@@ -43,7 +43,7 @@ pub(super) fn listener_response_from_data(
 
     Ok(ListenerResponse {
         name: data.name,
-        team: data.team.unwrap_or_else(|| "unknown".to_string()),
+        team: data.team_name.or(data.team).unwrap_or_else(|| "unknown".to_string()),
         address: data.address,
         port: port_from_i64(data.port)?,
         protocol: data.protocol,

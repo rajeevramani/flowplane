@@ -26,6 +26,10 @@ pub struct Config {
 pub struct SimpleXdsConfig {
     pub bind_address: String,
     pub port: u16,
+    /// Address that Envoy should use to connect back to the CP's gRPC services
+    /// (ALS, ExtProc). In Docker, this is the CP container hostname (e.g., "control-plane").
+    /// When None, falls back to bind_address with 0.0.0.0 → 127.0.0.1 mapping.
+    pub advertised_address: Option<String>,
     pub resources: XdsResourceConfig,
     pub tls: Option<XdsTlsConfig>,
     pub envoy_admin: EnvoyAdminConfig,
@@ -103,6 +107,7 @@ impl Default for SimpleXdsConfig {
         Self {
             bind_address: "0.0.0.0".to_string(),
             port: 18000,
+            advertised_address: None,
             resources: XdsResourceConfig::default(),
             tls: None,
             envoy_admin: EnvoyAdminConfig::default(),
@@ -133,6 +138,8 @@ impl Config {
 
         let xds_bind_address =
             std::env::var("FLOWPLANE_XDS_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+
+        let xds_advertised_address = std::env::var("FLOWPLANE_XDS_ADVERTISED_ADDRESS").ok();
 
         // Load resource configuration from environment variables
         let cluster_name =
@@ -205,6 +212,7 @@ impl Config {
             xds: SimpleXdsConfig {
                 bind_address: xds_bind_address,
                 port: xds_port,
+                advertised_address: xds_advertised_address,
                 resources: XdsResourceConfig {
                     cluster_name,
                     route_name,

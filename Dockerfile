@@ -3,8 +3,15 @@
 # Combined Dockerfile with cargo-chef optimization
 # Builds both UI and backend with optimized caching
 #
-# Build:
+# Build (default - no cloud features):
 #   DOCKER_BUILDKIT=1 docker build -t flowplane .
+#
+# Build with GCP support:
+#   DOCKER_BUILDKIT=1 docker build --build-arg CARGO_FEATURES=gcp -t flowplane:gcp .
+#
+# Build for Cloud Build (GCP):
+#   gcloud builds submit --tag gcr.io/PROJECT_ID/flowplane:VERSION \
+#     --build-arg CARGO_FEATURES=gcp .
 #
 # Run:
 #   docker run -p 8080:8080 -p 50051:50051 flowplane
@@ -40,6 +47,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Build dependencies (cached layer)
 FROM chef AS builder
 
+# Build argument for Cargo features (e.g., "gcp" for GCP deployment)
+ARG CARGO_FEATURES=""
+
 # Install system dependencies for building
 RUN apt-get update && apt-get install -y \
     pkg-config \
@@ -55,7 +65,11 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo chef cook --release --recipe-path recipe.json
+    if [ -n "$CARGO_FEATURES" ]; then \
+        cargo chef cook --release --features "$CARGO_FEATURES" --recipe-path recipe.json; \
+    else \
+        cargo chef cook --release --recipe-path recipe.json; \
+    fi
 
 # Build application
 COPY Cargo.toml Cargo.lock ./
@@ -67,7 +81,11 @@ COPY filter-schemas ./filter-schemas
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release && \
+    if [ -n "$CARGO_FEATURES" ]; then \
+        cargo build --release --features "$CARGO_FEATURES"; \
+    else \
+        cargo build --release; \
+    fi && \
     cp target/release/flowplane /app/flowplane
 
 # Runtime stage

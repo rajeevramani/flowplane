@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::encode::IsNull;
 use sqlx::error::BoxDynError;
-use sqlx::{Decode, Encode, Sqlite, Type};
+use sqlx::{Decode, Encode, Postgres, Type};
 use std::fmt;
 use std::str::FromStr;
 use utoipa::ToSchema;
@@ -67,24 +67,24 @@ impl FromStr for EndpointHealthStatus {
 }
 
 // SQLx trait implementations for database compatibility
-impl Type<Sqlite> for EndpointHealthStatus {
-    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
-        <String as Type<Sqlite>>::type_info()
+impl Type<Postgres> for EndpointHealthStatus {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as Type<Postgres>>::type_info()
     }
 }
 
-impl<'q> Encode<'q, Sqlite> for EndpointHealthStatus {
+impl<'q> Encode<'q, Postgres> for EndpointHealthStatus {
     fn encode_by_ref(
         &self,
-        buf: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
     ) -> Result<IsNull, BoxDynError> {
-        <&str as Encode<'q, Sqlite>>::encode_by_ref(&self.as_str(), buf)
+        <&str as Encode<'q, Postgres>>::encode_by_ref(&self.as_str(), buf)
     }
 }
 
-impl<'r> Decode<'r, Sqlite> for EndpointHealthStatus {
-    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, BoxDynError> {
-        let s = <String as Decode<'r, Sqlite>>::decode(value)?;
+impl<'r> Decode<'r, Postgres> for EndpointHealthStatus {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let s = <String as Decode<'r, Postgres>>::decode(value)?;
         EndpointHealthStatus::from_str(&s).map_err(|e| e.into())
     }
 }

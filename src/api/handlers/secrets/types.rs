@@ -1,12 +1,14 @@
 //! Request and response types for secrets API
 
+use crate::api::handlers::pagination::default_limit;
 use crate::domain::{SecretId, SecretType};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 /// Request to create a new secret
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSecretRequest {
     /// Name of the secret (must be unique within the team)
     #[validate(length(min = 1, max = 255))]
@@ -32,6 +34,7 @@ pub struct CreateSecretRequest {
 
 /// Request to create a reference-based secret (external backend)
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSecretReferenceRequest {
     /// Name of the secret (must be unique within the team)
     #[validate(length(min = 1, max = 255))]
@@ -61,6 +64,7 @@ pub struct CreateSecretReferenceRequest {
 
 /// Request to update an existing secret
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateSecretRequest {
     /// Optional description update
     pub description: Option<String>,
@@ -74,6 +78,7 @@ pub struct UpdateSecretRequest {
 
 /// Secret metadata response (never includes decrypted secret values)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SecretResponse {
     /// Unique identifier
     pub id: String,
@@ -128,7 +133,7 @@ impl SecretResponse {
             description: data.description.clone(),
             version: data.version,
             source: data.source.clone(),
-            team: data.team.clone(),
+            team: data.team_name.clone().unwrap_or_else(|| data.team.clone()),
             created_at: data.created_at,
             updated_at: data.updated_at,
             expires_at: data.expires_at,
@@ -140,15 +145,16 @@ impl SecretResponse {
 }
 
 /// Query parameters for listing secrets
-#[derive(Debug, Clone, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, Deserialize, ToSchema, IntoParams, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ListSecretsQuery {
-    /// Maximum number of secrets to return
-    #[serde(default)]
-    pub limit: Option<i64>,
+    /// Maximum number of secrets to return (default: 50)
+    #[serde(default = "default_limit")]
+    pub limit: i64,
 
-    /// Offset for pagination
+    /// Offset for pagination (default: 0)
     #[serde(default)]
-    pub offset: Option<i64>,
+    pub offset: i64,
 
     /// Filter by secret type
     #[serde(default)]
@@ -157,13 +163,8 @@ pub struct ListSecretsQuery {
 
 /// Path parameters for team-scoped secret operations
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TeamSecretPath {
     pub team: String,
     pub secret_id: SecretId,
-}
-
-/// Path parameters for team-scoped operations
-#[derive(Debug, Clone, Deserialize)]
-pub struct TeamPath {
-    pub team: String,
 }

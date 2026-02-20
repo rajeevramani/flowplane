@@ -7,9 +7,9 @@ CREATE TABLE IF NOT EXISTS routes (
     path_prefix TEXT NOT NULL,
     cluster_name TEXT NOT NULL,
     configuration TEXT NOT NULL,  -- JSON serialized route config
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    version BIGINT NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Foreign key constraint to clusters table
     FOREIGN KEY (cluster_name) REFERENCES clusters(name) ON DELETE CASCADE,

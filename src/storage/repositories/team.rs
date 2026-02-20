@@ -4,7 +4,7 @@
 //! with team memberships and resource ownership.
 
 use crate::auth::team::{CreateTeamRequest, Team, TeamStatus, UpdateTeamRequest};
-use crate::domain::TeamId;
+use crate::domain::{OrgId, TeamId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use async_trait::async_trait;
@@ -22,9 +22,10 @@ struct TeamRow {
     pub display_name: String,
     pub description: Option<String>,
     pub owner_user_id: Option<String>,
+    pub org_id: String,
     pub settings: Option<String>, // JSON stored as string
     pub status: String,
-    pub envoy_admin_port: Option<i64>, // Stored as INTEGER in SQLite
+    pub envoy_admin_port: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -51,6 +52,7 @@ impl TryFrom<TeamRow> for Team {
             display_name: row.display_name,
             description: row.description,
             owner_user_id: row.owner_user_id.map(|id| id.into()),
+            org_id: OrgId::from_string(row.org_id),
             settings,
             status,
             envoy_admin_port: row.envoy_admin_port.map(|p| p as u16),
@@ -93,12 +95,44 @@ pub trait TeamRepository: Send + Sync {
     /// Delete a team (will fail if there are resources referencing it due to FK RESTRICT)
     async fn delete_team(&self, id: &TeamId) -> Result<()>;
 
-    /// Check if a team name is available
+    /// Check if a team name is available (global — use is_name_available_in_org for org-scoped)
     async fn is_name_available(&self, name: &str) -> Result<bool>;
+
+    /// Check if a team name is available within a specific organization
+    async fn is_name_available_in_org(&self, org_id: &OrgId, name: &str) -> Result<bool>;
+
+    /// Get a team by org and name (org-scoped unique lookup)
+    async fn get_team_by_org_and_name(&self, org_id: &OrgId, name: &str) -> Result<Option<Team>>;
+
+    /// List all teams belonging to an organization
+    async fn list_teams_by_org(&self, org_id: &OrgId) -> Result<Vec<Team>>;
+
+    /// Resolve team names to team IDs (UUIDs).
+    /// Returns empty vec for empty input (admin bypass preserved).
+    /// Errors if any team name doesn't exist.
+    /// When `org_id` is Some, filters by organization (org-scoped lookup).
+    /// When `org_id` is None, searches globally (platform admin behavior).
+    async fn resolve_team_ids(
+        &self,
+        org_id: Option<&OrgId>,
+        team_names: &[String],
+    ) -> Result<Vec<String>>;
+
+    /// Resolve team IDs (UUIDs) to team names.
+    /// Inverse of `resolve_team_ids`. Returns empty vec for empty input.
+    /// Errors if any team ID doesn't exist.
+    /// When `org_id` is Some, filters by organization (org-scoped lookup).
+    /// When `org_id` is None, searches globally (platform admin behavior).
+    async fn resolve_team_names(
+        &self,
+        org_id: Option<&OrgId>,
+        team_ids: &[String],
+    ) -> Result<Vec<String>>;
 }
 
 // SQLx implementation
 
+#[derive(Debug)]
 pub struct SqlxTeamRepository {
     pool: DbPool,
 }
@@ -136,8 +170,8 @@ impl TeamRepository for SqlxTeamRepository {
 
         let row = sqlx::query_as::<_, TeamRow>(
             "INSERT INTO teams (
-                id, name, display_name, description, owner_user_id, settings, status, envoy_admin_port, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                id, name, display_name, description, owner_user_id, org_id, settings, status, envoy_admin_port, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *"
         )
         .bind(id.as_str())
@@ -145,6 +179,7 @@ impl TeamRepository for SqlxTeamRepository {
         .bind(&request.display_name)
         .bind(&request.description)
         .bind(request.owner_user_id.as_ref().map(|id| id.as_str()))
+        .bind(request.org_id.as_str())
         .bind(settings_json.as_deref())
         .bind(TeamStatus::Active.as_str())
         .bind(next_port)
@@ -307,6 +342,54 @@ impl TeamRepository for SqlxTeamRepository {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(org_id = %org_id, team_name = %name), name = "db_is_team_name_available_in_org")]
+    async fn is_name_available_in_org(&self, org_id: &OrgId, name: &str) -> Result<bool> {
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM teams WHERE org_id = $1 AND name = $2",
+        )
+        .bind(org_id.as_str())
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: format!("Failed to check name availability in org: {}", name),
+        })?;
+
+        Ok(count == 0)
+    }
+
+    #[instrument(skip(self), fields(org_id = %org_id, team_name = %name), name = "db_get_team_by_org_and_name")]
+    async fn get_team_by_org_and_name(&self, org_id: &OrgId, name: &str) -> Result<Option<Team>> {
+        let row =
+            sqlx::query_as::<_, TeamRow>("SELECT * FROM teams WHERE org_id = $1 AND name = $2")
+                .bind(org_id.as_str())
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to fetch team by org and name: {}", name),
+                })?;
+
+        row.map(|r| r.try_into()).transpose()
+    }
+
+    #[instrument(skip(self), fields(org_id = %org_id), name = "db_list_teams_by_org")]
+    async fn list_teams_by_org(&self, org_id: &OrgId) -> Result<Vec<Team>> {
+        let rows =
+            sqlx::query_as::<_, TeamRow>("SELECT * FROM teams WHERE org_id = $1 ORDER BY name")
+                .bind(org_id.as_str())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to list teams by org: {}", org_id),
+                })?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
+
     #[instrument(skip(self), fields(team_name = %name), name = "db_is_team_name_available")]
     async fn is_name_available(&self, name: &str) -> Result<bool> {
         let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE name = $1")
@@ -320,29 +403,140 @@ impl TeamRepository for SqlxTeamRepository {
 
         Ok(count == 0)
     }
+
+    #[instrument(skip(self), fields(team_count = team_names.len()), name = "db_resolve_team_ids")]
+    async fn resolve_team_ids(
+        &self,
+        org_id: Option<&OrgId>,
+        team_names: &[String],
+    ) -> Result<Vec<String>> {
+        // Empty input returns empty vec (admin bypass preserved)
+        if team_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build dynamic query with IN clause
+        // PostgreSQL uses $1, $2, ... for positional params
+        // When org_id is provided, it takes $1 and names start at $2
+        let (query, has_org_filter) = if let Some(_org) = org_id {
+            let placeholders: Vec<String> =
+                (2..=team_names.len() + 1).map(|i| format!("${}", i)).collect();
+            (
+                format!(
+                    "SELECT id, name FROM teams WHERE org_id = $1 AND name IN ({})",
+                    placeholders.join(", ")
+                ),
+                true,
+            )
+        } else {
+            let placeholders: Vec<String> =
+                (1..=team_names.len()).map(|i| format!("${}", i)).collect();
+            (
+                format!("SELECT id, name FROM teams WHERE name IN ({})", placeholders.join(", ")),
+                false,
+            )
+        };
+
+        // Bind parameters
+        let mut query_builder = sqlx::query_as::<_, (String, String)>(&query);
+        if has_org_filter {
+            query_builder = query_builder.bind(org_id.map(|o| o.as_str()).unwrap_or_default());
+        }
+        for name in team_names {
+            query_builder = query_builder.bind(name);
+        }
+
+        let rows =
+            query_builder.fetch_all(&self.pool).await.map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to resolve team IDs".to_string(),
+            })?;
+
+        // Verify all team names were found
+        if rows.len() != team_names.len() {
+            let found_names: std::collections::HashSet<_> =
+                rows.iter().map(|(_, name)| name.as_str()).collect();
+            let missing: Vec<_> =
+                team_names.iter().filter(|name| !found_names.contains(name.as_str())).collect();
+            return Err(FlowplaneError::validation(format!(
+                "Team(s) not found: {}",
+                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            )));
+        }
+
+        // Return IDs in the order they were returned (not necessarily the order requested)
+        Ok(rows.into_iter().map(|(id, _)| id).collect())
+    }
+
+    #[instrument(skip(self), fields(team_count = team_ids.len()), name = "db_resolve_team_names")]
+    async fn resolve_team_names(
+        &self,
+        org_id: Option<&OrgId>,
+        team_ids: &[String],
+    ) -> Result<Vec<String>> {
+        if team_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (query, has_org_filter) = if let Some(_org) = org_id {
+            let placeholders: Vec<String> =
+                (2..=team_ids.len() + 1).map(|i| format!("${}", i)).collect();
+            (
+                format!(
+                    "SELECT id, name FROM teams WHERE org_id = $1 AND id IN ({})",
+                    placeholders.join(", ")
+                ),
+                true,
+            )
+        } else {
+            let placeholders: Vec<String> =
+                (1..=team_ids.len()).map(|i| format!("${}", i)).collect();
+            (format!("SELECT id, name FROM teams WHERE id IN ({})", placeholders.join(", ")), false)
+        };
+
+        let mut query_builder = sqlx::query_as::<_, (String, String)>(&query);
+        if has_org_filter {
+            query_builder = query_builder.bind(org_id.map(|o| o.as_str()).unwrap_or_default());
+        }
+        for id in team_ids {
+            query_builder = query_builder.bind(id);
+        }
+
+        let rows =
+            query_builder.fetch_all(&self.pool).await.map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to resolve team names".to_string(),
+            })?;
+
+        if rows.len() != team_ids.len() {
+            let found_ids: std::collections::HashSet<_> =
+                rows.iter().map(|(id, _)| id.as_str()).collect();
+            let missing: Vec<_> =
+                team_ids.iter().filter(|id| !found_ids.contains(id.as_str())).collect();
+            return Err(FlowplaneError::validation(format!(
+                "Team ID(s) not found: {}",
+                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            )));
+        }
+
+        Ok(rows.into_iter().map(|(_, name)| name).collect())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
+    use crate::domain::OrgId;
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn setup_test_db() -> DbPool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("Failed to create test database");
-
-        // Run migrations
-        crate::storage::migrations::run_migrations(&pool).await.expect("Failed to run migrations");
-
-        pool
+    fn test_org_id() -> OrgId {
+        OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID)
     }
 
     #[tokio::test]
     async fn test_create_and_get_team() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_create_get").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -350,6 +544,7 @@ mod tests {
             display_name: "Engineering Team".to_string(),
             description: Some("Main engineering team".to_string()),
             owner_user_id: None,
+            org_id: test_org_id(),
             settings: Some(serde_json::json!({"foo": "bar"})),
         };
 
@@ -373,14 +568,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_team_duplicate_name_fails() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_dup_name").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
-            name: "platform".to_string(),
-            display_name: "Platform Team".to_string(),
+            name: "duplicate-test".to_string(),
+            display_name: "Duplicate Test Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
 
@@ -393,7 +590,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_team() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_update").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -401,6 +599,7 @@ mod tests {
             display_name: "DevOps".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
 
@@ -426,7 +625,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_teams() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_list").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         // Create multiple teams
@@ -436,21 +636,24 @@ mod tests {
                 display_name: format!("Team {}", i),
                 description: None,
                 owner_user_id: None,
+                org_id: test_org_id(),
                 settings: None,
             };
             repo.create_team(request).await.expect("create team");
         }
 
-        let teams = repo.list_teams(10, 0).await.expect("list teams");
-        assert_eq!(teams.len(), 5);
+        // Count includes seed teams from TestDatabase (test-team, team-a, team-b, platform)
+        let teams = repo.list_teams(20, 0).await.expect("list teams");
+        assert_eq!(teams.len(), 5 + 4); // 5 created + 4 seed
 
         let count = repo.count_teams().await.expect("count teams");
-        assert_eq!(count, 5);
+        assert_eq!(count, 5 + 4);
     }
 
     #[tokio::test]
     async fn test_list_teams_by_status() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_list_by_status").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         // Create active team
@@ -459,6 +662,7 @@ mod tests {
             display_name: "Active Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
         let active_team = repo.create_team(active_request).await.expect("create active team");
@@ -469,6 +673,7 @@ mod tests {
             display_name: "Suspended Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
         let suspended_team =
@@ -483,11 +688,11 @@ mod tests {
         };
         repo.update_team(&suspended_team.id, update).await.expect("suspend team");
 
-        // List active teams
+        // List active teams (includes 4 seed teams + 1 created active)
         let active_teams =
             repo.list_teams_by_status(TeamStatus::Active, 10, 0).await.expect("list active");
-        assert_eq!(active_teams.len(), 1);
-        assert_eq!(active_teams[0].id, active_team.id);
+        assert_eq!(active_teams.len(), 5); // 1 created + 4 seed
+        assert!(active_teams.iter().any(|t| t.id == active_team.id));
 
         // List suspended teams
         let suspended_teams =
@@ -498,7 +703,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_team() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_delete").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -506,6 +712,7 @@ mod tests {
             display_name: "Temporary Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
 
@@ -519,7 +726,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_name_available() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_name_available").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         assert!(repo.is_name_available("new-team").await.expect("check availability"));
@@ -529,6 +737,7 @@ mod tests {
             display_name: "Existing Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
         repo.create_team(request).await.expect("create team");
@@ -539,7 +748,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_team_allocates_envoy_admin_port() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_envoy_port").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         let request = CreateTeamRequest {
@@ -547,6 +757,7 @@ mod tests {
             display_name: "First Team".to_string(),
             description: None,
             owner_user_id: None,
+            org_id: test_org_id(),
             settings: None,
         };
 
@@ -558,7 +769,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_multiple_teams_unique_ports() {
-        let pool = setup_test_db().await;
+        let _db = TestDatabase::new("team_unique_ports").await;
+        let pool = _db.pool.clone();
         let repo = SqlxTeamRepository::new(pool);
 
         // Create 3 teams
@@ -569,6 +781,7 @@ mod tests {
                 display_name: format!("Team {}", i),
                 description: None,
                 owner_user_id: None,
+                org_id: test_org_id(),
                 settings: None,
             };
             let created = repo.create_team(request).await.expect("create team");
@@ -578,5 +791,157 @@ mod tests {
         // Verify sequential allocation
         let base = crate::config::DEFAULT_ENVOY_ADMIN_BASE_PORT;
         assert_eq!(ports, vec![base, base + 1, base + 2]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_ids_empty_input() {
+        let _db = TestDatabase::new("team_resolve_empty").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        let result = repo.resolve_team_ids(None, &[]).await.expect("resolve empty");
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_ids_success() {
+        let _db = TestDatabase::new("team_resolve_success").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        // Create teams
+        let team1 = repo
+            .create_team(CreateTeamRequest {
+                name: "alpha".to_string(),
+                display_name: "Alpha Team".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: test_org_id(),
+                settings: None,
+            })
+            .await
+            .expect("create team alpha");
+
+        let team2 = repo
+            .create_team(CreateTeamRequest {
+                name: "beta".to_string(),
+                display_name: "Beta Team".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: test_org_id(),
+                settings: None,
+            })
+            .await
+            .expect("create team beta");
+
+        // Resolve names to IDs
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+        let ids = repo.resolve_team_ids(None, &names).await.expect("resolve IDs");
+
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&team1.id.as_str().to_string()));
+        assert!(ids.contains(&team2.id.as_str().to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_ids_missing_team() {
+        let _db = TestDatabase::new("team_resolve_missing").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        // Create one team
+        repo.create_team(CreateTeamRequest {
+            name: "exists".to_string(),
+            display_name: "Exists Team".to_string(),
+            description: None,
+            owner_user_id: None,
+            org_id: test_org_id(),
+            settings: None,
+        })
+        .await
+        .expect("create team");
+
+        // Try to resolve with a missing team
+        let names = vec!["exists".to_string(), "does-not-exist".to_string()];
+        let result = repo.resolve_team_ids(None, &names).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("does-not-exist"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_names_empty_input() {
+        let _db = TestDatabase::new("team_resolve_names_empty").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        let result = repo.resolve_team_names(None, &[]).await.expect("resolve empty");
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_names_success() {
+        let _db = TestDatabase::new("team_resolve_names_success").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        let team1 = repo
+            .create_team(CreateTeamRequest {
+                name: "gamma".to_string(),
+                display_name: "Gamma Team".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: test_org_id(),
+                settings: None,
+            })
+            .await
+            .expect("create team gamma");
+
+        let team2 = repo
+            .create_team(CreateTeamRequest {
+                name: "delta".to_string(),
+                display_name: "Delta Team".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: test_org_id(),
+                settings: None,
+            })
+            .await
+            .expect("create team delta");
+
+        let ids = vec![team1.id.as_str().to_string(), team2.id.as_str().to_string()];
+        let names = repo.resolve_team_names(None, &ids).await.expect("resolve names");
+
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"gamma".to_string()));
+        assert!(names.contains(&"delta".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_team_names_missing_id() {
+        let _db = TestDatabase::new("team_resolve_names_missing").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool);
+
+        let team = repo
+            .create_team(CreateTeamRequest {
+                name: "exists-team".to_string(),
+                display_name: "Exists".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: test_org_id(),
+                settings: None,
+            })
+            .await
+            .expect("create team");
+
+        let fake_id = "00000000-0000-0000-0000-000000000000".to_string();
+        let ids = vec![team.id.as_str().to_string(), fake_id.clone()];
+        let result = repo.resolve_team_names(None, &ids).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains(&fake_id));
     }
 }

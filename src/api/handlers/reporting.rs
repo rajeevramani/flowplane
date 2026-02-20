@@ -18,8 +18,9 @@ use tracing::instrument;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::api::error::ApiError;
+use crate::api::handlers::team_access::{get_effective_team_ids, team_repo_from_state};
 use crate::api::routes::ApiState;
-use crate::auth::authorization::{extract_team_scopes, require_resource_access};
+use crate::auth::authorization::require_resource_access;
 use crate::auth::models::AuthContext;
 use crate::storage::repositories::ReportingRepository;
 use crate::xds::ClusterSpec;
@@ -70,19 +71,7 @@ pub struct RouteFlowEntry {
     pub team: Option<String>,
 }
 
-/// Response for route flows listing
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListRouteFlowsResponse {
-    /// List of route flow entries
-    pub route_flows: Vec<RouteFlowEntry>,
-    /// Total number of route flows available (for pagination)
-    pub total: i64,
-    /// Current offset
-    pub offset: i64,
-    /// Current limit
-    pub limit: i64,
-}
+use super::pagination::PaginatedResponse;
 
 // ============================================================================
 // Handlers
@@ -102,7 +91,7 @@ pub struct ListRouteFlowsResponse {
     path = "/api/v1/reports/route-flows",
     params(ListRouteFlowsQuery),
     responses(
-        (status = 200, description = "Route flows retrieved successfully", body = ListRouteFlowsResponse),
+        (status = 200, description = "Route flows retrieved successfully", body = PaginatedResponse<RouteFlowEntry>),
         (status = 403, description = "Insufficient permissions"),
         (status = 503, description = "Service unavailable")
     ),
@@ -114,7 +103,7 @@ pub async fn list_route_flows_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Query(params): Query<ListRouteFlowsQuery>,
-) -> Result<Json<ListRouteFlowsResponse>, ApiError> {
+) -> Result<Json<PaginatedResponse<RouteFlowEntry>>, ApiError> {
     // Authorization: require reports:read scope
     // Team filtering will be applied at the repository level based on context
     require_resource_access(&context, "reports", "read", None)?;
@@ -131,8 +120,9 @@ pub async fn list_route_flows_handler(
 
     let reporting_repo = ReportingRepository::new(cluster_repo.pool().clone());
 
-    // Extract team scopes from auth context for filtering
-    let team_scopes = extract_team_scopes(&context);
+    // Extract team IDs from auth context for filtering
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
 
     // Fetch route flows from repository
     let (rows, total) = reporting_repo
@@ -184,5 +174,5 @@ pub async fn list_route_flows_handler(
         })
         .collect();
 
-    Ok(Json(ListRouteFlowsResponse { route_flows, total, offset, limit }))
+    Ok(Json(PaginatedResponse::new(route_flows, total, limit, offset)))
 }

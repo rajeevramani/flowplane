@@ -14,7 +14,10 @@ use utoipa::{IntoParams, ToSchema};
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        handlers::team_access::{
+            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+            verify_team_access,
+        },
         routes::ApiState,
     },
     auth::authorization::{extract_team_scopes, require_resource_access},
@@ -28,6 +31,11 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
 pub struct ListAggregatedSchemasQuery {
+    /// Team to filter schemas by (required for team-scoped users, optional for admins)
+    #[serde(default)]
+    #[schema(example = "engineering")]
+    pub team: Option<String>,
+
     /// Text search in API path (substring match)
     #[serde(default)]
     #[schema(example = "users")]
@@ -245,14 +253,45 @@ pub async fn list_aggregated_schemas_handler(
     Extension(context): Extension<AuthContext>,
     Query(query): Query<ListAggregatedSchemasQuery>,
 ) -> Result<Json<Vec<AggregatedSchemaResponse>>, ApiError> {
-    // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    // Determine team: use query parameter if provided, otherwise fall back to first team scope
+    let team = if let Some(ref requested_team) = query.team {
+        // Verify user has access to the requested team
+        require_resource_access_resolved(
+            &state,
+            &context,
+            "aggregated-schemas",
+            "read",
+            Some(requested_team),
+            context.org_id.as_ref(),
+        )
+        .await?;
+        requested_team.clone()
+    } else {
+        // Fall back to first team scope from auth context
+        require_resource_access(&context, "aggregated-schemas", "read", None)?;
+        let team_scopes = extract_team_scopes(&context);
+        team_scopes
+            .first()
+            .ok_or_else(|| {
+                ApiError::BadRequest(
+                    "Team scope required for aggregated schemas. Provide 'team' query parameter."
+                        .to_string(),
+                )
+            })?
+            .clone()
+    };
 
-    // Extract team from context
-    let team_scopes = extract_team_scopes(&context);
-    let team = team_scopes.first().ok_or_else(|| {
-        ApiError::BadRequest("Team scope required for aggregated schemas".to_string())
-    })?;
+    // Resolve team name to UUID
+    use crate::storage::repositories::TeamRepository as _;
+    let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
+    let team_ids = team_repo
+        .resolve_team_ids(context.org_id.as_ref(), &[team])
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
+    let team = team_ids
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound("Team not found".to_string()))?;
 
     // Validate min_confidence bounds
     if let Some(min_conf) = query.min_confidence {
@@ -273,7 +312,7 @@ pub async fn list_aggregated_schemas_handler(
     // List schemas with filters
     let schemas = repo
         .list_filtered(
-            team,
+            &team,
             query.path.as_deref(),
             query.http_method.as_deref(),
             query.min_confidence,
@@ -334,7 +373,8 @@ pub async fn get_aggregated_schema_handler(
     })?;
 
     // Verify team access based on user's scope type
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -399,7 +439,8 @@ pub async fn compare_aggregated_schemas_handler(
     })?;
 
     // Verify team access based on user's scope type
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -501,7 +542,8 @@ pub async fn export_aggregated_schema_handler(
     // - Admin users (admin:all) can access all schemas
     // - Users with global aggregated-schemas:read can access all schemas
     // - Users with team:X:aggregated-schemas:read can only access their team's schemas
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -580,7 +622,8 @@ pub async fn export_multiple_schemas_handler(
     // - Admin users (admin:all) can access all schemas
     // - Users with global aggregated-schemas:read can access all schemas
     // - Users with team:X:aggregated-schemas:read can only access their team's schemas
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
         || context.has_scope("aggregated-schemas:write");
@@ -714,6 +757,20 @@ fn build_openapi_spec(
     if let Some(ref resp_schemas) = schema.response_schemas {
         if let Some(resp_map) = resp_schemas.as_object() {
             for (status_code, resp_schema) in resp_map {
+                // Null schema means bodyless response (e.g. DELETE 204).
+                // Emit the status code without a content block — valid OpenAPI.
+                if resp_schema.is_null() {
+                    let description = if status_code == "204" {
+                        "No Content".to_string()
+                    } else {
+                        format!("Response with status {}", status_code)
+                    };
+                    operation["responses"][status_code] = serde_json::json!({
+                        "description": description
+                    });
+                    continue;
+                }
+
                 // Clone, strip internal attributes, and convert to OpenAPI format
                 let mut cleaned_resp_schema = resp_schema.clone();
                 strip_internal_attributes(&mut cleaned_resp_schema);
@@ -777,7 +834,7 @@ fn build_openapi_spec(
 }
 
 /// Build a unified OpenAPI 3.1 specification from multiple schemas
-fn build_unified_openapi_spec(
+pub fn build_unified_openapi_spec(
     schemas: &[crate::storage::repositories::AggregatedSchemaData],
     options: &ExportMultipleSchemasRequest,
 ) -> OpenApiExportResponse {
@@ -883,6 +940,20 @@ fn build_unified_openapi_spec(
             if let Some(ref resp_schemas) = schema.response_schemas {
                 if let Some(resp_map) = resp_schemas.as_object() {
                     for (status_code, resp_schema) in resp_map {
+                        // Null schema means bodyless response (e.g. DELETE 204).
+                        // Emit the status code without a content block — valid OpenAPI.
+                        if resp_schema.is_null() {
+                            let description = if status_code == "204" {
+                                "No Content".to_string()
+                            } else {
+                                format!("Response with status {}", status_code)
+                            };
+                            operation["responses"][status_code] = serde_json::json!({
+                                "description": description
+                            });
+                            continue;
+                        }
+
                         let mut cleaned_resp = resp_schema.clone();
                         strip_internal_attributes(&mut cleaned_resp);
                         let converted_resp = convert_schema_to_openapi(&cleaned_resp);
@@ -1522,11 +1593,11 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_verify_access_admin_empty_scopes() {
+        async fn test_verify_access_empty_scopes_denied() {
             let schema = sample_schema("any-team", 1);
-            let team_scopes: Vec<String> = vec![]; // Admin bypass
+            let team_scopes: Vec<String> = vec![]; // Empty scopes = no access (admin bypass removed)
             let result = verify_team_access(schema, &team_scopes).await;
-            assert!(result.is_ok());
+            assert!(result.is_err(), "empty scopes should not bypass team access");
         }
     }
 }

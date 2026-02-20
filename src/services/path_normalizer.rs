@@ -164,6 +164,11 @@ struct RegexPatterns {
 }
 
 /// Get compiled regex patterns (singleton)
+///
+/// NOTE: These expect() calls are acceptable because:
+/// 1. Patterns are hardcoded compile-time constants
+/// 2. Patterns are validated by tests (test_regex_patterns_compile)
+/// 3. Failure indicates programmer error, not runtime issue
 fn get_patterns() -> &'static RegexPatterns {
     static PATTERNS: OnceLock<RegexPatterns> = OnceLock::new();
     PATTERNS.get_or_init(|| {
@@ -172,22 +177,25 @@ fn get_patterns() -> &'static RegexPatterns {
             uuid: Regex::new(
                 r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
             )
-            .expect("UUID regex compilation failed"),
+            .expect("BUG: UUID regex pattern is invalid - validated by tests"),
 
             // Numeric ID: pure digits
-            numeric_id: Regex::new(r"^\d+$").expect("Numeric ID regex compilation failed"),
+            numeric_id: Regex::new(r"^\d+$")
+                .expect("BUG: Numeric ID regex pattern is invalid - validated by tests"),
 
             // Alphanumeric code: mix of letters and numbers (at least one of each)
             // Must have at least 2 characters total
             // We'll validate this separately since regex crate doesn't support lookahead
             alphanumeric_code: Regex::new(r"^[a-zA-Z0-9]{2,}$")
-                .expect("Alphanumeric code regex compilation failed"),
+                .expect("BUG: Alphanumeric code regex pattern is invalid - validated by tests"),
 
             // Date: YYYY-MM-DD
-            date: Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("Date regex compilation failed"),
+            date: Regex::new(r"^\d{4}-\d{2}-\d{2}$")
+                .expect("BUG: Date regex pattern is invalid - validated by tests"),
 
             // Unix timestamp: 10+ digits (covers timestamps from 2001 onwards)
-            timestamp: Regex::new(r"^\d{10,}$").expect("Timestamp regex compilation failed"),
+            timestamp: Regex::new(r"^\d{10,}$")
+                .expect("BUG: Timestamp regex pattern is invalid - validated by tests"),
         }
     })
 }
@@ -366,6 +374,21 @@ pub fn normalize_path(path: &str, config: &PathNormalizationConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Validates that all regex patterns compile successfully.
+    /// This test ensures the expect() calls in get_patterns() will never panic.
+    #[test]
+    fn test_regex_patterns_compile() {
+        // Force pattern initialization - will panic if any pattern is invalid
+        let patterns = get_patterns();
+
+        // Verify patterns work by testing basic matching
+        assert!(patterns.uuid.is_match("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(patterns.numeric_id.is_match("12345"));
+        assert!(patterns.alphanumeric_code.is_match("ABC123"));
+        assert!(patterns.date.is_match("2024-01-15"));
+        assert!(patterns.timestamp.is_match("1640000000"));
+    }
 
     fn default_config() -> PathNormalizationConfig {
         PathNormalizationConfig::default()

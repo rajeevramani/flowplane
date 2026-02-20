@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS proxy_certificates (
     issued_by_user_id TEXT,                        -- User who generated the certificate
     revoked_at TEXT,                               -- NULL if not revoked
     revoked_reason TEXT,                           -- Reason for revocation
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
     FOREIGN KEY (issued_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
     UNIQUE(team_id, serial_number)

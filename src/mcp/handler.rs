@@ -3,55 +3,136 @@
 //! Routes incoming JSON-RPC requests to the appropriate method handlers.
 
 use serde_json::Value;
-use sqlx::SqlitePool;
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
+use crate::domain::OrgId;
 use crate::mcp::error::McpError;
 use crate::mcp::logging::SetLogLevelParams;
 use crate::mcp::protocol::*;
 use crate::mcp::resources;
+use crate::mcp::tool_registry::{check_scope_grants_authorization, get_tool_authorization};
 use crate::mcp::tools;
+use crate::storage::DbPool;
 use crate::xds::XdsState;
 
-/// Negotiate MCP protocol version
+/// Server instructions provided to LLM clients during initialization.
 ///
-/// Finds the highest version we support that is <= client's version.
-/// This ensures backward compatibility while preventing clients from
-/// requesting features we don't support.
-fn negotiate_version(client_version: &str) -> Result<String, McpError> {
-    // Find highest version we support that's <= client's version
-    let negotiated = SUPPORTED_VERSIONS.iter().rev().find(|&&v| v <= client_version).copied();
+/// This shapes how every AI agent interacts with Flowplane — explaining terminology,
+/// resource creation order, smart defaults, and diagnostic workflows.
+const SERVER_INSTRUCTIONS: &str = r#"# Flowplane API Gateway Control Plane
 
-    match negotiated {
-        Some(v) => Ok(v.to_string()),
-        None => Err(McpError::UnsupportedProtocolVersion {
+## Terminology
+- Backend = Cluster (upstream service with endpoints)
+- Entry Point = Listener (address:port where traffic enters)
+- Routing Rules = Route Configuration (path matching + forwarding)
+- Policy = Filter (rate limiting, CORS, auth, headers)
+
+## Resource Creation Order (ALWAYS follow)
+1. Backends (clusters) — must exist before routes reference them
+2. Routing Rules (route configs with virtual hosts and routes)
+3. Policies (filters) — create then attach
+4. Entry Points (listeners) — bind to routing rules
+
+## Before Creating Resources
+- cp_query_port: check if port is available
+- cp_query_path: check if path is already routed
+- dev_preflight_check: comprehensive pre-creation validation
+
+## Smart Defaults
+- Listen address: 0.0.0.0 | Protocol: HTTP | LB: ROUND_ROBIN
+- Virtual host domains: ["*"] | Match type: prefix
+
+## Diagnostic Workflow
+1. ops_topology: understand the full gateway layout
+2. ops_trace_request: trace a specific request path
+3. ops_config_validate: find configuration problems
+4. ops_audit_query: review recent changes
+
+## Error Recovery
+- ALREADY_EXISTS: use update tool or choose different name
+- NOT_FOUND: create the prerequisite first
+- CONFLICT: check existing resource, suggest resolution"#;
+
+/// Validate MCP protocol version (2025-11-25 only)
+///
+/// We only support the 2025-11-25 protocol version. Older versions are rejected
+/// with an error message suggesting mcp-remote bridge for backward compatibility.
+fn validate_protocol_version(client_version: &str) -> Result<(), McpError> {
+    if client_version == PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(McpError::UnsupportedProtocolVersion {
             client: client_version.to_string(),
-            supported: SUPPORTED_VERSIONS.iter().map(|s| s.to_string()).collect(),
-        }),
+            supported: vec![PROTOCOL_VERSION.to_string()],
+        })
     }
 }
 
 pub struct McpHandler {
-    db_pool: Arc<SqlitePool>,
+    db_pool: Arc<DbPool>,
     xds_state: Option<Arc<XdsState>>,
     team: String,
+    /// Scopes from the authenticated token for tool-level authorization
+    scopes: Vec<String>,
+    /// Organization ID from the authenticated user's context (None for CLI/system)
+    org_id: Option<OrgId>,
     initialized: bool,
 }
 
 impl McpHandler {
     /// Create a new MCP handler with read-only capabilities
-    pub fn new(db_pool: Arc<SqlitePool>, team: String) -> Self {
-        Self { db_pool, xds_state: None, team, initialized: false }
+    ///
+    /// # Arguments
+    /// * `db_pool` - Database connection pool
+    /// * `team` - Team context for multi-tenancy
+    /// * `scopes` - Authorization scopes from the authenticated token
+    // org_id is None: CLI MCP has direct machine access with admin:all scopes.
+    // Org isolation is only enforced on the HTTP MCP path via `with_xds_state`.
+    pub fn new(db_pool: Arc<DbPool>, team: String, scopes: Vec<String>) -> Self {
+        Self { db_pool, xds_state: None, team, scopes, org_id: None, initialized: false }
     }
 
     /// Create a new MCP handler with full read/write capabilities
+    ///
+    /// # Arguments
+    /// * `db_pool` - Database connection pool
+    /// * `xds_state` - XDS state for control plane operations
+    /// * `team` - Team context for multi-tenancy
+    /// * `scopes` - Authorization scopes from the authenticated token
     pub fn with_xds_state(
-        db_pool: Arc<SqlitePool>,
+        db_pool: Arc<DbPool>,
         xds_state: Arc<XdsState>,
         team: String,
+        scopes: Vec<String>,
+        org_id: Option<OrgId>,
     ) -> Self {
-        Self { db_pool, xds_state: Some(xds_state), team, initialized: false }
+        Self { db_pool, xds_state: Some(xds_state), team, scopes, org_id, initialized: false }
+    }
+
+    /// Resolve team name to UUID for database queries.
+    ///
+    /// Resource tables store team UUIDs (not names), so any direct SQL query
+    /// must use the resolved UUID. Internal API tools handle this themselves,
+    /// but direct-DB tools and the reporting repository need the UUID passed in.
+    ///
+    /// Returns the team name unchanged if it's already a UUID or is empty.
+    async fn resolve_team_uuid(&self) -> Result<String, McpError> {
+        if self.team.is_empty() {
+            return Ok(self.team.clone());
+        }
+        if uuid::Uuid::parse_str(&self.team).is_ok() {
+            return Ok(self.team.clone());
+        }
+        let row: Option<(String,)> = sqlx::query_as("SELECT id FROM teams WHERE name = $1")
+            .bind(&self.team)
+            .fetch_optional(&*self.db_pool)
+            .await
+            .map_err(|e| {
+                McpError::InternalError(format!("Failed to resolve team '{}': {}", self.team, e))
+            })?;
+        row.map(|r| r.0)
+            .ok_or_else(|| McpError::InternalError(format!("Team '{}' not found", self.team)))
     }
 
     /// Handle an incoming JSON-RPC request
@@ -133,35 +214,25 @@ impl McpHandler {
             "Received initialize request"
         );
 
-        // Negotiate protocol version with strict validation
-        let client_version = if params.protocol_version.is_empty() {
-            "2024-11-05" // Default to oldest supported version for backwards compatibility
-        } else {
-            &params.protocol_version
-        };
-
-        let negotiated_version = match negotiate_version(client_version) {
-            Ok(v) => v,
-            Err(e) => {
-                error!(
-                    client_version = %client_version,
-                    error = %e,
-                    "Protocol version negotiation failed"
-                );
-                return self.error_response(id, e);
-            }
-        };
+        // Validate protocol version - only 2025-11-25 is supported
+        if let Err(e) = validate_protocol_version(&params.protocol_version) {
+            error!(
+                client_version = %params.protocol_version,
+                supported_version = %PROTOCOL_VERSION,
+                "Unsupported protocol version - only 2025-11-25 is supported"
+            );
+            return self.error_response(id, e);
+        }
 
         debug!(
-            client_version = %client_version,
-            negotiated_version = %negotiated_version,
-            "Protocol version negotiated"
+            protocol_version = %PROTOCOL_VERSION,
+            "Protocol version validated"
         );
 
         self.initialized = true;
 
         let result = InitializeResult {
-            protocol_version: negotiated_version,
+            protocol_version: PROTOCOL_VERSION.to_string(),
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: Some(false) }),
                 resources: Some(ResourcesCapability {
@@ -170,12 +241,24 @@ impl McpHandler {
                 }),
                 prompts: Some(PromptsCapability { list_changed: Some(false) }),
                 logging: Some(LoggingCapability {}),
+                completions: None,
+                tasks: None,
                 experimental: None,
+                roots: None,       // Client-only capability
+                sampling: None,    // Client-only capability
+                elicitation: None, // Client-only capability
             },
             server_info: ServerInfo {
                 name: "flowplane-mcp".to_string(),
                 version: crate::VERSION.to_string(),
+                title: Some("Flowplane MCP Server".to_string()),
+                description: Some(
+                    "Envoy control plane management via Model Context Protocol".to_string(),
+                ),
+                icons: None,
+                website_url: None,
             },
+            instructions: Some(SERVER_INSTRUCTIONS.to_string()),
         };
 
         match serde_json::to_value(result) {
@@ -200,33 +283,17 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        let tools = vec![
-            // Read operations
-            tools::cp_list_clusters_tool(),
-            tools::cp_get_cluster_tool(),
-            tools::cp_list_listeners_tool(),
-            tools::cp_get_listener_tool(),
-            tools::cp_list_routes_tool(),
-            tools::cp_list_filters_tool(),
-            tools::cp_get_filter_tool(),
-            // Write operations (requires xds_state)
-            // Cluster CRUD
-            tools::cp_create_cluster_tool(),
-            tools::cp_update_cluster_tool(),
-            tools::cp_delete_cluster_tool(),
-            // Listener CRUD
-            tools::cp_create_listener_tool(),
-            tools::cp_update_listener_tool(),
-            tools::cp_delete_listener_tool(),
-            // Route config CRUD
-            tools::cp_create_route_config_tool(),
-            tools::cp_update_route_config_tool(),
-            tools::cp_delete_route_config_tool(),
-            // Filter CRUD
-            tools::cp_create_filter_tool(),
-            tools::cp_update_filter_tool(),
-            tools::cp_delete_filter_tool(),
-        ];
+        // Use get_all_tools() as single source of truth (60 tools)
+        let mut tools = tools::get_all_tools();
+
+        // Enrich tool descriptions with risk level hints from the registry
+        for tool in &mut tools {
+            if let Some(auth) = get_tool_authorization(&tool.name) {
+                if let Some(ref mut desc) = tool.description {
+                    *desc = format!("[Risk: {}] {}", auth.risk_level, desc);
+                }
+            }
+        }
 
         let result = ToolsListResult { tools, next_cursor: None };
 
@@ -252,30 +319,118 @@ impl McpHandler {
 
         debug!(tool_name = %params.name, "Executing tool call");
 
+        // Check tool-level authorization
+        if let Err(auth_error) = self.check_tool_authorization(&params.name) {
+            warn!(
+                tool_name = %params.name,
+                team = %self.team,
+                error = %auth_error,
+                "Tool authorization failed"
+            );
+            return self.error_response(id, auth_error);
+        }
+
         let args = params.arguments.unwrap_or(serde_json::json!({}));
 
+        // Resolve team name → UUID once for all tool dispatches.
+        // Resource tables store UUIDs, not names.
+        let team = match self.resolve_team_uuid().await {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(team = %self.team, error = %e, "Failed to resolve team UUID");
+                return self.error_response(id, e);
+            }
+        };
+
         let result = match params.name.as_str() {
-            // Read operations that only need db_pool (route table query)
-            "cp_list_routes" => tools::execute_list_routes(&self.db_pool, &self.team, args).await,
+            // Read operations that only need db_pool (direct table query for efficiency)
+            "cp_list_routes" => {
+                tools::execute_list_routes(&self.db_pool, &team, self.org_id.as_ref(), args).await
+            }
+            // Query-first tools (direct db_pool access for token efficiency)
+            "cp_query_port" => {
+                tools::execute_query_port(&self.db_pool, &team, self.org_id.as_ref(), args).await
+            }
+            "cp_query_path" => {
+                tools::execute_query_path(&self.db_pool, &team, self.org_id.as_ref(), args).await
+            }
+            // Ops tools that only need db_pool (diagnostic/reporting queries)
+            "ops_trace_request" => {
+                tools::execute_ops_trace_request(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
+            }
+            "ops_topology" => {
+                tools::execute_ops_topology(&self.db_pool, &team, self.org_id.as_ref(), args).await
+            }
+            "ops_config_validate" => {
+                tools::execute_ops_config_validate(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
+            }
+            "ops_audit_query" => {
+                tools::execute_ops_audit_query(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
+            }
+            // Dev agent tools (db_pool only)
+            "dev_preflight_check" => {
+                tools::execute_dev_preflight_check(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
+            }
+            "cp_query_service" => {
+                tools::execute_query_service(&self.db_pool, &team, self.org_id.as_ref(), args).await
+            }
+
             // Operations that require xds_state (internal API layer)
             "cp_list_clusters"
             | "cp_get_cluster"
+            | "cp_get_cluster_health"
             | "cp_list_listeners"
             | "cp_get_listener"
+            | "cp_get_listener_status"
             | "cp_list_filters"
             | "cp_get_filter"
+            | "cp_list_virtual_hosts"
+            | "cp_get_virtual_host"
+            | "cp_list_aggregated_schemas"
+            | "cp_get_aggregated_schema"
+            | "cp_list_learning_sessions"
+            | "cp_get_learning_session"
+            | "cp_create_learning_session"
+            | "cp_delete_learning_session"
             | "cp_create_cluster"
             | "cp_update_cluster"
             | "cp_delete_cluster"
             | "cp_create_listener"
             | "cp_update_listener"
             | "cp_delete_listener"
+            | "cp_list_route_configs"
+            | "cp_get_route_config"
             | "cp_create_route_config"
             | "cp_update_route_config"
             | "cp_delete_route_config"
+            | "cp_get_route"
+            | "cp_create_route"
+            | "cp_update_route"
+            | "cp_delete_route"
+            | "cp_create_virtual_host"
+            | "cp_update_virtual_host"
+            | "cp_delete_virtual_host"
             | "cp_create_filter"
             | "cp_update_filter"
-            | "cp_delete_filter" => {
+            | "cp_delete_filter"
+            | "cp_attach_filter"
+            | "cp_detach_filter"
+            | "cp_list_filter_attachments"
+            | "cp_list_openapi_imports"
+            | "cp_get_openapi_import"
+            | "cp_list_dataplanes"
+            | "cp_get_dataplane"
+            | "cp_create_dataplane"
+            | "cp_update_dataplane"
+            | "cp_delete_dataplane"
+            | "cp_list_filter_types"
+            | "cp_get_filter_type"
+            | "devops_get_deployment_status"
+            | "cp_export_schema_openapi" => {
                 let xds_state = match &self.xds_state {
                     Some(state) => state,
                     None => {
@@ -290,59 +445,355 @@ impl McpHandler {
                 match params.name.as_str() {
                     // Cluster operations (use internal API layer)
                     "cp_list_clusters" => {
-                        tools::execute_list_clusters(xds_state, &self.team, args).await
+                        tools::execute_list_clusters(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_get_cluster" => {
-                        tools::execute_get_cluster(xds_state, &self.team, args).await
+                        tools::execute_get_cluster(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    "cp_get_cluster_health" => {
+                        tools::execute_get_cluster_health(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_create_cluster" => {
-                        tools::execute_create_cluster(xds_state, &self.team, args).await
+                        tools::execute_create_cluster(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_update_cluster" => {
-                        tools::execute_update_cluster(xds_state, &self.team, args).await
+                        tools::execute_update_cluster(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_delete_cluster" => {
-                        tools::execute_delete_cluster(xds_state, &self.team, args).await
+                        tools::execute_delete_cluster(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     // Listener operations (use internal API layer)
                     "cp_list_listeners" => {
-                        tools::execute_list_listeners(xds_state, &self.team, args).await
+                        tools::execute_list_listeners(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_get_listener" => {
-                        tools::execute_get_listener(xds_state, &self.team, args).await
+                        tools::execute_get_listener(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    "cp_get_listener_status" => {
+                        tools::execute_get_listener_status(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_create_listener" => {
-                        tools::execute_create_listener(xds_state, &self.team, args).await
+                        tools::execute_create_listener(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_update_listener" => {
-                        tools::execute_update_listener(xds_state, &self.team, args).await
+                        tools::execute_update_listener(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_delete_listener" => {
-                        tools::execute_delete_listener(xds_state, &self.team, args).await
+                        tools::execute_delete_listener(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
-                    // Route config CRUD (use internal API layer)
+                    // Route config operations (use internal API layer)
+                    "cp_list_route_configs" => {
+                        tools::execute_list_route_configs(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_get_route_config" => {
+                        tools::execute_get_route_config(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
                     "cp_create_route_config" => {
-                        tools::execute_create_route_config(xds_state, &self.team, args).await
+                        tools::execute_create_route_config(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_update_route_config" => {
-                        tools::execute_update_route_config(xds_state, &self.team, args).await
+                        tools::execute_update_route_config(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_delete_route_config" => {
-                        tools::execute_delete_route_config(xds_state, &self.team, args).await
+                        tools::execute_delete_route_config(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Individual route CRUD (use internal API layer)
+                    "cp_get_route" => {
+                        tools::execute_get_route(xds_state, &team, self.org_id.as_ref(), args).await
+                    }
+                    "cp_create_route" => {
+                        tools::execute_create_route(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    "cp_update_route" => {
+                        tools::execute_update_route(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    "cp_delete_route" => {
+                        tools::execute_delete_route(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     // Filter operations (use internal API layer)
                     "cp_list_filters" => {
-                        tools::execute_list_filters(xds_state, &self.team, args).await
+                        tools::execute_list_filters(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
-                    "cp_get_filter" => tools::execute_get_filter(xds_state, &self.team, args).await,
+                    "cp_get_filter" => {
+                        tools::execute_get_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
                     "cp_create_filter" => {
-                        tools::execute_create_filter(xds_state, &self.team, args).await
+                        tools::execute_create_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_update_filter" => {
-                        tools::execute_update_filter(xds_state, &self.team, args).await
+                        tools::execute_update_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
                     }
                     "cp_delete_filter" => {
-                        tools::execute_delete_filter(xds_state, &self.team, args).await
+                        tools::execute_delete_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    // Filter attachment operations
+                    "cp_attach_filter" => {
+                        tools::execute_attach_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    "cp_detach_filter" => {
+                        tools::execute_detach_filter(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    "cp_list_filter_attachments" => {
+                        tools::execute_list_filter_attachments(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Virtual host operations (use internal API layer)
+                    "cp_list_virtual_hosts" => {
+                        tools::execute_list_virtual_hosts(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_get_virtual_host" => {
+                        tools::execute_get_virtual_host(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_create_virtual_host" => {
+                        tools::execute_create_virtual_host(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_update_virtual_host" => {
+                        tools::execute_update_virtual_host(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_delete_virtual_host" => {
+                        tools::execute_delete_virtual_host(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Aggregated schema operations (use internal API layer)
+                    "cp_list_aggregated_schemas" => {
+                        tools::execute_list_aggregated_schemas(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_get_aggregated_schema" => {
+                        tools::execute_get_aggregated_schema(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Learning session operations (use internal API layer)
+                    "cp_list_learning_sessions" => {
+                        tools::execute_list_learning_sessions(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_get_learning_session" => {
+                        tools::execute_get_learning_session(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_create_learning_session" => {
+                        tools::execute_create_learning_session(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_delete_learning_session" => {
+                        tools::execute_delete_learning_session(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // OpenAPI import operations
+                    "cp_list_openapi_imports" => {
+                        tools::execute_list_openapi_imports(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_get_openapi_import" => {
+                        tools::execute_get_openapi_import(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Dataplane operations
+                    "cp_list_dataplanes" => {
+                        tools::execute_list_dataplanes(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    "cp_get_dataplane" => {
+                        tools::execute_get_dataplane(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    "cp_create_dataplane" => {
+                        tools::execute_create_dataplane(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_update_dataplane" => {
+                        tools::execute_update_dataplane(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_delete_dataplane" => {
+                        tools::execute_delete_dataplane(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Filter type operations
+                    "cp_list_filter_types" => {
+                        tools::execute_list_filter_types(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_get_filter_type" => {
+                        tools::execute_get_filter_type(xds_state, &team, self.org_id.as_ref(), args)
+                            .await
+                    }
+                    // Schema export operations
+                    "cp_export_schema_openapi" => {
+                        tools::execute_export_schema_openapi(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // DevOps agent workflow operations
+                    "devops_get_deployment_status" => {
+                        tools::execute_devops_get_deployment_status(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     _ => unreachable!(),
                 }
@@ -369,7 +820,12 @@ impl McpHandler {
     async fn handle_resources_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!(team = %self.team, "Listing available resources");
 
-        match resources::list_resources(&self.db_pool, &self.team).await {
+        let team = match self.resolve_team_uuid().await {
+            Ok(t) => t,
+            Err(e) => return self.error_response(id, e),
+        };
+
+        match resources::list_resources(&self.db_pool, &team).await {
             Ok(result) => match serde_json::to_value(result) {
                 Ok(value) => JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
@@ -502,6 +958,49 @@ impl McpHandler {
         }
     }
 
+    /// Check if the current token has authorization to execute the given tool
+    ///
+    /// Uses the tool registry to lookup required scopes and checks against
+    /// the token's scopes. Implements hierarchical scope matching:
+    /// - `admin:all` grants all access
+    /// - `cp:read` grants all CP read operations
+    /// - `cp:write` grants all CP write/delete operations
+    /// - Specific scopes like `clusters:read` for granular control
+    fn check_tool_authorization(&self, tool_name: &str) -> Result<(), McpError> {
+        // Lookup tool authorization requirements
+        let auth = get_tool_authorization(tool_name).ok_or_else(|| {
+            McpError::ToolNotFound(format!(
+                "Tool '{}' is not registered in the authorization registry",
+                tool_name
+            ))
+        })?;
+
+        // Check if any scope grants the required authorization
+        if check_scope_grants_authorization(self.scopes.iter().map(|s| s.as_str()), auth) {
+            debug!(
+                tool_name = %tool_name,
+                resource = %auth.resource,
+                action = %auth.action,
+                "Tool authorization granted"
+            );
+            return Ok(());
+        }
+
+        // Build helpful error message
+        let required_scope = format!("{}:{}", auth.resource, auth.action);
+        let fallback_info =
+            if ["clusters", "listeners", "routes", "filters"].contains(&auth.resource) {
+                format!(" Alternatively, 'cp:{}' grants access to all core resources.", auth.action)
+            } else {
+                String::new()
+            };
+
+        Err(McpError::Forbidden(format!(
+            "Access denied: Tool '{}' requires scope '{}' or 'admin:all'.{} Your token has scopes: {:?}",
+            tool_name, required_scope, fallback_info, self.scopes
+        )))
+    }
+
     fn method_not_found(&self, id: Option<JsonRpcId>, method: &str) -> JsonRpcResponse {
         error!(method = %method, "Method not found");
 
@@ -532,25 +1031,20 @@ impl McpHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
-    use crate::storage::create_pool;
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn create_test_handler() -> McpHandler {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 5,
-            min_connections: 1,
-            connect_timeout_seconds: 5,
-            idle_timeout_seconds: 0,
-            auto_migrate: false,
-        };
-        let pool = create_pool(&config).await.expect("Failed to create pool");
-        McpHandler::new(Arc::new(pool), "test-team".to_string())
+    async fn create_test_handler() -> (TestDatabase, McpHandler) {
+        let test_db = TestDatabase::new("mcp_handler").await;
+        let pool = test_db.pool.clone();
+        // Use admin:all scope for tests to bypass authorization
+        let handler =
+            McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()]);
+        (test_db, handler)
     }
 
     #[tokio::test]
     async fn test_initialize() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -575,7 +1069,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_method_not_found() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -595,7 +1089,7 @@ mod tests {
     #[tokio::test]
     async fn test_tools_list_without_initialize() {
         // For stateless HTTP transport, tools/list should work without initialize
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -613,7 +1107,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tools_list() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         // Initialize first
         let init_request = JsonRpcRequest {
@@ -646,51 +1140,53 @@ mod tests {
     }
 
     #[test]
-    fn test_version_negotiation_exact_match() {
-        // Test exact match with a supported version
-        let result = negotiate_version("2025-11-25");
+    fn test_version_validation_exact_match() {
+        // Only 2025-11-25 is accepted
+        let result = validate_protocol_version("2025-11-25");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2025-11-25");
     }
 
     #[test]
-    fn test_version_negotiation_newer_client() {
-        // Client has newer version than we support - should get our newest
-        let result = negotiate_version("2026-01-01");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2025-11-25");
-    }
-
-    #[test]
-    fn test_version_negotiation_older_client() {
-        // Client has older supported version - should get their version
-        let result = negotiate_version("2025-03-26");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2025-03-26");
-    }
-
-    #[test]
-    fn test_version_negotiation_oldest_supported() {
-        // Client requests oldest supported version
-        let result = negotiate_version("2024-11-05");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "2024-11-05");
-    }
-
-    #[test]
-    fn test_version_negotiation_failure() {
-        // Client has version older than any we support
-        let result = negotiate_version("2024-01-01");
+    fn test_version_validation_rejects_older_version() {
+        // Older versions are rejected - no backward compatibility
+        let result = validate_protocol_version("2025-06-18");
         assert!(result.is_err());
 
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
-                assert_eq!(client, "2024-01-01");
-                assert_eq!(supported.len(), 4);
-                assert!(supported.contains(&"2024-11-05".to_string()));
-                assert!(supported.contains(&"2025-03-26".to_string()));
-                assert!(supported.contains(&"2025-06-18".to_string()));
-                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert_eq!(client, "2025-06-18");
+                assert_eq!(supported, vec!["2025-11-25".to_string()]);
+            }
+            _ => panic!("Expected UnsupportedProtocolVersion error"),
+        }
+    }
+
+    #[test]
+    fn test_version_validation_rejects_newer_version() {
+        // Newer versions are also rejected - exact match only
+        let result = validate_protocol_version("2026-01-01");
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            McpError::UnsupportedProtocolVersion { client, supported } => {
+                assert_eq!(client, "2026-01-01");
+                assert_eq!(supported, vec!["2025-11-25".to_string()]);
+            }
+            _ => panic!("Expected UnsupportedProtocolVersion error"),
+        }
+    }
+
+    #[test]
+    fn test_version_validation_rejects_ancient_version() {
+        // Very old versions are rejected
+        let result = validate_protocol_version("2024-11-05");
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            McpError::UnsupportedProtocolVersion { client, supported } => {
+                assert_eq!(client, "2024-11-05");
+                assert_eq!(supported.len(), 1);
+                assert_eq!(supported[0], "2025-11-25");
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
@@ -698,20 +1194,19 @@ mod tests {
 
     #[test]
     fn test_unsupported_version_error_message() {
-        let result = negotiate_version("2023-12-31");
+        let result = validate_protocol_version("2023-12-31");
         assert!(result.is_err());
 
         let error = result.unwrap_err();
         let message = error.to_string();
 
         assert!(message.contains("2023-12-31"));
-        assert!(message.contains("2024-11-05"));
         assert!(message.contains("2025-11-25"));
     }
 
     #[test]
     fn test_unsupported_version_json_rpc_error() {
-        let result = negotiate_version("2020-01-01");
+        let result = validate_protocol_version("2020-01-01");
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -726,12 +1221,13 @@ mod tests {
         assert!(data.get("supportedVersions").is_some());
 
         let supported = data["supportedVersions"].as_array().unwrap();
-        assert_eq!(supported.len(), 4);
+        assert_eq!(supported.len(), 1);
+        assert_eq!(supported[0], "2025-11-25");
     }
 
     #[tokio::test]
     async fn test_initialize_with_unsupported_version() {
-        let mut handler = create_test_handler().await;
+        let (_db, mut handler) = create_test_handler().await;
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -762,9 +1258,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_initialize_with_supported_version() {
-        let mut handler = create_test_handler().await;
+    async fn test_initialize_with_older_version_rejected() {
+        let (_db, mut handler) = create_test_handler().await;
 
+        // 2025-06-18 was previously supported but is now rejected
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(JsonRpcId::Number(1)),
@@ -781,18 +1278,20 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
-        assert!(response.error.is_none());
-        assert!(response.result.is_some());
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
 
-        let result = response.result.unwrap();
-        assert_eq!(result["protocolVersion"], "2025-06-18");
-        assert!(handler.initialized);
+        let error = response.error.unwrap();
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
+        assert!(error.message.contains("Unsupported protocol version"));
+        assert!(!handler.initialized);
     }
 
     #[tokio::test]
-    async fn test_initialize_with_newer_version() {
-        let mut handler = create_test_handler().await;
+    async fn test_initialize_with_newer_version_rejected() {
+        let (_db, mut handler) = create_test_handler().await;
 
+        // Future versions are rejected - no negotiation
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(JsonRpcId::Number(1)),
@@ -809,12 +1308,104 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
+        // Newer versions are rejected - exact match only
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
+        assert!(error.message.contains("Unsupported protocol version"));
+        assert!(!handler.initialized);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_returns_instructions() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
         assert!(response.error.is_none());
-        assert!(response.result.is_some());
 
         let result = response.result.unwrap();
-        // Should negotiate down to our newest supported version
-        assert_eq!(result["protocolVersion"], "2025-11-25");
-        assert!(handler.initialized);
+        let instructions = result.get("instructions").and_then(|v| v.as_str());
+        assert!(instructions.is_some(), "instructions must be set in InitializeResult");
+
+        let text = instructions.unwrap();
+        assert!(text.contains("Flowplane API Gateway Control Plane"));
+        assert!(text.contains("Resource Creation Order"));
+        assert!(text.contains("Diagnostic Workflow"));
+        assert!(text.contains("ops_topology"));
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_synced_with_get_all_tools() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "tools/list".to_string(),
+            params: serde_json::json!({}),
+        };
+
+        let response = handler.handle_request(request).await;
+        assert!(response.error.is_none());
+
+        let result = response.result.unwrap();
+        let tools_array = result.get("tools").and_then(|v| v.as_array()).unwrap();
+
+        // handle_tools_list must return exactly get_all_tools() count
+        let all_tools = tools::get_all_tools();
+        assert_eq!(
+            tools_array.len(),
+            all_tools.len(),
+            "handle_tools_list() ({}) must be in sync with get_all_tools() ({})",
+            tools_array.len(),
+            all_tools.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_has_risk_level_hints() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "tools/list".to_string(),
+            params: serde_json::json!({}),
+        };
+
+        let response = handler.handle_request(request).await;
+        assert!(response.error.is_none());
+
+        let result = response.result.unwrap();
+        let tools_array = result.get("tools").and_then(|v| v.as_array()).unwrap();
+
+        // Check that tool descriptions include risk level hints
+        for tool in tools_array {
+            let name = tool.get("name").and_then(|v| v.as_str()).unwrap();
+            if let Some(desc) = tool.get("description").and_then(|v| v.as_str()) {
+                assert!(
+                    desc.starts_with("[Risk: "),
+                    "Tool '{}' description should start with [Risk: ...] hint, got: {}",
+                    name,
+                    &desc[..std::cmp::min(50, desc.len())]
+                );
+            }
+        }
     }
 }

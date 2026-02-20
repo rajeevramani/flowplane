@@ -8,6 +8,9 @@ pub mod pool;
 pub mod repositories;
 pub mod repository;
 
+#[cfg(test)]
+pub mod test_helpers;
+
 pub use crate::config::DatabaseConfig;
 
 pub use migrations::{
@@ -57,18 +60,13 @@ pub async fn check_connection(pool: &DbPool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::test_helpers::TestDatabase;
     use super::*;
 
     #[tokio::test]
-    async fn test_create_sqlite_pool() {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 5,
-            auto_migrate: false,
-            ..Default::default()
-        };
-
-        let pool = create_pool(&config).await.unwrap();
+    async fn test_create_pool() {
+        let test_db = TestDatabase::new("create_pool").await;
+        let pool = test_db.pool.clone();
         assert!(pool.size() > 0 || pool.size() == 0); // Pool size check
 
         // Test connectivity
@@ -85,13 +83,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_migrations() {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        };
-
-        let pool = create_pool(&config).await.unwrap();
+        let test_db = TestDatabase::new("run_migrations").await;
+        let pool = test_db.pool.clone();
         let result = run_migrations(&pool).await;
         assert!(result.is_ok());
     }

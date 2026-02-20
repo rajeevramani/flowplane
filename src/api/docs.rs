@@ -64,7 +64,6 @@ use crate::xds::{
         crate::api::handlers::listeners::update_listener_handler,
         crate::api::handlers::listeners::delete_listener_handler,
         // Team endpoints
-        crate::api::handlers::teams::get_team_bootstrap_handler,
         crate::api::handlers::teams::list_teams_handler,
         crate::api::handlers::teams::admin_create_team,
         crate::api::handlers::teams::admin_list_teams,
@@ -73,6 +72,8 @@ use crate::xds::{
         crate::api::handlers::teams::admin_delete_team,
         // mTLS status endpoint
         crate::api::handlers::teams::get_mtls_status_handler,
+        // Admin resource summary
+        crate::api::handlers::admin_summary::admin_resource_summary_handler,
         // User management endpoints
         crate::api::handlers::users::create_user,
         crate::api::handlers::users::list_users,
@@ -175,6 +176,11 @@ use crate::xds::{
             crate::api::handlers::auth::LoginBody,
             crate::api::handlers::auth::LoginResponseBody,
             crate::api::handlers::auth::ChangePasswordBody,
+            // Admin resource summary schemas
+            crate::api::handlers::admin_summary::AdminResourceSummary,
+            crate::api::handlers::admin_summary::SummaryTotals,
+            crate::api::handlers::admin_summary::OrgSummary,
+            crate::api::handlers::admin_summary::TeamSummary,
             // Route config schemas
             crate::api::handlers::route_configs::RouteConfigDefinition,
             crate::api::handlers::route_configs::VirtualHostDefinition,
@@ -195,15 +201,12 @@ use crate::xds::{
             crate::api::handlers::listeners::CreateListenerBody,
             crate::api::handlers::listeners::UpdateListenerBody,
             // Team schemas
-            crate::api::handlers::teams::BootstrapQuery,
             crate::api::handlers::teams::ListTeamsResponse,
-            crate::api::handlers::teams::AdminListTeamsResponse,
             crate::api::handlers::teams::MtlsStatusResponse,
             crate::auth::team::Team,
             crate::auth::team::CreateTeamRequest,
             crate::auth::team::UpdateTeamRequest,
             // User management schemas
-            crate::api::handlers::users::ListUsersResponse,
             crate::auth::user::CreateUserRequest,
             crate::auth::user::UpdateUserRequest,
             crate::auth::user::UserResponse,
@@ -220,7 +223,6 @@ use crate::xds::{
             crate::api::handlers::openapi_import::ImportDetailsResponse,
             crate::api::handlers::openapi_import::OpenApiSpecBody,
             // Audit log schemas
-            crate::api::handlers::audit_log::ListAuditLogsResponse,
             crate::storage::repositories::AuditLogEntry,
             // Commonly used HTTP filter configurations
             CorsPolicyConfig,
@@ -230,7 +232,6 @@ use crate::xds::{
             LocalRateLimitConfig,
             RateLimitConfig,
             // Reporting schemas
-            crate::api::handlers::reporting::ListRouteFlowsResponse,
             crate::api::handlers::reporting::RouteFlowEntry,
             crate::api::handlers::reporting::RouteFlowListener,
             crate::api::handlers::reporting::ListRouteFlowsQuery,
@@ -267,7 +268,6 @@ use crate::xds::{
             crate::api::handlers::filters::CreateFilterRequest,
             crate::api::handlers::filters::UpdateFilterRequest,
             crate::api::handlers::filters::FilterResponse,
-            crate::api::handlers::filters::ListFiltersQuery,
             crate::api::handlers::filters::ClusterCreationConfig,
             crate::api::handlers::filters::ClusterMode,
             // Filter Install/Configure schemas
@@ -284,9 +284,7 @@ use crate::xds::{
             // Custom WASM filter schemas
             crate::api::handlers::custom_wasm_filters::CreateCustomWasmFilterRequest,
             crate::api::handlers::custom_wasm_filters::UpdateCustomWasmFilterRequest,
-            crate::api::handlers::custom_wasm_filters::CustomWasmFilterResponse,
-            crate::api::handlers::custom_wasm_filters::ListCustomWasmFiltersResponse,
-            crate::api::handlers::custom_wasm_filters::ListCustomFiltersQuery
+            crate::api::handlers::custom_wasm_filters::CustomWasmFilterResponse
         )
     ),
     tags(
@@ -430,12 +428,8 @@ mod tests {
             "Missing GET/PUT/DELETE /api/v1/listeners/{{name}}"
         );
 
-        // Team endpoints (7)
+        // Team endpoints (6)
         assert!(paths.contains_key("/api/v1/teams"), "Missing GET /api/v1/teams");
-        assert!(
-            paths.contains_key("/api/v1/teams/{team}/bootstrap"),
-            "Missing GET /api/v1/teams/{{team}}/bootstrap"
-        );
         assert!(paths.contains_key("/api/v1/admin/teams"), "Missing GET/POST /api/v1/admin/teams");
         assert!(
             paths.contains_key("/api/v1/admin/teams/{id}"),
@@ -626,18 +620,12 @@ mod tests {
         assert!(schemas.contains_key("UpdateListenerBody"), "Missing UpdateListenerBody schema");
 
         // Team schemas
-        assert!(schemas.contains_key("BootstrapQuery"), "Missing BootstrapQuery schema");
         assert!(schemas.contains_key("ListTeamsResponse"), "Missing ListTeamsResponse schema");
-        assert!(
-            schemas.contains_key("AdminListTeamsResponse"),
-            "Missing AdminListTeamsResponse schema"
-        );
         assert!(schemas.contains_key("Team"), "Missing Team schema");
         assert!(schemas.contains_key("CreateTeamRequest"), "Missing CreateTeamRequest schema");
         assert!(schemas.contains_key("UpdateTeamRequest"), "Missing UpdateTeamRequest schema");
 
         // User management schemas
-        assert!(schemas.contains_key("ListUsersResponse"), "Missing ListUsersResponse schema");
         assert!(schemas.contains_key("CreateUserRequest"), "Missing CreateUserRequest schema");
         assert!(schemas.contains_key("UpdateUserRequest"), "Missing UpdateUserRequest schema");
         assert!(schemas.contains_key("UserResponse"), "Missing UserResponse schema");
@@ -666,10 +654,6 @@ mod tests {
         assert!(schemas.contains_key("OpenApiSpecBody"), "Missing OpenApiSpecBody schema");
 
         // Audit log schemas
-        assert!(
-            schemas.contains_key("ListAuditLogsResponse"),
-            "Missing ListAuditLogsResponse schema"
-        );
         assert!(schemas.contains_key("AuditLogEntry"), "Missing AuditLogEntry schema");
 
         // HTTP filter schemas
@@ -809,12 +793,8 @@ mod tests {
             "Missing CustomWasmFilterResponse schema"
         );
         assert!(
-            schemas.contains_key("ListCustomWasmFiltersResponse"),
-            "Missing ListCustomWasmFiltersResponse schema"
-        );
-        assert!(
-            schemas.contains_key("ListCustomFiltersQuery"),
-            "Missing ListCustomFiltersQuery schema"
+            schemas.contains_key("CustomWasmFilterResponse"),
+            "Missing CustomWasmFilterResponse schema"
         );
     }
 }

@@ -7,7 +7,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 use utoipa::ToSchema;
 
@@ -21,6 +21,8 @@ pub struct AuditEvent {
     pub user_id: Option<String>,
     pub client_ip: Option<String>,
     pub user_agent: Option<String>,
+    pub org_id: Option<String>,
+    pub team_id: Option<String>,
 }
 
 impl AuditEvent {
@@ -38,6 +40,8 @@ impl AuditEvent {
             user_id: None,
             client_ip: None,
             user_agent: None,
+            org_id: None,
+            team_id: None,
         }
     }
 
@@ -61,6 +65,8 @@ impl AuditEvent {
             user_id: None,
             client_ip: None,
             user_agent: None,
+            org_id: None,
+            team_id: None,
         }
     }
 
@@ -79,6 +85,13 @@ impl AuditEvent {
         self.user_agent = user_agent;
         self
     }
+
+    /// Set organization and team context for this audit event.
+    pub fn with_org_context(mut self, org_id: Option<String>, team_id: Option<String>) -> Self {
+        self.org_id = org_id;
+        self.team_id = team_id;
+        self
+    }
 }
 
 /// Audit log entry returned from database queries.
@@ -95,6 +108,8 @@ pub struct AuditLogEntry {
     pub user_id: Option<String>,
     pub client_ip: Option<String>,
     pub user_agent: Option<String>,
+    pub org_id: Option<String>,
+    pub team_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -111,7 +126,9 @@ struct AuditLogRow {
     pub user_id: Option<String>,
     pub client_ip: Option<String>,
     pub user_agent: Option<String>,
-    pub created_at: String,
+    pub org_id: Option<String>,
+    pub team_id: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 impl From<AuditLogRow> for AuditLogEntry {
@@ -127,9 +144,42 @@ impl From<AuditLogRow> for AuditLogEntry {
             user_id: row.user_id,
             client_ip: row.client_ip,
             user_agent: row.user_agent,
-            created_at: DateTime::parse_from_rfc3339(&row.created_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
+            org_id: row.org_id,
+            team_id: row.team_id,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// Sanitized audit log entry for MCP responses.
+///
+/// Excludes PII and sensitive data: `client_ip`, `user_agent`,
+/// `old_configuration`, `new_configuration`. Used by `ops_audit_query`
+/// to prevent leaking operational details through the MCP interface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogSummary {
+    pub id: i64,
+    pub resource_type: String,
+    pub resource_id: Option<String>,
+    pub resource_name: Option<String>,
+    pub action: String,
+    pub org_id: Option<String>,
+    pub team_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<AuditLogEntry> for AuditLogSummary {
+    fn from(entry: AuditLogEntry) -> Self {
+        Self {
+            id: entry.id,
+            resource_type: entry.resource_type,
+            resource_id: entry.resource_id,
+            resource_name: entry.resource_name,
+            action: entry.action,
+            org_id: entry.org_id,
+            team_id: entry.team_id,
+            created_at: entry.created_at,
         }
     }
 }
@@ -140,6 +190,8 @@ pub struct AuditLogFilters {
     pub resource_type: Option<String>,
     pub action: Option<String>,
     pub user_id: Option<String>,
+    pub org_id: Option<String>,
+    pub team_id: Option<String>,
     pub start_date: Option<DateTime<Utc>>,
     pub end_date: Option<DateTime<Utc>>,
 }
@@ -164,8 +216,8 @@ impl AuditLogRepository {
         let resource_name = event.resource_name.unwrap_or_else(|| event.action.clone());
 
         sqlx::query(
-            "INSERT INTO audit_log (resource_type, resource_id, resource_name, action, old_configuration, new_configuration, user_id, client_ip, user_agent, created_at) \
-             VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9)"
+            "INSERT INTO audit_log (resource_type, resource_id, resource_name, action, old_configuration, new_configuration, user_id, client_ip, user_agent, org_id, team_id, created_at) \
+             VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9, $10, $11)"
         )
         .bind(resource_type)
         .bind(event.resource_id.as_deref())
@@ -175,6 +227,8 @@ impl AuditLogRepository {
         .bind(event.user_id.as_deref())
         .bind(event.client_ip.as_deref())
         .bind(event.user_agent.as_deref())
+        .bind(event.org_id.as_deref())
+        .bind(event.team_id.as_deref())
         .bind(now)
         .execute(&self.pool)
         .await
@@ -232,9 +286,10 @@ impl AuditLogRepository {
         let limit = limit.unwrap_or(50).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let mut query_builder = sqlx::QueryBuilder::<Sqlite>::new(
+        let mut query_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT id, resource_type, resource_id, resource_name, action, \
-             old_configuration, new_configuration, user_id, client_ip, user_agent, created_at \
+             old_configuration, new_configuration, user_id, client_ip, user_agent, \
+             org_id, team_id, created_at \
              FROM audit_log WHERE 1=1",
         );
 
@@ -251,6 +306,14 @@ impl AuditLogRepository {
             if let Some(user_id) = filters.user_id {
                 query_builder.push(" AND user_id = ");
                 query_builder.push_bind(user_id);
+            }
+            if let Some(org_id) = filters.org_id {
+                query_builder.push(" AND org_id = ");
+                query_builder.push_bind(org_id);
+            }
+            if let Some(team_id) = filters.team_id {
+                query_builder.push(" AND team_id = ");
+                query_builder.push_bind(team_id);
             }
             if let Some(start_date) = filters.start_date {
                 query_builder.push(" AND created_at >= ");
@@ -287,8 +350,9 @@ impl AuditLogRepository {
     /// This is useful for pagination to know the total number of pages.
     #[instrument(skip(self, filters), name = "db_count_audit_logs")]
     pub async fn count_logs(&self, filters: Option<AuditLogFilters>) -> Result<i64> {
-        let mut query_builder =
-            sqlx::QueryBuilder::<Sqlite>::new("SELECT COUNT(*) as count FROM audit_log WHERE 1=1");
+        let mut query_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT COUNT(*) as count FROM audit_log WHERE 1=1",
+        );
 
         // Apply filters (same as query_logs)
         if let Some(filters) = filters {
@@ -303,6 +367,14 @@ impl AuditLogRepository {
             if let Some(user_id) = filters.user_id {
                 query_builder.push(" AND user_id = ");
                 query_builder.push_bind(user_id);
+            }
+            if let Some(org_id) = filters.org_id {
+                query_builder.push(" AND org_id = ");
+                query_builder.push_bind(org_id);
+            }
+            if let Some(team_id) = filters.team_id {
+                query_builder.push(" AND team_id = ");
+                query_builder.push_bind(team_id);
             }
             if let Some(start_date) = filters.start_date {
                 query_builder.push(" AND created_at >= ");

@@ -29,7 +29,7 @@ use super::{
         list_custom_wasm_filters_handler, update_custom_wasm_filter_handler,
     },
     handlers::dataplanes::{
-        create_dataplane_handler, delete_dataplane_handler, get_dataplane_bootstrap_handler,
+        create_dataplane_handler, delete_dataplane_handler, generate_envoy_config_handler,
         get_dataplane_handler, list_all_dataplanes_handler, list_dataplanes_handler,
         update_dataplane_handler,
     },
@@ -38,11 +38,24 @@ use super::{
         get_secret_handler,
     },
     handlers::{
+        // Invitation handlers
+        accept_invitation_handler,
+        add_team_member,
         add_team_membership,
+        admin_add_org_member,
+        admin_create_organization,
         admin_create_team,
+        admin_delete_organization,
         admin_delete_team,
+        admin_get_organization,
         admin_get_team,
+        admin_list_org_members,
+        admin_list_organizations,
         admin_list_teams,
+        admin_remove_org_member,
+        admin_resource_summary_handler,
+        admin_update_org_member_role,
+        admin_update_organization,
         admin_update_team,
         apply_learned_schema_handler,
         attach_filter_handler,
@@ -60,8 +73,10 @@ use super::{
         configure_filter_handler,
         create_cluster_handler,
         create_filter_handler,
+        create_invitation_handler,
         create_learning_session_handler,
         create_listener_handler,
+        create_org_team,
         create_route_config_handler,
         create_session_handler,
         create_token_handler,
@@ -70,6 +85,7 @@ use super::{
         delete_filter_handler,
         delete_learning_session_handler,
         delete_listener_handler,
+        delete_org_team,
         delete_route_config_handler,
         delete_user,
         detach_filter_from_listener_handler,
@@ -85,6 +101,7 @@ use super::{
         get_app_handler,
         get_certificate_handler,
         get_cluster_handler,
+        get_current_org,
         get_filter_handler,
         get_filter_status_handler,
         get_filter_type_handler,
@@ -101,7 +118,6 @@ use super::{
         get_stats_clusters_handler,
         get_stats_enabled_handler,
         get_stats_overview_handler,
-        get_team_bootstrap_handler,
         get_token_handler,
         get_user,
         health_handler,
@@ -116,10 +132,12 @@ use super::{
         list_filter_installations_handler,
         list_filter_types_handler,
         list_filters_handler,
+        list_invitations_handler,
         list_learning_sessions_handler,
         list_listener_filters_handler,
         list_listeners_handler,
         list_mcp_tools_handler,
+        list_org_teams,
         list_route_configs_handler,
         list_route_filters_handler,
         list_route_flows_handler,
@@ -128,6 +146,7 @@ use super::{
         list_route_views_handler,
         list_scopes_handler,
         list_secrets_handler,
+        list_team_members,
         list_teams_handler,
         list_tokens_handler,
         list_user_teams,
@@ -137,10 +156,13 @@ use super::{
         login_handler,
         logout_handler,
         refresh_mcp_schema_handler,
+        refresh_session_handler,
         reload_filter_schemas_handler,
         remove_filter_configuration_handler,
+        remove_team_member,
         remove_team_membership,
         revoke_certificate_handler,
+        revoke_invitation_handler,
         revoke_token_handler,
         rotate_token_handler,
         set_app_status_handler,
@@ -149,13 +171,75 @@ use super::{
         update_filter_handler,
         update_listener_handler,
         update_mcp_tool_handler,
+        update_org_team,
         update_route_config_handler,
         update_secret_handler,
+        update_team_member_scopes,
         update_team_membership_scopes,
         update_token_handler,
         update_user,
+        validate_invitation_handler,
     },
 };
+
+/// Rate limiters for authentication endpoints.
+#[derive(Clone)]
+pub struct AuthRateLimiters {
+    /// 20/hour per IP — invitation creation
+    pub invite_create: Arc<super::rate_limit::RateLimiter>,
+    /// 10/min per IP — invitation token validation
+    pub invite_validate: Arc<super::rate_limit::RateLimiter>,
+    /// 5/min per IP — invitation acceptance (registration)
+    pub invite_accept: Arc<super::rate_limit::RateLimiter>,
+    /// 10/min per IP — login attempts
+    pub login: Arc<super::rate_limit::RateLimiter>,
+}
+
+impl AuthRateLimiters {
+    pub fn from_env() -> Self {
+        let invite_create_per_hour: u32 =
+            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_CREATE_PER_HOUR")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20);
+
+        let invite_validate_per_min: u32 =
+            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_VALIDATE_PER_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10);
+
+        let invite_accept_per_min: u32 =
+            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_ACCEPT_PER_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5);
+
+        let login_per_min: u32 = std::env::var("FLOWPLANE_RATE_LIMIT_LOGIN_PER_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
+
+        Self {
+            invite_create: Arc::new(super::rate_limit::RateLimiter::new(
+                invite_create_per_hour,
+                std::time::Duration::from_secs(3600),
+            )),
+            invite_validate: Arc::new(super::rate_limit::RateLimiter::new(
+                invite_validate_per_min,
+                std::time::Duration::from_secs(60),
+            )),
+            invite_accept: Arc::new(super::rate_limit::RateLimiter::new(
+                invite_accept_per_min,
+                std::time::Duration::from_secs(60),
+            )),
+            login: Arc::new(super::rate_limit::RateLimiter::new(
+                login_per_min,
+                std::time::Duration::from_secs(60),
+            )),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -164,6 +248,12 @@ pub struct ApiState {
     pub stats_cache: Arc<StatsCache>,
     pub mcp_connection_manager: crate::mcp::SharedConnectionManager,
     pub mcp_session_manager: crate::mcp::SharedSessionManager,
+    /// Rate limiter for certificate generation (prevents Vault PKI exhaustion)
+    pub certificate_rate_limiter: Arc<super::rate_limit::RateLimiter>,
+    /// Authentication configuration (cookie_secure, invite settings, proxy config)
+    pub auth_config: Arc<crate::config::AuthConfig>,
+    /// Rate limiters for auth endpoints (login, invitation create/validate/accept)
+    pub auth_rate_limiters: Arc<AuthRateLimiters>,
 }
 
 /// Get the UI static files directory path from environment or default
@@ -184,9 +274,10 @@ fn get_ui_static_dir() -> Option<PathBuf> {
 /// Supports multiple origins via comma-separated FLOWPLANE_UI_ORIGIN
 /// Example: FLOWPLANE_UI_ORIGIN=http://localhost:3000,http://localhost:6274
 fn build_cors_layer() -> CorsLayer {
-    // Read allowed origins from environment variable, default to localhost for development
+    // Read allowed origins from environment variable
+    // Default includes localhost:3000 (UI) and localhost:6274 (MCP Inspector)
     let allowed_origins_str = std::env::var("FLOWPLANE_UI_ORIGIN")
-        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:6274".to_string());
 
     // Parse comma-separated origins into a list
     let allowed_origins: Vec<String> = allowed_origins_str
@@ -220,14 +311,23 @@ fn build_cors_layer() -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        // Allow headers needed for authentication and CSRF protection
+        // Allow headers needed for authentication, CSRF, and MCP protocol
         .allow_headers([
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
+            header::ACCEPT,
             HeaderName::from_static("x-csrf-token"),
+            // MCP 2025-11-25 protocol headers
+            HeaderName::from_static("mcp-protocol-version"),
+            HeaderName::from_static("mcp-session-id"),
+            HeaderName::from_static("last-event-id"),
         ])
-        // Expose CSRF token header so UI can read it
-        .expose_headers([HeaderName::from_static("x-csrf-token")])
+        // Expose headers so clients can read them
+        .expose_headers([
+            HeaderName::from_static("x-csrf-token"),
+            // MCP session ID must be readable by clients
+            HeaderName::from_static("mcp-session-id"),
+        ])
 }
 
 pub fn build_router(state: Arc<XdsState>) -> Router {
@@ -247,18 +347,68 @@ pub fn build_router_with_registry(
     // Create MCP session manager for HTTP-only connections
     let mcp_session_manager = crate::mcp::create_session_manager();
 
+    // Create rate limiter for certificate generation (prevents Vault PKI exhaustion)
+    let certificate_rate_limiter = Arc::new(super::rate_limit::RateLimiter::from_env());
+
+    // Load auth config from environment
+    let auth_config = Arc::new(crate::config::AuthConfig::from_env());
+
+    // Startup safety checks for cookie_secure
+    if !auth_config.cookie_secure {
+        tracing::warn!("Cookie Secure flag is DISABLED — only safe for local HTTP development");
+        if auth_config.base_url.starts_with("https://") {
+            panic!("FLOWPLANE_COOKIE_SECURE=false with HTTPS base_url is a dangerous misconfiguration — refusing to start");
+        }
+    }
+
+    // Create auth rate limiters from environment
+    let auth_rate_limiters = Arc::new(AuthRateLimiters::from_env());
+
     let api_state = ApiState {
         xds_state: state.clone(),
         filter_schema_registry,
         stats_cache,
         mcp_connection_manager,
         mcp_session_manager,
+        certificate_rate_limiter,
+        auth_config,
+        auth_rate_limiters,
     };
 
     let cluster_repo = match &state.cluster_repository {
         Some(repo) => repo.clone(),
         None => return docs::docs_router(),
     };
+
+    // Spawn background task to expire stale invitations hourly
+    {
+        let pool = cluster_repo.pool().clone();
+        let invitation_repo = crate::storage::repositories::SqlxInvitationRepository::new(pool);
+        tokio::spawn(async move {
+            use crate::storage::repositories::InvitationRepository;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        match invitation_repo.expire_stale_invitations().await {
+                            Ok(count) => {
+                                if count > 0 {
+                                    tracing::info!(expired = count, "expired stale invitations");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "failed to expire stale invitations");
+                            }
+                        }
+                    }
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("invitation expiry task shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     let auth_layer = {
         let pool = cluster_repo.pool().clone();
@@ -268,8 +418,8 @@ pub fn build_router_with_registry(
             Arc::new(crate::storage::repository::SqlxTokenRepository::new(pool.clone()));
         let session_service = Arc::new(SessionService::new(token_repo, audit_repository));
 
-        // Create a tuple state with both services
-        let auth_state = (auth_service, session_service);
+        // Create a tuple state with auth services + pool for org context resolution
+        let auth_state = (auth_service, session_service, pool);
         middleware::from_fn_with_state(auth_state, authenticate)
     };
 
@@ -282,6 +432,8 @@ pub fn build_router_with_registry(
     let secured_api = Router::new()
         // Password change endpoint (authenticated users only)
         .route("/api/v1/auth/change-password", post(change_password_handler))
+        // Session refresh endpoint (recompute scopes from current memberships)
+        .route("/api/v1/auth/sessions/refresh", post(refresh_session_handler))
         // Token management endpoints
         .route("/api/v1/tokens", get(list_tokens_handler))
         .route("/api/v1/tokens", post(create_token_handler))
@@ -388,7 +540,6 @@ pub fn build_router_with_registry(
         )
         // Team endpoints
         .route("/api/v1/teams", get(list_teams_handler))
-        .route("/api/v1/teams/{team}/bootstrap", get(get_team_bootstrap_handler))
         // mTLS status endpoint
         .route("/api/v1/mtls/status", get(get_mtls_status_handler))
         // Proxy certificate endpoints (mTLS)
@@ -428,7 +579,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/dataplanes/{name}", get(get_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}", put(update_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}", delete(delete_dataplane_handler))
-        .route("/api/v1/teams/{team}/dataplanes/{name}/bootstrap", get(get_dataplane_bootstrap_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}/envoy-config", get(generate_envoy_config_handler))
         // Aggregated schema endpoints (API catalog)
         .route("/api/v1/aggregated-schemas", get(list_aggregated_schemas_handler))
         .route("/api/v1/aggregated-schemas/{id}", get(get_aggregated_schema_handler))
@@ -453,6 +604,32 @@ pub fn build_router_with_registry(
         .route("/api/v1/admin/teams/{id}", get(admin_get_team))
         .route("/api/v1/admin/teams/{id}", put(admin_update_team))
         .route("/api/v1/admin/teams/{id}", delete(admin_delete_team))
+        // Org-scoped endpoints (authenticated users)
+        .route("/api/v1/orgs/current", get(get_current_org))
+        .route("/api/v1/orgs/{org_name}/teams", get(list_org_teams))
+        .route("/api/v1/orgs/{org_name}/teams", post(create_org_team))
+        .route("/api/v1/orgs/{org_name}/teams/{team_name}", put(update_org_team).delete(delete_org_team))
+        .route("/api/v1/orgs/{org_name}/teams/{team_name}/members", get(list_team_members).post(add_team_member))
+        .route(
+            "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
+            put(update_team_member_scopes).delete(remove_team_member),
+        )
+        // Admin organization management endpoints
+        .route("/api/v1/admin/organizations", get(admin_list_organizations))
+        .route("/api/v1/admin/organizations", post(admin_create_organization))
+        .route("/api/v1/admin/organizations/{id}", get(admin_get_organization))
+        .route("/api/v1/admin/organizations/{id}", put(admin_update_organization))
+        .route("/api/v1/admin/organizations/{id}", delete(admin_delete_organization))
+        .route("/api/v1/admin/organizations/{id}/members", get(admin_list_org_members))
+        .route("/api/v1/admin/organizations/{id}/members", post(admin_add_org_member))
+        .route("/api/v1/admin/organizations/{id}/members/{user_id}", put(admin_update_org_member_role))
+        .route("/api/v1/admin/organizations/{id}/members/{user_id}", delete(admin_remove_org_member))
+        // Invitation management (org admin)
+        .route("/api/v1/orgs/{org_name}/invitations", get(list_invitations_handler))
+        .route("/api/v1/orgs/{org_name}/invitations", post(create_invitation_handler))
+        .route("/api/v1/orgs/{org_name}/invitations/{id}", delete(revoke_invitation_handler))
+        // Admin resource summary (platform admin dashboard)
+        .route("/api/v1/admin/resources/summary", get(admin_resource_summary_handler))
         // Audit log endpoints (admin only)
         .route("/api/v1/audit-logs", get(list_audit_logs))
         // Admin scopes endpoint (includes hidden scopes like admin:all)
@@ -468,13 +645,21 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
         .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
         .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
-        // MCP protocol endpoints - Control Plane tools (HTTP and SSE transport)
-        .route("/api/v1/mcp/cp", post(crate::mcp::mcp_http_handler))
-        .route("/api/v1/mcp/cp/sse", get(crate::mcp::mcp_sse_handler))
+        // MCP protocol endpoints - Control Plane tools (Streamable HTTP 2025-11-25)
+        .route(
+            "/api/v1/mcp/cp",
+            post(crate::mcp::post_handler_cp)
+                .get(crate::mcp::get_handler_cp)
+                .delete(crate::mcp::delete_handler_cp),
+        )
         .route("/api/v1/mcp/cp/connections", get(crate::mcp::list_connections_handler))
-        // MCP protocol endpoints - API tools (gateway API tools with different scopes)
-        .route("/api/v1/mcp/api", post(crate::mcp::mcp_api_http_handler))
-        .route("/api/v1/mcp/api/sse", get(crate::mcp::mcp_api_sse_handler))
+        // MCP protocol endpoints - API tools (Streamable HTTP 2025-11-25)
+        .route(
+            "/api/v1/mcp/api",
+            post(crate::mcp::post_handler_api)
+                .get(crate::mcp::get_handler_api)
+                .delete(crate::mcp::delete_handler_api),
+        )
         // MCP tools management endpoints
         .route("/api/v1/teams/{team}/mcp/tools", get(list_mcp_tools_handler))
         .route("/api/v1/teams/{team}/mcp/tools/{name}", get(get_mcp_tool_handler))
@@ -506,7 +691,10 @@ pub fn build_router_with_registry(
         .route("/api/v1/auth/sessions/logout", post(logout_handler))
         // Scopes endpoint (public - needed for token creation UI)
         .route("/api/v1/scopes", get(list_scopes_handler))
-        .with_state(api_state);
+        // Invitation public endpoints (registration flow)
+        .route("/api/v1/invitations/validate", get(validate_invitation_handler))
+        .route("/api/v1/invitations/accept", post(accept_invitation_handler))
+        .with_state(api_state.clone());
 
     // Build CORS layer for UI integration
     let cors_layer = build_cors_layer();

@@ -9,7 +9,6 @@ pub mod clusters;
 pub mod config;
 pub mod config_cmd;
 pub mod listeners;
-pub mod mcp;
 pub mod output;
 pub mod routes;
 pub mod teams;
@@ -95,12 +94,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: teams::TeamCommands,
     },
-
-    /// MCP server operations
-    Mcp {
-        #[command(subcommand)]
-        command: mcp::McpCommands,
-    },
+    // MCP is available via HTTP at /api/v1/mcp/cp (no CLI command needed)
 }
 
 #[derive(Subcommand)]
@@ -176,8 +170,7 @@ pub async fn run_cli() -> anyhow::Result<()> {
                 cli.verbose,
             )?;
             teams::handle_team_command(command, &client).await?
-        }
-        Commands::Mcp { command } => mcp::handle_mcp_command(command, &database).await?,
+        } // MCP removed from CLI — use HTTP endpoint at /api/v1/mcp/cp
     }
 
     Ok(())

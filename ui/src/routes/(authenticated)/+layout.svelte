@@ -6,6 +6,8 @@
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam, initializeSelectedTeam, setSelectedTeam } from '$lib/stores/team';
 	import { checkStatsEnabled } from '$lib/stores/stats';
+	import { currentOrg } from '$lib/stores/org';
+	import { getAdminSummary } from '$lib/stores/adminSummary';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -35,9 +37,29 @@
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
 
-			// Load available teams
-			const teamsResponse = await apiClient.listTeams();
-			availableTeams = teamsResponse.teams;
+			// Populate org store from session info
+			if (sessionInfo.orgId && sessionInfo.orgName) {
+				currentOrg.set({
+					organization: {
+						id: sessionInfo.orgId,
+						name: sessionInfo.orgName,
+						displayName: sessionInfo.orgName,
+						status: 'active',
+						createdAt: '',
+						updatedAt: ''
+					},
+					role: (sessionInfo.orgRole as import('$lib/api/types').OrgRole) ?? null
+				});
+			}
+
+			// Load available teams - use org-scoped endpoint when user has org context (defense-in-depth)
+			if (sessionInfo.orgName) {
+				const orgTeamsResponse = await apiClient.listOrgTeams(sessionInfo.orgName);
+				availableTeams = orgTeamsResponse.teams.map((t) => t.name);
+			} else {
+				const teamsResponse = await apiClient.listTeams();
+				availableTeams = teamsResponse.teams;
+			}
 
 			// Initialize selected team from store/sessionStorage or first team
 			initializeSelectedTeam(availableTeams);
@@ -57,6 +79,17 @@
 	});
 
 	async function loadResourceCounts() {
+		// Platform admin: load admin summary instead of team-filtered counts
+		if (sessionInfo?.isPlatformAdmin) {
+			try {
+				await getAdminSummary();
+			} catch {
+				// Admin summary failed — counts stay at zero
+			}
+			resourceCounts = { routeConfigs: 0, clusters: 0, listeners: 0, filters: 0, imports: 0, secrets: 0, dataplanes: 0 };
+			return;
+		}
+
 		// Helper to safely call an API and return empty array on failure
 		async function safeCall<T>(call: () => Promise<T[]>): Promise<T[]> {
 			try {
@@ -72,11 +105,9 @@
 			safeCall(() => apiClient.listListeners()),
 			safeCall(() => apiClient.listFilters()),
 			safeCall(() =>
-				sessionInfo?.isAdmin
-					? apiClient.listAllImports()
-					: currentTeam
-						? apiClient.listImports(currentTeam)
-						: Promise.resolve([])
+				currentTeam
+					? apiClient.listImports(currentTeam)
+					: Promise.resolve([])
 			),
 			safeCall(() =>
 				currentTeam

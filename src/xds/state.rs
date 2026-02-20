@@ -13,6 +13,7 @@ use crate::xds::secret::{secrets_from_database_entries, SECRET_TYPE_URL};
 use crate::{
     config::SimpleXdsConfig,
     services::{LearningSessionService, RouteHierarchySyncService, SecretEncryption},
+    storage::repositories::team::SqlxTeamRepository,
     storage::{
         AggregatedSchemaRepository, ClusterRepository, CustomWasmFilterRepository, DbPool,
         FilterRepository, ListenerAutoFilterRepository, ListenerRepository, RouteConfigRepository,
@@ -92,6 +93,8 @@ pub struct XdsState {
     pub custom_wasm_filter_repository: Option<CustomWasmFilterRepository>,
     /// MCP tool repository for AI assistant tools
     pub mcp_tool_repository: Option<crate::storage::McpToolRepository>,
+    /// Team repository for resolving team names to IDs
+    pub team_repository: Option<SqlxTeamRepository>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -122,6 +125,7 @@ impl XdsState {
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             custom_wasm_filter_repository: None,
             mcp_tool_repository: None,
+            team_repository: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -148,6 +152,9 @@ impl XdsState {
 
         // MCP tool repository
         let mcp_tool_repository = crate::storage::McpToolRepository::new(pool.clone());
+
+        // Team repository for name → ID resolution
+        let team_repository = SqlxTeamRepository::new(pool.clone());
 
         // Initialize secret repository and encryption service if encryption key is configured
         let (secret_repository, encryption_service) =
@@ -199,8 +206,52 @@ impl XdsState {
             filter_schema_registry: FilterSchemaRegistry::with_builtin_schemas(),
             custom_wasm_filter_repository: Some(custom_wasm_filter_repository),
             mcp_tool_repository: Some(mcp_tool_repository),
+            team_repository: Some(team_repository),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Resolve a team name to its UUID for database storage.
+    ///
+    /// After the FK migration, the `team` column stores UUIDs, not names.
+    /// This method converts a team name to its UUID. If the input is already
+    /// a UUID, it is returned as-is (idempotent).
+    pub async fn resolve_team_name(&self, team_name: &str) -> crate::Result<String> {
+        // If it already looks like a UUID, pass through (idempotent)
+        if uuid::Uuid::parse_str(team_name).is_ok() {
+            return Ok(team_name.to_string());
+        }
+        use crate::storage::repositories::TeamRepository;
+        let team_repo = self
+            .team_repository
+            .as_ref()
+            .ok_or_else(|| crate::errors::Error::internal("Team repository unavailable"))?;
+        let ids = team_repo.resolve_team_ids(None, &[team_name.to_string()]).await?;
+        ids.into_iter().next().ok_or_else(|| crate::errors::Error::not_found("Team", team_name))
+    }
+
+    /// Resolve an optional team name to its UUID for database storage.
+    pub async fn resolve_optional_team(&self, team: Option<&str>) -> crate::Result<Option<String>> {
+        match team {
+            None => Ok(None),
+            Some(name) => self.resolve_team_name(name).await.map(Some),
+        }
+    }
+
+    /// Resolve auth context team names to UUIDs. Idempotent.
+    pub async fn resolve_auth(
+        &self,
+        auth: &crate::internal_api::auth::InternalAuthContext,
+    ) -> std::result::Result<
+        crate::internal_api::auth::InternalAuthContext,
+        crate::internal_api::error::InternalError,
+    > {
+        if let Some(ref team_repo) = self.team_repository {
+            let repo: &dyn crate::storage::repositories::TeamRepository = team_repo;
+            auth.clone().resolve_teams(repo).await
+        } else {
+            Ok(auth.clone())
         }
     }
 
@@ -238,6 +289,10 @@ impl XdsState {
     }
 
     /// Create a new XdsState with services (builder pattern)
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned (indicates a previous panic in a thread
+    /// holding the lock - unrecoverable state).
     pub fn with_services(
         mut self,
         access_log_service: Arc<FlowplaneAccessLogService>,
@@ -246,14 +301,28 @@ impl XdsState {
     ) -> Self {
         self.access_log_service = Some(access_log_service);
         self.ext_proc_service = Some(ext_proc_service);
-        *self.learning_session_service.write().expect("lock poisoned") =
-            Some(learning_session_service);
+        match self.learning_session_service.write() {
+            Ok(mut guard) => *guard = Some(learning_session_service),
+            Err(e) => {
+                tracing::error!("BUG: learning_session_service lock poisoned: {}", e);
+                panic!("BUG: learning_session_service lock poisoned - indicates previous panic");
+            }
+        }
         self
     }
 
     /// Set the learning session service (safe mutation)
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned (indicates a previous panic).
     pub fn set_learning_session_service(&self, service: Arc<LearningSessionService>) {
-        *self.learning_session_service.write().expect("lock poisoned") = Some(service);
+        match self.learning_session_service.write() {
+            Ok(mut guard) => *guard = Some(service),
+            Err(e) => {
+                tracing::error!("BUG: learning_session_service lock poisoned: {}", e);
+                panic!("BUG: learning_session_service lock poisoned - indicates previous panic");
+            }
+        }
     }
 
     /// Get the learning session service if available
@@ -263,13 +332,22 @@ impl XdsState {
 
     /// Apply a new snapshot of built resources for `type_url` and broadcast changes.
     /// Returns `Some(ResourceUpdate)` when a delta was published.
+    ///
+    /// # Panics
+    /// Panics if the resource cache lock is poisoned (indicates a previous panic).
     #[instrument(skip(self, built_resources), fields(type_url = %type_url, resource_count = built_resources.len()), name = "xds_apply_resources")]
     pub fn apply_built_resources(
         &self,
         type_url: &str,
         built_resources: Vec<BuiltResource>,
     ) -> Option<Arc<ResourceUpdate>> {
-        let mut caches = self.resource_caches.write().expect("resource cache lock poisoned");
+        let mut caches = match self.resource_caches.write() {
+            Ok(guard) => guard,
+            Err(e) => {
+                tracing::error!("BUG: resource_caches lock poisoned during apply: {}", e);
+                panic!("BUG: resource_caches lock poisoned - indicates previous panic");
+            }
+        };
         let cache = caches.entry(type_url.to_string()).or_default();
 
         let incoming_names: HashSet<String> =
@@ -325,9 +403,18 @@ impl XdsState {
     }
 
     /// Return a clone of the cached resources for the provided type URL.
+    /// Returns empty Vec if lock is unavailable (degraded mode).
     pub fn cached_resources(&self, type_url: &str) -> Vec<CachedResource> {
-        let caches = self.resource_caches.read().expect("resource cache lock poisoned");
-        caches.get(type_url).map(|cache| cache.values().cloned().collect()).unwrap_or_default()
+        match self.resource_caches.read() {
+            Ok(caches) => caches
+                .get(type_url)
+                .map(|cache| cache.values().cloned().collect())
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::error!("resource_caches lock poisoned during read: {}", e);
+                Vec::new()
+            }
+        }
     }
 
     /// Refresh the cluster cache from the backing repository (if available).
@@ -347,14 +434,18 @@ impl XdsState {
         };
 
         // Always include the built-in ExtProc gRPC cluster for body capture
-        let ext_proc_cluster =
-            create_ext_proc_cluster(&self.config.bind_address, self.config.port)?;
+        let ext_proc_cluster = create_ext_proc_cluster(
+            &self.config.bind_address,
+            self.config.port,
+            self.config.advertised_address.as_deref(),
+        )?;
         built.push(ext_proc_cluster);
 
         // Always include the built-in Access Log Service gRPC cluster for ALS
         let access_log_cluster = crate::xds::resources::create_access_log_cluster(
             &self.config.bind_address,
             self.config.port,
+            self.config.advertised_address.as_deref(),
         )?;
         built.push(access_log_cluster);
 
@@ -880,7 +971,7 @@ mod tests {
         let port = 19000;
 
         // Create the ExtProc cluster
-        let built_resource = create_ext_proc_cluster(bind_address, port).unwrap();
+        let built_resource = create_ext_proc_cluster(bind_address, port, None).unwrap();
 
         // Decode the cluster
         let cluster = envoy_types::pb::envoy::config::cluster::v3::Cluster::decode(

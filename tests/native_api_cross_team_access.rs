@@ -1,10 +1,13 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for Native API cross-team resource access prevention
 //!
 //! These tests verify that team-scoped users cannot access or discover resources
 //! belonging to other teams through the Native API HTTP endpoints.
 
 use axum::http::{Method, StatusCode};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 use axum::{body::to_bytes, body::Body, http::Request, Router};
@@ -19,12 +22,11 @@ use flowplane::{
 };
 use hyper::Response;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use tower::ServiceExt;
 
 #[path = "common/mod.rs"]
 mod common;
-use common::test_db::TestDatabase;
+use common::test_db::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
 
 // === Test Infrastructure ===
 
@@ -62,29 +64,8 @@ pub async fn setup_native_api_app() -> NativeApiApp {
     let test_db = TestDatabase::new("native_api_cross_team").await;
     let pool = test_db.pool().clone();
 
-    // Create teams required for cross-team tests
-    let team_id_a = uuid::Uuid::new_v4().to_string();
-    let team_id_b = uuid::Uuid::new_v4().to_string();
-
-    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
-        .bind(&team_id_a)
-        .bind("team-a")
-        .bind("Team A")
-        .bind("active")
-        .execute(&pool)
-        .await
-        .expect("create team-a");
-
-    sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
-        .bind(&team_id_b)
-        .bind("team-b")
-        .bind("Team B")
-        .bind("active")
-        .execute(&pool)
-        .await
-        .expect("create team-b");
-
-    // Create dataplanes for both teams (required for listener creation)
+    // Teams are already seeded by TestDatabase::new() with predictable UUIDs.
+    // Create dataplanes for both teams (required for listener creation).
     let dataplane_id_a = uuid::Uuid::new_v4().to_string();
     let dataplane_id_b = uuid::Uuid::new_v4().to_string();
 
@@ -92,7 +73,7 @@ pub async fn setup_native_api_app() -> NativeApiApp {
         "INSERT INTO dataplanes (id, team, name, gateway_host, description) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&dataplane_id_a)
-    .bind("team-a")
+    .bind(TEAM_A_ID)
     .bind("team-a-dataplane")
     .bind("127.0.0.1")
     .bind("Team A dataplane")
@@ -104,7 +85,7 @@ pub async fn setup_native_api_app() -> NativeApiApp {
         "INSERT INTO dataplanes (id, team, name, gateway_host, description) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&dataplane_id_b)
-    .bind("team-b")
+    .bind(TEAM_B_ID)
     .bind("team-b-dataplane")
     .bind("127.0.0.1")
     .bind("Team B dataplane")
@@ -188,7 +169,8 @@ async fn team_a_cannot_list_team_b_clusters() {
         send_request(&app, Method::GET, "/api/v1/clusters", Some(&team_a_token.token), None).await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
-    let clusters: Vec<Value> = read_json(list_response).await;
+    let body: Value = read_json(list_response).await;
+    let clusters = body["items"].as_array().expect("items array");
     assert!(
         !clusters.iter().any(|c| c["name"] == "team-b-backend"),
         "Team A should not see Team B's cluster in list"
@@ -407,7 +389,8 @@ async fn team_a_cannot_list_team_b_routes() {
             .await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
-    let routes: Vec<Value> = read_json(list_response).await;
+    let body: Value = read_json(list_response).await;
+    let routes = body["items"].as_array().expect("items array");
     assert!(
         !routes.iter().any(|r| r["name"] == "team-b-route"),
         "Team A should not see Team B's route in list"
@@ -588,7 +571,8 @@ async fn team_a_cannot_list_team_b_listeners() {
         send_request(&app, Method::GET, "/api/v1/listeners", Some(&team_a_token.token), None).await;
     assert_eq!(list_response.status(), StatusCode::OK);
 
-    let listeners: Vec<Value> = read_json(list_response).await;
+    let body: Value = read_json(list_response).await;
+    let listeners = body["items"].as_array().expect("items array");
     assert!(
         !listeners.iter().any(|l| l["name"] == "team-b-listener"),
         "Team A should not see Team B's listener in list"
@@ -702,12 +686,11 @@ async fn team_a_cannot_delete_team_b_listener() {
 // === Admin Resource Accessibility Tests ===
 
 #[tokio::test]
-async fn admin_users_can_access_all_team_resources() {
+async fn admin_all_alone_cannot_access_tenant_resources() {
     let app = setup_native_api_app().await;
 
-    // Team A and Team B create clusters
+    // Team A creates a cluster
     let team_a_token = app.issue_token("team-a-user", &["team:team-a:clusters:write"]).await;
-    let team_b_token = app.issue_token("team-b-user", &["team:team-b:clusters:write"]).await;
 
     send_request(
         &app,
@@ -724,34 +707,44 @@ async fn admin_users_can_access_all_team_resources() {
     )
     .await;
 
+    // admin:all alone (governance-only) should be forbidden for tenant resources
+    let admin_token = app.issue_token("admin", &["admin:all"]).await;
+
+    let list_response =
+        send_request(&app, Method::GET, "/api/v1/clusters", Some(&admin_token.token), None).await;
+    assert_eq!(
+        list_response.status(),
+        StatusCode::FORBIDDEN,
+        "admin:all alone should be forbidden for tenant resource listing"
+    );
+}
+
+#[tokio::test]
+async fn admin_all_cannot_get_specific_team_resource() {
+    let app = setup_native_api_app().await;
+
+    // Team A creates a cluster
+    let team_a_token = app.issue_token("team-a-user", &["team:team-a:clusters:write"]).await;
+
     send_request(
         &app,
         Method::POST,
         "/api/v1/clusters",
-        Some(&team_b_token.token),
+        Some(&team_a_token.token),
         Some(json!({
-            "team": "team-b",
-            "name": "team-b-cluster",
-            "serviceName": "team-b-service",
-            "endpoints": [{"host": "team-b.local", "port": 8080}],
+            "team": "team-a",
+            "name": "team-a-cluster",
+            "serviceName": "team-a-service",
+            "endpoints": [{"host": "team-a.local", "port": 8080}],
             "connectTimeoutSeconds": 5
         })),
     )
     .await;
 
-    // Admin should see both clusters
+    // admin:all alone cannot get specific team resources
     let admin_token = app.issue_token("admin", &["admin:all"]).await;
 
-    let list_response =
-        send_request(&app, Method::GET, "/api/v1/clusters", Some(&admin_token.token), None).await;
-    assert_eq!(list_response.status(), StatusCode::OK);
-
-    let clusters: Vec<Value> = read_json(list_response).await;
-    assert!(clusters.iter().any(|c| c["name"] == "team-a-cluster"));
-    assert!(clusters.iter().any(|c| c["name"] == "team-b-cluster"));
-
-    // Admin should be able to get specific team clusters
-    let get_team_a = send_request(
+    let get_response = send_request(
         &app,
         Method::GET,
         "/api/v1/clusters/team-a-cluster",
@@ -759,15 +752,9 @@ async fn admin_users_can_access_all_team_resources() {
         None,
     )
     .await;
-    assert_eq!(get_team_a.status(), StatusCode::OK);
-
-    let get_team_b = send_request(
-        &app,
-        Method::GET,
-        "/api/v1/clusters/team-b-cluster",
-        Some(&admin_token.token),
-        None,
-    )
-    .await;
-    assert_eq!(get_team_b.status(), StatusCode::OK);
+    assert_eq!(
+        get_response.status(),
+        StatusCode::FORBIDDEN,
+        "admin:all alone should be forbidden for tenant resource access"
+    );
 }

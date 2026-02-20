@@ -8,8 +8,8 @@ CREATE TABLE IF NOT EXISTS import_metadata (
     spec_checksum TEXT,  -- SHA256 hash of the OpenAPI spec for change detection
     team TEXT NOT NULL,
     source_content TEXT,  -- Optional: store the original OpenAPI spec
-    imported_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Foreign key to teams table
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE CASCADE,

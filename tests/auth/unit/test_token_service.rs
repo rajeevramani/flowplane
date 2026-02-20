@@ -1,95 +1,29 @@
+// NOTE: This file requires PostgreSQL (via Testcontainers)
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 use chrono::Utc;
 use flowplane::auth::models::TokenStatus;
 use flowplane::auth::token_service::{TokenSecretResponse, TokenService};
 use flowplane::auth::validation::{CreateTokenRequest, UpdateTokenRequest};
 use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
-use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 use validator::Validate;
 
-async fn setup_pool() -> DbPool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
+#[allow(clippy::duplicate_mod)]
+#[path = "../test_schema.rs"]
+mod test_schema;
+use test_schema::{create_test_pool, TestDatabase};
 
-    sqlx::query(
-        r#"
-        CREATE TABLE personal_access_tokens (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            token_hash TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL,
-            expires_at DATETIME,
-            last_used_at DATETIME,
-            created_by TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            is_setup_token BOOLEAN NOT NULL DEFAULT FALSE,
-            max_usage_count INTEGER,
-            usage_count INTEGER NOT NULL DEFAULT 0,
-            failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME,
-            csrf_token TEXT,
-            user_id TEXT,
-            user_email TEXT
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-        CREATE TABLE token_scopes (
-            id TEXT PRIMARY KEY,
-            token_id TEXT NOT NULL,
-            scope TEXT NOT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (token_id) REFERENCES personal_access_tokens(id) ON DELETE CASCADE
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-        CREATE TABLE audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            resource_type TEXT NOT NULL,
-            resource_id TEXT,
-            resource_name TEXT,
-            action TEXT NOT NULL,
-            old_configuration TEXT,
-            new_configuration TEXT,
-            user_id TEXT,
-            client_ip TEXT,
-            user_agent TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    pool
-}
-
-async fn setup_service() -> (TokenService, Arc<SqlxTokenRepository>, Arc<AuditLogRepository>, DbPool)
-{
-    let pool = setup_pool().await;
+async fn setup_service(
+) -> (TestDatabase, TokenService, Arc<SqlxTokenRepository>, Arc<AuditLogRepository>, DbPool) {
+    let test_db = create_test_pool().await;
+    let pool = test_db.pool.clone();
     let repo = Arc::new(SqlxTokenRepository::new(pool.clone()));
     let audit = Arc::new(AuditLogRepository::new(pool.clone()));
     let service = TokenService::new(repo.clone(), audit.clone());
-    (service, repo, audit, pool)
+    (test_db, service, repo, audit, pool)
 }
 
 fn sample_create_request() -> CreateTokenRequest {
@@ -106,7 +40,7 @@ fn sample_create_request() -> CreateTokenRequest {
 
 #[tokio::test]
 async fn create_token_returns_secret_and_persists() {
-    let (service, repo, _, _) = setup_service().await;
+    let (_db, service, repo, _, _) = setup_service().await;
     let request = sample_create_request();
 
     let TokenSecretResponse { id, token } =
@@ -121,7 +55,7 @@ async fn create_token_returns_secret_and_persists() {
 
 #[tokio::test]
 async fn create_token_without_expiry_defaults_to_30_days() {
-    let (service, repo, _, _) = setup_service().await;
+    let (_db, service, repo, _, _) = setup_service().await;
     let request = CreateTokenRequest {
         name: "no-expiry-test".into(),
         description: Some("Test default expiry".into()),
@@ -153,7 +87,7 @@ async fn create_token_without_expiry_defaults_to_30_days() {
 
 #[tokio::test]
 async fn update_and_revoke_token() {
-    let (service, repo, _, _) = setup_service().await;
+    let (_db, service, repo, _, _) = setup_service().await;
     let secret = service.create_token(sample_create_request(), None).await.unwrap();
 
     let update_payload = UpdateTokenRequest {
@@ -181,7 +115,7 @@ async fn update_and_revoke_token() {
 
 #[tokio::test]
 async fn rotate_generates_new_secret() {
-    let (service, repo, _, _) = setup_service().await;
+    let (_db, service, repo, _, _) = setup_service().await;
     let created = service.create_token(sample_create_request(), None).await.unwrap();
 
     let rotated = service.rotate_token(&created.id, None).await.unwrap();
@@ -201,7 +135,7 @@ async fn rotate_generates_new_secret() {
 
 #[tokio::test]
 async fn ensure_bootstrap_token_creates_when_empty() {
-    let (service, _, _, pool) = setup_service().await;
+    let (_db, service, _, _, pool) = setup_service().await;
     let bootstrap_secret = "test-bootstrap-token-min-32-characters-long";
     // Pass None for secrets client - dev mode without Vault
     let maybe_token = service

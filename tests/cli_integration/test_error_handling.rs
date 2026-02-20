@@ -1,3 +1,6 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for CLI error handling
 //!
 //! Tests:
@@ -41,7 +44,7 @@ async fn test_network_error_unreachable_server() {
 #[tokio::test]
 async fn test_timeout_handling() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("timeout-test-token", &["routes:read"]).await;
+    let token_response = server.issue_admin_token("timeout-test-token", &["routes:read"]).await;
 
     // Use a very short timeout (note: this may or may not trigger depending on server speed)
     let result = run_cli_command(&[
@@ -70,7 +73,7 @@ async fn test_timeout_handling() {
 #[tokio::test]
 async fn test_invalid_output_format() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("invalid-format-token", &["routes:read"]).await;
+    let token_response = server.issue_admin_token("invalid-format-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[
         "cluster",
@@ -110,7 +113,7 @@ async fn test_missing_required_argument() {
 #[tokio::test]
 async fn test_invalid_base_url_format() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("invalid-url-token", &["routes:read"]).await;
+    let token_response = server.issue_admin_token("invalid-url-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[
         "cluster",
@@ -199,7 +202,8 @@ async fn test_version_flag() {
 #[tokio::test]
 async fn test_concurrent_requests_handling() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("concurrent-test-token", &["clusters:read"]).await;
+    let token_response =
+        server.issue_admin_token("concurrent-test-token", &["clusters:read"]).await;
 
     // Make multiple concurrent requests
     let handles: Vec<_> = (0..5)
@@ -235,7 +239,7 @@ async fn test_concurrent_requests_handling() {
 #[tokio::test]
 async fn test_special_characters_in_arguments() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("special-char-token", &["clusters:read"]).await;
+    let token_response = server.issue_admin_token("special-char-token", &["clusters:read"]).await;
 
     // Try to get a cluster with special characters in the ID
     let result = run_cli_command(&[

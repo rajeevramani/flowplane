@@ -15,9 +15,9 @@ CREATE TABLE IF NOT EXISTS instance_apps (
     enabled INTEGER NOT NULL DEFAULT 0,            -- 0=disabled, 1=enabled
     config TEXT,                                   -- JSON configuration for the app
     enabled_by TEXT,                               -- User/entity who enabled/disabled (audit only)
-    enabled_at DATETIME,                           -- When the app was enabled
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    enabled_at TIMESTAMPTZ,                           -- When the app was enabled
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Index for quick enabled checks

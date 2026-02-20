@@ -17,8 +17,8 @@ CREATE TABLE IF NOT EXISTS scopes (
     category TEXT NOT NULL,                        -- Category for UI grouping
     visible_in_ui BOOLEAN NOT NULL DEFAULT TRUE,   -- Whether to show in scope selector
     enabled BOOLEAN NOT NULL DEFAULT TRUE,         -- Whether scope is active
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(resource, action)
 );
 

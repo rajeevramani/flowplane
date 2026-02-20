@@ -64,6 +64,28 @@ fn get_registry() -> &'static PromptRegistry {
             templates::render_optimize_performance,
         );
 
+        // Register dev_deploy_and_verify prompt
+        registry.register(
+            "dev_deploy_and_verify".to_string(),
+            Some(
+                "Deploy a backend service and verify end-to-end connectivity through the gateway"
+                    .to_string(),
+            ),
+            Some(templates::deploy_and_verify_arguments()),
+            templates::render_deploy_and_verify,
+        );
+
+        // Register dev_learn_and_document prompt
+        registry.register(
+            "dev_learn_and_document".to_string(),
+            Some(
+                "Observe API traffic and generate OpenAPI specification from learned schemas"
+                    .to_string(),
+            ),
+            Some(templates::learn_and_document_arguments()),
+            templates::render_learn_and_document,
+        );
+
         registry
     })
 }
@@ -98,7 +120,7 @@ mod tests {
     #[test]
     fn test_get_all_prompts() {
         let prompts = get_all_prompts();
-        assert_eq!(prompts.len(), 5);
+        assert_eq!(prompts.len(), 7);
 
         let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
         assert!(names.contains(&"debug_route"));
@@ -106,6 +128,8 @@ mod tests {
         assert!(names.contains(&"troubleshoot_cluster"));
         assert!(names.contains(&"analyze_listener"));
         assert!(names.contains(&"optimize_performance"));
+        assert!(names.contains(&"dev_deploy_and_verify"));
+        assert!(names.contains(&"dev_learn_and_document"));
     }
 
     #[test]
@@ -132,6 +156,39 @@ mod tests {
 
         let result = get_prompt("explain_filter", args);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_prompt_deploy_and_verify() {
+        let args = Some(json!({
+            "backend_host": "10.0.1.5",
+            "backend_port": "8080",
+            "path": "/api/orders",
+            "listen_port": "80",
+            "team": "test-team"
+        }));
+
+        let result = get_prompt("dev_deploy_and_verify", args);
+        assert!(result.is_ok());
+
+        let prompt = result.unwrap();
+        assert!(prompt.description.is_some());
+        assert!(!prompt.messages.is_empty());
+    }
+
+    #[test]
+    fn test_get_prompt_learn_and_document() {
+        let args = Some(json!({
+            "route_config_name": "orders-routes",
+            "team": "test-team"
+        }));
+
+        let result = get_prompt("dev_learn_and_document", args);
+        assert!(result.is_ok());
+
+        let prompt = result.unwrap();
+        assert!(prompt.description.is_some());
+        assert!(!prompt.messages.is_empty());
     }
 
     #[test]

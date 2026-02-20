@@ -4,7 +4,6 @@
 //! with proper timeout handling and cleanup.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +12,7 @@ use tracing::{error, info};
 
 use flowplane::config::{ApiServerConfig, DatabaseConfig, SimpleXdsConfig, XdsResourceConfig};
 use flowplane::openapi::defaults::ensure_default_gateway_resources;
+use flowplane::secrets::SecretBackendRegistry;
 use flowplane::storage::{create_pool, run_migrations};
 use flowplane::xds::{start_database_xds_server_with_state, XdsState};
 
@@ -21,8 +21,8 @@ use super::timeout::{retry_with_timeout, STARTUP_TIMEOUT};
 /// Control plane configuration
 #[derive(Debug, Clone)]
 pub struct ControlPlaneConfig {
-    /// Path to SQLite database file
-    pub db_path: PathBuf,
+    /// PostgreSQL database URL
+    pub db_url: String,
     /// API server bind address
     pub api_addr: SocketAddr,
     /// xDS server bind address
@@ -35,9 +35,9 @@ pub struct ControlPlaneConfig {
 
 impl ControlPlaneConfig {
     /// Create a new config with the given ports
-    pub fn new(db_path: PathBuf, api_port: u16, xds_port: u16, default_listener_port: u16) -> Self {
+    pub fn new(db_url: String, api_port: u16, xds_port: u16, default_listener_port: u16) -> Self {
         Self {
-            db_path,
+            db_url,
             api_addr: SocketAddr::from(([127, 0, 0, 1], api_port)),
             xds_addr: SocketAddr::from(([127, 0, 0, 1], xds_port)),
             default_listener_port,
@@ -61,8 +61,8 @@ pub struct ControlPlaneHandle {
     pub api_addr: SocketAddr,
     /// xDS server address
     pub xds_addr: SocketAddr,
-    /// Database path (for verification/debugging)
-    pub db_path: PathBuf,
+    /// Database URL (for verification/debugging)
+    pub db_url: String,
 }
 
 impl std::fmt::Debug for ControlPlaneHandle {
@@ -70,7 +70,7 @@ impl std::fmt::Debug for ControlPlaneHandle {
         f.debug_struct("ControlPlaneHandle")
             .field("api_addr", &self.api_addr)
             .field("xds_addr", &self.xds_addr)
-            .field("db_path", &self.db_path)
+            .field("db_url", &self.db_url)
             .finish()
     }
 }
@@ -81,23 +81,28 @@ impl ControlPlaneHandle {
         info!(
             api_addr = %config.api_addr,
             xds_addr = %config.xds_addr,
-            db_path = %config.db_path.display(),
+            db_url = %config.db_url,
             "Starting control plane for E2E test"
         );
 
-        // Configure database from provided sqlite path
-        let db_url = format!("sqlite://{}?mode=rwc", config.db_path.display());
-        std::env::set_var("FLOWPLANE_DATABASE_URL", &db_url);
+        // Create DB pool from provided PostgreSQL URL
+        let db_config = DatabaseConfig {
+            url: config.db_url.clone(),
+            auto_migrate: true,
+            max_connections: 10,
+            min_connections: 1,
+            ..Default::default()
+        };
 
-        // Create DB pool and run migrations
         info!("Creating database pool and running migrations...");
-        let pool = create_pool(&DatabaseConfig::from_env()).await?;
+        let pool = create_pool(&db_config).await?;
         run_migrations(&pool).await?;
         info!("Database migrations completed");
 
         let simple_config = SimpleXdsConfig {
             bind_address: config.xds_addr.ip().to_string(),
             port: config.xds_addr.port(),
+            advertised_address: None,
             resources: XdsResourceConfig {
                 listener_port: config.default_listener_port,
                 ..Default::default()
@@ -106,7 +111,33 @@ impl ControlPlaneHandle {
             envoy_admin: Default::default(),
         };
 
-        let state = Arc::new(XdsState::with_database(simple_config, pool));
+        // Create state without Arc first so we can initialize the secret backend registry
+        let mut state_struct = XdsState::with_database(simple_config, pool.clone());
+
+        // Enable mock certificate backend for E2E tests
+        // This allows testing the certificate API without requiring Vault
+        std::env::set_var("FLOWPLANE_USE_MOCK_CERT_BACKEND", "1");
+
+        // Initialize secret backend registry with mock certificate backend
+        // Note: encryption service may be None in test environment, but we can
+        // still create the registry for certificate backend functionality
+        let encryption = state_struct.encryption_service.clone();
+        match SecretBackendRegistry::from_env(pool.clone(), encryption, None).await {
+            Ok(registry) => {
+                info!(
+                    backends = ?registry.registered_backends(),
+                    has_cert_backend = registry.has_certificate_backend(),
+                    cert_backend_type = ?registry.certificate_backend_type(),
+                    "Initialized secret backend registry for E2E tests"
+                );
+                state_struct.set_secret_backend_registry(registry);
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to initialize secret backend registry");
+            }
+        }
+
+        let state = Arc::new(state_struct);
         ensure_default_gateway_resources(&state).await?;
         info!("Default gateway resources created");
 
@@ -170,7 +201,7 @@ impl ControlPlaneHandle {
             api_error_rx,
             api_addr: config.api_addr,
             xds_addr: config.xds_addr,
-            db_path: config.db_path,
+            db_url: config.db_url,
         })
     }
 
@@ -259,14 +290,11 @@ impl Drop for ControlPlaneHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_control_plane_config() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
-
-        let config = ControlPlaneConfig::new(db_path.clone(), 9000, 9001, 10000);
+        let db_url = "postgresql://postgres:postgres@localhost:5432/test".to_string();
+        let config = ControlPlaneConfig::new(db_url, 9000, 9001, 10000);
 
         assert_eq!(config.api_addr.port(), 9000);
         assert_eq!(config.xds_addr.port(), 9001);

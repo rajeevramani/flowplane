@@ -17,7 +17,7 @@
 	let currentTeam = $state('');
 	let teamDetails = $state<TeamResponse | null>(null);
 	let format = $state<'yaml' | 'json'>('yaml');
-	let bootstrapConfig = $state('');
+	let envoyConfig = $state('');
 	let highlightedCode = $state('');
 	let isLoading = $state(false);
 	let error = $state<string | null>(null);
@@ -31,7 +31,7 @@
 	let isGeneratingCert = $state(false);
 	let generatedCertificate = $state<GenerateCertificateResponse | null>(null);
 	let certCopySuccess = $state<Record<string, boolean>>({});
-	let enableMtlsInBootstrap = $state(true);
+	let enableMtlsInEnvoyConfig = $state(true);
 
 	// Default certificate paths
 	const DEFAULT_CERT_PATH = '/etc/envoy/certs/client.pem';
@@ -56,7 +56,7 @@
 				// Reset certificate state on team change
 				generatedCertificate = null;
 				proxyId = '';
-				await Promise.all([loadBootstrapConfig(), loadTeamDetails()]);
+				await Promise.all([loadEnvoyConfig(), loadTeamDetails()]);
 			}
 		});
 	});
@@ -64,9 +64,9 @@
 	async function loadMtlsStatus() {
 		try {
 			mtlsStatus = await apiClient.getMtlsStatus();
-			// If mTLS is not available, disable mTLS in bootstrap by default
+			// If mTLS is not available, disable mTLS in envoy config by default
 			if (!mtlsStatus.pkiMountConfigured) {
-				enableMtlsInBootstrap = false;
+				enableMtlsInEnvoyConfig = false;
 			}
 		} catch (err) {
 			// If we can't get mTLS status, assume it's not configured
@@ -82,7 +82,7 @@
 
 		try {
 			const teamsResponse = await apiClient.adminListTeams(100, 0);
-			const team = teamsResponse.teams.find((t) => t.name === currentTeam);
+			const team = teamsResponse.items.find((t: import('$lib/api/types').TeamResponse) => t.name === currentTeam);
 			teamDetails = team || null;
 		} catch (err) {
 			teamDetails = null;
@@ -95,27 +95,22 @@
 		}
 	});
 
-	async function loadBootstrapConfig() {
+	async function loadEnvoyConfig() {
 		if (!currentTeam) return;
 
 		isLoading = true;
 		error = null;
 
 		try {
-			bootstrapConfig = await apiClient.getBootstrapConfig({
-				team: currentTeam,
-				format,
-				mtls: enableMtlsInBootstrap && mtlsStatus?.pkiMountConfigured,
-				certPath: enableMtlsInBootstrap ? certPath : undefined,
-				keyPath: enableMtlsInBootstrap ? keyPath : undefined,
-				caPath: enableMtlsInBootstrap ? caPath : undefined
-			});
+			// This page redirects to /dataplanes via +page.server.ts
+			// Keeping placeholder for reference
+			envoyConfig = '';
 
 			// Highlight the code
 			const language = format === 'yaml' ? 'yaml' : 'json';
-			highlightedCode = hljs.highlight(bootstrapConfig, { language }).value;
+			highlightedCode = hljs.highlight(envoyConfig, { language }).value;
 		} catch (err: unknown) {
-			const message = err instanceof Error ? err.message : 'Failed to load bootstrap configuration';
+			const message = err instanceof Error ? err.message : 'Failed to load envoy configuration';
 			error = message;
 		} finally {
 			isLoading = false;
@@ -123,11 +118,11 @@
 	}
 
 	function handleFormatChange() {
-		loadBootstrapConfig();
+		loadEnvoyConfig();
 	}
 
 	function handleMtlsToggle() {
-		loadBootstrapConfig();
+		loadEnvoyConfig();
 	}
 
 	function validateProxyId(value: string): string | null {
@@ -166,9 +161,9 @@
 				proxyId
 			});
 
-			// Reload bootstrap config with mTLS enabled
-			enableMtlsInBootstrap = true;
-			await loadBootstrapConfig();
+			// Reload envoy config with mTLS enabled
+			enableMtlsInEnvoyConfig = true;
+			await loadEnvoyConfig();
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : 'Failed to generate certificate';
 			error = message;
@@ -178,11 +173,11 @@
 	}
 
 	function downloadConfig() {
-		const blob = new Blob([bootstrapConfig], { type: 'text/plain' });
+		const blob = new Blob([envoyConfig], { type: 'text/plain' });
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = `bootstrap-${currentTeam}.${format}`;
+		a.download = `envoy-config-${currentTeam}.${format}`;
 		document.body.appendChild(a);
 		a.click();
 		document.body.removeChild(a);
@@ -191,7 +186,7 @@
 
 	async function copyToClipboard() {
 		try {
-			await navigator.clipboard.writeText(bootstrapConfig);
+			await navigator.clipboard.writeText(envoyConfig);
 			copySuccess = true;
 			setTimeout(() => {
 				copySuccess = false;
@@ -312,14 +307,14 @@
 								<label class="flex items-center">
 									<input
 										type="checkbox"
-										bind:checked={enableMtlsInBootstrap}
+										bind:checked={enableMtlsInEnvoyConfig}
 										onchange={handleMtlsToggle}
 										class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
 									/>
-									<span class="ml-2 text-sm text-gray-700">Enable mTLS in bootstrap</span>
+									<span class="ml-2 text-sm text-gray-700">Enable mTLS in envoy config</span>
 								</label>
 
-								{#if enableMtlsInBootstrap}
+								{#if enableMtlsInEnvoyConfig}
 									<div class="ml-6 space-y-2">
 										<div>
 											<label class="block text-xs font-medium text-gray-600 mb-1"
@@ -328,7 +323,7 @@
 											<input
 												type="text"
 												bind:value={certPath}
-												onblur={loadBootstrapConfig}
+												onblur={loadEnvoyConfig}
 												class="w-full px-2 py-1 text-xs border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
 											/>
 										</div>
@@ -337,7 +332,7 @@
 											<input
 												type="text"
 												bind:value={keyPath}
-												onblur={loadBootstrapConfig}
+												onblur={loadEnvoyConfig}
 												class="w-full px-2 py-1 text-xs border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
 											/>
 										</div>
@@ -346,7 +341,7 @@
 											<input
 												type="text"
 												bind:value={caPath}
-												onblur={loadBootstrapConfig}
+												onblur={loadEnvoyConfig}
 												class="w-full px-2 py-1 text-xs border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
 											/>
 										</div>
@@ -401,14 +396,14 @@
 				<div class="pt-4 space-y-2">
 					<button
 						onclick={downloadConfig}
-						disabled={!bootstrapConfig || isLoading}
+						disabled={!envoyConfig || isLoading}
 						class="w-full px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
 					>
 						Download Configuration
 					</button>
 					<button
 						onclick={copyToClipboard}
-						disabled={!bootstrapConfig || isLoading}
+						disabled={!envoyConfig || isLoading}
 						class="w-full px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
 					>
 						{copySuccess ? 'Copied!' : 'Copy to Clipboard'}
@@ -423,19 +418,19 @@
 			<div class="text-sm text-blue-700 space-y-2">
 				{#if generatedCertificate}
 					<p>1. Save the certificate files to your proxy</p>
-					<p>2. Download or copy the bootstrap configuration</p>
+					<p>2. Download or copy the Envoy configuration</p>
 					<p>
-						3. Save it as <code class="bg-blue-100 px-1 rounded">bootstrap.yaml</code>
+						3. Save it as <code class="bg-blue-100 px-1 rounded">envoy-config.yaml</code>
 					</p>
 					<p>4. Start Envoy with the configuration:</p>
 				{:else}
-					<p>1. Download or copy the bootstrap configuration</p>
+					<p>1. Download or copy the Envoy configuration</p>
 					<p>
-						2. Save it as <code class="bg-blue-100 px-1 rounded">bootstrap.yaml</code>
+						2. Save it as <code class="bg-blue-100 px-1 rounded">envoy-config.yaml</code>
 					</p>
 					<p>3. Start Envoy with the configuration:</p>
 				{/if}
-				<pre class="mt-2 p-2 bg-blue-100 rounded text-xs overflow-x-auto">envoy -c bootstrap.yaml</pre>
+				<pre class="mt-2 p-2 bg-blue-100 rounded text-xs overflow-x-auto">envoy -c envoy-config.yaml</pre>
 			</div>
 		</div>
 	</div>
@@ -548,14 +543,14 @@
 		<div class="bg-white rounded-lg shadow-md p-6">
 			<div class="flex justify-between items-center mb-4">
 				<h2 class="text-lg font-semibold text-gray-900">Configuration Preview</h2>
-				<span class="text-sm text-gray-500"> bootstrap-{currentTeam}.{format} </span>
+				<span class="text-sm text-gray-500"> envoy-config-{currentTeam}.{format} </span>
 			</div>
 
 			{#if isLoading}
 				<div class="flex justify-center items-center py-12">
 					<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
 				</div>
-			{:else if bootstrapConfig}
+			{:else if envoyConfig}
 				<div class="relative">
 					<pre
 						class="bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto text-sm"><code
@@ -563,7 +558,7 @@
 				</div>
 			{:else}
 				<p class="text-center text-gray-500 py-12">
-					Select a team to generate bootstrap configuration
+					Select a team to generate Envoy configuration
 				</p>
 			{/if}
 		</div>

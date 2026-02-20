@@ -58,6 +58,9 @@ pub struct McpSession {
     pub created_at: Instant,
     /// When the session was last accessed
     pub last_activity: Instant,
+    /// Optional SSE connection ID (for Streamable HTTP transport)
+    /// When present, this session has an associated SSE stream for notifications
+    pub connection_id: Option<String>,
 }
 
 impl Default for McpSession {
@@ -71,6 +74,7 @@ impl Default for McpSession {
             team: None,
             created_at: now,
             last_activity: now,
+            connection_id: None,
         }
     }
 }
@@ -87,6 +91,7 @@ impl McpSession {
             team: Some(team),
             created_at: now,
             last_activity: now,
+            connection_id: None,
         }
     }
 
@@ -209,6 +214,7 @@ impl SessionManager {
                 team,
                 created_at: now,
                 last_activity: now,
+                connection_id: None,
             };
             self.sessions.insert(id.clone(), session);
 
@@ -256,6 +262,83 @@ impl SessionManager {
     /// Get the client info for a session
     pub fn get_client_info(&self, id: &SessionId) -> Option<ClientInfo> {
         self.sessions.get(id).and_then(|s| s.client_info.clone())
+    }
+
+    /// Attach an SSE connection to a session (Streamable HTTP transport)
+    ///
+    /// Links a session to an active SSE connection for notifications.
+    ///
+    /// # Arguments
+    /// * `session_id` - Session to attach connection to
+    /// * `conn_id` - Connection ID string to attach
+    ///
+    /// # Returns
+    /// true if session exists and was updated, false otherwise
+    pub fn attach_sse_connection(&self, session_id: &SessionId, conn_id: &str) -> bool {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            session.connection_id = Some(conn_id.to_string());
+            session.touch();
+            debug!(
+                session_id = %session_id,
+                connection_id = %conn_id,
+                "Attached SSE connection to session"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Detach SSE connection from a session
+    ///
+    /// Removes the connection link, returning session to HTTP-only mode.
+    pub fn detach_sse_connection(&self, session_id: &SessionId) {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            if let Some(conn_id) = session.connection_id.take() {
+                session.touch();
+                debug!(
+                    session_id = %session_id,
+                    connection_id = %conn_id,
+                    "Detached SSE connection from session"
+                );
+            }
+        }
+    }
+
+    /// Get the connection ID for a session
+    ///
+    /// Returns None if session doesn't exist or has no attached connection.
+    pub fn get_connection_id(&self, session_id: &SessionId) -> Option<String> {
+        self.sessions.get(session_id).and_then(|s| s.connection_id.clone())
+    }
+
+    /// Validate session ownership by team (multi-tenancy check)
+    ///
+    /// Ensures the requesting team owns the session.
+    ///
+    /// # Arguments
+    /// * `session_id` - Session to validate
+    /// * `request_team` - Team making the request
+    ///
+    /// # Returns
+    /// Ok(()) if session belongs to request_team, Err if not found or mismatch
+    pub fn validate_session_ownership(
+        &self,
+        session_id: &SessionId,
+        request_team: &str,
+    ) -> Result<(), crate::mcp::error::McpError> {
+        let session = self.sessions.get(session_id).ok_or_else(|| {
+            crate::mcp::error::McpError::InvalidParams(format!("Session not found: {}", session_id))
+        })?;
+
+        if let Some(session_team) = &session.team {
+            crate::mcp::security::check_team_ownership(session_team, request_team)
+        } else {
+            Err(crate::mcp::error::McpError::Forbidden(format!(
+                "Session {} has no team assigned",
+                session_id
+            )))
+        }
     }
 
     /// Remove expired sessions
@@ -414,8 +497,14 @@ mod tests {
         assert!(!manager.is_initialized(&id));
 
         // Mark as initialized
-        let client_info =
-            ClientInfo { name: "test-client".to_string(), version: "1.0.0".to_string() };
+        let client_info = ClientInfo {
+            name: "test-client".to_string(),
+            version: "1.0.0".to_string(),
+            title: None,
+            description: None,
+            icons: None,
+            website_url: None,
+        };
         manager.mark_initialized(&id, "2025-11-25".to_string(), client_info.clone());
 
         assert!(manager.is_initialized(&id));
@@ -429,8 +518,14 @@ mod tests {
         let id = SessionId::from_token("new-token");
 
         // Mark as initialized without creating first
-        let client_info =
-            ClientInfo { name: "test-client".to_string(), version: "1.0.0".to_string() };
+        let client_info = ClientInfo {
+            name: "test-client".to_string(),
+            version: "1.0.0".to_string(),
+            title: None,
+            description: None,
+            icons: None,
+            website_url: None,
+        };
         manager.mark_initialized(&id, "2025-11-25".to_string(), client_info);
 
         assert!(manager.is_initialized(&id));
@@ -580,5 +675,108 @@ mod tests {
         // Should still have exactly one session
         assert_eq!(manager.total_sessions(), 1);
         assert!(manager.exists(&id));
+    }
+
+    // -------------------------------------------------------------------------
+    // Connection Integration Tests (Phase 3)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_session_connection_id_default_none() {
+        let session = McpSession::default();
+        assert!(session.connection_id.is_none());
+    }
+
+    #[test]
+    fn test_attach_sse_connection() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("mcp-test-session");
+
+        // Create session
+        let _ = manager.get_or_create_for_team(&session_id, "test-team");
+
+        // Attach connection
+        let attached = manager.attach_sse_connection(&session_id, "conn-test-123");
+        assert!(attached);
+
+        // Verify connection is attached
+        assert_eq!(manager.get_connection_id(&session_id), Some("conn-test-123".to_string()));
+    }
+
+    #[test]
+    fn test_attach_sse_connection_nonexistent_session() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("nonexistent-session");
+
+        // Attach to non-existent session should return false
+        let attached = manager.attach_sse_connection(&session_id, "conn-test-123");
+        assert!(!attached);
+    }
+
+    #[test]
+    fn test_detach_sse_connection() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("mcp-test-session");
+
+        // Create session and attach connection
+        let _ = manager.get_or_create_for_team(&session_id, "test-team");
+        manager.attach_sse_connection(&session_id, "conn-test-123");
+
+        // Detach connection
+        manager.detach_sse_connection(&session_id);
+
+        // Verify connection is detached
+        assert!(manager.get_connection_id(&session_id).is_none());
+    }
+
+    #[test]
+    fn test_get_connection_id_no_session() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("nonexistent");
+
+        assert!(manager.get_connection_id(&session_id).is_none());
+    }
+
+    #[test]
+    fn test_validate_session_ownership_same_team() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("mcp-test-session");
+
+        // Create session for team-a
+        let _ = manager.get_or_create_for_team(&session_id, "team-a");
+
+        // Validation should succeed for same team
+        let result = manager.validate_session_ownership(&session_id, "team-a");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_session_ownership_different_team() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("mcp-test-session");
+
+        // Create session for team-a
+        let _ = manager.get_or_create_for_team(&session_id, "team-a");
+
+        // Validation should fail for different team
+        let result = manager.validate_session_ownership(&session_id, "team-b");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_session_ownership_nonexistent_session() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("nonexistent");
+
+        // Validation should fail for non-existent session
+        let result = manager.validate_session_ownership(&session_id, "team-a");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_session_for_team_has_no_connection() {
+        let session = McpSession::for_team("test-team".to_string());
+        assert!(session.connection_id.is_none());
+        assert_eq!(session.team, Some("test-team".to_string()));
     }
 }

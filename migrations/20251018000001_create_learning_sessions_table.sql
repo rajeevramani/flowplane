@@ -12,14 +12,14 @@ CREATE TABLE IF NOT EXISTS learning_sessions (
 
     -- Lifecycle tracking
     status TEXT NOT NULL DEFAULT 'pending',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    started_at DATETIME,
-    ends_at DATETIME,
-    completed_at DATETIME,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMPTZ,
+    ends_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
 
     -- Progress tracking
-    target_sample_count INTEGER NOT NULL,
-    current_sample_count INTEGER NOT NULL DEFAULT 0,
+    target_sample_count BIGINT NOT NULL,
+    current_sample_count BIGINT NOT NULL DEFAULT 0,
 
     -- Metadata
     triggered_by TEXT,
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS learning_sessions (
     configuration_snapshot TEXT, -- JSON snapshot of config
     error_message TEXT,
 
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes for query performance

@@ -14,7 +14,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -282,7 +282,7 @@ impl ListenerAutoFilterRepository {
         source_filter_id: &FilterId,
         route_config_id: &RouteConfigId,
     ) -> Result<bool> {
-        let count = sqlx::query_scalar::<Sqlite, i64>(
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>(
             "SELECT COUNT(*) FROM listener_auto_filters \
              WHERE listener_id = $1 AND http_filter_name = $2 AND source_filter_id = $3 \
              AND route_config_id = $4 AND attachment_level = 'route_config'"
@@ -313,7 +313,7 @@ impl ListenerAutoFilterRepository {
         source_filter_id: &FilterId,
         source_virtual_host_id: &VirtualHostId,
     ) -> Result<bool> {
-        let count = sqlx::query_scalar::<Sqlite, i64>(
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>(
             "SELECT COUNT(*) FROM listener_auto_filters \
              WHERE listener_id = $1 AND http_filter_name = $2 AND source_filter_id = $3 \
              AND source_virtual_host_id = $4 AND attachment_level = 'virtual_host'"
@@ -344,7 +344,7 @@ impl ListenerAutoFilterRepository {
         source_filter_id: &FilterId,
         source_route_id: &RouteId,
     ) -> Result<bool> {
-        let count = sqlx::query_scalar::<Sqlite, i64>(
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>(
             "SELECT COUNT(*) FROM listener_auto_filters \
              WHERE listener_id = $1 AND http_filter_name = $2 AND source_filter_id = $3 \
              AND source_route_id = $4 AND attachment_level = 'route'"
@@ -469,7 +469,7 @@ impl ListenerAutoFilterRepository {
         listener_id: &ListenerId,
         http_filter_name: &str,
     ) -> Result<i64> {
-        let count = sqlx::query_scalar::<Sqlite, i64>(
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>(
             "SELECT COUNT(*) FROM listener_auto_filters WHERE listener_id = $1 AND http_filter_name = $2"
         )
         .bind(listener_id.as_str())
@@ -493,7 +493,7 @@ impl ListenerAutoFilterRepository {
         &self,
         listener_id: &ListenerId,
     ) -> Result<Vec<ListenerAutoFilterData>> {
-        let rows = sqlx::query_as::<Sqlite, ListenerAutoFilterRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ListenerAutoFilterRow>(
             "SELECT id, listener_id, http_filter_name, source_filter_id, route_config_id, attachment_level, \
              source_virtual_host_id, source_route_id, created_at \
              FROM listener_auto_filters WHERE listener_id = $1 ORDER BY created_at ASC"
@@ -518,7 +518,7 @@ impl ListenerAutoFilterRepository {
         &self,
         route_config_id: &RouteConfigId,
     ) -> Result<Vec<ListenerAutoFilterData>> {
-        let rows = sqlx::query_as::<Sqlite, ListenerAutoFilterRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ListenerAutoFilterRow>(
             "SELECT id, listener_id, http_filter_name, source_filter_id, route_config_id, attachment_level, \
              source_virtual_host_id, source_route_id, created_at \
              FROM listener_auto_filters WHERE route_config_id = $1"

@@ -253,7 +253,7 @@ impl FlowplaneAccessLogService {
     #[allow(dead_code)] // Will be used in subtask 1.4 for server integration
     pub async fn add_session(&self, session: LearningSession) {
         let mut sessions = self.learning_sessions.write().await;
-        info!(session_id = %session.id, patterns = sessions.len(), "Adding learning session");
+        info!(session_id = %session.id, patterns = session.route_patterns.len(), "Adding learning session");
         sessions.push(session);
     }
 
@@ -485,8 +485,12 @@ impl FlowplaneAccessLogService {
                 .unwrap_or_else(|| request.path.clone());
 
             // Extract limited headers (first 20 headers to avoid excessive memory)
-            // Note: Actual header structure will be validated with real Envoy
-            let headers: Vec<(String, String)> = Vec::new(); // TODO: Parse headers once structure is confirmed
+            let headers: Vec<(String, String)> = request
+                .request_headers
+                .iter()
+                .take(20)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
 
             // Build headers map for correlation extraction
             let headers_map: std::collections::HashMap<String, String> =
@@ -498,12 +502,10 @@ impl FlowplaneAccessLogService {
             // Extract W3C TraceContext for distributed tracing correlation
             let trace_context = Self::extract_trace_context(&headers_map);
 
-            // TODO: Extract request body (up to 10KB for schema inference)
-            // Note: The HttpRequestProperties protobuf from Envoy does NOT include
-            // the actual body content by default. To capture bodies, we need to:
-            // 1. Enable body buffering in Envoy's HTTP connection manager
-            // 2. Use the `body` field in access log format configuration
-            // For now, bodies are not available in the protobuf message.
+            // Body extraction limitation: The HttpRequestProperties protobuf from Envoy
+            // does NOT include body content by default. Bodies are captured via ExtProc
+            // service (FlowplaneExtProcService) which has body buffering enabled.
+            // Access logs only contain body size, not content.
             let body = None;
 
             let body_size = request.request_body_bytes;
@@ -529,16 +531,18 @@ impl FlowplaneAccessLogService {
             if let Some(response) = &entry.response {
                 let status = response.response_code.as_ref().map(|c| c.value).unwrap_or(0);
 
-                // Extract limited headers
-                // Note: Actual header structure will be validated with real Envoy
-                let headers: Vec<(String, String)> = Vec::new(); // TODO: Parse headers once structure is confirmed
+                // Extract limited headers (first 20 headers to avoid excessive memory)
+                let headers: Vec<(String, String)> = response
+                    .response_headers
+                    .iter()
+                    .take(20)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
 
-                // TODO: Extract response body (up to 10KB for schema inference)
-                // Note: The HttpResponseProperties protobuf from Envoy does NOT include
-                // the actual body content by default. To capture bodies, we need to:
-                // 1. Enable body buffering in Envoy's HTTP connection manager
-                // 2. Use the `body` field in access log format configuration
-                // For now, bodies are not available in the protobuf message.
+                // Body extraction limitation: The HttpResponseProperties protobuf from Envoy
+                // does NOT include body content by default. Bodies are captured via ExtProc
+                // service (FlowplaneExtProcService) which has body buffering enabled.
+                // Access logs only contain body size, not content.
                 let body = None;
 
                 let body_size = response.response_body_bytes;

@@ -6,7 +6,7 @@
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Database row structure for cluster_references
@@ -55,12 +55,12 @@ impl ClusterReferencesRepository {
     pub async fn add_reference(&self, cluster_id: &str, import_id: &str, count: i64) -> Result<()> {
         let now = chrono::Utc::now();
 
-        // Use INSERT OR REPLACE to handle both new refs and increments
+        // Use INSERT with ON CONFLICT to handle both new refs and increments
         sqlx::query(
             "INSERT INTO cluster_references (cluster_id, import_id, route_count, created_at)
              VALUES ($1, $2, $3, $4)
              ON CONFLICT(cluster_id, import_id)
-             DO UPDATE SET route_count = route_count + $3",
+             DO UPDATE SET route_count = cluster_references.route_count + EXCLUDED.route_count",
         )
         .bind(cluster_id)
         .bind(import_id)
@@ -132,7 +132,7 @@ impl ClusterReferencesRepository {
     /// Get all references for a specific cluster
     #[instrument(skip(self), name = "db_get_cluster_references")]
     pub async fn get_by_cluster(&self, cluster_id: &str) -> Result<Vec<ClusterReferenceData>> {
-        let rows = sqlx::query_as::<Sqlite, ClusterReferenceRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ClusterReferenceRow>(
             "SELECT cluster_id, import_id, route_count, created_at
              FROM cluster_references WHERE cluster_id = $1",
         )
@@ -149,7 +149,7 @@ impl ClusterReferencesRepository {
     /// Get all references for a specific import
     #[instrument(skip(self), name = "db_get_import_references")]
     pub async fn get_by_import(&self, import_id: &str) -> Result<Vec<ClusterReferenceData>> {
-        let rows = sqlx::query_as::<Sqlite, ClusterReferenceRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, ClusterReferenceRow>(
             "SELECT cluster_id, import_id, route_count, created_at
              FROM cluster_references WHERE import_id = $1",
         )

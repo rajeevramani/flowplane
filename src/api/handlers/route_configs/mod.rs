@@ -9,11 +9,12 @@ mod validation;
 
 // Re-export public types
 pub use types::{
-    HeaderMatchDefinition, ListRouteConfigsQuery, PathMatchDefinition,
-    QueryParameterMatchDefinition, RouteActionDefinition, RouteConfigDefinition,
-    RouteConfigResponse, RouteMatchDefinition, RouteRuleDefinition, VirtualHostDefinition,
-    WeightedClusterDefinition,
+    HeaderMatchDefinition, PathMatchDefinition, QueryParameterMatchDefinition,
+    RouteActionDefinition, RouteConfigDefinition, RouteConfigResponse, RouteMatchDefinition,
+    RouteRuleDefinition, VirtualHostDefinition, WeightedClusterDefinition,
 };
+
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 use axum::{
     extract::{Path, Query, State},
@@ -23,7 +24,11 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::ApiError,
+        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
+        routes::ApiState,
+    },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     internal_api::auth::InternalAuthContext,
@@ -62,7 +67,15 @@ pub async fn create_route_config_handler(
     validate_route_config_payload(&payload)?;
 
     // Verify user has write access to the specified team
-    require_resource_access(&context, "routes", "write", Some(&payload.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "write",
+        Some(&payload.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Validate and convert to XDS config
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
@@ -79,12 +92,16 @@ pub async fn create_route_config_handler(
 
     // Delegate to internal API layer (includes XDS refresh and route hierarchy sync)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.create(internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
         name: result.data.name,
-        team: result.data.team.unwrap_or_default(),
+        team: result.data.team_name.or(result.data.team).unwrap_or_default(),
         path_prefix: result.data.path_prefix,
         cluster_targets: result.data.cluster_name,
         import_id: result.data.import_id,
@@ -98,43 +115,47 @@ pub async fn create_route_config_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/route-configs",
-    params(
-        ("limit" = Option<i32>, Query, description = "Maximum number of route configs to return"),
-        ("offset" = Option<i32>, Query, description = "Offset for paginated results"),
-    ),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "List of route configs", body = [RouteConfigResponse]),
+        (status = 200, description = "List of route configs", body = PaginatedResponse<RouteConfigResponse>),
         (status = 503, description = "Route config repository unavailable"),
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
+#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
 pub async fn list_route_configs_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<types::ListRouteConfigsQuery>,
-) -> Result<Json<Vec<RouteConfigResponse>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<RouteConfigResponse>>, ApiError> {
     // Authorization: require routes:read scope
     require_resource_access(&context, "routes", "read", None)?;
 
+    let (limit, offset) = params.clamp(1000);
+
     // Create internal API request (REST API: include default resources)
     let internal_request = InternalListRouteConfigsRequest {
-        limit: params.limit,
-        offset: params.offset,
+        limit: Some(limit as i32),
+        offset: Some(offset as i32),
         include_defaults: true,
     };
 
     // Delegate to internal API layer
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.list(internal_request, &auth).await?;
+    let total = result.count as i64;
 
     let mut routes = Vec::with_capacity(result.routes.len());
     for row in result.routes {
         routes.push(route_config_response_from_data(row)?);
     }
 
-    Ok(Json(routes))
+    Ok(Json(PaginatedResponse::new(routes, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -159,7 +180,11 @@ pub async fn get_route_config_handler(
 
     // Delegate to internal API layer (includes team access verification)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let route_config = ops.get(&name, &auth).await?;
 
     Ok(Json(route_config_response_from_data(route_config)?))
@@ -209,12 +234,16 @@ pub async fn update_route_config_handler(
 
     // Delegate to internal API layer (includes team access, XDS refresh, and route hierarchy sync)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.update(&name, internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
         name: result.data.name,
-        team: result.data.team.unwrap_or_default(),
+        team: result.data.team_name.or(result.data.team).unwrap_or_default(),
         path_prefix: result.data.path_prefix,
         cluster_targets: result.data.cluster_name,
         import_id: result.data.import_id,
@@ -247,7 +276,11 @@ pub async fn delete_route_config_handler(
 
     // Delegate to internal API layer (includes default route protection, team access, and XDS refresh)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -258,15 +291,16 @@ pub async fn delete_route_config_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::State, Extension, Json};
+    use axum::{extract::State, response::IntoResponse, Extension, Json};
     use serde_json::json;
-    use sqlx::Executor;
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crate::auth::models::AuthContext;
+    use crate::api::test_utils::{
+        minimal_auth_context, readonly_resource_auth_context, team_auth_context,
+    };
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, CreateClusterRequest, DatabaseConfig};
+    use crate::storage::{test_helpers::TestDatabase, CreateClusterRequest};
     use crate::xds::filters::http::{
         local_rate_limit::{
             FractionalPercentDenominator, LocalRateLimitConfig, RuntimeFractionalPercentConfig,
@@ -282,71 +316,24 @@ mod tests {
         RouteRuleDefinition, VirtualHostDefinition, WeightedClusterDefinition,
     };
 
-    /// Create an admin AuthContext for testing with full permissions
-    fn admin_context() -> AuthContext {
-        AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("test-token"),
-            "test-admin".to_string(),
-            vec!["admin:all".to_string()],
-        )
-    }
-
-    async fn setup_state() -> ApiState {
-        let pool = create_pool(&DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        })
-        .await
-        .expect("pool");
-
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS clusters (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                service_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            );
-
-            CREATE TABLE IF NOT EXISTS route_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                path_prefix TEXT NOT NULL,
-                cluster_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                route_order INTEGER,
-                headers TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            );
-        "#,
-        )
-        .await
-        .expect("create tables");
+    async fn setup_state() -> (TestDatabase, ApiState) {
+        let test_db = TestDatabase::new("route_configs_handler").await;
+        let pool = test_db.pool.clone();
 
         let state = XdsState::with_database(SimpleXdsConfig::default(), pool.clone());
         let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
         let mcp_connection_manager = crate::mcp::create_connection_manager();
         let mcp_session_manager = crate::mcp::create_session_manager();
+        let certificate_rate_limiter = Arc::new(crate::api::rate_limit::RateLimiter::from_env());
         let api_state = ApiState {
             xds_state: Arc::new(state),
             filter_schema_registry: None,
             stats_cache,
             mcp_connection_manager,
             mcp_session_manager,
+            certificate_rate_limiter,
+            auth_config: Arc::new(crate::config::AuthConfig::default()),
+            auth_rate_limiters: Arc::new(crate::api::routes::AuthRateLimiters::from_env()),
         };
 
         // Seed a cluster for route references
@@ -379,7 +366,7 @@ mod tests {
             .await
             .expect("seed shadow cluster");
 
-        api_state
+        (test_db, api_state)
     }
 
     fn sample_route_config_definition() -> RouteConfigDefinition {
@@ -412,12 +399,12 @@ mod tests {
 
     #[tokio::test]
     async fn create_route_config_persists_configuration() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let payload = sample_route_config_definition();
         let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -436,12 +423,12 @@ mod tests {
 
     #[tokio::test]
     async fn list_route_configs_returns_entries() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -450,23 +437,23 @@ mod tests {
 
         let response = list_route_configs_handler(
             State(state),
-            Extension(admin_context()),
-            Query(types::ListRouteConfigsQuery::default()),
+            Extension(team_auth_context("test-team")),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list route configs");
 
-        assert_eq!(response.0.len(), 1);
-        assert_eq!(response.0[0].name, "primary-routes");
+        assert_eq!(response.0.items.len(), 1);
+        assert_eq!(response.0.items[0].name, "primary-routes");
     }
 
     #[tokio::test]
     async fn get_route_config_returns_definition() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -475,7 +462,7 @@ mod tests {
 
         let response = get_route_config_handler(
             State(state),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Path("primary-routes".into()),
         )
         .await
@@ -487,11 +474,11 @@ mod tests {
 
     #[tokio::test]
     async fn update_route_config_applies_changes() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -542,7 +529,7 @@ mod tests {
 
         let response = update_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Path("primary-routes".into()),
             Json(payload.clone()),
         )
@@ -574,11 +561,11 @@ mod tests {
 
     #[tokio::test]
     async fn delete_route_config_removes_row() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let payload = sample_route_config_definition();
         let (status, _) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload),
         )
         .await
@@ -587,7 +574,7 @@ mod tests {
 
         let status = delete_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Path("primary-routes".into()),
         )
         .await
@@ -602,7 +589,7 @@ mod tests {
 
     #[tokio::test]
     async fn template_route_config_supports_rewrite() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         let mut payload = sample_route_config_definition();
         payload.name = "template-route".into();
@@ -618,7 +605,7 @@ mod tests {
 
         let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Json(payload.clone()),
         )
         .await
@@ -638,5 +625,359 @@ mod tests {
             state.xds_state.route_config_repository.as_ref().cloned().expect("route config repo");
         let stored = repo.get_by_name("template-route").await.expect("stored template route");
         assert_eq!(stored.path_prefix, "template:/api/v1/users/{user_id}".to_string());
+    }
+
+    // === Authorization Tests ===
+
+    #[tokio::test]
+    async fn create_route_config_with_routes_write_scope() {
+        let (_db, state) = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let (status, _) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_fails_without_write_scope() {
+        let (_db, state) = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("routes")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_fails_with_no_permissions() {
+        let (_db, state) = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_route_configs_requires_read_scope() {
+        let (_db, state) = setup_state().await;
+
+        let result = list_route_configs_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_route_config_requires_read_scope() {
+        let (_db, state) = setup_state().await;
+
+        let result = get_route_config_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Path("any-route".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn update_route_config_requires_write_scope() {
+        let (_db, state) = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        // Create first with admin
+        let _ = create_route_config_handler(
+            State(state.clone()),
+            Extension(team_auth_context("test-team")),
+            Json(payload.clone()),
+        )
+        .await
+        .expect("create route config");
+
+        // Try to update with readonly scope
+        let result = update_route_config_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("routes")),
+            Path("primary-routes".into()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn delete_route_config_requires_write_scope() {
+        let (_db, state) = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        // Create first with admin
+        let _ = create_route_config_handler(
+            State(state.clone()),
+            Extension(team_auth_context("test-team")),
+            Json(payload),
+        )
+        .await
+        .expect("create route config");
+
+        // Try to delete with readonly scope
+        let result = delete_route_config_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("routes")),
+            Path("primary-routes".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // === Error Handling Tests ===
+
+    #[tokio::test]
+    async fn get_route_config_not_found() {
+        let (_db, state) = setup_state().await;
+
+        let result = get_route_config_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Path("non-existent-route".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_route_config_not_found() {
+        let (_db, state) = setup_state().await;
+        let mut payload = sample_route_config_definition();
+        // Set the payload name to match the path parameter
+        payload.name = "non-existent-route".to_string();
+
+        let result = update_route_config_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Path("non-existent-route".into()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_route_config_not_found() {
+        let (_db, state) = setup_state().await;
+
+        let result = delete_route_config_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Path("non-existent-route".into()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_duplicate_name_returns_error() {
+        let (_db, state) = setup_state().await;
+        let payload = sample_route_config_definition();
+
+        // Create first route config
+        let _ = create_route_config_handler(
+            State(state.clone()),
+            Extension(team_auth_context("test-team")),
+            Json(payload.clone()),
+        )
+        .await
+        .expect("create first route config");
+
+        // Try to create duplicate - should fail
+        let result = create_route_config_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        // The exact status code depends on the internal error mapping
+        // What matters is that the duplicate is rejected
+    }
+
+    // === Validation Tests ===
+
+    #[tokio::test]
+    async fn create_route_config_validates_empty_virtual_hosts() {
+        let (_db, state) = setup_state().await;
+
+        let mut payload = sample_route_config_definition();
+        payload.virtual_hosts = vec![];
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_validates_empty_routes() {
+        let (_db, state) = setup_state().await;
+
+        let mut payload = sample_route_config_definition();
+        payload.virtual_hosts[0].routes = vec![];
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_route_config_validates_empty_domains() {
+        let (_db, state) = setup_state().await;
+
+        let mut payload = sample_route_config_definition();
+        payload.virtual_hosts[0].domains = vec![];
+
+        let result = create_route_config_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // === Edge Case Tests ===
+
+    #[tokio::test]
+    async fn list_route_configs_with_pagination() {
+        let (_db, state) = setup_state().await;
+
+        // Create multiple route configs
+        for i in 0..5 {
+            let mut payload = sample_route_config_definition();
+            payload.name = format!("route-{}", i);
+            let _ = create_route_config_handler(
+                State(state.clone()),
+                Extension(team_auth_context("test-team")),
+                Json(payload),
+            )
+            .await
+            .expect("create route config");
+        }
+
+        // List with limit
+        let result = list_route_configs_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Query(PaginationQuery { limit: 2, offset: 0 }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let routes = &result.unwrap().0.items;
+        assert_eq!(routes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_route_configs_with_offset() {
+        let (_db, state) = setup_state().await;
+
+        // Create multiple route configs
+        for i in 0..5 {
+            let mut payload = sample_route_config_definition();
+            payload.name = format!("route-{}", i);
+            let _ = create_route_config_handler(
+                State(state.clone()),
+                Extension(team_auth_context("test-team")),
+                Json(payload),
+            )
+            .await
+            .expect("create route config");
+        }
+
+        // List with offset
+        let result = list_route_configs_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Query(PaginationQuery { limit: 10, offset: 2 }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let routes = &result.unwrap().0.items;
+        assert_eq!(routes.len(), 3); // 5 total - 2 offset = 3 remaining
     }
 }

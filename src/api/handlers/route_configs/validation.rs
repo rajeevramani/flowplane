@@ -34,8 +34,8 @@ pub(super) fn route_config_response_from_data(
         )))
     })?;
 
-    // Use team from database, or empty string if None (should not happen with explicit team requirement)
-    let team = data.team.clone().unwrap_or_default();
+    // Prefer resolved team name over UUID, fall back to UUID if name not resolved
+    let team = data.team_name.or(data.team).unwrap_or_default();
     let config = RouteConfigDefinition::from_xds_config(&xds_config, team.clone());
 
     Ok(RouteConfigResponse {
@@ -61,17 +61,17 @@ pub(super) fn validate_route_config_payload(
 ) -> Result<(), ApiError> {
     use validator::Validate;
 
-    definition.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    definition.validate().map_err(ApiError::from)?;
 
     for virtual_host in &definition.virtual_hosts {
-        virtual_host.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+        virtual_host.validate().map_err(ApiError::from)?;
 
         if virtual_host.domains.iter().any(|domain| domain.trim().is_empty()) {
             return Err(validation_error("Virtual host domains must not be empty"));
         }
 
         for route in &virtual_host.routes {
-            route.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+            route.validate().map_err(ApiError::from)?;
             validate_route_match(&route.r#match)?;
             validate_route_action(&route.action)?;
 

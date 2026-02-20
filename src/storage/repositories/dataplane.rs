@@ -7,7 +7,7 @@ use crate::domain::DataplaneId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for dataplanes.
@@ -15,9 +15,12 @@ use tracing::instrument;
 struct DataplaneRow {
     pub id: String,
     pub team: String,
+    pub team_name: Option<String>,
     pub name: String,
     pub gateway_host: Option<String>,
     pub description: Option<String>,
+    pub certificate_serial: Option<String>,
+    pub certificate_expires_at: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -27,21 +30,35 @@ struct DataplaneRow {
 pub struct DataplaneData {
     pub id: DataplaneId,
     pub team: String,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub name: String,
     pub gateway_host: Option<String>,
     pub description: Option<String>,
+    /// Serial number of the currently issued certificate (if any)
+    pub certificate_serial: Option<String>,
+    /// Expiration time of the current certificate (if any)
+    pub certificate_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl From<DataplaneRow> for DataplaneData {
     fn from(row: DataplaneRow) -> Self {
+        // Parse certificate_expires_at from RFC3339 string to DateTime
+        let certificate_expires_at = row.certificate_expires_at.and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(&s).map(|dt| dt.with_timezone(&chrono::Utc)).ok()
+        });
+
         Self {
             id: DataplaneId::from_string(row.id),
             team: row.team,
+            team_name: row.team_name,
             name: row.name,
             gateway_host: row.gateway_host,
             description: row.description,
+            certificate_serial: row.certificate_serial,
+            certificate_expires_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -132,8 +149,9 @@ impl DataplaneRepository {
     /// Retrieves a dataplane by its unique ID.
     #[instrument(skip(self), fields(dataplane_id = %id), name = "db_get_dataplane_by_id")]
     pub async fn get_by_id(&self, id: &DataplaneId) -> Result<DataplaneData> {
-        let row = sqlx::query_as::<Sqlite, DataplaneRow>(
-            "SELECT id, team, name, gateway_host, description, created_at, updated_at FROM dataplanes WHERE id = $1"
+        let row = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+             FROM dataplanes d LEFT JOIN teams t ON d.team = t.id WHERE d.id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -157,8 +175,9 @@ impl DataplaneRepository {
     /// Retrieves a dataplane by name and team.
     #[instrument(skip(self), fields(dataplane_name = %name, team = %team), name = "db_get_dataplane_by_name")]
     pub async fn get_by_name(&self, team: &str, name: &str) -> Result<Option<DataplaneData>> {
-        let row = sqlx::query_as::<Sqlite, DataplaneRow>(
-            "SELECT id, team, name, gateway_host, description, created_at, updated_at FROM dataplanes WHERE team = $1 AND name = $2"
+        let row = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+             FROM dataplanes d LEFT JOIN teams t ON d.team = t.id WHERE d.team = $1 AND d.name = $2"
         )
         .bind(team)
         .bind(name)
@@ -186,8 +205,9 @@ impl DataplaneRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, DataplaneRow>(
-            "SELECT id, team, name, gateway_host, description, created_at, updated_at FROM dataplanes WHERE team = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+        let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+             FROM dataplanes d LEFT JOIN teams t ON d.team = t.id WHERE d.team = $1 ORDER BY d.created_at DESC LIMIT $2 OFFSET $3"
         )
         .bind(team)
         .bind(limit)
@@ -206,6 +226,9 @@ impl DataplaneRepository {
     }
 
     /// Lists dataplanes filtered by teams for multi-tenancy support.
+    ///
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_dataplanes_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -214,7 +237,7 @@ impl DataplaneRepository {
         offset: Option<i32>,
     ) -> Result<Vec<DataplaneData>> {
         if teams.is_empty() {
-            return self.list(limit, offset).await;
+            return Ok(vec![]);
         }
 
         let limit = limit.unwrap_or(100).min(1000);
@@ -228,17 +251,17 @@ impl DataplaneRepository {
             .join(", ");
 
         let query_str = format!(
-            "SELECT id, team, name, gateway_host, description, created_at, updated_at \
-             FROM dataplanes \
-             WHERE team IN ({}) \
-             ORDER BY created_at DESC \
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+             FROM dataplanes d LEFT JOIN teams t ON d.team = t.id \
+             WHERE d.team IN ({}) \
+             ORDER BY d.created_at DESC \
              LIMIT ${} OFFSET ${}",
             placeholders,
             teams.len() + 1,
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, DataplaneRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(&query_str);
 
         for team in teams {
             query = query.bind(team);
@@ -267,8 +290,9 @@ impl DataplaneRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, DataplaneRow>(
-            "SELECT id, team, name, gateway_host, description, created_at, updated_at FROM dataplanes ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+             FROM dataplanes d LEFT JOIN teams t ON d.team = t.id ORDER BY d.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -393,7 +417,7 @@ impl DataplaneRepository {
     #[instrument(skip(self), fields(dataplane_name = %name, team = %team), name = "db_exists_dataplane_by_name")]
     pub async fn exists_by_name(&self, team: &str, name: &str) -> Result<bool> {
         let count =
-            sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM dataplanes WHERE team = $1 AND name = $2")
+            sqlx::query_scalar::<sqlx::Postgres, i64>("SELECT COUNT(*) FROM dataplanes WHERE team = $1 AND name = $2")
                 .bind(team)
                 .bind(name)
                 .fetch_one(&self.pool)
@@ -407,6 +431,125 @@ impl DataplaneRepository {
                 })?;
 
         Ok(count > 0)
+    }
+
+    /// Updates certificate information for a dataplane after certificate issuance.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The dataplane ID
+    /// * `serial` - Certificate serial number from the PKI backend
+    /// * `expires_at` - Certificate expiration time
+    #[instrument(skip(self), fields(dataplane_id = %id, serial = %serial, expires_at = %expires_at), name = "db_update_dataplane_certificate_info")]
+    pub async fn update_certificate_info(
+        &self,
+        id: &DataplaneId,
+        serial: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+        let expires_at_str = expires_at.to_rfc3339();
+
+        let result = sqlx::query(
+            "UPDATE dataplanes SET certificate_serial = $1, certificate_expires_at = $2, updated_at = $3 WHERE id = $4"
+        )
+        .bind(serial)
+        .bind(&expires_at_str)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, dataplane_id = %id, "Failed to update certificate info");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to update certificate info for dataplane '{}'", id),
+            }
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowplaneError::not_found_msg(format!(
+                "Dataplane with ID '{}' not found",
+                id
+            )));
+        }
+
+        tracing::info!(dataplane_id = %id, serial = %serial, expires_at = %expires_at, "Updated dataplane certificate info");
+
+        Ok(())
+    }
+
+    /// Lists dataplanes with certificates expiring within the specified number of days.
+    ///
+    /// Used for monitoring and automated renewal workflows.
+    ///
+    /// # Arguments
+    ///
+    /// * `within_days` - Return dataplanes with certificates expiring within this many days
+    /// * `limit` - Maximum number of results (default: 100, max: 1000)
+    #[instrument(skip(self), fields(within_days = within_days, limit = ?limit), name = "db_list_expiring_certificates")]
+    pub async fn list_expiring_certificates(
+        &self,
+        within_days: i64,
+        limit: Option<i32>,
+    ) -> Result<Vec<DataplaneData>> {
+        let limit = limit.unwrap_or(100).min(1000);
+        let threshold = chrono::Utc::now() + chrono::Duration::days(within_days);
+        let threshold_str = threshold.to_rfc3339();
+
+        let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+             FROM dataplanes d LEFT JOIN teams t ON d.team = t.id \
+             WHERE d.certificate_expires_at IS NOT NULL \
+               AND d.certificate_expires_at <= $1 \
+             ORDER BY d.certificate_expires_at ASC \
+             LIMIT $2"
+        )
+        .bind(&threshold_str)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, within_days = within_days, "Failed to list expiring certificates");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to list dataplanes with expiring certificates".to_string(),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(DataplaneData::from).collect())
+    }
+
+    /// Clears certificate information for a dataplane (e.g., after revocation).
+    #[instrument(skip(self), fields(dataplane_id = %id), name = "db_clear_dataplane_certificate_info")]
+    pub async fn clear_certificate_info(&self, id: &DataplaneId) -> Result<()> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            "UPDATE dataplanes SET certificate_serial = NULL, certificate_expires_at = NULL, updated_at = $1 WHERE id = $2"
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, dataplane_id = %id, "Failed to clear certificate info");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to clear certificate info for dataplane '{}'", id),
+            }
+        })?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowplaneError::not_found_msg(format!(
+                "Dataplane with ID '{}' not found",
+                id
+            )));
+        }
+
+        tracing::info!(dataplane_id = %id, "Cleared dataplane certificate info");
+
+        Ok(())
     }
 
     /// Returns the database pool.

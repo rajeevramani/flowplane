@@ -27,6 +27,15 @@
 //! - Envoy binary on PATH (for proxy tests)
 //! - wiremock dependency for mock services
 
+// TLS support utilities (shared with tls tests)
+#[path = "tls/support.rs"]
+pub mod tls_support;
+
+// Re-export as tls module for consistency with harness imports
+pub mod tls {
+    pub use super::tls_support as support;
+}
+
 // Shared test infrastructure
 #[path = "e2e/common/mod.rs"]
 pub mod common;

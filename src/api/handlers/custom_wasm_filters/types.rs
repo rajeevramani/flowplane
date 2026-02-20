@@ -6,32 +6,11 @@ use validator::Validate;
 
 use crate::storage::CustomWasmFilterData;
 
-/// Path parameters for team-scoped routes
-#[derive(Debug, Deserialize)]
-pub struct TeamPath {
-    pub team: String,
-}
-
 /// Path parameters for custom filter by ID
 #[derive(Debug, Deserialize)]
 pub struct CustomFilterPath {
     pub team: String,
     pub id: String,
-}
-
-/// Query parameters for listing custom filters
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ListCustomFiltersQuery {
-    /// Maximum number of results to return
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-    /// Offset for pagination
-    #[serde(default)]
-    pub offset: i64,
-}
-
-fn default_limit() -> i64 {
-    50
 }
 
 /// Request to create a custom WASM filter (JSON API)
@@ -174,13 +153,4 @@ impl CustomWasmFilterResponse {
             filter_type: format!("custom_wasm_{}", data.id),
         }
     }
-}
-
-/// Response for listing custom WASM filters
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ListCustomWasmFiltersResponse {
-    /// List of custom filters
-    pub items: Vec<CustomWasmFilterResponse>,
-    /// Total count for pagination
-    pub total: i64,
 }

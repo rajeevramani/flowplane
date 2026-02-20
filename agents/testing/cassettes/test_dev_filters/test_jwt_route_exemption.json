@@ -1,0 +1,1059 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T22:36:50.152998+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "t9c1b162",
+    "ports": [
+      23277
+    ]
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771454136-KjHyCo4CopX3QpQ59NEw",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll deploy this API with exactly the specified configuration. Let me start with parallel pre-flight checks and gather the necessary information.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01EbnQFuYjRnSmRs7j8fojgb",
+                  "function": {
+                    "arguments": "{\"cluster_name\": \"t9c1b162-cluster\", \"route_config_name\": \"t9c1b162-rc\", \"listener_name\": \"t9c1b162-listener\", \"listen_port\": 23277}",
+                    "name": "dev_preflight_check"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_01LQCaP3gNHbmwt12CsVRyHS",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_dataplanes"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454136,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 189,
+          "prompt_tokens": 23343,
+          "total_tokens": 23532,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.072864,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.072864,
+            "upstream_inference_prompt_cost": 0.070029,
+            "upstream_inference_completions_cost": 0.002835
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "dev_preflight_check",
+        "cp_list_dataplanes"
+      ],
+      "tool_results": {
+        "cp_list_dataplanes": {
+          "count": 1,
+          "dataplanes": [
+            {
+              "created_at": "2026-02-18T20:09:44.220826+00:00",
+              "description": "Agent test dataplane",
+              "gateway_host": "127.0.0.1",
+              "id": "cf14b7ee-8081-4ad4-90ee-ef8192c21ebb",
+              "name": "agent-test-dataplane",
+              "team": "33722fd0-ca45-4b62-87e0-adb232f50a9a",
+              "updated_at": "2026-02-18T20:09:44.220826+00:00"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771454139-ZSLHxY47PtvVKxqpzs8V",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All preflight checks passed. Now I'll create the cluster.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01AayFEHnNk1vXaPjeWbca5a",
+                  "function": {
+                    "arguments": "{\"name\": \"t9c1b162-cluster\", \"serviceName\": \"httpbin-test\", \"endpoints\": [{\"address\":\"httpbin-test\",\"port\":80}]}",
+                    "name": "cp_create_cluster"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454139,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 130,
+          "prompt_tokens": 23942,
+          "total_tokens": 24072,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.073776,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.073776,
+            "upstream_inference_prompt_cost": 0.071826,
+            "upstream_inference_completions_cost": 0.00195
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_create_cluster"
+      ]
+    },
+    {
+      "turn": 2,
+      "response": {
+        "id": "gen-1771454142-xB47DV18yeqX0n8Oh1qe",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Cluster created. Now I'll create the route configuration with both path prefix routes under the single virtual host.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_015AfgKqZGUg6zAyjYnxvNr7",
+                  "function": {
+                    "arguments": "{\"name\": \"t9c1b162-rc\", \"virtualHosts\": [{\"name\":\"t9c1b162-vhost\",\"domains\":[\"*\"],\"routes\":[{\"name\":\"route-api-data\",\"match\":{\"path\":{\"type\":\"prefix\",\"value\":\"/api/data\"}},\"action\":{\"type\":\"forward\",\"cluster\":\"t9c1b162-cluster\"}},{\"name\":\"route-health\",\"match\":{\"path\":{\"type\":\"prefix\",\"value\":\"/health\"}},\"action\":{\"type\":\"forward\",\"cluster\":\"t9c1b162-cluster\"}}]}]}",
+                    "name": "cp_create_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454142,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 273,
+          "prompt_tokens": 24182,
+          "total_tokens": 24455,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076641,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076641,
+            "upstream_inference_prompt_cost": 0.072546,
+            "upstream_inference_completions_cost": 0.004095
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_route_config"
+      ]
+    },
+    {
+      "turn": 3,
+      "response": {
+        "id": "gen-1771454146-R7AyhP9Jk7VxUiFcXiEG",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Route config created with both routes. Now creating the listener.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01BSUcFkQc8YggJimwiiQh94",
+                  "function": {
+                    "arguments": "{\"name\": \"t9c1b162-listener\", \"port\": 23277, \"address\": \"0.0.0.0\", \"protocol\": \"HTTP\", \"routeConfigName\": \"t9c1b162-rc\", \"dataplaneId\": \"cf14b7ee-8081-4ad4-90ee-ef8192c21ebb\"}",
+                    "name": "cp_create_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454146,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 202,
+          "prompt_tokens": 24525,
+          "total_tokens": 24727,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076605,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076605,
+            "upstream_inference_prompt_cost": 0.073575,
+            "upstream_inference_completions_cost": 0.00303
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_create_listener"
+      ]
+    },
+    {
+      "turn": 4,
+      "response": {
+        "id": "gen-1771454150-70XudE8R1jbzn8PBosTy",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Listener is up. Now let me run full verification in parallel.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_011NicyY67T2PY85Q9jfwtP6",
+                  "function": {
+                    "arguments": "{\"name\": \"t9c1b162-cluster\"}",
+                    "name": "cp_query_service"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_vrtx_018oL8q6v79oD2D186eQKFng",
+                  "function": {
+                    "arguments": "{\"path\": \"/api/data\", \"port\": 23277}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_vrtx_017McXWekYdvcP3kcnfwFXd9",
+                  "function": {
+                    "arguments": "{\"path\": \"/health\", \"port\": 23277}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 2
+                },
+                {
+                  "id": "toolu_vrtx_0156SEV9ALCGwLL8prYceQQX",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 3
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454150,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 214,
+          "prompt_tokens": 24851,
+          "total_tokens": 25065,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.077763,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.077763,
+            "upstream_inference_prompt_cost": 0.074553,
+            "upstream_inference_completions_cost": 0.00321
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_query_service",
+        "ops_trace_request",
+        "ops_trace_request",
+        "ops_config_validate"
+      ]
+    },
+    {
+      "turn": 5,
+      "response": {
+        "id": "gen-1771454154-66F8FBdL5OKHgYuegk1u",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All routes trace correctly. The 2 validation warnings are pre-existing orphan clusters unrelated to this deployment \u2014 no errors on our new resources.\n\n---\n\n## \u2705 Deployment Complete\n\nAll resources were created with **exactly** the specified names and configuration.\n\n### Resources Created\n\n| Resource | Name | Details |\n|---|---|---|\n| **Cluster** | `t9c1b162-cluster` | `httpbin-test:80`, ROUND_ROBIN |\n| **Route Config** | `t9c1b162-rc` | 1 virtual host, 2 routes |\n| **Virtual Host** | `t9c1b162-vhost` | domains: `[\"*\"]` |\n| **Route 1** | `route-api-data` | prefix `/api/data` \u2192 `t9c1b162-cluster` |\n| **Route 2** | `route-health` | prefix `/health` \u2192 `t9c1b162-cluster` |\n| **Listener** | `t9c1b162-listener` | `0.0.0.0:23277` HTTP |\n\n### Route Trace Results \u2705\n\n| Path | Listener | Virtual Host | Route | Cluster |\n|---|---|---|---|---|\n| `GET /api/data` | `t9c1b162-listener:23277` | `t9c1b162-vhost` | `route-api-data` | `t9c1b162-cluster` |\n| `GET /health` | `t9c1b162-listener:23277` | `t9c1b162-vhost` | `route-health` | `t9c1b162-cluster` |\n\n### Access URLs\n- **http://localhost:23277/api/data**\n- **http://localhost:23277/health**\n\n> \u26a0\ufe0f **Note:** The 2 config validation warnings (`auth-example-443-cluster`, `auth-example-443-cluster-2`) are pre-existing orphan clusters not related to this deployment. No errors were found.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771454154,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 484,
+          "prompt_tokens": 25961,
+          "total_tokens": 26445,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.085143,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.085143,
+            "upstream_inference_prompt_cost": 0.077883,
+            "upstream_inference_completions_cost": 0.00726
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": []
+    },
+    {
+      "turn": 6,
+      "response": {
+        "id": "gen-1771454163-mSCmdjnI6zWDhhezp0CO",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll set this up step by step. Let me start by gathering information about the existing listener and any existing JWT filters.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_013srRUHazQE9qdx1GPvtyLp",
+                  "function": {
+                    "arguments": "{\"name\": \"t9c1b162-listener\"}",
+                    "name": "cp_get_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_vrtx_01PVmawnhFVqtke4DjRvaVzy",
+                  "function": {
+                    "arguments": "{\"filter_type\": \"jwt_auth\"}",
+                    "name": "cp_list_filters"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454163,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 130,
+          "prompt_tokens": 23290,
+          "total_tokens": 23420,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.07182,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.07182,
+            "upstream_inference_prompt_cost": 0.06987,
+            "upstream_inference_completions_cost": 0.00195
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_get_listener",
+        "cp_list_filters"
+      ]
+    },
+    {
+      "turn": 7,
+      "response": {
+        "id": "gen-1771454166-WxzjJ6vU6FlW8f5bQhK8",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Good findings. I can see:\n1. The listener uses route config `t9c1b162-rc`\n2. There's already a JWT filter `ta7c1511-jwt` with the **exact same issuer and JWKS URI** \u2014 I'll reuse it\n3. But its `rules` array is empty \u2014 I need to update it to enforce JWT on all routes **except** `/health`\n\nLet me now get the route config to understand the virtual hosts and routes, and also check the filter's current attachments:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01Aej6DKaJfe2Y5E3Mdm8Zaw",
+                  "function": {
+                    "arguments": "{\"name\": \"t9c1b162-rc\"}",
+                    "name": "cp_get_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_01VAZuV3gm9kBptAGV3AW4PJ",
+                  "function": {
+                    "arguments": "{\"filter\": \"ta7c1511-jwt\"}",
+                    "name": "cp_list_filter_attachments"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454166,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 229,
+          "prompt_tokens": 24188,
+          "total_tokens": 24417,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.075999,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.075999,
+            "upstream_inference_prompt_cost": 0.072564,
+            "upstream_inference_completions_cost": 0.003435
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_get_route_config",
+        "cp_list_filter_attachments"
+      ]
+    },
+    {
+      "turn": 8,
+      "response": {
+        "id": "gen-1771454171-oPyesFKmJLsVoc424kBX",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Perfect. Now I have the full picture:\n\n- **Routes**: `route-api-data` (`/api/data` prefix) \u2014 needs JWT; `route-health` (`/health` prefix) \u2014 must be public\n- **Filter `ta7c1511-jwt`**: correct provider config, but empty `rules` and **not attached anywhere yet**\n\nI need to:\n1. **Update the filter** to add proper rules (require JWT for `/api/data`, allow all on `/health`)\n2. **Attach the filter** to the listener `t9c1b162-listener`\n\nLet's do both in parallel:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01REXv2hcREHSFpa4vibQP5h",
+                  "function": {
+                    "arguments": "{\"name\": \"ta7c1511-jwt\", \"description\": \"JWT authentication for t9c1b162-listener \u2014 required on all routes except /health\", \"configuration\": {\"config\":{\"providers\":{\"auth-example-provider\":{\"issuer\":\"https://auth.example.com\",\"jwks\":{\"type\":\"remote\",\"http_uri\":{\"uri\":\"https://auth.example.com/.well-known/jwks.json\",\"cluster\":\"auth-example-443-cluster\",\"timeout_ms\":1000}}}},\"rules\":[{\"match\":{\"prefix\":\"/health\"},\"requires\":{\"type\":\"allow_missing_or_failed\"}},{\"match\":{\"prefix\":\"/\"},\"requires\":{\"type\":\"provider_name\",\"provider_name\":\"auth-example-provider\"}}]},\"type\":\"jwt_auth\"}}",
+                    "name": "cp_update_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454171,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 478,
+          "prompt_tokens": 25164,
+          "total_tokens": 25642,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.082662,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.082662,
+            "upstream_inference_prompt_cost": 0.075492,
+            "upstream_inference_completions_cost": 0.00717
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_update_filter"
+      ]
+    },
+    {
+      "turn": 9,
+      "response": {
+        "id": "gen-1771454180-iz0E1uJw74lJaUWc5CHg",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "The schema requires a `path` field in the rules match. Let me inspect the exact schema first:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01EPjuHDtF7yWzYKFmT7ZbBc",
+                  "function": {
+                    "arguments": "{\"name\": \"jwt_auth\"}",
+                    "name": "cp_get_filter_type"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454180,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 81,
+          "prompt_tokens": 25632,
+          "total_tokens": 25713,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.078111,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.078111,
+            "upstream_inference_prompt_cost": 0.076896,
+            "upstream_inference_completions_cost": 0.001215
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_get_filter_type"
+      ]
+    },
+    {
+      "turn": 10,
+      "response": {
+        "id": "gen-1771454182-XrniDLDXRdps5L0xFq6z",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "The schema reveals that rules are **not** part of the filter configuration itself \u2014 instead, `per_route_behavior: \"reference_only\"` means route-level enforcement is handled via **per-route settings** when attaching to a route config, and the filter itself only needs the `providers` definition. Let me now update the filter with the clean schema-compliant config and attach it to the listener:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01AMB4bR5JTjq4PVFypUdC8t",
+                  "function": {
+                    "arguments": "{\"name\": \"ta7c1511-jwt\", \"description\": \"JWT authentication for t9c1b162-listener \u2014 required on all routes except /health\", \"configuration\": {\"providers\":{\"auth-example-provider\":{\"issuer\":\"https://auth.example.com\",\"forward\":false,\"jwks\":{\"type\":\"remote\",\"http_uri\":{\"uri\":\"https://auth.example.com/.well-known/jwks.json\",\"cluster\":\"auth-example-443-cluster\",\"timeout_seconds\":5}}}}}}",
+                    "name": "cp_update_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454183,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 284,
+          "prompt_tokens": 26395,
+          "total_tokens": 26679,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.083445,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.083445,
+            "upstream_inference_prompt_cost": 0.079185,
+            "upstream_inference_completions_cost": 0.00426
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_update_filter"
+      ]
+    },
+    {
+      "turn": 11,
+      "response": {
+        "id": "gen-1771454188-RC8lFWzQ97AWmsCWLi4R",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Filter updated \u2705. Now attach it to the listener:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01GQXSPWH3DyGVXRE17fJQ3a",
+                  "function": {
+                    "arguments": "{\"filter\": \"ta7c1511-jwt\", \"listener\": \"t9c1b162-listener\", \"order\": 10}",
+                    "name": "cp_attach_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454188,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 116,
+          "prompt_tokens": 26740,
+          "total_tokens": 26856,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.08196,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.08196,
+            "upstream_inference_prompt_cost": 0.08022,
+            "upstream_inference_completions_cost": 0.00174
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_attach_filter"
+      ]
+    },
+    {
+      "turn": 12,
+      "response": {
+        "id": "gen-1771454191-OJcxKMiTafrHVFs96s5u",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Filter attached to listener \u2705. Now I need to handle the `/health` exemption. Since `per_route_behavior` is `reference_only`, I need to attach the filter to the route config with a **disable** setting for the `/health` route. Let me attach it to the route config with per-route settings for the health route:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_011s6YUNwfpRnsGMWBmDohyH",
+                  "function": {
+                    "arguments": "{\"filter\": \"ta7c1511-jwt\", \"route_config\": \"t9c1b162-rc\", \"settings\": {\"disabled_routes\":[{\"route\":\"route-health\",\"virtual_host\":\"t9c1b162-vhost\"}],\"required_routes\":[{\"route\":\"route-api-data\",\"virtual_host\":\"t9c1b162-vhost\",\"provider\":\"auth-example-provider\"}]}}",
+                    "name": "cp_attach_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454191,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 253,
+          "prompt_tokens": 26934,
+          "total_tokens": 27187,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.084597,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.084597,
+            "upstream_inference_prompt_cost": 0.080802,
+            "upstream_inference_completions_cost": 0.003795
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_attach_filter"
+      ]
+    },
+    {
+      "turn": 13,
+      "response": {
+        "id": "gen-1771454197-ExapI8h91eDsO1oX9WAV",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Now let me run final verification \u2014 validate the config and trace both routes to confirm correct behavior:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01LxrxXfenwBkFvyN3WuZEiR",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_01VCHPgJ6ovY8XTHLdPtgMNB",
+                  "function": {
+                    "arguments": "{\"path\": \"/api/data\", \"port\": 23277}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_0112YvCUWiJoZqgL1T61Y5th",
+                  "function": {
+                    "arguments": "{\"path\": \"/health\", \"port\": 23277}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 2
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454197,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 174,
+          "prompt_tokens": 27267,
+          "total_tokens": 27441,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.084411,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.084411,
+            "upstream_inference_prompt_cost": 0.081801,
+            "upstream_inference_completions_cost": 0.00261
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "ops_config_validate",
+        "ops_trace_request",
+        "ops_trace_request"
+      ]
+    },
+    {
+      "turn": 14,
+      "response": {
+        "id": "gen-1771454201-0JvG6YSs3d5pAlPDGiq4",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Everything is wired up correctly. Here's the full deployment summary:\n\n---\n\n## \u2705 JWT Authentication Deployment Summary\n\n### What Was Configured\n\n| Resource | Name | Action |\n|---|---|---|\n| JWT Filter | `ta7c1511-jwt` | Reused & updated (config already matched) |\n| Listener Attachment | `t9c1b162-listener` | \u2705 Attached (order: 10) |\n| Route Config Attachment | `t9c1b162-rc` | \u2705 Attached with per-route exemption |\n\n### JWT Provider\n| Setting | Value |\n|---|---|\n| **Provider Name** | `auth-example-provider` |\n| **Issuer** | `https://auth.example.com` |\n| **JWKS URI** | `https://auth.example.com/.well-known/jwks.json` |\n| **JWKS Fetch** | Remote (5s timeout) |\n\n### Route-Level Enforcement\n\n| Route | Path | JWT Required? |\n|---|---|---|\n| `route-api-data` | `/api/data` (prefix) | \ud83d\udd12 **Yes** \u2014 `auth-example-provider` required |\n| `route-health` | `/health` (prefix) | \ud83d\udfe2 **No** \u2014 explicitly disabled |\n\n### Request Traces\n- **`/api/data` \u2192 `t9c1b162-cluster`** \u2705 \u2014 JWT enforcement active\n- **`/health` \u2192 `t9c1b162-cluster`** \u2705 \u2014 Public, no auth required\n\n### Config Validation\n- **0 errors** \u2014 gateway is fully operational\n- **2 warnings** \u2014 pre-existing orphan JWKS clusters (`auth-example-443-cluster`, `auth-example-443-cluster-2`). These are the JWKS fetch clusters used internally by Envoy's JWT filter and are expected to not carry route traffic \u2014 **safe to ignore**.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771454201,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 464,
+          "prompt_tokens": 28189,
+          "total_tokens": 28653,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.091527,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.091527,
+            "upstream_inference_prompt_cost": 0.084567,
+            "upstream_inference_completions_cost": 0.00696
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": []
+    }
+  ]
+}

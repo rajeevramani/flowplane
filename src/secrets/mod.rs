@@ -110,6 +110,7 @@ pub mod client;
 pub mod env;
 pub mod error;
 pub mod fallback;
+pub mod types;
 pub mod vault;
 
 // Re-export main types
@@ -119,9 +120,10 @@ pub use client::{SecretMetadata, SecretsClient};
 pub use env::EnvVarSecretsClient;
 pub use error::{Result, SecretsError};
 pub use fallback::FallbackSecretsClient;
+pub use types::SecretString;
 pub use vault::{
-    parse_proxy_id_from_spiffe_uri, parse_team_from_spiffe_uri, GeneratedCertificate, PkiConfig,
-    VaultConfig, VaultSecretsClient,
+    parse_org_from_spiffe_uri, parse_proxy_id_from_spiffe_uri, parse_team_from_spiffe_uri,
+    GeneratedCertificate, PkiConfig, VaultConfig, VaultSecretsClient,
 };
 
 // Re-export backend types

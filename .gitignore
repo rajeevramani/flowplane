@@ -46,6 +46,7 @@ logs/
 # Documentation build artifacts
 book/
 docs/build/
+docs/adr/
 
 # Test coverage and reports
 coverage/
@@ -86,6 +87,10 @@ node_modules/
 # SvelteKit build outputs
 ui/.svelte-kit/
 ui/build/
+
+# Playwright test artifacts
+ui/playwright-report/
+ui/test-results/
 ui/.netlify/
 ui/.vercel/
 # Environment variables
@@ -111,3 +116,31 @@ AGENTS.md
 GEMINI.md
 
 examples/custom-filter/add-header/target
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+
+# Remove later
+deploy

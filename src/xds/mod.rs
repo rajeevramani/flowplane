@@ -7,7 +7,6 @@
 //! - LDS (Listener Discovery Service)
 
 pub mod access_log;
-pub mod cluster;
 mod cluster_spec;
 pub mod filters;
 pub mod helpers;
@@ -60,8 +59,9 @@ where
     let ads_service = MinimalAggregatedDiscoveryService::new(state.clone());
 
     // Create AccessLogService for receiving Envoy access logs
+    // Note: log_rx is not used in minimal xDS mode. In full mode (start_database_xds_server),
+    // the log receiver is wired to the learning infrastructure for schema inference.
     let (access_log_service, _log_rx) = FlowplaneAccessLogService::new();
-    // TODO: Spawn background task to process log_rx entries
 
     // Create ExtProcService for body capture
     let (ext_proc_service, _ext_proc_rx) = FlowplaneExtProcService::new();

@@ -8,7 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for virtual_hosts.
@@ -133,7 +133,7 @@ impl VirtualHostRepository {
     /// Get a virtual host by ID.
     #[instrument(skip(self), fields(id = %id), name = "db_get_virtual_host_by_id")]
     pub async fn get_by_id(&self, id: &VirtualHostId) -> Result<VirtualHostData> {
-        let row = sqlx::query_as::<Sqlite, VirtualHostRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, VirtualHostRow>(
             "SELECT id, route_config_id, name, domains, rule_order, created_at, updated_at \
              FROM virtual_hosts WHERE id = $1",
         )
@@ -161,7 +161,7 @@ impl VirtualHostRepository {
         route_config_id: &RouteConfigId,
         name: &str,
     ) -> Result<VirtualHostData> {
-        let row = sqlx::query_as::<Sqlite, VirtualHostRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, VirtualHostRow>(
             "SELECT id, route_config_id, name, domains, rule_order, created_at, updated_at \
              FROM virtual_hosts WHERE route_config_id = $1 AND name = $2"
         )
@@ -191,7 +191,7 @@ impl VirtualHostRepository {
         &self,
         route_config_id: &RouteConfigId,
     ) -> Result<Vec<VirtualHostData>> {
-        let rows = sqlx::query_as::<Sqlite, VirtualHostRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, VirtualHostRow>(
             "SELECT id, route_config_id, name, domains, rule_order, created_at, updated_at \
              FROM virtual_hosts WHERE route_config_id = $1 ORDER BY rule_order ASC",
         )
@@ -375,7 +375,7 @@ impl VirtualHostRepository {
             placeholders.join(", ")
         );
 
-        let mut query = sqlx::query_scalar::<Sqlite, i64>(&query_str);
+        let mut query = sqlx::query_scalar::<sqlx::Postgres, i64>(&query_str);
         for team in teams {
             query = query.bind(team);
         }

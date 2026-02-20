@@ -19,14 +19,14 @@ CREATE TABLE IF NOT EXISTS route_metadata (
 
     -- Learning enrichment (optional)
     learning_schema_id INTEGER,
-    enriched_from_learning INTEGER DEFAULT 0 CHECK (enriched_from_learning IN (0, 1)),
+    enriched_from_learning BOOLEAN DEFAULT FALSE,
 
     -- Source tracking
     source_type TEXT NOT NULL CHECK (source_type IN ('openapi', 'manual', 'learned')),
-    confidence REAL,
+    confidence DOUBLE PRECISION,
 
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (route_id) REFERENCES routes(id) ON DELETE CASCADE,
     FOREIGN KEY (learning_schema_id) REFERENCES aggregated_api_schemas(id) ON DELETE SET NULL,

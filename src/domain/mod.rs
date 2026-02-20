@@ -58,9 +58,9 @@ pub use filter_schema::{
     SharedFilterSchemaRegistry, UiHints,
 };
 pub use id::{
-    ClusterId, CustomWasmFilterId, DataplaneId, EndpointId, FilterId, ListenerId, McpToolId,
-    ProxyCertificateId, RouteConfigId, RouteId, RouteMetadataId, ScopeId, SecretId, TeamId,
-    TokenId, UserId, VirtualHostId,
+    ClusterId, CustomWasmFilterId, DataplaneId, EndpointId, FilterId, InvitationId, ListenerId,
+    McpToolId, OrgId, ProxyCertificateId, RouteConfigId, RouteId, RouteMetadataId, ScopeId,
+    SecretId, TeamId, TokenId, UserId, VirtualHostId,
 };
 pub use listener::{
     BindAddress, IsolationMode, ListenerSpec, ListenerValidationError, Protocol,

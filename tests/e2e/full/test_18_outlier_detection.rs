@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use crate::common::{
-    api_client::{setup_dev_context, ApiClient},
+    api_client::{setup_dev_context, setup_envoy_context, ApiClient},
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
     resource_setup::{ClusterConfig, ResourceSetup},
@@ -79,8 +79,9 @@ async fn test_101_verify_ejection() {
     }
 
     let api = ApiClient::new(harness.api_url());
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_101_verify_ejection").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_101_verify_ejection").await.expect("Setup should succeed");
 
     // The echo mock server is "smart" and returns status codes based on path patterns:
     // - Paths ending in /fail return 500
@@ -236,7 +237,8 @@ async fn test_102_multi_endpoint_ejection() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_102_multi_endpoint_ejection")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_102_multi_endpoint_ejection")
         .await
         .expect("Setup should succeed");
 

@@ -7,11 +7,11 @@ CREATE TABLE IF NOT EXISTS custom_wasm_filters (
     display_name TEXT NOT NULL,
     description TEXT,
     -- WASM binary stored as BLOB
-    wasm_binary BLOB NOT NULL,
+    wasm_binary BYTEA NOT NULL,
     -- SHA256 hash for integrity verification
     wasm_sha256 TEXT NOT NULL,
     -- Size in bytes for display and validation
-    wasm_size_bytes INTEGER NOT NULL,
+    wasm_size_bytes BIGINT NOT NULL,
     -- JSON Schema for filter configuration validation
     config_schema TEXT NOT NULL,
     -- Optional per-route config schema
@@ -25,14 +25,14 @@ CREATE TABLE IF NOT EXISTS custom_wasm_filters (
     -- Failure policy: FAIL_CLOSED or FAIL_OPEN
     failure_policy TEXT NOT NULL DEFAULT 'FAIL_CLOSED',
     -- Version for optimistic locking
-    version INTEGER NOT NULL DEFAULT 1,
+    version BIGINT NOT NULL DEFAULT 1,
     -- Team ownership for multi-tenancy
     team TEXT NOT NULL,
     -- User who created this filter
     created_by TEXT,
     -- Timestamps
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE RESTRICT,
     UNIQUE(team, name)

@@ -1,3 +1,6 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Comprehensive tests for token rotation workflows and security
 //!
 //! Tests cover:
@@ -13,92 +16,21 @@ use flowplane::auth::validation::CreateTokenRequest;
 use flowplane::secrets::{EnvVarSecretsClient, SecretsClient, SecretsError};
 use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
-use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 
-async fn setup_pool() -> DbPool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
+#[allow(clippy::duplicate_mod)]
+#[path = "../test_schema.rs"]
+mod test_schema;
+use test_schema::{create_test_pool, TestDatabase};
 
-    // Create tables
-    sqlx::query(
-        r#"
-        CREATE TABLE personal_access_tokens (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            token_hash TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL,
-            expires_at DATETIME,
-            last_used_at DATETIME,
-            created_by TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            is_setup_token BOOLEAN NOT NULL DEFAULT FALSE,
-            max_usage_count INTEGER,
-            usage_count INTEGER NOT NULL DEFAULT 0,
-            failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME,
-            csrf_token TEXT,
-            user_id TEXT,
-            user_email TEXT
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-        CREATE TABLE token_scopes (
-            id TEXT PRIMARY KEY,
-            token_id TEXT NOT NULL,
-            scope TEXT NOT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (token_id) REFERENCES personal_access_tokens(id) ON DELETE CASCADE
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-        CREATE TABLE audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            resource_type TEXT NOT NULL,
-            resource_id TEXT,
-            resource_name TEXT,
-            action TEXT NOT NULL,
-            old_configuration TEXT,
-            new_configuration TEXT,
-            user_id TEXT,
-            client_ip TEXT,
-            user_agent TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    pool
-}
-
-async fn setup_service() -> (TokenService, Arc<SqlxTokenRepository>, Arc<AuditLogRepository>, DbPool)
-{
-    let pool = setup_pool().await;
+async fn setup_service(
+) -> (TestDatabase, TokenService, Arc<SqlxTokenRepository>, Arc<AuditLogRepository>, DbPool) {
+    let test_db = create_test_pool().await;
+    let pool = test_db.pool.clone();
     let repo = Arc::new(SqlxTokenRepository::new(pool.clone()));
     let audit = Arc::new(AuditLogRepository::new(pool.clone()));
     let service = TokenService::new(repo.clone(), audit.clone());
-    (service, repo, audit, pool)
+    (test_db, service, repo, audit, pool)
 }
 
 /// Mock secrets client for testing
@@ -162,7 +94,7 @@ impl SecretsClient for MockSecretsClient {
 // Test 1: Bootstrap token creation without Vault
 #[tokio::test]
 async fn test_bootstrap_token_creation_without_vault() {
-    let (service, _repo, _audit, pool) = setup_service().await;
+    let (_db, service, _repo, _audit, pool) = setup_service().await;
     let bootstrap_secret = "test-bootstrap-secret-min-32-chars";
 
     // Create bootstrap token without secrets client (None)
@@ -197,7 +129,7 @@ async fn test_bootstrap_token_creation_without_vault() {
 // Test 2: Bootstrap token creation with Vault
 #[tokio::test]
 async fn test_bootstrap_token_creation_with_vault() {
-    let (service, _repo, _audit, pool) = setup_service().await;
+    let (_db, service, _repo, _audit, pool) = setup_service().await;
     let bootstrap_secret = "vault-bootstrap-secret-min-32-chars";
     let secrets_client = MockSecretsClient { should_fail: false };
 
@@ -220,7 +152,7 @@ async fn test_bootstrap_token_creation_with_vault() {
 // Test 3: Bootstrap token rotation with Vault
 #[tokio::test]
 async fn test_bootstrap_token_rotation_with_vault() {
-    let (service, _repo, _audit, pool) = setup_service().await;
+    let (_db, service, _repo, _audit, pool) = setup_service().await;
     let bootstrap_secret = "initial-bootstrap-secret-min-32-chars";
 
     // Create initial bootstrap token
@@ -251,7 +183,7 @@ async fn test_bootstrap_token_rotation_with_vault() {
 // Test 4: Regular token rotation (no-downtime verification)
 #[tokio::test]
 async fn test_token_rotation_no_downtime() {
-    let (service, repo, _audit, _pool) = setup_service().await;
+    let (_db, service, repo, _audit, _pool) = setup_service().await;
 
     // Create a regular token
     let created = service
@@ -315,7 +247,7 @@ async fn test_token_rotation_no_downtime() {
 // Test 5: Audit logging completeness for rotation
 #[tokio::test]
 async fn test_audit_logging_completeness() {
-    let (service, _repo, _audit, pool) = setup_service().await;
+    let (_db, service, _repo, _audit, pool) = setup_service().await;
 
     // Create a token
     let created = service
@@ -375,7 +307,7 @@ async fn test_audit_logging_completeness() {
 // Test 6: Security - secrets should never appear in audit logs
 #[tokio::test]
 async fn test_secrets_not_in_audit_logs() {
-    let (service, _repo, _audit, pool) = setup_service().await;
+    let (_db, service, _repo, _audit, pool) = setup_service().await;
 
     let bootstrap_secret = "super-secret-value-min-32-characters-long";
 
@@ -414,7 +346,7 @@ async fn test_secrets_not_in_audit_logs() {
 // Test 7: Bootstrap token rotation fails gracefully without Vault
 #[tokio::test]
 async fn test_bootstrap_rotation_without_vault_fails() {
-    let (service, _repo, _audit, _pool) = setup_service().await;
+    let (_db, service, _repo, _audit, _pool) = setup_service().await;
 
     // Create bootstrap token without Vault
     let bootstrap_secret = "test-secret-min-32-characters-long";
@@ -436,7 +368,7 @@ async fn test_bootstrap_rotation_without_vault_fails() {
 // Test 8: Multiple rotation cycles maintain integrity
 #[tokio::test]
 async fn test_multiple_rotation_cycles() {
-    let (service, repo, _audit, pool) = setup_service().await;
+    let (_db, service, repo, _audit, pool) = setup_service().await;
 
     // Create initial token
     let created = service
@@ -466,7 +398,7 @@ async fn test_multiple_rotation_cycles() {
 
     // Verify audit log has all rotation events
     let rotation_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.rotated' AND resource_id = ?",
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token.rotated' AND resource_id = $1",
     )
     .bind(&created.id)
     .fetch_one(&pool)

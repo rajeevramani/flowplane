@@ -54,6 +54,8 @@ use crate::storage::repository::{AuditEvent, AuditLogRepository};
 pub struct AuditedSecretsClient<T: SecretsClient> {
     inner: T,
     audit_repository: Arc<AuditLogRepository>,
+    org_id: Option<String>,
+    team_id: Option<String>,
 }
 
 impl<T: SecretsClient> AuditedSecretsClient<T> {
@@ -64,17 +66,33 @@ impl<T: SecretsClient> AuditedSecretsClient<T> {
     /// * `inner` - The underlying secrets client to wrap
     /// * `audit_repository` - Repository for storing audit events
     pub fn new(inner: T, audit_repository: Arc<AuditLogRepository>) -> Self {
-        Self { inner, audit_repository }
+        Self { inner, audit_repository, org_id: None, team_id: None }
+    }
+
+    /// Creates a new audited secrets client with organization and team context.
+    ///
+    /// All audit events produced by this client will include the given org_id
+    /// and team_id for multi-tenant traceability.
+    pub fn with_org_context(
+        inner: T,
+        audit_repository: Arc<AuditLogRepository>,
+        org_id: Option<String>,
+        team_id: Option<String>,
+    ) -> Self {
+        Self { inner, audit_repository, org_id, team_id }
     }
 
     /// Record a successful secret operation to the audit log.
     async fn record_success(&self, action: &str, key: &str, metadata: serde_json::Value) {
-        let event = AuditEvent::secret(action, key, metadata);
+        let event = AuditEvent::secret(action, key, metadata)
+            .with_org_context(self.org_id.clone(), self.team_id.clone());
         if let Err(e) = self.audit_repository.record_secrets_event(event).await {
             tracing::error!(
                 error = %e,
                 action = %action,
                 key = %key,
+                org_id = ?self.org_id,
+                team_id = ?self.team_id,
                 "Failed to record secrets audit event"
             );
         }
@@ -90,12 +108,15 @@ impl<T: SecretsClient> AuditedSecretsClient<T> {
                 "error": error,
                 "timestamp": chrono::Utc::now()
             }),
-        );
+        )
+        .with_org_context(self.org_id.clone(), self.team_id.clone());
         if let Err(e) = self.audit_repository.record_secrets_event(event).await {
             tracing::error!(
                 error = %e,
                 action = %action,
                 key = %key,
+                org_id = ?self.org_id,
+                team_id = ?self.team_id,
                 "Failed to record secrets audit event for failure"
             );
         }
@@ -215,19 +236,15 @@ impl<T: SecretsClient> SecretsClient for AuditedSecretsClient<T> {
 mod tests {
     use super::*;
     use crate::secrets::EnvVarSecretsClient;
-    use crate::storage::DbPool;
+    use crate::storage::test_helpers::TestDatabase;
 
     #[tokio::test]
     async fn test_audited_client_logs_operations() {
         // Set up test environment
         std::env::set_var("FLOWPLANE_SECRET_TEST", "test-value");
 
-        // Create test database pool (in-memory SQLite for testing)
-        let pool =
-            DbPool::connect("sqlite::memory:").await.expect("Failed to create test database");
-
-        // Run migrations to create audit_log table
-        sqlx::migrate!().run(&pool).await.expect("Failed to run migrations");
+        let _db = TestDatabase::new("secrets_audited_ops").await;
+        let pool = _db.pool.clone();
 
         let env_client = EnvVarSecretsClient::new();
         let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));
@@ -252,10 +269,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_audited_client_logs_failures() {
-        let pool =
-            DbPool::connect("sqlite::memory:").await.expect("Failed to create test database");
-
-        sqlx::migrate!().run(&pool).await.expect("Failed to run migrations");
+        let _db = TestDatabase::new("secrets_audited_failures").await;
+        let pool = _db.pool.clone();
 
         let env_client = EnvVarSecretsClient::new();
         let audit_repo = Arc::new(AuditLogRepository::new(pool.clone()));

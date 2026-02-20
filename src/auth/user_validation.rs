@@ -366,6 +366,7 @@ mod tests {
             password: "SecureP@ssw0rd".to_string(),
             name: "Test User".to_string(),
             is_admin: false,
+            org_id: None,
         };
 
         assert!(request.validate().is_ok());

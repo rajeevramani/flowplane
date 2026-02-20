@@ -1,0 +1,899 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T22:33:11.585051+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "ta7c1511",
+    "ports": [
+      50098
+    ]
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771453935-Kx5sVhCtWleFSSTIKUak",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll deploy this API step by step, following the dependency order: Cluster \u2192 Route Config \u2192 Listener. Let me start with pre-flight checks and the foundational resources simultaneously.\n\n**Step 1: Pre-flight checks + Create Cluster**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01RAJM8n4EQaFsifEXRm2A22",
+                  "function": {
+                    "arguments": "{\"cluster_name\": \"ta7c1511-cluster\", \"listen_port\": 50098, \"route_config_name\": \"ta7c1511-rc\", \"listener_name\": \"ta7c1511-listener\"}",
+                    "name": "dev_preflight_check"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_vrtx_01HMkKSmY1QSe9NoY3iFaguj",
+                  "function": {
+                    "arguments": "{\"name\": \"ta7c1511-cluster\", \"serviceName\": \"httpbin-test\", \"endpoints\": [{\"address\":\"httpbin-test\",\"port\":80}]}",
+                    "name": "cp_create_cluster"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453935,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 288,
+          "prompt_tokens": 23321,
+          "total_tokens": 23609,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.074283,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.074283,
+            "upstream_inference_prompt_cost": 0.069963,
+            "upstream_inference_completions_cost": 0.00432
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "dev_preflight_check",
+        "cp_create_cluster"
+      ]
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771453940-ic41PSlwd0SxHATUK678",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All pre-flight checks passed \u2705 and the cluster is created \u2705. Now creating the Route Config with the virtual host and route.\n\n**Step 2: Create Route Configuration**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_0145m9dxGKYZCiTR9rqgP3gF",
+                  "function": {
+                    "arguments": "{\"name\": \"ta7c1511-rc\", \"virtualHosts\": [{\"name\":\"ta7c1511-vhost\",\"domains\":[\"*\"],\"routes\":[{\"name\":\"ta7c1511-route\",\"match\":{\"path\":{\"type\":\"prefix\",\"value\":\"/\"}},\"action\":{\"type\":\"forward\",\"cluster\":\"ta7c1511-cluster\"}}]}]}",
+                    "name": "cp_create_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453940,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 201,
+          "prompt_tokens": 23970,
+          "total_tokens": 24171,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.074925,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.074925,
+            "upstream_inference_prompt_cost": 0.07191,
+            "upstream_inference_completions_cost": 0.003015
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_route_config"
+      ]
+    },
+    {
+      "turn": 2,
+      "response": {
+        "id": "gen-1771453944-rufeUqhv47J5BEyWWeoH",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Route config created with virtual host and route \u2705. Now getting the dataplane ID and creating the listener.\n\n**Step 3: Get Dataplane + Create Listener**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01PbSjtzathYJ4MPoG1EkXzi",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_dataplanes"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453944,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 79,
+          "prompt_tokens": 24280,
+          "total_tokens": 24359,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.074025,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.074025,
+            "upstream_inference_prompt_cost": 0.07284,
+            "upstream_inference_completions_cost": 0.001185
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_list_dataplanes"
+      ],
+      "tool_results": {
+        "cp_list_dataplanes": {
+          "count": 1,
+          "dataplanes": [
+            {
+              "created_at": "2026-02-18T20:09:44.220826+00:00",
+              "description": "Agent test dataplane",
+              "gateway_host": "127.0.0.1",
+              "id": "cf14b7ee-8081-4ad4-90ee-ef8192c21ebb",
+              "name": "agent-test-dataplane",
+              "team": "33722fd0-ca45-4b62-87e0-adb232f50a9a",
+              "updated_at": "2026-02-18T20:09:44.220826+00:00"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "turn": 3,
+      "response": {
+        "id": "gen-1771453947-sR0CszcwgNwdKsjLkUis",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_014sssrrVzn7zbRzbyRiYW5r",
+                  "function": {
+                    "arguments": "{\"name\": \"ta7c1511-listener\", \"port\": 50098, \"routeConfigName\": \"ta7c1511-rc\", \"dataplaneId\": \"cf14b7ee-8081-4ad4-90ee-ef8192c21ebb\"}",
+                    "name": "cp_create_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453947,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 147,
+          "prompt_tokens": 24512,
+          "total_tokens": 24659,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.075741,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.075741,
+            "upstream_inference_prompt_cost": 0.073536,
+            "upstream_inference_completions_cost": 0.002205
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_listener"
+      ]
+    },
+    {
+      "turn": 4,
+      "response": {
+        "id": "gen-1771453950-1AgXl5wRA7sYf1J3d1tc",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Listener created \u2705. Now running full verification.\n\n**Step 4: Verification**",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01CyRyJGhwKLGtQmJsuzzVxe",
+                  "function": {
+                    "arguments": "{\"name\": \"ta7c1511-cluster\"}",
+                    "name": "cp_query_service"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_01JzRUrHhXgHt7npha4qenEb",
+                  "function": {
+                    "arguments": "{\"path\": \"/\", \"port\": 50098}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_bdrk_01UaLBHasz6Byz5r9WfudF5k",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 2
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453950,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 160,
+          "prompt_tokens": 24780,
+          "total_tokens": 24940,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.07674,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.07674,
+            "upstream_inference_prompt_cost": 0.07434,
+            "upstream_inference_completions_cost": 0.0024
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_query_service",
+        "ops_trace_request",
+        "ops_config_validate"
+      ]
+    },
+    {
+      "turn": 5,
+      "response": {
+        "id": "gen-1771453953-510WivPEMeRjgsLne4kX",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All verification checks passed \u2705. Here's the complete deployment summary:\n\n---\n\n## \u2705 Deployment Summary\n\n| Resource | Name | Details |\n|---|---|---|\n| **Cluster** | `ta7c1511-cluster` | `httpbin-test:80`, ROUND_ROBIN |\n| **Route Config** | `ta7c1511-rc` | prefix `/` \u2192 `ta7c1511-cluster` |\n| **Virtual Host** | `ta7c1511-vhost` | domains `[\"*\"]` |\n| **Listener** | `ta7c1511-listener` | `0.0.0.0:50098` |\n\n### Request Trace: `/` on port `50098`\n```\nClient \u2192 ta7c1511-listener:50098\n       \u2192 ta7c1511-rc (route config)\n       \u2192 ta7c1511-vhost (domains: [\"*\"])\n       \u2192 ta7c1511-route (prefix: /)\n       \u2192 ta7c1511-cluster\n       \u2192 httpbin-test:80\n```\n\n### Validation\n- \u2705 **0 errors, 0 warnings** \u2014 configuration is fully valid\n- \u2705 **1 route match** found for path `/` on port `50098`\n\n### Access URL\n```\nhttp://127.0.0.1:50098/\n```",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771453953,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 325,
+          "prompt_tokens": 25421,
+          "total_tokens": 25746,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.081138,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.081138,
+            "upstream_inference_prompt_cost": 0.076263,
+            "upstream_inference_completions_cost": 0.004875
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": []
+    },
+    {
+      "turn": 6,
+      "response": {
+        "id": "gen-1771453960-AGmdhBraMAeTJNtuWrSn",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll help you create a JWT authentication filter and attach it to the listener. Let me start by gathering the necessary information in parallel \u2014 checking the existing listener and looking up the JWT filter type schema.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01BvpAQhY6kemKciyqNnUzXm",
+                  "function": {
+                    "arguments": "{\"name\": \"ta7c1511-listener\"}",
+                    "name": "cp_get_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_vrtx_01Nyw7ivqGRumr1jE81zkSkq",
+                  "function": {
+                    "arguments": "{\"name\": \"jwt_auth\"}",
+                    "name": "cp_get_filter_type"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453960,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 144,
+          "prompt_tokens": 23287,
+          "total_tokens": 23431,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.072021,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.072021,
+            "upstream_inference_prompt_cost": 0.069861,
+            "upstream_inference_completions_cost": 0.00216
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_get_listener",
+        "cp_get_filter_type"
+      ]
+    },
+    {
+      "turn": 7,
+      "response": {
+        "id": "gen-1771453963-ahUs25cfD5Wv4modLT0s",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "The listener `ta7c1511-listener` exists on port `50098`, and I have the JWT filter schema. I also notice the listener's route config is `ta7c1511-rc`, and the JWT filter requires a **cluster** for the remote JWKS endpoint. Let me check if a JWKS cluster already exists, and simultaneously look up any existing filters to avoid name collisions.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_018mSWKAk3yaF9LRHKV8nYUj",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_clusters"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_015Cr3MAQPt16LyNf6MdB3J4",
+                  "function": {
+                    "arguments": "{\"filter_type\": \"jwt_auth\"}",
+                    "name": "cp_list_filters"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453964,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 167,
+          "prompt_tokens": 24462,
+          "total_tokens": 24629,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.075891,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.075891,
+            "upstream_inference_prompt_cost": 0.073386,
+            "upstream_inference_completions_cost": 0.002505
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_list_clusters",
+        "cp_list_filters"
+      ]
+    },
+    {
+      "turn": 8,
+      "response": {
+        "id": "gen-1771453968-nSE0ZKrY2PN3VWMYbB4y",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "No existing JWT filters and no JWKS cluster yet. I need to:\n1. **Create a JWKS cluster** for `auth.example.com` (required by the JWT filter for fetching the remote JWKS)\n2. **Create the JWT filter** referencing that cluster\n3. **Attach the filter** to the listener\n\nLet me create the JWKS cluster first:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01Prp74merTNRtse5TzXtppu",
+                  "function": {
+                    "arguments": "{\"name\": \"auth-example-443-cluster\", \"serviceName\": \"auth.example.com JWKS endpoint\", \"endpoints\": [{\"address\":\"auth.example.com\",\"port\":443}], \"useTls\": true}",
+                    "name": "cp_create_cluster"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453968,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 227,
+          "prompt_tokens": 24826,
+          "total_tokens": 25053,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.077883,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.077883,
+            "upstream_inference_prompt_cost": 0.074478,
+            "upstream_inference_completions_cost": 0.003405
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_create_cluster"
+      ]
+    },
+    {
+      "turn": 9,
+      "response": {
+        "id": "gen-1771453973-VqW8W57VBEU7KnqyxIoS",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "JWKS cluster created. Now let me create the JWT authentication filter:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_015R6ZoSxJoJZK6hdPJ1X5yD",
+                  "function": {
+                    "arguments": "{\"name\": \"ta7c1511-jwt\", \"filterType\": \"jwt_auth\", \"description\": \"JWT authentication filter for auth.example.com\", \"configuration\": {\"providers\":{\"auth-example-provider\":{\"issuer\":\"https://auth.example.com\",\"jwks\":{\"type\":\"remote\",\"http_uri\":{\"uri\":\"https://auth.example.com/.well-known/jwks.json\",\"cluster\":\"auth-example-443-cluster\",\"timeout_seconds\":5}}}}}}",
+                    "name": "cp_create_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453973,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 252,
+          "prompt_tokens": 25163,
+          "total_tokens": 25415,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.079269,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.079269,
+            "upstream_inference_prompt_cost": 0.075489,
+            "upstream_inference_completions_cost": 0.00378
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_create_filter"
+      ]
+    },
+    {
+      "turn": 10,
+      "response": {
+        "id": "gen-1771453977-ARaC0S6txubgkvwWQJzE",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "JWT filter created. Now let me attach it to the listener `ta7c1511-listener`:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_013Vr82N7oB7QP811K369dsv",
+                  "function": {
+                    "arguments": "{\"filter\": \"ta7c1511-jwt\", \"listener\": \"ta7c1511-listener\"}",
+                    "name": "cp_attach_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453977,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 106,
+          "prompt_tokens": 25488,
+          "total_tokens": 25594,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.078054,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.078054,
+            "upstream_inference_prompt_cost": 0.076464,
+            "upstream_inference_completions_cost": 0.00159
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_attach_filter"
+      ]
+    },
+    {
+      "turn": 11,
+      "response": {
+        "id": "gen-1771453980-H9O2AotcZPzVhJjKam3K",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Filter attached! Let me do a final verification to confirm everything is wired correctly:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01WngML4ty1q8TrY4UiPeLxN",
+                  "function": {
+                    "arguments": "{\"filter\": \"ta7c1511-jwt\"}",
+                    "name": "cp_list_filter_attachments"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453980,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 82,
+          "prompt_tokens": 25670,
+          "total_tokens": 25752,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.07824,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.07824,
+            "upstream_inference_prompt_cost": 0.07701,
+            "upstream_inference_completions_cost": 0.00123
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_list_filter_attachments"
+      ]
+    },
+    {
+      "turn": 12,
+      "response": {
+        "id": "gen-1771453982-ypNHJh4pquh8r8qqaxoT",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Everything is confirmed and verified. Here's the complete deployment summary:\n\n---\n\n## \u2705 JWT Authentication Filter Deployment Summary\n\n### Resources Created\n\n| Resource | Name | Details |\n|---|---|---|\n| **JWKS Cluster** | `auth-example-443-cluster` | `auth.example.com:443`, TLS enabled, ROUND_ROBIN |\n| **JWT Filter** | `ta7c1511-jwt` | `jwt_auth` type, issuer `https://auth.example.com` |\n\n### Filter Configuration\n\n| Property | Value |\n|---|---|\n| **Filter Name** | `ta7c1511-jwt` |\n| **Filter Type** | `jwt_auth` |\n| **Provider** | `auth-example-provider` |\n| **Issuer** | `https://auth.example.com` |\n| **JWKS URI** | `https://auth.example.com/.well-known/jwks.json` |\n| **JWKS Fetch Cluster** | `auth-example-443-cluster` |\n| **JWKS Type** | Remote |\n\n### Filter Attachment\n\n| Property | Value |\n|---|---|\n| **Attached To** | `ta7c1511-listener` (port `50098`) |\n| **Attachment Level** | Listener (applies to **all traffic** through the listener) |\n| **Order** | `0` (executes first in the filter chain) |\n\n### How It Works\nAll incoming requests on port `50098` via `ta7c1511-listener` will now require a valid JWT token. The gateway will:\n1. Extract the JWT from the `Authorization: Bearer <token>` header\n2. Fetch the public JWKS from `https://auth.example.com/.well-known/jwks.json` (via `auth-example-443-cluster`)\n3. Validate the token signature and `iss` claim against `https://auth.example.com`\n4. Reject invalid/missing tokens with `401 Unauthorized`",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771453982,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 473,
+          "prompt_tokens": 26208,
+          "total_tokens": 26681,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.085719,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.085719,
+            "upstream_inference_prompt_cost": 0.078624,
+            "upstream_inference_completions_cost": 0.007095
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": []
+    }
+  ]
+}

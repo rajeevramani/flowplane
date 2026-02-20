@@ -7,18 +7,18 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
     token_hash TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'active',
-    expires_at DATETIME,
-    last_used_at DATETIME,
+    expires_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
     created_by TEXT,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS token_scopes (
     id TEXT PRIMARY KEY,
     token_id TEXT NOT NULL,
     scope TEXT NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (token_id) REFERENCES personal_access_tokens(id) ON DELETE CASCADE
 );
 

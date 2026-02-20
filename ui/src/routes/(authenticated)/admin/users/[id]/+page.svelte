@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import type { UserWithTeamsResponse, UserTeamMembership, UpdateUserRequest, CreateTeamMembershipRequest, UpdateTeamMembershipRequest } from '$lib/api/types';
 	import ScopeSelector from '$lib/components/ScopeSelector.svelte';
+	import { isSystemAdmin } from '$lib/stores/org';
 
 	let user = $state<UserWithTeamsResponse | null>(null);
 	let availableTeams = $state<string[]>([]);
@@ -41,7 +42,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			if (!isSystemAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}
@@ -56,7 +57,7 @@
 		try {
 			// Admin users should see all teams from the admin endpoint
 			const response = await apiClient.adminListTeams(100, 0);
-			availableTeams = response.teams.map(t => t.name);
+			availableTeams = response.items.map(t => t.name);
 		} catch (err: any) {
 			console.error('Failed to load teams:', err);
 			// Non-fatal error

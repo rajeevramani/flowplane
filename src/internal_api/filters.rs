@@ -51,16 +51,23 @@ impl FilterOperations {
         req: CreateFilterRequest,
         auth: &InternalAuthContext,
     ) -> Result<OperationResult<FilterData>, InternalError> {
+        // Resolve team name to UUID for database storage
+        let resolved_team = self
+            .xds_state
+            .resolve_optional_team(req.team.as_deref())
+            .await
+            .map_err(InternalError::from)?;
+
         // 1. Verify team access (can create in this team?)
-        if !auth.can_create_for_team(req.team.as_deref()) {
+        if !auth.can_create_for_team(resolved_team.as_deref()) {
             return Err(InternalError::forbidden(format!(
                 "Cannot create filter for team '{}'",
-                req.team.as_deref().unwrap_or("global")
+                resolved_team.as_deref().unwrap_or("global")
             )));
         }
 
         // 2. Validate that we have a team (filters require team)
-        let team = req.team.ok_or_else(|| {
+        let team = resolved_team.ok_or_else(|| {
             InternalError::validation("Filter must be associated with a team".to_string())
         })?;
 
@@ -71,7 +78,10 @@ impl FilterOperations {
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
-                if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
+                if err_str.contains("already exists")
+                    || err_str.contains("UNIQUE constraint")
+                    || err_str.contains("unique constraint")
+                {
                     InternalError::already_exists("Filter", &req.name)
                 } else if err_str.contains("do not match") || err_str.contains("validation") {
                     InternalError::validation(err_str)
@@ -350,7 +360,10 @@ impl FilterOperations {
         let service = FilterService::new(self.xds_state.clone());
         service.attach_filter_to_listener(&listener.id, &filter.id, order).await.map_err(|e| {
             let err_str = e.to_string();
-            if err_str.contains("already attached") || err_str.contains("UNIQUE constraint") {
+            if err_str.contains("already attached")
+                || err_str.contains("UNIQUE constraint")
+                || err_str.contains("unique constraint")
+            {
                 InternalError::conflict(format!(
                     "Filter '{}' is already attached to listener '{}'",
                     filter.name, listener_name
@@ -456,7 +469,10 @@ impl FilterOperations {
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
-                if err_str.contains("already attached") || err_str.contains("UNIQUE constraint") {
+                if err_str.contains("already attached")
+                    || err_str.contains("UNIQUE constraint")
+                    || err_str.contains("unique constraint")
+                {
                     InternalError::conflict(format!(
                         "Filter '{}' is already attached to route config '{}'",
                         filter.name, route_config_name
@@ -535,177 +551,14 @@ mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
     use crate::domain::FilterConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
     use crate::xds::filters::http::cors::{CorsConfig, CorsPolicyConfig};
-    use sqlx::Executor;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
-
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create filters table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS filters (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                filter_type TEXT NOT NULL,
-                description TEXT,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api',
-                team TEXT NOT NULL,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(team, name)
-            )
-        "#,
-        )
-        .await
-        .expect("create filters table");
-
-        // Create listener_filters table for attachment tests
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS listener_filters (
-                listener_id TEXT NOT NULL,
-                filter_id TEXT NOT NULL,
-                filter_order INTEGER NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (listener_id, filter_id)
-            )
-        "#,
-        )
-        .await
-        .expect("create listener_filters table");
-
-        // Create route_config_filters table for attachment tests
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_config_filters (
-                route_config_id TEXT NOT NULL,
-                filter_id TEXT NOT NULL,
-                filter_order INTEGER NOT NULL DEFAULT 0,
-                settings TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (route_config_id, filter_id)
-            )
-        "#,
-        )
-        .await
-        .expect("create route_config_filters table");
-
-        // Create route_configs table for XDS refresh
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_configs (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                path_prefix TEXT NOT NULL,
-                cluster_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api',
-                team TEXT,
-                import_id TEXT,
-                route_order INTEGER,
-                headers TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create route_configs table");
-
-        // Create listeners table for XDS refresh
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS listeners (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                address TEXT NOT NULL,
-                port INTEGER,
-                protocol TEXT NOT NULL DEFAULT 'HTTP',
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api',
-                team TEXT,
-                import_id TEXT,
-                dataplane_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create listeners table");
-
-        // Create virtual_hosts table for filter route checks
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS virtual_hosts (
-                id TEXT PRIMARY KEY,
-                route_config_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                domains TEXT NOT NULL,
-                require_tls TEXT,
-                configuration TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create virtual_hosts table");
-
-        // Create routes table for filter route checks
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS routes (
-                id TEXT PRIMARY KEY,
-                virtual_host_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                route_order INTEGER NOT NULL DEFAULT 0,
-                match_path TEXT,
-                match_headers TEXT,
-                match_query_parameters TEXT,
-                action_type TEXT NOT NULL,
-                action_config TEXT NOT NULL,
-                typed_per_filter_config TEXT,
-                configuration TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create routes table");
-
-        // Create route_filters table for filter route attachment checks
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS route_filters (
-                route_id TEXT NOT NULL,
-                filter_id TEXT NOT NULL,
-                filter_order INTEGER NOT NULL DEFAULT 0,
-                settings TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (route_id, filter_id)
-            )
-        "#,
-        )
-        .await
-        .expect("create route_filters table");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_filters").await;
+        let pool = test_db.pool.clone();
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     fn sample_cors_config() -> FilterConfig {
@@ -727,15 +580,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateFilterRequest {
             name: "test-cors".to_string(),
             filter_type: "cors".to_string(),
             description: Some("Test CORS filter".to_string()),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_cors_config(),
         };
 
@@ -750,15 +603,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_team_user() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateFilterRequest {
             name: "team-cors".to_string(),
             filter_type: "cors".to_string(),
             description: None,
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             config: sample_cors_config(),
         };
 
@@ -768,15 +621,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filter_wrong_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateFilterRequest {
             name: "wrong-team-filter".to_string(),
             filter_type: "cors".to_string(),
             description: None,
-            team: Some("team-b".to_string()), // Different team
+            team: Some(TEAM_B_ID.to_string()), // Different team
             config: sample_cors_config(),
         };
 
@@ -787,9 +640,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_filter_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", &auth).await;
         assert!(result.is_err());
@@ -798,22 +651,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_filter_cross_team_returns_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
 
-        // Create filter as admin for team-a
-        let admin_auth = InternalAuthContext::admin();
+        // Create filter for team-a using team-a context
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = CreateFilterRequest {
             name: "team-a-filter".to_string(),
             filter_type: "cors".to_string(),
             description: None,
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             config: sample_cors_config(),
         };
-        ops.create(req, &admin_auth).await.expect("create filter");
+        ops.create(req, &team_a_auth).await.expect("create filter");
 
         // Try to access from team-b
-        let team_b_auth = InternalAuthContext::for_team("team-b");
+        let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
         let result = ops.get("team-a-filter", &team_b_auth).await;
 
         assert!(result.is_err());
@@ -823,14 +676,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_filters_team_filtering() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
 
-        // Create filters for different teams
+        // Create filters for different teams using team-scoped contexts
         for (name, team) in
-            [("filter-a1", "team-a"), ("filter-b1", "team-b"), ("filter-a2", "team-a")]
+            [("filter-a1", TEAM_A_ID), ("filter-b1", TEAM_B_ID), ("filter-a2", TEAM_A_ID)]
         {
+            let team_auth = InternalAuthContext::for_team(team);
             let req = CreateFilterRequest {
                 name: name.to_string(),
                 filter_type: "cors".to_string(),
@@ -838,36 +691,36 @@ mod tests {
                 team: Some(team.to_string()),
                 config: sample_cors_config(),
             };
-            ops.create(req, &admin_auth).await.expect("create filter");
+            ops.create(req, &team_auth).await.expect("create filter");
         }
 
         // List as team-a
-        let team_a_auth = InternalAuthContext::for_team("team-a");
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let list_req = ListFiltersRequest { include_defaults: true, ..Default::default() };
         let result = ops.list(list_req, &team_a_auth).await.expect("list filters");
 
         // Should only see team-a filters
         assert_eq!(result.count, 2);
         for filter in &result.filters {
-            assert_eq!(filter.team, "team-a");
+            assert_eq!(filter.team, TEAM_A_ID);
         }
     }
 
     #[tokio::test]
     async fn test_list_filters_by_type() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a filter
         let req = CreateFilterRequest {
             name: "test-cors".to_string(),
             filter_type: "cors".to_string(),
             description: None,
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_cors_config(),
         };
-        ops.create(req, &admin_auth).await.expect("create filter");
+        ops.create(req, &auth).await.expect("create filter");
 
         // List with type filter
         let list_req = ListFiltersRequest {
@@ -875,7 +728,7 @@ mod tests {
             include_defaults: true,
             ..Default::default()
         };
-        let result = ops.list(list_req, &admin_auth).await.expect("list filters");
+        let result = ops.list(list_req, &auth).await.expect("list filters");
         assert_eq!(result.count, 1);
         assert_eq!(result.filters[0].filter_type, "cors");
 
@@ -885,22 +738,22 @@ mod tests {
             include_defaults: true,
             ..Default::default()
         };
-        let result = ops.list(list_req, &admin_auth).await.expect("list filters");
+        let result = ops.list(list_req, &auth).await.expect("list filters");
         assert_eq!(result.count, 0);
     }
 
     #[tokio::test]
     async fn test_update_filter() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a filter
         let create_req = CreateFilterRequest {
             name: "update-test".to_string(),
             filter_type: "cors".to_string(),
             description: Some("Original".to_string()),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_cors_config(),
         };
         ops.create(create_req, &auth).await.expect("create filter");
@@ -921,16 +774,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_filter() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = FilterOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a filter
         let create_req = CreateFilterRequest {
             name: "delete-test".to_string(),
             filter_type: "cors".to_string(),
             description: None,
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_cors_config(),
         };
         ops.create(create_req, &auth).await.expect("create filter");

@@ -17,8 +17,8 @@ CREATE TABLE route_rules (
         match_type IN ('prefix', 'exact', 'regex', 'path_template', 'connect_matcher')
     ),
     rule_order INTEGER NOT NULL,                  -- Position in routes array
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (virtual_host_id) REFERENCES virtual_hosts(id) ON DELETE CASCADE,
     UNIQUE(virtual_host_id, name)

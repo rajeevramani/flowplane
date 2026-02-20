@@ -12,7 +12,10 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use crate::common::{
-    api_client::{setup_dev_context, simple_cluster, simple_listener, simple_route, ApiClient},
+    api_client::{
+        setup_dev_context, setup_envoy_context, simple_cluster, simple_listener, simple_route,
+        ApiClient,
+    },
     harness::{TestHarness, TestHarnessConfig},
     timeout::{with_timeout, TestTimeout},
 };
@@ -117,7 +120,9 @@ async fn test_810_auth_success() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_810_auth_success").await.expect("Setup should succeed");
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx =
+        setup_envoy_context(&api, "test_810_auth_success").await.expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();
@@ -308,7 +313,8 @@ async fn test_811_auth_fail_invalid_jwt() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_811_auth_fail_invalid_jwt")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_811_auth_fail_invalid_jwt")
         .await
         .expect("Setup should succeed");
 
@@ -466,7 +472,8 @@ async fn test_812_auth_fail_expired_jwt() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_812_auth_fail_expired_jwt")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_812_auth_fail_expired_jwt")
         .await
         .expect("Setup should succeed");
 
@@ -604,7 +611,8 @@ async fn test_815_public_route_bypass() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_815_public_route_bypass")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_815_public_route_bypass")
         .await
         .expect("Setup should succeed");
 

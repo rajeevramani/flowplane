@@ -21,13 +21,13 @@ CREATE TABLE IF NOT EXISTS mcp_tools (
     http_method TEXT,                            -- GET, POST, PUT, DELETE
     http_path TEXT,                              -- Full path pattern
     cluster_name TEXT,                           -- Target cluster
-    listener_port INTEGER,                       -- Envoy listener port for execution
+    listener_port BIGINT,                        -- Envoy listener port for execution
 
     -- State
     enabled INTEGER DEFAULT 1 CHECK (enabled IN (0, 1)),
-    confidence REAL,                             -- 1.0 for OpenAPI, 0.0-1.0 for learned
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    confidence DOUBLE PRECISION,                             -- 1.0 for OpenAPI, 0.0-1.0 for learned
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Foreign keys
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE CASCADE,

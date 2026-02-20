@@ -8,7 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::services::{SecretEncryption, SecretEncryptionConfig};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -26,6 +26,8 @@ struct SecretRow {
     pub version: i64,
     pub source: String,
     pub team: String,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -49,7 +51,10 @@ pub struct SecretData {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: String,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -205,9 +210,9 @@ impl SecretRepository {
     /// Get secret by ID
     #[instrument(skip(self), fields(secret_id = %id), name = "db_get_secret_by_id")]
     pub async fn get_by_id(&self, id: &SecretId) -> Result<SecretData> {
-        let row = sqlx::query_as::<Sqlite, SecretRow>(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets WHERE id = $1"
+        let row = sqlx::query_as::<sqlx::Postgres, SecretRow>(
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id WHERE s.id = $1"
         )
         .bind(id.as_str())
         .fetch_optional(&self.pool)
@@ -231,9 +236,9 @@ impl SecretRepository {
     /// Get secret by name within a team
     #[instrument(skip(self), fields(secret_name = %name, team = %team), name = "db_get_secret_by_name")]
     pub async fn get_by_name(&self, team: &str, name: &str) -> Result<SecretData> {
-        let row = sqlx::query_as::<Sqlite, SecretRow>(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets WHERE team = $1 AND name = $2"
+        let row = sqlx::query_as::<sqlx::Postgres, SecretRow>(
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id WHERE s.team = $1 AND s.name = $2"
         )
         .bind(team)
         .bind(name)
@@ -262,9 +267,9 @@ impl SecretRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, SecretRow>(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        let rows = sqlx::query_as::<sqlx::Postgres, SecretRow>(
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id ORDER BY s.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -282,6 +287,9 @@ impl SecretRepository {
     }
 
     /// List secrets filtered by team names
+    ///
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_secrets_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -289,9 +297,8 @@ impl SecretRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<SecretData>> {
-        // If no teams specified, return all secrets (admin scope)
         if teams.is_empty() {
-            return self.list(limit, offset).await;
+            return Ok(vec![]);
         }
 
         let limit = limit.unwrap_or(100).min(1000);
@@ -306,17 +313,17 @@ impl SecretRepository {
             .join(", ");
 
         let query_str = format!(
-            "SELECT id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, created_at, updated_at, expires_at, backend, reference, reference_version \
-             FROM secrets \
-             WHERE team IN ({}) \
-             ORDER BY created_at DESC \
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id \
+             WHERE s.team IN ({}) \
+             ORDER BY s.created_at DESC \
              LIMIT ${} OFFSET ${}",
             placeholders,
             teams.len() + 1,
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, SecretRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, SecretRow>(&query_str);
 
         // Bind team names
         for team in teams {
@@ -331,6 +338,43 @@ impl SecretRepository {
             FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to list secrets for teams: {:?}", teams),
+            }
+        })?;
+
+        rows.into_iter().map(|row| self.decrypt_row(row)).collect()
+    }
+
+    /// List only default/shared secrets (team IS NULL)
+    ///
+    /// Used for Allowlist scope where clients should only see shared infrastructure,
+    /// not team-specific resources.
+    ///
+    /// Note: Secrets are always team-scoped in practice, so this typically returns empty.
+    #[instrument(skip(self), fields(limit = ?limit, offset = ?offset), name = "db_list_default_secrets")]
+    pub async fn list_default_only(
+        &self,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<SecretData>> {
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        let rows = sqlx::query_as::<sqlx::Postgres, SecretRow>(
+            "SELECT s.id, s.name, s.secret_type, s.description, s.configuration_encrypted, s.encryption_key_id, s.nonce, s.version, s.source, s.team, t.name as team_name, s.created_at, s.updated_at, s.expires_at, s.backend, s.reference, s.reference_version \
+             FROM secrets s LEFT JOIN teams t ON s.team = t.id \
+             WHERE s.team IS NULL \
+             ORDER BY s.created_at DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to list default secrets");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to list default secrets".to_string(),
             }
         })?;
 
@@ -468,6 +512,7 @@ impl SecretRepository {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             created_at: row.created_at,
             updated_at: row.updated_at,
             expires_at: row.expires_at,
@@ -488,8 +533,8 @@ impl SecretRepository {
 
         // For reference-based secrets, we store empty encrypted data
         // The actual secret is fetched on-demand from the external backend
-        let empty_config = vec![];
-        let empty_nonce = vec![0u8; 12]; // Standard GCM nonce size
+        let empty_config: Vec<u8> = vec![];
+        let empty_nonce: Vec<u8> = vec![0u8; 12]; // Standard GCM nonce size
 
         let result = sqlx::query(
             "INSERT INTO secrets (id, name, secret_type, description, configuration_encrypted, encryption_key_id, nonce, version, source, team, expires_at, backend, reference, reference_version, created_at, updated_at) \

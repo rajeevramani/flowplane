@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import type { TeamResponse, TeamStatus } from '$lib/api/types';
+	import { isSystemAdmin } from '$lib/stores/org';
 
 	let teams = $state<TeamResponse[]>([]);
 	let total = $state(0);
@@ -21,7 +22,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			if (!isSystemAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}
@@ -38,10 +39,10 @@
 		try {
 			const offset = (currentPage - 1) * pageSize;
 			const response = await apiClient.adminListTeams(pageSize, offset);
-			teams = response.teams;
+			teams = response.items;
 			total = response.total;
-		} catch (err: any) {
-			error = err.message || 'Failed to load teams';
+		} catch (err: unknown) {
+			error = err instanceof Error ? err.message : 'Failed to load teams';
 		} finally {
 			isLoading = false;
 		}
@@ -224,6 +225,11 @@
 								<th
 									class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
 								>
+									Organization
+								</th>
+								<th
+									class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+								>
 									Status
 								</th>
 								<th
@@ -256,6 +262,13 @@
 										<div class="text-sm text-gray-600 max-w-xs truncate">
 											{team.description || '-'}
 										</div>
+									</td>
+									<td class="px-6 py-4 whitespace-nowrap">
+										{#if team.orgId}
+											<span class="text-sm text-indigo-600 font-medium">{team.orgId}</span>
+										{:else}
+											<span class="text-sm text-gray-400">-</span>
+										{/if}
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap">
 										<span

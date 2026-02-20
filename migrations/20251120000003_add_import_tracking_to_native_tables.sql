@@ -6,7 +6,7 @@ ALTER TABLE routes ADD COLUMN import_id TEXT
     REFERENCES import_metadata(id) ON DELETE CASCADE;
 
 -- Add route_order for deterministic Envoy route ordering
-ALTER TABLE routes ADD COLUMN route_order INTEGER DEFAULT 0;
+ALTER TABLE routes ADD COLUMN route_order BIGINT DEFAULT 0;
 
 -- Add headers column for header-based routing (JSON)
 ALTER TABLE routes ADD COLUMN headers TEXT;

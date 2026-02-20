@@ -20,9 +20,11 @@
 		Puzzle,
 		Bot,
 		Cable,
-		Network
+		Network,
+		Globe
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
+	import { isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -74,6 +76,10 @@
 		{ id: 'audit', label: 'Audit Log', href: '/admin/audit-log', icon: FileText }
 	];
 
+	// Derived admin flags from session scopes
+	let showOrganizations = $derived(isSystemAdmin(sessionInfo.scopes));
+	let showOrgSettings = $derived(isOrgAdmin(sessionInfo.scopes));
+
 	// Check if a path is active
 	function isActive(href: string): boolean {
 		const currentPath = $page.url.pathname;
@@ -99,6 +105,8 @@
 	}
 
 	function getCount(id: string): number | undefined {
+		// Platform admin has no team-scoped resource counts
+		if (sessionInfo.isPlatformAdmin) return undefined;
 		if (!resourceCounts) return undefined;
 		switch (id) {
 			case 'route-configs':
@@ -205,7 +213,7 @@
 							HTTP Filters
 						</div>
 						<div class="flex items-center gap-2">
-							{#if resourceCounts?.filters !== undefined && resourceCounts.filters > 0}
+							{#if !sessionInfo.isPlatformAdmin && resourceCounts?.filters !== undefined && resourceCounts.filters > 0}
 								<span
 									class="px-2 py-0.5 text-xs rounded-full
 									{isFiltersActive() ? 'bg-blue-500 text-white' : 'bg-gray-700 text-gray-300'}"
@@ -290,8 +298,8 @@
 			</div>
 		</div>
 
-		<!-- Admin Section (only for admins) -->
-		{#if sessionInfo.isAdmin}
+		<!-- Admin Section (only for governance admins) -->
+		{#if isSystemAdmin(sessionInfo.scopes)}
 			<div class="px-3 mb-4">
 				<h3 class="px-3 mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
 					Admin
@@ -309,6 +317,41 @@
 							{item.label}
 						</a>
 					{/each}
+
+					<!-- Organizations (system admins only) -->
+					{#if showOrganizations}
+						<a
+							href="/admin/organizations"
+							class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+								{isActive('/admin/organizations')
+								? 'bg-blue-600 text-white'
+								: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+						>
+							<Globe class="h-5 w-5" />
+							Organizations
+						</a>
+					{/if}
+				</div>
+			</div>
+		{:else if showOrgSettings}
+			<!-- Org Settings (visible to org admins who aren't system admins) -->
+			<div class="px-3 mb-4">
+				<h3 class="px-3 mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+					Admin
+				</h3>
+				<div class="space-y-1">
+					{#if sessionInfo.orgId}
+						<a
+							href="/admin/organizations/{sessionInfo.orgId}"
+							class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+								{isActive('/admin/organizations/')
+								? 'bg-blue-600 text-white'
+								: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+						>
+							<Globe class="h-5 w-5" />
+							Org Settings
+						</a>
+					{/if}
 				</div>
 			</div>
 		{/if}

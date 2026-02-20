@@ -5,17 +5,18 @@
 mod types;
 
 use crate::api::error::ApiError;
+use crate::api::handlers::team_access::{
+    get_db_pool, require_resource_access_resolved, resolve_team_name, TeamPath,
+};
 use crate::api::routes::ApiState;
-use crate::auth::authorization::require_resource_access;
 use crate::auth::models::AuthContext;
-use crate::services::mcp_service::{EnableMcpRequest, McpService, McpServiceError};
+use crate::services::mcp_service::{EnableMcpRequest, McpService};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Extension, Json,
 };
 use serde::Deserialize;
-use std::sync::Arc;
 use tracing::instrument;
 
 pub use types::{
@@ -28,32 +29,6 @@ pub use types::{
 pub struct TeamRoutePath {
     pub team: String,
     pub route_id: String,
-}
-
-/// Path parameters for team-level MCP endpoints
-#[derive(Debug, Deserialize)]
-pub struct TeamPath {
-    pub team: String,
-}
-
-/// Convert McpServiceError to ApiError
-fn to_api_error(e: McpServiceError) -> ApiError {
-    match e {
-        McpServiceError::NotFound(msg) => ApiError::NotFound(msg),
-        McpServiceError::Validation(msg) => ApiError::BadRequest(msg),
-        McpServiceError::Database(e) => ApiError::internal(format!("Database error: {}", e)),
-        McpServiceError::Internal(msg) => ApiError::internal(msg),
-    }
-}
-
-/// Get the database pool from ApiState
-fn get_db_pool(state: &ApiState) -> Result<Arc<sqlx::SqlitePool>, ApiError> {
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("Database not available"))?;
-    Ok(Arc::new(cluster_repo.pool().clone()))
 }
 
 /// Get MCP status for a route
@@ -81,11 +56,22 @@ pub async fn get_mcp_status_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<Json<McpStatusResponse>, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    let status = service.get_status(&team, &route_id).await.map_err(to_api_error)?;
+    let status = service.get_status(&team_id, &route_id).await.map_err(ApiError::from)?;
 
     Ok(Json(McpStatusResponse::from(status)))
 }
@@ -118,7 +104,18 @@ pub async fn enable_mcp_handler(
     Json(body): Json<EnableMcpRequestBody>,
 ) -> Result<(StatusCode, Json<crate::api::handlers::mcp_tools::McpToolResponse>), ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
@@ -130,7 +127,7 @@ pub async fn enable_mcp_handler(
         http_method: body.http_method,
     };
 
-    let tool = service.enable(&team, &route_id, request).await.map_err(to_api_error)?;
+    let tool = service.enable(&team_id, &route_id, request).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(tool.into())))
 }
@@ -160,11 +157,22 @@ pub async fn disable_mcp_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<StatusCode, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    service.disable(&team, &route_id).await.map_err(to_api_error)?;
+    service.disable(&team_id, &route_id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -194,11 +202,22 @@ pub async fn refresh_mcp_schema_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<Json<RefreshSchemaResponse>, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
-    let result = service.refresh_schema(&team, &route_id).await.map_err(to_api_error)?;
+    let result = service.refresh_schema(&team_id, &route_id).await.map_err(ApiError::from)?;
 
     Ok(Json(RefreshSchemaResponse::from(result)))
 }
@@ -228,7 +247,18 @@ pub async fn bulk_enable_mcp_handler(
     Json(body): Json<BulkMcpEnableRequest>,
 ) -> Result<Json<BulkMcpEnableResponse>, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
@@ -245,7 +275,7 @@ pub async fn bulk_enable_mcp_handler(
             http_method: None,
         };
 
-        match service.enable(&team, &route_id, request).await {
+        match service.enable(&team_id, &route_id, request).await {
             Ok(tool) => {
                 results.push(types::BulkEnableResult {
                     route_id,
@@ -295,7 +325,18 @@ pub async fn bulk_disable_mcp_handler(
     Json(body): Json<BulkMcpDisableRequest>,
 ) -> Result<Json<BulkMcpDisableResponse>, ApiError> {
     // Verify team access
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     let db_pool = get_db_pool(&state)?;
     let service = McpService::new(db_pool);
@@ -304,7 +345,7 @@ pub async fn bulk_disable_mcp_handler(
     let mut failed = 0;
 
     for route_id in body.route_ids {
-        match service.disable(&team, &route_id).await {
+        match service.disable(&team_id, &route_id).await {
             Ok(()) => {
                 results.push(types::BulkDisableResult { route_id, success: true, error: None });
                 succeeded += 1;

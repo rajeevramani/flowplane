@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use crate::common::{
-    api_client::{setup_dev_context, ApiClient},
+    api_client::{setup_dev_context, setup_envoy_context, ApiClient},
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
     resource_setup::ResourceSetup,
@@ -74,7 +74,8 @@ async fn test_101_verify_custom_response() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_101_verify_custom_response")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_101_verify_custom_response")
         .await
         .expect("Setup should succeed");
 
@@ -206,8 +207,9 @@ async fn test_102_route_override() {
     }
 
     let api = ApiClient::new(harness.api_url());
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_102_route_override").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_102_route_override").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();
@@ -339,8 +341,9 @@ async fn test_103_status_override() {
     }
 
     let api = ApiClient::new(harness.api_url());
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_103_status_override").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_103_status_override").await.expect("Setup should succeed");
 
     let echo_endpoint = harness.echo_endpoint();
     let parts: Vec<&str> = echo_endpoint.split(':').collect();

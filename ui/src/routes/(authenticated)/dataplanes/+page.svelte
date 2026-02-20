@@ -3,10 +3,14 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { Plus, Edit, Trash2, Server, Network, Download, Copy } from 'lucide-svelte';
-	import type { DataplaneResponse } from '$lib/api/types';
+	import type { DataplaneResponse, SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
+	import { adminSummary, adminSummaryLoading, adminSummaryError, getAdminSummary } from '$lib/stores/adminSummary';
+	import AdminResourceSummary from '$lib/components/AdminResourceSummary.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -27,6 +31,12 @@
 	});
 
 	onMount(async () => {
+		sessionInfo = await apiClient.getSessionInfo();
+		if (sessionInfo.isPlatformAdmin) {
+			try { await getAdminSummary(); } catch { /* handled by store */ }
+			isLoading = false;
+			return;
+		}
 		await loadData();
 	});
 
@@ -53,7 +63,6 @@
 	// Filter dataplanes
 	let filteredDataplanes = $derived(
 		dataplanes
-			.filter((dp) => dp.team === currentTeam)
 			.filter(
 				(dp) =>
 					!searchQuery ||
@@ -91,21 +100,21 @@
 		}
 	}
 
-	// Download bootstrap config
-	async function handleDownloadBootstrap(dataplane: DataplaneResponse) {
+	// Download envoy config
+	async function handleDownloadEnvoyConfig(dataplane: DataplaneResponse) {
 		try {
-			const bootstrap = await apiClient.getDataplaneBootstrap(dataplane.team, dataplane.name, { format: 'yaml' });
-			const blob = new Blob([bootstrap], { type: 'application/yaml' });
+			const config = await apiClient.getDataplaneEnvoyConfig(dataplane.team, dataplane.name, { format: 'yaml' });
+			const blob = new Blob([config], { type: 'application/yaml' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
-			a.download = `envoy-bootstrap-${dataplane.name}.yaml`;
+			a.download = `envoy-config-${dataplane.name}.yaml`;
 			document.body.appendChild(a);
 			a.click();
 			document.body.removeChild(a);
 			URL.revokeObjectURL(url);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to download bootstrap';
+			error = err instanceof Error ? err.message : 'Failed to download envoy config';
 		}
 	}
 
@@ -128,6 +137,21 @@
 	}
 </script>
 
+{#if sessionInfo?.isPlatformAdmin}
+<div class="w-full px-4 sm:px-6 lg:px-8 py-8">
+	<div class="mb-8">
+		<h1 class="text-3xl font-bold text-gray-900">Dataplanes</h1>
+		<p class="mt-2 text-sm text-gray-600">Platform-wide dataplane summary across all organizations and teams.</p>
+	</div>
+	{#if $adminSummaryLoading}
+		<div class="flex items-center justify-center py-12"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>
+	{:else if $adminSummaryError}
+		<div class="bg-red-50 border border-red-200 rounded-md p-4"><p class="text-sm text-red-800">{$adminSummaryError}</p></div>
+	{:else if $adminSummary}
+		<AdminResourceSummary summary={$adminSummary} highlightResource="dataplanes" />
+	{/if}
+</div>
+{:else}
 <div class="w-full px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Header -->
 	<div class="mb-8">
@@ -315,9 +339,9 @@
 							<td class="px-6 py-4 text-right">
 								<div class="flex justify-end gap-2">
 									<button
-										onclick={() => handleDownloadBootstrap(dataplane)}
+										onclick={() => handleDownloadEnvoyConfig(dataplane)}
 										class="p-2 text-green-600 hover:bg-green-50 rounded-md transition-colors"
-										title="Download bootstrap config"
+										title="Download envoy config"
 									>
 										<Download class="h-4 w-4" />
 									</button>
@@ -351,3 +375,4 @@
 		{/if}
 	{/if}
 </div>
+{/if}

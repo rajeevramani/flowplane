@@ -12,7 +12,10 @@
 use serde_json::json;
 
 use crate::common::{
-    api_client::{setup_dev_context, simple_cluster, simple_listener, simple_route, ApiClient},
+    api_client::{
+        setup_dev_context, setup_envoy_context, simple_cluster, simple_listener, simple_route,
+        ApiClient,
+    },
     harness::{TestHarness, TestHarnessConfig},
     timeout::{with_timeout, TestTimeout},
 };
@@ -45,6 +48,18 @@ async fn test_100_initialize_app() {
     );
 
     println!("✓ Bootstrap successful, setup_token: {}...", &bootstrap.setup_token[..20]);
+
+    // Verify org was created by logging in and checking org fields
+    let (_session, login_resp) =
+        with_timeout(TestTimeout::default_with_label("Login to verify org"), async {
+            api.login_full("admin@e2e.test", "SecurePass123!").await
+        })
+        .await
+        .expect("Login should succeed after bootstrap");
+
+    assert!(login_resp.org_id.is_some(), "Login should include org_id after bootstrap");
+    assert!(login_resp.org_name.is_some(), "Login should include org_name after bootstrap");
+    println!("✓ Org context verified: org_name={:?}", login_resp.org_name);
 }
 
 /// Test login flow
@@ -64,8 +79,8 @@ async fn test_101_login() {
         .expect("Bootstrap should succeed");
 
     // Login
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login("admin@e2e.test", "SecurePass123!").await
+    let (session, login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
+        api.login_full("admin@e2e.test", "SecurePass123!").await
     })
     .await
     .expect("Login should succeed");
@@ -74,9 +89,18 @@ async fn test_101_login() {
     assert!(!session.session_token.is_empty(), "Session token should not be empty");
     assert!(!session.csrf_token.is_empty(), "CSRF token should not be empty");
 
+    // Verify org context
+    assert!(login_resp.org_id.is_some(), "Login should include org_id");
+    assert_eq!(
+        login_resp.org_name.as_deref(),
+        Some("platform"),
+        "Platform org should be 'platform'"
+    );
+
     println!(
-        "✓ Login successful, csrf_token: {}...",
-        &session.csrf_token[..20.min(session.csrf_token.len())]
+        "✓ Login successful, csrf_token: {}..., org={:?}",
+        &session.csrf_token[..20.min(session.csrf_token.len())],
+        login_resp.org_name
     );
 }
 
@@ -97,8 +121,12 @@ async fn test_102_create_admin_token() {
         .await
         .expect("Bootstrap should succeed");
 
-    let session =
-        api.login("admin@e2e.test", "SecurePass123!").await.expect("Login should succeed");
+    let (session, login_resp) =
+        api.login_full("admin@e2e.test", "SecurePass123!").await.expect("Login should succeed");
+
+    // Verify org context in login response
+    assert!(login_resp.org_id.is_some(), "Login should include org_id");
+    assert!(login_resp.org_name.is_some(), "Login should include org_name");
 
     // Create admin token
     let token = with_timeout(TestTimeout::default_with_label("Create PAT"), async {
@@ -138,9 +166,13 @@ async fn test_103_create_team() {
     assert!(!ctx.team_a_id.is_empty(), "Team A should have valid ID");
     assert!(!ctx.team_b_id.is_empty(), "Team B should have valid ID");
 
+    // Verify org context was captured from login
+    assert!(ctx.org_id.is_some(), "Context should include org_id");
+    assert!(ctx.org_name.is_some(), "Context should include org_name");
+
     println!(
-        "✓ Teams created: {} (id={}), {} (id={})",
-        ctx.team_a_name, ctx.team_a_id, ctx.team_b_name, ctx.team_b_id
+        "✓ Teams created: {} (id={}), {} (id={}), org={:?}",
+        ctx.team_a_name, ctx.team_a_id, ctx.team_b_name, ctx.team_b_id, ctx.org_name
     );
 }
 
@@ -154,9 +186,9 @@ async fn test_300_import_openapi() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context with unique teams for this test
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_300_import_openapi").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_300_import_openapi").await.expect("Setup should succeed");
 
     // Delay between setup and resource creation
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -238,13 +270,17 @@ async fn test_400_team_isolation() {
     let ctx =
         setup_dev_context(&api, "test_400_team_isolation").await.expect("Setup should succeed");
 
-    // Create a team-scoped token for Team A
+    // Create a team-scoped token for Team A.
+    // Includes org membership so the token can access resources in the tenant org,
+    // plus team-level scopes for Team A clusters only.
+    let org_name = ctx.org_name.as_deref().expect("org_name should be set");
     let team_a_token =
         with_timeout(TestTimeout::default_with_label("Create Team A token"), async {
             api.create_token(
                 &ctx.admin_session,
                 "team-a-token",
                 vec![
+                    format!("org:{}:member", org_name),
                     format!("team:{}:clusters:write", ctx.team_a_name),
                     format!("team:{}:clusters:read", ctx.team_a_name),
                 ],
@@ -308,9 +344,10 @@ async fn test_500_full_routing_setup() {
 
     let api = ApiClient::new(harness.api_url());
 
-    // Setup dev context with unique teams for this test
-    let ctx =
-        setup_dev_context(&api, "test_500_full_routing_setup").await.expect("Setup should succeed");
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_500_full_routing_setup")
+        .await
+        .expect("Setup should succeed");
 
     // Extract echo server endpoint
     let echo_endpoint = harness.echo_endpoint();

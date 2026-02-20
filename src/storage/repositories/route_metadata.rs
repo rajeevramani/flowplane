@@ -7,7 +7,7 @@ use crate::domain::{RouteId, RouteMetadataId, RouteMetadataSourceType};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Database row structure for route metadata
@@ -205,7 +205,7 @@ impl RouteMetadataRepository {
     /// Get route metadata by ID
     #[instrument(skip(self), fields(route_metadata_id = %id), name = "db_get_route_metadata_by_id")]
     pub async fn get_by_id(&self, id: &RouteMetadataId) -> Result<Option<RouteMetadataData>> {
-        let row = sqlx::query_as::<Sqlite, RouteMetadataRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, RouteMetadataRow>(
             "SELECT id, route_id, operation_id, summary, description, tags, http_method,
                     request_body_schema, response_schemas, learning_schema_id,
                     enriched_from_learning, source_type, confidence, created_at, updated_at
@@ -228,7 +228,7 @@ impl RouteMetadataRepository {
     /// Get route metadata by route ID
     #[instrument(skip(self), fields(route_id = %route_id), name = "db_get_route_metadata_by_route_id")]
     pub async fn get_by_route_id(&self, route_id: &RouteId) -> Result<Option<RouteMetadataData>> {
-        let row = sqlx::query_as::<Sqlite, RouteMetadataRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, RouteMetadataRow>(
             "SELECT id, route_id, operation_id, summary, description, tags, http_method,
                     request_body_schema, response_schemas, learning_schema_id,
                     enriched_from_learning, source_type, confidence, created_at, updated_at
@@ -251,7 +251,7 @@ impl RouteMetadataRepository {
     /// List route metadata by team (joins with routes table)
     #[instrument(skip(self), fields(team = %team), name = "db_list_route_metadata_by_team")]
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<RouteMetadataData>> {
-        let rows = sqlx::query_as::<Sqlite, RouteMetadataRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, RouteMetadataRow>(
             "SELECT rm.id, rm.route_id, rm.operation_id, rm.summary, rm.description, rm.tags, rm.http_method,
                     rm.request_body_schema, rm.response_schemas, rm.learning_schema_id,
                     rm.enriched_from_learning, rm.source_type, rm.confidence, rm.created_at, rm.updated_at

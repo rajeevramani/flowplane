@@ -7,7 +7,8 @@ use crate::support::{read_json, send_request, setup_test_app};
 async fn contract_post_tokens_rotate_creates_new_secret() {
     let app = setup_test_app().await;
 
-    let admin = app.issue_token("token-rotator", &["tokens:write", "tokens:read"]).await;
+    let admin =
+        app.issue_token("token-rotator", &["admin:all", "tokens:write", "tokens:read"]).await;
 
     let created = app
         .token_service

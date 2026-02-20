@@ -1,5 +1,6 @@
 //! HTTP request handlers organized by resource type
 
+pub mod admin_summary;
 pub mod aggregated_schemas;
 pub mod audit_log;
 pub mod auth;
@@ -10,12 +11,15 @@ pub mod dataplanes;
 pub mod filters;
 pub mod health;
 pub mod hierarchy;
+pub mod invitations;
 pub mod learning_sessions;
 pub mod listeners;
 pub mod mcp_routes;
 pub mod mcp_tools;
 pub mod openapi_import;
 pub mod openapi_utils;
+pub mod organizations;
+pub mod pagination;
 pub mod proxy_certificates;
 pub mod reporting;
 pub mod route_configs;
@@ -28,6 +32,9 @@ pub mod teams;
 pub mod users;
 
 // Re-export handler functions for backward compatibility
+pub use admin_summary::{
+    admin_resource_summary_handler, AdminResourceSummary, OrgSummary, SummaryTotals, TeamSummary,
+};
 pub use aggregated_schemas::{
     compare_aggregated_schemas_handler, export_aggregated_schema_handler,
     export_multiple_schemas_handler, get_aggregated_schema_handler,
@@ -37,7 +44,8 @@ pub use audit_log::list_audit_logs;
 pub use auth::{
     change_password_handler, create_session_handler, create_token_handler,
     get_session_info_handler, get_token_handler, list_tokens_handler, login_handler,
-    logout_handler, revoke_token_handler, rotate_token_handler, update_token_handler,
+    logout_handler, refresh_session_handler, revoke_token_handler, rotate_token_handler,
+    update_token_handler,
 };
 pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
@@ -50,7 +58,7 @@ pub use custom_wasm_filters::{
     update_custom_wasm_filter_handler,
 };
 pub use dataplanes::{
-    create_dataplane_handler, delete_dataplane_handler, get_dataplane_bootstrap_handler,
+    create_dataplane_handler, delete_dataplane_handler, generate_envoy_config_handler,
     get_dataplane_handler, list_all_dataplanes_handler, list_dataplanes_handler,
     update_dataplane_handler,
 };
@@ -64,6 +72,10 @@ pub use filters::{
     uninstall_filter_handler, update_filter_handler,
 };
 pub use health::health_handler;
+pub use invitations::{
+    accept_invitation_handler, create_invitation_handler, list_invitations_handler,
+    revoke_invitation_handler, validate_invitation_handler,
+};
 pub use learning_sessions::{
     create_learning_session_handler, delete_learning_session_handler, get_learning_session_handler,
     list_learning_sessions_handler,
@@ -83,6 +95,13 @@ pub use mcp_tools::{
     list_mcp_tools_handler, update_mcp_tool_handler,
 };
 pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
+pub use organizations::{
+    add_team_member, admin_add_org_member, admin_create_organization, admin_delete_organization,
+    admin_get_organization, admin_list_org_members, admin_list_organizations,
+    admin_remove_org_member, admin_update_org_member_role, admin_update_organization,
+    create_org_team, delete_org_team, get_current_org, list_org_teams, list_team_members,
+    remove_team_member, update_org_team, update_team_member_scopes,
+};
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
     revoke_certificate_handler,
@@ -106,7 +125,7 @@ pub use stats::{
 };
 pub use teams::{
     admin_create_team, admin_delete_team, admin_get_team, admin_list_teams, admin_update_team,
-    get_mtls_status_handler, get_team_bootstrap_handler, list_teams_handler,
+    get_mtls_status_handler, list_teams_handler,
 };
 pub use users::{
     add_team_membership, create_user, delete_user, get_user, list_user_teams, list_users,
@@ -114,7 +133,13 @@ pub use users::{
 };
 
 // Re-export team access utilities for use across handlers
-pub use team_access::{get_effective_team_scopes, verify_team_access, TeamOwned};
+pub use team_access::{
+    default_limit, get_db_pool, get_effective_team_scopes, require_admin, verify_team_access,
+    TeamOwned, TeamPath,
+};
+
+// Re-export pagination types
+pub use pagination::{PaginatedResponse, PaginationQuery};
 
 // Re-export hierarchy handlers for route hierarchy filter attachment
 pub use hierarchy::{
@@ -135,37 +160,35 @@ pub use clusters::{
 };
 pub use filters::{
     AttachFilterRequest, CreateFilterRequest, FilterResponse, FilterTypeFormSection,
-    FilterTypeInfo, FilterTypeUiHints, FilterTypesResponse, ListFiltersQuery,
-    ListenerFiltersResponse, RouteFiltersResponse, UpdateFilterRequest,
+    FilterTypeInfo, FilterTypeUiHints, FilterTypesResponse, ListenerFiltersResponse,
+    RouteFiltersResponse, UpdateFilterRequest,
 };
 pub use learning_sessions::{
     CreateLearningSessionBody, LearningSessionResponse, ListLearningSessionsQuery,
 };
-pub use mcp_tools::{ListMcpToolsQuery, ListMcpToolsResponse, McpToolResponse, UpdateMcpToolBody};
+pub use mcp_tools::{ListMcpToolsQuery, McpToolResponse, UpdateMcpToolBody};
+pub use organizations::{
+    AddOrgMemberRequest, AddTeamMemberRequest, CurrentOrgResponse, ListOrgMembersResponse,
+    ListOrgTeamsResponse, ListTeamMembersResponse, TeamMemberResponse, UpdateOrgMemberRoleRequest,
+    UpdateTeamMemberScopesRequest,
+};
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,
-    ListCertificatesQuery, ListCertificatesResponse, RevokeCertificateRequest,
+    RevokeCertificateRequest,
 };
 pub use secrets::{
-    CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamPath, TeamSecretPath,
-    UpdateSecretRequest,
+    CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamSecretPath, UpdateSecretRequest,
 };
-pub use teams::{
-    AdminListTeamsQuery, AdminListTeamsResponse, BootstrapQuery, ListTeamsResponse,
-    MtlsStatusResponse,
-};
-pub use users::ListUsersResponse;
+pub use teams::{ListTeamsResponse, MtlsStatusResponse};
 
 // Custom WASM filter DTOs
 pub use custom_wasm_filters::{
-    CreateCustomWasmFilterRequest, CustomWasmFilterResponse, ListCustomFiltersQuery,
-    ListCustomWasmFiltersResponse, UpdateCustomWasmFilterRequest,
+    CreateCustomWasmFilterRequest, CustomWasmFilterResponse, UpdateCustomWasmFilterRequest,
 };
 
 // Dataplane DTOs
 pub use dataplanes::{
-    BootstrapQuery as DataplaneBootstrapQuery, CreateDataplaneBody, DataplaneResponse,
-    ListDataplanesQuery, ListDataplanesResponse, UpdateDataplaneBody,
+    CreateDataplaneBody, DataplaneResponse, EnvoyConfigQuery, UpdateDataplaneBody,
 };
 
 // Hierarchy DTOs for route hierarchy filter attachment

@@ -10,12 +10,13 @@ All environment variables use the `FLOWPLANE_` prefix.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FLOWPLANE_DATABASE_URL` | `sqlite://./data/flowplane.db` | Database connection URL |
+| `FLOWPLANE_DATABASE_URL` | `postgresql://flowplane:flowplane@localhost:5432/flowplane` | Database connection URL |
 | `FLOWPLANE_API_PORT` | `8080` | REST API port |
 | `FLOWPLANE_API_BIND_ADDRESS` | `127.0.0.1` | REST API bind address |
 | `FLOWPLANE_XDS_PORT` | `18000` | xDS gRPC port |
 | `FLOWPLANE_XDS_BIND_ADDRESS` | `0.0.0.0` | xDS bind address |
 | `FLOWPLANE_UI_ORIGIN` | `http://localhost:3000` | CORS allowed origin for UI |
+| `FLOWPLANE_COOKIE_SECURE` | `true` | Require HTTPS for session cookies (set to `false` for local development) |
 
 ### Database
 
@@ -75,7 +76,7 @@ All environment variables use the `FLOWPLANE_` prefix.
 ### Development
 
 ```bash
-export FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db
+export FLOWPLANE_DATABASE_URL=postgresql://flowplane:flowplane@localhost:5432/flowplane
 export FLOWPLANE_API_PORT=8080
 export FLOWPLANE_XDS_PORT=18000
 export RUST_LOG=info,flowplane=debug
@@ -101,4 +102,4 @@ export FLOWPLANE_SERVICE_NAME=flowplane-control-plane
 export RUST_LOG=info,flowplane=info,sqlx=warn
 ```
 
-See [Operations Guide](operations.md) for production deployment details.
+See the [Kubernetes Deployment Guide](deployment/kubernetes.md) for production deployment details.

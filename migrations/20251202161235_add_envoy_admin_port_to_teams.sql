@@ -5,7 +5,7 @@
 -- Ports are allocated sequentially starting from the base port (default 9901).
 -- Existing teams will have NULL and fall back to the global config port.
 
-ALTER TABLE teams ADD COLUMN envoy_admin_port INTEGER;
+ALTER TABLE teams ADD COLUMN envoy_admin_port BIGINT;
 
 -- Create unique index to prevent port conflicts
 CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_envoy_admin_port ON teams(envoy_admin_port);

@@ -300,7 +300,7 @@ impl RouteViewExtractor {
             virtual_host_name: data.virtual_host_name.clone(),
             route_config_id: data.route_config_id.to_string(),
             route_config_name: data.route_config_name.clone(),
-            team: data.team.clone(),
+            team: data.team_name.clone().or(data.team.clone()),
 
             // From routes table
             path_pattern: data.path_pattern.clone(),
@@ -405,6 +405,7 @@ mod tests {
             version: 1,
             source: "native_api".to_string(),
             team: Some("test-team".to_string()),
+            team_name: None,
             import_id: None,
             route_order: None,
             headers: None,

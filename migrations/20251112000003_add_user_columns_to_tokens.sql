@@ -10,9 +10,10 @@ ALTER TABLE personal_access_tokens
 ADD COLUMN user_email TEXT;
 
 -- Add foreign key constraint to users table
--- Note: SQLite does not support adding foreign key constraints to existing tables
--- The constraint will be enforced at the application level for existing installations
--- For new installations, this will be part of the initial schema
+-- PostgreSQL supports adding FK constraints to existing tables
+ALTER TABLE personal_access_tokens
+    ADD CONSTRAINT fk_personal_access_tokens_user_id
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
 
 -- Index for looking up all tokens for a user
 CREATE INDEX IF NOT EXISTS idx_personal_access_tokens_user_id

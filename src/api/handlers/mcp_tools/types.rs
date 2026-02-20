@@ -8,6 +8,12 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+/// Default limit for MCP tools listing — higher than the generic 50
+/// because this endpoint merges CP built-in tools (~60) with DB tools.
+fn default_mcp_tools_limit() -> i64 {
+    200
+}
+
 /// Query parameters for listing MCP tools
 #[derive(Debug, Clone, Deserialize, ToSchema, IntoParams, Default)]
 #[serde(rename_all = "camelCase")]
@@ -24,13 +30,13 @@ pub struct ListMcpToolsQuery {
     #[serde(default)]
     pub search: Option<String>,
 
-    /// Maximum number of tools to return
-    #[serde(default)]
-    pub limit: Option<i64>,
+    /// Maximum number of tools to return (default: 200)
+    #[serde(default = "default_mcp_tools_limit")]
+    pub limit: i64,
 
-    /// Offset for pagination
+    /// Offset for pagination (default: 0)
     #[serde(default)]
-    pub offset: Option<i64>,
+    pub offset: i64,
 }
 
 /// MCP tool response DTO
@@ -136,7 +142,7 @@ impl McpToolResponse {
             id: format!("builtin:{}", tool.name),
             team: team.to_string(),
             name: tool.name.clone(),
-            description: Some(tool.description.clone()),
+            description: tool.description.clone(),
             category: McpToolCategory::ControlPlane,
             source_type: McpToolSourceType::Builtin,
             is_builtin: true,
@@ -155,23 +161,6 @@ impl McpToolResponse {
             updated_at: now,
         }
     }
-}
-
-/// Paginated response for listing MCP tools
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListMcpToolsResponse {
-    /// List of MCP tools
-    pub tools: Vec<McpToolResponse>,
-
-    /// Total count of tools matching the query
-    pub total: i64,
-
-    /// Limit used for pagination
-    pub limit: i64,
-
-    /// Offset used for pagination
-    pub offset: i64,
 }
 
 /// Request body for updating an MCP tool

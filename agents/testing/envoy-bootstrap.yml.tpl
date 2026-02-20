@@ -1,0 +1,41 @@
+admin:
+  access_log_path: /dev/null
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9902
+dynamic_resources:
+  ads_config:
+    api_type: GRPC
+    grpc_services:
+    - envoy_grpc:
+        cluster_name: xds_cluster
+    transport_api_version: V3
+  cds_config:
+    ads: {}
+  lds_config:
+    ads: {}
+node:
+  cluster: agent-test-cluster
+  id: team=agent-test-team/dp-__DATAPLANE_ID__
+  metadata:
+    dataplane_id: __DATAPLANE_ID__
+    dataplane_name: __DATAPLANE_NAME__
+    gateway_host: envoy-agent-test
+    team: agent-test-team
+static_resources:
+  clusters:
+  - connect_timeout: 1s
+    dns_lookup_family: V4_ONLY
+    http2_protocol_options: {}
+    load_assignment:
+      cluster_name: xds_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: __XDS_ADDRESS__
+                port_value: 50051
+    name: xds_cluster
+    type: LOGICAL_DNS

@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use crate::common::{
-    api_client::{setup_dev_context, simple_cluster, simple_listener, simple_route, ApiClient},
+    api_client::{setup_envoy_context, simple_cluster, simple_listener, simple_route, ApiClient},
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
     timeout::{with_timeout, TestTimeout},
@@ -30,7 +30,7 @@ async fn test_100_setup_cors() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_100_setup_cors").await.expect("Setup should succeed");
+    let ctx = setup_envoy_context(&api, "test_100_setup_cors").await.expect("Setup should succeed");
 
     // Get echo server endpoint for backend
     let echo_endpoint = harness.echo_endpoint();
@@ -139,8 +139,9 @@ async fn test_101_preflight_allowed() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx =
-        setup_dev_context(&api, "test_101_preflight_allowed").await.expect("Setup should succeed");
+    let ctx = setup_envoy_context(&api, "test_101_preflight_allowed")
+        .await
+        .expect("Setup should succeed");
 
     // Setup infrastructure
     let echo_endpoint = harness.echo_endpoint();
@@ -303,7 +304,7 @@ async fn test_102_request_with_origin() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_102_request_with_origin")
+    let ctx = setup_envoy_context(&api, "test_102_request_with_origin")
         .await
         .expect("Setup should succeed");
 
@@ -447,7 +448,7 @@ async fn test_103_blocked_origin() {
 
     let api = ApiClient::new(harness.api_url());
     let ctx =
-        setup_dev_context(&api, "test_103_blocked_origin").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_103_blocked_origin").await.expect("Setup should succeed");
 
     // Setup infrastructure
     let echo_endpoint = harness.echo_endpoint();

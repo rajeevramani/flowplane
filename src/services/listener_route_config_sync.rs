@@ -44,7 +44,7 @@ impl ListenerRouteSyncService {
             match self.route_config_repo.get_by_name(route_config_name).await {
                 Ok(route_config) => {
                     self.listener_route_config_repo
-                        .create(listener_id, &route_config.id, order as i32)
+                        .create(listener_id, &route_config.id, order as i64)
                         .await?;
                     result.routes_created += 1;
                 }
@@ -74,7 +74,9 @@ impl ListenerRouteSyncService {
     /// Extracts route names from a listener configuration JSON.
     ///
     /// This parses the filter_chains looking for http_connection_manager filters
-    /// that reference route configurations via rds.route_config_name.
+    /// that reference route configurations. Supports two formats:
+    /// - Rust serde format: `filter_type.HttpConnectionManager.route_config_name`
+    /// - Raw Envoy xDS format: `typed_config.rds.route_config_name`
     fn extract_route_names(&self, config_json: &str) -> Result<Vec<String>> {
         let config: serde_json::Value = serde_json::from_str(config_json).map_err(|e| {
             crate::errors::FlowplaneError::internal(format!(
@@ -90,12 +92,26 @@ impl ListenerRouteSyncService {
             for filter_chain in filter_chains {
                 if let Some(filters) = filter_chain.get("filters").and_then(|v| v.as_array()) {
                     for filter in filters {
-                        // Check if this is an HTTP connection manager filter
+                        // Format 1: Rust serde serialized ListenerConfig
+                        // filter_type.HttpConnectionManager.route_config_name
+                        if let Some(route_name) = filter
+                            .get("filter_type")
+                            .and_then(|ft| ft.get("HttpConnectionManager"))
+                            .and_then(|hcm| hcm.get("route_config_name"))
+                            .and_then(|v| v.as_str())
+                        {
+                            if !route_names.contains(&route_name.to_string()) {
+                                route_names.push(route_name.to_string());
+                            }
+                            continue;
+                        }
+
+                        // Format 2: Raw Envoy xDS JSON
+                        // typed_config.rds.route_config_name
                         let is_hcm = filter.get("name").and_then(|v| v.as_str())
                             == Some("envoy.filters.network.http_connection_manager");
 
                         if is_hcm {
-                            // Look for typed_config.rds.route_config_name
                             if let Some(route_name) = filter
                                 .get("typed_config")
                                 .and_then(|tc| tc.get("rds"))
@@ -161,7 +177,37 @@ pub struct SyncResult {
 
 #[cfg(test)]
 mod tests {
-    fn create_test_config_json() -> &'static str {
+    // Rust serde format (what ListenerConfig actually serializes to)
+    fn create_serde_config_json() -> &'static str {
+        r#"{
+            "name": "test-listener",
+            "address": "0.0.0.0",
+            "port": 8080,
+            "filter_chains": [
+                {
+                    "name": "default",
+                    "filters": [
+                        {
+                            "name": "envoy.filters.network.http_connection_manager",
+                            "filter_type": {
+                                "HttpConnectionManager": {
+                                    "route_config_name": "main-route",
+                                    "inline_route_config": null,
+                                    "access_log": null,
+                                    "tracing": null,
+                                    "http_filters": []
+                                }
+                            }
+                        }
+                    ],
+                    "tls_context": null
+                }
+            ]
+        }"#
+    }
+
+    // Raw Envoy xDS format
+    fn create_xds_config_json() -> &'static str {
         r#"{
             "filter_chains": [
                 {
@@ -185,7 +231,53 @@ mod tests {
         }"#
     }
 
-    fn create_multi_route_config_json() -> &'static str {
+    fn create_multi_route_serde_json() -> &'static str {
+        r#"{
+            "name": "multi-listener",
+            "address": "0.0.0.0",
+            "port": 8080,
+            "filter_chains": [
+                {
+                    "name": "chain-1",
+                    "filters": [
+                        {
+                            "name": "envoy.filters.network.http_connection_manager",
+                            "filter_type": {
+                                "HttpConnectionManager": {
+                                    "route_config_name": "api-route",
+                                    "inline_route_config": null,
+                                    "access_log": null,
+                                    "tracing": null,
+                                    "http_filters": []
+                                }
+                            }
+                        }
+                    ],
+                    "tls_context": null
+                },
+                {
+                    "name": "chain-2",
+                    "filters": [
+                        {
+                            "name": "envoy.filters.network.http_connection_manager",
+                            "filter_type": {
+                                "HttpConnectionManager": {
+                                    "route_config_name": "web-route",
+                                    "inline_route_config": null,
+                                    "access_log": null,
+                                    "tracing": null,
+                                    "http_filters": []
+                                }
+                            }
+                        }
+                    ],
+                    "tls_context": null
+                }
+            ]
+        }"#
+    }
+
+    fn create_multi_route_xds_json() -> &'static str {
         r#"{
             "filter_chains": [
                 {
@@ -216,71 +308,107 @@ mod tests {
         }"#
     }
 
-    #[test]
-    fn test_extract_single_route_name() {
-        // We can't easily test extract_route_names without creating the service,
-        // so let's test the JSON parsing logic directly
-        let config_json = create_test_config_json();
+    /// Helper: parse route names using the same logic as extract_route_names
+    fn parse_route_names(config_json: &str) -> Vec<String> {
         let config: serde_json::Value = serde_json::from_str(config_json).unwrap();
-
         let mut route_names = Vec::new();
+
         if let Some(filter_chains) = config.get("filter_chains").and_then(|v| v.as_array()) {
             for filter_chain in filter_chains {
                 if let Some(filters) = filter_chain.get("filters").and_then(|v| v.as_array()) {
                     for filter in filters {
+                        // Format 1: Rust serde format
                         if let Some(route_name) = filter
-                            .get("typed_config")
-                            .and_then(|tc| tc.get("rds"))
-                            .and_then(|rds| rds.get("route_config_name"))
+                            .get("filter_type")
+                            .and_then(|ft| ft.get("HttpConnectionManager"))
+                            .and_then(|hcm| hcm.get("route_config_name"))
                             .and_then(|v| v.as_str())
                         {
-                            route_names.push(route_name.to_string());
+                            if !route_names.contains(&route_name.to_string()) {
+                                route_names.push(route_name.to_string());
+                            }
+                            continue;
+                        }
+
+                        // Format 2: Raw Envoy xDS format
+                        let is_hcm = filter.get("name").and_then(|v| v.as_str())
+                            == Some("envoy.filters.network.http_connection_manager");
+
+                        if is_hcm {
+                            if let Some(route_name) = filter
+                                .get("typed_config")
+                                .and_then(|tc| tc.get("rds"))
+                                .and_then(|rds| rds.get("route_config_name"))
+                                .and_then(|v| v.as_str())
+                            {
+                                if !route_names.contains(&route_name.to_string()) {
+                                    route_names.push(route_name.to_string());
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
+        route_names
+    }
+
+    #[test]
+    fn test_extract_single_route_serde_format() {
+        let route_names = parse_route_names(create_serde_config_json());
         assert_eq!(route_names, vec!["main-route"]);
     }
 
     #[test]
-    fn test_extract_multiple_route_names() {
-        let config_json = create_multi_route_config_json();
-        let config: serde_json::Value = serde_json::from_str(config_json).unwrap();
+    fn test_extract_single_route_xds_format() {
+        let route_names = parse_route_names(create_xds_config_json());
+        assert_eq!(route_names, vec!["main-route"]);
+    }
 
-        let mut route_names = Vec::new();
-        if let Some(filter_chains) = config.get("filter_chains").and_then(|v| v.as_array()) {
-            for filter_chain in filter_chains {
-                if let Some(filters) = filter_chain.get("filters").and_then(|v| v.as_array()) {
-                    for filter in filters {
-                        if let Some(route_name) = filter
-                            .get("typed_config")
-                            .and_then(|tc| tc.get("rds"))
-                            .and_then(|rds| rds.get("route_config_name"))
-                            .and_then(|v| v.as_str())
-                        {
-                            route_names.push(route_name.to_string());
-                        }
-                    }
-                }
-            }
-        }
+    #[test]
+    fn test_extract_multiple_routes_serde_format() {
+        let route_names = parse_route_names(create_multi_route_serde_json());
+        assert_eq!(route_names, vec!["api-route", "web-route"]);
+    }
 
+    #[test]
+    fn test_extract_multiple_routes_xds_format() {
+        let route_names = parse_route_names(create_multi_route_xds_json());
         assert_eq!(route_names, vec!["api-route", "web-route"]);
     }
 
     #[test]
     fn test_extract_no_routes() {
-        let config_json = r#"{"filter_chains": []}"#;
-        let config: serde_json::Value = serde_json::from_str(config_json).unwrap();
+        let route_names = parse_route_names(r#"{"filter_chains": []}"#);
+        assert!(route_names.is_empty());
+    }
 
-        let route_names: Vec<String> = config
-            .get("filter_chains")
-            .and_then(|v| v.as_array())
-            .map(|_| Vec::new())
-            .unwrap_or_default();
-
+    #[test]
+    fn test_extract_tcp_proxy_has_no_routes() {
+        let config = r#"{
+            "name": "tcp-listener",
+            "address": "0.0.0.0",
+            "port": 9090,
+            "filter_chains": [
+                {
+                    "name": "default",
+                    "filters": [
+                        {
+                            "name": "envoy.filters.network.tcp_proxy",
+                            "filter_type": {
+                                "TcpProxy": {
+                                    "cluster": "some-cluster",
+                                    "access_log": null
+                                }
+                            }
+                        }
+                    ],
+                    "tls_context": null
+                }
+            ]
+        }"#;
+        let route_names = parse_route_names(config);
         assert!(route_names.is_empty());
     }
 }

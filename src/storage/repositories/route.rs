@@ -8,7 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for routes.
@@ -95,9 +95,10 @@ struct RouteWithRelatedDataRow {
     pub route_config_id: String,
     pub route_config_name: String,
     pub route_config_team: Option<String>,
+    pub route_config_team_name: Option<String>,
     pub configuration: String, // JSON for extraction
     // MCP tool fields (optional, from LEFT JOIN)
-    pub mcp_enabled: i32, // SQLite uses integer for boolean
+    pub mcp_enabled: bool,
     pub mcp_tool_name: Option<String>,
     // Filter count (computed)
     pub filter_count: i64,
@@ -123,6 +124,7 @@ pub struct RouteWithRelatedData {
     pub route_config_id: crate::domain::RouteConfigId,
     pub route_config_name: String,
     pub team: Option<String>,
+    pub team_name: Option<String>,
     pub configuration: String,
     // MCP tool fields
     pub mcp_enabled: bool,
@@ -157,8 +159,9 @@ impl TryFrom<RouteWithRelatedDataRow> for RouteWithRelatedData {
             route_config_id: crate::domain::RouteConfigId::from_string(row.route_config_id),
             route_config_name: row.route_config_name,
             team: row.route_config_team,
+            team_name: row.route_config_team_name,
             configuration: row.configuration,
-            mcp_enabled: row.mcp_enabled != 0,
+            mcp_enabled: row.mcp_enabled,
             mcp_tool_name: row.mcp_tool_name,
             filter_count: row.filter_count as i32,
         })
@@ -227,7 +230,7 @@ impl RouteRepository {
     /// Get a route by ID.
     #[instrument(skip(self), fields(id = %id), name = "db_get_route_by_id")]
     pub async fn get_by_id(&self, id: &RouteId) -> Result<RouteData> {
-        let row = sqlx::query_as::<Sqlite, RouteRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, RouteRow>(
             "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
              FROM routes WHERE id = $1"
         )
@@ -255,7 +258,7 @@ impl RouteRepository {
         virtual_host_id: &VirtualHostId,
         name: &str,
     ) -> Result<RouteData> {
-        let row = sqlx::query_as::<Sqlite, RouteRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, RouteRow>(
             "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
              FROM routes WHERE virtual_host_id = $1 AND name = $2"
         )
@@ -285,7 +288,7 @@ impl RouteRepository {
         &self,
         virtual_host_id: &VirtualHostId,
     ) -> Result<Vec<RouteData>> {
-        let rows = sqlx::query_as::<Sqlite, RouteRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, RouteRow>(
             "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
              FROM routes WHERE virtual_host_id = $1 ORDER BY rule_order ASC"
         )
@@ -327,7 +330,7 @@ impl RouteRepository {
     /// List all routes for a team (joins through virtual_host and route_config).
     #[instrument(skip(self), fields(team = %team), name = "db_list_routes_by_team")]
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<RouteData>> {
-        let rows = sqlx::query_as::<Sqlite, RouteRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, RouteRow>(
             "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.created_at, r.updated_at \
              FROM routes r \
              INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id \
@@ -394,7 +397,7 @@ impl RouteRepository {
 
         let rows = if let Some(search_term) = search {
             let search_pattern = format!("%{}%", search_term);
-            sqlx::query_as::<Sqlite, RouteRow>(
+            sqlx::query_as::<sqlx::Postgres, RouteRow>(
                 "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.created_at, r.updated_at \
                  FROM routes r \
                  INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id \
@@ -411,7 +414,7 @@ impl RouteRepository {
             .fetch_all(&self.pool)
             .await
         } else {
-            sqlx::query_as::<Sqlite, RouteRow>(
+            sqlx::query_as::<sqlx::Postgres, RouteRow>(
                 "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.created_at, r.updated_at \
                  FROM routes r \
                  INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id \
@@ -621,13 +624,15 @@ impl RouteRepository {
                 rc.id as route_config_id,
                 rc.name as route_config_name,
                 rc.team as route_config_team,
+                tm.name as route_config_team_name,
                 rc.configuration,
-                COALESCE(mt.enabled, 0) as mcp_enabled,
+                COALESCE(mt.enabled, false) as mcp_enabled,
                 mt.name as mcp_tool_name,
                 COALESCE((SELECT COUNT(*) FROM route_filters rf WHERE rf.route_id = r.id), 0) as filter_count
             FROM routes r
             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
             INNER JOIN route_configs rc ON vh.route_config_id = rc.id
+            LEFT JOIN teams tm ON rc.team = tm.id
             LEFT JOIN mcp_tools mt ON mt.route_id = r.id
             WHERE rc.team = $1
         "#;
@@ -635,9 +640,9 @@ impl RouteRepository {
         let rows = match (search, mcp_filter) {
             (Some(search_term), Some("enabled")) => {
                 let search_pattern = format!("%{}%", search_term);
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
                     "{} AND (r.name LIKE $2 OR r.path_pattern LIKE $2 OR vh.name LIKE $2) \
-                     AND COALESCE(mt.enabled, 0) = 1 \
+                     AND COALESCE(mt.enabled, false) = true \
                      ORDER BY r.created_at DESC LIMIT $3 OFFSET $4",
                     base_query
                 ))
@@ -650,9 +655,9 @@ impl RouteRepository {
             }
             (Some(search_term), Some("disabled")) => {
                 let search_pattern = format!("%{}%", search_term);
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
                     "{} AND (r.name LIKE $2 OR r.path_pattern LIKE $2 OR vh.name LIKE $2) \
-                     AND COALESCE(mt.enabled, 0) = 0 \
+                     AND COALESCE(mt.enabled, false) = false \
                      ORDER BY r.created_at DESC LIMIT $3 OFFSET $4",
                     base_query
                 ))
@@ -665,7 +670,7 @@ impl RouteRepository {
             }
             (Some(search_term), _) => {
                 let search_pattern = format!("%{}%", search_term);
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
                     "{} AND (r.name LIKE $2 OR r.path_pattern LIKE $2 OR vh.name LIKE $2) \
                      ORDER BY r.created_at DESC LIMIT $3 OFFSET $4",
                     base_query
@@ -678,8 +683,8 @@ impl RouteRepository {
                 .await
             }
             (None, Some("enabled")) => {
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
-                    "{} AND COALESCE(mt.enabled, 0) = 1 \
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
+                    "{} AND COALESCE(mt.enabled, false) = true \
                      ORDER BY r.created_at DESC LIMIT $2 OFFSET $3",
                     base_query
                 ))
@@ -690,8 +695,8 @@ impl RouteRepository {
                 .await
             }
             (None, Some("disabled")) => {
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
-                    "{} AND COALESCE(mt.enabled, 0) = 0 \
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
+                    "{} AND COALESCE(mt.enabled, false) = false \
                      ORDER BY r.created_at DESC LIMIT $2 OFFSET $3",
                     base_query
                 ))
@@ -702,7 +707,7 @@ impl RouteRepository {
                 .await
             }
             (None, _) => {
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
                     "{} ORDER BY r.created_at DESC LIMIT $2 OFFSET $3",
                     base_query
                 ))
@@ -749,7 +754,7 @@ impl RouteRepository {
                 let search_pattern = format!("%{}%", search_term);
                 sqlx::query_scalar(&format!(
                     "{} AND (r.name LIKE $2 OR r.path_pattern LIKE $2 OR vh.name LIKE $2) \
-                     AND COALESCE(mt.enabled, 0) = 1",
+                     AND COALESCE(mt.enabled, false) = true",
                     base_query
                 ))
                 .bind(team)
@@ -761,7 +766,7 @@ impl RouteRepository {
                 let search_pattern = format!("%{}%", search_term);
                 sqlx::query_scalar(&format!(
                     "{} AND (r.name LIKE $2 OR r.path_pattern LIKE $2 OR vh.name LIKE $2) \
-                     AND COALESCE(mt.enabled, 0) = 0",
+                     AND COALESCE(mt.enabled, false) = false",
                     base_query
                 ))
                 .bind(team)
@@ -781,16 +786,22 @@ impl RouteRepository {
                 .await
             }
             (None, Some("enabled")) => {
-                sqlx::query_scalar(&format!("{} AND COALESCE(mt.enabled, 0) = 1", base_query))
-                    .bind(team)
-                    .fetch_one(&self.pool)
-                    .await
+                sqlx::query_scalar(&format!(
+                    "{} AND COALESCE(mt.enabled, false) = true",
+                    base_query
+                ))
+                .bind(team)
+                .fetch_one(&self.pool)
+                .await
             }
             (None, Some("disabled")) => {
-                sqlx::query_scalar(&format!("{} AND COALESCE(mt.enabled, 0) = 0", base_query))
-                    .bind(team)
-                    .fetch_one(&self.pool)
-                    .await
+                sqlx::query_scalar(&format!(
+                    "{} AND COALESCE(mt.enabled, false) = false",
+                    base_query
+                ))
+                .bind(team)
+                .fetch_one(&self.pool)
+                .await
             }
             (None, _) => sqlx::query_scalar(base_query).bind(team).fetch_one(&self.pool).await,
         }
@@ -845,13 +856,15 @@ impl RouteRepository {
                 rc.id as route_config_id,
                 rc.name as route_config_name,
                 rc.team as route_config_team,
+                tm.name as route_config_team_name,
                 rc.configuration,
-                COALESCE(mt.enabled, 0) as mcp_enabled,
+                COALESCE(mt.enabled, false) as mcp_enabled,
                 mt.name as mcp_tool_name,
                 COALESCE((SELECT COUNT(*) FROM route_filters rf WHERE rf.route_id = r.id), 0) as filter_count
             FROM routes r
             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
             INNER JOIN route_configs rc ON vh.route_config_id = rc.id
+            LEFT JOIN teams tm ON rc.team = tm.id
             LEFT JOIN mcp_tools mt ON mt.route_id = r.id
             WHERE 1=1
             "#
@@ -879,9 +892,9 @@ impl RouteRepository {
         let rows = match (search, mcp_filter) {
             (Some(search_term), Some("enabled")) => {
                 let search_pattern = format!("%{}%", search_term);
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
                     "{} AND (r.name LIKE $1 OR r.path_pattern LIKE $1 OR vh.name LIKE $1) \
-                     AND COALESCE(mt.enabled, 0) = 1 \
+                     AND COALESCE(mt.enabled, false) = true \
                      ORDER BY r.created_at DESC LIMIT $2 OFFSET $3",
                     base_query
                 ))
@@ -893,9 +906,9 @@ impl RouteRepository {
             }
             (Some(search_term), Some("disabled")) => {
                 let search_pattern = format!("%{}%", search_term);
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
                     "{} AND (r.name LIKE $1 OR r.path_pattern LIKE $1 OR vh.name LIKE $1) \
-                     AND COALESCE(mt.enabled, 0) = 0 \
+                     AND COALESCE(mt.enabled, false) = false \
                      ORDER BY r.created_at DESC LIMIT $2 OFFSET $3",
                     base_query
                 ))
@@ -907,7 +920,7 @@ impl RouteRepository {
             }
             (Some(search_term), _) => {
                 let search_pattern = format!("%{}%", search_term);
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
                     "{} AND (r.name LIKE $1 OR r.path_pattern LIKE $1 OR vh.name LIKE $1) \
                      ORDER BY r.created_at DESC LIMIT $2 OFFSET $3",
                     base_query
@@ -919,8 +932,8 @@ impl RouteRepository {
                 .await
             }
             (None, Some("enabled")) => {
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
-                    "{} AND COALESCE(mt.enabled, 0) = 1 \
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
+                    "{} AND COALESCE(mt.enabled, false) = true \
                      ORDER BY r.created_at DESC LIMIT $1 OFFSET $2",
                     base_query
                 ))
@@ -930,8 +943,8 @@ impl RouteRepository {
                 .await
             }
             (None, Some("disabled")) => {
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
-                    "{} AND COALESCE(mt.enabled, 0) = 0 \
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
+                    "{} AND COALESCE(mt.enabled, false) = false \
                      ORDER BY r.created_at DESC LIMIT $1 OFFSET $2",
                     base_query
                 ))
@@ -941,7 +954,7 @@ impl RouteRepository {
                 .await
             }
             (None, _) => {
-                sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&format!(
+                sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&format!(
                     "{} ORDER BY r.created_at DESC LIMIT $1 OFFSET $2",
                     base_query
                 ))
@@ -991,13 +1004,15 @@ impl RouteRepository {
                 rc.id as route_config_id,
                 rc.name as route_config_name,
                 rc.team as route_config_team,
+                tm.name as route_config_team_name,
                 rc.configuration,
-                COALESCE(mt.enabled, 0) as mcp_enabled,
+                COALESCE(mt.enabled, false) as mcp_enabled,
                 mt.name as mcp_tool_name,
                 COALESCE((SELECT COUNT(*) FROM route_filters rf WHERE rf.route_id = r.id), 0) as filter_count
             FROM routes r
             INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id
             INNER JOIN route_configs rc ON vh.route_config_id = rc.id
+            LEFT JOIN teams tm ON rc.team = tm.id
             LEFT JOIN mcp_tools mt ON mt.route_id = r.id
             WHERE rc.team IN ({})
             "#,
@@ -1008,7 +1023,7 @@ impl RouteRepository {
             (Some(_), Some("enabled")) => {
                 format!(
                     "{} AND (r.name LIKE ${} OR r.path_pattern LIKE ${} OR vh.name LIKE ${}) \
-                     AND COALESCE(mt.enabled, 0) = 1 \
+                     AND COALESCE(mt.enabled, false) = true \
                      ORDER BY r.created_at DESC LIMIT ${} OFFSET ${}",
                     base_query,
                     team_placeholder_count + 1,
@@ -1021,7 +1036,7 @@ impl RouteRepository {
             (Some(_), Some("disabled")) => {
                 format!(
                     "{} AND (r.name LIKE ${} OR r.path_pattern LIKE ${} OR vh.name LIKE ${}) \
-                     AND COALESCE(mt.enabled, 0) = 0 \
+                     AND COALESCE(mt.enabled, false) = false \
                      ORDER BY r.created_at DESC LIMIT ${} OFFSET ${}",
                     base_query,
                     team_placeholder_count + 1,
@@ -1045,7 +1060,7 @@ impl RouteRepository {
             }
             (None, Some("enabled")) => {
                 format!(
-                    "{} AND COALESCE(mt.enabled, 0) = 1 \
+                    "{} AND COALESCE(mt.enabled, false) = true \
                      ORDER BY r.created_at DESC LIMIT ${} OFFSET ${}",
                     base_query,
                     team_placeholder_count + 1,
@@ -1054,7 +1069,7 @@ impl RouteRepository {
             }
             (None, Some("disabled")) => {
                 format!(
-                    "{} AND COALESCE(mt.enabled, 0) = 0 \
+                    "{} AND COALESCE(mt.enabled, false) = false \
                      ORDER BY r.created_at DESC LIMIT ${} OFFSET ${}",
                     base_query,
                     team_placeholder_count + 1,
@@ -1071,7 +1086,7 @@ impl RouteRepository {
             }
         };
 
-        let mut query = sqlx::query_as::<Sqlite, RouteWithRelatedDataRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, RouteWithRelatedDataRow>(&query_str);
 
         // Bind team parameters
         for team in teams {
@@ -1145,12 +1160,12 @@ impl RouteRepository {
             match (search, mcp_filter) {
                 (Some(_), Some("enabled")) => format!(
                     "{} AND (r.name LIKE $1 OR r.path_pattern LIKE $1 OR vh.name LIKE $1) \
-                     AND COALESCE(mt.enabled, 0) = 1",
+                     AND COALESCE(mt.enabled, false) = true",
                     base_query
                 ),
                 (Some(_), Some("disabled")) => format!(
                     "{} AND (r.name LIKE $1 OR r.path_pattern LIKE $1 OR vh.name LIKE $1) \
-                     AND COALESCE(mt.enabled, 0) = 0",
+                     AND COALESCE(mt.enabled, false) = false",
                     base_query
                 ),
                 (Some(_), _) => format!(
@@ -1158,10 +1173,10 @@ impl RouteRepository {
                     base_query
                 ),
                 (None, Some("enabled")) => {
-                    format!("{} AND COALESCE(mt.enabled, 0) = 1", base_query)
+                    format!("{} AND COALESCE(mt.enabled, false) = true", base_query)
                 }
                 (None, Some("disabled")) => {
-                    format!("{} AND COALESCE(mt.enabled, 0) = 0", base_query)
+                    format!("{} AND COALESCE(mt.enabled, false) = false", base_query)
                 }
                 (None, _) => base_query,
             }
@@ -1170,7 +1185,7 @@ impl RouteRepository {
             match (search, mcp_filter) {
                 (Some(_), Some("enabled")) => format!(
                     "{} AND (r.name LIKE ${} OR r.path_pattern LIKE ${} OR vh.name LIKE ${}) \
-                     AND COALESCE(mt.enabled, 0) = 1",
+                     AND COALESCE(mt.enabled, false) = true",
                     base_query,
                     team_count + 1,
                     team_count + 1,
@@ -1178,7 +1193,7 @@ impl RouteRepository {
                 ),
                 (Some(_), Some("disabled")) => format!(
                     "{} AND (r.name LIKE ${} OR r.path_pattern LIKE ${} OR vh.name LIKE ${}) \
-                     AND COALESCE(mt.enabled, 0) = 0",
+                     AND COALESCE(mt.enabled, false) = false",
                     base_query,
                     team_count + 1,
                     team_count + 1,
@@ -1192,16 +1207,16 @@ impl RouteRepository {
                     team_count + 1
                 ),
                 (None, Some("enabled")) => {
-                    format!("{} AND COALESCE(mt.enabled, 0) = 1", base_query)
+                    format!("{} AND COALESCE(mt.enabled, false) = true", base_query)
                 }
                 (None, Some("disabled")) => {
-                    format!("{} AND COALESCE(mt.enabled, 0) = 0", base_query)
+                    format!("{} AND COALESCE(mt.enabled, false) = false", base_query)
                 }
                 (None, _) => base_query,
             }
         };
 
-        let mut query = sqlx::query_scalar::<Sqlite, i64>(&query_str);
+        let mut query = sqlx::query_scalar::<sqlx::Postgres, i64>(&query_str);
 
         // Bind team parameters (if any)
         for team in teams {
@@ -1271,7 +1286,7 @@ impl RouteRepository {
             placeholders.join(", ")
         );
 
-        let mut query = sqlx::query_scalar::<Sqlite, i64>(&query_str);
+        let mut query = sqlx::query_scalar::<sqlx::Postgres, i64>(&query_str);
         for team in teams {
             query = query.bind(team);
         }

@@ -34,8 +34,8 @@ CREATE INDEX IF NOT EXISTS idx_route_configs_import_id ON route_configs(import_i
 CREATE TABLE route_config_filters (
     route_config_id TEXT NOT NULL,
     filter_id TEXT NOT NULL,
-    filter_order INTEGER NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    filter_order BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (route_config_id) REFERENCES route_configs(id) ON DELETE CASCADE,
     FOREIGN KEY (filter_id) REFERENCES filters(id) ON DELETE RESTRICT,
@@ -64,8 +64,8 @@ CREATE INDEX idx_routes_virtual_host ON routes(virtual_host_id);
 CREATE TABLE route_filters (
     route_id TEXT NOT NULL,
     filter_id TEXT NOT NULL,
-    filter_order INTEGER NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    filter_order BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (route_id) REFERENCES routes(id) ON DELETE CASCADE,
     FOREIGN KEY (filter_id) REFERENCES filters(id) ON DELETE RESTRICT,
@@ -86,8 +86,8 @@ CREATE INDEX idx_route_filters_filter ON route_filters(filter_id);
 CREATE TABLE listener_route_configs (
     listener_id TEXT NOT NULL,
     route_config_id TEXT NOT NULL,
-    route_order INTEGER NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    route_order BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (listener_id) REFERENCES listeners(id) ON DELETE CASCADE,
     FOREIGN KEY (route_config_id) REFERENCES route_configs(id) ON DELETE CASCADE,

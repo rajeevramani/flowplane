@@ -7,7 +7,8 @@ use crate::support::{read_json, send_request, setup_test_app};
 async fn contract_delete_tokens_revokes_token() {
     let app = setup_test_app().await;
 
-    let admin = app.issue_token("token-revoker", &["tokens:write", "tokens:read"]).await;
+    let admin =
+        app.issue_token("token-revoker", &["admin:all", "tokens:write", "tokens:read"]).await;
 
     let created = app
         .token_service

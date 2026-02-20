@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use crate::common::{
-    api_client::{setup_dev_context, simple_cluster, simple_listener, simple_route, ApiClient},
+    api_client::{setup_envoy_context, simple_cluster, simple_listener, simple_route, ApiClient},
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
     timeout::{with_timeout, TestTimeout},
@@ -37,7 +37,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_098_debug_ext_authz_step_by_step")
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_098_debug_ext_authz_step_by_step")
         .await
         .expect("Setup should succeed");
 
@@ -446,8 +447,9 @@ async fn test_100_setup_ext_authz() {
     }
 
     let api = ApiClient::new(harness.api_url());
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
     let ctx =
-        setup_dev_context(&api, "test_100_setup_ext_authz").await.expect("Setup should succeed");
+        setup_envoy_context(&api, "test_100_setup_ext_authz").await.expect("Setup should succeed");
 
     // Get ext_authz mock server endpoint
     let authz_endpoint =
@@ -583,7 +585,9 @@ async fn test_101_authz_allow() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_101_authz_allow").await.expect("Setup should succeed");
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx =
+        setup_envoy_context(&api, "test_101_authz_allow").await.expect("Setup should succeed");
 
     // Setup infrastructure (same as test_100)
     let authz_endpoint =
@@ -798,7 +802,8 @@ async fn test_102_authz_deny() {
     }
 
     let api = ApiClient::new(harness.api_url());
-    let ctx = setup_dev_context(&api, "test_102_authz_deny").await.expect("Setup should succeed");
+    // Use envoy context - creates resources under E2E_SHARED_TEAM so Envoy can see them
+    let ctx = setup_envoy_context(&api, "test_102_authz_deny").await.expect("Setup should succeed");
 
     // Setup infrastructure
     let authz_endpoint =

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::encode::IsNull;
 use sqlx::error::BoxDynError;
-use sqlx::{Decode, Encode, Sqlite, Type};
+use sqlx::{Decode, Encode, Postgres, Type};
 use std::fmt;
 use std::str::FromStr;
 use utoipa::ToSchema;
@@ -93,24 +93,24 @@ macro_rules! domain_id {
         }
 
         // SQLx trait implementations for database compatibility
-        impl Type<Sqlite> for $name {
-            fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
-                <String as Type<Sqlite>>::type_info()
+        impl Type<Postgres> for $name {
+            fn type_info() -> sqlx::postgres::PgTypeInfo {
+                <String as Type<Postgres>>::type_info()
             }
         }
 
-        impl<'q> Encode<'q, Sqlite> for $name {
+        impl<'q> Encode<'q, Postgres> for $name {
             fn encode_by_ref(
                 &self,
-                buf: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
+                buf: &mut sqlx::postgres::PgArgumentBuffer,
             ) -> Result<IsNull, BoxDynError> {
-                <String as Encode<'q, Sqlite>>::encode_by_ref(&self.0, buf)
+                <String as Encode<'q, Postgres>>::encode_by_ref(&self.0, buf)
             }
         }
 
-        impl<'r> Decode<'r, Sqlite> for $name {
-            fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, BoxDynError> {
-                let s = <String as Decode<'r, Sqlite>>::decode(value)?;
+        impl<'r> Decode<'r, Postgres> for $name {
+            fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, BoxDynError> {
+                let s = <String as Decode<'r, Postgres>>::decode(value)?;
                 Ok(Self(s))
             }
         }
@@ -201,6 +201,16 @@ domain_id!(
 domain_id!(
     /// Unique identifier for a dataplane resource (Envoy instance)
     DataplaneId
+);
+
+domain_id!(
+    /// Unique identifier for an organization
+    OrgId
+);
+
+domain_id!(
+    /// Unique identifier for an invitation
+    InvitationId
 );
 
 #[cfg(test)]

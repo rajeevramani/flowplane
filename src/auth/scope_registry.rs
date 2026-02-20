@@ -6,7 +6,7 @@
 //! - Provides both sync and async validation methods
 //! - Supports team-scoped patterns with wildcards
 
-use crate::errors::Result;
+use crate::errors::{FlowplaneError, Result};
 use crate::storage::repositories::{ScopeDefinition, ScopeRepository, SqlxScopeRepository};
 use crate::storage::DbPool;
 use lazy_static::lazy_static;
@@ -16,13 +16,20 @@ use std::sync::{Arc, RwLock};
 
 lazy_static! {
     /// Regex for validating team name format
+    /// NOTE: expect() acceptable - pattern is validated by tests
     static ref TEAM_NAME_REGEX: Regex = Regex::new(r"^[a-z0-9-]+$")
-        .expect("TEAM_NAME_REGEX should be valid");
+        .expect("BUG: TEAM_NAME_REGEX pattern is invalid - validated by tests");
 
     /// Regex for validating scope format (basic structure check)
+    /// Supports:
+    /// - `resource:action` (e.g., `routes:read`)
+    /// - `team:name:resource:action` (e.g., `team:platform:routes:read`)
+    /// - `team:name:*:*` (e.g., `team:platform:*:*`)
+    /// - `org:name:role` (e.g., `org:acme:admin`, `org:acme:member`)
+    /// NOTE: expect() acceptable - pattern is validated by tests
     static ref SCOPE_FORMAT_REGEX: Regex = Regex::new(
-        r"^(team:[a-z0-9-]+:[a-z0-9-]+:[a-z]+|team:[a-z0-9-]+:\*:\*|[a-z0-9-]+:[a-z]+)$"
-    ).expect("SCOPE_FORMAT_REGEX should be valid");
+        r"^(team:[a-z0-9-]+:[a-z0-9-]+:[a-z]+|team:[a-z0-9-]+:\*:\*|org:[a-z0-9-]+:(admin|member)|[a-z0-9-]+:[a-z]+)$"
+    ).expect("BUG: SCOPE_FORMAT_REGEX pattern is invalid - validated by tests");
 }
 
 /// Cached scope data for fast synchronous validation
@@ -79,7 +86,10 @@ impl ScopeRegistry {
                 .insert(scope.action.clone());
         }
 
-        let mut cache = self.cache.write().expect("RwLock poisoned");
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|_| FlowplaneError::sync("Scope registry cache lock poisoned"))?;
         cache.valid_scopes = valid_scopes;
         cache.valid_resources = valid_resources;
         cache.resource_actions = resource_actions;
@@ -92,7 +102,7 @@ impl ScopeRegistry {
     /// Check if a scope is valid (synchronous, uses cache)
     pub fn is_valid_scope(&self, scope: &str) -> bool {
         // First check format
-        if !SCOPE_FORMAT_REGEX.is_match(scope) {
+        if !is_valid_scope_format(scope) {
             return false;
         }
 
@@ -101,8 +111,19 @@ impl ScopeRegistry {
             return self.is_valid_team_scope(scope);
         }
 
-        // Check against cached scopes
-        let cache = self.cache.read().expect("RwLock poisoned");
+        // Handle org-scoped patterns: org:{name}:admin or org:{name}:member
+        if scope.starts_with("org:") {
+            return self.is_valid_org_scope(scope);
+        }
+
+        // Check against cached scopes - fail closed on lock failure
+        let cache = match self.cache.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - denying access");
+                return false;
+            }
+        };
         cache.valid_scopes.contains(scope)
     }
 
@@ -124,7 +145,14 @@ impl ScopeRegistry {
             return false;
         }
 
-        let cache = self.cache.read().expect("RwLock poisoned");
+        // Fail closed on lock failure
+        let cache = match self.cache.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - denying access");
+                return false;
+            }
+        };
 
         // Handle wildcards
         if resource == "*" && action == "*" {
@@ -145,26 +173,78 @@ impl ScopeRegistry {
         false
     }
 
+    /// Check if an org-scoped pattern is valid
+    fn is_valid_org_scope(&self, scope: &str) -> bool {
+        let parts: Vec<&str> = scope.split(':').collect();
+
+        // Org scopes must have exactly 3 parts: org:{name}:{role}
+        if parts.len() != 3 || parts[0] != "org" {
+            return false;
+        }
+
+        let org_name = parts[1];
+        let role = parts[2];
+
+        // Validate org name format (same rules as team names)
+        if !TEAM_NAME_REGEX.is_match(org_name) {
+            return false;
+        }
+
+        // Valid org roles are admin and member
+        matches!(role, "admin" | "member")
+    }
+
     /// Get all enabled scope definitions (for admin API)
+    /// Returns empty Vec if cache is unavailable.
     pub fn get_all_scopes(&self) -> Vec<ScopeDefinition> {
-        self.cache.read().expect("RwLock poisoned").definitions.clone()
+        match self.cache.read() {
+            Ok(cache) => cache.definitions.clone(),
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - returning empty");
+                Vec::new()
+            }
+        }
     }
 
     /// Get UI-visible scope definitions (for public API)
+    /// Returns empty Vec if cache is unavailable.
     pub fn get_ui_scopes(&self) -> Vec<ScopeDefinition> {
-        self.cache.read().expect("RwLock poisoned").ui_definitions.clone()
+        match self.cache.read() {
+            Ok(cache) => cache.ui_definitions.clone(),
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - returning empty");
+                Vec::new()
+            }
+        }
     }
 
     /// Get valid resources
+    /// Returns empty Vec if cache is unavailable.
     pub fn get_resources(&self) -> Vec<String> {
-        self.cache.read().expect("RwLock poisoned").valid_resources.iter().cloned().collect()
+        match self.cache.read() {
+            Ok(cache) => cache.valid_resources.iter().cloned().collect(),
+            Err(_) => {
+                tracing::error!("Scope registry cache lock poisoned - returning empty");
+                Vec::new()
+            }
+        }
     }
 
     /// Validate a scope and return detailed error if invalid
     pub fn validate_scope(&self, scope: &str) -> std::result::Result<(), String> {
-        if !SCOPE_FORMAT_REGEX.is_match(scope) {
+        if !is_valid_scope_format(scope) {
             return Err(format!(
                 "Invalid scope format '{}'. Expected format: 'resource:action' or 'team:name:resource:action'",
+                scope
+            ));
+        }
+
+        if scope.starts_with("org:") {
+            if self.is_valid_org_scope(scope) {
+                return Ok(());
+            }
+            return Err(format!(
+                "Invalid org scope '{}'. Expected format: 'org:{{name}}:admin' or 'org:{{name}}:member'",
                 scope
             ));
         }
@@ -179,7 +259,10 @@ impl ScopeRegistry {
                 let resource = parts[2];
                 let action = parts[3];
 
-                let cache = self.cache.read().expect("RwLock poisoned");
+                let cache = self
+                    .cache
+                    .read()
+                    .map_err(|_| "Scope registry unavailable - cache lock poisoned".to_string())?;
                 if resource != "*" && !cache.valid_resources.contains(resource) {
                     return Err(format!(
                         "Unknown resource '{}' in scope '{}'. Valid resources: {:?}",
@@ -257,9 +340,14 @@ pub async fn init_scope_registry(pool: DbPool) -> Result<()> {
 }
 
 /// Get the global scope registry
-/// Panics if not initialized - call `init_scope_registry()` first
+///
+/// # Panics
+/// Panics if not initialized - call `init_scope_registry()` first.
+/// This is a programming error, not a runtime failure.
 pub fn get_scope_registry() -> &'static Arc<ScopeRegistry> {
-    SCOPE_REGISTRY.get().expect("Scope registry not initialized. Call init_scope_registry() first.")
+    SCOPE_REGISTRY
+        .get()
+        .expect("BUG: Scope registry not initialized - call init_scope_registry() first")
 }
 
 /// Check if scope registry is initialized
@@ -275,8 +363,24 @@ pub fn validate_scope_sync(scope: &str) -> bool {
     } else {
         // Fallback to format validation only if registry not initialized
         // This allows validation to work during tests without full setup
-        SCOPE_FORMAT_REGEX.is_match(scope)
+        is_valid_scope_format(scope)
     }
+}
+
+/// Check if a scope string has valid format.
+///
+/// The regex alone can't distinguish `org:acme` (invalid two-part org scope)
+/// from `resource:action` (valid). This function adds the semantic check.
+fn is_valid_scope_format(scope: &str) -> bool {
+    if !SCOPE_FORMAT_REGEX.is_match(scope) {
+        return false;
+    }
+    // Reject two-part scopes starting with "org:" or "team:" (these need 3 or 4 parts)
+    let parts: Vec<&str> = scope.split(':').collect();
+    if parts.len() == 2 && (parts[0] == "org" || parts[0] == "team") {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -284,24 +388,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_scope_format_regex() {
+    fn test_scope_format_validation() {
         // Valid formats
-        assert!(SCOPE_FORMAT_REGEX.is_match("tokens:read"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("clusters:write"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("admin:all"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("api-definitions:read"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("custom-wasm-filters:read"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("team:platform:routes:read"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("team:eng-team:api-definitions:write"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("team:team-test-1:clusters:read"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("team:engineering:custom-wasm-filters:read"));
-        assert!(SCOPE_FORMAT_REGEX.is_match("team:platform:*:*"));
+        assert!(is_valid_scope_format("tokens:read"));
+        assert!(is_valid_scope_format("clusters:write"));
+        assert!(is_valid_scope_format("admin:all"));
+        assert!(is_valid_scope_format("api-definitions:read"));
+        assert!(is_valid_scope_format("custom-wasm-filters:read"));
+        assert!(is_valid_scope_format("team:platform:routes:read"));
+        assert!(is_valid_scope_format("team:eng-team:api-definitions:write"));
+        assert!(is_valid_scope_format("team:team-test-1:clusters:read"));
+        assert!(is_valid_scope_format("team:engineering:custom-wasm-filters:read"));
+        assert!(is_valid_scope_format("team:platform:*:*"));
+
+        // Org scope formats
+        assert!(is_valid_scope_format("org:acme:admin"));
+        assert!(is_valid_scope_format("org:acme:member"));
+        assert!(is_valid_scope_format("org:my-org-1:admin"));
+
+        // Invalid org formats
+        assert!(!is_valid_scope_format("org:acme:viewer"));
+        assert!(!is_valid_scope_format("org:acme:owner"));
+        assert!(!is_valid_scope_format("org:ACME:admin"));
+        assert!(!is_valid_scope_format("org:acme"));
 
         // Invalid formats
-        assert!(!SCOPE_FORMAT_REGEX.is_match("bad_scope"));
-        assert!(!SCOPE_FORMAT_REGEX.is_match("UPPERCASE:READ"));
-        assert!(!SCOPE_FORMAT_REGEX.is_match("team:only-two"));
-        assert!(!SCOPE_FORMAT_REGEX.is_match(""));
+        assert!(!is_valid_scope_format("bad_scope"));
+        assert!(!is_valid_scope_format("UPPERCASE:READ"));
+        assert!(!is_valid_scope_format("team:only-two"));
+        assert!(!is_valid_scope_format(""));
+        // Two-part team/org prefixes are not valid resource:action scopes
+        assert!(!is_valid_scope_format("team:platform"));
     }
 
     #[test]
@@ -322,6 +439,9 @@ mod tests {
         // When registry is not initialized, falls back to format validation
         assert!(validate_scope_sync("tokens:read"));
         assert!(validate_scope_sync("team:platform:routes:read"));
+        assert!(validate_scope_sync("org:acme:admin"));
+        assert!(validate_scope_sync("org:acme:member"));
+        assert!(!validate_scope_sync("org:acme:viewer"));
         assert!(!validate_scope_sync("invalid"));
     }
 }

@@ -2,7 +2,7 @@ use crate::domain::{FilterId, ListenerId, RouteConfigId, RouteId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 // ============================================================================
@@ -62,6 +62,7 @@ struct FilterRow {
     pub version: i64,
     pub source: String,
     pub team: String,
+    pub team_name: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -75,7 +76,10 @@ pub struct FilterData {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: String,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -91,6 +95,7 @@ impl From<FilterRow> for FilterData {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             created_at: row.created_at,
             updated_at: row.updated_at,
         }
@@ -177,9 +182,9 @@ impl FilterRepository {
 
     #[instrument(skip(self), fields(filter_id = %id), name = "db_get_filter_by_id")]
     pub async fn get_by_id(&self, id: &FilterId) -> Result<FilterData> {
-        let row = sqlx::query_as::<Sqlite, FilterRow>(
-            "SELECT id, name, filter_type, description, configuration, version, source, team, created_at, updated_at \
-             FROM filters WHERE id = $1"
+        let row = sqlx::query_as::<sqlx::Postgres, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, t.name as team_name, f.created_at, f.updated_at \
+             FROM filters f LEFT JOIN teams t ON f.team = t.id WHERE f.id = $1"
         )
         .bind(id.as_str())
         .fetch_one(&self.pool)
@@ -202,9 +207,9 @@ impl FilterRepository {
 
     #[instrument(skip(self), fields(filter_name = %name), name = "db_get_filter_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<FilterData> {
-        let row = sqlx::query_as::<Sqlite, FilterRow>(
-            "SELECT id, name, filter_type, description, configuration, version, source, team, created_at, updated_at \
-             FROM filters WHERE name = $1"
+        let row = sqlx::query_as::<sqlx::Postgres, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, t.name as team_name, f.created_at, f.updated_at \
+             FROM filters f LEFT JOIN teams t ON f.team = t.id WHERE f.name = $1"
         )
         .bind(name)
         .fetch_one(&self.pool)
@@ -230,9 +235,9 @@ impl FilterRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, FilterRow>(
-            "SELECT id, name, filter_type, description, configuration, version, source, team, created_at, updated_at \
-             FROM filters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        let rows = sqlx::query_as::<sqlx::Postgres, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, t.name as team_name, f.created_at, f.updated_at \
+             FROM filters f LEFT JOIN teams t ON f.team = t.id ORDER BY f.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -249,6 +254,10 @@ impl FilterRepository {
         Ok(rows.into_iter().map(FilterData::from).collect())
     }
 
+    /// Lists filters filtered by teams.
+    ///
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_filters_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -257,7 +266,7 @@ impl FilterRepository {
         offset: Option<i32>,
     ) -> Result<Vec<FilterData>> {
         if teams.is_empty() {
-            return self.list(limit, offset).await;
+            return Ok(vec![]);
         }
 
         let limit = limit.unwrap_or(100).min(1000);
@@ -270,20 +279,20 @@ impl FilterRepository {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let where_clause = format!("WHERE team IN ({})", placeholders);
+        let where_clause = format!("WHERE f.team IN ({})", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, filter_type, description, configuration, version, source, team, created_at, updated_at \
-             FROM filters \
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, t.name as team_name, f.created_at, f.updated_at \
+             FROM filters f LEFT JOIN teams t ON f.team = t.id \
              {} \
-             ORDER BY created_at DESC \
+             ORDER BY f.created_at DESC \
              LIMIT ${} OFFSET ${}",
             where_clause,
             teams.len() + 1,
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, FilterRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, FilterRow>(&query_str);
 
         for team in teams {
             query = query.bind(team);
@@ -380,6 +389,28 @@ impl FilterRepository {
         Ok(count > 0)
     }
 
+    /// Count filters by filter type
+    ///
+    /// Used to check if any filter instances exist for a given custom WASM filter type
+    /// before allowing deletion of the custom filter definition.
+    #[instrument(skip(self), fields(filter_type = %filter_type), name = "db_count_filters_by_type")]
+    pub async fn count_by_filter_type(&self, filter_type: &str) -> Result<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM filters WHERE filter_type = $1")
+                .bind(filter_type)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, filter_type = %filter_type, "Failed to count filters by type");
+                    FlowplaneError::Database {
+                        source: e,
+                        context: format!("Failed to count filters by type: {}", filter_type),
+                    }
+                })?;
+
+        Ok(count)
+    }
+
     // Filter attachment methods
 
     #[instrument(skip(self), fields(route_id = %route_id, filter_id = %filter_id, order = %order), name = "db_attach_filter_to_route")]
@@ -437,9 +468,10 @@ impl FilterRepository {
 
     #[instrument(skip(self), fields(route_id = %route_id), name = "db_list_route_filters")]
     pub async fn list_route_filters(&self, route_id: &RouteId) -> Result<Vec<FilterData>> {
-        let rows = sqlx::query_as::<Sqlite, FilterRow>(
-            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, f.created_at, f.updated_at \
+        let rows = sqlx::query_as::<sqlx::Postgres, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, t.name as team_name, f.created_at, f.updated_at \
              FROM filters f \
+             LEFT JOIN teams t ON f.team = t.id \
              INNER JOIN route_filters rf ON f.id = rf.filter_id \
              WHERE rf.route_id = $1 \
              ORDER BY rf.filter_order ASC"
@@ -520,8 +552,8 @@ impl FilterRepository {
             // Check for unique constraint violations and provide helpful error messages
             if let Some(db_err) = e.as_database_error() {
                 if let Some(code) = db_err.code() {
-                    // SQLite UNIQUE constraint violation code is 2067
-                    if code.as_ref() == "2067" {
+                    // PostgreSQL unique violation code is 23505
+                    if code.as_ref() == "23505" {
                         let msg = db_err.message();
                         // Check which constraint was violated
                         if msg.contains("filter_order") {
@@ -576,7 +608,7 @@ impl FilterRepository {
         let now = chrono::Utc::now();
         let settings_json = settings.as_ref().map(|s| s.to_string());
 
-        // Use INSERT OR REPLACE (SQLite UPSERT)
+        // Use ON CONFLICT ... DO UPDATE (PostgreSQL UPSERT)
         sqlx::query(
             "INSERT INTO route_config_filters (route_config_id, filter_id, filter_order, created_at, settings) \
              VALUES ($1, $2, $3, $4, $5) \
@@ -667,9 +699,10 @@ impl FilterRepository {
         &self,
         route_config_id: &RouteConfigId,
     ) -> Result<Vec<FilterData>> {
-        let rows = sqlx::query_as::<Sqlite, FilterRow>(
-            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, f.created_at, f.updated_at \
+        let rows = sqlx::query_as::<sqlx::Postgres, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, t.name as team_name, f.created_at, f.updated_at \
              FROM filters f \
+             LEFT JOIN teams t ON f.team = t.id \
              INNER JOIN route_config_filters rcf ON f.id = rcf.filter_id \
              WHERE rcf.route_config_id = $1 \
              ORDER BY rcf.filter_order ASC"
@@ -734,8 +767,8 @@ impl FilterRepository {
             // Check for unique constraint violations and provide helpful error messages
             if let Some(db_err) = e.as_database_error() {
                 if let Some(code) = db_err.code() {
-                    // SQLite UNIQUE constraint violation code is 2067
-                    if code.as_ref() == "2067" {
+                    // PostgreSQL unique violation code is 23505
+                    if code.as_ref() == "23505" {
                         let msg = db_err.message();
                         // Check which constraint was violated
                         if msg.contains("filter_order") {
@@ -806,9 +839,10 @@ impl FilterRepository {
 
     #[instrument(skip(self), fields(listener_id = %listener_id), name = "db_list_listener_filters")]
     pub async fn list_listener_filters(&self, listener_id: &ListenerId) -> Result<Vec<FilterData>> {
-        let rows = sqlx::query_as::<Sqlite, FilterRow>(
-            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, f.created_at, f.updated_at \
+        let rows = sqlx::query_as::<sqlx::Postgres, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, t.name as team_name, f.created_at, f.updated_at \
              FROM filters f \
+             LEFT JOIN teams t ON f.team = t.id \
              INNER JOIN listener_filters lf ON f.id = lf.filter_id \
              WHERE lf.listener_id = $1 \
              ORDER BY lf.filter_order ASC"
@@ -915,9 +949,9 @@ impl FilterRepository {
     #[instrument(skip(self), fields(cluster_name = %cluster_name), name = "db_find_filters_by_cluster")]
     pub async fn find_by_cluster(&self, cluster_name: &str) -> Result<Vec<(FilterData, String)>> {
         // Get all filters and check their JSON configuration for cluster references
-        let rows = sqlx::query_as::<Sqlite, FilterRow>(
-            "SELECT id, name, filter_type, description, configuration, version, source, team, created_at, updated_at \
-             FROM filters WHERE filter_type IN ('oauth2', 'jwt_auth', 'ext_authz')"
+        let rows = sqlx::query_as::<sqlx::Postgres, FilterRow>(
+            "SELECT f.id, f.name, f.filter_type, f.description, f.configuration, f.version, f.source, f.team, t.name as team_name, f.created_at, f.updated_at \
+             FROM filters f LEFT JOIN teams t ON f.team = t.id WHERE f.filter_type IN ('oauth2', 'jwt_auth', 'ext_authz')"
         )
         .fetch_all(&self.pool)
         .await
@@ -1044,7 +1078,7 @@ impl FilterRepository {
             filter_order: i64,
         }
 
-        let rows = sqlx::query_as::<Sqlite, InstallationRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, InstallationRow>(
             "SELECT l.id as listener_id, l.name as listener_name, l.address as listener_address, lf.filter_order \
              FROM listener_filters lf \
              INNER JOIN listeners l ON lf.listener_id = l.id \
@@ -1092,7 +1126,7 @@ impl FilterRepository {
             settings: Option<String>,
         }
 
-        let route_config_rows = sqlx::query_as::<Sqlite, RouteConfigRow>(
+        let route_config_rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
             "SELECT rc.id as route_config_id, rc.name as route_config_name, rcf.settings \
              FROM route_config_filters rcf \
              INNER JOIN route_configs rc ON rcf.route_config_id = rc.id \
@@ -1129,7 +1163,7 @@ impl FilterRepository {
             settings: Option<String>,
         }
 
-        let vhost_rows = sqlx::query_as::<Sqlite, VirtualHostRow>(
+        let vhost_rows = sqlx::query_as::<sqlx::Postgres, VirtualHostRow>(
             "SELECT vh.route_config_id, rc.name as route_config_name, vh.name as virtual_host_name, vhf.settings \
              FROM virtual_host_filters vhf \
              INNER JOIN virtual_hosts vh ON vhf.virtual_host_id = vh.id \
@@ -1168,7 +1202,7 @@ impl FilterRepository {
             settings: Option<String>,
         }
 
-        let route_rows = sqlx::query_as::<Sqlite, RouteRow>(
+        let route_rows = sqlx::query_as::<sqlx::Postgres, RouteRow>(
             "SELECT vh.route_config_id, rc.name as route_config_name, \
                     vh.name as virtual_host_name, r.name as route_name, rf.settings \
              FROM route_filters rf \

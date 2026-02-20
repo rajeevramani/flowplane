@@ -1120,4 +1120,419 @@ mod tests {
         // Should contain only type information
         assert!(schema_str.contains("string"));
     }
+
+    // ========================================================================
+    // STRING FORMAT EDGE CASES
+    // ========================================================================
+
+    #[test]
+    fn test_detect_ipv6_format() {
+        let engine = SchemaInferenceEngine::new();
+        // Standard IPv6 with zero compression
+        let schema = engine
+            .infer_from_value(&Value::String("2001:0db8:85a3::8a2e:0370:7334".to_string()))
+            .unwrap();
+        // Note: Current implementation doesn't detect IPv6, so format will be None
+        // This test documents the current behavior - IPv6 detection could be added
+        assert!(schema.format.is_none() || schema.format == Some(StringFormat::Ipv6));
+    }
+
+    #[test]
+    fn test_detect_time_format() {
+        let engine = SchemaInferenceEngine::new();
+        // Time format HH:MM:SS
+        let schema = engine.infer_from_value(&Value::String("14:30:45".to_string())).unwrap();
+        // Note: Current implementation doesn't detect standalone time format
+        // This test documents the current behavior - time detection could be added
+        assert!(schema.format.is_none() || schema.format == Some(StringFormat::Time));
+    }
+
+    #[test]
+    fn test_email_with_plus_sign() {
+        let engine = SchemaInferenceEngine::new();
+        // Email with plus sign (common for Gmail aliases)
+        let schema =
+            engine.infer_from_value(&Value::String("user+tag@example.com".to_string())).unwrap();
+        assert_eq!(schema.format, Some(StringFormat::Email));
+    }
+
+    #[test]
+    fn test_email_without_tld() {
+        let engine = SchemaInferenceEngine::new();
+        // Email without TLD (e.g., internal email systems)
+        let schema = engine.infer_from_value(&Value::String("user@localhost".to_string())).unwrap();
+        // Current implementation requires a dot in the domain, so this won't be detected as email
+        assert!(schema.format.is_none());
+    }
+
+    #[test]
+    fn test_uuid_uppercase() {
+        let engine = SchemaInferenceEngine::new();
+        // UUID with uppercase hex characters
+        let schema = engine
+            .infer_from_value(&Value::String("550E8400-E29B-41D4-A716-446655440000".to_string()))
+            .unwrap();
+        assert_eq!(schema.format, Some(StringFormat::Uuid));
+    }
+
+    #[test]
+    fn test_uuid_invalid_hex() {
+        let engine = SchemaInferenceEngine::new();
+        // Invalid UUID with non-hex characters
+        let schema = engine
+            .infer_from_value(&Value::String("550g8400-e29b-41d4-a716-446655440000".to_string()))
+            .unwrap();
+        // Should not be detected as UUID due to invalid hex character 'g'
+        assert!(schema.format.is_none());
+    }
+
+    #[test]
+    fn test_datetime_with_milliseconds() {
+        let engine = SchemaInferenceEngine::new();
+        // ISO 8601 DateTime with milliseconds
+        let schema = engine
+            .infer_from_value(&Value::String("2023-10-18T12:00:00.123Z".to_string()))
+            .unwrap();
+        assert_eq!(schema.format, Some(StringFormat::DateTime));
+    }
+
+    #[test]
+    fn test_datetime_with_timezone_offset() {
+        let engine = SchemaInferenceEngine::new();
+        // ISO 8601 DateTime with timezone offset
+        let schema = engine
+            .infer_from_value(&Value::String("2023-10-18T12:00:00+05:30".to_string()))
+            .unwrap();
+        assert_eq!(schema.format, Some(StringFormat::DateTime));
+    }
+
+    // ========================================================================
+    // COMPLEX JSON STRUCTURES
+    // ========================================================================
+
+    #[test]
+    fn test_heterogeneous_array() {
+        let engine = SchemaInferenceEngine::new();
+        // Array with mixed types: number, string, boolean, null
+        let value = serde_json::json!([1, "string", true, null]);
+        let schema = engine.infer_from_value(&value).unwrap();
+
+        assert_eq!(schema.schema_type, SchemaType::Array);
+        assert!(schema.items.is_some());
+
+        let items = schema.items.unwrap();
+        // Should be OneOf with all different types
+        match items.schema_type {
+            SchemaType::OneOf(ref types) => {
+                assert!(types.contains(&SchemaType::Integer));
+                assert!(types.contains(&SchemaType::String));
+                assert!(types.contains(&SchemaType::Boolean));
+                assert!(types.contains(&SchemaType::Null));
+            }
+            _ => panic!("Expected OneOf type for heterogeneous array"),
+        }
+    }
+
+    #[test]
+    fn test_deep_nesting() {
+        let engine = SchemaInferenceEngine::new();
+        // 5+ levels of nested objects
+        let value = serde_json::json!({
+            "level1": {
+                "level2": {
+                    "level3": {
+                        "level4": {
+                            "level5": {
+                                "value": "deep"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let schema = engine.infer_from_value(&value).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Object);
+
+        // Navigate to level5
+        let l1 = schema.properties.as_ref().unwrap().get("level1").unwrap();
+        assert_eq!(l1.schema_type, SchemaType::Object);
+
+        let l2 = l1.properties.as_ref().unwrap().get("level2").unwrap();
+        assert_eq!(l2.schema_type, SchemaType::Object);
+
+        let l3 = l2.properties.as_ref().unwrap().get("level3").unwrap();
+        assert_eq!(l3.schema_type, SchemaType::Object);
+
+        let l4 = l3.properties.as_ref().unwrap().get("level4").unwrap();
+        assert_eq!(l4.schema_type, SchemaType::Object);
+
+        let l5 = l4.properties.as_ref().unwrap().get("level5").unwrap();
+        assert_eq!(l5.schema_type, SchemaType::Object);
+
+        let value_schema = l5.properties.as_ref().unwrap().get("value").unwrap();
+        assert_eq!(value_schema.schema_type, SchemaType::String);
+    }
+
+    #[test]
+    fn test_arrays_of_arrays() {
+        let engine = SchemaInferenceEngine::new();
+        // Array containing arrays (2D array structure)
+        let value = serde_json::json!([[1, 2], [3, 4], [5, 6]]);
+        let schema = engine.infer_from_value(&value).unwrap();
+
+        assert_eq!(schema.schema_type, SchemaType::Array);
+        assert!(schema.items.is_some());
+
+        let items = schema.items.unwrap();
+        assert_eq!(items.schema_type, SchemaType::Array);
+
+        // Inner array items should be integers
+        assert!(items.items.is_some());
+        let inner_items = items.items.unwrap();
+        assert_eq!(inner_items.schema_type, SchemaType::Integer);
+    }
+
+    #[test]
+    fn test_empty_array() {
+        let engine = SchemaInferenceEngine::new();
+        // Empty array has no items to infer from
+        let value = serde_json::json!([]);
+        let schema = engine.infer_from_value(&value).unwrap();
+
+        assert_eq!(schema.schema_type, SchemaType::Array);
+        // Empty arrays have no items schema
+        assert!(schema.items.is_none());
+
+        // Array constraints should reflect empty array
+        assert!(schema.array_constraints.is_some());
+        let constraints = schema.array_constraints.unwrap();
+        assert_eq!(constraints.min_items, Some(0));
+        assert_eq!(constraints.max_items, Some(0));
+    }
+
+    #[test]
+    fn test_array_of_nulls() {
+        let engine = SchemaInferenceEngine::new();
+        // Array containing only null values
+        let value = serde_json::json!([null, null, null]);
+        let schema = engine.infer_from_value(&value).unwrap();
+
+        assert_eq!(schema.schema_type, SchemaType::Array);
+        assert!(schema.items.is_some());
+
+        let items = schema.items.unwrap();
+        assert_eq!(items.schema_type, SchemaType::Null);
+    }
+
+    #[test]
+    fn test_mixed_array_with_objects() {
+        let engine = SchemaInferenceEngine::new();
+        // Array mixing primitives and objects
+        let value = serde_json::json!([
+            1,
+            "string",
+            {"key": "value"},
+            [1, 2, 3]
+        ]);
+        let schema = engine.infer_from_value(&value).unwrap();
+
+        assert_eq!(schema.schema_type, SchemaType::Array);
+        assert!(schema.items.is_some());
+
+        let items = schema.items.unwrap();
+        // Should be OneOf with multiple types including object and array
+        match items.schema_type {
+            SchemaType::OneOf(ref types) => {
+                assert!(types.contains(&SchemaType::Integer));
+                assert!(types.contains(&SchemaType::String));
+                assert!(types.contains(&SchemaType::Object));
+                assert!(types.contains(&SchemaType::Array));
+            }
+            _ => panic!("Expected OneOf type for mixed array"),
+        }
+    }
+
+    // ========================================================================
+    // TYPE INFERENCE EDGE CASES
+    // ========================================================================
+
+    #[test]
+    fn test_number_vs_integer_one_point_zero() {
+        let engine = SchemaInferenceEngine::new();
+        // 1.0 should be detected as Number, not Integer
+        let schema = engine.infer_from_value(&serde_json::json!(1.0)).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Number);
+    }
+
+    #[test]
+    fn test_scientific_notation() {
+        let engine = SchemaInferenceEngine::new();
+        // Scientific notation should be detected as Number
+        let schema = engine.infer_from_value(&serde_json::json!(1.23e-10)).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Number);
+    }
+
+    #[test]
+    fn test_three_way_type_conflict() {
+        let engine = SchemaInferenceEngine::new();
+        // Start with integer
+        let mut schema = engine.infer_from_value(&serde_json::json!(42)).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Integer);
+
+        // Merge with string
+        let schema2 = engine.infer_from_value(&serde_json::json!("text")).unwrap();
+        schema.merge(&schema2);
+
+        // Should now be OneOf(Integer, String)
+        match &schema.schema_type {
+            SchemaType::OneOf(types) => {
+                assert_eq!(types.len(), 2);
+                assert!(types.contains(&SchemaType::Integer));
+                assert!(types.contains(&SchemaType::String));
+            }
+            _ => panic!("Expected OneOf after merging integer and string"),
+        }
+
+        // Merge with boolean
+        let schema3 = engine.infer_from_value(&serde_json::json!(true)).unwrap();
+        schema.merge(&schema3);
+
+        // Should now be OneOf(Boolean, Integer, String)
+        match &schema.schema_type {
+            SchemaType::OneOf(types) => {
+                assert_eq!(types.len(), 3);
+                assert!(types.contains(&SchemaType::Integer));
+                assert!(types.contains(&SchemaType::String));
+                assert!(types.contains(&SchemaType::Boolean));
+            }
+            _ => panic!("Expected OneOf with 3 types"),
+        }
+    }
+
+    #[test]
+    fn test_four_way_type_conflict_with_object() {
+        let engine = SchemaInferenceEngine::new();
+        // Create a 4-way type conflict: string + integer + boolean + object
+        let mut schema = engine.infer_from_value(&serde_json::json!("text")).unwrap();
+
+        let schema2 = engine.infer_from_value(&serde_json::json!(42)).unwrap();
+        schema.merge(&schema2);
+
+        let schema3 = engine.infer_from_value(&serde_json::json!(true)).unwrap();
+        schema.merge(&schema3);
+
+        let schema4 = engine.infer_from_value(&serde_json::json!({"key": "value"})).unwrap();
+        schema.merge(&schema4);
+
+        // Should be OneOf with 4 types
+        match &schema.schema_type {
+            SchemaType::OneOf(types) => {
+                assert_eq!(types.len(), 4);
+                assert!(types.contains(&SchemaType::String));
+                assert!(types.contains(&SchemaType::Integer));
+                assert!(types.contains(&SchemaType::Boolean));
+                assert!(types.contains(&SchemaType::Object));
+            }
+            _ => panic!("Expected OneOf with 4 types"),
+        }
+    }
+
+    #[test]
+    fn test_null_merging_only_nulls() {
+        let engine = SchemaInferenceEngine::new();
+        // Merging null + null + null should remain Null
+        let mut schema = engine.infer_from_value(&Value::Null).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Null);
+
+        let schema2 = engine.infer_from_value(&Value::Null).unwrap();
+        schema.merge(&schema2);
+        assert_eq!(schema.schema_type, SchemaType::Null);
+
+        let schema3 = engine.infer_from_value(&Value::Null).unwrap();
+        schema.merge(&schema3);
+        assert_eq!(schema.schema_type, SchemaType::Null);
+
+        // Stats should reflect 3 observations
+        assert_eq!(schema.stats.sample_count, 3);
+    }
+
+    #[test]
+    fn test_very_large_numbers() {
+        let engine = SchemaInferenceEngine::new();
+        // Number beyond JavaScript MAX_SAFE_INTEGER (2^53 - 1 = 9007199254740991)
+        let large_number = 9007199254740992_i64; // 2^53
+        let schema = engine.infer_from_value(&serde_json::json!(large_number)).unwrap();
+
+        // Should still be detected as Integer
+        assert_eq!(schema.schema_type, SchemaType::Integer);
+    }
+
+    #[test]
+    fn test_negative_scientific_notation() {
+        let engine = SchemaInferenceEngine::new();
+        // Negative scientific notation
+        let schema = engine.infer_from_value(&serde_json::json!(-5.67e+20)).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Number);
+    }
+
+    #[test]
+    fn test_integer_vs_number_merge() {
+        let engine = SchemaInferenceEngine::new();
+        // Merging integer and number should result in OneOf
+        let mut schema = engine.infer_from_value(&serde_json::json!(42)).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Integer);
+
+        let schema2 = engine.infer_from_value(&serde_json::json!(2.5)).unwrap();
+        assert_eq!(schema2.schema_type, SchemaType::Number);
+
+        schema.merge(&schema2);
+
+        // Should be OneOf(Integer, Number)
+        match &schema.schema_type {
+            SchemaType::OneOf(types) => {
+                assert_eq!(types.len(), 2);
+                assert!(types.contains(&SchemaType::Integer));
+                assert!(types.contains(&SchemaType::Number));
+            }
+            _ => panic!("Expected OneOf(Integer, Number)"),
+        }
+    }
+
+    #[test]
+    fn test_null_plus_type_merge() {
+        let engine = SchemaInferenceEngine::new();
+        // Merging null with other types (nullable pattern)
+        let mut schema = engine.infer_from_value(&Value::Null).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Null);
+
+        let schema2 = engine.infer_from_value(&serde_json::json!("text")).unwrap();
+        schema.merge(&schema2);
+
+        // Should be OneOf(Null, String) - nullable string
+        match &schema.schema_type {
+            SchemaType::OneOf(types) => {
+                assert_eq!(types.len(), 2);
+                assert!(types.contains(&SchemaType::Null));
+                assert!(types.contains(&SchemaType::String));
+            }
+            _ => panic!("Expected OneOf(Null, String)"),
+        }
+    }
+
+    #[test]
+    fn test_zero_as_integer() {
+        let engine = SchemaInferenceEngine::new();
+        // Zero should be detected as Integer
+        let schema = engine.infer_from_value(&serde_json::json!(0)).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Integer);
+    }
+
+    #[test]
+    fn test_negative_zero_as_number() {
+        let engine = SchemaInferenceEngine::new();
+        // -0.0 should be detected as Number
+        let schema = engine.infer_from_value(&serde_json::json!(-0.0)).unwrap();
+        assert_eq!(schema.schema_type, SchemaType::Number);
+    }
 }

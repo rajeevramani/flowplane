@@ -57,6 +57,10 @@ pub struct SessionResponse {
     pub teams: Vec<String>,
     /// Scopes granted to this session
     pub scopes: Vec<String>,
+    /// Organization ID (if user belongs to an org)
+    pub org_id: Option<String>,
+    /// Organization name (if user belongs to an org)
+    pub org_name: Option<String>,
 }
 
 /// Session information for validation
@@ -93,6 +97,24 @@ pub enum SameSitePolicy {
     Strict,
     Lax,
     None,
+}
+
+/// Extract the first organization name and derive org_id placeholder from org-scoped permissions.
+///
+/// Parses scopes matching `org:{name}:admin|member` and returns the first org found.
+/// Since users belong to a single org, the first match is sufficient.
+pub fn extract_org_from_scopes(scopes: &[String]) -> (Option<String>, Option<String>) {
+    for scope in scopes {
+        if scope.starts_with("org:") {
+            let parts: Vec<&str> = scope.split(':').collect();
+            if parts.len() == 3 && (parts[2] == "admin" || parts[2] == "member") {
+                // Return org_name in both fields for now; org_id will be resolved
+                // by middleware from the user's org_id field in the database
+                return (None, Some(parts[1].to_string()));
+            }
+        }
+    }
+    (None, None)
 }
 
 /// Extract team names from a list of scopes
@@ -264,6 +286,9 @@ impl SessionService {
             "Session created from setup token"
         );
 
+        // Extract org info from scopes
+        let (org_id, org_name) = extract_org_from_scopes(&setup_token_obj.scopes);
+
         Ok(SessionResponse {
             session_id,
             session_token: session_token_value,
@@ -271,6 +296,8 @@ impl SessionService {
             expires_at,
             teams,
             scopes: setup_token_obj.scopes,
+            org_id,
+            org_name,
         })
     }
 
@@ -365,6 +392,9 @@ impl SessionService {
             "Session created from user login"
         );
 
+        // Extract org info from scopes
+        let (org_id, org_name) = extract_org_from_scopes(&scopes);
+
         Ok(SessionResponse {
             session_id,
             session_token: session_token_value,
@@ -372,6 +402,8 @@ impl SessionService {
             expires_at,
             teams,
             scopes,
+            org_id,
+            org_name,
         })
     }
 
@@ -517,11 +549,11 @@ impl SessionService {
         }
 
         let id_part = parts[0];
-        if !id_part.starts_with("fp_setup_") {
-            return Err(Error::auth("Invalid setup token prefix", AuthErrorType::InvalidToken));
-        }
-
-        let id = id_part.strip_prefix("fp_setup_").unwrap().to_string();
+        // Note: strip_prefix is safe after starts_with check, but using ok_or_else for consistency
+        let id = id_part
+            .strip_prefix("fp_setup_")
+            .ok_or_else(|| Error::auth("Invalid setup token prefix", AuthErrorType::InvalidToken))?
+            .to_string();
         let secret = parts[1].to_string();
 
         Ok((id, secret))
@@ -535,11 +567,13 @@ impl SessionService {
         }
 
         let id_part = parts[0];
-        if !id_part.starts_with("fp_session_") {
-            return Err(Error::auth("Invalid session token prefix", AuthErrorType::InvalidToken));
-        }
-
-        let id = id_part.strip_prefix("fp_session_").unwrap().to_string();
+        // Note: strip_prefix is safe after starts_with check, but using ok_or_else for consistency
+        let id = id_part
+            .strip_prefix("fp_session_")
+            .ok_or_else(|| {
+                Error::auth("Invalid session token prefix", AuthErrorType::InvalidToken)
+            })?
+            .to_string();
         let secret = parts[1].to_string();
 
         Ok((id, secret))
@@ -591,29 +625,21 @@ impl SessionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DatabaseConfig;
-    use crate::storage::create_pool;
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn create_test_pool() -> crate::storage::DbPool {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        };
-        create_pool(&config).await.unwrap()
-    }
-
-    async fn create_test_service() -> SessionService {
-        let pool = create_test_pool().await;
+    async fn create_test_service() -> (TestDatabase, SessionService) {
+        let test_db = TestDatabase::new("auth_session").await;
+        let pool = test_db.pool.clone();
         let token_repo =
             Arc::new(crate::storage::repository::SqlxTokenRepository::new(pool.clone()));
         let audit_repo = Arc::new(AuditLogRepository::new(pool));
-        SessionService::new(token_repo, audit_repo)
+        let service = SessionService::new(token_repo, audit_repo);
+        (test_db, service)
     }
 
     #[tokio::test]
     async fn test_generate_csrf_token() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let token1 = service.generate_csrf_token().unwrap();
         let token2 = service.generate_csrf_token().unwrap();
@@ -633,7 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_teams_from_scopes() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let scopes = vec![
             "team:acme:*".to_string(),
@@ -652,7 +678,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_session_cookie() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let expires_at = Utc::now() + Duration::hours(24);
         let cookie = service.build_session_cookie("fp_session_test.secret", expires_at, true);
@@ -668,7 +694,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_setup_token_valid() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let token = "fp_setup_12345.abcdef";
         let result = service.parse_setup_token(token);
@@ -681,7 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_setup_token_invalid_format() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         // Missing dot separator
         let result = service.parse_setup_token("fp_setup_12345abcdef");
@@ -698,7 +724,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_session_token_valid() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let token = "fp_session_12345.abcdef";
         let result = service.parse_session_token(token);
@@ -711,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hash_and_verify_secret() {
-        let service = create_test_service().await;
+        let (_db, service) = create_test_service().await;
 
         let secret = "test_secret_123";
         let hashed = service.hash_secret(secret).unwrap();

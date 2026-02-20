@@ -4,8 +4,8 @@
 CREATE TABLE IF NOT EXISTS cluster_references (
     cluster_id TEXT NOT NULL,
     import_id TEXT NOT NULL,
-    route_count INTEGER NOT NULL DEFAULT 1,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    route_count BIGINT NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Foreign keys with CASCADE delete
     FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,

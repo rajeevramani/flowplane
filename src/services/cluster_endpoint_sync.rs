@@ -4,7 +4,7 @@
 //! from cluster configuration JSON into the cluster_endpoints table.
 
 use crate::domain::{ClusterId, EndpointHealthStatus};
-use crate::errors::Result;
+use crate::errors::{FlowplaneError, Result};
 use crate::storage::{
     ClusterEndpointRepository, CreateEndpointRequest, DbPool, UpdateEndpointRequest,
 };
@@ -51,7 +51,12 @@ impl ClusterEndpointSyncService {
                 let existing = existing_endpoints
                     .iter()
                     .find(|e| e.address == endpoint.address && e.port as i32 == endpoint.port)
-                    .expect("Endpoint must exist if key is in existing_keys");
+                    .ok_or_else(|| {
+                        FlowplaneError::internal(format!(
+                            "Endpoint inconsistency: {:?} found in keys but not in list",
+                            key
+                        ))
+                    })?;
 
                 if existing.weight != endpoint.weight as u32
                     || existing.priority != endpoint.priority as u32
@@ -114,8 +119,9 @@ impl ClusterEndpointSyncService {
 
     /// Extracts endpoints from a cluster configuration JSON.
     ///
-    /// This parses the load_assignment.endpoints array to extract
-    /// lb_endpoints with their socket addresses.
+    /// Supports two formats:
+    /// - Rust serde format: `endpoints` array with string ("host:port") or object ({host, port})
+    /// - Raw Envoy xDS format: `load_assignment.endpoints[].lb_endpoints[].endpoint.address.socket_address`
     fn extract_endpoints(&self, config_json: &str) -> Result<Vec<EndpointConfig>> {
         let config: serde_json::Value = serde_json::from_str(config_json).map_err(|e| {
             crate::errors::FlowplaneError::internal(format!(
@@ -126,70 +132,106 @@ impl ClusterEndpointSyncService {
 
         let mut endpoints = Vec::new();
 
-        // Look for load_assignment.endpoints array
-        if let Some(load_assignment) = config.get("load_assignment") {
-            if let Some(locality_endpoints) =
-                load_assignment.get("endpoints").and_then(|v| v.as_array())
-            {
-                for (priority, locality_ep) in locality_endpoints.iter().enumerate() {
-                    // Get priority from locality if specified
-                    let ep_priority = locality_ep
-                        .get("priority")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(priority as u64) as i32;
+        // Format 1: Rust serde serialized ClusterSpec
+        // endpoints: ["host:port"] or [{"host": "...", "port": N}]
+        if let Some(ep_array) = config.get("endpoints").and_then(|v| v.as_array()) {
+            for ep in ep_array {
+                let (address, port) = if let Some(s) = ep.as_str() {
+                    // String format: "host:port"
+                    let parts: Vec<&str> = s.split(':').collect();
+                    if parts.len() == 2 {
+                        let host = parts[0].trim().to_string();
+                        let p = parts[1].trim().parse::<i32>().unwrap_or(0);
+                        (host, p)
+                    } else {
+                        continue;
+                    }
+                } else if let Some(obj) = ep.as_object() {
+                    // Object format: {"host": "...", "port": N}
+                    let host = obj.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let p = obj.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
+                    (host, p)
+                } else {
+                    continue;
+                };
 
-                    if let Some(lb_endpoints) =
-                        locality_ep.get("lb_endpoints").and_then(|v| v.as_array())
-                    {
-                        for lb_ep in lb_endpoints {
-                            // Extract weight
-                            let weight = lb_ep
-                                .get("load_balancing_weight")
-                                .and_then(|v| v.get("value"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(1) as i32;
+                if !address.is_empty() && port > 0 {
+                    endpoints.push(EndpointConfig {
+                        address,
+                        port,
+                        weight: 1,
+                        health_status: EndpointHealthStatus::Unknown,
+                        priority: 0,
+                        metadata: None,
+                    });
+                }
+            }
+        }
 
-                            // Extract health status
-                            let health_status = lb_ep
-                                .get("health_status")
-                                .and_then(|v| v.as_str())
-                                .map(|s| match s {
-                                    "HEALTHY" => EndpointHealthStatus::Healthy,
-                                    "UNHEALTHY" => EndpointHealthStatus::Unhealthy,
-                                    "DEGRADED" => EndpointHealthStatus::Degraded,
-                                    _ => EndpointHealthStatus::Unknown,
-                                })
-                                .unwrap_or(EndpointHealthStatus::Unknown);
+        // Format 2: Raw Envoy xDS load_assignment format
+        if endpoints.is_empty() {
+            if let Some(load_assignment) = config.get("load_assignment") {
+                if let Some(locality_endpoints) =
+                    load_assignment.get("endpoints").and_then(|v| v.as_array())
+                {
+                    for (priority, locality_ep) in locality_endpoints.iter().enumerate() {
+                        let ep_priority = locality_ep
+                            .get("priority")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(priority as u64)
+                            as i32;
 
-                            // Extract metadata
-                            let metadata = lb_ep.get("metadata").map(|v| v.to_string());
-
-                            // Extract socket address
-                            if let Some(socket_address) = lb_ep
-                                .get("endpoint")
-                                .and_then(|e| e.get("address"))
-                                .and_then(|a| a.get("socket_address"))
-                            {
-                                let address = socket_address
-                                    .get("address")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-
-                                let port = socket_address
-                                    .get("port_value")
+                        if let Some(lb_endpoints) =
+                            locality_ep.get("lb_endpoints").and_then(|v| v.as_array())
+                        {
+                            for lb_ep in lb_endpoints {
+                                let weight = lb_ep
+                                    .get("load_balancing_weight")
+                                    .and_then(|v| v.get("value"))
                                     .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as i32;
+                                    .unwrap_or(1)
+                                    as i32;
 
-                                if !address.is_empty() && port > 0 {
-                                    endpoints.push(EndpointConfig {
-                                        address,
-                                        port,
-                                        weight,
-                                        health_status,
-                                        priority: ep_priority,
-                                        metadata,
-                                    });
+                                let health_status = lb_ep
+                                    .get("health_status")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| match s {
+                                        "HEALTHY" => EndpointHealthStatus::Healthy,
+                                        "UNHEALTHY" => EndpointHealthStatus::Unhealthy,
+                                        "DEGRADED" => EndpointHealthStatus::Degraded,
+                                        _ => EndpointHealthStatus::Unknown,
+                                    })
+                                    .unwrap_or(EndpointHealthStatus::Unknown);
+
+                                let metadata = lb_ep.get("metadata").map(|v| v.to_string());
+
+                                if let Some(socket_address) = lb_ep
+                                    .get("endpoint")
+                                    .and_then(|e| e.get("address"))
+                                    .and_then(|a| a.get("socket_address"))
+                                {
+                                    let address = socket_address
+                                        .get("address")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+
+                                    let port = socket_address
+                                        .get("port_value")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0)
+                                        as i32;
+
+                                    if !address.is_empty() && port > 0 {
+                                        endpoints.push(EndpointConfig {
+                                            address,
+                                            port,
+                                            weight,
+                                            health_status,
+                                            priority: ep_priority,
+                                            metadata,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -198,29 +240,31 @@ impl ClusterEndpointSyncService {
             }
         }
 
-        // Also check for simple hosts array (legacy format)
-        if let Some(hosts) = config.get("hosts").and_then(|v| v.as_array()) {
-            for host in hosts {
-                if let Some(socket_address) = host.get("socket_address") {
-                    let address = socket_address
-                        .get("address")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+        // Format 3: Legacy hosts array
+        if endpoints.is_empty() {
+            if let Some(hosts) = config.get("hosts").and_then(|v| v.as_array()) {
+                for host in hosts {
+                    if let Some(socket_address) = host.get("socket_address") {
+                        let address = socket_address
+                            .get("address")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
 
-                    let port =
-                        socket_address.get("port_value").and_then(|v| v.as_u64()).unwrap_or(0)
-                            as i32;
+                        let port =
+                            socket_address.get("port_value").and_then(|v| v.as_u64()).unwrap_or(0)
+                                as i32;
 
-                    if !address.is_empty() && port > 0 {
-                        endpoints.push(EndpointConfig {
-                            address,
-                            port,
-                            weight: 1,
-                            health_status: EndpointHealthStatus::Unknown,
-                            priority: 0,
-                            metadata: None,
-                        });
+                        if !address.is_empty() && port > 0 {
+                            endpoints.push(EndpointConfig {
+                                address,
+                                port,
+                                weight: 1,
+                                health_status: EndpointHealthStatus::Unknown,
+                                priority: 0,
+                                metadata: None,
+                            });
+                        }
                     }
                 }
             }
@@ -262,7 +306,19 @@ pub struct SyncResult {
 
 #[cfg(test)]
 mod tests {
-    fn create_test_config_json() -> &'static str {
+    use super::*;
+
+    // Rust serde format (what ClusterSpec actually serializes to)
+    fn create_serde_string_config() -> &'static str {
+        r#"{"endpoints": ["10.0.0.1:8080", "10.0.0.2:9090"]}"#
+    }
+
+    fn create_serde_object_config() -> &'static str {
+        r#"{"endpoints": [{"host": "10.0.0.1", "port": 8080}, {"host": "10.0.0.2", "port": 9090}]}"#
+    }
+
+    // Raw Envoy xDS format
+    fn create_xds_config_json() -> &'static str {
         r#"{
             "load_assignment": {
                 "cluster_name": "backend",
@@ -305,35 +361,79 @@ mod tests {
         }"#
     }
 
-    #[test]
-    fn test_parse_endpoints() {
-        let config_json = create_test_config_json();
+    /// Helper: extract endpoints using the service method
+    fn parse_endpoints(config_json: &str) -> Vec<EndpointConfig> {
         let config: serde_json::Value = serde_json::from_str(config_json).unwrap();
-
         let mut endpoints = Vec::new();
-        if let Some(load_assignment) = config.get("load_assignment") {
-            if let Some(locality_endpoints) =
-                load_assignment.get("endpoints").and_then(|v| v.as_array())
-            {
-                for locality_ep in locality_endpoints {
-                    if let Some(lb_endpoints) =
-                        locality_ep.get("lb_endpoints").and_then(|v| v.as_array())
-                    {
-                        for lb_ep in lb_endpoints {
-                            if let Some(socket_address) = lb_ep
-                                .get("endpoint")
-                                .and_then(|e| e.get("address"))
-                                .and_then(|a| a.get("socket_address"))
-                            {
-                                let address = socket_address
-                                    .get("address")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                let port = socket_address
-                                    .get("port_value")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
-                                endpoints.push((address.to_string(), port));
+
+        // Format 1: Serde endpoints array
+        if let Some(ep_array) = config.get("endpoints").and_then(|v| v.as_array()) {
+            for ep in ep_array {
+                let (address, port) = if let Some(s) = ep.as_str() {
+                    let parts: Vec<&str> = s.split(':').collect();
+                    if parts.len() == 2 {
+                        (parts[0].trim().to_string(), parts[1].trim().parse::<i32>().unwrap_or(0))
+                    } else {
+                        continue;
+                    }
+                } else if let Some(obj) = ep.as_object() {
+                    let host = obj.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let p = obj.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
+                    (host, p)
+                } else {
+                    continue;
+                };
+
+                if !address.is_empty() && port > 0 {
+                    endpoints.push(EndpointConfig {
+                        address,
+                        port,
+                        weight: 1,
+                        health_status: EndpointHealthStatus::Unknown,
+                        priority: 0,
+                        metadata: None,
+                    });
+                }
+            }
+        }
+
+        // Format 2: xDS load_assignment
+        if endpoints.is_empty() {
+            if let Some(load_assignment) = config.get("load_assignment") {
+                if let Some(locality_endpoints) =
+                    load_assignment.get("endpoints").and_then(|v| v.as_array())
+                {
+                    for locality_ep in locality_endpoints {
+                        if let Some(lb_endpoints) =
+                            locality_ep.get("lb_endpoints").and_then(|v| v.as_array())
+                        {
+                            for lb_ep in lb_endpoints {
+                                if let Some(socket_address) = lb_ep
+                                    .get("endpoint")
+                                    .and_then(|e| e.get("address"))
+                                    .and_then(|a| a.get("socket_address"))
+                                {
+                                    let address = socket_address
+                                        .get("address")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let port = socket_address
+                                        .get("port_value")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0)
+                                        as i32;
+                                    if !address.is_empty() && port > 0 {
+                                        endpoints.push(EndpointConfig {
+                                            address,
+                                            port,
+                                            weight: 1,
+                                            health_status: EndpointHealthStatus::Unknown,
+                                            priority: 0,
+                                            metadata: None,
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
@@ -341,82 +441,81 @@ mod tests {
             }
         }
 
-        assert_eq!(endpoints.len(), 2);
-        assert_eq!(endpoints[0], ("10.0.0.1".to_string(), 8080));
-        assert_eq!(endpoints[1], ("10.0.0.2".to_string(), 8080));
+        endpoints
     }
 
     #[test]
-    fn test_parse_health_status() {
-        let config_json = create_test_config_json();
-        let config: serde_json::Value = serde_json::from_str(config_json).unwrap();
+    fn test_parse_serde_string_endpoints() {
+        let endpoints = parse_endpoints(create_serde_string_config());
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].address, "10.0.0.1");
+        assert_eq!(endpoints[0].port, 8080);
+        assert_eq!(endpoints[1].address, "10.0.0.2");
+        assert_eq!(endpoints[1].port, 9090);
+    }
 
-        let mut statuses = Vec::new();
-        if let Some(load_assignment) = config.get("load_assignment") {
-            if let Some(locality_endpoints) =
-                load_assignment.get("endpoints").and_then(|v| v.as_array())
-            {
-                for locality_ep in locality_endpoints {
-                    if let Some(lb_endpoints) =
-                        locality_ep.get("lb_endpoints").and_then(|v| v.as_array())
-                    {
-                        for lb_ep in lb_endpoints {
-                            let status = lb_ep
-                                .get("health_status")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("UNKNOWN");
-                            statuses.push(status.to_string());
-                        }
-                    }
-                }
-            }
-        }
+    #[test]
+    fn test_parse_serde_object_endpoints() {
+        let endpoints = parse_endpoints(create_serde_object_config());
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].address, "10.0.0.1");
+        assert_eq!(endpoints[0].port, 8080);
+        assert_eq!(endpoints[1].address, "10.0.0.2");
+        assert_eq!(endpoints[1].port, 9090);
+    }
+
+    #[test]
+    fn test_parse_xds_endpoints() {
+        let endpoints = parse_endpoints(create_xds_config_json());
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].address, "10.0.0.1");
+        assert_eq!(endpoints[0].port, 8080);
+        assert_eq!(endpoints[1].address, "10.0.0.2");
+        assert_eq!(endpoints[1].port, 8080);
+    }
+
+    #[test]
+    fn test_parse_xds_health_status() {
+        let config: serde_json::Value = serde_json::from_str(create_xds_config_json()).unwrap();
+        let lb_endpoints =
+            config["load_assignment"]["endpoints"][0]["lb_endpoints"].as_array().unwrap();
+
+        let statuses: Vec<&str> = lb_endpoints
+            .iter()
+            .map(|ep| ep.get("health_status").and_then(|v| v.as_str()).unwrap_or("UNKNOWN"))
+            .collect();
 
         assert_eq!(statuses, vec!["HEALTHY", "DEGRADED"]);
     }
 
     #[test]
-    fn test_parse_weights() {
-        let config_json = create_test_config_json();
-        let config: serde_json::Value = serde_json::from_str(config_json).unwrap();
+    fn test_parse_xds_weights() {
+        let config: serde_json::Value = serde_json::from_str(create_xds_config_json()).unwrap();
+        let lb_endpoints =
+            config["load_assignment"]["endpoints"][0]["lb_endpoints"].as_array().unwrap();
 
-        let mut weights = Vec::new();
-        if let Some(load_assignment) = config.get("load_assignment") {
-            if let Some(locality_endpoints) =
-                load_assignment.get("endpoints").and_then(|v| v.as_array())
-            {
-                for locality_ep in locality_endpoints {
-                    if let Some(lb_endpoints) =
-                        locality_ep.get("lb_endpoints").and_then(|v| v.as_array())
-                    {
-                        for lb_ep in lb_endpoints {
-                            let weight = lb_ep
-                                .get("load_balancing_weight")
-                                .and_then(|v| v.get("value"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(1);
-                            weights.push(weight);
-                        }
-                    }
-                }
-            }
-        }
+        let weights: Vec<u64> = lb_endpoints
+            .iter()
+            .map(|ep| {
+                ep.get("load_balancing_weight")
+                    .and_then(|v| v.get("value"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1)
+            })
+            .collect();
 
         assert_eq!(weights, vec![100, 50]);
     }
 
     #[test]
     fn test_empty_config() {
-        let config_json = r#"{}"#;
-        let config: serde_json::Value = serde_json::from_str(config_json).unwrap();
+        let endpoints = parse_endpoints(r#"{}"#);
+        assert!(endpoints.is_empty());
+    }
 
-        let endpoints: Vec<String> = config
-            .get("load_assignment")
-            .and_then(|la| la.get("endpoints"))
-            .and_then(|e| e.as_array())
-            .map(|_| Vec::new())
-            .unwrap_or_default();
-
+    #[test]
+    fn test_empty_endpoints_array() {
+        let endpoints = parse_endpoints(r#"{"endpoints": []}"#);
         assert!(endpoints.is_empty());
     }
 }

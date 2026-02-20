@@ -7,7 +7,7 @@ use crate::domain::RouteConfigId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for route_configs.
@@ -24,6 +24,7 @@ struct RouteConfigRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub route_order: Option<i64>,
     pub headers: Option<String>,
@@ -58,7 +59,10 @@ pub struct RouteConfigData {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: Option<String>,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub route_order: Option<i64>,
     pub headers: Option<String>,
@@ -77,6 +81,7 @@ impl From<RouteConfigRow> for RouteConfigData {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             import_id: row.import_id,
             route_order: row.route_order,
             headers: row.headers,
@@ -225,8 +230,9 @@ impl RouteConfigRepository {
 
     #[instrument(skip(self), fields(route_config_id = %id), name = "db_get_route_config_by_id")]
     pub async fn get_by_id(&self, id: &RouteConfigId) -> Result<RouteConfigData> {
-        let row = sqlx::query_as::<Sqlite, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM route_configs WHERE id = $1"
+        let row = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id WHERE r.id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -250,8 +256,9 @@ impl RouteConfigRepository {
 
     #[instrument(skip(self), fields(route_config_name = %name), name = "db_get_route_config_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<RouteConfigData> {
-        let row = sqlx::query_as::<Sqlite, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM route_configs WHERE name = $1 ORDER BY version DESC LIMIT 1"
+        let row = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id WHERE r.name = $1 ORDER BY r.version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -275,7 +282,7 @@ impl RouteConfigRepository {
 
     #[instrument(skip(self), fields(route_config_name = %name), name = "db_exists_route_config_by_name")]
     pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
-        let count = sqlx::query_scalar::<Sqlite, i64>(
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>(
             "SELECT COUNT(*) FROM route_configs WHERE name = $1",
         )
         .bind(name)
@@ -301,8 +308,9 @@ impl RouteConfigRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at FROM route_configs ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        let rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id ORDER BY r.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -321,19 +329,8 @@ impl RouteConfigRepository {
 
     /// Lists route configs filtered by team names for multi-tenancy support.
     ///
-    /// Critical for team-based access control. Returns route configs for specified
-    /// teams and optionally includes team-agnostic route configs (where team is NULL).
-    ///
-    /// # Arguments
-    ///
-    /// * `teams` - Team identifiers to filter by. Empty list returns all route configs.
-    /// * `include_default` - If true, also include route configs with team=NULL (default resources)
-    /// * `limit` - Maximum results (default: 100, max: 1000)
-    /// * `offset` - Pagination offset
-    ///
-    /// # Errors
-    ///
-    /// - [`FlowplaneError::Database`] if query execution fails
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_route_configs_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -342,9 +339,8 @@ impl RouteConfigRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<RouteConfigData>> {
-        // If no teams specified, return all route configs (admin:all or resource-level scope)
         if teams.is_empty() {
-            return self.list(limit, offset).await;
+            return Ok(vec![]);
         }
 
         let limit = limit.unwrap_or(100).min(1000);
@@ -359,20 +355,20 @@ impl RouteConfigRepository {
             .join(", ");
 
         // Always include NULL team route configs (default resources)
-        let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
+        let where_clause = format!("WHERE r.team IN ({}) OR r.team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM route_configs \
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id \
              {} \
-             ORDER BY created_at DESC \
+             ORDER BY r.created_at DESC \
              LIMIT ${} OFFSET ${}",
             where_clause,
             teams.len() + 1,
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, RouteConfigRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(&query_str);
 
         // Bind team names
         for team in teams {
@@ -393,6 +389,41 @@ impl RouteConfigRepository {
         Ok(rows.into_iter().map(RouteConfigData::from).collect())
     }
 
+    /// List only default/shared route configs (team IS NULL)
+    ///
+    /// Used for Allowlist scope where clients should only see shared infrastructure,
+    /// not team-specific resources.
+    #[instrument(skip(self), fields(limit = ?limit, offset = ?offset), name = "db_list_default_route_configs")]
+    pub async fn list_default_only(
+        &self,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<RouteConfigData>> {
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        let rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id \
+             WHERE r.team IS NULL \
+             ORDER BY r.created_at DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to list default route configs");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to list default route configs".to_string(),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(RouteConfigData::from).collect())
+    }
+
     /// Lists route configs filtered by import_id for OpenAPI import tracking.
     ///
     /// Returns all route configs associated with a specific OpenAPI import,
@@ -407,11 +438,11 @@ impl RouteConfigRepository {
     /// - [`FlowplaneError::Database`] if query execution fails
     #[instrument(skip(self), name = "db_list_route_configs_by_import")]
     pub async fn list_by_import(&self, import_id: &str) -> Result<Vec<RouteConfigData>> {
-        let rows = sqlx::query_as::<Sqlite, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM route_configs \
-             WHERE import_id = $1 \
-             ORDER BY route_order ASC, created_at ASC"
+        let rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id \
+             WHERE r.import_id = $1 \
+             ORDER BY r.route_order ASC, r.created_at ASC"
         )
         .bind(import_id)
         .fetch_all(&self.pool)
@@ -531,9 +562,9 @@ impl RouteConfigRepository {
     /// Used for cluster deletion protection to check dependencies.
     #[instrument(skip(self), fields(cluster_name = %cluster_name), name = "db_find_route_configs_by_cluster")]
     pub async fn find_by_cluster(&self, cluster_name: &str) -> Result<Vec<RouteConfigData>> {
-        let rows = sqlx::query_as::<Sqlite, RouteConfigRow>(
-            "SELECT id, name, path_prefix, cluster_name, configuration, version, source, team, import_id, route_order, headers, created_at, updated_at \
-             FROM route_configs WHERE cluster_name = $1"
+        let rows = sqlx::query_as::<sqlx::Postgres, RouteConfigRow>(
+            "SELECT r.id, r.name, r.path_prefix, r.cluster_name, r.configuration, r.version, r.source, r.team, t.name as team_name, r.import_id, r.route_order, r.headers, r.created_at, r.updated_at \
+             FROM route_configs r LEFT JOIN teams t ON r.team = t.id WHERE r.cluster_name = $1"
         )
         .bind(cluster_name)
         .fetch_all(&self.pool)
@@ -556,7 +587,7 @@ impl RouteConfigRepository {
     /// Count all route configs for a team.
     #[instrument(skip(self), fields(team = %team), name = "db_count_route_configs_by_team")]
     pub async fn count_by_team(&self, team: &str) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar::<Sqlite, i64>(
+        let count: i64 = sqlx::query_scalar::<sqlx::Postgres, i64>(
             "SELECT COUNT(*) FROM route_configs WHERE team = $1",
         )
         .bind(team)
@@ -573,9 +604,10 @@ impl RouteConfigRepository {
         Ok(count)
     }
 
-    /// Count all route configs for multiple teams (supports admin bypass).
+    /// Count all route configs for multiple teams.
     ///
-    /// If `teams` is empty, counts ALL route configs across all teams (admin bypass).
+    /// Empty teams = no resource access (returns 0). The caller (handler layer)
+    /// is responsible for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams.len()), name = "db_count_route_configs_by_teams")]
     pub async fn count_by_teams(&self, teams: &[String]) -> Result<i64> {
         // Single team: use existing optimized method
@@ -583,19 +615,8 @@ impl RouteConfigRepository {
             return self.count_by_team(&teams[0]).await;
         }
 
-        // Admin bypass: empty teams = count all route configs
         if teams.is_empty() {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM route_configs")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, "Failed to count all route configs (admin bypass)");
-                    FlowplaneError::Database {
-                        source: e,
-                        context: "Failed to count all route configs".to_string(),
-                    }
-                })?;
-            return Ok(count);
+            return Ok(0);
         }
 
         // Build IN clause for team filtering
@@ -605,7 +626,7 @@ impl RouteConfigRepository {
             placeholders.join(", ")
         );
 
-        let mut query = sqlx::query_scalar::<Sqlite, i64>(&query_str);
+        let mut query = sqlx::query_scalar::<sqlx::Postgres, i64>(&query_str);
         for team in teams {
             query = query.bind(team);
         }

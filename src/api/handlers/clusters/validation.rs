@@ -115,7 +115,7 @@ pub(super) fn cluster_response_from_data(
     let config = service.parse_config(&data).map_err(ApiError::from)?;
     Ok(super::types::ClusterResponse {
         name: data.name,
-        team: data.team.unwrap_or_else(|| "unknown".to_string()),
+        team: data.team_name.or(data.team).unwrap_or_else(|| "unknown".to_string()),
         service_name: data.service_name,
         import_id: data.import_id,
         config,

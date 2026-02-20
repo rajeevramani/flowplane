@@ -393,10 +393,11 @@ impl CustomResponseConfig {
             }
         });
 
-        let config = Self {
-            matchers: Vec::new(), // TODO: Implement reverse conversion from protobuf to user-friendly matchers
-            custom_response_matcher,
-        };
+        // Note: Reverse conversion from xds.type.matcher.v3.Matcher to ResponseMatcherRule
+        // is complex and not implemented. Users can create configs but editing retrieved
+        // configs will show empty matchers. The raw proto is preserved in custom_response_matcher
+        // for xDS generation to work correctly.
+        let config = Self { matchers: Vec::new(), custom_response_matcher };
 
         config.validate()?;
         Ok(config)

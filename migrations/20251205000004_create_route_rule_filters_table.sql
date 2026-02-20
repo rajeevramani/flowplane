@@ -12,8 +12,8 @@
 CREATE TABLE route_rule_filters (
     route_rule_id TEXT NOT NULL,
     filter_id TEXT NOT NULL,
-    filter_order INTEGER NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    filter_order BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (route_rule_id) REFERENCES route_rules(id) ON DELETE CASCADE,
     FOREIGN KEY (filter_id) REFERENCES filters(id) ON DELETE RESTRICT,

@@ -5,12 +5,12 @@ CREATE TABLE IF NOT EXISTS listeners (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     address TEXT NOT NULL,  -- IP address or socket path
-    port INTEGER,           -- Port number (NULL for Unix domain sockets)
+    port BIGINT,            -- Port number (NULL for Unix domain sockets)
     protocol TEXT NOT NULL DEFAULT 'HTTP',  -- HTTP, HTTPS, TCP, etc.
     configuration TEXT NOT NULL,  -- JSON serialized listener config
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    version BIGINT NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Ensure unique listener names per version
     UNIQUE(name, version)

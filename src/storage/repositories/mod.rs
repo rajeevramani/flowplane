@@ -3,6 +3,7 @@
 //! This module provides repository implementations split into focused, manageable files.
 //! Each repository handles CRUD operations for a specific resource type.
 
+pub mod admin_summary;
 pub mod aggregated_schema;
 pub mod audit_log;
 pub mod cluster;
@@ -14,11 +15,13 @@ pub mod filter;
 pub mod import_metadata;
 pub mod inferred_schema;
 pub mod instance_app;
+pub mod invitation;
 pub mod learning_session;
 pub mod listener;
 pub mod listener_auto_filter;
 pub mod listener_route_config;
 pub mod mcp_tool;
+pub mod organization;
 pub mod proxy_certificate;
 pub mod reporting;
 pub mod route;
@@ -34,10 +37,13 @@ pub mod virtual_host;
 pub mod virtual_host_filter;
 
 // Re-export all repository types and their associated request/response types
+pub use admin_summary::{AdminSummaryRepository, TeamResourceCounts};
 pub use aggregated_schema::{
     AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
 };
-pub use audit_log::{AuditEvent, AuditLogEntry, AuditLogFilters, AuditLogRepository};
+pub use audit_log::{
+    AuditEvent, AuditLogEntry, AuditLogFilters, AuditLogRepository, AuditLogSummary,
+};
 pub use cluster::{ClusterData, ClusterRepository, CreateClusterRequest, UpdateClusterRequest};
 pub use cluster_endpoint::{
     ClusterEndpointData, ClusterEndpointRepository, CreateEndpointRequest, UpdateEndpointRequest,
@@ -62,6 +68,7 @@ pub use instance_app::{
     app_ids, ExternalSecretsConfig, InstanceApp, InstanceAppRepository, SetAppStatusRequest,
     SqlxInstanceAppRepository, StatsDashboardConfig,
 };
+pub use invitation::{InvitationRepository, InvitationWithHash, SqlxInvitationRepository};
 pub use learning_session::{
     CreateLearningSessionRequest, LearningSessionData, LearningSessionRepository,
     LearningSessionStatus, UpdateLearningSessionRequest,
@@ -77,11 +84,19 @@ pub use listener_route_config::{ListenerRouteConfigData, ListenerRouteConfigRepo
 pub use mcp_tool::{
     CreateMcpToolRequest, McpToolData, McpToolRepository, McpToolWithGateway, UpdateMcpToolRequest,
 };
+pub use organization::{
+    OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
+    SqlxOrganizationRepository,
+};
 pub use proxy_certificate::{
     CreateProxyCertificateRequest, ProxyCertificateData, ProxyCertificateRepository,
     SqlxProxyCertificateRepository,
 };
-pub use reporting::{ReportingRepository, RouteFlowRow};
+pub use reporting::{
+    OrphanClusterRow, OrphanRouteConfigRow, ReportingRepository, RequestTraceResult,
+    RequestTraceRow, RouteFlowRow, ServiceClusterInfo, ServiceListenerRow, ServiceRouteConfigRow,
+    ServiceSummaryResult, TopologyResult, TopologyRow, TopologySummary, TraceEndpointRow,
+};
 pub use route::{
     CreateRouteRequest, RouteData, RouteRepository, RouteWithRelatedData, UpdateRouteRequest,
 };

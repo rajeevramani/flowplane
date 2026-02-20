@@ -1,4 +1,5 @@
 use axum::http::{Method, StatusCode};
+use flowplane::api::handlers::PaginatedResponse;
 use flowplane::auth::models::PersonalAccessToken;
 
 use crate::support::{read_json, send_request, setup_test_app};
@@ -7,7 +8,8 @@ use crate::support::{read_json, send_request, setup_test_app};
 async fn contract_get_tokens_lists_tokens() {
     let app = setup_test_app().await;
 
-    let admin = app.issue_token("tokens-reader", &["tokens:read", "tokens:write"]).await;
+    let admin =
+        app.issue_token("tokens-reader", &["admin:all", "tokens:read", "tokens:write"]).await;
 
     let _ = app
         .token_service
@@ -47,7 +49,7 @@ async fn contract_get_tokens_lists_tokens() {
         send_request(&app, Method::GET, "/api/v1/tokens?limit=10", Some(&admin.token), None).await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let tokens: Vec<PersonalAccessToken> = read_json(response).await;
-    assert!(tokens.iter().any(|t| t.name == "list-one"));
-    assert!(tokens.iter().any(|t| t.name == "list-two"));
+    let result: PaginatedResponse<PersonalAccessToken> = read_json(response).await;
+    assert!(result.items.iter().any(|t| t.name == "list-one"));
+    assert!(result.items.iter().any(|t| t.name == "list-two"));
 }

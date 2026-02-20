@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import type { UserResponse } from '$lib/api/types';
+	import { isSystemAdmin } from '$lib/stores/org';
 
 	let users = $state<UserResponse[]>([]);
 	let total = $state(0);
@@ -22,7 +23,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			if (!isSystemAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}
@@ -39,7 +40,7 @@
 		try {
 			const offset = (currentPage - 1) * pageSize;
 			const response = await apiClient.listUsers(pageSize, offset);
-			users = response.users;
+			users = response.items;
 			total = response.total;
 		} catch (err: any) {
 			error = err.message || 'Failed to load users';

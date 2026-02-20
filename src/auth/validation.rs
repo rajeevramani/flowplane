@@ -150,6 +150,16 @@ mod tests {
         assert!(validate_scope("team:payments-2024:routes:write").is_ok());
         assert!(validate_scope("team:team123:api-definitions:read").is_ok());
 
+        // Org scopes
+        assert!(validate_scope("org:acme:admin").is_ok());
+        assert!(validate_scope("org:acme:member").is_ok());
+        assert!(validate_scope("org:my-org-1:admin").is_ok());
+
+        // Invalid org scope patterns
+        assert!(validate_scope("org:acme:viewer").is_err()); // Only admin/member allowed
+        assert!(validate_scope("org:acme").is_err()); // Missing role
+        assert!(validate_scope("org:ACME:admin").is_err()); // Must be lowercase
+
         // Invalid patterns
         assert!(validate_scope("bad_scope").is_err()); // No colon
         assert!(validate_scope("routes:read:extra").is_err()); // Too many parts for resource-level

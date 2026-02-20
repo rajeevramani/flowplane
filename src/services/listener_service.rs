@@ -11,6 +11,7 @@ use crate::{
     errors::Error,
     observability::http_tracing::create_operation_span,
     openapi::defaults::is_default_gateway_listener,
+    services::ListenerRouteSyncService,
     storage::{
         CreateListenerRequest, DataplaneRepository, ListenerData, ListenerRepository,
         UpdateListenerRequest,
@@ -102,6 +103,9 @@ impl ListenerService {
                 listener_name = %created.name,
                 "Listener created"
             );
+
+            // Sync listener-route config relationships
+            self.sync_listener_routes(&created).await;
 
             let mut xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
             xds_span.set_attribute(KeyValue::new("listener.id", created.id.to_string()));
@@ -199,6 +203,9 @@ impl ListenerService {
                 "Listener updated"
             );
 
+            // Re-sync listener-route config relationships
+            self.sync_listener_routes(&updated).await;
+
             let mut xds_span = create_operation_span("xds.refresh_listeners", SpanKind::Internal);
             xds_span.set_attribute(KeyValue::new("listener.id", updated.id.to_string()));
             self.refresh_xds().await?;
@@ -227,6 +234,9 @@ impl ListenerService {
         async move {
             let repository = self.repository()?;
             let existing = repository.get_by_name(name).await?;
+
+            // Clear listener-route config relationships before deleting
+            self.clear_listener_routes(&existing.id).await;
 
             let mut db_span = create_operation_span("db.listener.delete", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
@@ -295,6 +305,55 @@ impl ListenerService {
         }
 
         Ok(())
+    }
+
+    /// Sync listener-route config relationships from the listener's stored configuration.
+    /// This is best-effort: failures are logged but don't block the listener operation.
+    async fn sync_listener_routes(&self, listener: &ListenerData) {
+        let pool = match self.xds_state.listener_repository.as_ref().map(|r| r.pool().clone()) {
+            Some(pool) => pool,
+            None => return,
+        };
+
+        let sync_service = ListenerRouteSyncService::new(pool);
+        match sync_service.sync(&listener.id, &listener.configuration).await {
+            Ok(result) => {
+                info!(
+                    listener_id = %listener.id,
+                    listener_name = %listener.name,
+                    routes_created = result.routes_created,
+                    routes_skipped = result.routes_skipped,
+                    "Listener-route relationships synced"
+                );
+            }
+            Err(e) => {
+                error!(
+                    listener_id = %listener.id,
+                    listener_name = %listener.name,
+                    error = %e,
+                    "Failed to sync listener-route relationships"
+                );
+            }
+        }
+    }
+
+    /// Clear listener-route config relationships before deletion.
+    /// Best-effort: failures are logged but don't block the delete operation.
+    async fn clear_listener_routes(&self, listener_id: &crate::domain::ListenerId) {
+        let pool = match self.xds_state.listener_repository.as_ref().map(|r| r.pool().clone()) {
+            Some(pool) => pool,
+            None => return,
+        };
+
+        let sync_service = ListenerRouteSyncService::new(pool);
+        match sync_service.clear(listener_id).await {
+            Ok(deleted) => {
+                info!(listener_id = %listener_id, deleted = deleted, "Listener-route relationships cleared");
+            }
+            Err(e) => {
+                error!(listener_id = %listener_id, error = %e, "Failed to clear listener-route relationships");
+            }
+        }
     }
 
     /// Refresh xDS caches after listener changes

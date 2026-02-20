@@ -5,8 +5,9 @@
 //! on application startup when auto_migrate is enabled.
 
 use crate::errors::{FlowplaneError, Result};
+use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::Row;
 use tracing::{error, info, warn};
 
 /// Migration information structure
@@ -98,7 +99,7 @@ fn load_migrations() -> Result<Vec<(String, String)>> {
 }
 
 /// Run all pending database migrations
-pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
+pub async fn run_migrations(pool: &DbPool) -> Result<()> {
     info!("Starting database migration process");
 
     // Create migration tracking table if it doesn't exist
@@ -128,8 +129,8 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
             FlowplaneError::database(e, "Failed to start migration transaction".to_string())
         })?;
 
-        // Run the migration SQL
-        sqlx::query(sql).execute(&mut *tx).await.map_err(|e| {
+        // Run the migration SQL using raw_sql to support multi-statement migrations
+        sqlx::raw_sql(sql).execute(&mut *tx).await.map_err(|e| {
             error!(error = %e, migration = filename, "Migration failed");
             FlowplaneError::database(e, format!("Migration failed: {}", filename))
         })?;
@@ -137,7 +138,7 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
         // Record migration
         let execution_time = start_time.elapsed().as_millis() as i64;
         let checksum = calculate_checksum(sql);
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let now = chrono::Utc::now();
 
         sqlx::query(
             "INSERT INTO _flowplane_migrations (version, description, checksum, execution_time, installed_on) VALUES ($1, $2, $3, $4, $5)"
@@ -146,7 +147,7 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
         .bind(filename)
         .bind(&checksum)
         .bind(execution_time)
-        .bind(&now)
+        .bind(now)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -177,15 +178,15 @@ pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
 }
 
 /// Create the migration tracking table
-async fn create_migration_table(pool: &Pool<Sqlite>) -> Result<()> {
+async fn create_migration_table(pool: &DbPool) -> Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS _flowplane_migrations (
             version BIGINT PRIMARY KEY,
             description TEXT NOT NULL,
-            checksum BLOB NOT NULL,
+            checksum BYTEA NOT NULL,
             execution_time BIGINT NOT NULL,
-            installed_on DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            installed_on TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     "#,
     )
@@ -199,7 +200,7 @@ async fn create_migration_table(pool: &Pool<Sqlite>) -> Result<()> {
 }
 
 /// Get list of applied migration versions
-async fn get_applied_migration_versions(pool: &Pool<Sqlite>) -> Result<Vec<i64>> {
+async fn get_applied_migration_versions(pool: &DbPool) -> Result<Vec<i64>> {
     let rows = sqlx::query("SELECT version FROM _flowplane_migrations ORDER BY version")
         .fetch_all(pool)
         .await;
@@ -207,8 +208,9 @@ async fn get_applied_migration_versions(pool: &Pool<Sqlite>) -> Result<Vec<i64>>
     match rows {
         Ok(rows) => Ok(rows.into_iter().map(|row| row.get::<i64, _>("version")).collect()),
         Err(sqlx::Error::Database(db_err))
-            if db_err.message().contains("no such table: _flowplane_migrations") =>
+            if db_err.message().contains("relation \"_flowplane_migrations\" does not exist") =>
         {
+            // Table doesn't exist yet - this is expected on first run
             Ok(Vec::new())
         }
         Err(e) => Err(FlowplaneError::database(e, "Failed to get applied migrations".to_string())),
@@ -237,7 +239,7 @@ fn calculate_checksum(content: &str) -> Vec<u8> {
 }
 
 /// Validate that all migrations are applied correctly
-pub async fn validate_migrations(pool: &Pool<Sqlite>) -> Result<bool> {
+pub async fn validate_migrations(pool: &DbPool) -> Result<bool> {
     info!("Validating migration integrity");
 
     let migrations = load_migrations()?;
@@ -268,13 +270,13 @@ pub async fn validate_migrations(pool: &Pool<Sqlite>) -> Result<bool> {
 }
 
 /// Get the current migration version (highest applied)
-pub async fn get_migration_version(pool: &Pool<Sqlite>) -> Result<i64> {
+pub async fn get_migration_version(pool: &DbPool) -> Result<i64> {
     let applied = get_applied_migration_versions(pool).await?;
     Ok(applied.into_iter().max().unwrap_or(0))
 }
 
 /// List all applied migrations
-pub async fn list_applied_migrations(pool: &Pool<Sqlite>) -> Result<Vec<MigrationInfo>> {
+pub async fn list_applied_migrations(pool: &DbPool) -> Result<Vec<MigrationInfo>> {
     let rows = sqlx::query("SELECT version, description, checksum, execution_time, installed_on FROM _flowplane_migrations ORDER BY version")
         .fetch_all(pool)
         .await;
@@ -294,8 +296,9 @@ pub async fn list_applied_migrations(pool: &Pool<Sqlite>) -> Result<Vec<Migratio
             Ok(migrations)
         }
         Err(sqlx::Error::Database(db_err))
-            if db_err.message().contains("no such table: _flowplane_migrations") =>
+            if db_err.message().contains("relation \"_flowplane_migrations\" does not exist") =>
         {
+            // Table doesn't exist yet
             Ok(Vec::new())
         }
         Err(e) => Err(FlowplaneError::database(e, "Failed to list applied migrations".to_string())),
@@ -305,66 +308,6 @@ pub async fn list_applied_migrations(pool: &Pool<Sqlite>) -> Result<Vec<Migratio
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_run_migrations() {
-        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:").await.unwrap();
-
-        // Run migrations
-        let result = run_migrations(&pool).await;
-        assert!(result.is_ok());
-
-        // Check that all migrations were applied
-        let applied = get_applied_migration_versions(&pool).await.unwrap();
-        let migrations = load_migrations().unwrap();
-        assert_eq!(applied.len(), migrations.len());
-
-        // Running again should be idempotent
-        let result = run_migrations(&pool).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_validate_migrations() {
-        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:").await.unwrap();
-
-        // Run migrations first
-        run_migrations(&pool).await.unwrap();
-
-        // Validation should pass
-        let result = validate_migrations(&pool).await;
-        assert!(result.is_ok());
-        assert!(result.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_get_migration_version() {
-        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:").await.unwrap();
-
-        // Before migrations
-        let version = get_migration_version(&pool).await.unwrap();
-        assert_eq!(version, 0);
-
-        // After migrations
-        run_migrations(&pool).await.unwrap();
-        let version = get_migration_version(&pool).await.unwrap();
-        assert!(version > 0);
-    }
-
-    #[tokio::test]
-    async fn test_list_applied_migrations() {
-        let pool = sqlx::sqlite::SqlitePool::connect("sqlite://:memory:").await.unwrap();
-
-        // Before migrations
-        let migrations = list_applied_migrations(&pool).await.unwrap();
-        assert!(migrations.is_empty());
-
-        // After migrations
-        run_migrations(&pool).await.unwrap();
-        let applied_migrations = list_applied_migrations(&pool).await.unwrap();
-        let loaded_migrations = load_migrations().unwrap();
-        assert_eq!(applied_migrations.len(), loaded_migrations.len());
-    }
 
     #[test]
     fn test_extract_version_from_filename() {
@@ -388,4 +331,7 @@ mod tests {
         assert_eq!(checksum1, checksum2);
         assert_ne!(checksum1, checksum3);
     }
+
+    // NOTE: Integration tests requiring database are in tests/migration_tests.rs
+    // These tests use Testcontainers for PostgreSQL
 }

@@ -19,7 +19,7 @@ async fn login_admin_user_receives_admin_all_scope() {
     let app = setup_test_app().await;
 
     // Create an admin user
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
     let create_response = send_request(
         &app,
         Method::POST,
@@ -53,8 +53,18 @@ async fn login_admin_user_receives_admin_all_scope() {
     assert_eq!(login_response.status(), StatusCode::OK);
     let login_body: LoginResponseBody = read_json(login_response).await;
 
-    // Admin should receive admin:all scope
-    assert_eq!(login_body.scopes, vec!["admin:all"]);
+    // Admin should receive admin:all + all governance scopes
+    assert!(login_body.scopes.contains(&"admin:all".to_string()), "should have admin:all");
+    assert!(
+        login_body.scopes.contains(&"admin:orgs:read".to_string()),
+        "should have governance scopes"
+    );
+    assert!(login_body.scopes.contains(&"admin:audit:read".to_string()), "should have audit scope");
+    assert!(
+        login_body.scopes.len() >= 16,
+        "should have admin:all + 15 governance scopes, got {}",
+        login_body.scopes.len()
+    );
     assert_eq!(login_body.user_id, admin_user.id.to_string());
     assert_eq!(login_body.user_email, "admin@example.com");
     assert!(login_body.teams.is_empty(), "Admin with admin:all should have no team-scoped access");
@@ -63,7 +73,7 @@ async fn login_admin_user_receives_admin_all_scope() {
 #[tokio::test]
 async fn login_regular_user_single_team() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create the team first
     create_team(&app, &admin_token.token, "engineering").await;
@@ -126,7 +136,7 @@ async fn login_regular_user_single_team() {
 #[tokio::test]
 async fn login_regular_user_multiple_teams_deduplicates_scopes() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create teams first
     create_team(&app, &admin_token.token, "engineering").await;
@@ -235,7 +245,7 @@ async fn login_regular_user_multiple_teams_deduplicates_scopes() {
 #[tokio::test]
 async fn login_user_with_no_teams_receives_empty_scopes() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create a regular user without any team memberships
     let create_response = send_request(
@@ -297,7 +307,7 @@ async fn login_fails_with_invalid_email() {
 #[tokio::test]
 async fn login_fails_with_invalid_password() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create a user
     send_request(
@@ -333,7 +343,7 @@ async fn login_fails_with_invalid_password() {
 #[tokio::test]
 async fn login_fails_with_inactive_user() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create a user
     let create_response = send_request(
@@ -383,7 +393,7 @@ async fn login_fails_with_inactive_user() {
 #[tokio::test]
 async fn login_fails_with_suspended_user() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create a user
     let create_response = send_request(
@@ -452,7 +462,7 @@ async fn login_validates_email_format() {
 #[tokio::test]
 async fn login_session_can_be_used_for_authenticated_requests() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team first
     create_team(&app, &admin_token.token, "engineering").await;

@@ -202,6 +202,10 @@ impl From<FlowplaneError> for InternalError {
                 "Operation '{}' timed out after {}ms",
                 operation, duration_ms
             )),
+            FlowplaneError::Parse { context, .. } => InternalError::validation(context),
+            FlowplaneError::Sync { context } => InternalError::internal(context),
+            FlowplaneError::Conversion { context, .. } => InternalError::validation(context),
+            FlowplaneError::CrossOrgViolation { .. } => InternalError::forbidden(err.to_string()),
         }
     }
 }

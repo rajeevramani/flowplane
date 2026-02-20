@@ -8,17 +8,19 @@ use axum::{
     extract::{ConnectInfo, Extension, State},
     http::{header::AUTHORIZATION, header::USER_AGENT, Method, Request},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::cookie::CookieJar;
 
 use crate::api::error::ApiError;
 use crate::auth::auth_service::AuthService;
 use crate::auth::authorization::{
-    action_from_request, require_resource_access, resource_from_path,
+    action_from_request, extract_org_scopes, require_resource_access, resource_from_path,
 };
 use crate::auth::models::{AuthContext, AuthError};
 use crate::auth::session::{SessionService, CSRF_HEADER_NAME, SESSION_COOKIE_NAME};
+use crate::storage::repositories::{OrganizationRepository, SqlxOrganizationRepository};
+use crate::storage::DbPool;
 use tracing::{field, info_span, warn};
 
 pub type AuthServiceState = Arc<AuthService>;
@@ -66,7 +68,11 @@ fn extract_user_agent(request: &Request<Body>) -> Option<String> {
 /// Middleware entry point that authenticates requests using the configured [`AuthService`] and [`SessionService`].
 /// Supports both Bearer token and cookie-based authentication with CSRF validation.
 pub async fn authenticate(
-    State((auth_service, session_service)): State<(AuthServiceState, SessionServiceState)>,
+    State((auth_service, session_service, pool)): State<(
+        AuthServiceState,
+        SessionServiceState,
+        DbPool,
+    )>,
     jar: CookieJar,
     mut request: Request<Body>,
     next: Next,
@@ -83,6 +89,8 @@ pub async fn authenticate(
         http.method = %method,
         http.path = %path,
         auth.token_id = field::Empty,
+        auth.org_id = field::Empty,
+        auth.org_name = field::Empty,
         correlation_id = %correlation_id
     );
     let _guard = span.enter();
@@ -257,9 +265,45 @@ pub async fn authenticate(
             let user_agent = extract_user_agent(&request);
 
             // Add request context to auth context
-            let context = context.with_request_context(client_ip, user_agent);
+            let mut context = context.with_request_context(client_ip, user_agent);
 
-            tracing::Span::current().record("auth.token_id", field::display(&context.token_id));
+            // Populate org context from scopes (Phase 3.6)
+            // SECURITY: Fail-closed — if a token has org scopes but the org cannot be
+            // resolved, reject the request entirely. A token referencing a non-existent
+            // org is invalid and should not be honored.
+            let org_scopes = extract_org_scopes(&context);
+            if let Some((org_name, _role)) = org_scopes.first() {
+                let org_repo = SqlxOrganizationRepository::new(pool);
+                match org_repo.get_organization_by_name(org_name).await {
+                    Ok(Some(org)) => {
+                        context = context.with_org(org.id, org.name);
+                    }
+                    Ok(None) => {
+                        warn!(org_name = %org_name, "org scope references non-existent org, rejecting request");
+                        return Ok(ApiError::Unauthorized(format!(
+                            "Token references non-existent organization '{}'",
+                            org_name
+                        ))
+                        .into_response());
+                    }
+                    Err(e) => {
+                        warn!(org_name = %org_name, error = %e, "org lookup failed during authentication");
+                        return Ok(ApiError::ServiceUnavailable(
+                            "Organization validation temporarily unavailable".to_string(),
+                        )
+                        .into_response());
+                    }
+                }
+            }
+
+            let current_span = tracing::Span::current();
+            current_span.record("auth.token_id", field::display(&context.token_id));
+            if let Some(ref org_id) = context.org_id {
+                current_span.record("auth.org_id", field::display(org_id));
+            }
+            if let Some(ref org_name) = context.org_name {
+                current_span.record("auth.org_name", org_name.as_str());
+            }
             request.extensions_mut().insert(context);
             Ok(next.run(request).await)
         }
@@ -289,6 +333,8 @@ pub async fn ensure_scopes(
         http.method = %method,
         http.path = %path,
         auth.token_id = %context.token_id,
+        auth.org_id = context.org_id.as_ref().map(|id| id.to_string()).unwrap_or_default().as_str(),
+        auth.org_name = context.org_name.as_deref().unwrap_or(""),
         required_scopes = %required_summary,
         correlation_id = %correlation_id
     );
@@ -350,6 +396,8 @@ pub async fn ensure_dynamic_scopes(
         http.method = %method,
         http.path = %path,
         auth.token_id = %context.token_id,
+        auth.org_id = context.org_id.as_ref().map(|id| id.to_string()).unwrap_or_default().as_str(),
+        auth.org_name = context.org_name.as_deref().unwrap_or(""),
         resource = %resource,
         action = %action,
         correlation_id = %correlation_id

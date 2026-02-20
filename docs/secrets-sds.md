@@ -456,7 +456,7 @@ The `FLOWPLANE_SECRET_ENCRYPTION_KEY` and Vault serve different purposes:
 │         │                                                                    │
 │         ▼  Encrypts metadata at rest                                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │              SQLite Database (Secret Metadata)                       │    │
+│  │              PostgreSQL Database (Secret Metadata)                       │    │
 │  │  ┌─────────────────────────────────────────────────────────────┐    │    │
 │  │  │ name: "oauth2-client-secret"                                │    │    │
 │  │  │ backend: "vault"                                            │    │    │

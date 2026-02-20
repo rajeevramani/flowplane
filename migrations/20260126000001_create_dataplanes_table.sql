@@ -8,8 +8,8 @@ CREATE TABLE IF NOT EXISTS dataplanes (
     name TEXT NOT NULL,                          -- Human-readable dataplane name
     gateway_host TEXT,                           -- Host address for gateway API execution
     description TEXT,                            -- Optional description
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Foreign keys
     FOREIGN KEY (team) REFERENCES teams(name) ON DELETE CASCADE,

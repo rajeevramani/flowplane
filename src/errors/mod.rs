@@ -98,6 +98,30 @@ pub enum FlowplaneError {
     /// Network transport errors (gRPC, HTTP) - retained for backward compatibility
     #[error("Transport error: {0}")]
     Transport(String),
+
+    /// Parsing/decoding errors (replaces unwrap on parse operations)
+    #[error("Parse error: {context}")]
+    Parse {
+        context: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    /// Lock/concurrency errors (replaces expect on RwLock/Mutex)
+    #[error("Synchronization error: {context}")]
+    Sync { context: String },
+
+    /// Type conversion errors (replaces unwrap on TryFrom/TryInto)
+    #[error("Conversion error: {context}")]
+    Conversion {
+        context: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+
+    /// Cross-organization access violation
+    #[error("Cross-organization access denied: user org '{user_org}' cannot access resources in org '{attempted_org}'")]
+    CrossOrgViolation { attempted_org: String, user_org: String },
 }
 
 /// Authentication error subtypes
@@ -209,6 +233,45 @@ impl FlowplaneError {
         Self::Database { source, context }
     }
 
+    /// Create a parse error
+    pub fn parse<S: Into<String>>(context: S) -> Self {
+        Self::Parse { context: context.into(), source: None }
+    }
+
+    /// Create a parse error with source
+    pub fn parse_with_source<S: Into<String>>(
+        context: S,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
+        Self::Parse { context: context.into(), source: Some(source) }
+    }
+
+    /// Create a sync/lock error
+    pub fn sync<S: Into<String>>(context: S) -> Self {
+        Self::Sync { context: context.into() }
+    }
+
+    /// Create a conversion error
+    pub fn conversion<S: Into<String>>(context: S) -> Self {
+        Self::Conversion { context: context.into(), source: None }
+    }
+
+    /// Create a conversion error with source
+    pub fn conversion_with_source<S: Into<String>>(
+        context: S,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    ) -> Self {
+        Self::Conversion { context: context.into(), source: Some(source) }
+    }
+
+    /// Create a cross-organization violation error
+    pub fn cross_org_violation<A: Into<String>, U: Into<String>>(
+        attempted_org: A,
+        user_org: U,
+    ) -> Self {
+        Self::CrossOrgViolation { attempted_org: attempted_org.into(), user_org: user_org.into() }
+    }
+
     /// Create a serialization error with custom context
     pub fn serialization<S: Into<String>>(source: serde_json::Error, context: S) -> Self {
         Self::Serialization { source, context: context.into() }
@@ -252,6 +315,10 @@ impl FlowplaneError {
             FlowplaneError::Timeout { .. } => 408,
             FlowplaneError::ConstraintViolation { .. } => 409,
             FlowplaneError::Transport(_) => 500,
+            FlowplaneError::Parse { .. } => 400,
+            FlowplaneError::Sync { .. } => 500,
+            FlowplaneError::Conversion { .. } => 400,
+            FlowplaneError::CrossOrgViolation { .. } => 403,
         }
     }
 
@@ -273,9 +340,12 @@ impl From<sqlx::Error> for FlowplaneError {
         // Check for constraint violations
         if let Some(db_err) = error.as_database_error() {
             if let Some(code) = db_err.code() {
-                // SQLite constraint violation codes
-                // 2067 is SQLITE_CONSTRAINT_UNIQUE
-                if code.as_ref() == "2067" || code.as_ref().starts_with("SQLITE_CONSTRAINT") {
+                // PostgreSQL constraint violation error codes (Class 23)
+                // 23505 = unique_violation
+                // 23503 = foreign_key_violation
+                // 23502 = not_null_violation
+                // 23514 = check_violation
+                if code.as_ref().starts_with("23") {
                     return Self::ConstraintViolation {
                         message: db_err.message().to_string(),
                         source: error,
@@ -330,6 +400,30 @@ impl From<validator::ValidationErrors> for FlowplaneError {
 impl From<TlsError> for FlowplaneError {
     fn from(error: TlsError) -> Self {
         Self::Config { message: error.to_string(), source: None }
+    }
+}
+
+impl From<std::num::ParseIntError> for FlowplaneError {
+    fn from(error: std::num::ParseIntError) -> Self {
+        Self::parse_with_source("Integer parsing failed", Box::new(error))
+    }
+}
+
+impl From<std::num::ParseFloatError> for FlowplaneError {
+    fn from(error: std::num::ParseFloatError) -> Self {
+        Self::parse_with_source("Float parsing failed", Box::new(error))
+    }
+}
+
+impl From<url::ParseError> for FlowplaneError {
+    fn from(error: url::ParseError) -> Self {
+        Self::parse_with_source("URL parsing failed", Box::new(error))
+    }
+}
+
+impl From<uuid::Error> for FlowplaneError {
+    fn from(error: uuid::Error) -> Self {
+        Self::parse_with_source("UUID parsing failed", Box::new(error))
     }
 }
 
@@ -401,11 +495,63 @@ mod tests {
     }
 
     #[test]
+    fn test_cross_org_violation() {
+        let error = FlowplaneError::cross_org_violation("target-org", "user-org");
+        assert!(matches!(error, FlowplaneError::CrossOrgViolation { .. }));
+        assert_eq!(error.status_code(), 403);
+        assert!(error.to_string().contains("user-org"));
+        assert!(error.to_string().contains("target-org"));
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
     fn test_backward_compatibility_simple_variants() {
         // Test that simple error constructors from old Error type still work
         let _config = FlowplaneError::config("test");
         let _transport = FlowplaneError::transport("test");
         let _internal = FlowplaneError::internal("test");
         let _validation = FlowplaneError::validation("test");
+    }
+
+    #[test]
+    fn test_parse_error() {
+        let error = FlowplaneError::parse("Invalid format");
+        assert!(matches!(error, FlowplaneError::Parse { .. }));
+        assert_eq!(error.status_code(), 400);
+        assert_eq!(error.to_string(), "Parse error: Invalid format");
+    }
+
+    #[test]
+    fn test_sync_error() {
+        let error = FlowplaneError::sync("Lock poisoned");
+        assert!(matches!(error, FlowplaneError::Sync { .. }));
+        assert_eq!(error.status_code(), 500);
+        assert_eq!(error.to_string(), "Synchronization error: Lock poisoned");
+    }
+
+    #[test]
+    fn test_conversion_error() {
+        let error = FlowplaneError::conversion("Value out of range");
+        assert!(matches!(error, FlowplaneError::Conversion { .. }));
+        assert_eq!(error.status_code(), 400);
+        assert_eq!(error.to_string(), "Conversion error: Value out of range");
+    }
+
+    #[test]
+    fn test_parse_error_conversions() {
+        // Test ParseIntError conversion
+        let int_error = "not_a_number".parse::<i64>().unwrap_err();
+        let flowplane_error: FlowplaneError = int_error.into();
+        assert!(matches!(flowplane_error, FlowplaneError::Parse { .. }));
+
+        // Test UUID parse error conversion
+        let uuid_error = uuid::Uuid::parse_str("not-a-uuid").unwrap_err();
+        let flowplane_error: FlowplaneError = uuid_error.into();
+        assert!(matches!(flowplane_error, FlowplaneError::Parse { .. }));
+
+        // Test URL parse error conversion
+        let url_error = url::Url::parse("not a valid url").unwrap_err();
+        let flowplane_error: FlowplaneError = url_error.into();
+        assert!(matches!(flowplane_error, FlowplaneError::Parse { .. }));
     }
 }

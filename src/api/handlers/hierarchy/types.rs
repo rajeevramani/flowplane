@@ -18,7 +18,7 @@ pub struct AttachFilterRequest {
     /// ID of the filter to attach
     pub filter_id: String,
     /// Optional order for the filter (defaults to next available order)
-    pub order: Option<i32>,
+    pub order: Option<i64>,
 }
 
 // === Response Types ===

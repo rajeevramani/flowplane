@@ -102,25 +102,158 @@ impl PkiConfig {
         std::env::var("FLOWPLANE_VAULT_PKI_MOUNT_PATH").is_ok()
     }
 
-    /// Build a SPIFFE URI for the given team and proxy.
+    /// Build a SPIFFE URI for the given team and proxy with validation.
     ///
-    /// Format: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
-    pub fn build_spiffe_uri(&self, team: &str, proxy_id: &str) -> String {
-        format!("spiffe://{}/team/{}/proxy/{}", self.trust_domain, team, proxy_id)
+    /// When `org` is provided, the format is:
+    /// `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
+    ///
+    /// When `org` is `None` (backward compatibility), the legacy format is used:
+    /// `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
+    ///
+    /// # Arguments
+    ///
+    /// * `team` - Team name (validated for injection attacks)
+    /// * `proxy_id` - Unique identifier for the proxy instance
+    ///
+    /// # Returns
+    ///
+    /// The constructed SPIFFE URI if validation passes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecretsError::InvalidValue` if any component contains:
+    /// - Path separators (`/`), at signs (`@`), or colons (`:`)
+    /// - Path traversal sequences (`..`)
+    /// - Empty strings or strings exceeding 128 characters
+    pub fn build_spiffe_uri(&self, team: &str, proxy_id: &str) -> Result<String> {
+        self.build_spiffe_uri_with_org(None, team, proxy_id)
     }
+
+    /// Build a SPIFFE URI with optional org context.
+    ///
+    /// When `org` is provided, the format is:
+    /// `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
+    ///
+    /// When `org` is `None`, the legacy format is used:
+    /// `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
+    pub fn build_spiffe_uri_with_org(
+        &self,
+        org: Option<&str>,
+        team: &str,
+        proxy_id: &str,
+    ) -> Result<String> {
+        // Validate components before constructing URI
+        if let Some(org_val) = org {
+            validate_spiffe_component(org_val, "org")?;
+        }
+        validate_spiffe_component(team, "team")?;
+        validate_spiffe_component(proxy_id, "proxy_id")?;
+
+        match org {
+            Some(org_val) => Ok(format!(
+                "spiffe://{}/org/{}/team/{}/proxy/{}",
+                self.trust_domain, org_val, team, proxy_id
+            )),
+            None => Ok(format!("spiffe://{}/team/{}/proxy/{}", self.trust_domain, team, proxy_id)),
+        }
+    }
+}
+
+/// Validates a SPIFFE URI component for injection attacks.
+///
+/// Rejects components containing:
+/// - Path separators (`/`) - prevents path traversal
+/// - At signs (`@`) - prevents authority injection
+/// - Colons (`:`) - prevents scheme/port injection
+/// - Path traversal sequences (`..`)
+/// - Empty strings
+/// - Strings longer than 128 characters (prevents DoS)
+///
+/// # Arguments
+///
+/// * `component` - The component to validate (team name, proxy ID, etc.)
+/// * `component_name` - Human-readable name for error messages
+///
+/// # Returns
+///
+/// `Ok(())` if valid, `Err(SecretsError::InvalidValue)` if invalid.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// validate_spiffe_component("engineering", "team")?; // OK
+/// validate_spiffe_component("../admin", "team")?;    // Error: contains '..'
+/// validate_spiffe_component("team/admin", "team")?;  // Error: contains '/'
+/// ```
+pub fn validate_spiffe_component(component: &str, component_name: &str) -> Result<()> {
+    // Reject empty strings
+    if component.is_empty() {
+        return Err(SecretsError::invalid_value(format!(
+            "SPIFFE {} cannot be empty",
+            component_name
+        )));
+    }
+
+    // Reject strings longer than 128 characters (prevent DoS)
+    if component.len() > 128 {
+        return Err(SecretsError::invalid_value(format!(
+            "SPIFFE {} exceeds maximum length of 128 characters (got {})",
+            component_name,
+            component.len()
+        )));
+    }
+
+    // Reject path separators (prevents path traversal)
+    if component.contains('/') {
+        return Err(SecretsError::invalid_value(format!(
+            "SPIFFE {} cannot contain '/' (path separator)",
+            component_name
+        )));
+    }
+
+    // Reject at signs (prevents authority injection)
+    if component.contains('@') {
+        return Err(SecretsError::invalid_value(format!(
+            "SPIFFE {} cannot contain '@' (authority separator)",
+            component_name
+        )));
+    }
+
+    // Reject colons (prevents scheme/port injection)
+    if component.contains(':') {
+        return Err(SecretsError::invalid_value(format!(
+            "SPIFFE {} cannot contain ':' (scheme/port separator)",
+            component_name
+        )));
+    }
+
+    // Reject path traversal sequences
+    if component.contains("..") {
+        return Err(SecretsError::invalid_value(format!(
+            "SPIFFE {} cannot contain '..' (path traversal)",
+            component_name
+        )));
+    }
+
+    Ok(())
 }
 
 /// Certificate bundle generated by Vault PKI.
 ///
 /// Contains all materials needed for an Envoy proxy to establish mTLS
 /// connections to the control plane.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security
+///
+/// The `private_key` field uses [`SecretString`] to prevent accidental
+/// logging. Debug output will show `[REDACTED]` for the private key.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GeneratedCertificate {
     /// PEM-encoded X.509 certificate
     pub certificate: String,
 
-    /// PEM-encoded private key
-    pub private_key: String,
+    /// PEM-encoded private key (redacted in logs)
+    pub private_key: super::types::SecretString,
 
     /// PEM-encoded CA certificate chain
     pub ca_chain: String,
@@ -135,9 +268,24 @@ pub struct GeneratedCertificate {
     pub spiffe_uri: String,
 }
 
+impl std::fmt::Debug for GeneratedCertificate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratedCertificate")
+            .field("certificate", &format!("[{} bytes PEM]", self.certificate.len()))
+            .field("private_key", &self.private_key) // Uses SecretString's Debug
+            .field("ca_chain", &format!("[{} bytes PEM]", self.ca_chain.len()))
+            .field("serial_number", &self.serial_number)
+            .field("expires_at", &self.expires_at)
+            .field("spiffe_uri", &self.spiffe_uri)
+            .finish()
+    }
+}
+
 /// Parse team name from a SPIFFE URI.
 ///
-/// URI format: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
+/// Supports both the new org-scoped format and legacy format:
+/// - New: `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
+/// - Legacy: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
 ///
 /// # Arguments
 ///
@@ -152,20 +300,28 @@ pub struct GeneratedCertificate {
 /// ```rust,ignore
 /// let team = parse_team_from_spiffe_uri("spiffe://flowplane.local/team/engineering/proxy/proxy-1");
 /// assert_eq!(team, Some("engineering".to_string()));
+///
+/// let team = parse_team_from_spiffe_uri("spiffe://flowplane.local/org/acme/team/engineering/proxy/proxy-1");
+/// assert_eq!(team, Some("engineering".to_string()));
 /// ```
 pub fn parse_team_from_spiffe_uri(uri: &str) -> Option<String> {
     let parts: Vec<&str> = uri.split('/').collect();
-    // Expected: ["spiffe:", "", "{domain}", "team", "{team}", "proxy", "{proxy_id}"]
-    if parts.len() >= 5 && parts[3] == "team" {
-        Some(parts[4].to_string())
-    } else {
-        None
+    // New format: ["spiffe:", "", "{domain}", "org", "{org}", "team", "{team}", "proxy", "{proxy_id}"]
+    if parts.len() >= 7 && parts[3] == "org" && parts[5] == "team" {
+        return Some(parts[6].to_string());
     }
+    // Legacy format: ["spiffe:", "", "{domain}", "team", "{team}", "proxy", "{proxy_id}"]
+    if parts.len() >= 5 && parts[3] == "team" {
+        return Some(parts[4].to_string());
+    }
+    None
 }
 
 /// Parse proxy ID from a SPIFFE URI.
 ///
-/// URI format: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
+/// Supports both the new org-scoped format and legacy format:
+/// - New: `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
+/// - Legacy: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
 ///
 /// # Arguments
 ///
@@ -176,11 +332,68 @@ pub fn parse_team_from_spiffe_uri(uri: &str) -> Option<String> {
 /// The proxy ID if the URI is valid, otherwise `None`.
 pub fn parse_proxy_id_from_spiffe_uri(uri: &str) -> Option<String> {
     let parts: Vec<&str> = uri.split('/').collect();
-    // Expected: ["spiffe:", "", "{domain}", "team", "{team}", "proxy", "{proxy_id}"]
+    // New format: ["spiffe:", "", "{domain}", "org", "{org}", "team", "{team}", "proxy", "{proxy_id}"]
+    if parts.len() >= 9 && parts[3] == "org" && parts[5] == "team" && parts[7] == "proxy" {
+        return Some(parts[8].to_string());
+    }
+    // Legacy format: ["spiffe:", "", "{domain}", "team", "{team}", "proxy", "{proxy_id}"]
     if parts.len() >= 7 && parts[3] == "team" && parts[5] == "proxy" {
-        Some(parts[6].to_string())
+        return Some(parts[6].to_string());
+    }
+    None
+}
+
+/// Parse org name from a SPIFFE URI.
+///
+/// Only returns a value for the new org-scoped format:
+/// `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
+///
+/// Returns `None` for legacy format URIs that lack org context.
+pub fn parse_org_from_spiffe_uri(uri: &str) -> Option<String> {
+    let parts: Vec<&str> = uri.split('/').collect();
+    // New format: ["spiffe:", "", "{domain}", "org", "{org}", "team", "{team}", "proxy", "{proxy_id}"]
+    if parts.len() >= 7 && parts[3] == "org" && parts[5] == "team" {
+        return Some(parts[4].to_string());
+    }
+    None
+}
+
+/// Get configured TTL for certificate generation.
+///
+/// Reads from `FLOWPLANE_VAULT_PKI_TTL_HOURS` environment variable.
+/// Default: 12 hours
+/// Range: 4-24 hours (clamped with warning if out of range)
+///
+/// Per ADR-008, short-lived certificates (4-24 hours) are required for
+/// shared dataplane certificates to limit blast radius on compromise.
+pub fn get_certificate_ttl_hours() -> u32 {
+    const DEFAULT_TTL: u32 = 12;
+    const MIN_TTL: u32 = 4;
+    const MAX_TTL: u32 = 24;
+
+    let ttl = std::env::var("FLOWPLANE_VAULT_PKI_TTL_HOURS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_TTL);
+
+    if ttl < MIN_TTL {
+        tracing::warn!(
+            requested_ttl = ttl,
+            min_ttl = MIN_TTL,
+            "Certificate TTL below minimum, clamping to {} hours",
+            MIN_TTL
+        );
+        MIN_TTL
+    } else if ttl > MAX_TTL {
+        tracing::warn!(
+            requested_ttl = ttl,
+            max_ttl = MAX_TTL,
+            "Certificate TTL exceeds maximum (security risk per ADR-008), clamping to {} hours",
+            MAX_TTL
+        );
+        MAX_TTL
     } else {
-        None
+        ttl
     }
 }
 
@@ -358,7 +571,7 @@ impl VaultSecretsClient {
     ) -> Result<GeneratedCertificate> {
         use vaultrs::pki::cert;
 
-        let spiffe_uri = pki_config.build_spiffe_uri(team, proxy_id);
+        let spiffe_uri = pki_config.build_spiffe_uri(team, proxy_id)?;
 
         tracing::info!(
             team = %team,
@@ -373,7 +586,10 @@ impl VaultSecretsClient {
         let mut opts = vaultrs::api::pki::requests::GenerateCertificateRequestBuilder::default();
         // uri_sans expects a comma-separated string for multiple SANs
         opts.uri_sans(spiffe_uri.clone());
-        opts.ttl("720h"); // 30 days
+
+        // Configure TTL with secure defaults (4-24 hour range per ADR-008)
+        let ttl_hours = get_certificate_ttl_hours();
+        opts.ttl(format!("{}h", ttl_hours));
 
         // Generate certificate via Vault PKI
         let response = cert::generate(
@@ -393,14 +609,22 @@ impl VaultSecretsClient {
             SecretsError::backend_error(format!("Vault PKI certificate generation failed: {}", e))
         })?;
 
-        // Parse expiration timestamp
-        let expires_at = response
-            .expiration
-            .map(|ts| DateTime::from_timestamp(ts as i64, 0).unwrap_or_else(Utc::now))
-            .unwrap_or_else(|| {
-                // Default to 30 days from now if not provided
-                Utc::now() + chrono::Duration::days(30)
-            });
+        // Parse expiration timestamp - return error if invalid or missing
+        let expires_at = match response.expiration {
+            Some(ts) => DateTime::from_timestamp(ts as i64, 0).ok_or_else(|| {
+                tracing::error!(timestamp = ts, "Invalid expiration timestamp from Vault PKI");
+                SecretsError::backend_error(format!(
+                    "Invalid expiration timestamp from Vault PKI: {}",
+                    ts
+                ))
+            })?,
+            None => {
+                tracing::error!("Vault PKI response missing expiration timestamp");
+                return Err(SecretsError::backend_error(
+                    "Vault PKI response missing expiration timestamp",
+                ));
+            }
+        };
 
         // Build CA chain from response
         let ca_chain = response
@@ -418,7 +642,7 @@ impl VaultSecretsClient {
 
         Ok(GeneratedCertificate {
             certificate: response.certificate,
-            private_key: response.private_key,
+            private_key: super::types::SecretString::new(response.private_key),
             ca_chain,
             serial_number: response.serial_number,
             expires_at,
@@ -572,7 +796,7 @@ mod tests {
             trust_domain: "flowplane.local".to_string(),
         };
 
-        let uri = config.build_spiffe_uri("engineering", "proxy-1");
+        let uri = config.build_spiffe_uri("engineering", "proxy-1").unwrap();
         assert_eq!(uri, "spiffe://flowplane.local/team/engineering/proxy/proxy-1");
     }
 
@@ -585,7 +809,7 @@ mod tests {
         };
 
         // Team and proxy names with hyphens and numbers
-        let uri = config.build_spiffe_uri("team-123", "proxy-abc-456");
+        let uri = config.build_spiffe_uri("team-123", "proxy-abc-456").unwrap();
         assert_eq!(uri, "spiffe://example.com/team/team-123/proxy/proxy-abc-456");
     }
 
@@ -670,10 +894,321 @@ mod tests {
         let team = "payments";
         let proxy_id = "edge-proxy-1";
 
-        let uri = config.build_spiffe_uri(team, proxy_id);
+        let uri = config.build_spiffe_uri(team, proxy_id).unwrap();
 
         // Parse should return the original values
         assert_eq!(parse_team_from_spiffe_uri(&uri), Some(team.to_string()));
         assert_eq!(parse_proxy_id_from_spiffe_uri(&uri), Some(proxy_id.to_string()));
+        // Legacy format should not have org
+        assert_eq!(parse_org_from_spiffe_uri(&uri), None);
+    }
+
+    // =========================================================================
+    // Org-scoped SPIFFE URI Tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_spiffe_uri_with_org() {
+        let config = PkiConfig {
+            mount_path: "pki".to_string(),
+            role_name: "proxy".to_string(),
+            trust_domain: "flowplane.local".to_string(),
+        };
+
+        let uri =
+            config.build_spiffe_uri_with_org(Some("acme-corp"), "engineering", "proxy-1").unwrap();
+        assert_eq!(uri, "spiffe://flowplane.local/org/acme-corp/team/engineering/proxy/proxy-1");
+    }
+
+    #[test]
+    fn test_build_spiffe_uri_with_org_none_falls_back_to_legacy() {
+        let config = PkiConfig {
+            mount_path: "pki".to_string(),
+            role_name: "proxy".to_string(),
+            trust_domain: "flowplane.local".to_string(),
+        };
+
+        let uri = config.build_spiffe_uri_with_org(None, "engineering", "proxy-1").unwrap();
+        assert_eq!(uri, "spiffe://flowplane.local/team/engineering/proxy/proxy-1");
+    }
+
+    #[test]
+    fn test_build_spiffe_uri_with_org_validates_org() {
+        let config = PkiConfig {
+            mount_path: "pki".to_string(),
+            role_name: "proxy".to_string(),
+            trust_domain: "flowplane.local".to_string(),
+        };
+
+        // org with path separator should fail
+        assert!(config.build_spiffe_uri_with_org(Some("bad/org"), "team", "proxy").is_err());
+        // org with path traversal should fail
+        assert!(config.build_spiffe_uri_with_org(Some(".."), "team", "proxy").is_err());
+        // empty org should fail
+        assert!(config.build_spiffe_uri_with_org(Some(""), "team", "proxy").is_err());
+    }
+
+    #[test]
+    fn test_parse_org_scoped_spiffe_uri() {
+        let uri = "spiffe://flowplane.local/org/acme-corp/team/engineering/proxy/proxy-1";
+        assert_eq!(parse_org_from_spiffe_uri(uri), Some("acme-corp".to_string()));
+        assert_eq!(parse_team_from_spiffe_uri(uri), Some("engineering".to_string()));
+        assert_eq!(parse_proxy_id_from_spiffe_uri(uri), Some("proxy-1".to_string()));
+    }
+
+    #[test]
+    fn test_parse_org_from_legacy_uri_returns_none() {
+        let uri = "spiffe://flowplane.local/team/engineering/proxy/proxy-1";
+        assert_eq!(parse_org_from_spiffe_uri(uri), None);
+    }
+
+    #[test]
+    fn test_org_scoped_spiffe_uri_roundtrip() {
+        let config = PkiConfig {
+            mount_path: "pki".to_string(),
+            role_name: "proxy".to_string(),
+            trust_domain: "prod.example.com".to_string(),
+        };
+
+        let org = "acme";
+        let team = "payments";
+        let proxy_id = "edge-proxy-1";
+
+        let uri = config.build_spiffe_uri_with_org(Some(org), team, proxy_id).unwrap();
+
+        assert_eq!(parse_org_from_spiffe_uri(&uri), Some(org.to_string()));
+        assert_eq!(parse_team_from_spiffe_uri(&uri), Some(team.to_string()));
+        assert_eq!(parse_proxy_id_from_spiffe_uri(&uri), Some(proxy_id.to_string()));
+    }
+
+    // =========================================================================
+    // SPIFFE URI Injection Security Tests
+    // =========================================================================
+
+    #[test]
+    fn test_validate_spiffe_component_valid() {
+        // Valid components - should all pass
+        assert!(validate_spiffe_component("engineering", "team").is_ok());
+        assert!(validate_spiffe_component("proxy-1", "proxy_id").is_ok());
+        assert!(validate_spiffe_component("team-alpha-123", "team").is_ok());
+        assert!(validate_spiffe_component("a", "team").is_ok()); // Single char
+        assert!(validate_spiffe_component("with.dots", "team").is_ok()); // Dots allowed
+        assert!(validate_spiffe_component("with_underscores", "team").is_ok());
+    }
+
+    #[test]
+    fn test_validate_spiffe_component_empty() {
+        let err = validate_spiffe_component("", "team").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_spiffe_component_too_long() {
+        let long_string = "a".repeat(129);
+        let err = validate_spiffe_component(&long_string, "team").unwrap_err();
+        assert!(err.to_string().contains("exceeds maximum length"));
+
+        // Exactly 128 should be fine
+        let max_length = "a".repeat(128);
+        assert!(validate_spiffe_component(&max_length, "team").is_ok());
+    }
+
+    #[test]
+    fn test_validate_spiffe_component_path_separator() {
+        let err = validate_spiffe_component("team/admin", "team").unwrap_err();
+        assert!(err.to_string().contains("cannot contain '/'"));
+
+        let err = validate_spiffe_component("a/b/c", "proxy_id").unwrap_err();
+        assert!(err.to_string().contains("cannot contain '/'"));
+    }
+
+    #[test]
+    fn test_validate_spiffe_component_at_sign() {
+        let err = validate_spiffe_component("user@domain", "team").unwrap_err();
+        assert!(err.to_string().contains("cannot contain '@'"));
+    }
+
+    #[test]
+    fn test_validate_spiffe_component_colon() {
+        let err = validate_spiffe_component("https:test", "team").unwrap_err();
+        assert!(err.to_string().contains("cannot contain ':'"));
+
+        let err = validate_spiffe_component("host:8080", "proxy_id").unwrap_err();
+        assert!(err.to_string().contains("cannot contain ':'"));
+    }
+
+    #[test]
+    fn test_validate_spiffe_component_path_traversal() {
+        // Embedded path traversal (no slash, so hits ".." check)
+        let err = validate_spiffe_component("team..admin", "team").unwrap_err();
+        assert!(err.to_string().contains("cannot contain '..'"));
+
+        // Trailing path traversal
+        let err = validate_spiffe_component("admin..", "team").unwrap_err();
+        assert!(err.to_string().contains("cannot contain '..'"));
+
+        // Leading path traversal - this also contains '/', so test separately
+        let err = validate_spiffe_component("..admin", "team").unwrap_err();
+        assert!(err.to_string().contains("cannot contain '..'"));
+
+        // With slash - will be caught by '/' check first (that's fine, both are blocked)
+        assert!(validate_spiffe_component("../admin", "team").is_err());
+    }
+
+    #[test]
+    fn test_build_spiffe_uri_injection_prevention() {
+        let config = PkiConfig {
+            mount_path: "pki".to_string(),
+            role_name: "proxy".to_string(),
+            trust_domain: "flowplane.local".to_string(),
+        };
+
+        // Path traversal attack
+        assert!(config.build_spiffe_uri("../admin", "proxy-1").is_err());
+        assert!(config.build_spiffe_uri("../../etc", "passwd").is_err());
+
+        // Path separator injection in proxy_id
+        assert!(config.build_spiffe_uri("team", "../../team/other/proxy/x").is_err());
+
+        // Authority injection
+        assert!(config.build_spiffe_uri("admin@evil.com", "proxy").is_err());
+
+        // Scheme injection
+        assert!(config.build_spiffe_uri("evil.com:443", "proxy").is_err());
+
+        // Empty components
+        assert!(config.build_spiffe_uri("", "proxy-1").is_err());
+        assert!(config.build_spiffe_uri("team", "").is_err());
+
+        // Valid inputs should still work
+        assert!(config.build_spiffe_uri("engineering", "proxy-1").is_ok());
+        assert!(config.build_spiffe_uri("team-123", "envoy-gateway").is_ok());
+    }
+
+    #[test]
+    fn test_build_spiffe_uri_preserves_format() {
+        let config = PkiConfig {
+            mount_path: "pki".to_string(),
+            role_name: "proxy".to_string(),
+            trust_domain: "prod.example.com".to_string(),
+        };
+
+        let uri = config.build_spiffe_uri("payments", "gateway-1").unwrap();
+        assert_eq!(uri, "spiffe://prod.example.com/team/payments/proxy/gateway-1");
+
+        // Verify the URI can be parsed back
+        assert_eq!(parse_team_from_spiffe_uri(&uri), Some("payments".to_string()));
+        assert_eq!(parse_proxy_id_from_spiffe_uri(&uri), Some("gateway-1".to_string()));
+    }
+
+    // =========================================================================
+    // GeneratedCertificate Security Tests
+    // =========================================================================
+
+    #[test]
+    fn test_generated_certificate_debug_redacts_private_key() {
+        use crate::secrets::SecretString;
+        let cert = GeneratedCertificate {
+            certificate: "-----BEGIN CERTIFICATE-----\nMOCK_CERT\n-----END CERTIFICATE-----"
+                .to_string(),
+            private_key: SecretString::new(
+                "-----BEGIN PRIVATE KEY-----\nSUPER_SECRET_KEY\n-----END PRIVATE KEY-----",
+            ),
+            ca_chain: "-----BEGIN CERTIFICATE-----\nCA_CHAIN\n-----END CERTIFICATE-----"
+                .to_string(),
+            serial_number: "1234567890".to_string(),
+            expires_at: chrono::Utc::now(),
+            spiffe_uri: "spiffe://test.local/team/eng/proxy/p1".to_string(),
+        };
+
+        let debug_output = format!("{:?}", cert);
+
+        // Verify private key material is NOT in debug output
+        assert!(!debug_output.contains("SUPER_SECRET_KEY"));
+        assert!(!debug_output.contains("BEGIN PRIVATE KEY"));
+
+        // Verify the debug output shows it's redacted
+        assert!(debug_output.contains("[REDACTED]"));
+
+        // Verify other non-sensitive fields are visible
+        assert!(debug_output.contains("1234567890")); // serial_number
+        assert!(debug_output.contains("spiffe://test.local")); // spiffe_uri
+    }
+
+    #[test]
+    fn test_generated_certificate_private_key_accessible() {
+        use crate::secrets::SecretString;
+        let secret_key = "-----BEGIN PRIVATE KEY-----\nMY_SECRET\n-----END PRIVATE KEY-----";
+        let cert = GeneratedCertificate {
+            certificate: "cert".to_string(),
+            private_key: SecretString::new(secret_key),
+            ca_chain: "ca".to_string(),
+            serial_number: "123".to_string(),
+            expires_at: chrono::Utc::now(),
+            spiffe_uri: "spiffe://test".to_string(),
+        };
+
+        // The secret should still be accessible via expose_secret()
+        assert_eq!(cert.private_key.expose_secret(), secret_key);
+    }
+
+    // =========================================================================
+    // Certificate TTL Configuration Tests
+    // =========================================================================
+
+    #[test]
+    fn test_certificate_ttl_default() {
+        // Clear any existing env var
+        std::env::remove_var("FLOWPLANE_VAULT_PKI_TTL_HOURS");
+        assert_eq!(get_certificate_ttl_hours(), 12);
+    }
+
+    #[test]
+    fn test_certificate_ttl_custom_valid() {
+        std::env::set_var("FLOWPLANE_VAULT_PKI_TTL_HOURS", "8");
+        assert_eq!(get_certificate_ttl_hours(), 8);
+        std::env::remove_var("FLOWPLANE_VAULT_PKI_TTL_HOURS");
+    }
+
+    #[test]
+    fn test_certificate_ttl_boundary_min() {
+        std::env::set_var("FLOWPLANE_VAULT_PKI_TTL_HOURS", "4");
+        assert_eq!(get_certificate_ttl_hours(), 4); // Exactly at minimum
+        std::env::remove_var("FLOWPLANE_VAULT_PKI_TTL_HOURS");
+    }
+
+    #[test]
+    fn test_certificate_ttl_boundary_max() {
+        std::env::set_var("FLOWPLANE_VAULT_PKI_TTL_HOURS", "24");
+        assert_eq!(get_certificate_ttl_hours(), 24); // Exactly at maximum
+        std::env::remove_var("FLOWPLANE_VAULT_PKI_TTL_HOURS");
+    }
+
+    #[test]
+    fn test_certificate_ttl_clamped_below_min() {
+        std::env::set_var("FLOWPLANE_VAULT_PKI_TTL_HOURS", "2");
+        assert_eq!(get_certificate_ttl_hours(), 4); // Clamped to minimum
+        std::env::remove_var("FLOWPLANE_VAULT_PKI_TTL_HOURS");
+    }
+
+    #[test]
+    fn test_certificate_ttl_clamped_above_max() {
+        std::env::set_var("FLOWPLANE_VAULT_PKI_TTL_HOURS", "72");
+        assert_eq!(get_certificate_ttl_hours(), 24); // Clamped to maximum
+        std::env::remove_var("FLOWPLANE_VAULT_PKI_TTL_HOURS");
+    }
+
+    #[test]
+    fn test_certificate_ttl_invalid_parse() {
+        std::env::set_var("FLOWPLANE_VAULT_PKI_TTL_HOURS", "invalid");
+        assert_eq!(get_certificate_ttl_hours(), 12); // Falls back to default
+        std::env::remove_var("FLOWPLANE_VAULT_PKI_TTL_HOURS");
+    }
+
+    #[test]
+    fn test_certificate_ttl_zero_clamped() {
+        std::env::set_var("FLOWPLANE_VAULT_PKI_TTL_HOURS", "0");
+        assert_eq!(get_certificate_ttl_hours(), 4); // Clamped to minimum
+        std::env::remove_var("FLOWPLANE_VAULT_PKI_TTL_HOURS");
     }
 }

@@ -2,12 +2,16 @@
 //!
 //! Control Plane tools for managing filters.
 
+use crate::domain::OrgId;
 use crate::internal_api::{
     CreateFilterRequest, FilterOperations, InternalAuthContext, ListFiltersRequest,
     UpdateFilterRequest,
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::response_builders::{
+    build_delete_response, build_rich_create_response, build_update_response,
+};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -15,9 +19,9 @@ use tracing::instrument;
 
 /// Tool definition for listing filters
 pub fn cp_list_filters_tool() -> Tool {
-    Tool {
-        name: "cp_list_filters".to_string(),
-        description: r#"List all filters available in the Flowplane control plane.
+    Tool::new(
+        "cp_list_filters",
+        r#"List all filters available in the Flowplane control plane.
 
 RESOURCE ORDER: Filters are independent resources (order 1 of 4).
 Create filters BEFORE attaching them to listeners or routes.
@@ -46,26 +50,38 @@ FILTER TYPES:
 
 RETURNS: Array of filter objects with name, filter_type, configuration, and metadata.
 
-RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#,
+        json!({
             "type": "object",
             "properties": {
                 "filter_type": {
                     "type": "string",
                     "description": "Filter by filter type (e.g., jwt_auth, oauth2, cors, rate_limit)",
                     "enum": ["jwt_auth", "oauth2", "local_rate_limit", "cors", "header_mutation", "ext_authz", "rbac", "custom_response", "compressor", "mcp"]
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of filters to return (1-1000, default: 100)",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 100
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Offset for pagination (default: 0)",
+                    "minimum": 0,
+                    "default": 0
                 }
             }
         }),
-    }
+    )
 }
 
 /// Tool definition for getting a specific filter
 pub fn cp_get_filter_tool() -> Tool {
-    Tool {
-        name: "cp_get_filter".to_string(),
-        description: r#"Get detailed information about a specific filter by name.
+    Tool::new(
+        "cp_get_filter",
+        r#"Get detailed information about a specific filter by name.
 
 PURPOSE: Retrieve complete filter configuration and see where it's installed.
 
@@ -93,9 +109,8 @@ CONFIGURATION VARIES BY TYPE:
 - rate_limit: {statPrefix, domain, rateLimits: [...]}
 - header_mutation: {requestHeadersToAdd: [...], responseHeadersToAdd: [...]}
 
-RELATED TOOLS: cp_list_filters (discovery), cp_update_filter (modify), cp_delete_filter (remove)"#
-            .to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_list_filters (discovery), cp_update_filter (modify), cp_delete_filter (remove)"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -105,7 +120,7 @@ RELATED TOOLS: cp_list_filters (discovery), cp_update_filter (modify), cp_delete
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Execute list filters operation using the internal API layer.
@@ -113,15 +128,25 @@ RELATED TOOLS: cp_list_filters (discovery), cp_update_filter (modify), cp_delete
 pub async fn execute_list_filters(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let filter_type = args["filter_type"].as_str().map(|s| s.to_string());
+    let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32);
 
     // Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
-    let req = ListFiltersRequest { filter_type, include_defaults: true, ..Default::default() };
+    let req = ListFiltersRequest { filter_type, limit, offset, include_defaults: true };
 
     let response = ops.list(req, &auth).await?;
 
@@ -159,6 +184,7 @@ pub async fn execute_list_filters(
 pub async fn execute_get_filter(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let name = args["name"]
@@ -167,7 +193,14 @@ pub async fn execute_get_filter(
 
     // Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let filter_with_installations = ops.get_with_installations(name, &auth).await?;
     let filter = &filter_with_installations.filter;
@@ -211,9 +244,9 @@ pub async fn execute_get_filter(
 
 /// Returns the MCP tool definition for creating a filter.
 pub fn cp_create_filter_tool() -> Tool {
-    Tool {
-        name: "cp_create_filter".to_string(),
-        description: r#"Create a new filter in the Flowplane control plane.
+    Tool::new(
+        "cp_create_filter",
+        r#"Create a new filter in the Flowplane control plane.
 
 RESOURCE ORDER: Filters are independent resources (order 1 of 4).
 Create filters BEFORE attaching them to listeners or route configurations.
@@ -227,53 +260,60 @@ NEXT STEPS AFTER CREATING FILTER:
 1. Attach to a listener for global traffic processing, OR
 2. Attach to specific routes for per-endpoint policies
 
-CONFIGURATION BY FILTER TYPE:
+CONFIGURATION FORMAT:
+Pass filter-specific config as a flat object. The filterType parameter is used automatically.
+Use cp_get_filter_type to see the full JSON Schema for any filter type.
+
+EXAMPLES BY FILTER TYPE:
+
+local_rate_limit - Request Rate Limiting:
+{
+  "stat_prefix": "api_rate_limit",
+  "token_bucket": {"max_tokens": 100, "tokens_per_fill": 100, "fill_interval_ms": 60000},
+  "status_code": 429
+}
 
 jwt_auth - JWT Authentication:
 {
-  "providers": [{
-    "name": "my-provider",
-    "issuer": "https://auth.example.com",
-    "audiences": ["api"],
-    "jwks": {"remoteJwks": {"uri": "https://auth.example.com/.well-known/jwks.json"}}
-  }],
-  "rules": [{"match": {"prefix": "/api"}, "requires": {"providerName": "my-provider"}}]
+  "providers": {
+    "my-provider": {
+      "issuer": "https://auth.example.com",
+      "audiences": ["api"],
+      "jwks": {"type": "remote", "http_uri": {"uri": "https://auth.example.com/.well-known/jwks.json", "cluster": "jwks-cluster"}}
+    }
+  },
+  "rules": [{"match": {"prefix": "/api"}, "requires": {"type": "provider_name", "provider_name": "my-provider"}}]
 }
 
 cors - Cross-Origin Resource Sharing:
 {
-  "allowOrigins": [{"exact": "https://app.example.com"}],
-  "allowMethods": ["GET", "POST", "PUT", "DELETE"],
-  "allowHeaders": ["Authorization", "Content-Type"],
-  "maxAge": 86400
-}
-
-local_rate_limit - Request Rate Limiting:
-{
-  "statPrefix": "api_rate_limit",
-  "tokenBucket": {"maxTokens": 100, "tokensPerFill": 100, "fillInterval": "60s"},
-  "filterEnabled": {"defaultValue": {"numerator": 100, "denominator": "HUNDRED"}}
+  "policy": {
+    "allow_origin": [{"type": "exact", "value": "https://app.example.com"}],
+    "allow_methods": ["GET", "POST", "PUT", "DELETE"],
+    "allow_headers": ["Authorization", "Content-Type"],
+    "max_age": 86400
+  }
 }
 
 header_mutation - Header Modification:
 {
-  "requestHeadersToAdd": [{"header": {"key": "X-Custom", "value": "added"}, "append": false}],
-  "requestHeadersToRemove": ["X-Remove-Me"],
-  "responseHeadersToAdd": [{"header": {"key": "X-Response", "value": "added"}}]
+  "request_headers_to_add": [{"key": "X-Custom", "value": "added", "append": false}],
+  "request_headers_to_remove": ["X-Remove-Me"],
+  "response_headers_to_add": [{"key": "X-Response", "value": "added"}]
 }
 
 ext_authz - External Authorization:
 {
-  "httpService": {
-    "serverUri": {"uri": "http://auth-service:8080", "cluster": "auth-cluster"},
-    "authorizationRequest": {"allowedHeaders": {"patterns": [{"exact": "Authorization"}]}}
+  "service": {
+    "type": "http",
+    "server_uri": {"uri": "http://auth-service:8080", "cluster": "auth-cluster"},
+    "authorization_request": {"allowed_headers": ["Authorization"]}
   }
 }
 
 Authorization: Requires cp:write scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -296,14 +336,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name", "filterType", "configuration"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for updating a filter.
 pub fn cp_update_filter_tool() -> Tool {
-    Tool {
-        name: "cp_update_filter".to_string(),
-        description: r#"Update an existing filter's configuration.
+    Tool::new(
+        "cp_update_filter",
+        r#"Update an existing filter's configuration.
 
 PURPOSE: Modify filter settings. Changes are automatically pushed to Envoy via xDS.
 
@@ -329,8 +369,8 @@ Optional Parameters:
 TIP: Use cp_get_filter first to see current configuration and installations.
 
 Authorization: Requires cp:write scope.
-"#.to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -352,14 +392,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for deleting a filter.
 pub fn cp_delete_filter_tool() -> Tool {
-    Tool {
-        name: "cp_delete_filter".to_string(),
-        description: r#"Delete a filter from the Flowplane control plane.
+    Tool::new(
+        "cp_delete_filter",
+        r#"Delete a filter from the Flowplane control plane.
 
 PREREQUISITES FOR DELETION:
 - Filter must NOT be attached to any listeners
@@ -380,9 +420,8 @@ Required Parameters:
 - name: Name of the filter to delete
 
 Authorization: Requires cp:write scope.
-"#
-        .to_string(),
-        input_schema: json!({
+"#,
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -392,7 +431,7 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Execute the cp_create_filter tool using the internal API layer.
@@ -400,6 +439,7 @@ Authorization: Requires cp:write scope.
 pub async fn execute_create_filter(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -426,12 +466,30 @@ pub async fn execute_create_filter(
     );
 
     // 2. Parse configuration into FilterConfig enum
-    let config: crate::domain::FilterConfig = serde_json::from_value(configuration.clone())
-        .map_err(|e| McpError::InvalidParams(format!("Invalid configuration: {}", e)))?;
+    // Auto-wrap with type envelope so agents can pass flat config matching the schema
+    // from cp_get_filter_type. Also accept pre-wrapped {"type": "...", "config": {...}}.
+    let wrapped = if configuration.get("type").is_some() && configuration.get("config").is_some() {
+        configuration.clone()
+    } else {
+        json!({"type": filter_type, "config": configuration})
+    };
+    let config: crate::domain::FilterConfig = serde_json::from_value(wrapped).map_err(|e| {
+        McpError::InvalidParams(format!(
+            "Invalid configuration for '{}': {}. Use cp_get_filter_type(\"{}\") to see required fields.",
+            filter_type, e, filter_type
+        ))
+    })?;
 
     // 3. Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     let req = CreateFilterRequest {
         name: name.to_string(),
@@ -443,25 +501,20 @@ pub async fn execute_create_filter(
 
     let result = ops.create(req, &auth).await?;
 
-    // 4. Format success response
-    let output = json!({
-        "success": true,
-        "filter": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "filterType": result.data.filter_type,
-            "description": result.data.description,
-            "team": result.data.team,
-            "version": result.data.version,
-            "createdAt": result.data.created_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Filter '{}' created successfully. xDS configuration has been refreshed.",
+    // 4. Format rich response with filter_type and next-step guidance
+    let output = build_rich_create_response(
+        "filter",
+        &result.data.name,
+        result.data.id.as_ref(),
+        Some(json!({"filter_type": filter_type})),
+        None,
+        Some(&format!(
+            "Attach with cp_attach_filter to a listener or route_config. Filter name: '{}'",
             result.data.name
         )),
-    });
+    );
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -478,6 +531,7 @@ pub async fn execute_create_filter(
 pub async fn execute_update_filter(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse filter name
@@ -492,46 +546,47 @@ pub async fn execute_update_filter(
         "Updating filter via MCP"
     );
 
-    // 2. Parse optional updates
+    // 2. Set up auth and operations
+    let ops = FilterOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+
+    // 3. Parse optional updates (auto-wrap config if needed)
     let new_name = args.get("newName").and_then(|v| v.as_str()).map(|s| s.to_string());
     let new_description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
     let new_config = if let Some(config_json) = args.get("configuration") {
-        Some(
-            serde_json::from_value(config_json.clone())
-                .map_err(|e| McpError::InvalidParams(format!("Invalid configuration: {}", e)))?,
-        )
+        // Look up existing filter to get its type for auto-wrapping
+        let existing = ops.get(name, &auth).await?;
+        let wrapped = if config_json.get("type").is_some() && config_json.get("config").is_some() {
+            config_json.clone()
+        } else {
+            json!({"type": existing.filter_type, "config": config_json})
+        };
+        Some(serde_json::from_value(wrapped).map_err(|e| {
+            McpError::InvalidParams(format!(
+                "Invalid configuration for '{}': {}. Use cp_get_filter_type(\"{}\") to see required fields.",
+                existing.filter_type, e, existing.filter_type
+            ))
+        })?)
     } else {
         None
     };
-
-    // 3. Use internal API layer
-    let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
 
     let req =
         UpdateFilterRequest { name: new_name, description: new_description, config: new_config };
 
     let result = ops.update(name, req, &auth).await?;
 
-    // 4. Format success response
-    let output = json!({
-        "success": true,
-        "filter": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "filterType": result.data.filter_type,
-            "description": result.data.description,
-            "team": result.data.team,
-            "version": result.data.version,
-            "updatedAt": result.data.updated_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| format!(
-            "Filter '{}' updated successfully. xDS configuration has been refreshed.",
-            result.data.name
-        )),
-    });
+    // 4. Format success response (minimal token-efficient format)
+    let output = build_update_response("filter", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -548,6 +603,7 @@ pub async fn execute_update_filter(
 pub async fn execute_delete_filter(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse filter name
@@ -564,25 +620,459 @@ pub async fn execute_delete_filter(
 
     // 2. Use internal API layer
     let ops = FilterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
-    let result = ops.delete(name, &auth).await?;
+    ops.delete(name, &auth).await?;
 
-    // 3. Format success response
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
+
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        filter_name = %name,
+        "Successfully deleted filter via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+// =============================================================================
+// FILTER ATTACHMENT TOOLS
+// =============================================================================
+
+/// Returns the MCP tool definition for attaching a filter to a resource.
+pub fn cp_attach_filter_tool() -> Tool {
+    Tool::new(
+        "cp_attach_filter",
+        r#"Attach a filter to a resource (listener or route configuration).
+
+RESOURCE ORDER: Filters must be created BEFORE they can be attached.
+
+ATTACHMENT HIERARCHY:
+  Listener Level    - Filter applies to ALL traffic through the listener
+  RouteConfig Level - Filter applies to ALL routes in the configuration
+  VirtualHost Level - Filter applies to ALL routes in the virtual host
+  Route Level       - Filter applies to SINGLE route only
+
+ATTACHMENT BEHAVIOR:
+- Filters are executed in order (lower numbers first)
+- If no order is specified, filter is added at the end
+- Same filter can be attached to multiple resources
+- Attachments take effect immediately via xDS push
+
+SUPPORTED TARGETS:
+1. Listener: Attach to a named listener (affects all traffic)
+   - Provide: filter, listener
+
+2. RouteConfig: Attach to a route configuration (affects all routes in config)
+   - Provide: filter, route_config
+   - Optional: settings (per-scope configuration override)
+
+COMMON USE CASES:
+- Attach JWT auth filter to listener for API-wide authentication
+- Attach CORS filter to specific route config for API endpoints
+- Attach rate limiting to high-traffic routes
+
+EXAMPLE (attach to listener):
+{
+  "filter": "api-jwt-auth",
+  "listener": "main-listener",
+  "order": 10
+}
+
+EXAMPLE (attach to route config with settings override):
+{
+  "filter": "rate-limit",
+  "route_config": "api-routes",
+  "order": 20,
+  "settings": {"max_requests": 1000}
+}
+
+Authorization: Requires filters:write or cp:write scope.
+"#,
+        json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": "Name or ID of the filter to attach"
+                },
+                "listener": {
+                    "type": "string",
+                    "description": "Name of the listener to attach to (for listener-level attachment)"
+                },
+                "route_config": {
+                    "type": "string",
+                    "description": "Name of the route configuration to attach to (for route-config-level attachment)"
+                },
+                "order": {
+                    "type": "integer",
+                    "description": "Execution order (lower numbers execute first, default: append at end)",
+                    "minimum": 0
+                },
+                "settings": {
+                    "type": "object",
+                    "description": "Per-scope configuration override (only for route_config attachments)"
+                }
+            },
+            "required": ["filter"]
+        }),
+    )
+}
+
+/// Returns the MCP tool definition for detaching a filter from a resource.
+pub fn cp_detach_filter_tool() -> Tool {
+    Tool::new(
+        "cp_detach_filter",
+        r#"Detach a filter from a resource (listener or route configuration).
+
+PURPOSE: Remove a filter attachment from a resource. The filter itself is not deleted,
+only the association is removed.
+
+IMPORTANT: Detaching takes effect immediately via xDS push.
+
+SUPPORTED TARGETS:
+1. Listener: Detach from a named listener
+   - Provide: filter, listener
+
+2. RouteConfig: Detach from a route configuration
+   - Provide: filter, route_config
+
+WORKFLOW:
+1. Use cp_get_filter to see current attachments
+2. Identify the resource to detach from
+3. Call this tool with filter and target resource
+4. Changes propagate immediately to Envoy
+
+NOTE: Must specify exactly one target (listener OR route_config).
+
+EXAMPLE:
+{
+  "filter": "api-jwt-auth",
+  "listener": "main-listener"
+}
+
+Authorization: Requires filters:write or cp:write scope.
+"#,
+        json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": "Name or ID of the filter to detach"
+                },
+                "listener": {
+                    "type": "string",
+                    "description": "Name of the listener to detach from"
+                },
+                "route_config": {
+                    "type": "string",
+                    "description": "Name of the route configuration to detach from"
+                }
+            },
+            "required": ["filter"]
+        }),
+    )
+}
+
+/// Returns the MCP tool definition for listing filter attachments.
+pub fn cp_list_filter_attachments_tool() -> Tool {
+    Tool::new(
+        "cp_list_filter_attachments",
+        r#"List all attachments for a specific filter.
+
+PURPOSE: See where a filter is currently attached (listeners and route configs).
+This is useful before modifying or deleting a filter.
+
+RETURNS:
+- filter: Full filter details (id, name, type, configuration)
+- listener_attachments: Array of listener attachments with order
+- route_config_attachments: Array of route config attachments with settings
+
+ATTACHMENT INFO:
+- resource_id: Internal ID of the attached resource
+- resource_name: Name of the attached resource (listener/route_config)
+- order: Execution order in the filter chain
+- settings: Per-scope configuration override (route_config only)
+
+WHEN TO USE:
+- Before deleting a filter (check if it's attached anywhere)
+- To audit filter usage across resources
+- To understand filter execution order
+- Before modifying filter configuration
+
+EXAMPLE:
+{
+  "filter": "api-jwt-auth"
+}
+
+Authorization: Requires filters:read or cp:read scope.
+"#,
+        json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": "Name or ID of the filter to list attachments for"
+                }
+            },
+            "required": ["filter"]
+        }),
+    )
+}
+
+/// Execute the cp_attach_filter tool.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_attach_filter")]
+pub async fn execute_attach_filter(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    // 1. Parse required filter parameter
+    let filter = args
+        .get("filter")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
+
+    let listener = args.get("listener").and_then(|v| v.as_str());
+    let route_config = args.get("route_config").and_then(|v| v.as_str());
+    let order = args.get("order").and_then(|v| v.as_i64());
+    let settings = args.get("settings").cloned();
+
+    // 2. Validate exactly one target is specified
+    if listener.is_none() && route_config.is_none() {
+        return Err(McpError::InvalidParams(
+            "Must specify either 'listener' or 'route_config' as attachment target".to_string(),
+        ));
+    }
+    if listener.is_some() && route_config.is_some() {
+        return Err(McpError::InvalidParams(
+            "Cannot specify both 'listener' and 'route_config'. Choose one target.".to_string(),
+        ));
+    }
+
+    let ops = FilterOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+
+    // 3. Execute appropriate attachment
+    let (target_type, target_name) = if let Some(listener_name) = listener {
+        tracing::debug!(
+            team = %team,
+            filter = %filter,
+            listener = %listener_name,
+            order = ?order,
+            "Attaching filter to listener via MCP"
+        );
+
+        ops.attach_to_listener(filter, listener_name, order, &auth).await?;
+        ("listener", listener_name)
+    } else if let Some(route_config_name) = route_config {
+        tracing::debug!(
+            team = %team,
+            filter = %filter,
+            route_config = %route_config_name,
+            order = ?order,
+            "Attaching filter to route config via MCP"
+        );
+
+        ops.attach_to_route_config(filter, route_config_name, order, settings, &auth).await?;
+        ("route_config", route_config_name)
+    } else {
+        unreachable!()
+    };
+
+    // 4. Format rich response with target confirmation
+    let attachment_id = format!("{}-{}", filter, target_name);
+    let output = build_rich_create_response(
+        "filter_attachment",
+        filter,
+        &attachment_id,
+        Some(json!({"target_type": target_type, "target_name": target_name})),
+        None,
+        None,
+    );
+
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        filter = %filter,
+        target_type = %target_type,
+        target_name = %target_name,
+        "Successfully attached filter via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_detach_filter tool.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_detach_filter")]
+pub async fn execute_detach_filter(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    // 1. Parse required filter parameter
+    let filter = args
+        .get("filter")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
+
+    let listener = args.get("listener").and_then(|v| v.as_str());
+    let route_config = args.get("route_config").and_then(|v| v.as_str());
+
+    // 2. Validate exactly one target is specified
+    if listener.is_none() && route_config.is_none() {
+        return Err(McpError::InvalidParams(
+            "Must specify either 'listener' or 'route_config' as detachment target".to_string(),
+        ));
+    }
+    if listener.is_some() && route_config.is_some() {
+        return Err(McpError::InvalidParams(
+            "Cannot specify both 'listener' and 'route_config'. Choose one target.".to_string(),
+        ));
+    }
+
+    let ops = FilterOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+
+    // 3. Execute appropriate detachment
+    let (target_type, target_name) = if let Some(listener_name) = listener {
+        tracing::debug!(
+            team = %team,
+            filter = %filter,
+            listener = %listener_name,
+            "Detaching filter from listener via MCP"
+        );
+
+        ops.detach_from_listener(filter, listener_name, &auth).await?;
+        ("listener", listener_name)
+    } else if let Some(route_config_name) = route_config {
+        tracing::debug!(
+            team = %team,
+            filter = %filter,
+            route_config = %route_config_name,
+            "Detaching filter from route config via MCP"
+        );
+
+        ops.detach_from_route_config(filter, route_config_name, &auth).await?;
+        ("route_config", route_config_name)
+    } else {
+        unreachable!()
+    };
+
+    // 4. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
+
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        filter = %filter,
+        target_type = %target_type,
+        target_name = %target_name,
+        "Successfully detached filter via MCP"
+    );
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_list_filter_attachments tool.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_list_filter_attachments")]
+pub async fn execute_list_filter_attachments(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    // 1. Parse required filter parameter
+    let filter = args
+        .get("filter")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
+
+    tracing::debug!(
+        team = %team,
+        filter = %filter,
+        "Listing filter attachments via MCP"
+    );
+
+    // 2. Use internal API layer
+    let ops = FilterOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+
+    let filter_with_installations = ops.get_with_installations(filter, &auth).await?;
+    let filter_data = &filter_with_installations.filter;
+
+    // Parse configuration JSON
+    let config: Value = serde_json::from_str(&filter_data.configuration).unwrap_or_else(|e| {
+        tracing::warn!(filter_id = %filter_data.id, error = %e, "Failed to parse filter configuration");
+        json!({"_parse_error": format!("Failed to parse configuration: {}", e)})
+    });
+
+    // 3. Format response
     let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!(
-            "Filter '{}' deleted successfully. xDS configuration has been refreshed.",
-            name
-        )),
+        "filter": {
+            "id": filter_data.id.to_string(),
+            "name": filter_data.name,
+            "filter_type": filter_data.filter_type,
+            "description": filter_data.description,
+            "configuration": config,
+            "version": filter_data.version,
+            "team": filter_data.team
+        },
+        "listener_attachments": filter_with_installations.listener_installations.iter().map(|i| json!({
+            "resource_id": i.resource_id,
+            "resource_name": i.resource_name,
+            "order": i.order
+        })).collect::<Vec<_>>(),
+        "route_config_attachments": filter_with_installations.route_config_installations.iter().map(|i| json!({
+            "resource_id": i.resource_id,
+            "resource_name": i.resource_name
+        })).collect::<Vec<_>>(),
+        "total_attachments": filter_with_installations.listener_installations.len() + filter_with_installations.route_config_installations.len()
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
-        filter_name = %name,
-        "Successfully deleted filter via MCP"
+        filter = %filter,
+        listener_count = filter_with_installations.listener_installations.len(),
+        route_config_count = filter_with_installations.route_config_installations.len(),
+        "Successfully listed filter attachments via MCP"
     );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
@@ -596,14 +1086,14 @@ mod tests {
     fn test_cp_list_filters_tool_definition() {
         let tool = cp_list_filters_tool();
         assert_eq!(tool.name, "cp_list_filters");
-        assert!(tool.description.contains("filters"));
+        assert!(tool.description.as_ref().unwrap().contains("filters"));
     }
 
     #[test]
     fn test_cp_get_filter_tool_definition() {
         let tool = cp_get_filter_tool();
         assert_eq!(tool.name, "cp_get_filter");
-        assert!(tool.description.contains("detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("detailed information"));
 
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -614,7 +1104,7 @@ mod tests {
     fn test_cp_create_filter_tool_definition() {
         let tool = cp_create_filter_tool();
         assert_eq!(tool.name, "cp_create_filter");
-        assert!(tool.description.contains("Create"));
+        assert!(tool.description.as_ref().unwrap().contains("Create"));
 
         // Check required fields in schema
         let required = tool.input_schema["required"].as_array().unwrap();
@@ -627,13 +1117,48 @@ mod tests {
     fn test_cp_update_filter_tool_definition() {
         let tool = cp_update_filter_tool();
         assert_eq!(tool.name, "cp_update_filter");
-        assert!(tool.description.contains("Update"));
+        assert!(tool.description.as_ref().unwrap().contains("Update"));
     }
 
     #[test]
     fn test_cp_delete_filter_tool_definition() {
         let tool = cp_delete_filter_tool();
         assert_eq!(tool.name, "cp_delete_filter");
-        assert!(tool.description.contains("Delete"));
+        assert!(tool.description.as_ref().unwrap().contains("Delete"));
+    }
+
+    #[test]
+    fn test_cp_attach_filter_tool_definition() {
+        let tool = cp_attach_filter_tool();
+        assert_eq!(tool.name, "cp_attach_filter");
+        assert!(tool.description.as_ref().unwrap().contains("Attach"));
+        assert!(tool.description.as_ref().unwrap().contains("listener"));
+        assert!(tool.description.as_ref().unwrap().contains("route_config"));
+
+        // Check required field
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("filter")));
+    }
+
+    #[test]
+    fn test_cp_detach_filter_tool_definition() {
+        let tool = cp_detach_filter_tool();
+        assert_eq!(tool.name, "cp_detach_filter");
+        assert!(tool.description.as_ref().unwrap().contains("Detach"));
+
+        // Check required field
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("filter")));
+    }
+
+    #[test]
+    fn test_cp_list_filter_attachments_tool_definition() {
+        let tool = cp_list_filter_attachments_tool();
+        assert_eq!(tool.name, "cp_list_filter_attachments");
+        assert!(tool.description.as_ref().unwrap().contains("attachments"));
+
+        // Check required field
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("filter")));
     }
 }

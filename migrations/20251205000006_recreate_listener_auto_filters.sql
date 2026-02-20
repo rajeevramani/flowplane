@@ -29,7 +29,7 @@ CREATE TABLE listener_auto_filters (
     source_virtual_host_id TEXT,
     source_route_rule_id TEXT,
 
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (listener_id) REFERENCES listeners(id) ON DELETE CASCADE,
     FOREIGN KEY (source_filter_id) REFERENCES filters(id) ON DELETE CASCADE,

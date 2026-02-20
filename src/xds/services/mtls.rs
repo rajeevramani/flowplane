@@ -7,9 +7,11 @@
 //!
 //! # SPIFFE URI Format
 //!
-//! Certificates issued by Flowplane contain a SPIFFE URI in the Subject Alternative Name:
+//! Certificates issued by Flowplane contain a SPIFFE URI in the Subject Alternative Name.
+//! Both formats are supported:
 //! ```text
-//! spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}
+//! spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}   (org-scoped)
+//! spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}             (legacy)
 //! ```
 //!
 //! # Security Model
@@ -29,6 +31,9 @@ use x509_parser::prelude::*;
 /// Identity information extracted from a client certificate.
 #[derive(Debug, Clone)]
 pub struct ClientIdentity {
+    /// Organization name extracted from SPIFFE URI (None for legacy format)
+    pub org: Option<String>,
+
     /// Team name extracted from SPIFFE URI
     pub team: String,
 
@@ -74,10 +79,11 @@ pub fn extract_client_identity(peer_certs: &[CertificateDer<'_>]) -> Option<Clie
     // Look for SPIFFE URI in Subject Alternative Names
     let spiffe_uri = extract_spiffe_uri_from_cert(&parsed)?;
 
-    // Parse team and proxy_id from SPIFFE URI
+    // Parse team and proxy_id from SPIFFE URI (supports both legacy and org-scoped formats)
     let (team, proxy_id) = parse_spiffe_uri(&spiffe_uri)?;
+    let org = crate::secrets::parse_org_from_spiffe_uri(&spiffe_uri);
 
-    Some(ClientIdentity { team, proxy_id, spiffe_uri, serial_number })
+    Some(ClientIdentity { org, team, proxy_id, spiffe_uri, serial_number })
 }
 
 /// Extract SPIFFE URI from certificate's Subject Alternative Name extension.
@@ -99,7 +105,9 @@ fn extract_spiffe_uri_from_cert(cert: &X509Certificate<'_>) -> Option<String> {
 
 /// Parse team and proxy_id from a SPIFFE URI.
 ///
-/// Expected format: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
+/// Supports both formats:
+/// - New: `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
+/// - Legacy: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
 fn parse_spiffe_uri(uri: &str) -> Option<(String, String)> {
     // Use the parsing functions from our vault module
     let team = crate::secrets::parse_team_from_spiffe_uri(uri)?;
@@ -146,6 +154,16 @@ mod tests {
     #[test]
     fn test_parse_spiffe_uri_valid() {
         let uri = "spiffe://flowplane.local/team/engineering/proxy/envoy-1";
+        let result = parse_spiffe_uri(uri);
+        assert!(result.is_some());
+        let (team, proxy_id) = result.unwrap();
+        assert_eq!(team, "engineering");
+        assert_eq!(proxy_id, "envoy-1");
+    }
+
+    #[test]
+    fn test_parse_spiffe_uri_org_scoped() {
+        let uri = "spiffe://flowplane.local/org/acme/team/engineering/proxy/envoy-1";
         let result = parse_spiffe_uri(uri);
         assert!(result.is_some());
         let (team, proxy_id) = result.unwrap();

@@ -11,6 +11,7 @@
 		validatePasswordMatch,
 		runValidators
 	} from '$lib/utils/validators';
+	import { isSystemAdmin } from '$lib/stores/org';
 
 	let formData = $state({
 		email: '',
@@ -28,7 +29,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!sessionInfo.isAdmin) {
+			if (!isSystemAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}

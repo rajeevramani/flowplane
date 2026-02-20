@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use crate::api::handlers::PaginatedResponse;
 
 #[derive(Subcommand)]
 pub enum ClusterCommands {
@@ -169,12 +170,12 @@ async fn list_clusters(
 
     path.push_str(&params.join("&"));
 
-    let response: Vec<ClusterResponse> = client.get_json(&path).await?;
+    let response: PaginatedResponse<ClusterResponse> = client.get_json(&path).await?;
 
     if output == "table" {
-        print_clusters_table(&response);
+        print_clusters_table(&response.items);
     } else {
-        print_output(&response, output)?;
+        print_output(&response.items, output)?;
     }
 
     Ok(())

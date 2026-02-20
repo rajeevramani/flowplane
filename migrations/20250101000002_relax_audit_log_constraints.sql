@@ -1,57 +1,20 @@
 -- Adjust audit_log constraints to support auth events
 -- Migration: 20250101000002_relax_audit_log_constraints.sql
+--
+-- PostgreSQL: Use ALTER TABLE instead of SQLite table recreation pattern.
+-- Changes:
+--   1. resource_id: NOT NULL → nullable
+--   2. resource_name: NOT NULL → nullable
+--   3. CHECK constraints relaxed from specific values to non-empty checks
 
-PRAGMA foreign_keys = OFF;
+-- Make resource_id and resource_name nullable
+ALTER TABLE audit_log ALTER COLUMN resource_id DROP NOT NULL;
+ALTER TABLE audit_log ALTER COLUMN resource_name DROP NOT NULL;
 
-CREATE TABLE IF NOT EXISTS audit_log_tmp (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    resource_type TEXT NOT NULL,
-    resource_id TEXT,
-    resource_name TEXT,
-    action TEXT NOT NULL,
-    old_configuration TEXT,
-    new_configuration TEXT,
-    user_id TEXT,
-    client_ip TEXT,
-    user_agent TEXT,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (length(trim(resource_type)) > 0),
-    CHECK (length(trim(action)) > 0)
-);
+-- Drop the restrictive CHECK constraints from the original table
+ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS audit_log_action_check;
+ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS audit_log_resource_type_check;
 
-INSERT INTO audit_log_tmp (
-    id,
-    resource_type,
-    resource_id,
-    resource_name,
-    action,
-    old_configuration,
-    new_configuration,
-    user_id,
-    client_ip,
-    user_agent,
-    created_at
-)
-SELECT
-    id,
-    resource_type,
-    resource_id,
-    resource_name,
-    action,
-    old_configuration,
-    new_configuration,
-    user_id,
-    client_ip,
-    user_agent,
-    created_at
-FROM audit_log;
-
-DROP TABLE audit_log;
-ALTER TABLE audit_log_tmp RENAME TO audit_log;
-
-CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource_type, resource_id);
-CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(created_at);
-CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
-
-PRAGMA foreign_keys = ON;
+-- Add relaxed CHECK constraints (allow any non-empty values)
+ALTER TABLE audit_log ADD CONSTRAINT audit_log_resource_type_check CHECK (length(trim(resource_type)) > 0);
+ALTER TABLE audit_log ADD CONSTRAINT audit_log_action_check CHECK (length(trim(action)) > 0);

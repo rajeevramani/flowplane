@@ -2,7 +2,7 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 
 use crate::support::{create_team, read_json, send_request, setup_test_app};
-use flowplane::api::handlers::ListUsersResponse;
+use flowplane::api::handlers::PaginatedResponse;
 use flowplane::auth::user::{UserResponse, UserTeamMembership, UserWithTeamsResponse};
 
 #[tokio::test]
@@ -34,7 +34,7 @@ async fn create_user_with_admin_token() {
     let app = setup_test_app().await;
 
     // Admin token
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response = send_request(
         &app,
@@ -60,7 +60,7 @@ async fn create_user_with_admin_token() {
 #[tokio::test]
 async fn create_user_validates_email() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response = send_request(
         &app,
@@ -82,7 +82,7 @@ async fn create_user_validates_email() {
 #[tokio::test]
 async fn create_user_validates_password() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response = send_request(
         &app,
@@ -104,7 +104,7 @@ async fn create_user_validates_password() {
 #[tokio::test]
 async fn create_duplicate_user_returns_conflict() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create first user
     let response1 = send_request(
@@ -143,7 +143,7 @@ async fn create_duplicate_user_returns_conflict() {
 #[tokio::test]
 async fn get_user_by_id() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create user
     let create_response = send_request(
@@ -176,7 +176,7 @@ async fn get_user_by_id() {
 #[tokio::test]
 async fn get_user_requires_admin() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
     let regular_token = app.issue_token("regular-user", &["clusters:read"]).await;
 
     // Create user as admin
@@ -206,7 +206,7 @@ async fn get_user_requires_admin() {
 #[tokio::test]
 async fn get_nonexistent_user_returns_404() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     let response = send_request(
         &app,
@@ -223,7 +223,7 @@ async fn get_nonexistent_user_returns_404() {
 #[tokio::test]
 async fn list_users_with_pagination() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create multiple users
     for i in 1..=3 {
@@ -253,8 +253,8 @@ async fn list_users_with_pagination() {
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let list: ListUsersResponse = read_json(response).await;
-    assert!(list.users.len() >= 3);
+    let list: PaginatedResponse<UserResponse> = read_json(response).await;
+    assert!(list.items.len() >= 3);
     assert!(list.total >= 3);
     assert_eq!(list.limit, 10);
     assert_eq!(list.offset, 0);
@@ -280,7 +280,7 @@ async fn list_users_requires_admin() {
 #[tokio::test]
 async fn update_user() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create user
     let create_response = send_request(
@@ -321,7 +321,7 @@ async fn update_user() {
 #[tokio::test]
 async fn update_user_requires_admin() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
     let regular_token = app.issue_token("regular-user", &["clusters:read"]).await;
 
     // Create user as admin
@@ -357,7 +357,7 @@ async fn update_user_requires_admin() {
 #[tokio::test]
 async fn delete_user() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create user
     let create_response = send_request(
@@ -391,7 +391,7 @@ async fn delete_user() {
 #[tokio::test]
 async fn delete_user_requires_admin() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
     let regular_token = app.issue_token("regular-user", &["clusters:read"]).await;
 
     // Create user as admin
@@ -421,7 +421,7 @@ async fn delete_user_requires_admin() {
 #[tokio::test]
 async fn add_team_membership() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team first
     create_team(&app, &admin_token.token, "engineering").await;
@@ -460,14 +460,15 @@ async fn add_team_membership() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let membership: UserTeamMembership = read_json(response).await;
     assert_eq!(membership.user_id, created.id);
-    assert_eq!(membership.team, "engineering");
+    // Team is stored as UUID after FK migration (resolved from name "engineering")
+    assert!(uuid::Uuid::parse_str(&membership.team).is_ok(), "team should be a UUID");
     assert_eq!(membership.scopes.len(), 2);
 }
 
 #[tokio::test]
 async fn add_team_membership_requires_admin() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
     let regular_token = app.issue_token("regular-user", &["clusters:read"]).await;
 
     // Create user as admin
@@ -507,7 +508,7 @@ async fn add_team_membership_requires_admin() {
 #[tokio::test]
 async fn list_user_teams() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create teams first
     create_team(&app, &admin_token.token, "engineering").await;
@@ -559,7 +560,7 @@ async fn list_user_teams() {
 #[tokio::test]
 async fn remove_team_membership() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team first
     create_team(&app, &admin_token.token, "engineering").await;
@@ -612,7 +613,7 @@ async fn remove_team_membership() {
 #[tokio::test]
 async fn remove_team_membership_requires_admin() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
     let regular_token = app.issue_token("regular-user", &["clusters:read"]).await;
 
     // Create user and add team membership as admin
@@ -656,7 +657,7 @@ async fn remove_team_membership_requires_admin() {
 #[tokio::test]
 async fn user_lifecycle_integration() {
     let app = setup_test_app().await;
-    let admin_token = app.issue_token("admin-token", &["admin:all"]).await;
+    let admin_token = app.issue_admin_token("admin-token").await;
 
     // Create team first
     create_team(&app, &admin_token.token, "platform").await;

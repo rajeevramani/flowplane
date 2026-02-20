@@ -17,7 +17,6 @@
 
 	// User session state
 	let userTeams = $state<string[]>([]);
-	let isAdmin = $state(false);
 
 	// Available listeners for the selected team
 	let availableListeners = $state<ListenerResponse[]>([]);
@@ -41,21 +40,18 @@
 	onMount(async () => {
 		// Load user session info (authentication already handled by layout)
 		const session = await apiClient.getSessionInfo();
-		isAdmin = session.isAdmin || false;
 
-		// Load teams from API
-		// Use admin endpoint for full team list (includes teams without memberships)
-		// Use regular endpoint for non-admins (only teams they're members of)
-		if (isAdmin) {
-			const teamsResponse = await apiClient.adminListTeams();
-			userTeams = teamsResponse.teams.map((t) => t.name);
+		// Load teams the user belongs to
+		if (session.orgName) {
+			const orgTeamsResponse = await apiClient.listOrgTeams(session.orgName);
+			userTeams = orgTeamsResponse.teams.map((t) => t.name);
 		} else {
 			const teamsResponse = await apiClient.listTeams();
 			userTeams = teamsResponse.teams || [];
 		}
 
-		// Auto-populate team for non-admin single-team users
-		if (!isAdmin && userTeams.length === 1) {
+		// Auto-populate team for single-team users
+		if (userTeams.length === 1) {
 			config.team = userTeams[0];
 			await loadListenersForTeam(userTeams[0]);
 		}
@@ -453,8 +449,8 @@
 						Team <span class="text-red-500">*</span>
 					</label>
 
-					{#if userTeams.length > 1 || isAdmin}
-						<!-- Dropdown for multi-team or admin users -->
+					{#if userTeams.length > 1}
+						<!-- Dropdown for multi-team users -->
 						<select
 							id="team"
 							value={config.team}
@@ -466,22 +462,7 @@
 							{#each userTeams as team}
 								<option value={team}>{team}</option>
 							{/each}
-							{#if isAdmin && userTeams.length === 0}
-								<option disabled>Enter team name below</option>
-							{/if}
 						</select>
-						{#if isAdmin}
-							<p class="mt-1 text-xs text-gray-500">
-								Or enter a custom team name:
-							</p>
-							<input
-								type="text"
-								value={config.team}
-								oninput={(e) => handleTeamChange((e.target as HTMLInputElement).value)}
-								class="mt-2 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-								placeholder="Enter team name"
-							/>
-						{/if}
 					{:else if userTeams.length === 1}
 						<!-- Read-only for single-team users -->
 						<input

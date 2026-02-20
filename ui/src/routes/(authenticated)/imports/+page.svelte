@@ -3,10 +3,14 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { Plus, Eye, Trash2, FileText, Database, Server, Route as RouteIcon } from 'lucide-svelte';
-	import type { ImportSummary, RouteResponse, ClusterResponse, ListenerResponse } from '$lib/api/types';
+	import type { ImportSummary, RouteResponse, ClusterResponse, ListenerResponse, SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
+	import { adminSummary, adminSummaryLoading, adminSummaryError, getAdminSummary } from '$lib/stores/adminSummary';
+	import AdminResourceSummary from '$lib/components/AdminResourceSummary.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -30,6 +34,12 @@
 	});
 
 	onMount(async () => {
+		sessionInfo = await apiClient.getSessionInfo();
+		if (sessionInfo.isPlatformAdmin) {
+			try { await getAdminSummary(); } catch { /* handled by store */ }
+			isLoading = false;
+			return;
+		}
 		await loadData();
 	});
 
@@ -123,6 +133,21 @@
 	}
 </script>
 
+{#if sessionInfo?.isPlatformAdmin}
+<div class="w-full px-4 sm:px-6 lg:px-8 py-8">
+	<div class="mb-8">
+		<h1 class="text-3xl font-bold text-gray-900">OpenAPI Imports</h1>
+		<p class="mt-2 text-sm text-gray-600">Platform-wide import summary across all organizations and teams.</p>
+	</div>
+	{#if $adminSummaryLoading}
+		<div class="flex items-center justify-center py-12"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>
+	{:else if $adminSummaryError}
+		<div class="bg-red-50 border border-red-200 rounded-md p-4"><p class="text-sm text-red-800">{$adminSummaryError}</p></div>
+	{:else if $adminSummary}
+		<AdminResourceSummary summary={$adminSummary} highlightResource="imports" />
+	{/if}
+</div>
+{:else}
 <div class="w-full px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Header -->
 	<div class="mb-8">
@@ -343,3 +368,4 @@
 		{/if}
 	{/if}
 </div>
+{/if}

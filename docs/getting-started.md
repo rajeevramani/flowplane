@@ -13,7 +13,7 @@ This guide walks you through setting up Flowplane and creating your first resour
 **For building from source:**
 - Rust (edition 2021) with cargo
 - Node.js 18+ (for building UI)
-- SQLite (included) or PostgreSQL
+- PostgreSQL 15+
 - protoc (Protocol Buffers compiler)
 
 Optional:
@@ -24,7 +24,7 @@ Optional:
 ### Option 1: Build from Source
 
 ```bash
-git clone https://github.com/flowplane-ai/flowplane.git
+git clone https://github.com/rajeevramani/flowplane.git
 cd flowplane
 
 # Build UI (required for web dashboard)
@@ -42,11 +42,11 @@ The server automatically serves the UI from `./ui/build` when present. You can o
 
 ```bash
 # Clone repository
-git clone https://github.com/flowplane-ai/flowplane.git
+git clone https://github.com/rajeevramani/flowplane.git
 cd flowplane
 
 # Start with Docker Compose
-docker-compose up -d
+make up
 ```
 
 Services start at:
@@ -54,15 +54,63 @@ Services start at:
 - **Swagger UI**: http://localhost:8080/swagger-ui/
 - **xDS**: localhost:50051 (gRPC)
 
-## First Run
+## Quick Start (2 minutes)
+
+The fastest path from clone to working proxy:
+
+```bash
+# Start Flowplane with Envoy and httpbin
+make up HTTPBIN=1 ENVOY=1
+
+# Seed demo data (admin, org, team, httpbin API via OpenAPI import)
+make seed
+
+# Test it — traffic flows through Envoy to httpbin!
+curl http://localhost:10016/get
+```
+
+**What `make seed` creates:**
+
+| Resource | Value |
+|---|---|
+| Platform admin | `admin@flowplane.local` / `Admin123!` |
+| Org admin | `orgadmin@acme-corp.local` / `OrgAdmin123!` |
+| Organization | `acme-corp` |
+| Team | `engineering` |
+| API | httpbin (imported from OpenAPI spec) |
+| Listener | port 10016 (Envoy proxy) |
+| API tokens | Printed to terminal |
+
+**Access points:**
+
+| Service | URL |
+|---|---|
+| Web UI | http://localhost:8080 |
+| API | http://localhost:8080/api/v1/ |
+| Swagger UI | http://localhost:8080/swagger-ui/ |
+| Envoy proxy | http://localhost:10016 |
+| xDS (gRPC) | localhost:50051 |
+
+> Want to understand each step? Continue to [Manual Setup](#manual-setup) below.
+
+---
+
+## Manual Setup
+
+> Skip this section if you used `make seed` above — everything below is already configured.
 
 ### 1. Start the Control Plane
 
-```bash
-# Create data directory for SQLite
-mkdir -p data
+Using Docker Compose (recommended):
 
-# Run with default settings
+```bash
+make up
+```
+
+Or from source (requires a running PostgreSQL instance):
+
+```bash
+export DATABASE_URL=postgres://flowplane:flowplane@localhost:5432/flowplane
 cargo run --release
 ```
 
@@ -75,7 +123,9 @@ The server starts with:
 
 ### 2. Bootstrap Authentication
 
-On first startup with an empty database, Flowplane displays setup instructions. Initialize the system by creating your admin account:
+On first startup with an empty database, Flowplane displays setup instructions. Initialize the system by creating your admin account.
+
+> **Note:** After bootstrapping, the platform admin creates an organization. Creating an org automatically provisions a default team (`{org-name}-default`). Resources (clusters, routes, listeners) belong to teams. The examples below use `my-org-default`, the auto-created default team for the `my-org` organization.
 
 ```bash
 # Initialize with your admin credentials
@@ -127,7 +177,31 @@ curl -X POST http://127.0.0.1:8080/api/v1/tokens \
 export FLOWPLANE_TOKEN="fp_pat_..."
 ```
 
-### 3. Verify API Access
+### 3. Create an Organization
+
+Create an organization — this automatically provisions a default team (`my-org-default`):
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/admin/organizations \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-org",
+    "displayName": "My Organization"
+  }'
+
+# Response:
+# {
+#   "id": "...",
+#   "name": "my-org",
+#   "displayName": "My Organization",
+#   "defaultTeam": "my-org-default"
+# }
+```
+
+The `my-org-default` team is ready to use immediately for creating resources.
+
+### 4. Verify API Access
 
 ```bash
 # Check health
@@ -149,7 +223,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/clusters \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "team": "platform-admin",
+    "team": "my-org-default",
     "name": "httpbin-cluster",
     "serviceName": "httpbin",
     "endpoints": [
@@ -170,7 +244,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/route-configs \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "team": "platform-admin",
+    "team": "my-org-default",
     "name": "demo-routes",
     "virtualHosts": [
       {
@@ -203,7 +277,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/listeners \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "team": "platform-admin",
+    "team": "my-org-default",
     "name": "demo-listener",
     "address": "0.0.0.0",
     "port": 10000,
@@ -229,14 +303,29 @@ curl -X POST http://127.0.0.1:8080/api/v1/listeners \
   }'
 ```
 
-## Connecting Envoy
+### Create a Dataplane
 
-### Generate Bootstrap Configuration
+A dataplane represents an Envoy instance managed by Flowplane:
 
 ```bash
-# Get bootstrap config for your team
+curl -X POST http://127.0.0.1:8080/api/v1/teams/my-org-default/dataplanes \
+  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "team": "my-org-default",
+    "name": "my-envoy",
+    "description": "Local development Envoy"
+  }'
+```
+
+## Connecting Envoy
+
+### Generate Envoy Configuration
+
+```bash
+# Get envoy config for your dataplane
 curl -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/teams/platform-admin/bootstrap > envoy-bootstrap.yaml
+  http://127.0.0.1:8080/api/v1/teams/my-org-default/dataplanes/my-envoy/envoy-config > envoy-bootstrap.yaml
 ```
 
 ### Start Envoy
@@ -278,13 +367,13 @@ Access the dashboard at http://localhost:8080
 Import an OpenAPI specification to auto-generate resources:
 
 ```bash
-curl -X POST "http://127.0.0.1:8080/api/v1/openapi/import?team=platform-admin" \
+curl -X POST "http://127.0.0.1:8080/api/v1/openapi/import?team=my-org-default" \
   -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
   -H "Content-Type: application/json" \
   -d @your-openapi-spec.json
 ```
 
-This creates clusters, routes, and optionally a listener from your API spec. The `platform-admin` team is created during bootstrap.
+This creates clusters, routes, and optionally a listener from your API spec.
 
 ## Environment Configuration
 
@@ -296,7 +385,7 @@ cp .env.example .env
 
 # Edit as needed
 # Key variables:
-# FLOWPLANE_DATABASE_URL=sqlite://./data/flowplane.db
+# DATABASE_URL=postgres://flowplane:flowplane@localhost:5432/flowplane
 # FLOWPLANE_API_PORT=8080
 # FLOWPLANE_XDS_PORT=18000
 ```
@@ -305,14 +394,22 @@ See the [README](../README.md) for the full list of environment variables.
 
 ## Next Steps
 
-- [API Reference](api.md) - Complete API documentation
-- [Authentication](authentication.md) - Token management and RBAC
-- [HTTP Filters](filters.md) - Configure rate limiting, JWT, OAuth2, CORS
+- [Swagger UI](http://localhost:8080/swagger-ui/) - Interactive API reference
+- [HTTP Filters](filters.md) - Rate limiting, JWT, OAuth2, CORS, and 15 more
+- [Configuration](configuration.md) - Environment variables and settings
 - [Architecture](architecture.md) - System design overview
-- [Operations](operations.md) - Deployment and monitoring
+- [Tracing & Operations](tracing-operations.md) - Observability and monitoring
+- [TLS](tls.md) - TLS termination and mTLS
+- [Secrets Management (SDS)](secrets-sds.md) - Certificate and secret management
+- [MCP Integration](mcp.md) - AI agent tools and prompts
+- [CLI](cli.md) - Command-line interface
 
 ### Cookbooks
 
-- [Cluster Cookbook](cluster-cookbook.md) - Health checks, circuit breakers, TLS
 - [Routing Cookbook](routing-cookbook.md) - Weighted routes, redirects, rewrites
-- [Listener Cookbook](listener-cookbook.md) - TLS termination, filter chains
+
+### Deployment
+
+- [Kubernetes](deployment/kubernetes.md)
+- [Multi-Region](deployment/multi-region.md)
+- [Multi-Dataplane](deployment/multi-dataplane.md)

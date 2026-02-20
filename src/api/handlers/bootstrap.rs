@@ -17,19 +17,13 @@ use validator::Validate;
 use crate::api::error::ApiError;
 use crate::api::routes::ApiState;
 use crate::auth::hashing;
-use crate::auth::models::{NewPersonalAccessToken, TokenStatus};
+use crate::auth::models::TokenStatus;
+use crate::auth::organization::OrgRole;
 use crate::auth::setup_token::SetupToken;
-use crate::auth::team::CreateTeamRequest;
-use crate::auth::user::NewUserTeamMembership;
-use crate::auth::user::{NewUser, UserStatus};
-use crate::domain::{TokenId, UserId};
+use crate::auth::user::UserStatus;
+use crate::domain::UserId;
 use crate::errors::Error;
-use crate::storage::repositories::{
-    AuditEvent, AuditLogRepository, SqlxTeamMembershipRepository, SqlxTeamRepository,
-    SqlxTokenRepository, SqlxUserRepository, TeamMembershipRepository, TeamRepository,
-    TokenRepository, UserRepository,
-};
-use std::sync::Arc;
+use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 
 /// Request body for bootstrap initialization
 #[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
@@ -78,10 +72,6 @@ pub struct BootstrapStatusResponse {
 
     /// Optional message describing current state
     pub message: String,
-}
-
-fn convert_error(err: Error) -> ApiError {
-    ApiError::from(err)
 }
 
 /// Extract client IP from headers, preferring X-Forwarded-For
@@ -137,7 +127,7 @@ pub async fn bootstrap_initialize_handler(
     Json(payload): Json<BootstrapInitializeRequest>,
 ) -> Result<(StatusCode, Json<BootstrapInitializeResponse>), ApiError> {
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Extract client context from headers for audit logging
     let client_ip = extract_client_ip(&headers);
@@ -152,198 +142,238 @@ pub async fn bootstrap_initialize_handler(
         .ok_or_else(|| ApiError::service_unavailable("Token repository unavailable"))?;
     let pool = cluster_repo.pool().clone();
 
-    // Create repositories
-    let token_repo = SqlxTokenRepository::new(pool.clone());
-    let user_repo = SqlxUserRepository::new(pool.clone());
-    let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
+    // CRITICAL: Use a single PostgreSQL transaction with advisory lock to prevent
+    // TOCTOU race conditions. All bootstrap operations (check + create) happen
+    // atomically within this transaction. The advisory lock prevents concurrent
+    // bootstrap attempts from interleaving.
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::from(Error::database(e, "begin bootstrap transaction".into())))?;
 
-    // CRITICAL: Check if system is already initialized (has active tokens OR users exist)
-    let active_count = token_repo.count_active_tokens().await.map_err(convert_error)?;
-    let user_count = user_repo.count_users().await.map_err(convert_error)?;
+    // Acquire advisory lock within transaction (blocks until available)
+    sqlx::query("SELECT pg_advisory_xact_lock(1)").execute(&mut *tx).await.map_err(|e| {
+        ApiError::from(Error::database(e, "acquire bootstrap advisory lock".into()))
+    })?;
 
-    if active_count > 0 || user_count > 0 {
+    // Check if system is already initialized (within the lock)
+    let active_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM personal_access_tokens WHERE status = 'active'")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| {
+                ApiError::from(Error::database(e, "count active tokens in bootstrap".into()))
+            })?;
+
+    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| ApiError::from(Error::database(e, "count users in bootstrap".into())))?;
+
+    if active_count.0 > 0 || user_count.0 > 0 {
+        // Rollback to release advisory lock, then return error
+        tx.rollback().await.map_err(|e| {
+            ApiError::from(Error::database(e, "rollback bootstrap transaction".into()))
+        })?;
         return Err(ApiError::forbidden(
             "System already initialized. Bootstrap is only allowed for initial setup.",
         ));
     }
 
     // Get configuration from environment
-    let ttl_days = std::env::var("FLOWPLANE_SETUP_TOKEN_TTL_DAYS")
+    let ttl_days: i64 = std::env::var("FLOWPLANE_SETUP_TOKEN_TTL_DAYS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(7);
 
-    let max_usage = std::env::var("FLOWPLANE_SETUP_TOKEN_MAX_USAGE")
+    let max_usage: i64 = std::env::var("FLOWPLANE_SETUP_TOKEN_MAX_USAGE")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
 
-    // Create the first admin user
+    // All entity creation happens inside the advisory lock transaction.
+    // If anything fails, the transaction rolls back atomically.
+
+    // 1. Create platform organization
+    let org_id = crate::domain::OrgId::new();
+    let org_name = "platform";
+    let now = chrono::Utc::now();
+
+    sqlx::query(
+        "INSERT INTO organizations (id, name, display_name, description, owner_user_id, settings, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, NULL, NULL, 'active', $5, $5)",
+    )
+    .bind(org_id.as_str())
+    .bind(org_name)
+    .bind("Platform")
+    .bind("Platform administration — not a tenant org")
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::from(Error::database(e, "create platform organization".into())))?;
+
+    // 2. Create admin user
     let user_id = UserId::new();
-    let password_hash = hashing::hash_password(&payload.password).map_err(convert_error)?;
+    let password_hash = hashing::hash_password(&payload.password).map_err(ApiError::from)?;
+    let user_status = UserStatus::Active.to_string();
 
-    let new_user = NewUser {
-        id: user_id.clone(),
-        email: payload.email.clone(),
-        password_hash,
-        name: payload.name.clone(),
-        status: UserStatus::Active,
-        is_admin: true,
-    };
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)",
+    )
+    .bind(user_id.as_str())
+    .bind(&payload.email)
+    .bind(&password_hash)
+    .bind(&payload.name)
+    .bind(&user_status)
+    .bind(true)
+    .bind(org_id.as_str())
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::from(Error::database(e, "create admin user".into())))?;
 
-    let admin_user = user_repo.create_user(new_user).await.map_err(convert_error)?;
-
-    // Log admin user creation with user context
-    audit_repository
-        .record_auth_event(
-            AuditEvent::token(
-                "bootstrap.admin_user_created",
-                Some(admin_user.id.as_str()),
-                Some(&admin_user.email),
-                serde_json::json!({
-                    "name": admin_user.name,
-                    "is_admin": admin_user.is_admin,
-                }),
-            )
-            .with_user_context(
-                Some(admin_user.id.to_string()),
-                client_ip.clone(),
-                user_agent.clone(),
-            ),
-        )
+    // 3. Update org owner_user_id to the admin user
+    sqlx::query("UPDATE organizations SET owner_user_id = $1, updated_at = $2 WHERE id = $3")
+        .bind(user_id.as_str())
+        .bind(now)
+        .bind(org_id.as_str())
+        .execute(&mut *tx)
         .await
-        .map_err(convert_error)?;
+        .map_err(|e| ApiError::from(Error::database(e, "update platform org owner".into())))?;
 
-    // Create platform-admin team
-    let team_repo = SqlxTeamRepository::new(pool.clone());
-    let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
+    // 4. Create organization membership (admin as Owner)
+    let membership_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO organization_memberships (id, user_id, org_id, role, created_at)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(&membership_id)
+    .bind(user_id.as_str())
+    .bind(org_id.as_str())
+    .bind(OrgRole::Owner.as_str())
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::from(Error::database(e, "create org membership".into())))?;
 
-    // Check if platform-admin team already exists (idempotency)
-    let existing_team = team_repo.get_team_by_name("platform-admin").await;
-
-    match existing_team {
-        Ok(None) => {
-            // Team doesn't exist, create it
-            let create_team_request = CreateTeamRequest {
-                name: "platform-admin".to_string(),
-                display_name: "Platform Admin".to_string(),
-                description: Some("Default team created during system bootstrap".to_string()),
-                owner_user_id: Some(admin_user.id.clone()),
-                settings: None,
-            };
-
-            let created_team =
-                team_repo.create_team(create_team_request).await.map_err(convert_error)?;
-
-            // Add admin to platform-admin team with full permissions
-            let membership = NewUserTeamMembership {
-                id: format!("utm_{}", admin_user.id),
-                user_id: admin_user.id.clone(),
-                team: "platform-admin".to_string(),
-                scopes: vec!["team:platform-admin:*:*".to_string()],
-            };
-
-            membership_repo.create_membership(membership).await.map_err(convert_error)?;
-
-            // Log team creation with user context
-            audit_repository
-                .record_auth_event(
-                    AuditEvent::token(
-                        "bootstrap.platform_admin_team_created",
-                        Some(created_team.id.as_str()),
-                        Some("platform-admin"),
-                        serde_json::json!({
-                            "name": "platform-admin",
-                            "display_name": "Platform Admin",
-                            "owner": admin_user.id.to_string(),
-                            "admin_email": admin_user.email,
-                        }),
-                    )
-                    .with_user_context(
-                        Some(admin_user.id.to_string()),
-                        client_ip.clone(),
-                        user_agent.clone(),
-                    ),
-                )
-                .await
-                .map_err(convert_error)?;
-        }
-        Ok(Some(_)) => {
-            // Team already exists - log warning but continue
-            tracing::warn!(
-                "platform-admin team already exists during bootstrap, skipping creation"
-            );
-        }
-        Err(e) => {
-            // Database error - log and propagate
-            tracing::error!("Failed to check for platform-admin team: {:?}", e);
-            return Err(convert_error(e));
-        }
-    }
-
-    // Generate setup token
+    // 5. Generate and store setup token
     let setup_token_generator = SetupToken::new();
     let (token_value, hashed_secret, expires_at) =
-        setup_token_generator.generate(Some(max_usage), Some(ttl_days)).map_err(convert_error)?;
+        setup_token_generator.generate(Some(max_usage), Some(ttl_days)).map_err(ApiError::from)?;
 
-    // Extract token ID from token value (format: fp_setup_{id}.{secret})
     let token_id = token_value
         .strip_prefix("fp_setup_")
         .and_then(|s| s.split('.').next())
         .ok_or_else(|| {
-            convert_error(Error::internal("Failed to extract token ID from generated setup token"))
+            ApiError::from(Error::internal("Failed to extract token ID from generated setup token"))
         })?;
 
-    // Store setup token in database for the admin user
-    let new_token = NewPersonalAccessToken {
-        id: TokenId::from_string(token_id.to_string()),
-        name: format!("bootstrap-setup-token-{}", &payload.email),
-        description: Some(format!(
-            "Setup token for bootstrap initialization (admin: {}, user_id: {}, expires in {} days)",
-            payload.email, admin_user.id, ttl_days
-        )),
-        hashed_secret,
-        status: TokenStatus::Active,
-        expires_at: Some(expires_at),
-        created_by: Some(format!("bootstrap:user:{}", admin_user.id)),
-        scopes: vec!["bootstrap:initialize".to_string()],
-        is_setup_token: true,
-        max_usage_count: Some(max_usage),
-        usage_count: 0,
-        failed_attempts: 0,
-        locked_until: None,
-        user_id: Some(admin_user.id.clone()), // Setup token is for this admin user
-        user_email: Some(payload.email.clone()),
-    };
+    let token_name = format!("bootstrap-setup-token-{}", &payload.email);
+    let token_description = format!(
+        "Setup token for bootstrap initialization (admin: {}, user_id: {}, expires in {} days)",
+        payload.email, user_id, ttl_days
+    );
+    let token_created_by = format!("bootstrap:user:{}", user_id);
+    let token_scopes = vec!["bootstrap:initialize".to_string(), format!("org:{}:admin", org_name)];
 
-    token_repo.create_token(new_token).await.map_err(convert_error)?;
+    sqlx::query(
+        "INSERT INTO personal_access_tokens (id, name, token_hash, description, status, expires_at, created_by, is_setup_token, max_usage_count, usage_count, failed_attempts, locked_until, user_id, user_email, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)",
+    )
+    .bind(token_id)
+    .bind(&token_name)
+    .bind(&hashed_secret)
+    .bind(&token_description)
+    .bind(TokenStatus::Active.as_str())
+    .bind(expires_at)
+    .bind(&token_created_by)
+    .bind(true)
+    .bind(Some(max_usage))
+    .bind(0_i64)
+    .bind(0_i32)
+    .bind(None::<chrono::DateTime<chrono::Utc>>)
+    .bind(user_id.to_string())
+    .bind(&payload.email)
+    .bind(now)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| ApiError::from(Error::database(e, "create setup token".into())))?;
 
-    // Log audit event for setup token generation with user context
-    audit_repository
-        .record_auth_event(
-            AuditEvent::token(
-                "bootstrap.setup_token_generated",
-                Some(token_id),
-                Some(&format!("bootstrap-setup-token-{}", &payload.email)),
-                serde_json::json!({
-                    "admin_email": payload.email,
-                    "admin_user_id": admin_user.id.to_string(),
-                    "admin_name": payload.name,
-                    "ttl_days": ttl_days,
-                    "max_usage": max_usage,
-                    "expires_at": expires_at,
-                }),
-            )
-            .with_user_context(Some(admin_user.id.to_string()), client_ip, user_agent),
+    // Insert token scopes
+    for scope in &token_scopes {
+        sqlx::query(
+            "INSERT INTO token_scopes (id, token_id, scope, created_at) VALUES ($1, $2, $3, $4)",
         )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(token_id)
+        .bind(scope)
+        .bind(now)
+        .execute(&mut *tx)
         .await
-        .map_err(convert_error)?;
+        .map_err(|e| ApiError::from(Error::database(e, "create token scope".into())))?;
+    }
+
+    // 6. Write audit log entries
+    let audit_entries = vec![
+        (
+            "bootstrap.admin_user_created",
+            user_id.as_str(),
+            &payload.email as &str,
+            serde_json::json!({"name": payload.name, "is_admin": true, "org_id": org_id.as_str()}),
+        ),
+        (
+            "bootstrap.platform_org_created",
+            org_id.as_str(),
+            "platform",
+            serde_json::json!({"name": "platform", "display_name": "Platform", "owner": user_id.to_string()}),
+        ),
+        (
+            "bootstrap.org_membership_created",
+            user_id.as_str(),
+            &payload.email,
+            serde_json::json!({"org_id": org_id.as_str(), "org_name": "platform", "role": "owner"}),
+        ),
+        (
+            "bootstrap.setup_token_generated",
+            token_id,
+            &token_name,
+            serde_json::json!({"admin_email": payload.email, "admin_user_id": user_id.to_string(), "admin_name": payload.name, "ttl_days": ttl_days, "max_usage": max_usage, "expires_at": expires_at.to_string()}),
+        ),
+    ];
+
+    for (action, resource_id, resource_name, metadata) in &audit_entries {
+        let metadata_json = serde_json::to_string(metadata).map_err(|e| {
+            ApiError::from(Error::internal(format!("Failed to serialize audit metadata: {}", e)))
+        })?;
+        sqlx::query(
+            "INSERT INTO audit_log (resource_type, resource_id, resource_name, action, old_configuration, new_configuration, user_id, client_ip, user_agent, org_id, team_id, created_at)
+             VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, NULL, NULL, $9)",
+        )
+        .bind("auth.token")
+        .bind(*resource_id)
+        .bind(*resource_name)
+        .bind(*action)
+        .bind(&metadata_json)
+        .bind(user_id.to_string())
+        .bind(client_ip.as_deref())
+        .bind(user_agent.as_deref())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::from(Error::database(e, "write bootstrap audit log".into())))?;
+    }
+
+    // Commit the transaction — all entities created atomically under advisory lock
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::from(Error::database(e, "commit bootstrap transaction".into())))?;
 
     // Build response with next steps
     let next_steps = vec![
         "Admin user created successfully. You can now login with your email and password.".to_string(),
         format!("Email: {}", payload.email),
-        "Default team 'platform-admin' created for OpenAPI imports and resource management.".to_string(),
+        "Platform organization created for governance and administration.".to_string(),
         "Use POST /api/v1/auth/login to authenticate with your credentials.".to_string(),
         format!("Example: curl -X POST http://localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' -d '{{\"email\": \"{}\", \"password\": \"YOUR_PASSWORD\"}}'", payload.email),
         "The login response will include a session cookie and CSRF token for authenticated requests.".to_string(),
@@ -401,7 +431,7 @@ pub async fn bootstrap_status_handler(
     let user_repo = SqlxUserRepository::new(pool.clone());
 
     // Check if any users exist
-    let user_count = user_repo.count_users().await.map_err(convert_error)?;
+    let user_count = user_repo.count_users().await.map_err(ApiError::from)?;
 
     let (needs_initialization, message) = if user_count == 0 {
         (true, "System requires initialization. Please create the first admin user.".to_string())
@@ -410,4 +440,150 @@ pub async fn bootstrap_status_handler(
     };
 
     Ok(Json(BootstrapStatusResponse { needs_initialization, message }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::organization::CreateOrganizationRequest;
+    use crate::auth::user::NewUser;
+    use crate::domain::OrgId;
+    use crate::storage::repositories::{
+        OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
+        SqlxOrganizationRepository,
+    };
+    use crate::storage::test_helpers::TestDatabase;
+
+    #[tokio::test]
+    async fn test_bootstrap_creates_platform_org() {
+        let _db = TestDatabase::new("bootstrap_platform_org").await;
+        let pool = _db.pool.clone();
+
+        // Create user and org repositories
+        let user_repo = SqlxUserRepository::new(pool.clone());
+        let org_repo = SqlxOrganizationRepository::new(pool.clone());
+        let org_membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+
+        // Verify no users exist initially
+        let user_count = user_repo.count_users().await.expect("count users");
+        assert_eq!(user_count, 0);
+
+        // Create bootstrap request
+        let request = BootstrapInitializeRequest {
+            email: "admin@example.com".to_string(),
+            password: "SecurePassword123!".to_string(),
+            name: "Admin User".to_string(),
+        };
+
+        // Create platform organization (user needs org_id)
+        let create_org_request = CreateOrganizationRequest {
+            name: "platform".to_string(),
+            display_name: "Platform".to_string(),
+            description: Some("Platform administration — not a tenant org".to_string()),
+            owner_user_id: None,
+            settings: None,
+        };
+
+        let platform_org =
+            org_repo.create_organization(create_org_request).await.expect("create org");
+
+        // Verify org was created
+        assert_eq!(platform_org.name, "platform");
+        assert_eq!(platform_org.display_name, "Platform");
+        assert!(platform_org.is_active());
+
+        // Create admin user with org_id set
+        let user_id = UserId::new();
+        let password_hash = hashing::hash_password(&request.password).expect("hash password");
+        let new_user = NewUser {
+            id: user_id.clone(),
+            email: request.email.clone(),
+            password_hash,
+            name: request.name.clone(),
+            status: UserStatus::Active,
+            is_admin: true,
+            org_id: platform_org.id.clone(),
+        };
+
+        let admin_user = user_repo.create_user(new_user).await.expect("create admin user");
+        assert_eq!(admin_user.org_id, platform_org.id);
+
+        // Create org membership for admin as Owner
+        let membership = org_membership_repo
+            .create_membership(&admin_user.id, &platform_org.id, OrgRole::Owner)
+            .await
+            .expect("create membership");
+
+        // Verify membership — no team, no team membership (governance only)
+        assert_eq!(membership.user_id, admin_user.id);
+        assert_eq!(membership.org_id, platform_org.id);
+        assert_eq!(membership.role, OrgRole::Owner);
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_status_needs_initialization() {
+        let _db = TestDatabase::new("bootstrap_status_init").await;
+        let pool = _db.pool.clone();
+
+        let user_repo = SqlxUserRepository::new(pool.clone());
+
+        // Verify no users exist
+        let user_count = user_repo.count_users().await.expect("count users");
+        assert_eq!(user_count, 0);
+
+        // System should need initialization
+        let (needs_init, _message) = if user_count == 0 {
+            (true, "System requires initialization".to_string())
+        } else {
+            (false, "System is already initialized".to_string())
+        };
+
+        assert!(needs_init);
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_status_already_initialized() {
+        let _db = TestDatabase::new("bootstrap_status_already").await;
+        let pool = _db.pool.clone();
+
+        let user_repo = SqlxUserRepository::new(pool.clone());
+        let org_repo = SqlxOrganizationRepository::new(pool.clone());
+
+        // Use the seeded test-org organization
+        use crate::storage::test_helpers::TEST_ORG_ID;
+        let org_id = OrgId::from_str_unchecked(TEST_ORG_ID);
+        let org = org_repo
+            .get_organization_by_id(&org_id)
+            .await
+            .expect("get org")
+            .expect("seeded org should exist");
+
+        // Create a user with org_id
+        let user_id = UserId::new();
+        let password_hash = hashing::hash_password("TestPassword123!").expect("hash password");
+        let new_user = NewUser {
+            id: user_id.clone(),
+            email: "test@example.com".to_string(),
+            password_hash,
+            name: "Test User".to_string(),
+            status: UserStatus::Active,
+            is_admin: false,
+            org_id: org.id.clone(),
+        };
+
+        user_repo.create_user(new_user).await.expect("create user");
+
+        // Verify user exists
+        let user_count = user_repo.count_users().await.expect("count users");
+        assert_eq!(user_count, 1);
+
+        // System should not need initialization
+        let (needs_init, _message) = if user_count == 0 {
+            (true, "System requires initialization".to_string())
+        } else {
+            (false, "System is already initialized".to_string())
+        };
+
+        assert!(!needs_init);
+    }
 }

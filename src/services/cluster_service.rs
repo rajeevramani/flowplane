@@ -12,6 +12,7 @@ use crate::{
     errors::Error,
     observability::http_tracing::create_operation_span,
     openapi::defaults::is_default_gateway_cluster,
+    services::ClusterEndpointSyncService,
     storage::{
         ClusterData, ClusterRepository, CreateClusterRequest, FilterRepository,
         RouteConfigRepository, UpdateClusterRequest,
@@ -138,6 +139,9 @@ impl ClusterService {
                 "Cluster created"
             );
 
+            // Sync cluster endpoints
+            self.sync_cluster_endpoints(&created).await;
+
             // Create nested span for xDS refresh
             let mut xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
             xds_span.set_attribute(KeyValue::new("cluster.id", created.id.to_string()));
@@ -204,6 +208,9 @@ impl ClusterService {
                 "Cluster updated"
             );
 
+            // Re-sync cluster endpoints
+            self.sync_cluster_endpoints(&updated).await;
+
             let mut xds_span = create_operation_span("xds.refresh_clusters", SpanKind::Internal);
             xds_span.set_attribute(KeyValue::new("cluster.id", updated.id.to_string()));
             self.refresh_xds().await?;
@@ -260,6 +267,9 @@ impl ClusterService {
                 ));
             }
 
+            // Clear cluster endpoints before deleting
+            self.clear_cluster_endpoints(&existing.id).await;
+
             let mut db_span = create_operation_span("db.cluster.delete", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "DELETE"));
             db_span.set_attribute(KeyValue::new("db.table", "clusters"));
@@ -290,6 +300,56 @@ impl ClusterService {
             Error::internal(format!("Failed to parse stored cluster configuration: {}", err))
         })?;
         ClusterSpec::from_value(value)
+    }
+
+    /// Sync cluster endpoint records from the cluster's stored configuration.
+    /// This is best-effort: failures are logged but don't block the cluster operation.
+    async fn sync_cluster_endpoints(&self, cluster: &ClusterData) {
+        let pool = match self.xds_state.cluster_repository.as_ref().map(|r| r.pool().clone()) {
+            Some(pool) => pool,
+            None => return,
+        };
+
+        let sync_service = ClusterEndpointSyncService::new(pool);
+        match sync_service.sync(&cluster.id, &cluster.configuration).await {
+            Ok(result) => {
+                info!(
+                    cluster_id = %cluster.id,
+                    cluster_name = %cluster.name,
+                    endpoints_created = result.endpoints_created,
+                    endpoints_updated = result.endpoints_updated,
+                    endpoints_deleted = result.endpoints_deleted,
+                    "Cluster endpoints synced"
+                );
+            }
+            Err(e) => {
+                error!(
+                    cluster_id = %cluster.id,
+                    cluster_name = %cluster.name,
+                    error = %e,
+                    "Failed to sync cluster endpoints"
+                );
+            }
+        }
+    }
+
+    /// Clear cluster endpoint records before deletion.
+    /// Best-effort: failures are logged but don't block the delete operation.
+    async fn clear_cluster_endpoints(&self, cluster_id: &crate::domain::ClusterId) {
+        let pool = match self.xds_state.cluster_repository.as_ref().map(|r| r.pool().clone()) {
+            Some(pool) => pool,
+            None => return,
+        };
+
+        let sync_service = ClusterEndpointSyncService::new(pool);
+        match sync_service.clear(cluster_id).await {
+            Ok(deleted) => {
+                info!(cluster_id = %cluster_id, deleted = deleted, "Cluster endpoints cleared");
+            }
+            Err(e) => {
+                error!(cluster_id = %cluster_id, error = %e, "Failed to clear cluster endpoints");
+            }
+        }
     }
 
     /// Refresh xDS caches after cluster changes

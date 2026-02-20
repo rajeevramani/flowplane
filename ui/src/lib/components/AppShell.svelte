@@ -4,6 +4,7 @@
 	import Sidebar from './Sidebar.svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { apiClient } from '$lib/api/client';
+	import { currentOrg, isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -22,7 +23,7 @@
 		onTeamChange: (team: string) => void;
 		resourceCounts?: ResourceCounts;
 		statsEnabled?: boolean;
-		children: any;
+		children: import('svelte').Snippet;
 	}
 
 	let {
@@ -70,7 +71,11 @@
 			<div class="px-6 py-3 flex items-center justify-between">
 				<!-- Left side: Team selector -->
 				<div class="flex items-center gap-4">
-					{#if availableTeams.length > 0}
+					{#if sessionInfo.isPlatformAdmin && availableTeams.length === 0}
+						<span class="inline-flex items-center px-3 py-1 rounded-md text-sm font-medium bg-amber-50 text-amber-800 border border-amber-200">
+							Platform Governance
+						</span>
+					{:else if availableTeams.length > 0}
 						<div class="flex items-center gap-2">
 							<label for="teamSelect" class="text-sm font-medium text-gray-600">Team:</label>
 							<select
@@ -88,12 +93,28 @@
 
 				<!-- Right side: User menu -->
 				<div class="flex items-center gap-4">
+					<!-- Org badge -->
+					{#if sessionInfo.orgName}
+						<span
+							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800"
+							title="Organization: {sessionInfo.orgName}"
+						>
+							{sessionInfo.orgName}
+						</span>
+					{/if}
+
 					<!-- Role badge -->
-					{#if sessionInfo.isAdmin}
+					{#if isSystemAdmin(sessionInfo.scopes)}
 						<span
 							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
 						>
 							Admin
+						</span>
+					{:else if isOrgAdmin(sessionInfo.scopes)}
+						<span
+							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"
+						>
+							Org Admin
 						</span>
 					{:else}
 						<span

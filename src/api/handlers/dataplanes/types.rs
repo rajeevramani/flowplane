@@ -57,29 +57,17 @@ pub struct DataplaneResponse {
     /// Description
     pub description: Option<String>,
 
+    /// Certificate serial number (if a certificate has been issued)
+    pub certificate_serial: Option<String>,
+
+    /// Certificate expiration timestamp
+    pub certificate_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+
     /// Creation timestamp
     pub created_at: chrono::DateTime<chrono::Utc>,
 
     /// Last update timestamp
     pub updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-/// Response for listing dataplanes
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ListDataplanesResponse {
-    pub dataplanes: Vec<DataplaneResponse>,
-}
-
-/// Query parameters for listing dataplanes
-#[derive(Debug, Clone, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListDataplanesQuery {
-    /// Maximum number of results
-    pub limit: Option<i32>,
-
-    /// Offset for pagination
-    pub offset: Option<i32>,
 }
 
 /// Path parameter for team-scoped dataplane operations
@@ -92,15 +80,15 @@ pub struct TeamDataplanePath {
     pub name: String,
 }
 
-/// Query parameters for dataplane bootstrap endpoint
+/// Query parameters for dataplane envoy config endpoint
 #[derive(Debug, Clone, Deserialize, Serialize, IntoParams, ToSchema)]
-pub struct BootstrapQuery {
+pub struct EnvoyConfigQuery {
     /// Output format: yaml or json (default: yaml)
     #[serde(default)]
     #[param(required = false)]
     pub format: Option<String>,
 
-    /// Enable mTLS configuration in bootstrap. When true, adds transport_socket
+    /// Enable mTLS configuration in envoy config. When true, adds transport_socket
     /// with TLS settings to the xds_cluster. Defaults to true if control plane
     /// has mTLS configured.
     #[serde(default)]
@@ -121,16 +109,32 @@ pub struct BootstrapQuery {
     #[serde(default)]
     #[param(required = false)]
     pub ca_path: Option<String>,
+
+    /// xDS server hostname/IP for Envoy to connect to.
+    /// Overrides the bind_address in generated config.
+    /// Falls back to FLOWPLANE_XDS_ADVERTISE_ADDRESS env var if not set.
+    /// Examples: "control-plane" (docker), "flowplane-cp.svc.cluster.local" (k8s)
+    #[serde(default)]
+    #[param(required = false)]
+    pub xds_host: Option<String>,
+
+    /// xDS server port for Envoy to connect to.
+    /// Overrides the default port in generated config.
+    #[serde(default)]
+    #[param(required = false)]
+    pub xds_port: Option<u16>,
 }
 
 impl From<crate::storage::repositories::DataplaneData> for DataplaneResponse {
     fn from(data: crate::storage::repositories::DataplaneData) -> Self {
         Self {
             id: data.id.to_string(),
-            team: data.team,
+            team: data.team_name.unwrap_or(data.team),
             name: data.name,
             gateway_host: data.gateway_host,
             description: data.description,
+            certificate_serial: data.certificate_serial,
+            certificate_expires_at: data.certificate_expires_at,
             created_at: data.created_at,
             updated_at: data.updated_at,
         }

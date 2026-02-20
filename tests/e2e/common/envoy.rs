@@ -383,29 +383,49 @@ fn write_envoy_config(config: &EnvoyConfig) -> anyhow::Result<PathBuf> {
     };
 
     let xds_tls_config = if let Some(ref tls) = config.xds_tls {
-        let client_tls = if let (Some(cert), Some(key)) = (&tls.client_cert, &tls.client_key) {
-            format!(
-                r#"tls_certificates:
-              - certificate_chain: {{ filename: "{}" }}
-                private_key: {{ filename: "{}" }}"#,
-                cert.display(),
-                key.display()
-            )
-        } else {
-            String::new()
-        };
+        // Build the TLS config matching the structure from data/bootstrap/mtls/envoy.yaml
+        // Structure:
+        //   common_tls_context:
+        //     tls_certificates:        (optional, for mTLS client cert)
+        //     - certificate_chain: ...
+        //       private_key: ...
+        //     validation_context:      (always present)
+        //       trusted_ca: ...
 
-        format!(
-            r#"transport_socket:
+        if let (Some(cert), Some(key)) = (&tls.client_cert, &tls.client_key) {
+            // mTLS mode: include client certificate
+            format!(
+                r#"transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
           common_tls_context:
-            {}validation_context:
-              trusted_ca: {{ filename: "{}" }}"#,
-            client_tls,
-            tls.ca_cert.display()
-        )
+            tls_certificates:
+            - certificate_chain:
+                filename: "{cert_path}"
+              private_key:
+                filename: "{key_path}"
+            validation_context:
+              trusted_ca:
+                filename: "{ca_path}""#,
+                cert_path = cert.display(),
+                key_path = key.display(),
+                ca_path = tls.ca_cert.display()
+            )
+        } else {
+            // Server-only TLS: just CA for server verification
+            format!(
+                r#"transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            validation_context:
+              trusted_ca:
+                filename: "{ca_path}""#,
+                ca_path = tls.ca_cert.display()
+            )
+        }
     } else {
         String::new()
     };

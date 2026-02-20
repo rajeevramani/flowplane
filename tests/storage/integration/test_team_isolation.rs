@@ -1,9 +1,13 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for database-level team filtering in repositories
 //!
 //! These tests verify that team-scoped RBAC filtering works correctly at the database
 //! level, ensuring proper data isolation between teams.
 
 use flowplane::auth::team::CreateTeamRequest;
+use flowplane::domain::OrgId;
 use flowplane::storage::repositories::team::{SqlxTeamRepository, TeamRepository};
 use flowplane::storage::{
     ClusterRepository, CreateClusterRequest, CreateListenerRequest,
@@ -12,33 +16,49 @@ use flowplane::storage::{
 
 #[path = "../../common/mod.rs"]
 mod common;
-use common::test_db::TestDatabase;
+use common::test_db::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_ORG_ID};
 
 /// Set up a test database with migrations applied and create test teams
-async fn setup_test_db() -> (TestDatabase, DbPool) {
+/// Returns a tuple of (TestDatabase, DbPool, special_team_id, team_with_dashes_id)
+async fn setup_test_db() -> (TestDatabase, DbPool, String, String) {
     let test_db = TestDatabase::new("team_isolation").await;
     let pool = test_db.pool().clone();
 
     // Create test teams to satisfy FK constraints
+    // Note: team-a and team-b are already seeded by TestDatabase with predictable UUIDs
     let team_repo = SqlxTeamRepository::new(pool.clone());
-    for team_name in &["team-a", "team-b", "special-team", "team-with-dashes_and_underscores"] {
-        let _ = team_repo
-            .create_team(CreateTeamRequest {
-                name: team_name.to_string(),
-                display_name: format!("Test Team {}", team_name),
-                description: Some("Team for storage team isolation tests".to_string()),
-                owner_user_id: None,
-                settings: None,
-            })
-            .await;
-    }
 
-    (test_db, pool)
+    // Create additional test-specific teams and capture their IDs
+    let special_team = team_repo
+        .create_team(CreateTeamRequest {
+            name: "special-team".to_string(),
+            display_name: "Test Team special-team".to_string(),
+            description: Some("Team for storage team isolation tests".to_string()),
+            owner_user_id: None,
+            org_id: OrgId::from_str_unchecked(TEST_ORG_ID),
+            settings: None,
+        })
+        .await
+        .expect("Failed to create special-team");
+
+    let team_with_dashes = team_repo
+        .create_team(CreateTeamRequest {
+            name: "team-with-dashes_and_underscores".to_string(),
+            display_name: "Test Team team-with-dashes_and_underscores".to_string(),
+            description: Some("Team for storage team isolation tests".to_string()),
+            owner_user_id: None,
+            org_id: OrgId::from_str_unchecked(TEST_ORG_ID),
+            settings: None,
+        })
+        .await
+        .expect("Failed to create team-with-dashes_and_underscores");
+
+    (test_db, pool, special_team.id.to_string(), team_with_dashes.id.to_string())
 }
 
 #[tokio::test]
 async fn cluster_repository_filters_by_team() {
-    let (_test_db, pool) = setup_test_db().await;
+    let (_test_db, pool, _special_team_id, _team_with_dashes_id) = setup_test_db().await;
     let repo = ClusterRepository::new(pool.clone());
 
     // Create clusters for different teams
@@ -49,7 +69,7 @@ async fn cluster_repository_filters_by_team() {
             "endpoints": [{"Address": {"host": "127.0.0.1", "port": 8080}}],
             "connect_timeout_seconds": 5
         }),
-        team: Some("team-a".to_string()),
+        team: Some(TEAM_A_ID.to_string()),
         import_id: None,
     };
 
@@ -60,7 +80,7 @@ async fn cluster_repository_filters_by_team() {
             "endpoints": [{"Address": {"host": "127.0.0.1", "port": 8081}}],
             "connect_timeout_seconds": 5
         }),
-        team: Some("team-b".to_string()),
+        team: Some(TEAM_B_ID.to_string()),
         import_id: None,
     };
 
@@ -81,7 +101,7 @@ async fn cluster_repository_filters_by_team() {
 
     // Test: Team A should see only their cluster + global cluster (include_default=true)
     let team_a_results =
-        repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
+        repo.list_by_teams(&[TEAM_A_ID.to_string()], true, None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-a-cluster"));
@@ -90,24 +110,20 @@ async fn cluster_repository_filters_by_team() {
 
     // Test: Team B should see only their cluster + global cluster (include_default=true)
     let team_b_results =
-        repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
+        repo.list_by_teams(&[TEAM_B_ID.to_string()], true, None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"team-b-cluster"));
     assert!(names.contains(&"global-cluster"));
     assert!(!names.contains(&"team-a-cluster"));
 
-    // Test: Empty teams list (admin:all) should see all clusters
-    let admin_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
-    assert_eq!(admin_results.len(), 3);
-    let names: Vec<&str> = admin_results.iter().map(|c| c.name.as_str()).collect();
-    assert!(names.contains(&"team-a-cluster"));
-    assert!(names.contains(&"team-b-cluster"));
-    assert!(names.contains(&"global-cluster"));
+    // Test: Empty teams list returns no results (security hardening)
+    let empty_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
+    assert_eq!(empty_results.len(), 0);
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = repo
-        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], true, None, None)
+        .list_by_teams(&[TEAM_A_ID.to_string(), TEAM_B_ID.to_string()], true, None, None)
         .await
         .unwrap();
     assert_eq!(multi_team_results.len(), 3);
@@ -115,7 +131,7 @@ async fn cluster_repository_filters_by_team() {
 
 #[tokio::test]
 async fn route_repository_filters_by_team() {
-    let (_test_db, pool) = setup_test_db().await;
+    let (_test_db, pool, _special_team_id, _team_with_dashes_id) = setup_test_db().await;
     let route_repo = RouteConfigRepository::new(pool.clone());
     let cluster_repo = ClusterRepository::new(pool.clone());
 
@@ -128,7 +144,7 @@ async fn route_repository_filters_by_team() {
                 "endpoints": [{"Address": {"host": "127.0.0.1", "port": 8080}}],
                 "connect_timeout_seconds": 5
             }),
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             import_id: None,
         })
         .await
@@ -142,7 +158,7 @@ async fn route_repository_filters_by_team() {
                 "endpoints": [{"Address": {"host": "127.0.0.1", "port": 8081}}],
                 "connect_timeout_seconds": 5
             }),
-            team: Some("team-b".to_string()),
+            team: Some(TEAM_B_ID.to_string()),
             import_id: None,
         })
         .await
@@ -171,7 +187,7 @@ async fn route_repository_filters_by_team() {
             "name": "team-a-routes",
             "virtual_hosts": []
         }),
-        team: Some("team-a".to_string()),
+        team: Some(TEAM_A_ID.to_string()),
         import_id: None,
         route_order: None,
         headers: None,
@@ -185,7 +201,7 @@ async fn route_repository_filters_by_team() {
             "name": "team-b-routes",
             "virtual_hosts": []
         }),
-        team: Some("team-b".to_string()),
+        team: Some(TEAM_B_ID.to_string()),
         import_id: None,
         route_order: None,
         headers: None,
@@ -211,7 +227,7 @@ async fn route_repository_filters_by_team() {
 
     // Test: Team A should see only their route + global route (include_default=true)
     let team_a_results =
-        route_repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
+        route_repo.list_by_teams(&[TEAM_A_ID.to_string()], true, None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|r| r.name.as_str()).collect();
     assert!(names.contains(&"team-a-routes"));
@@ -220,20 +236,20 @@ async fn route_repository_filters_by_team() {
 
     // Test: Team B should see only their route + global route (include_default=true)
     let team_b_results =
-        route_repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
+        route_repo.list_by_teams(&[TEAM_B_ID.to_string()], true, None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|r| r.name.as_str()).collect();
     assert!(names.contains(&"team-b-routes"));
     assert!(names.contains(&"global-routes"));
     assert!(!names.contains(&"team-a-routes"));
 
-    // Test: Empty teams list (admin:all) should see all routes
-    let admin_results = route_repo.list_by_teams(&[], true, None, None).await.unwrap();
-    assert_eq!(admin_results.len(), 3);
+    // Test: Empty teams list returns no results (security hardening)
+    let empty_results = route_repo.list_by_teams(&[], true, None, None).await.unwrap();
+    assert_eq!(empty_results.len(), 0);
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = route_repo
-        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], true, None, None)
+        .list_by_teams(&[TEAM_A_ID.to_string(), TEAM_B_ID.to_string()], true, None, None)
         .await
         .unwrap();
     assert_eq!(multi_team_results.len(), 3);
@@ -241,7 +257,7 @@ async fn route_repository_filters_by_team() {
 
 #[tokio::test]
 async fn listener_repository_filters_by_team() {
-    let (_test_db, pool) = setup_test_db().await;
+    let (_test_db, pool, _special_team_id, _team_with_dashes_id) = setup_test_db().await;
     let repo = ListenerRepository::new(pool.clone());
 
     // Create listeners for different teams
@@ -256,7 +272,7 @@ async fn listener_repository_filters_by_team() {
             "port": 8080,
             "filter_chains": []
         }),
-        team: Some("team-a".to_string()),
+        team: Some(TEAM_A_ID.to_string()),
         import_id: None,
         dataplane_id: None,
     };
@@ -272,7 +288,7 @@ async fn listener_repository_filters_by_team() {
             "port": 8081,
             "filter_chains": []
         }),
-        team: Some("team-b".to_string()),
+        team: Some(TEAM_B_ID.to_string()),
         import_id: None,
         dataplane_id: None,
     };
@@ -299,7 +315,7 @@ async fn listener_repository_filters_by_team() {
 
     // Test: Team A should see only their listener + global listener (include_default=true)
     let team_a_results =
-        repo.list_by_teams(&["team-a".to_string()], true, None, None).await.unwrap();
+        repo.list_by_teams(&[TEAM_A_ID.to_string()], true, None, None).await.unwrap();
     assert_eq!(team_a_results.len(), 2);
     let names: Vec<&str> = team_a_results.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"team-a-listener"));
@@ -308,20 +324,20 @@ async fn listener_repository_filters_by_team() {
 
     // Test: Team B should see only their listener + global listener (include_default=true)
     let team_b_results =
-        repo.list_by_teams(&["team-b".to_string()], true, None, None).await.unwrap();
+        repo.list_by_teams(&[TEAM_B_ID.to_string()], true, None, None).await.unwrap();
     assert_eq!(team_b_results.len(), 2);
     let names: Vec<&str> = team_b_results.iter().map(|l| l.name.as_str()).collect();
     assert!(names.contains(&"team-b-listener"));
     assert!(names.contains(&"global-listener"));
     assert!(!names.contains(&"team-a-listener"));
 
-    // Test: Empty teams list (admin:all) should see all listeners
-    let admin_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
-    assert_eq!(admin_results.len(), 3);
+    // Test: Empty teams list returns no results (security hardening)
+    let empty_results = repo.list_by_teams(&[], true, None, None).await.unwrap();
+    assert_eq!(empty_results.len(), 0);
 
     // Test: Multiple teams should see resources from all specified teams + global
     let multi_team_results = repo
-        .list_by_teams(&["team-a".to_string(), "team-b".to_string()], true, None, None)
+        .list_by_teams(&[TEAM_A_ID.to_string(), TEAM_B_ID.to_string()], true, None, None)
         .await
         .unwrap();
     assert_eq!(multi_team_results.len(), 3);
@@ -329,7 +345,7 @@ async fn listener_repository_filters_by_team() {
 
 #[tokio::test]
 async fn team_filtering_respects_pagination() {
-    let (_test_db, pool) = setup_test_db().await;
+    let (_test_db, pool, _special_team_id, _team_with_dashes_id) = setup_test_db().await;
     let repo = ClusterRepository::new(pool.clone());
 
     // Create 5 clusters for team-a
@@ -341,17 +357,19 @@ async fn team_filtering_respects_pagination() {
                 "endpoints": [{"Address": {"host": "127.0.0.1", "port": 8080 + i}}],
                 "connect_timeout_seconds": 5
             }),
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             import_id: None,
         };
         repo.create(cluster).await.unwrap();
     }
 
     // Test pagination with limit (include_default=false to only get team-scoped resources)
-    let page1 = repo.list_by_teams(&["team-a".to_string()], false, Some(2), Some(0)).await.unwrap();
+    let page1 =
+        repo.list_by_teams(&[TEAM_A_ID.to_string()], false, Some(2), Some(0)).await.unwrap();
     assert_eq!(page1.len(), 2);
 
-    let page2 = repo.list_by_teams(&["team-a".to_string()], false, Some(2), Some(2)).await.unwrap();
+    let page2 =
+        repo.list_by_teams(&[TEAM_A_ID.to_string()], false, Some(2), Some(2)).await.unwrap();
     assert_eq!(page2.len(), 2);
 
     // Verify we got different clusters
@@ -360,7 +378,7 @@ async fn team_filtering_respects_pagination() {
 
 #[tokio::test]
 async fn team_filtering_handles_special_characters_in_team_names() {
-    let (_test_db, pool) = setup_test_db().await;
+    let (_test_db, pool, _special_team_id, team_with_dashes_id) = setup_test_db().await;
     let repo = ClusterRepository::new(pool.clone());
 
     // Create cluster with team name containing special characters
@@ -371,7 +389,7 @@ async fn team_filtering_handles_special_characters_in_team_names() {
             "endpoints": [{"Address": {"host": "127.0.0.1", "port": 8080}}],
             "connect_timeout_seconds": 5
         }),
-        team: Some("team-with-dashes_and_underscores".to_string()),
+        team: Some(team_with_dashes_id.clone()),
         import_id: None,
     };
 
@@ -379,10 +397,10 @@ async fn team_filtering_handles_special_characters_in_team_names() {
 
     // Test: Special characters in team name should work correctly (include_default=false)
     let results = repo
-        .list_by_teams(&["team-with-dashes_and_underscores".to_string()], false, None, None)
+        .list_by_teams(std::slice::from_ref(&team_with_dashes_id), false, None, None)
         .await
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].name, "special-team-cluster");
-    assert_eq!(results[0].team.as_deref(), Some("team-with-dashes_and_underscores"));
+    assert_eq!(results[0].team.as_deref(), Some(team_with_dashes_id.as_str()));
 }

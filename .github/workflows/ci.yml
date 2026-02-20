@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev mold clang
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev mold clang
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check
@@ -31,6 +31,20 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flowplane
+          POSTGRES_PASSWORD: flowplane
+          POSTGRES_DB: flowplane_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Free disk space
         run: |
@@ -38,21 +52,13 @@ jobs:
           df -h
       - uses: actions/checkout@v4
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev mold clang
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev mold clang
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install sqlx-cli (sqlite)
-        run: cargo install sqlx-cli --no-default-features --features sqlite
-      - name: Create database file
-        run: touch /tmp/flowplane_test.sqlite
-      - name: Run migrations
-        run: sqlx migrate run
-        env:
-          DATABASE_URL: sqlite:///tmp/flowplane_test.sqlite
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --features postgres_tests
         env:
-          DATABASE_URL: sqlite:///tmp/flowplane_test.sqlite
+          DATABASE_URL: postgresql://flowplane:flowplane@localhost:5432/flowplane_test
           BOOTSTRAP_TOKEN: test-bootstrap-token-min-32-chars-long-secure
 
   fmt:
@@ -72,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev mold clang
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev mold clang
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -96,20 +102,26 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, clippy]
     if: github.event_name == 'pull_request'
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flowplane
+          POSTGRES_PASSWORD: flowplane
+          POSTGRES_DB: flowplane_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev mold clang
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev mold clang
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install sqlx-cli (sqlite)
-        run: cargo install sqlx-cli --no-default-features --features sqlite
-      - name: Create database file
-        run: touch /tmp/flowplane_e2e_smoke.sqlite
-      - name: Run migrations
-        run: sqlx migrate run
-        env:
-          DATABASE_URL: sqlite:///tmp/flowplane_e2e_smoke.sqlite
       - name: Attempt to install Envoy (best-effort)
         run: |
           sudo apt-get update || true
@@ -121,29 +133,46 @@ jobs:
           set -e
           export RUN_E2E=1
           export RUST_LOG=info
-          export DATABASE_URL=sqlite:///tmp/flowplane_e2e_smoke.sqlite
+          export DATABASE_URL=postgresql://flowplane:flowplane@localhost:5432/flowplane_e2e
           export BOOTSTRAP_TOKEN=test-bootstrap-token-min-32-chars-long-secure
+          # mTLS connection tests skip gracefully without FLOWPLANE_E2E_MTLS=1
+          # Certificate API tests (test_200-205) run using mock backend
           cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1
+      - name: Clean up testcontainers
+        if: always()
+        run: |
+          CONTAINERS=$(docker ps -q --filter "label=org.testcontainers.managed-by=testcontainers" --filter "ancestor=postgres" 2>/dev/null || true)
+          if [ -n "$CONTAINERS" ]; then
+            echo "Stopping orphaned testcontainers..."
+            docker stop --time 5 $CONTAINERS 2>/dev/null || true
+            docker rm -f $CONTAINERS 2>/dev/null || true
+          fi
 
   e2e-full:
     name: E2E Full (main/nightly)
     runs-on: ubuntu-latest
     needs: [test, clippy]
     if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flowplane
+          POSTGRES_PASSWORD: flowplane
+          POSTGRES_DB: flowplane_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev mold clang
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev mold clang
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install sqlx-cli (sqlite)
-        run: cargo install sqlx-cli --no-default-features --features sqlite
-      - name: Create database file
-        run: touch /tmp/flowplane_e2e_full.sqlite
-      - name: Run migrations
-        run: sqlx migrate run
-        env:
-          DATABASE_URL: sqlite:///tmp/flowplane_e2e_full.sqlite
       - name: Attempt to install Envoy (best-effort)
         run: |
           sudo apt-get update || true
@@ -155,15 +184,26 @@ jobs:
           set -e
           export RUN_E2E=1
           export RUST_LOG=info
-          export DATABASE_URL=sqlite:///tmp/flowplane_e2e_full.sqlite
+          export DATABASE_URL=postgresql://flowplane:flowplane@localhost:5432/flowplane_e2e
           export BOOTSTRAP_TOKEN=test-bootstrap-token-min-32-chars-long-secure
+          # Enable mTLS E2E tests - tests mTLS connection, SPIFFE team extraction, and team isolation
+          # Uses mock certificate backend (no Vault required)
+          export FLOWPLANE_E2E_MTLS=1
           cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1
+      - name: Clean up testcontainers
+        if: always()
+        run: |
+          CONTAINERS=$(docker ps -q --filter "label=org.testcontainers.managed-by=testcontainers" --filter "ancestor=postgres" 2>/dev/null || true)
+          if [ -n "$CONTAINERS" ]; then
+            echo "Stopping orphaned testcontainers..."
+            docker stop --time 5 $CONTAINERS 2>/dev/null || true
+            docker rm -f $CONTAINERS 2>/dev/null || true
+          fi
       - name: Collect test artifacts
         if: ${{ always() }}
         run: |
           mkdir -p artifacts
           cp -v /tmp/envoy_admin*.log artifacts/ 2>/dev/null || true
-          cp -v /tmp/flowplane-e2e*.sqlite artifacts/ 2>/dev/null || true
           find /tmp -name "*.envoy.yaml" -exec cp -v {} artifacts/ \; 2>/dev/null || true
       - name: Upload artifacts
         if: ${{ always() }}

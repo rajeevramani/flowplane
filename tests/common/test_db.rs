@@ -1,198 +1,177 @@
 //! Test database utilities for integration tests.
 //!
-//! Provides file-based SQLite databases under `data/test/` for test isolation
-//! and easier debugging of test failures.
+//! Provides PostgreSQL test database infrastructure using Testcontainers.
+//! Each `TestDatabase` instance starts a fresh PostgreSQL container with
+//! all migrations applied, providing full isolation between tests.
 
 #![allow(clippy::duplicate_mod)]
+#![allow(dead_code)]
 
-use flowplane::storage::{self, DbPool};
-use sqlx::sqlite::SqlitePoolOptions;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use uuid::Uuid;
+use flowplane::config::DatabaseConfig;
+use flowplane::storage::{create_pool, DbPool};
+use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
 
-/// Counter for generating unique database names within a test run
-static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Predictable team IDs for seed data (UUIDs).
+/// Tests can reference these IDs when working with team-scoped resources.
+/// These match the constants defined in src/storage/test_helpers.rs
+pub const TEST_TEAM_ID: &str = "00000000-0000-0000-0000-000000000001";
+pub const TEAM_A_ID: &str = "00000000-0000-0000-0000-000000000002";
+pub const TEAM_B_ID: &str = "00000000-0000-0000-0000-000000000003";
 
-/// Get the test database directory path
-fn test_db_dir() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(manifest_dir).join("data").join("test")
-}
+/// Predictable organization ID for seed data.
+/// All seeded teams belong to this organization.
+pub const TEST_ORG_ID: &str = "00000000-0000-0000-0000-0000000000a1";
 
-/// Generate a unique database filename for a test
-fn unique_db_name(prefix: &str) -> String {
-    let counter = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let uuid_short = &Uuid::new_v4().to_string()[..8];
-    format!("{}_{}_{}_{}.db", prefix, std::process::id(), counter, uuid_short)
-}
-
-/// A test database that automatically cleans up on drop.
+/// A test database backed by a Testcontainers PostgreSQL instance.
+///
+/// The container is automatically stopped and removed when this struct is dropped.
+/// Keep this struct alive for the duration of your test to maintain the database connection.
 pub struct TestDatabase {
     pub pool: DbPool,
-    pub path: PathBuf,
-    cleanup_on_drop: bool,
+    _container: ContainerAsync<Postgres>,
 }
 
 impl TestDatabase {
-    /// Create a new test database with automatic cleanup and migrations applied.
+    /// Create a new test database with all migrations applied.
     ///
-    /// The database file is created under `data/test/` with a unique name.
-    /// It will be automatically deleted when this struct is dropped.
+    /// Starts a fresh PostgreSQL container, connects to it, and runs all migrations.
+    /// The `prefix` parameter is used for logging/debugging purposes.
     pub async fn new(prefix: &str) -> Self {
-        Self::with_options(prefix, true, true).await
-    }
+        cleanup_stale_testcontainers();
 
-    /// Create a new test database without running migrations.
-    ///
-    /// Use this for unit tests that need to set up their own minimal schema.
-    /// The database file is created under `data/test/` with a unique name.
-    pub async fn new_without_migrations(prefix: &str) -> Self {
-        Self::with_options(prefix, true, false).await
-    }
+        let container = Postgres::default().start().await.unwrap_or_else(|e| {
+            panic!("Failed to start PostgreSQL container for {}: {}", prefix, e)
+        });
 
-    /// Create a new test database with configurable cleanup behavior.
-    ///
-    /// Set `cleanup_on_drop` to `false` to preserve the database file after
-    /// the test completes (useful for debugging test failures).
-    pub async fn with_cleanup(prefix: &str, cleanup_on_drop: bool) -> Self {
-        Self::with_options(prefix, cleanup_on_drop, true).await
-    }
-
-    /// Create a new test database with full control over options.
-    ///
-    /// - `cleanup_on_drop`: Whether to delete the database file when dropped
-    /// - `run_migrations`: Whether to run schema migrations
-    pub async fn with_options(prefix: &str, cleanup_on_drop: bool, run_migrations: bool) -> Self {
-        let db_dir = test_db_dir();
-
-        // Ensure the test directory exists
-        std::fs::create_dir_all(&db_dir).expect("create test database directory");
-
-        let db_name = unique_db_name(prefix);
-        let path = db_dir.join(&db_name);
-        let url = format!("sqlite://{}?mode=rwc", path.display());
-
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect(&url)
+        let host = container
+            .get_host()
             .await
-            .expect("create test database pool");
+            .unwrap_or_else(|e| panic!("Failed to get container host for {}: {}", prefix, e));
 
-        // Run migrations to set up schema if requested
-        if run_migrations {
-            storage::run_migrations(&pool).await.expect("run migrations for test database");
-        }
+        let port = container
+            .get_host_port_ipv4(5432)
+            .await
+            .unwrap_or_else(|e| panic!("Failed to get container port for {}: {}", prefix, e));
 
-        Self { pool, path, cleanup_on_drop }
-    }
+        let url = format!("postgresql://postgres:postgres@{}:{}/postgres", host, port);
 
-    /// Create a test database that persists after the test (for debugging).
-    pub async fn persistent(prefix: &str) -> Self {
-        Self::with_cleanup(prefix, false).await
+        let config = DatabaseConfig {
+            url,
+            auto_migrate: true,
+            max_connections: 5,
+            min_connections: 1,
+            ..Default::default()
+        };
+
+        let pool = create_pool(&config)
+            .await
+            .unwrap_or_else(|e| panic!("Failed to create test pool for {}: {}", prefix, e));
+
+        // Seed common test data: org + teams (matches src/storage/test_helpers.rs)
+        seed_test_data(&pool).await;
+
+        Self { pool, _container: container }
     }
 
     /// Get a reference to the connection pool.
     pub fn pool(&self) -> &DbPool {
         &self.pool
     }
+}
 
-    /// Get the database file path.
-    pub fn path(&self) -> &PathBuf {
-        &self.path
-    }
+/// Seed common test data: organization and teams with predictable UUIDs.
+///
+/// Uses raw SQL to insert test org and teams with specific UUIDs that match
+/// the constants defined above. This mirrors `src/storage/test_helpers.rs::seed_test_data()`.
+async fn seed_test_data(pool: &DbPool) {
+    // Create test organization first (teams require org_id NOT NULL)
+    sqlx::query(
+        "INSERT INTO organizations (id, name, display_name, status, created_at, updated_at) \
+         VALUES ($1, 'test-org', 'Test Organization', 'active', NOW(), NOW()) \
+         ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(TEST_ORG_ID)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|e| panic!("Failed to seed test organization: {}", e));
 
-    /// Disable cleanup on drop (useful for debugging).
-    pub fn keep_on_drop(&mut self) {
-        self.cleanup_on_drop = false;
+    let teams = [("test-team", TEST_TEAM_ID), ("team-a", TEAM_A_ID), ("team-b", TEAM_B_ID)];
+
+    for (team_name, team_id) in &teams {
+        sqlx::query(
+            "INSERT INTO teams (id, name, display_name, org_id, status) \
+             VALUES ($1, $2, $3, $4, 'active') \
+             ON CONFLICT (org_id, name) DO NOTHING",
+        )
+        .bind(team_id)
+        .bind(team_name)
+        .bind(format!("Test Team {}", team_name))
+        .bind(TEST_ORG_ID)
+        .execute(pool)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to seed team '{}': {}", team_name, e));
     }
 }
 
-impl Drop for TestDatabase {
-    fn drop(&mut self) {
-        if self.cleanup_on_drop {
-            // Best effort cleanup - don't panic in drop
-            if let Err(e) = std::fs::remove_file(&self.path) {
-                eprintln!("Warning: Failed to cleanup test database {:?}: {}", self.path, e);
+/// Stop and remove stale testcontainer PostgreSQL containers from previous runs.
+///
+/// Testcontainers-rs 0.26 has a known issue where `ContainerAsync::Drop` is async
+/// but Rust's `Drop` is sync, so cleanup tasks get cancelled when the tokio runtime
+/// shuts down. This function finds and removes any orphaned containers.
+///
+/// Runs at most once per test binary via `std::sync::Once`.
+fn cleanup_stale_testcontainers() {
+    use std::process::Command;
+
+    static CLEANUP_ONCE: std::sync::Once = std::sync::Once::new();
+    CLEANUP_ONCE.call_once(|| {
+        // Find containers managed by testcontainers with postgres image
+        let output = Command::new("docker")
+            .args([
+                "ps",
+                "-q",
+                "--filter",
+                "label=org.testcontainers.managed-by=testcontainers",
+                "--filter",
+                "ancestor=postgres",
+            ])
+            .output();
+
+        let container_ids = match output {
+            Ok(out) if out.status.success() => {
+                let ids = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if ids.is_empty() {
+                    return;
+                }
+                ids
             }
-            // Also try to remove WAL and SHM files if they exist
-            let wal_path = self.path.with_extension("db-wal");
-            let shm_path = self.path.with_extension("db-shm");
-            let _ = std::fs::remove_file(wal_path);
-            let _ = std::fs::remove_file(shm_path);
+            _ => return,
+        };
+
+        let ids: Vec<&str> = container_ids.lines().collect();
+        if ids.is_empty() {
+            return;
         }
-    }
+
+        eprintln!("[test_db] Cleaning up {} stale testcontainer(s) from previous runs", ids.len());
+
+        // Stop containers (best-effort)
+        let mut stop_args = vec!["stop", "--time", "5"];
+        stop_args.extend(&ids);
+        let _ = Command::new("docker").args(&stop_args).output();
+
+        // Remove containers (best-effort)
+        let mut rm_args = vec!["rm", "-f"];
+        rm_args.extend(&ids);
+        let _ = Command::new("docker").args(&rm_args).output();
+    });
 }
 
-/// Create a test database pool under `data/test/`.
+/// Clean up all test databases.
 ///
-/// This is a convenience function for tests that don't need the full
-/// `TestDatabase` wrapper. Note that cleanup is NOT automatic with this
-/// function - use `TestDatabase` for automatic cleanup.
-pub async fn create_test_pool(prefix: &str) -> DbPool {
-    let db = TestDatabase::new(prefix).await;
-    // Leak the TestDatabase to prevent cleanup, returning just the pool
-    let pool = db.pool.clone();
-    std::mem::forget(db);
-    pool
-}
-
-/// Clean up all test databases in the test directory.
-///
-/// This can be called at the start of a test run to ensure a clean slate.
+/// Stops and removes stale testcontainer PostgreSQL containers from previous runs.
 pub fn cleanup_all_test_databases() {
-    let db_dir = test_db_dir();
-    if let Ok(entries) = std::fs::read_dir(&db_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "db") {
-                let _ = std::fs::remove_file(&path);
-                // Also remove WAL/SHM files
-                let wal_path = path.with_extension("db-wal");
-                let shm_path = path.with_extension("db-shm");
-                let _ = std::fs::remove_file(wal_path);
-                let _ = std::fs::remove_file(shm_path);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_database_creates_file() {
-        let db = TestDatabase::new("test_creates_file").await;
-        assert!(db.path.exists(), "Database file should exist");
-
-        // Verify we can query the database
-        let result: (i64,) =
-            sqlx::query_as("SELECT 1").fetch_one(&db.pool).await.expect("query should succeed");
-        assert_eq!(result.0, 1);
-    }
-
-    #[tokio::test]
-    async fn test_database_cleanup_on_drop() {
-        let path = {
-            let db = TestDatabase::new("test_cleanup").await;
-            let path = db.path.clone();
-            assert!(path.exists(), "Database file should exist before drop");
-            path
-        };
-        // After drop, file should be removed
-        assert!(!path.exists(), "Database file should be removed after drop");
-    }
-
-    #[tokio::test]
-    async fn test_persistent_database() {
-        let path = {
-            let db = TestDatabase::persistent("test_persistent").await;
-            db.path.clone()
-        };
-        // File should still exist after drop
-        assert!(path.exists(), "Persistent database should remain after drop");
-        // Clean up manually
-        std::fs::remove_file(&path).ok();
-    }
+    cleanup_stale_testcontainers();
 }

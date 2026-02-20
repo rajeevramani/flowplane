@@ -38,10 +38,10 @@ use tracing::{debug, error, info, warn};
 use crate::observability::metrics;
 use crate::schema::inference::SchemaInferenceEngine;
 use crate::services::{normalize_path, PathNormalizationConfig};
+use crate::storage::DbPool;
 use crate::xds::services::access_log_service::ProcessedLogEntry;
 use crate::xds::services::ext_proc_service::CapturedBody;
 use crate::Result;
-use sqlx::{Pool, Sqlite};
 
 /// Convert HTTP method code to string
 ///
@@ -115,8 +115,8 @@ impl Default for ProcessorConfig {
             initial_backoff_ms: 100,              // Start with 100ms backoff
             max_queue_capacity: 10_000,           // Drop entries after 10k queued
             path_normalization: PathNormalizationConfig::rest_defaults(), // Use REST defaults
-            pending_entry_ttl_secs: 300,          // 5 minute TTL for pending entries
-            pending_cleanup_interval_secs: 60,    // Check for stale entries every 60 seconds
+            pending_entry_ttl_secs: 15,           // 15 second TTL for pending entries
+            pending_cleanup_interval_secs: 5,     // Check for stale entries every 5 seconds
         }
     }
 }
@@ -172,7 +172,7 @@ pub struct AccessLogProcessor {
     /// Receiver for inferred schemas (moved to batcher task)
     schema_rx: Arc<Mutex<mpsc::Receiver<InferredSchemaRecord>>>,
     /// Database pool for batch writes (optional for testing)
-    db_pool: Option<Pool<Sqlite>>,
+    db_pool: Option<DbPool>,
     /// Shutdown signal sender (broadcast to all workers)
     shutdown_tx: watch::Sender<bool>,
     /// Shutdown signal receiver (cloned for each worker)
@@ -233,7 +233,7 @@ impl AccessLogProcessor {
     pub fn new(
         log_rx: mpsc::UnboundedReceiver<ProcessedLogEntry>,
         ext_proc_rx: Option<mpsc::UnboundedReceiver<CapturedBody>>,
-        db_pool: Option<Pool<Sqlite>>,
+        db_pool: Option<DbPool>,
         config: Option<ProcessorConfig>,
     ) -> Self {
         let config = config.unwrap_or_default();
@@ -585,12 +585,17 @@ impl AccessLogProcessor {
             None
         };
 
-        // Spawn cleanup task for TTL-based removal of stale pending entries
+        // Spawn cleanup task that PROCESSES timed-out pending entries instead of dropping them.
+        // When ExtProc fails to deliver bodies, ALS entries get stuck in pending_logs.
+        // This task ensures they're eventually processed (without bodies) so schema inference
+        // can at least log what happened, and metrics are recorded.
         let cleanup_handle = {
             let pending_logs = Arc::clone(&self.pending_logs);
             let pending_bodies = Arc::clone(&self.pending_bodies);
             let ttl_secs = self.config.pending_entry_ttl_secs;
             let cleanup_interval_secs = self.config.pending_cleanup_interval_secs;
+            let schema_tx = self.schema_tx.clone();
+            let path_norm_config = self.config.path_normalization.clone();
             let mut shutdown_rx = self.shutdown_rx.clone();
 
             let handle = tokio::spawn(async move {
@@ -605,51 +610,79 @@ impl AccessLogProcessor {
                         _ = interval.tick() => {
                             let now = tokio::time::Instant::now();
 
-                            // Clean up stale pending logs
-                            let logs_removed = {
+                            // Extract timed-out pending logs and PROCESS them (without bodies)
+                            let timed_out_entries: Vec<PendingLogEntry> = {
                                 let mut logs_map = pending_logs.lock().await;
-                                let initial_count = logs_map.len();
-                                logs_map.retain(|key, pending| {
-                                    let age = now.duration_since(pending.created_at);
-                                    if age > ttl_duration {
-                                        debug!(
-                                            key,
-                                            age_secs = age.as_secs(),
-                                            "Removing stale pending log entry"
-                                        );
-                                        false
-                                    } else {
-                                        true
+                                let mut expired = Vec::new();
+                                let keys_to_remove: Vec<String> = logs_map
+                                    .iter()
+                                    .filter(|(_, pending)| {
+                                        now.duration_since(pending.created_at) > ttl_duration
+                                    })
+                                    .map(|(key, _)| key.clone())
+                                    .collect();
+
+                                for key in keys_to_remove {
+                                    if let Some(pending) = logs_map.remove(&key) {
+                                        expired.push(pending);
                                     }
-                                });
-                                initial_count - logs_map.len()
+                                }
+                                expired
                             };
 
-                            // Clean up stale pending bodies
+                            let logs_processed = timed_out_entries.len();
+                            for pending in timed_out_entries {
+                                warn!(
+                                    session_id = %pending.entry.session_id,
+                                    path = %pending.entry.path,
+                                    method = pending.entry.method,
+                                    request_id = ?pending.entry.request_id,
+                                    age_secs = now.duration_since(pending.created_at).as_secs(),
+                                    "Processing timed-out entry without body merge — \
+                                     ExtProc may not be delivering bodies. \
+                                     Schema inference will be skipped for this entry."
+                                );
+                                if let Err(e) = Self::process_entry(
+                                    usize::MAX, // cleanup worker ID
+                                    pending.entry,
+                                    &schema_tx,
+                                    &path_norm_config,
+                                ).await {
+                                    error!(
+                                        error = %e,
+                                        "Failed to process timed-out pending entry"
+                                    );
+                                }
+                            }
+
+                            // Clean up stale pending bodies (orphaned — no matching ALS entry)
                             let bodies_removed = {
                                 let mut bodies_map = pending_bodies.lock().await;
-                                let initial_count = bodies_map.len();
-                                bodies_map.retain(|key, pending| {
-                                    let age = now.duration_since(pending.created_at);
-                                    if age > ttl_duration {
-                                        debug!(
-                                            key,
-                                            age_secs = age.as_secs(),
-                                            "Removing stale pending body"
+                                let keys_to_remove: Vec<String> = bodies_map
+                                    .iter()
+                                    .filter(|(_, pending)| {
+                                        now.duration_since(pending.created_at) > ttl_duration
+                                    })
+                                    .map(|(key, _)| key.clone())
+                                    .collect();
+
+                                for key in &keys_to_remove {
+                                    if let Some(pending) = bodies_map.remove(key) {
+                                        warn!(
+                                            session_id = %pending.body.session_id,
+                                            request_id = %pending.body.request_id,
+                                            "Removing orphaned pending body (no matching ALS entry)"
                                         );
-                                        false
-                                    } else {
-                                        true
                                     }
-                                });
-                                initial_count - bodies_map.len()
+                                }
+                                keys_to_remove.len()
                             };
 
-                            if logs_removed > 0 || bodies_removed > 0 {
-                                info!(
-                                    logs_removed,
+                            if logs_processed > 0 || bodies_removed > 0 {
+                                warn!(
+                                    logs_processed,
                                     bodies_removed,
-                                    "Cleaned up stale pending entries"
+                                    "Processed timed-out pending entries"
                                 );
                             }
                         }
@@ -737,80 +770,39 @@ impl AccessLogProcessor {
         );
 
         // Task 5.2: Schema inference for request and response bodies
+        // Infer both schemas first, then emit a single combined record so that
+        // request_schema and response_schema share the same grouping key
+        // (method, path, response_status_code) during aggregation.
         let inference_engine = SchemaInferenceEngine::new();
 
         // Infer request schema if body is present
+        let mut inferred_request_schema: Option<String> = None;
         if let Some(ref request_body) = entry.request_body {
             match std::str::from_utf8(request_body) {
-                Ok(json_str) => {
-                    match inference_engine.infer_from_json(json_str) {
-                        Ok(schema) => {
-                            debug!(
-                                worker_id,
-                                session_id = %entry.session_id,
-                                path = %entry.path,
-                                schema_type = ?schema.schema_type,
-                                "Inferred request schema"
-                            );
-
-                            // Normalize path before storing
-                            let normalized_path = normalize_path(&entry.path, path_norm_config);
-
-                            let record = InferredSchemaRecord {
-                                session_id: entry.session_id.clone(),
-                                team: entry.team.clone(),
-                                http_method: method_to_string(entry.method),
-                                path_pattern: normalized_path,
-                                request_schema: Some(serde_json::to_string(
-                                    &schema.to_json_schema(),
-                                )?),
-                                response_schema: None,
-                                response_status_code: None,
-                            };
-
-                            // Send to batcher with backpressure handling
-                            match schema_tx.try_send(record) {
-                                Ok(_) => {
-                                    info!(
-                                        worker_id,
-                                        session_id = %entry.session_id,
-                                        path = %entry.path,
-                                        schema_type = "request",
-                                        "Inferred schema sent to batcher for persistence"
-                                    );
-                                    metrics::record_schema_inferred("request", true).await;
-                                }
-                                Err(mpsc::error::TrySendError::Full(_)) => {
-                                    // Queue is full - drop the schema and log for metrics
-                                    warn!(
-                                        worker_id,
-                                        session_id = %entry.session_id,
-                                        path = %entry.path,
-                                        "Schema queue full, dropping schema (backpressure)"
-                                    );
-                                    metrics::record_schema_dropped("request").await;
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    // Batcher is shut down, ignore silently
-                                    debug!(worker_id, "Batcher channel closed, dropping schema");
-                                    metrics::record_schema_dropped("request").await;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Non-JSON or malformed body - log but don't fail
-                            debug!(
-                                worker_id,
-                                session_id = %entry.session_id,
-                                error = %e,
-                                "Failed to infer request schema (likely non-JSON body)"
-                            );
-                            metrics::record_schema_inferred("request", false).await;
-                        }
+                Ok(json_str) => match inference_engine.infer_from_json(json_str) {
+                    Ok(schema) => {
+                        debug!(
+                            worker_id,
+                            session_id = %entry.session_id,
+                            path = %entry.path,
+                            schema_type = ?schema.schema_type,
+                            "Inferred request schema"
+                        );
+                        inferred_request_schema =
+                            Some(serde_json::to_string(&schema.to_json_schema())?);
+                        metrics::record_schema_inferred("request", true).await;
                     }
-                }
+                    Err(e) => {
+                        debug!(
+                            worker_id,
+                            session_id = %entry.session_id,
+                            error = %e,
+                            "Failed to infer request schema (likely non-JSON body)"
+                        );
+                        metrics::record_schema_inferred("request", false).await;
+                    }
+                },
                 Err(_) => {
-                    // Binary request body - skip schema inference
                     debug!(
                         worker_id,
                         session_id = %entry.session_id,
@@ -821,85 +813,83 @@ impl AccessLogProcessor {
         }
 
         // Infer response schema if body is present
+        let mut inferred_response_schema: Option<String> = None;
         if let Some(ref response_body) = entry.response_body {
             match std::str::from_utf8(response_body) {
-                Ok(json_str) => {
-                    match inference_engine.infer_from_json(json_str) {
-                        Ok(schema) => {
-                            debug!(
-                                worker_id,
-                                session_id = %entry.session_id,
-                                path = %entry.path,
-                                status = entry.response_status,
-                                schema_type = ?schema.schema_type,
-                                "Inferred response schema"
-                            );
-
-                            // Normalize path before storing
-                            let normalized_path = normalize_path(&entry.path, path_norm_config);
-
-                            let record = InferredSchemaRecord {
-                                session_id: entry.session_id.clone(),
-                                team: entry.team.clone(),
-                                http_method: method_to_string(entry.method),
-                                path_pattern: normalized_path,
-                                request_schema: None,
-                                response_schema: Some(serde_json::to_string(
-                                    &schema.to_json_schema(),
-                                )?),
-                                response_status_code: Some(entry.response_status),
-                            };
-
-                            // Send to batcher with backpressure handling
-                            match schema_tx.try_send(record) {
-                                Ok(_) => {
-                                    info!(
-                                        worker_id,
-                                        session_id = %entry.session_id,
-                                        path = %entry.path,
-                                        status = entry.response_status,
-                                        schema_type = "response",
-                                        "Inferred schema sent to batcher for persistence"
-                                    );
-                                    metrics::record_schema_inferred("response", true).await;
-                                }
-                                Err(mpsc::error::TrySendError::Full(_)) => {
-                                    // Queue is full - drop the schema and log for metrics
-                                    warn!(
-                                        worker_id,
-                                        session_id = %entry.session_id,
-                                        path = %entry.path,
-                                        "Schema queue full, dropping schema (backpressure)"
-                                    );
-                                    metrics::record_schema_dropped("response").await;
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    // Batcher is shut down, ignore silently
-                                    debug!(worker_id, "Batcher channel closed, dropping schema");
-                                    metrics::record_schema_dropped("response").await;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Non-JSON or malformed body - log but don't fail
-                            debug!(
-                                worker_id,
-                                session_id = %entry.session_id,
-                                error = %e,
-                                "Failed to infer response schema (likely non-JSON body)"
-                            );
-                            metrics::record_schema_inferred("response", false).await;
-                        }
+                Ok(json_str) => match inference_engine.infer_from_json(json_str) {
+                    Ok(schema) => {
+                        debug!(
+                            worker_id,
+                            session_id = %entry.session_id,
+                            path = %entry.path,
+                            status = entry.response_status,
+                            schema_type = ?schema.schema_type,
+                            "Inferred response schema"
+                        );
+                        inferred_response_schema =
+                            Some(serde_json::to_string(&schema.to_json_schema())?);
+                        metrics::record_schema_inferred("response", true).await;
                     }
-                }
+                    Err(e) => {
+                        debug!(
+                            worker_id,
+                            session_id = %entry.session_id,
+                            error = %e,
+                            "Failed to infer response schema (likely non-JSON body)"
+                        );
+                        metrics::record_schema_inferred("response", false).await;
+                    }
+                },
                 Err(_) => {
-                    // Binary response body - skip schema inference
                     debug!(
                         worker_id,
                         session_id = %entry.session_id,
                         "Response body is not valid UTF-8 (binary data)"
                     );
                 }
+            }
+        }
+
+        // Emit a record for every access log entry, even when both schemas are
+        // None.  Bodyless endpoints (GET collections, DELETE 204) must still
+        // appear in the aggregated catalog so the OpenAPI export is complete.
+        // Strip query string before normalization so `/api/x?page=1` groups
+        // with `/api/x`.
+        let path_without_query = entry.path.split('?').next().unwrap_or(&entry.path);
+        let normalized_path = normalize_path(path_without_query, path_norm_config);
+
+        let record = InferredSchemaRecord {
+            session_id: entry.session_id.clone(),
+            team: entry.team.clone(),
+            http_method: method_to_string(entry.method),
+            path_pattern: normalized_path,
+            request_schema: inferred_request_schema,
+            response_schema: inferred_response_schema,
+            response_status_code: Some(entry.response_status),
+        };
+
+        match schema_tx.try_send(record) {
+            Ok(_) => {
+                info!(
+                    worker_id,
+                    session_id = %entry.session_id,
+                    path = %entry.path,
+                    status = entry.response_status,
+                    "Inferred schema sent to batcher for persistence"
+                );
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!(
+                    worker_id,
+                    session_id = %entry.session_id,
+                    path = %entry.path,
+                    "Schema queue full, dropping schema (backpressure)"
+                );
+                metrics::record_schema_dropped("combined").await;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                debug!(worker_id, "Batcher channel closed, dropping schema");
+                metrics::record_schema_dropped("combined").await;
             }
         }
 
@@ -916,7 +906,7 @@ impl AccessLogProcessor {
     /// Task 5.3: Batch database writes for schema aggregation
     /// Task 5.4: Retry logic with exponential backoff
     async fn write_schema_batch_with_retry(
-        pool: &Pool<Sqlite>,
+        pool: &DbPool,
         batch: Vec<InferredSchemaRecord>,
         max_retries: usize,
         initial_backoff_ms: u64,
@@ -967,8 +957,8 @@ impl AccessLogProcessor {
     ///
     /// Uses a single transaction for all inserts to ensure atomicity and performance.
     /// Task 5.3: Batch database writes for schema aggregation
-    async fn write_schema_batch(
-        pool: &Pool<Sqlite>,
+    pub(crate) async fn write_schema_batch(
+        pool: &DbPool,
         batch: Vec<InferredSchemaRecord>,
     ) -> Result<()> {
         if batch.is_empty() {
@@ -989,7 +979,7 @@ impl AccessLogProcessor {
                     team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
                     sample_count, confidence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1.0)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 1.0)
                 "#,
             )
             .bind(&record.team)
@@ -1022,7 +1012,7 @@ impl AccessLogProcessor {
     /// Task 5.3: Batch accumulation and periodic flushing
     fn spawn_schema_batcher(
         schema_rx: Arc<Mutex<mpsc::Receiver<InferredSchemaRecord>>>,
-        db_pool: Pool<Sqlite>,
+        db_pool: DbPool,
         batch_size: usize,
         flush_interval_secs: u64,
         max_retries: usize,
@@ -1160,7 +1150,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1179,7 +1169,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1207,7 +1197,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1253,7 +1243,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1282,7 +1272,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1330,7 +1320,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1380,7 +1370,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1428,7 +1418,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1476,7 +1466,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 10_000,
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
         let processor = AccessLogProcessor::new(rx, None, None, Some(config));
@@ -1553,7 +1543,7 @@ mod tests {
             initial_backoff_ms: 100,
             max_queue_capacity: 2, // Very small queue to test backpressure
             path_normalization: PathNormalizationConfig::rest_defaults(),
-            pending_entry_ttl_secs: 300,
+            pending_entry_ttl_secs: 15,
             pending_cleanup_interval_secs: 60,
         };
 
@@ -1601,4 +1591,330 @@ mod tests {
     // 1. Code review of the exponential backoff implementation
     // 2. Manual testing with actual database failures
     // 3. Integration tests that exercise the full path
+
+    #[tokio::test]
+    async fn test_query_string_stripped() {
+        let (schema_tx, mut schema_rx) = mpsc::channel(16);
+        let config = PathNormalizationConfig::rest_defaults();
+
+        // Entry with a simple query string
+        let entry1 = ProcessedLogEntry {
+            session_id: "qs-test-1".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
+            method: 1, // GET
+            path: "/api/users?page=1&limit=10".to_string(),
+            request_headers: vec![],
+            request_body: None,
+            request_body_size: 0,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: None,
+            response_body_size: 0,
+            start_time_seconds: 1234567890,
+            duration_ms: 10,
+            trace_context: None,
+        };
+
+        AccessLogProcessor::process_entry(0, entry1, &schema_tx, &config).await.unwrap();
+
+        let record1 = schema_rx.recv().await.expect("should receive record");
+        assert_eq!(record1.path_pattern, "/api/users");
+        assert!(!record1.path_pattern.contains('?'), "path_pattern must not contain query string");
+
+        // Entry with numeric segment + query string — should normalize the ID
+        let entry2 = ProcessedLogEntry {
+            session_id: "qs-test-2".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
+            method: 1, // GET
+            path: "/api/users/123?fields=name,email".to_string(),
+            request_headers: vec![],
+            request_body: None,
+            request_body_size: 0,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: None,
+            response_body_size: 0,
+            start_time_seconds: 1234567890,
+            duration_ms: 10,
+            trace_context: None,
+        };
+
+        AccessLogProcessor::process_entry(0, entry2, &schema_tx, &config).await.unwrap();
+
+        let record2 = schema_rx.recv().await.expect("should receive record");
+        assert_eq!(record2.path_pattern, "/api/users/{userId}");
+        assert!(!record2.path_pattern.contains('?'), "path_pattern must not contain query string");
+    }
+
+    #[tokio::test]
+    async fn test_bodyless_entry_emits_record() {
+        let (schema_tx, mut schema_rx) = mpsc::channel(16);
+        let config = PathNormalizationConfig::rest_defaults();
+
+        // GET with no request or response body
+        let entry = ProcessedLogEntry {
+            session_id: "bodyless-test".to_string(),
+            request_id: None,
+            team: "test-team".to_string(),
+            method: 1, // GET
+            path: "/api/users".to_string(),
+            request_headers: vec![],
+            request_body: None,
+            request_body_size: 0,
+            response_status: 200,
+            response_headers: vec![],
+            response_body: None,
+            response_body_size: 0,
+            start_time_seconds: 1234567890,
+            duration_ms: 5,
+            trace_context: None,
+        };
+
+        AccessLogProcessor::process_entry(0, entry, &schema_tx, &config).await.unwrap();
+
+        let record = schema_rx
+            .recv()
+            .await
+            .expect("bodyless endpoint must still emit a record for OpenAPI catalog completeness");
+        assert_eq!(record.path_pattern, "/api/users");
+        assert_eq!(record.http_method, "GET");
+        assert!(record.request_schema.is_none());
+        assert!(record.response_schema.is_none());
+        assert_eq!(record.response_status_code, Some(200));
+    }
+
+    #[cfg(feature = "postgres_tests")]
+    mod postgres_tests {
+        use super::*;
+        use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
+        use sqlx::Row;
+
+        /// Helper: create a learning session directly via SQL (same pattern as inferred_schema tests)
+        async fn create_test_session(pool: &DbPool, team: &str) -> String {
+            let session_id = uuid::Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO learning_sessions (
+                    id, team, route_pattern, status, target_sample_count, current_sample_count
+                ) VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(&session_id)
+            .bind(team)
+            .bind("/test/*")
+            .bind("active")
+            .bind(100i64)
+            .bind(0i64)
+            .execute(pool)
+            .await
+            .expect("Failed to create test session");
+
+            session_id
+        }
+
+        #[tokio::test]
+        async fn test_write_schema_batch_to_postgres() {
+            let test_db = TestDatabase::new("write_schema_batch").await;
+            let pool = test_db.pool.clone();
+            let session_id = create_test_session(&pool, TEST_TEAM_ID).await;
+
+            let batch = vec![
+                InferredSchemaRecord {
+                    session_id: session_id.clone(),
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "GET".to_string(),
+                    path_pattern: "/api/users/{id}".to_string(),
+                    request_schema: None,
+                    response_schema: Some(r#"{"type":"object","properties":{"id":{"type":"integer"}}}"#.to_string()),
+                    response_status_code: Some(200),
+                },
+                InferredSchemaRecord {
+                    session_id: session_id.clone(),
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "POST".to_string(),
+                    path_pattern: "/api/users".to_string(),
+                    request_schema: Some(r#"{"type":"object","properties":{"name":{"type":"string"}}}"#.to_string()),
+                    response_schema: Some(r#"{"type":"object","properties":{"id":{"type":"integer"}}}"#.to_string()),
+                    response_status_code: Some(201),
+                },
+                InferredSchemaRecord {
+                    session_id: session_id.clone(),
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "DELETE".to_string(),
+                    path_pattern: "/api/users/{id}".to_string(),
+                    request_schema: None,
+                    response_schema: None,
+                    response_status_code: Some(204),
+                },
+                InferredSchemaRecord {
+                    session_id: session_id.clone(),
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "PUT".to_string(),
+                    path_pattern: "/api/users/{id}".to_string(),
+                    request_schema: Some(r#"{"type":"object","properties":{"name":{"type":"string"}}}"#.to_string()),
+                    response_schema: Some(r#"{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"}}}"#.to_string()),
+                    response_status_code: Some(200),
+                },
+            ];
+
+            AccessLogProcessor::write_schema_batch(&pool, batch)
+                .await
+                .expect("write_schema_batch should succeed");
+
+            // Read back and verify
+            let rows = sqlx::query(
+                "SELECT team, session_id, http_method, path_pattern,
+                        request_schema, response_schema, response_status_code
+                 FROM inferred_schemas WHERE session_id = $1
+                 ORDER BY http_method",
+            )
+            .bind(&session_id)
+            .fetch_all(&pool)
+            .await
+            .expect("Failed to read back schemas");
+
+            assert_eq!(rows.len(), 4);
+
+            // Rows are ordered by http_method: DELETE, GET, POST, PUT
+            let delete_row = &rows[0];
+            assert_eq!(delete_row.get::<String, _>("http_method"), "DELETE");
+            assert_eq!(delete_row.get::<String, _>("team"), TEST_TEAM_ID);
+            assert_eq!(delete_row.get::<String, _>("session_id"), session_id);
+            assert_eq!(delete_row.get::<String, _>("path_pattern"), "/api/users/{id}");
+            assert_eq!(delete_row.get::<Option<String>, _>("request_schema"), None);
+            assert_eq!(delete_row.get::<Option<String>, _>("response_schema"), None);
+            assert_eq!(delete_row.get::<Option<i64>, _>("response_status_code"), Some(204));
+
+            let get_row = &rows[1];
+            assert_eq!(get_row.get::<String, _>("http_method"), "GET");
+            assert!(get_row.get::<Option<String>, _>("response_schema").is_some());
+
+            let post_row = &rows[2];
+            assert_eq!(post_row.get::<String, _>("http_method"), "POST");
+            assert!(post_row.get::<Option<String>, _>("request_schema").is_some());
+            assert!(post_row.get::<Option<String>, _>("response_schema").is_some());
+            assert_eq!(post_row.get::<Option<i64>, _>("response_status_code"), Some(201));
+
+            let put_row = &rows[3];
+            assert_eq!(put_row.get::<String, _>("http_method"), "PUT");
+            assert!(put_row.get::<Option<String>, _>("request_schema").is_some());
+        }
+
+        #[tokio::test]
+        async fn test_write_schema_batch_empty() {
+            let test_db = TestDatabase::new("write_schema_batch_empty").await;
+            let pool = test_db.pool.clone();
+
+            let result = AccessLogProcessor::write_schema_batch(&pool, vec![]).await;
+            assert!(result.is_ok(), "Empty batch should return Ok(())");
+        }
+
+        #[tokio::test]
+        async fn test_write_schema_batch_with_null_schemas() {
+            let test_db = TestDatabase::new("write_schema_batch_nulls").await;
+            let pool = test_db.pool.clone();
+            let session_id = create_test_session(&pool, TEST_TEAM_ID).await;
+
+            let batch = vec![
+                InferredSchemaRecord {
+                    session_id: session_id.clone(),
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "GET".to_string(),
+                    path_pattern: "/api/health".to_string(),
+                    request_schema: None,
+                    response_schema: None,
+                    response_status_code: Some(200),
+                },
+                InferredSchemaRecord {
+                    session_id: session_id.clone(),
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "HEAD".to_string(),
+                    path_pattern: "/api/health".to_string(),
+                    request_schema: None,
+                    response_schema: None,
+                    response_status_code: None,
+                },
+            ];
+
+            AccessLogProcessor::write_schema_batch(&pool, batch)
+                .await
+                .expect("write_schema_batch with null schemas should succeed");
+
+            let rows = sqlx::query(
+                "SELECT request_schema, response_schema, response_status_code
+                 FROM inferred_schemas WHERE session_id = $1
+                 ORDER BY http_method",
+            )
+            .bind(&session_id)
+            .fetch_all(&pool)
+            .await
+            .expect("Failed to read back schemas");
+
+            assert_eq!(rows.len(), 2);
+
+            // Both records should have NULL schemas
+            for row in &rows {
+                assert_eq!(row.get::<Option<String>, _>("request_schema"), None);
+                assert_eq!(row.get::<Option<String>, _>("response_schema"), None);
+            }
+
+            // GET has status code 200, HEAD has NULL
+            let get_row = &rows[0]; // GET
+            assert_eq!(get_row.get::<Option<i64>, _>("response_status_code"), Some(200));
+            let head_row = &rows[1]; // HEAD
+            assert_eq!(head_row.get::<Option<i64>, _>("response_status_code"), None);
+        }
+
+        #[tokio::test]
+        async fn test_write_schema_batch_transactional() {
+            let test_db = TestDatabase::new("write_schema_batch_tx").await;
+            let pool = test_db.pool.clone();
+            let session_id = create_test_session(&pool, TEST_TEAM_ID).await;
+
+            // Batch where the last record has an invalid session_id (FK violation)
+            let batch = vec![
+                InferredSchemaRecord {
+                    session_id: session_id.clone(),
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "GET".to_string(),
+                    path_pattern: "/api/valid".to_string(),
+                    request_schema: None,
+                    response_schema: None,
+                    response_status_code: Some(200),
+                },
+                InferredSchemaRecord {
+                    session_id: session_id.clone(),
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "POST".to_string(),
+                    path_pattern: "/api/valid".to_string(),
+                    request_schema: None,
+                    response_schema: None,
+                    response_status_code: Some(201),
+                },
+                InferredSchemaRecord {
+                    session_id: "nonexistent-session-id".to_string(), // FK violation
+                    team: TEST_TEAM_ID.to_string(),
+                    http_method: "DELETE".to_string(),
+                    path_pattern: "/api/invalid".to_string(),
+                    request_schema: None,
+                    response_schema: None,
+                    response_status_code: Some(204),
+                },
+            ];
+
+            let result = AccessLogProcessor::write_schema_batch(&pool, batch).await;
+            assert!(result.is_err(), "Batch with invalid FK should fail");
+
+            // Verify the ENTIRE batch was rolled back — 0 records in DB
+            let count: i64 =
+                sqlx::query("SELECT COUNT(*) as count FROM inferred_schemas WHERE session_id = $1")
+                    .bind(&session_id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("Failed to count schemas")
+                    .get("count");
+
+            assert_eq!(count, 0, "Transaction should have rolled back all records");
+        }
+    }
 }

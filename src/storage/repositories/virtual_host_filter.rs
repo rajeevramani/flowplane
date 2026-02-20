@@ -8,7 +8,7 @@ use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for virtual_host_filters.
@@ -16,7 +16,7 @@ use tracing::instrument;
 struct VirtualHostFilterRow {
     pub virtual_host_id: String,
     pub filter_id: String,
-    pub filter_order: i32,
+    pub filter_order: i64,
     pub created_at: DateTime<Utc>,
     pub settings: Option<String>,
 }
@@ -26,7 +26,7 @@ struct VirtualHostFilterRow {
 pub struct VirtualHostFilterData {
     pub virtual_host_id: VirtualHostId,
     pub filter_id: FilterId,
-    pub filter_order: i32,
+    pub filter_order: i64,
     pub created_at: DateTime<Utc>,
     /// Per-scope settings (behavior, config overrides, etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,7 +63,7 @@ impl VirtualHostFilterRepository {
         &self,
         virtual_host_id: &VirtualHostId,
         filter_id: &FilterId,
-        order: i32,
+        order: i64,
         settings: Option<serde_json::Value>,
     ) -> Result<VirtualHostFilterData> {
         let now = Utc::now();
@@ -112,13 +112,13 @@ impl VirtualHostFilterRepository {
         &self,
         virtual_host_id: &VirtualHostId,
         filter_id: &FilterId,
-        order: i32,
+        order: i64,
         settings: Option<serde_json::Value>,
     ) -> Result<VirtualHostFilterData> {
         let now = Utc::now();
         let settings_json = settings.as_ref().map(|s| s.to_string());
 
-        // Use INSERT OR REPLACE (SQLite UPSERT)
+        // Use ON CONFLICT ... DO UPDATE (PostgreSQL UPSERT)
         sqlx::query(
             "INSERT INTO virtual_host_filters (virtual_host_id, filter_id, filter_order, created_at, settings) \
              VALUES ($1, $2, $3, $4, $5) \
@@ -200,7 +200,7 @@ impl VirtualHostFilterRepository {
         &self,
         virtual_host_id: &VirtualHostId,
     ) -> Result<Vec<VirtualHostFilterData>> {
-        let rows = sqlx::query_as::<Sqlite, VirtualHostFilterRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, VirtualHostFilterRow>(
             "SELECT virtual_host_id, filter_id, filter_order, created_at, settings \
              FROM virtual_host_filters WHERE virtual_host_id = $1 ORDER BY filter_order ASC"
         )
@@ -265,8 +265,8 @@ impl VirtualHostFilterRepository {
 
     /// Get the next available order for a virtual host.
     #[instrument(skip(self), fields(vh_id = %virtual_host_id), name = "db_next_vh_filter_order")]
-    pub async fn get_next_order(&self, virtual_host_id: &VirtualHostId) -> Result<i32> {
-        let max_order: Option<i32> = sqlx::query_scalar(
+    pub async fn get_next_order(&self, virtual_host_id: &VirtualHostId) -> Result<i64> {
+        let max_order: Option<i64> = sqlx::query_scalar(
             "SELECT MAX(filter_order) FROM virtual_host_filters WHERE virtual_host_id = $1",
         )
         .bind(virtual_host_id.as_str())

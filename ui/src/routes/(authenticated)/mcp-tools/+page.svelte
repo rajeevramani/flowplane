@@ -70,8 +70,8 @@
 		error = null;
 
 		try {
-			const response = await apiClient.listMcpTools(currentTeam);
-			tools = response.tools;
+			const response = await apiClient.listMcpTools(currentTeam, { limit: 200 });
+			tools = response.items;
 
 			// Load learned schema availability for tools with routeIds
 			await loadLearnedSchemaAvailability();

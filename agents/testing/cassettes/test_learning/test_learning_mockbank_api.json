@@ -1,0 +1,888 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-19T01:30:16.691004+00:00",
+    "model": "qwen/qwen3-coder-next",
+    "prefix": "tb76923e",
+    "ports": [
+      15067
+    ]
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771464487-Qw7eqAEUX1kbOpvEaYZ3",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll deploy this API configuration step by step, following the resource creation order.\n\n**Step 1: Pre-flight check for conflicts**\n\nLet me first check for any conflicts with the exact names and port you've specified.\n\n",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_ccd6ba028e6e4571a3bbf485",
+                  "function": {
+                    "arguments": "{\"cluster_name\": \"tb76923e-cluster\", \"route_config_name\": \"tb76923e-rc\", \"listener_name\": \"tb76923e-listener\", \"listen_port\": 15067, \"path\": \"/\"}",
+                    "name": "dev_preflight_check"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464487,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 139,
+          "prompt_tokens": 20153,
+          "total_tokens": 20292,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0102433,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0102433,
+            "upstream_inference_prompt_cost": 0.0100765,
+            "upstream_inference_completions_cost": 0.0001668
+          }
+        },
+        "provider": "Together"
+      },
+      "tool_names": [
+        "dev_preflight_check"
+      ]
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771464490-yycpK9VXMYbhuZWlbLlj",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "**Step 2: Create the cluster for the backend service**\n\nNow I'll create the cluster pointing to `mockbank-api:3000`.\n\n",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_7a1d719407f7455f84b3bc6e",
+                  "function": {
+                    "arguments": "{\"name\": \"tb76923e-cluster\", \"serviceName\": \"mockbank-api:3000\", \"endpoints\": [{\"address\": \"mockbank-api\", \"port\": 3000}]}",
+                    "name": "cp_create_cluster"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464490,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 104,
+          "prompt_tokens": 20518,
+          "total_tokens": 20622,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0042596,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0042596,
+            "upstream_inference_prompt_cost": 0.0041036,
+            "upstream_inference_completions_cost": 0.000156
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "cp_create_cluster"
+      ]
+    },
+    {
+      "turn": 2,
+      "response": {
+        "id": "gen-1771464493-rDwl1BqFgEAqQEkwAFto",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "**Step 3: Create the route configuration**\n\nNow I'll create the route configuration with a route for path prefix `/` forwarding to the cluster.\n\n",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_1554d49a7130414cb0086ba8",
+                  "function": {
+                    "arguments": "{\"name\": \"tb76923e-rc\", \"virtualHosts\": [{\"name\": \"tb76923e-vhost\", \"domains\": [\"*\"], \"routes\": [{\"name\": \"tb76923e-route\", \"match\": {\"path\": {\"type\": \"prefix\", \"value\": \"/\"}}, \"action\": {\"type\": \"forward\", \"cluster\": \"tb76923e-cluster\"}}]}]}",
+                    "name": "cp_create_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464493,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 151,
+          "prompt_tokens": 20729,
+          "total_tokens": 20880,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0043723,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0043723,
+            "upstream_inference_prompt_cost": 0.0041458,
+            "upstream_inference_completions_cost": 0.0002265
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "cp_create_route_config"
+      ]
+    },
+    {
+      "turn": 3,
+      "response": {
+        "id": "gen-1771464496-kykVpQKKqCahBeVe0HzC",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "**Step 4: Create the listener on port 15067**\n\nNow I'll create the listener bound to the route configuration.\n\n",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_36ce3e15d0ba4482bc00f275",
+                  "function": {
+                    "arguments": "{\"name\": \"tb76923e-listener\", \"port\": 15067, \"routeConfigName\": \"tb76923e-rc\", \"dataplaneId\": \"envoy-gateway-01\"}",
+                    "name": "cp_create_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464496,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 112,
+          "prompt_tokens": 20990,
+          "total_tokens": 21102,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.004366,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.004366,
+            "upstream_inference_prompt_cost": 0.004198,
+            "upstream_inference_completions_cost": 0.000168
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "cp_create_listener"
+      ]
+    },
+    {
+      "turn": 4,
+      "response": {
+        "id": "gen-1771464499-gMMP7DqI3UO6sjlerVWC",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I need to find a valid dataplane ID first. Let me list available dataplanes.\n\n",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_cbf621c2a63d403eb7ee57f1",
+                  "function": {
+                    "arguments": "{}",
+                    "name": "cp_list_dataplanes"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464499,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 36,
+          "prompt_tokens": 21141,
+          "total_tokens": 21177,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0106137,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0106137,
+            "upstream_inference_prompt_cost": 0.0105705,
+            "upstream_inference_completions_cost": 4.32e-05
+          }
+        },
+        "provider": "Together"
+      },
+      "tool_names": [
+        "cp_list_dataplanes"
+      ],
+      "tool_results": {
+        "cp_list_dataplanes": {
+          "count": 1,
+          "dataplanes": [
+            {
+              "created_at": "2026-02-19T01:28:05.509046+00:00",
+              "description": "Agent test dataplane",
+              "gateway_host": "127.0.0.1",
+              "id": "ca826789-f208-4863-95b5-8dc1ab634457",
+              "name": "agent-test-dataplane",
+              "team": "62865e68-29c6-4493-86c5-2fd91f1faa3e",
+              "updated_at": "2026-02-19T01:28:05.509046+00:00"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "turn": 5,
+      "response": {
+        "id": "gen-1771464500-n2gtXfJcTtVsGqCDhZvV",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Now I'll create the listener with the correct dataplane ID.\n\n",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_256d63d5bf1c469fb704f1b7",
+                  "function": {
+                    "arguments": "{\"name\": \"tb76923e-listener\", \"port\": 15067, \"routeConfigName\": \"tb76923e-rc\", \"dataplaneId\": \"ca826789-f208-4863-95b5-8dc1ab634457\"}",
+                    "name": "cp_create_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464500,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 121,
+          "prompt_tokens": 21371,
+          "total_tokens": 21492,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0044557,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0044557,
+            "upstream_inference_prompt_cost": 0.0042742,
+            "upstream_inference_completions_cost": 0.0001815
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "cp_create_listener"
+      ]
+    },
+    {
+      "turn": 6,
+      "response": {
+        "id": "gen-1771464523-2TnkxpEBhnV6pQ7J9uGC",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "**Step 5: Verification**\n\nLet me verify the deployment by checking the service summary and tracing a request.\n\n",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_d54879d7ec034dcfb63fc36a",
+                  "function": {
+                    "arguments": "{\"name\": \"tb76923e-cluster\"}",
+                    "name": "cp_query_service"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464523,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 52,
+          "prompt_tokens": 21615,
+          "total_tokens": 21667,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.004401,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.004401,
+            "upstream_inference_prompt_cost": 0.004323,
+            "upstream_inference_completions_cost": 7.8e-05
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "cp_query_service"
+      ]
+    },
+    {
+      "turn": 7,
+      "response": {
+        "id": "gen-1771464525-ozw6Lyx5MIOZahEGoi4s",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_0ee1cc65cc5f42708d43db3d",
+                  "function": {
+                    "arguments": "{}",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464525,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 14,
+          "prompt_tokens": 21790,
+          "total_tokens": 21804,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.004379,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.004379,
+            "upstream_inference_prompt_cost": 0.004358,
+            "upstream_inference_completions_cost": 2.1e-05
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "ops_config_validate"
+      ]
+    },
+    {
+      "turn": 8,
+      "response": {
+        "id": "gen-1771464527-AM552mpujz1129RvMmg1",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_e4e56670638248a38a2b47cb",
+                  "function": {
+                    "arguments": "{\"path\": \"/\", \"port\": 15067}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464527,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 36,
+          "prompt_tokens": 21875,
+          "total_tokens": 21911,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.004429,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.004429,
+            "upstream_inference_prompt_cost": 0.004375,
+            "upstream_inference_completions_cost": 5.4e-05
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "ops_trace_request"
+      ]
+    },
+    {
+      "turn": 9,
+      "response": {
+        "id": "gen-1771464531-R7icNc9Bhb5SxE5TvrxP",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "---\n\n## \u2705 Deployment Summary\n\nThe API has been successfully deployed with the exact configuration requested:\n\n| Resource | Name | Details |\n|----------|------|---------|\n| **Cluster** | `tb76923e-cluster` | Backend: `mockbank-api:3000` (1 endpoint) |\n| **Route Config** | `tb76923e-rc` | Path prefix: `/`, Virtual host: `tb76923e-vhost` |\n| **Virtual Host** | `tb76923e-vhost` | Domains: `[\"*\"]`, Route: `tb76923e-route` |\n| **Listener** | `tb76923e-listener` | Port: `15067`, Route config: `tb76923e-rc` |\n\n**Access URL**: `http://localhost:15067/`  \n**Routing**: All requests to `/` are forwarded to `mockbank-api:3000`\n\n**Verification Results**:\n- \u2705 Configuration is valid (no issues)\n- \u2705 Route trace confirms path `/` resolves correctly through listener \u2192 route config \u2192 cluster\n- \u2705 All resources are properly connected\n\nThe deployment is complete and ready for traffic.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771464531,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 275,
+          "prompt_tokens": 22118,
+          "total_tokens": 22393,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0048361,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0048361,
+            "upstream_inference_prompt_cost": 0.0044236,
+            "upstream_inference_completions_cost": 0.0004125
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": []
+    },
+    {
+      "turn": 10,
+      "response": {
+        "id": "gen-1771464538-7qsdGX8J83fkXKR0LJ5X",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_b04015ff11844b2db57a7552",
+                  "function": {
+                    "arguments": "{\"route_pattern\": \".*\", \"target_sample_count\": 50, \"auto_start\": true}",
+                    "name": "cp_create_learning_session"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464538,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 48,
+          "prompt_tokens": 11123,
+          "total_tokens": 11171,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0022966,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0022966,
+            "upstream_inference_prompt_cost": 0.0022246,
+            "upstream_inference_completions_cost": 7.2e-05
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "cp_create_learning_session"
+      ]
+    },
+    {
+      "turn": 11,
+      "response": {
+        "id": "gen-1771464551-oK65XWETzthe7hr3WIal",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Learning session created successfully!\n\n**Session ID:** `c786c01b-c3fa-44a5-b940-0332d9a8e9b9`  \n**Route pattern:** `.*` (all routes)  \n**Target samples:** 50  \n**Status:** Active (started immediately)\n\nThe session is now collecting traffic samples. To reach the target, I need **50 actual HTTP requests** flowing through the gateway.\n\n### Next Steps:\n1. Check the gateway listener port using `cp_list_listeners` \u2014 send traffic to that port\n2. Use `ops_topology` or `cp_list_routes` to find available API paths\n3. Send HTTP requests (e.g., via curl) to match the learned routes\n\nExample (once you know the port \u2014 let me know if you'd like me to check it now):\n```bash\ncurl http://localhost:{port}/api/example\n```\n\nI\u2019ll monitor progress \u2014 currently **0/50 samples**. Let me know if you'd like help discovering routes or sending test traffic!",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771464551,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 228,
+          "prompt_tokens": 11235,
+          "total_tokens": 11463,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.002589,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.002589,
+            "upstream_inference_prompt_cost": 0.002247,
+            "upstream_inference_completions_cost": 0.000342
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": []
+    },
+    {
+      "turn": 12,
+      "response": {
+        "id": "gen-1771464581-xukhZhPv60lgYWD1vrn1",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "call_fa72146341b24a4b9eeaf318",
+                  "function": {
+                    "arguments": "{\"schema_ids\": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 32, 33, 16, 17, 18, 19, 20, 34, 35, 55, 21, 22, 23, 24, 36, 25, 26, 27, 28, 29, 30, 31, 78, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 56, 57, 58, 59, 60, 61, 62, 79, 63, 64, 65, 66, 67, 87, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 80, 81, 82, 83, 84, 85, 86, 88, 89, 90], \"title\": \"MockBank API\", \"version\": \"1.0.0\"}",
+                    "name": "cp_export_schema_openapi"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771464582,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 401,
+          "prompt_tokens": 11491,
+          "total_tokens": 11892,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0028997,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0028997,
+            "upstream_inference_prompt_cost": 0.0022982,
+            "upstream_inference_completions_cost": 0.0006015
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": [
+        "cp_export_schema_openapi"
+      ]
+    },
+    {
+      "turn": 13,
+      "response": {
+        "id": "gen-1771464601-i9KaCX1Cbko760wuRCA0",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "\u2705 **OpenAPI Specification Exported Successfully**\n\n- **Title:** MockBank API  \n- **Version:** 1.0.0  \n- **Schemas Exported:** 90 endpoints  \n- **OpenAPI Version:** 3.1.0  \n- **Paths Covered:** `/v2/api/accounts`, `/v2/api/atms`, `/v2/api/bankInfo`, `/v2/api/beneficiaries`, `/v2/api/billPayments`, `/v2/api/branches`, `/v2/api/cards`, `/v2/api/customers`, `/v2/api/exchangeRates`, `/v2/api/holdings`, `/v2/api/investments`, `/v2/api/loans`, `/v2/api/notifications`, `/v2/api/transactions`, `/v2/api/transfers`\n\nThe generated spec includes full CRUD operations (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`) for each resource, with:\n- Request/response body schemas (with required/optional fields)\n- Path parameters (e.g., `{accountId}`, `{customerId}`)\n- Status codes and response descriptions\n- Nested structures (e.g., `address`, `coordinates`, `hours`, etc.)\n\n---\n\n### \ud83d\udcdd Suggestions for Enhancement\n\n1. **Add Descriptions & Tags**\n   - Include summary/description for each operation (e.g., `summary: \"Retrieve account details by ID\"`)\n   - Add tags like `Accounts`, `Payments`, `Customers`, `Transfers` for better organization.\n\n2. **Security Schemes**\n   - Add OAuth2 or API key authentication if used (e.g., `x-api-key`, `Bearer` token).\n   - Example:\n     ```yaml\n     components:\n       securitySchemes:\n         ApiKeyAuth:\n           type: apiKey\n           in: header\n           name: X-API-Key\n     ```\n\n3. **Enum Values**\n   - Where applicable, add `enum` constraints for fields like `status`, `type`, `cardBrand`, `currency`, etc.\n\n4. **Example Payloads**\n   - Add `examples` field to request/response bodies to aid documentation and testing.\n\n5. **Error Responses**\n   - Expand `500`, `404`, `400` responses with example error bodies (e.g., `{\"error\": \"Account not found\"}`).\n\nWould you like me to generate an enhanced version with these improvements?",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771464601,
+        "model": "qwen/qwen3-coder-next",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": "",
+        "usage": {
+          "completion_tokens": 500,
+          "prompt_tokens": 30241,
+          "total_tokens": 30741,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": 0,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": 0,
+            "cached_tokens": 0
+          },
+          "cost": 0.0067982,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.0067982,
+            "upstream_inference_prompt_cost": 0.0060482,
+            "upstream_inference_completions_cost": 0.00075
+          }
+        },
+        "provider": "Novita"
+      },
+      "tool_names": []
+    }
+  ]
+}

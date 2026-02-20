@@ -1,5 +1,12 @@
 // API response types matching backend DTOs
 
+export interface PaginatedResponse<T> {
+	items: T[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
 export interface LoginRequest {
 	email: string;
 	password: string;
@@ -11,8 +18,11 @@ export interface LoginResponse {
 	expiresAt: string;
 	userId: string;
 	userEmail: string;
+	isPlatformAdmin: boolean;
 	teams: string[];
 	scopes: string[];
+	orgId?: string;
+	orgName?: string;
 }
 
 export interface ChangePasswordRequest {
@@ -45,10 +55,14 @@ export interface SessionInfoResponse {
 	name: string;
 	email: string;
 	isAdmin: boolean;
+	isPlatformAdmin: boolean;
 	teams: string[];
 	scopes: string[];
 	expiresAt: string | null;
 	version: string;
+	orgId?: string;
+	orgName?: string;
+	orgRole?: string;
 }
 
 export interface ListTeamsResponse {
@@ -63,11 +77,12 @@ export interface TeamResponse {
 	displayName: string;
 	description: string | null;
 	ownerUserId: string | null;
-	settings: any | null;
+	settings: Record<string, unknown> | null;
 	status: TeamStatus;
 	envoyAdminPort: number | null;
 	createdAt: string;
 	updatedAt: string;
+	orgId?: string;
 }
 
 export interface CreateTeamRequest {
@@ -75,19 +90,20 @@ export interface CreateTeamRequest {
 	displayName: string;
 	description?: string | null;
 	ownerUserId?: string | null;
-	settings?: any | null;
+	settings?: Record<string, unknown> | null;
+	orgId?: string;
 }
 
 export interface UpdateTeamRequest {
 	displayName?: string;
 	description?: string | null;
 	ownerUserId?: string | null;
-	settings?: any | null;
+	settings?: Record<string, unknown> | null;
 	status?: TeamStatus;
 }
 
 export interface AdminListTeamsResponse {
-	teams: TeamResponse[];
+	items: TeamResponse[];
 	total: number;
 	limit: number;
 	offset: number;
@@ -169,6 +185,7 @@ export interface OpenApiSpec {
 		url: string;
 		description?: string;
 	}>;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	paths: Record<string, any>;
 }
 
@@ -207,7 +224,8 @@ export interface ListenerResponse {
 	version: number;
 	importId?: string;
 	dataplaneId?: string | null;
-	config: any; // Full listener config
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	config: any; // Full listener config - dynamic Envoy structure
 }
 
 // Route types
@@ -218,7 +236,8 @@ export interface RouteResponse {
 	clusterTargets: string;
 	importId?: string;
 	routeOrder?: number;
-	config: any; // Full route config
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	config: any; // Full route config - dynamic Envoy structure
 }
 
 // Legacy type - no longer used after API definitions removal
@@ -230,11 +249,12 @@ export interface ClusterResponse {
 	team: string;
 	serviceName: string;
 	importId?: string;
-	config: any; // Full cluster config
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	config: any; // Full cluster config - dynamic Envoy structure
 }
 
-// Bootstrap configuration types
-export interface BootstrapConfigRequest {
+// Envoy configuration types
+export interface EnvoyConfigRequest {
 	team: string;
 	format?: 'yaml' | 'json';
 }
@@ -250,6 +270,7 @@ export interface UserResponse {
 	isAdmin: boolean;
 	createdAt: string;
 	updatedAt: string;
+	orgId?: string;
 }
 
 export interface UserTeamMembership {
@@ -276,6 +297,7 @@ export interface CreateUserRequest {
 	password: string;
 	name: string;
 	isAdmin?: boolean;
+	orgId?: string;
 }
 
 export interface UpdateUserRequest {
@@ -296,7 +318,7 @@ export interface UpdateTeamMembershipRequest {
 }
 
 export interface ListUsersResponse {
-	users: UserResponse[];
+	items: UserResponse[];
 	total: number;
 	limit: number;
 	offset: number;
@@ -328,7 +350,7 @@ export interface ListAuditLogsQuery {
 }
 
 export interface ListAuditLogsResponse {
-	entries: AuditLogEntry[];
+	items: AuditLogEntry[];
 	total: number;
 	limit: number;
 	offset: number;
@@ -1024,9 +1046,9 @@ export interface ListCertificatesQuery {
 	offset?: number;
 }
 
-// Bootstrap configuration request with mTLS options
-export interface BootstrapConfigRequestWithMtls extends BootstrapConfigRequest {
-	/** Enable mTLS configuration in bootstrap */
+// Envoy configuration request with mTLS options
+export interface EnvoyConfigRequestWithMtls extends EnvoyConfigRequest {
+	/** Enable mTLS configuration in envoy config */
 	mtls?: boolean;
 	/** Path to client certificate file */
 	certPath?: string;
@@ -1441,6 +1463,8 @@ export interface LearningSessionResponse {
 
 /** Request to create a learning session */
 export interface CreateLearningSessionRequest {
+	/** Team identifier for the learning session */
+	team: string;
 	routePattern: string;
 	clusterName?: string;
 	httpMethods?: string[];
@@ -1491,6 +1515,8 @@ export interface AggregatedSchemaResponse {
 
 /** Query parameters for listing aggregated schemas */
 export interface ListAggregatedSchemasQuery {
+	/** Team to filter schemas by (required for proper filtering) */
+	team?: string;
 	path?: string;
 	httpMethod?: string;
 	minConfidence?: number;
@@ -1629,7 +1655,7 @@ export interface McpTool {
 
 /** Response for listing MCP tools */
 export interface ListMcpToolsResponse {
-	tools: McpTool[];
+	items: McpTool[];
 	total: number;
 	limit: number;
 	offset: number;
@@ -1809,4 +1835,154 @@ export interface ListDataplanesResponse {
 	total: number;
 	limit: number;
 	offset: number;
+}
+
+// ============================================================================
+// Organization Types (Org Multi-Tenancy)
+// ============================================================================
+
+export type OrgStatus = 'active' | 'suspended' | 'archived';
+export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer';
+
+export interface OrganizationResponse {
+	id: string;
+	name: string;
+	displayName: string;
+	description?: string;
+	ownerUserId?: string;
+	settings?: Record<string, unknown>;
+	status: OrgStatus;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface OrgMembershipResponse {
+	id: string;
+	userId: string;
+	orgId: string;
+	role: OrgRole;
+	createdAt: string;
+	userEmail?: string;
+	userName?: string;
+}
+
+export interface CreateOrganizationRequest {
+	name: string;
+	displayName: string;
+	description?: string;
+}
+
+export interface UpdateOrganizationRequest {
+	displayName?: string;
+	description?: string;
+	status?: OrgStatus;
+}
+
+export interface AddOrgMemberRequest {
+	userId: string;
+	role: OrgRole;
+}
+
+export interface AdminListOrgsResponse {
+	items: OrganizationResponse[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+export interface CurrentOrgResponse {
+	organization: OrganizationResponse;
+	role: OrgRole;
+}
+
+export interface ListOrgTeamsResponse {
+	teams: TeamResponse[];
+}
+
+// ============================================================================
+// Invitation Types (Invite-Only Registration)
+// ============================================================================
+
+export type InvitableRole = 'admin' | 'member' | 'viewer';
+
+export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+
+export interface InviteTokenInfo {
+	orgName: string;
+	orgDisplayName: string;
+	email: string;
+	role: InvitableRole;
+	expiresAt: string;
+}
+
+export interface AcceptInvitationRequest {
+	token: string;
+	name: string;
+	password: string;
+}
+
+export interface InvitationResponse {
+	id: string;
+	email: string;
+	role: InvitableRole;
+	status: InvitationStatus;
+	invitedBy: string | null;
+	expiresAt: string;
+	createdAt: string;
+}
+
+export interface CreateInvitationRequest {
+	email: string;
+	role: InvitableRole;
+}
+
+export interface CreateInvitationResponse {
+	id: string;
+	email: string;
+	role: InvitableRole;
+	expiresAt: string;
+	inviteUrl: string;
+}
+
+export interface PaginatedInvitations {
+	invitations: InvitationResponse[];
+	total: number;
+}
+
+// ============================================================================
+// Admin Resource Summary Types (Platform Governance)
+// ============================================================================
+
+export interface TeamSummary {
+	teamName: string;
+	teamDisplayName: string;
+	clusters: number;
+	listeners: number;
+	routeConfigs: number;
+	filters: number;
+	dataplanes: number;
+	secrets: number;
+	imports: number;
+}
+
+export interface OrgSummary {
+	orgId: string | null;
+	orgName: string | null;
+	teams: TeamSummary[];
+}
+
+export interface SummaryTotals {
+	teams: number;
+	clusters: number;
+	listeners: number;
+	routeConfigs: number;
+	filters: number;
+	dataplanes: number;
+	secrets: number;
+	imports: number;
+}
+
+export interface AdminResourceSummary {
+	totals: SummaryTotals;
+	orgs: OrgSummary[];
 }

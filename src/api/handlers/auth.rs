@@ -10,7 +10,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::api::error::ApiError;
@@ -23,28 +23,10 @@ use crate::auth::{
     validation::{CreateTokenRequest, UpdateTokenRequest},
 };
 use crate::domain::UserId;
-use crate::errors::Error;
 use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 use crate::storage::repository::AuditLogRepository;
 
-/// Extract client IP from headers, preferring X-Forwarded-For
-fn extract_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
-    // Try X-Forwarded-For header first (for proxied requests)
-    if let Some(forwarded) = headers.get("x-forwarded-for") {
-        if let Ok(value) = forwarded.to_str() {
-            // X-Forwarded-For can contain multiple IPs; the first is the original client
-            return value.split(',').next().map(|s| s.trim().to_string());
-        }
-    }
-    // Note: We don't have access to ConnectInfo here, so we just return None
-    // if X-Forwarded-For is not present
-    None
-}
-
-/// Extract User-Agent header
-fn extract_user_agent(headers: &axum::http::HeaderMap) -> Option<String> {
-    headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
-}
+use crate::api::util::{extract_client_ip, extract_user_agent};
 
 fn token_service_for_state(state: &ApiState) -> Result<TokenService, ApiError> {
     let cluster_repo = state
@@ -127,16 +109,7 @@ impl UpdateTokenBody {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ListTokensQuery {
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
-}
-
-fn convert_error(err: Error) -> ApiError {
-    ApiError::from(err)
-}
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 #[utoipa::path(
     post,
@@ -159,13 +132,13 @@ pub async fn create_token_handler(
     // Authorization: require tokens:write scope
     require_resource_access(&context, "tokens", "write", None)?;
 
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     let request = payload.into_request(&context);
-    request.validate().map_err(|err| convert_error(Error::from(err)))?;
+    request.validate().map_err(ApiError::from)?;
 
     let service = token_service_for_state(&state)?;
-    let secret = service.create_token(request, Some(&context)).await.map_err(convert_error)?;
+    let secret = service.create_token(request, Some(&context)).await.map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(secret)))
 }
@@ -173,25 +146,24 @@ pub async fn create_token_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/tokens",
-    params(ListTokensQuery),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "Tokens list", body = [PersonalAccessToken]),
+        (status = 200, description = "Tokens list", body = PaginatedResponse<PersonalAccessToken>),
         (status = 503, description = "Token repository unavailable")
     ),
     security(("bearerAuth" = [])),
     tag = "Authentication"
 )]
-#[instrument(skip(state), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
+#[instrument(skip(state), fields(user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
 pub async fn list_tokens_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<ListTokensQuery>,
-) -> Result<Json<Vec<PersonalAccessToken>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<PersonalAccessToken>>, ApiError> {
     // Authorization: require tokens:read scope
     require_resource_access(&context, "tokens", "read", None)?;
 
-    let limit = params.limit.unwrap_or(50).clamp(1, 1000);
-    let offset = params.offset.unwrap_or(0).max(0);
+    let (limit, offset) = params.clamp(1000);
 
     // Filter tokens by current user - only show tokens created by this user
     let created_by_filter = context.user_id.as_ref().map(|user_id| format!("user:{}", user_id));
@@ -200,9 +172,10 @@ pub async fn list_tokens_handler(
     let tokens = service
         .list_tokens(limit, offset, created_by_filter.as_deref())
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
-    Ok(Json(tokens))
+    let total = tokens.len() as i64;
+    Ok(Json(PaginatedResponse::new(tokens, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -227,7 +200,7 @@ pub async fn get_token_handler(
     require_resource_access(&context, "tokens", "read", None)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.get_token(&id).await.map_err(convert_error)?;
+    let token = service.get_token(&id).await.map_err(ApiError::from)?;
     Ok(Json(token))
 }
 
@@ -256,10 +229,10 @@ pub async fn update_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let request = payload.into_request();
-    request.validate().map_err(|err| convert_error(Error::from(err)))?;
+    request.validate().map_err(ApiError::from)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.update_token(&id, request, Some(&context)).await.map_err(convert_error)?;
+    let token = service.update_token(&id, request, Some(&context)).await.map_err(ApiError::from)?;
 
     Ok(Json(token))
 }
@@ -286,7 +259,7 @@ pub async fn revoke_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let service = token_service_for_state(&state)?;
-    let token = service.revoke_token(&id, Some(&context)).await.map_err(convert_error)?;
+    let token = service.revoke_token(&id, Some(&context)).await.map_err(ApiError::from)?;
     Ok(Json(token))
 }
 
@@ -312,7 +285,7 @@ pub async fn rotate_token_handler(
     require_resource_access(&context, "tokens", "write", None)?;
 
     let service = token_service_for_state(&state)?;
-    let secret = service.rotate_token(&id, Some(&context)).await.map_err(convert_error)?;
+    let secret = service.rotate_token(&id, Some(&context)).await.map_err(ApiError::from)?;
     Ok(Json(secret))
 }
 
@@ -385,7 +358,7 @@ pub async fn create_session_handler(
     Json(payload): Json<CreateSessionBody>,
 ) -> Result<SessionCreatedResponse, ApiError> {
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Create session service
     let service = session_service_for_state(&state)?;
@@ -394,16 +367,14 @@ pub async fn create_session_handler(
     let session_response = service
         .create_session_from_setup_token(&payload.setup_token)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
-    // Build secure session cookie
-    // Note: .secure(false) allows cookie to work over HTTP in development
-    // In production, this should be set to true and use HTTPS
+    // Build secure session cookie using configurable Secure flag
     let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(false) // Allow HTTP in development
-        .same_site(SameSite::Lax) // Lax instead of Strict for cross-site navigation
+        .secure(state.auth_config.cookie_secure)
+        .same_site(SameSite::Lax)
         .expires(
             time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
         )
@@ -432,9 +403,15 @@ pub struct SessionInfoResponse {
     pub name: String,
     pub email: String,
     pub is_admin: bool,
+    /// Whether this user is the platform administrator (is_admin + platform org)
+    pub is_platform_admin: bool,
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// Organization ID (if user belongs to an org)
+    pub org_id: Option<String>,
+    /// Organization name (if user belongs to an org)
+    pub org_name: Option<String>,
     /// Control plane version
     #[schema(example = "0.0.11")]
     pub version: String,
@@ -476,10 +453,10 @@ pub async fn get_session_info_handler(
     let service = session_service_for_state(&state)?;
 
     // Validate session
-    let session_info = service.validate_session(&session_token).await.map_err(convert_error)?;
+    let session_info = service.validate_session(&session_token).await.map_err(ApiError::from)?;
 
     // Get user information - need to find the user associated with this session
-    let (user_id_str, name, email, is_admin) =
+    let (user_id_str, name, email, is_admin, user_org_id) =
         match &session_info.token.created_by {
             Some(created_by) if created_by.starts_with("user:") => {
                 // Session created from login - extract user ID
@@ -493,11 +470,17 @@ pub async fn get_session_info_handler(
                 let user_repo = SqlxUserRepository::new(pool);
 
                 let user_id = UserId::from_string(user_id_str.to_string());
-                let user = user_repo.get_user(&user_id).await.map_err(convert_error)?.ok_or_else(
+                let user = user_repo.get_user(&user_id).await.map_err(ApiError::from)?.ok_or_else(
                     || ApiError::Internal("User not found for session token".to_string()),
                 )?;
 
-                (user_id_str.to_string(), user.name.clone(), user.email.clone(), user.is_admin)
+                (
+                    user_id_str.to_string(),
+                    user.name.clone(),
+                    user.email.clone(),
+                    user.is_admin,
+                    user.org_id.to_string(),
+                )
             }
             Some(created_by) if created_by.starts_with("setup_token:") => {
                 // For bootstrap sessions, we need to find the admin user
@@ -509,7 +492,7 @@ pub async fn get_session_info_handler(
                 let user_repo = SqlxUserRepository::new(pool);
 
                 // Get all users and find the admin (during bootstrap, there's only one user)
-                let users = user_repo.list_users(100, 0).await.map_err(convert_error)?;
+                let users = user_repo.list_users(100, 0).await.map_err(ApiError::from)?;
                 let admin_user = users
                     .iter()
                     .find(|u| u.is_admin)
@@ -520,6 +503,7 @@ pub async fn get_session_info_handler(
                     admin_user.name.clone(),
                     admin_user.email.clone(),
                     admin_user.is_admin,
+                    admin_user.org_id.to_string(),
                 )
             }
             Some(_) => {
@@ -530,15 +514,24 @@ pub async fn get_session_info_handler(
             }
         };
 
+    // Extract org info: use user's org_id directly (scopes only contain org name, not ID)
+    let (_, org_name) = crate::auth::session::extract_org_from_scopes(&session_info.token.scopes);
+    let org_id = Some(user_org_id);
+
+    let is_platform_admin = is_admin && org_name.as_deref() == Some("platform");
+
     let response = SessionInfoResponse {
         session_id: session_info.token.id.to_string(),
         user_id: user_id_str,
         name,
         email,
         is_admin,
+        is_platform_admin,
         teams: session_info.teams,
         scopes: session_info.token.scopes,
         expires_at: session_info.token.expires_at,
+        org_id,
+        org_name,
         version: crate::VERSION.to_string(),
     };
 
@@ -611,18 +604,18 @@ pub async fn logout_handler(
     let session_service = session_service_for_state(&state)?;
 
     // Validate the session exists and is active before revoking
-    session_service.validate_session(&session_token).await.map_err(convert_error)?;
+    session_service.validate_session(&session_token).await.map_err(ApiError::from)?;
 
     // Create token service and revoke the session token
     // Note: No AuthContext available for logout since we're terminating the session
     let token_service = token_service_for_state(&state)?;
-    token_service.revoke_token(token_id, None).await.map_err(convert_error)?;
+    token_service.revoke_token(token_id, None).await.map_err(ApiError::from)?;
 
     // Build cookie clearing directive (same name, empty value, immediate expiration)
     let clear_cookie = Cookie::build((SESSION_COOKIE_NAME, ""))
         .path("/")
         .http_only(true)
-        .secure(true)
+        .secure(state.auth_config.cookie_secure)
         .same_site(SameSite::Strict)
         .expires(time::OffsetDateTime::UNIX_EPOCH)
         .into();
@@ -649,8 +642,14 @@ pub struct LoginResponseBody {
     pub expires_at: DateTime<Utc>,
     pub user_id: String,
     pub user_email: String,
+    /// Whether this user is the platform administrator (is_admin + platform org)
+    pub is_platform_admin: bool,
     pub teams: Vec<String>,
     pub scopes: Vec<String>,
+    /// Organization ID (if user belongs to an org)
+    pub org_id: Option<String>,
+    /// Organization name (if user belongs to an org)
+    pub org_name: Option<String>,
 }
 
 /// Response wrapper that includes both JSON body and Set-Cookie header
@@ -706,11 +705,19 @@ pub async fn login_handler(
     use crate::auth::login_service::LoginService;
     use crate::auth::LoginRequest;
 
+    // Rate limit: 10/min per IP
+    let rate_limit_ip =
+        extract_client_ip(&headers, &state.auth_config).unwrap_or_else(|| "unknown".to_string());
+    if let Err(retry_after) = state.auth_rate_limiters.login.check_rate_limit(&rate_limit_ip).await
+    {
+        return Err(ApiError::rate_limited("Too many login attempts", retry_after));
+    }
+
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Extract client context from headers for audit logging
-    let client_ip = extract_client_ip(&headers);
+    let client_ip = extract_client_ip(&headers, &state.auth_config);
     let user_agent = extract_user_agent(&headers);
 
     // Get database pool
@@ -730,7 +737,7 @@ pub async fn login_handler(
     let (user, scopes) = login_service
         .login(&login_request, client_ip.clone(), user_agent.clone())
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Create session service
     let session_service = session_service_for_state(&state)?;
@@ -739,23 +746,27 @@ pub async fn login_handler(
     let session_response = session_service
         .create_session_from_user(&user.id, &user.email, scopes.clone(), client_ip, user_agent)
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     // Extract teams from scopes
     let teams: Vec<String> = crate::auth::session::extract_teams_from_scopes(&scopes);
 
-    // Build secure session cookie
-    // Note: .secure(false) allows cookie to work over HTTP in development
-    // In production, this should be set to true and use HTTPS
+    // Build secure session cookie using configurable Secure flag
     let cookie = Cookie::build((SESSION_COOKIE_NAME, session_response.session_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(false) // Allow HTTP in development
-        .same_site(SameSite::Lax) // Lax instead of Strict for cross-site navigation
+        .secure(state.auth_config.cookie_secure)
+        .same_site(SameSite::Lax)
         .expires(
             time::OffsetDateTime::from_unix_timestamp(session_response.expires_at.timestamp()).ok(),
         )
         .into();
+
+    // Extract org info: use user's org_id directly (scopes only contain org name, not ID)
+    let (_, org_name) = crate::auth::session::extract_org_from_scopes(&scopes);
+    let org_id = Some(user.org_id.to_string());
+
+    let is_platform_admin = user.is_admin && org_name.as_deref() == Some("platform");
 
     let response_body = LoginResponseBody {
         session_id: session_response.session_id,
@@ -763,8 +774,11 @@ pub async fn login_handler(
         expires_at: session_response.expires_at,
         user_id: user.id.to_string(),
         user_email: user.email,
+        is_platform_admin,
         teams,
         scopes,
+        org_id,
+        org_name,
     };
 
     Ok(LoginResponse { body: response_body, cookie, csrf_token: session_response.csrf_token })
@@ -803,7 +817,7 @@ pub async fn change_password_handler(
     use crate::auth::user_service::UserService;
 
     // Validate request
-    payload.validate().map_err(|err| convert_error(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Ensure user is authenticated via session (not PAT)
     let user_id_str = context
@@ -839,7 +853,543 @@ pub async fn change_password_handler(
             Some(&context),
         )
         .await
-        .map_err(convert_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// Session Refresh Endpoint
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshSessionResponse {
+    pub scopes: Vec<String>,
+    pub teams: Vec<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sessions/refresh",
+    responses(
+        (status = 200, description = "Session scopes refreshed", body = RefreshSessionResponse),
+        (status = 401, description = "Not authenticated or no user session"),
+        (status = 503, description = "Service unavailable")
+    ),
+    security(("session" = [])),
+    tag = "Authentication"
+)]
+#[instrument(skip(state), fields(user_id = ?context.user_id))]
+pub async fn refresh_session_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+) -> Result<Json<RefreshSessionResponse>, ApiError> {
+    use crate::auth::login_service::compute_scopes_from_memberships;
+    use crate::auth::models::UpdatePersonalAccessToken;
+    use crate::storage::repositories::{
+        OrgMembershipRepository, SqlxOrgMembershipRepository, SqlxTeamMembershipRepository,
+        TeamMembershipRepository, TokenRepository,
+    };
+
+    // Require a user session (not a bare PAT)
+    let user_id_str = context
+        .user_id
+        .as_ref()
+        .ok_or_else(|| ApiError::unauthorized("Session refresh requires user authentication"))?;
+
+    let user_id = UserId::from_string(user_id_str.to_string());
+
+    // Get database pool
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
+    let pool = cluster_repo.pool().clone();
+
+    // Fetch user
+    let user_repo = SqlxUserRepository::new(pool.clone());
+    let user = user_repo
+        .get_user(&user_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::Internal("User not found".to_string()))?;
+
+    // Fetch team memberships
+    let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
+    let team_memberships =
+        membership_repo.list_user_memberships(&user_id).await.map_err(ApiError::from)?;
+
+    // Fetch org memberships
+    let org_membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+    let org_memberships =
+        org_membership_repo.list_user_memberships(&user_id).await.map_err(ApiError::from)?;
+
+    // Recompute scopes
+    let scopes = compute_scopes_from_memberships(&user, &team_memberships, &org_memberships);
+
+    // Update session token scopes in the database
+    let token_repo = crate::storage::repository::SqlxTokenRepository::new(pool);
+    let update = UpdatePersonalAccessToken {
+        name: None,
+        description: None,
+        status: None,
+        expires_at: None,
+        scopes: Some(scopes.clone()),
+    };
+    token_repo.update_metadata(&context.token_id, update).await.map_err(ApiError::from)?;
+
+    // Extract teams from refreshed scopes
+    let teams = crate::auth::session::extract_teams_from_scopes(&scopes);
+
+    Ok(Json(RefreshSessionResponse { scopes, teams }))
+}
+
+// === Tests ===
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::{Path, Query, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::Extension;
+    use chrono::{Duration, Utc};
+
+    use crate::api::test_utils::{
+        admin_auth_context, create_test_state, minimal_auth_context, readonly_resource_auth_context,
+    };
+
+    // Use test_utils helpers for auth contexts:
+    // - admin_auth_context() -> admin_auth_context()
+    // - resource_auth_context("tokens") -> resource_auth_context("tokens")
+    // - readonly_resource_auth_context("tokens") -> readonly_resource_auth_context("tokens")
+    // - minimal_auth_context() -> minimal_auth_context()
+
+    fn sample_create_token_body() -> CreateTokenBody {
+        CreateTokenBody {
+            name: "test-token".to_string(),
+            description: Some("A test token".to_string()),
+            expires_at: Some(Utc::now() + Duration::days(30)),
+            scopes: vec!["clusters:read".to_string(), "routes:read".to_string()],
+        }
+    }
+
+    // === Token Handler Tests ===
+
+    #[tokio::test]
+    async fn test_create_token_with_admin_auth_context() {
+        let (_db, state) = create_test_state().await;
+        let body = sample_create_token_body();
+
+        let result =
+            create_token_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+
+        assert!(result.is_ok());
+        let (status, Json(response)) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+        // TokenSecretResponse has id (token id) and token (the secret)
+        assert!(!response.id.is_empty());
+        assert!(!response.token.is_empty());
+        assert!(response.token.starts_with("fp_"));
+    }
+
+    #[tokio::test]
+    async fn test_create_token_with_tokens_write_scope() {
+        let (_db, state) = create_test_state().await;
+        let body = sample_create_token_body();
+
+        // Use admin context: global resource scopes like "tokens:write" and "clusters:read"
+        // are restricted to platform admins. Admin can grant any scope.
+        let context = AuthContext::new(
+            crate::domain::TokenId::new(),
+            "tokens-test-token".into(),
+            vec![
+                "admin:all".into(),
+                "tokens:read".into(),
+                "tokens:write".into(),
+                "clusters:read".into(),
+                "routes:read".into(),
+            ],
+        );
+
+        let result = create_token_handler(State(state), Extension(context), Json(body)).await;
+
+        assert!(result.is_ok());
+        let (status, _) = result.unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn test_create_token_fails_without_write_scope() {
+        let (_db, state) = create_test_state().await;
+        let body = sample_create_token_body();
+
+        let result = create_token_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("tokens")),
+            Json(body),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_create_token_fails_with_no_permissions() {
+        let (_db, state) = create_test_state().await;
+        let body = sample_create_token_body();
+
+        let result =
+            create_token_handler(State(state), Extension(minimal_auth_context()), Json(body)).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_create_token_validates_name_length() {
+        let (_db, state) = create_test_state().await;
+        let mut body = sample_create_token_body();
+        body.name = "ab".to_string(); // Too short (min is 3)
+
+        let result =
+            create_token_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_create_token_validates_empty_scopes() {
+        let (_db, state) = create_test_state().await;
+        let mut body = sample_create_token_body();
+        body.scopes = vec![]; // Empty scopes (min is 1)
+
+        let result =
+            create_token_handler(State(state), Extension(admin_auth_context()), Json(body)).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_tokens_returns_created_tokens() {
+        let (_db, state) = create_test_state().await;
+
+        // Create a token first
+        let body = sample_create_token_body();
+        let _ =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // List tokens
+        let result = list_tokens_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(resp) = result.unwrap();
+        assert!(!resp.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_tokens_requires_read_scope() {
+        let (_db, state) = create_test_state().await;
+
+        let result = list_tokens_handler(
+            State(state),
+            Extension(minimal_auth_context()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_list_tokens_with_pagination() {
+        let (_db, state) = create_test_state().await;
+
+        // Create multiple tokens
+        for i in 0..5 {
+            let mut body = sample_create_token_body();
+            body.name = format!("test-token-{}", i);
+            let _ = create_token_handler(
+                State(state.clone()),
+                Extension(admin_auth_context()),
+                Json(body),
+            )
+            .await
+            .expect("create token");
+        }
+
+        // List with limit
+        let result = list_tokens_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Query(PaginationQuery { limit: 2, offset: 0 }),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(resp) = result.unwrap();
+        assert_eq!(resp.items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_token_returns_token_details() {
+        let (_db, state) = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Get the token using the id from the response
+        let result = get_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(token) = result.unwrap();
+        assert_eq!(token.name, "test-token");
+        assert_eq!(token.id.to_string(), created.id);
+    }
+
+    #[tokio::test]
+    async fn test_get_token_not_found() {
+        let (_db, state) = create_test_state().await;
+
+        let result = get_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path("non-existent-token-id".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_update_token_changes_name() {
+        let (_db, state) = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Update the token
+        let update_body = UpdateTokenBody {
+            name: Some("updated-token-name".to_string()),
+            description: None,
+            status: None,
+            expires_at: None,
+            scopes: None,
+        };
+
+        let result = update_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+            Json(update_body),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(token) = result.unwrap();
+        assert_eq!(token.name, "updated-token-name");
+    }
+
+    #[tokio::test]
+    async fn test_update_token_requires_write_scope() {
+        let (_db, state) = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Try to update with readonly context
+        let update_body = UpdateTokenBody::default();
+
+        let result = update_token_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("tokens")),
+            Path(created.id.clone()),
+            Json(update_body),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_revoke_token_changes_status() {
+        let (_db, state) = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Revoke the token
+        let result = revoke_token_handler(
+            State(state.clone()),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(token) = result.unwrap();
+        assert_eq!(token.status.as_str(), "revoked");
+
+        // Verify we can still get the revoked token
+        let get_result = get_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(get_result.is_ok());
+        let Json(fetched) = get_result.unwrap();
+        assert_eq!(fetched.status.as_str(), "revoked");
+    }
+
+    #[tokio::test]
+    async fn test_rotate_token_returns_new_secret() {
+        let (_db, state) = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        let original_secret = created.token.clone();
+
+        // Rotate the token
+        let result = rotate_token_handler(
+            State(state),
+            Extension(admin_auth_context()),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(rotated) = result.unwrap();
+        assert!(!rotated.token.is_empty());
+        assert_ne!(rotated.token, original_secret);
+        assert!(rotated.token.starts_with("fp_"));
+    }
+
+    #[tokio::test]
+    async fn test_rotate_token_requires_write_scope() {
+        let (_db, state) = create_test_state().await;
+
+        // Create a token
+        let body = sample_create_token_body();
+        let (_, Json(created)) =
+            create_token_handler(State(state.clone()), Extension(admin_auth_context()), Json(body))
+                .await
+                .expect("create token");
+
+        // Try to rotate with readonly context
+        let result = rotate_token_handler(
+            State(state),
+            Extension(readonly_resource_auth_context("tokens")),
+            Path(created.id.clone()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // === Helper Function Tests ===
+
+    // extract_client_ip and extract_user_agent tests are in src/api/util.rs
+
+    // === CreateTokenBody Tests ===
+
+    #[test]
+    fn test_create_token_body_into_request() {
+        let body = CreateTokenBody {
+            name: "my-token".to_string(),
+            description: Some("Test description".to_string()),
+            expires_at: None,
+            scopes: vec!["clusters:read".to_string()],
+        };
+
+        // Create a context with user_id
+        let mut context = admin_auth_context();
+        context.user_id = Some(UserId::from_string("user-123".to_string()));
+        context.user_email = Some("test@example.com".to_string());
+
+        let request = body.into_request(&context);
+
+        assert_eq!(request.name, "my-token");
+        assert_eq!(request.description, Some("Test description".to_string()));
+        assert_eq!(request.scopes, vec!["clusters:read".to_string()]);
+        assert_eq!(request.created_by, Some("user:user-123".to_string()));
+        assert_eq!(request.user_id, Some(UserId::from_string("user-123".to_string())));
+        assert_eq!(request.user_email, Some("test@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_update_token_body_into_request() {
+        let body = UpdateTokenBody {
+            name: Some("new-name".to_string()),
+            description: Some("new-description".to_string()),
+            status: Some("active".to_string()),
+            expires_at: None,
+            scopes: Some(vec!["clusters:write".to_string()]),
+        };
+
+        let request = body.into_request();
+
+        assert_eq!(request.name, Some("new-name".to_string()));
+        assert_eq!(request.description, Some("new-description".to_string()));
+        assert_eq!(request.status, Some("active".to_string()));
+        assert_eq!(request.scopes, Some(vec!["clusters:write".to_string()]));
+    }
 }

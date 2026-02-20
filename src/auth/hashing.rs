@@ -9,20 +9,22 @@ use rand::rngs::OsRng;
 
 use crate::errors::{FlowplaneError, Result};
 
-/// Create an Argon2 hasher with recommended parameters.
+/// Create an Argon2 hasher with OWASP-recommended parameters.
 ///
 /// Configuration:
 /// - Algorithm: Argon2id (hybrid mode for resistance to both side-channel and GPU attacks)
-/// - Memory cost: 768 KiB (0.75 MiB) - balances security and performance for API latency
-/// - Iterations: 1 - sufficient with Argon2id's memory-hard design
+/// - Memory cost: 19456 KiB (19 MiB) - OWASP minimum acceptable for Argon2id
+/// - Iterations: 2 - increases computational cost for attackers
 /// - Parallelism: 1 - suitable for single-user authentication contexts
 /// - Output length: 32 bytes
 ///
-/// These parameters keep verification under 10ms on development hardware while
-/// maintaining strong security guarantees.
+/// Target: ~200ms hash verification on production hardware.
+/// Each concurrent hash allocates 19 MiB — ensure container memory >= 1 GiB.
+/// Existing hashes with old parameters continue to verify correctly
+/// (parameters are embedded in the PHC string).
 pub fn password_hasher() -> Argon2<'static> {
-    const MEMORY_COST_KIB: u32 = 768; // 0.75 MiB keeps verification below the latency budget
-    const ITERATIONS: u32 = 1;
+    const MEMORY_COST_KIB: u32 = 19456; // 19 MiB — OWASP minimum acceptable for Argon2id
+    const ITERATIONS: u32 = 2;
     const PARALLELISM: u32 = 1;
     let params = Params::new(MEMORY_COST_KIB, ITERATIONS, PARALLELISM, Some(32))
         .expect("valid Argon2 parameters");
@@ -45,7 +47,7 @@ pub fn password_hasher() -> Argon2<'static> {
 ///
 /// let password = "SecureP@ssw0rd";
 /// let hash = hash_password(password).unwrap();
-/// // hash format: $argon2id$v=19$m=768,t=1,p=1$<salt>$<hash>
+/// // hash format: $argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>
 /// ```
 ///
 /// # Errors
@@ -110,10 +112,10 @@ mod tests {
         let password = "TestP@ssw0rd123";
         let hash = hash_password(password).unwrap();
 
-        // PHC string format: $argon2id$v=19$m=768,t=1,p=1$<salt>$<hash>
+        // PHC string format: $argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>
         assert!(hash.starts_with("$argon2id$"));
         assert!(hash.contains("$v=19$"));
-        assert!(hash.contains("$m=768,t=1,p=1$"));
+        assert!(hash.contains("$m=19456,t=2,p=1$"));
 
         // Hash should be reasonably long (includes salt and digest)
         assert!(hash.len() > 80);

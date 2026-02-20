@@ -1,63 +1,23 @@
+// NOTE: This file requires PostgreSQL - disabled until Phase 4 of PostgreSQL migration
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus};
 use flowplane::domain::TokenId;
 use flowplane::storage::repository::{SqlxTokenRepository, TokenRepository};
 use flowplane::storage::DbPool;
-use sqlx::sqlite::SqlitePoolOptions;
 use std::time::Instant;
 use uuid::Uuid;
 
-async fn setup_pool() -> DbPool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(10)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
+#[allow(clippy::duplicate_mod)]
+#[path = "../test_schema.rs"]
+mod test_schema;
+use test_schema::{create_test_pool_minimal_with_connections, TestDatabase};
 
-    sqlx::query(
-        r#"
-        CREATE TABLE personal_access_tokens (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            token_hash TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL,
-            expires_at DATETIME,
-            last_used_at DATETIME,
-            created_by TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            is_setup_token BOOLEAN NOT NULL DEFAULT FALSE,
-            max_usage_count INTEGER,
-            usage_count INTEGER NOT NULL DEFAULT 0,
-            failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME,
-            csrf_token TEXT,
-            user_id TEXT,
-            user_email TEXT
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-        CREATE TABLE token_scopes (
-            id TEXT PRIMARY KEY,
-            token_id TEXT NOT NULL,
-            scope TEXT NOT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (token_id) REFERENCES personal_access_tokens(id) ON DELETE CASCADE
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    pool
+async fn setup_pool() -> (TestDatabase, DbPool) {
+    let test_db = create_test_pool_minimal_with_connections(10).await;
+    let pool = test_db.pool.clone();
+    (test_db, pool)
 }
 
 fn sample_token(id: &str, index: usize) -> NewPersonalAccessToken {
@@ -93,7 +53,7 @@ async fn seed_tokens(repo: &SqlxTokenRepository, count: usize) {
 
 #[tokio::test]
 async fn performance_list_tokens_100() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 100).await;
 
@@ -113,7 +73,7 @@ async fn performance_list_tokens_100() {
 
 #[tokio::test]
 async fn performance_list_tokens_1000() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 1000).await;
 
@@ -133,7 +93,7 @@ async fn performance_list_tokens_1000() {
 
 #[tokio::test]
 async fn performance_list_tokens_pagination() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 500).await;
 
@@ -157,7 +117,7 @@ async fn performance_list_tokens_pagination() {
 
 #[tokio::test]
 async fn performance_count_operations() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 1000).await;
 
@@ -179,7 +139,7 @@ async fn performance_count_operations() {
 
 #[tokio::test]
 async fn performance_get_single_token() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 1000).await;
 
@@ -210,7 +170,7 @@ async fn performance_get_single_token() {
 
 #[tokio::test]
 async fn performance_comparison_theoretical() {
-    let pool = setup_pool().await;
+    let (_db, pool) = setup_pool().await;
     let repo = SqlxTokenRepository::new(pool.clone());
     seed_tokens(&repo, 100).await;
 

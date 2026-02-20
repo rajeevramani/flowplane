@@ -7,7 +7,7 @@ use crate::domain::ClusterId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Database row structure for clusters
@@ -20,6 +20,7 @@ struct ClusterRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -34,7 +35,10 @@ pub struct ClusterData {
     pub configuration: String, // JSON serialized
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: Option<String>,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -50,6 +54,7 @@ impl From<ClusterRow> for ClusterData {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             import_id: row.import_id,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -114,7 +119,7 @@ impl ClusterRepository {
         })?;
         let now = chrono::Utc::now();
 
-        // Use parameterized query with positional parameters (works with both SQLite and PostgreSQL)
+        // Use parameterized query with positional parameters
         let result = sqlx::query(
             "INSERT INTO clusters (id, name, service_name, configuration, version, team, import_id, created_at, updated_at) VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8)"
         )
@@ -154,8 +159,9 @@ impl ClusterRepository {
     /// Get cluster by ID
     #[instrument(skip(self), fields(cluster_id = %id), name = "db_get_cluster_by_id")]
     pub async fn get_by_id(&self, id: &ClusterId) -> Result<ClusterData> {
-        let row = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE id = $1"
+        let row = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id WHERE c.id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -179,8 +185,9 @@ impl ClusterRepository {
     /// Get cluster by name
     #[instrument(skip(self), fields(cluster_name = %name), name = "db_get_cluster_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ClusterData> {
-        let row = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters WHERE name = $1 ORDER BY version DESC LIMIT 1"
+        let row = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id WHERE c.name = $1 ORDER BY c.version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -208,8 +215,9 @@ impl ClusterRepository {
         let limit = limit.unwrap_or(100).min(1000); // Max 1000 results
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, ClusterRow>(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at FROM clusters ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        let rows = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id ORDER BY c.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -227,7 +235,9 @@ impl ClusterRepository {
     }
 
     /// List clusters filtered by team names (for team-scoped tokens)
-    /// If teams list is empty, returns all clusters (for admin:all or resource-level scopes)
+    ///
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_clusters_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -236,9 +246,8 @@ impl ClusterRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<ClusterData>> {
-        // If no teams specified, return all clusters (admin:all or resource-level scope)
         if teams.is_empty() {
-            return self.list(limit, offset).await;
+            return Ok(vec![]);
         }
 
         let limit = limit.unwrap_or(100).min(1000);
@@ -255,20 +264,20 @@ impl ClusterRepository {
             .join(", ");
 
         // Always include NULL team clusters (default resources)
-        let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
+        let where_clause = format!("WHERE c.team IN ({}) OR c.team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, service_name, configuration, version, source, team, import_id, created_at, updated_at \
-             FROM clusters \
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id \
              {} \
-             ORDER BY created_at DESC \
+             ORDER BY c.created_at DESC \
              LIMIT ${} OFFSET ${}",
             where_clause,
             teams.len() + 1,
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, ClusterRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, ClusterRow>(&query_str);
 
         // Bind team names
         for team in teams {
@@ -283,6 +292,41 @@ impl ClusterRepository {
             FlowplaneError::Database {
                 source: e,
                 context: format!("Failed to list clusters for teams: {:?}", teams),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(ClusterData::from).collect())
+    }
+
+    /// List only default/shared clusters (team IS NULL)
+    ///
+    /// Used for Allowlist scope where clients should only see shared infrastructure,
+    /// not team-specific resources.
+    #[instrument(skip(self), fields(limit = ?limit, offset = ?offset), name = "db_list_default_clusters")]
+    pub async fn list_default_only(
+        &self,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<ClusterData>> {
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        let rows = sqlx::query_as::<sqlx::Postgres, ClusterRow>(
+            "SELECT c.id, c.name, c.service_name, c.configuration, c.version, c.source, c.team, t.name as team_name, c.import_id, c.created_at, c.updated_at \
+             FROM clusters c LEFT JOIN teams t ON c.team = t.id \
+             WHERE c.team IS NULL \
+             ORDER BY c.created_at DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to list default clusters");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to list default clusters".to_string(),
             }
         })?;
 

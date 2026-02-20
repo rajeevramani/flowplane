@@ -2,55 +2,17 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use flowplane::auth::models::{NewPersonalAccessToken, TokenStatus};
 use flowplane::domain::TokenId;
 use flowplane::storage::repository::{SqlxTokenRepository, TokenRepository};
-use flowplane::storage::DbPool;
-use sqlx::sqlite::SqlitePoolOptions;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
-async fn setup_pool() -> DbPool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(10)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
+#[allow(clippy::duplicate_mod)]
+#[path = "../tests/auth/test_schema.rs"]
+mod test_schema;
+use test_schema::TestDatabase;
 
-    sqlx::query(
-        r#"
-        CREATE TABLE personal_access_tokens (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            token_hash TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL,
-            expires_at DATETIME,
-            last_used_at DATETIME,
-            created_by TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-        CREATE TABLE token_scopes (
-            id TEXT PRIMARY KEY,
-            token_id TEXT NOT NULL,
-            scope TEXT NOT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (token_id) REFERENCES personal_access_tokens(id) ON DELETE CASCADE
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    pool
+async fn setup_pool() -> TestDatabase {
+    TestDatabase::new("bench_token_repo").await
 }
 
 async fn seed_tokens(repo: &SqlxTokenRepository, count: usize) {
@@ -89,8 +51,8 @@ fn bench_list_tokens(c: &mut Criterion) {
 
     // Benchmark with different token counts
     for count in [100, 500, 1000, 2000].iter() {
-        let pool = rt.block_on(setup_pool());
-        let repo = SqlxTokenRepository::new(pool);
+        let _db = rt.block_on(setup_pool());
+        let repo = SqlxTokenRepository::new(_db.pool.clone());
         rt.block_on(seed_tokens(&repo, *count));
 
         group.bench_with_input(BenchmarkId::new("list_tokens", count), count, |b, &_count| {
@@ -112,8 +74,8 @@ fn bench_list_tokens_pagination(c: &mut Criterion) {
     group.sample_size(50);
 
     // Set up once with 1000 tokens
-    let pool = rt.block_on(setup_pool());
-    let repo = SqlxTokenRepository::new(pool);
+    let _db = rt.block_on(setup_pool());
+    let repo = SqlxTokenRepository::new(_db.pool.clone());
     rt.block_on(seed_tokens(&repo, 1000));
 
     // Benchmark different page sizes
@@ -140,8 +102,8 @@ fn bench_get_single_token(c: &mut Criterion) {
     let mut group = c.benchmark_group("token_repository_get");
     group.measurement_time(Duration::from_secs(10));
 
-    let pool = rt.block_on(setup_pool());
-    let repo = SqlxTokenRepository::new(pool);
+    let _db = rt.block_on(setup_pool());
+    let repo = SqlxTokenRepository::new(_db.pool.clone());
     rt.block_on(seed_tokens(&repo, 100));
 
     // Get the first token ID for benchmarking
@@ -164,8 +126,8 @@ fn bench_count_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("token_repository_count");
     group.measurement_time(Duration::from_secs(10));
 
-    let pool = rt.block_on(setup_pool());
-    let repo = SqlxTokenRepository::new(pool);
+    let _db = rt.block_on(setup_pool());
+    let repo = SqlxTokenRepository::new(_db.pool.clone());
     rt.block_on(seed_tokens(&repo, 1000));
 
     group.bench_function("count_tokens", |b| {

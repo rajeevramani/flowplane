@@ -6,12 +6,18 @@
 //! The tools use the internal API layer (`ClusterOperations`) for unified
 //! validation and team-based access control.
 
+use crate::domain::OrgId;
 use crate::internal_api::{
     ClusterOperations, CreateClusterRequest as InternalCreateRequest, InternalAuthContext,
     ListClustersRequest, UpdateClusterRequest as InternalUpdateRequest,
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::response_builders::{
+    build_delete_response, build_query_response, build_rich_create_response, build_update_response,
+    ResourceRef,
+};
+use crate::storage::repositories::ClusterEndpointRepository;
 use crate::xds::{ClusterSpec, EndpointSpec, XdsState};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -21,9 +27,7 @@ use tracing::instrument;
 ///
 /// This tool supports pagination via `limit` and `offset` parameters.
 pub fn cp_list_clusters_tool() -> Tool {
-    Tool {
-        name: "cp_list_clusters".to_string(),
-        description: r#"List all upstream clusters in the Flowplane control plane.
+    Tool::new("cp_list_clusters", r#"List all upstream clusters in the Flowplane control plane.
 
 RESOURCE ORDER: Clusters are foundational resources (order 1 of 4). Create clusters BEFORE route configurations.
 
@@ -42,8 +46,7 @@ WORKFLOW CONTEXT:
 2. Use cluster names when creating route configs with "action": {"type": "forward", "cluster": "<cluster-name>"}
 3. Create new clusters with cp_create_cluster if needed
 
-RELATED TOOLS: cp_get_cluster (details), cp_create_cluster (create), cp_list_route_configs (routes using clusters)"#.to_string(),
-        input_schema: json!({
+RELATED TOOLS: cp_get_cluster (details), cp_create_cluster (create), cp_list_route_configs (routes using clusters)"#.to_string(), json!({
             "type": "object",
             "properties": {
                 "limit": {
@@ -60,17 +63,15 @@ RELATED TOOLS: cp_get_cluster (details), cp_create_cluster (create), cp_list_rou
                     "default": 0
                 }
             }
-        }),
-    }
+        }))
 }
 
 /// Returns the MCP tool definition for getting a cluster by name.
 ///
 /// Requires a `name` parameter to identify the cluster.
 pub fn cp_get_cluster_tool() -> Tool {
-    Tool {
-        name: "cp_get_cluster".to_string(),
-        description: r#"Get detailed information about a specific cluster by name.
+    Tool::new("cp_get_cluster",
+        r#"Get detailed information about a specific cluster by name.
 
 PURPOSE: Retrieve complete cluster configuration to understand backend setup before modifying or
 referencing it in route configurations.
@@ -97,7 +98,7 @@ WHEN TO USE:
 - Before referencing cluster in a new route config
 
 RELATED TOOLS: cp_list_clusters (discovery), cp_update_cluster (modify), cp_create_route_config (reference)"#.to_string(),
-        input_schema: json!({
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -106,8 +107,139 @@ RELATED TOOLS: cp_list_clusters (discovery), cp_update_cluster (modify), cp_crea
                 }
             },
             "required": ["name"]
+        }))
+}
+
+/// Returns the MCP tool definition for getting cluster health status.
+///
+/// Aggregates endpoint health for a specific cluster.
+pub fn cp_get_cluster_health_tool() -> Tool {
+    Tool::new(
+        "cp_get_cluster_health",
+        r#"Get aggregated endpoint health status for a cluster.
+
+PURPOSE: Check backend health before deployments or troubleshooting.
+
+RETURNS: Health summary with:
+- total_endpoints: Total endpoint count
+- healthy: Count of healthy endpoints
+- unhealthy: Count of unhealthy endpoints
+- degraded: Count of degraded endpoints
+- unknown: Count of endpoints with unknown status
+- endpoints: Array of individual endpoint health (address, port, status)
+
+TOKEN BUDGET: <80 tokens response
+
+Authorization: Requires clusters:read or cp:read scope."#
+            .to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the cluster to check health for"
+                }
+            },
+            "required": ["name"]
         }),
+    )
+}
+
+/// Returns the MCP tool definition for querying a service summary.
+///
+/// Uses db_pool directly (ReportingRepository, no xds_state needed).
+pub fn cp_query_service_tool() -> Tool {
+    Tool::new(
+        "cp_query_service",
+        r#"Get a service-level summary for a cluster: endpoints, health, route configs, and listeners.
+
+PURPOSE: Understand how a backend service is connected — which routes send traffic to it and which
+listeners expose those routes. Combines cluster info, endpoint health, routing, and listener data
+in a single call.
+
+USE CASES:
+- Verify a backend is fully wired (cluster → route_config → listener)
+- Check endpoint health before deployments
+- Understand the traffic path to a specific service
+- Pre-deployment validation ("is this service reachable?")
+
+PARAMETERS:
+- name (required): Cluster name to summarize
+
+EXAMPLE:
+{ "name": "orders-svc" }
+
+RETURNS:
+- cluster: Cluster info with endpoint counts and health (or null if not found)
+- route_configs: Route configurations referencing this cluster
+- listeners: Listeners bound to those route configs
+- message: Summary description
+
+TOKEN BUDGET: <150 tokens
+
+Authorization: Requires clusters:read or cp:read scope."#
+            .to_string(),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Cluster name to summarize"
+                }
+            },
+            "required": ["name"]
+        }),
+    )
+}
+
+// validate_team_in_org is shared — use super::validate_team_in_org
+use super::validate_team_in_org;
+
+/// Execute the cp_query_service tool.
+///
+/// Returns a service-level summary using ReportingRepository (db_pool only, no xds_state).
+#[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_query_service")]
+pub async fn execute_query_service(
+    db_pool: &crate::storage::DbPool,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    // Validate team belongs to caller's org
+    if let Some(oid) = org_id {
+        validate_team_in_org(db_pool, team, oid).await?;
     }
+
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    let repo = crate::storage::repositories::ReportingRepository::new(db_pool.clone());
+    let result = repo
+        .service_summary(name, team)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to get service summary: {}", e)))?;
+
+    let output = json!({
+        "success": true,
+        "cluster": result.cluster,
+        "route_configs": result.route_configs,
+        "listeners": result.listeners,
+        "message": if result.cluster.is_some() {
+            format!(
+                "Service '{}': {} route config(s), {} listener(s)",
+                name,
+                result.route_configs.len(),
+                result.listeners.len()
+            )
+        } else {
+            format!("Cluster '{}' not found for the current team", name)
+        }
+    });
+
+    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
 
 /// Execute the cp_list_clusters tool.
@@ -117,6 +249,7 @@ RELATED TOOLS: cp_list_clusters (discovery), cp_update_cluster (modify), cp_crea
 pub async fn execute_list_clusters(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32).or(Some(50));
@@ -126,7 +259,14 @@ pub async fn execute_list_clusters(
 
     // Use internal API layer
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let list_req = ListClustersRequest {
         limit,
         offset,
@@ -185,6 +325,7 @@ pub async fn execute_list_clusters(
 pub async fn execute_get_cluster(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let name = args
@@ -196,7 +337,14 @@ pub async fn execute_get_cluster(
 
     // Use internal API layer
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let cluster = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for pretty output
@@ -227,10 +375,9 @@ pub async fn execute_get_cluster(
 ///
 /// This tool creates a new upstream cluster with the specified configuration.
 pub fn cp_create_cluster_tool() -> Tool {
-    Tool {
-        name: "cp_create_cluster".to_string(),
-        description:
-            r#"Create a new upstream cluster (backend service) in the Flowplane control plane.
+    Tool::new(
+        "cp_create_cluster",
+        r#"Create a new upstream cluster (backend service) in the Flowplane control plane.
 
 RESOURCE ORDER: Clusters are foundational resources (order 1 of 4).
 CREATE CLUSTERS FIRST, before route configurations that reference them.
@@ -294,8 +441,8 @@ Example:
 
 Authorization: Requires cp:write scope.
 "#
-            .to_string(),
-        input_schema: json!({
+        .to_string(),
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -411,14 +558,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name", "serviceName", "endpoints"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for updating a cluster.
 pub fn cp_update_cluster_tool() -> Tool {
-    Tool {
-        name: "cp_update_cluster".to_string(),
-        description: r#"Update an existing cluster in the Flowplane control plane.
+    Tool::new(
+        "cp_update_cluster".to_string(),
+        r#"Update an existing cluster in the Flowplane control plane.
 
 PURPOSE: Modify cluster configuration (endpoints, load balancing, health checks).
 Changes are automatically pushed to Envoy proxies via xDS.
@@ -450,7 +597,7 @@ TIP: Use cp_get_cluster first to see current configuration before updating.
 Authorization: Requires cp:write scope.
 "#
         .to_string(),
-        input_schema: json!({
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -510,14 +657,14 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Returns the MCP tool definition for deleting a cluster.
 pub fn cp_delete_cluster_tool() -> Tool {
-    Tool {
-        name: "cp_delete_cluster".to_string(),
-        description: r#"Delete a cluster from the Flowplane control plane.
+    Tool::new(
+        "cp_delete_cluster",
+        r#"Delete a cluster from the Flowplane control plane.
 
 DELETION ORDER: Delete in REVERSE order of creation.
 Delete route configs referencing this cluster FIRST, then delete the cluster.
@@ -543,7 +690,7 @@ Required Parameters:
 Authorization: Requires cp:write scope.
 "#
         .to_string(),
-        input_schema: json!({
+        json!({
             "type": "object",
             "properties": {
                 "name": {
@@ -554,7 +701,7 @@ Authorization: Requires cp:write scope.
             },
             "required": ["name"]
         }),
-    }
+    )
 }
 
 /// Execute the cp_create_cluster tool.
@@ -564,6 +711,7 @@ Authorization: Requires cp:write scope.
 pub async fn execute_create_cluster(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
@@ -625,24 +773,36 @@ pub async fn execute_create_cluster(
     };
 
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let result = ops.create(internal_req, &auth).await?;
 
-    // 7. Format success response
-    let output = json!({
-        "success": true,
-        "cluster": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "serviceName": result.data.service_name,
-            "team": result.data.team,
-            "version": result.data.version,
-            "createdAt": result.data.created_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| "Cluster created successfully".to_string()),
-    });
+    // 7. Format rich response with details and next-step guidance
+    let endpoint_count = args["endpoints"].as_array().map_or(0, |e| e.len());
+    let lb_policy = args["lbPolicy"].as_str().unwrap_or("ROUND_ROBIN");
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let output = build_rich_create_response(
+        "cluster",
+        &result.data.name,
+        result.data.id.as_ref(),
+        Some(json!({
+            "endpoints": endpoint_count,
+            "lb_policy": lb_policy
+        })),
+        None,
+        Some(&format!(
+            "Create a route_config with cp_create_route_config referencing cluster '{}'",
+            result.data.name
+        )),
+    );
+
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -661,6 +821,7 @@ pub async fn execute_create_cluster(
 pub async fn execute_update_cluster(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse cluster name
@@ -673,7 +834,14 @@ pub async fn execute_update_cluster(
 
     // 2. Get existing cluster to merge configuration
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     let existing = ops.get(name, &auth).await?;
 
     // 3. Parse existing configuration
@@ -716,21 +884,10 @@ pub async fn execute_update_cluster(
 
     let result = ops.update(name, internal_req, &auth).await?;
 
-    // 7. Format success response
-    let output = json!({
-        "success": true,
-        "cluster": {
-            "id": result.data.id.to_string(),
-            "name": result.data.name,
-            "serviceName": result.data.service_name,
-            "team": result.data.team,
-            "version": result.data.version,
-            "updatedAt": result.data.updated_at.to_rfc3339(),
-        },
-        "message": result.message.unwrap_or_else(|| "Cluster updated successfully".to_string()),
-    });
+    // 7. Format success response (minimal token-efficient format)
+    let output = build_update_response("cluster", &result.data.name, result.data.id.as_ref());
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(
         team = %team,
@@ -749,6 +906,7 @@ pub async fn execute_update_cluster(
 pub async fn execute_delete_cluster(
     xds_state: &Arc<XdsState>,
     team: &str,
+    org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse cluster name
@@ -761,18 +919,117 @@ pub async fn execute_delete_cluster(
 
     // 2. Use internal API layer
     let ops = ClusterOperations::new(xds_state.clone());
-    let auth = InternalAuthContext::from_mcp(team);
-    let result = ops.delete(name, &auth).await?;
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    ops.delete(name, &auth).await?;
 
-    // 3. Format success response
-    let output = json!({
-        "success": true,
-        "message": result.message.unwrap_or_else(|| format!("Cluster '{}' deleted successfully", name)),
-    });
+    // 3. Format success response (minimal token-efficient format)
+    let output = build_delete_response();
 
-    let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(team = %team, cluster_name = %name, "Successfully deleted cluster via MCP");
+
+    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+}
+
+/// Execute the cp_get_cluster_health tool.
+///
+/// Returns aggregated endpoint health status for a cluster.
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_get_cluster_health")]
+pub async fn execute_get_cluster_health(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
+
+    tracing::debug!(team = %team, cluster_name = %name, "Getting cluster health");
+
+    // Verify cluster exists and get cluster ID
+    let ops = ClusterOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let cluster = ops.get(name, &auth).await?;
+    let cluster_id = cluster.id.clone();
+
+    // Get endpoint health from database
+    let pool = xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Database not available".to_string()))?
+        .pool();
+
+    let endpoint_repo = ClusterEndpointRepository::new(pool.clone());
+    let endpoints = endpoint_repo
+        .list_by_cluster(&cluster_id)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to query endpoints: {}", e)))?;
+
+    // Aggregate health status counts
+    let mut healthy_count = 0;
+    let mut unhealthy_count = 0;
+    let mut degraded_count = 0;
+    let mut unknown_count = 0;
+
+    let endpoint_details: Vec<Value> = endpoints
+        .iter()
+        .map(|ep| {
+            match ep.health_status {
+                crate::domain::EndpointHealthStatus::Healthy => healthy_count += 1,
+                crate::domain::EndpointHealthStatus::Unhealthy => unhealthy_count += 1,
+                crate::domain::EndpointHealthStatus::Degraded => degraded_count += 1,
+                crate::domain::EndpointHealthStatus::Unknown => unknown_count += 1,
+            }
+            json!({
+                "address": ep.address,
+                "port": ep.port,
+                "status": ep.health_status.as_str()
+            })
+        })
+        .collect();
+
+    // Build response
+    let data = json!({
+        "total_endpoints": endpoints.len(),
+        "healthy": healthy_count,
+        "unhealthy": unhealthy_count,
+        "degraded": degraded_count,
+        "unknown": unknown_count,
+        "endpoints": endpoint_details
+    });
+
+    let response = build_query_response(
+        true,
+        Some(ResourceRef::cluster(&cluster.name, cluster.id.to_string())),
+        Some(data),
+    );
+
+    let text = serde_json::to_string(&response).map_err(McpError::SerializationError)?;
+
+    tracing::info!(
+        team = %team,
+        cluster_name = %name,
+        total_endpoints = endpoints.len(),
+        healthy = healthy_count,
+        "Successfully retrieved cluster health"
+    );
 
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
 }
@@ -866,33 +1123,24 @@ fn parse_circuit_breakers(cb_json: &Value) -> Option<crate::xds::CircuitBreakers
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
+    use crate::storage::test_helpers::TestDatabase;
 
-    async fn setup_test_xds() -> Arc<XdsState> {
-        let config = DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            max_connections: 5,
-            min_connections: 1,
-            connect_timeout_seconds: 5,
-            idle_timeout_seconds: 0,
-            auto_migrate: false,
-        };
-        let pool = create_pool(&config).await.expect("Failed to create pool");
-
-        // Run migrations
-        sqlx::migrate!("./migrations").run(&pool).await.expect("Failed to run migrations");
-
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+    async fn setup_test_xds() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("mcp_tools_clusters").await;
+        let pool = test_db.pool.clone();
+        let xds_state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, xds_state)
     }
 
     /// Create a test team in the database
     async fn create_test_team(xds_state: &Arc<XdsState>, team_name: &str) {
         let pool = xds_state.cluster_repository.as_ref().unwrap().pool();
         let team_id = format!("team-{}", uuid::Uuid::new_v4());
-        sqlx::query("INSERT INTO teams (id, name, display_name, status) VALUES ($1, $2, $3, $4)")
+        sqlx::query("INSERT INTO teams (id, name, display_name, org_id, status) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (org_id, name) DO NOTHING")
             .bind(&team_id)
             .bind(team_name)
             .bind(format!("Test {}", team_name))
+            .bind(crate::storage::test_helpers::TEST_ORG_ID)
             .bind("active")
             .execute(pool)
             .await
@@ -903,8 +1151,8 @@ mod tests {
     async fn test_cp_list_clusters_tool_definition() {
         let tool = cp_list_clusters_tool();
         assert_eq!(tool.name, "cp_list_clusters");
-        assert!(tool.description.contains("List all upstream clusters"));
-        assert!(tool.description.contains("RESOURCE ORDER")); // AI-agent friendly description
+        assert!(tool.description.as_ref().unwrap().contains("List all upstream clusters"));
+        assert!(tool.description.as_ref().unwrap().contains("RESOURCE ORDER")); // AI-agent friendly description
         assert!(tool.input_schema.get("properties").is_some());
     }
 
@@ -912,16 +1160,28 @@ mod tests {
     async fn test_cp_get_cluster_tool_definition() {
         let tool = cp_get_cluster_tool();
         assert_eq!(tool.name, "cp_get_cluster");
-        assert!(tool.description.contains("Get detailed information"));
+        assert!(tool.description.as_ref().unwrap().contains("Get detailed information"));
         assert!(tool.input_schema.get("required").is_some());
     }
 
+    #[test]
+    fn test_cp_get_cluster_health_tool_definition() {
+        let tool = cp_get_cluster_health_tool();
+        assert_eq!(tool.name, "cp_get_cluster_health");
+        assert!(tool.description.as_ref().unwrap().contains("endpoint health"));
+        assert!(tool.input_schema.get("required").is_some());
+
+        // Verify required parameters
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("name")));
+    }
+
     #[tokio::test]
-    async fn test_execute_list_clusters_empty() {
-        let xds_state = setup_test_xds().await;
+    async fn test_execute_list_clusters_returns_seed_data() {
+        let (_db, xds_state) = setup_test_xds().await;
         let args = json!({});
 
-        let result = execute_list_clusters(&xds_state, "test-team", args).await;
+        let result = execute_list_clusters(&xds_state, "test-team", None, args).await;
         assert!(result.is_ok());
 
         let tool_result = result.unwrap();
@@ -929,7 +1189,8 @@ mod tests {
 
         if let ContentBlock::Text { text } = &tool_result.content[0] {
             let output: Value = serde_json::from_str(text).unwrap();
-            assert_eq!(output["count"], 0);
+            // Seed data creates global clusters (test-cluster, cluster-a, cluster-b)
+            assert!(output["count"].as_u64().unwrap() >= 3);
         } else {
             panic!("Expected text content block");
         }
@@ -937,39 +1198,39 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_create_and_get_cluster() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
 
         // Create the team first
         create_test_team(&xds_state, "test-team").await;
 
-        // Create a cluster
+        // Create a cluster (use unique name to avoid seed data conflicts)
         let create_args = json!({
-            "name": "test-cluster",
+            "name": "mcp-created-cluster",
             "serviceName": "test-service",
             "endpoints": [{"address": "10.0.0.1", "port": 8080}]
         });
 
-        let result = execute_create_cluster(&xds_state, "test-team", create_args).await;
+        let result = execute_create_cluster(&xds_state, "test-team", None, create_args).await;
         assert!(result.is_ok());
 
         // Get the cluster
-        let get_args = json!({"name": "test-cluster"});
-        let result = execute_get_cluster(&xds_state, "test-team", get_args).await;
+        let get_args = json!({"name": "mcp-created-cluster"});
+        let result = execute_get_cluster(&xds_state, "test-team", None, get_args).await;
         assert!(result.is_ok());
 
         if let ContentBlock::Text { text } = &result.unwrap().content[0] {
             let output: Value = serde_json::from_str(text).unwrap();
-            assert_eq!(output["name"], "test-cluster");
+            assert_eq!(output["name"], "mcp-created-cluster");
             assert_eq!(output["service_name"], "test-service");
         }
     }
 
     #[tokio::test]
     async fn test_execute_get_cluster_not_found() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
         let args = json!({"name": "non-existent-cluster"});
 
-        let result = execute_get_cluster(&xds_state, "test-team", args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, args).await;
         assert!(result.is_err());
 
         if let Err(McpError::ResourceNotFound(msg)) = result {
@@ -981,10 +1242,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_get_cluster_missing_name() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
         let args = json!({});
 
-        let result = execute_get_cluster(&xds_state, "test-team", args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, args).await;
         assert!(result.is_err());
 
         if let Err(McpError::InvalidParams(msg)) = result {
@@ -996,7 +1257,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_update_cluster() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
         create_test_team(&xds_state, "test-team").await;
 
         // Create a cluster first
@@ -1005,19 +1266,21 @@ mod tests {
             "serviceName": "original",
             "endpoints": [{"address": "10.0.0.1", "port": 8080}]
         });
-        execute_create_cluster(&xds_state, "test-team", create_args).await.expect("create cluster");
+        execute_create_cluster(&xds_state, "test-team", None, create_args)
+            .await
+            .expect("create cluster");
 
         // Update it
         let update_args = json!({
             "name": "update-test",
             "serviceName": "updated"
         });
-        let result = execute_update_cluster(&xds_state, "test-team", update_args).await;
+        let result = execute_update_cluster(&xds_state, "test-team", None, update_args).await;
         assert!(result.is_ok());
 
         // Verify the update
         let get_args = json!({"name": "update-test"});
-        let result = execute_get_cluster(&xds_state, "test-team", get_args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, get_args).await;
         if let ContentBlock::Text { text } = &result.unwrap().content[0] {
             let output: Value = serde_json::from_str(text).unwrap();
             assert_eq!(output["service_name"], "updated");
@@ -1026,7 +1289,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_delete_cluster() {
-        let xds_state = setup_test_xds().await;
+        let (_db, xds_state) = setup_test_xds().await;
         create_test_team(&xds_state, "test-team").await;
 
         // Create a cluster first
@@ -1035,16 +1298,93 @@ mod tests {
             "serviceName": "service",
             "endpoints": [{"address": "10.0.0.1", "port": 8080}]
         });
-        execute_create_cluster(&xds_state, "test-team", create_args).await.expect("create cluster");
+        execute_create_cluster(&xds_state, "test-team", None, create_args)
+            .await
+            .expect("create cluster");
 
         // Delete it
         let delete_args = json!({"name": "delete-test"});
-        let result = execute_delete_cluster(&xds_state, "test-team", delete_args).await;
+        let result = execute_delete_cluster(&xds_state, "test-team", None, delete_args).await;
         assert!(result.is_ok());
 
         // Verify it's gone
         let get_args = json!({"name": "delete-test"});
-        let result = execute_get_cluster(&xds_state, "test-team", get_args).await;
+        let result = execute_get_cluster(&xds_state, "test-team", None, get_args).await;
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // cp_query_service tests
+    // ========================================================================
+
+    #[test]
+    fn test_cp_query_service_tool_definition() {
+        let tool = cp_query_service_tool();
+        assert_eq!(tool.name, "cp_query_service");
+        assert!(tool.description.as_ref().unwrap().contains("service-level summary"));
+
+        let schema = &tool.input_schema;
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["name"].is_object());
+
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("name")));
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_service_with_data() {
+        use crate::storage::test_helpers::seed_reporting_data;
+
+        let test_db = TestDatabase::new("mcp_query_service").await;
+        seed_reporting_data(&test_db.pool).await;
+
+        // orders-svc is seeded by seed_reporting_data for team-a
+        let result = execute_query_service(
+            &test_db.pool,
+            crate::storage::test_helpers::TEAM_A_ID,
+            None,
+            json!({"name": "orders-svc"}),
+        )
+        .await
+        .expect("should succeed");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        assert_eq!(output["success"], true);
+        assert!(output["cluster"].is_object(), "should have cluster info");
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_service_not_found() {
+        let test_db = TestDatabase::new("mcp_query_service_nf").await;
+
+        let result =
+            execute_query_service(&test_db.pool, "test-team", None, json!({"name": "nonexistent"}))
+                .await
+                .expect("should succeed even if cluster not found");
+
+        let text = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            _ => panic!("expected text content"),
+        };
+        let output: Value = serde_json::from_str(text).expect("should be valid JSON");
+        assert_eq!(output["success"], true);
+        assert!(output["cluster"].is_null(), "cluster should be null when not found");
+        assert!(output["message"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_service_missing_name() {
+        let test_db = TestDatabase::new("mcp_query_service_noname").await;
+
+        let result = execute_query_service(&test_db.pool, "test-team", None, json!({})).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            McpError::InvalidParams(msg) => assert!(msg.contains("name")),
+            other => panic!("expected InvalidParams, got: {:?}", other),
+        }
     }
 }

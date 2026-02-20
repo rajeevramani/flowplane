@@ -1,14 +1,14 @@
 # Flowplane
 
-![Version](https://img.shields.io/badge/version-0.0.13-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
+![Version](https://img.shields.io/static/v1?label=version&message=0.1.0&color=blue) ![Status](https://img.shields.io/static/v1?label=status&message=early%20alpha&color=orange) ![License](https://img.shields.io/badge/license-MIT-green) ![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
 
 ![Flowplane Demo](docs/images/flowplane-demo.gif)
 
 ## What is Flowplane?
 
-Flowplane is a dynamic Envoy control plane that provides REST APIs for managing proxy configuration without writing raw protobuf. It translates high-level JSON resource definitions into Envoy's xDS protocol, enabling teams to configure clusters, routes, listeners, and filters through a standard API.
+Flowplane is a dynamic Envoy control plane that provides REST APIs for managing proxy configuration without writing raw protobuf. It translates high-level JSON resource definitions into Envoy's xDS protocol, enabling teams to configure clusters, routes, listeners, and filters through a standard API. Flowplane is designed for agent-operated workflows—AI agents can deploy, diagnose, and manage gateway configuration end-to-end via MCP tools.
+
+Resources are organized into **organizations** containing **teams**, providing multi-tenant isolation where each team manages its own gateway configuration independently.
 
 The platform addresses three challenges faced by teams operating Envoy proxies:
 
@@ -28,11 +28,45 @@ Flowplane supports 15 HTTP filter types including JWT authentication, OAuth2, CO
 - **xDS Server** - gRPC-based configuration server for Envoy proxies (ADS, LDS, RDS, CDS, EDS, SDS)
 - **REST API** - Management API for clusters, listeners, routes, filters, and secrets
 - **Web UI** - SvelteKit dashboard for resource management and monitoring
-- **Multi-tenant** - Team-based resource isolation with RBAC
+- **Multi-tenant** - Org → team hierarchy with RBAC and resource isolation
 - **HTTP Filters** - 15 filters including JWT Auth, OAuth2, Rate Limit, CORS, Header Mutation
 - **API Learning** - Infer API schemas from traffic via ExtProc and Access Logs
 - **Observability** - OpenTelemetry tracing, Prometheus metrics
 - **Security** - OAuth2, JWT, mTLS with Vault PKI integration
+- **Organization Multitenancy** - Orgs contain teams; org admins manage team membership and scopes
+- **Invite-only Registration** - Org admins invite users via tokens; no open signup
+- **Governance Admin** - Platform admins restricted to org/user management; cannot access tenant resources
+- **Dataplane Abstraction** - Envoy instances modeled as named dataplanes with gateway_host
+
+### MCP & AI Agents
+
+Flowplane exposes 60 MCP tools and 7 prompt templates, enabling AI agents to deploy, diagnose, and manage API gateway configuration without touching the UI.
+
+**Agent Capabilities:**
+- Deploy APIs end-to-end with pre-flight validation
+- Diagnose routing issues by tracing request paths
+- Validate gateway configuration and detect misconfigurations
+- Generate OpenAPI specs from live traffic via learning sessions
+
+**Quick Demo:**
+
+```bash
+# Start Flowplane with httpbin and Envoy, then seed demo data
+make up HTTPBIN=1 ENVOY=1 && make seed
+
+# Run the dev agent (requires an OpenAI-compatible LLM)
+FLOWPLANE_URL=http://localhost:8080 \
+FLOWPLANE_TEAM=engineering \
+FLOWPLANE_TOKEN=<token from seed output> \
+LLM_BASE_URL=<your LLM endpoint> \
+LLM_API_KEY=<your LLM API key> \
+LLM_MODEL=<model name> \
+python agents/dev_agent.py "Expose httpbin at localhost:8000 on path / at port 10001"
+```
+
+> `make seed` prints the API token and team name. LLM can be any OpenAI-compatible endpoint — e.g. `http://localhost:11434/v1` for Ollama with `qwen3-coder-next:cloud`, or `https://api.openai.com/v1` with `gpt-4o`.
+
+Tested with GPT-4o and Qwen 3 (via Ollama). See [agents/README.md](agents/README.md) for details and [MCP Integration](docs/mcp.md) for protocol documentation.
 
 ### Import OpenApi
 ![Import OpenAppi](docs/images/import.gif)
@@ -44,75 +78,59 @@ Flowplane supports 15 HTTP filter types including JWT authentication, OAuth2, CO
 
 - Rust (edition 2021)
 - Node.js 18+ (for UI)
-- SQLite (default) or PostgreSQL
+- PostgreSQL 15+
 - protoc (Protocol Buffers compiler)
 
 ## Quick Start
 
-### Docker (Recommended)
+The fastest way to a working setup:
 
 ```bash
-docker run -d \
-  --name flowplane \
-  -p 8080:8080 \
-  -p 50051:50051 \
-  -v flowplane_data:/app/data \
-  -e FLOWPLANE_DATABASE_URL=sqlite:///app/data/flowplane.db \
-  ghcr.io/rajeevramani/flowplane:latest
+git clone https://github.com/rajeevramani/flowplane.git
+cd flowplane
+make up HTTPBIN=1 ENVOY=1    # Start Flowplane + Envoy + httpbin
+make seed                     # Bootstrap admin, org, team, import httpbin API
 ```
 
-#### Access Points
-
-| Service    | URL                               |
-|------------|-----------------------------------|
-| API        | http://localhost:8080/api/v1/     |
-| UI         | http://localhost:8080/            |
-| Swagger UI | http://localhost:8080/swagger-ui/ |
-| xDS (gRPC) | localhost:50051                   |
-
-> **Ports are configurable**: `FLOWPLANE_API_PORT` (default: 8080), `FLOWPLANE_XDS_PORT` (default: 50051 in Docker, 18000 for local dev). See [Configuration](docs/configuration.md).
-
-
-### Development with Docker Compose
-
-If you've cloned the repository, use `make` for easier management:
+Seed creates an admin user, organization (`acme-corp`), team (`engineering`), imports the [httpbin OpenAPI spec](examples/openapi/httpbin.yaml) into routes and clusters, spins up a dataplane with a listener on port 10016, and prints API tokens. Test it:
 
 ```bash
-# Start backend + UI
-make up
+curl http://localhost:10016/get  # Traffic flowing through Envoy → httpbin 🎉
+```
 
-# Start with tracing (Jaeger)
-make up-tracing
+Open the [Web UI](http://localhost:8080) to see what was created, or explore the [Swagger UI](http://localhost:8080/swagger-ui/) for the full API.
 
-# Start with mTLS (Vault)
-make up-mtls
+For more `make` options:
 
-# Add httpbin test service
-make up HTTPBIN=1
-
-# Stop all services
-make down
-
-# View all options
-make help
+```bash
+make up                        # Backend + UI only
+make up HTTPBIN=1              # Add httpbin test service
+make up-tracing                # With Jaeger tracing
+make up-mtls                   # With mTLS (Vault)
+make down                      # Stop all services
+make help                      # All options
 ```
 
 ### Binary
 
-Download from [GitHub Releases](https://github.com/flowplane-ai/flowplane/releases):
+Download from [GitHub Releases](https://github.com/rajeevramani/flowplane/releases):
 
 ```bash
 # Linux (x86_64)
-curl -LO https://github.com/flowplane-ai/flowplane/releases/latest/download/flowplane-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/rajeevramani/flowplane/releases/latest/download/flowplane-x86_64-unknown-linux-gnu.tar.gz
 tar xzf flowplane-x86_64-unknown-linux-gnu.tar.gz
 
 # macOS (Apple Silicon)
-curl -LO https://github.com/flowplane-ai/flowplane/releases/latest/download/flowplane-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/rajeevramani/flowplane/releases/latest/download/flowplane-aarch64-apple-darwin.tar.gz
 tar xzf flowplane-aarch64-apple-darwin.tar.gz
 
 # Run
 ./flowplane-*/flowplane
 ```
+
+### Manual Setup (Optional)
+
+> If you used `make seed` above, skip this section — everything below is already configured. These steps explain what seed does under the hood, or let you customize the setup.
 
 ### Platform Setup
 
@@ -128,6 +146,14 @@ curl --request POST \
   "password": "YOUR_PASSW0RD!",
   "name": "Admin User"
 }'
+
+# Create an organization (platform admin only)
+# This auto-creates a default team named "my-org-default"
+curl --request POST \
+  --url http://localhost:8080/api/v1/admin/organizations \
+  --header 'authorization: Bearer TOKEN_FROM_INITIALIZE' \
+  --header 'content-type: application/json' \
+  --data '{"name": "my-org", "displayName": "My Organization"}'
 
 # Login
 curl --request POST \
@@ -161,11 +187,11 @@ A **Dataplane** represents an Envoy proxy instance. Create one first, then gener
 ```bash
 # Create a dataplane
 curl --request POST \
-  --url http://localhost:8080/api/v1/teams/platform-admin/dataplanes \
+  --url http://localhost:8080/api/v1/teams/my-org-default/dataplanes \
   --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
   --header 'content-type: application/json' \
   --data '{
-  "team": "platform-admin",
+  "team": "my-org-default",
   "name": "default",
   "gatewayHost": "127.0.0.1",
   "description": "Default dataplane for local development"
@@ -173,7 +199,7 @@ curl --request POST \
 
 # Generate Envoy bootstrap config from the dataplane
 curl --request GET \
-  --url 'http://localhost:8080/api/v1/teams/platform-admin/dataplanes/default/bootstrap' \
+  --url 'http://localhost:8080/api/v1/teams/my-org-default/dataplanes/default/envoy-config' \
   --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
   > envoy.yaml
 
@@ -193,7 +219,7 @@ curl --request POST \
   --header 'authorization: Bearer API_TOKEN_FROM_PREVIOUS_STEP' \
   --header 'content-type: application/json' \
   --data '{
-  "team": "platform-admin",
+  "team": "my-org-default",
   "name": "httpbin-cluster",
   "serviceName": "httpbin-service",
   "endpoints": [
@@ -214,7 +240,7 @@ curl --request POST \
   --header 'content-type: application/json' \
   --data '{
   "name": "httpbin-route",
-  "team": "platform-admin",
+  "team": "my-org-default",
   "virtualHosts": [
     {
       "name": "httpbin-vhost",
@@ -248,7 +274,7 @@ curl --request POST \
   "name": "httpbin-listener",
   "address": "0.0.0.0",
   "port": 10000,
-  "team": "platform-admin",
+  "team": "my-org-default",
   "dataplaneId": "DATAPLANE_ID_FROM_CREATE_RESPONSE",
   "protocol": "HTTP",
   "filterChains": [
@@ -275,6 +301,8 @@ curl --request POST \
 # Test the proxy
 curl http://localhost:10000/get
 ```
+
+> **Tip:** Instead of manually creating clusters, routes, and listeners, import an OpenAPI spec to generate everything automatically. See [OpenAPI Import](docs/getting-started.md#openapi-import) or use `make seed` which demonstrates this with the httpbin spec.
 
 ## Architecture
 
@@ -343,15 +371,29 @@ graph TD
 
 ## Documentation
 
+### Getting Started
 - [Getting Started](docs/getting-started.md)
-- [CLI](docs/cli.md)
 - [Configuration](docs/configuration.md)
-- [Operations](docs/operations.md)
+- [CLI](docs/cli.md)
+
+### Features
 - [HTTP Filters](docs/filters.md)
+- [Custom WASM Filters](docs/wasm-filters.md)
 - [TLS](docs/tls.md)
 - [Secrets Management (SDS)](docs/secrets-sds.md)
 - [Learning Gateway](docs/learning-manual/README.md)
 - [MCP Integration](docs/mcp.md)
+- [AI Agents](agents/README.md)
+
+### Deployment
+- [Kubernetes](docs/deployment/kubernetes.md)
+- [Multi-Region](docs/deployment/multi-region.md)
+- [Multi-Dataplane](docs/deployment/multi-dataplane.md)
+
+### Architecture
+- [Architecture Overview](docs/architecture.md)
+### Contributing
+- [Contributing](CONTRIBUTING.md)
 
 ## Acknowledgments
 

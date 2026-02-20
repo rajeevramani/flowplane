@@ -226,7 +226,7 @@ where
                 tokio::select! {
                 result = in_stream.next() => {
                     match result {
-                        Some(Ok(discovery_request)) => {
+                        Some(Ok(mut discovery_request)) => {
                             info!(
                                 type_url = %discovery_request.type_url,
                                 version_info = %discovery_request.version_info,
@@ -261,11 +261,15 @@ where
                                 }
                             }
 
-                            // Store the node metadata for use in push updates to preserve team context
+                            // Store the node metadata to preserve team context across requests.
+                            // With set_node_on_first_message_only, only the first request has node info.
+                            // For subsequent requests, inject the stored node so scope_from_discovery works.
                             {
                                 let mut node_guard = node_for_stream.lock().await;
                                 if node_guard.is_none() && discovery_request.node.is_some() {
                                     *node_guard = discovery_request.node.clone();
+                                } else if discovery_request.node.is_none() && node_guard.is_some() {
+                                    discovery_request.node = node_guard.clone();
                                 }
                             }
 
@@ -624,7 +628,7 @@ where
                 tokio::select! {
                     result = in_stream.next() => {
                         match result {
-                            Some(Ok(delta_request)) => {
+                            Some(Ok(mut delta_request)) => {
                                 info!(
                                     type_url = %delta_request.type_url,
                                     nonce = %delta_request.response_nonce,
@@ -658,11 +662,15 @@ where
                                     }
                                 }
 
-                                // Store the node metadata for use in push updates to preserve team context
+                                // Store the node metadata to preserve team context across requests.
+                                // With set_node_on_first_message_only, only the first request has node info.
+                                // For subsequent requests, inject the stored node so scope_from_discovery works.
                                 {
                                     let mut node_guard = node_for_stream.lock().await;
                                     if node_guard.is_none() && delta_request.node.is_some() {
                                         *node_guard = delta_request.node.clone();
+                                    } else if delta_request.node.is_none() && node_guard.is_some() {
+                                        delta_request.node = node_guard.clone();
                                     }
                                 }
 

@@ -1,0 +1,759 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T22:30:52.588252+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "tf58d93b",
+    "ports": [
+      23065
+    ]
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771453807-ZENmZvlvfwg1XGbEaIEj",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll deploy this API step by step. Let me start with parallel pre-flight checks and gather existing infrastructure info simultaneously.\n\n## Step 1: Pre-flight Checks & Discovery",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01G1EipAEBxXSJbT8u9iXwwS",
+                  "function": {
+                    "arguments": "{\"cluster_name\": \"tf58d93b-cluster\", \"route_config_name\": \"tf58d93b-rc\", \"listener_name\": \"tf58d93b-listener\", \"listen_port\": 23065}",
+                    "name": "dev_preflight_check"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_vrtx_01V6ipbHvLJcky98WgB8T3HG",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_dataplanes"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453807,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 198,
+          "prompt_tokens": 23321,
+          "total_tokens": 23519,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.072933,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.072933,
+            "upstream_inference_prompt_cost": 0.069963,
+            "upstream_inference_completions_cost": 0.00297
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "dev_preflight_check",
+        "cp_list_dataplanes"
+      ],
+      "tool_results": {
+        "cp_list_dataplanes": {
+          "count": 1,
+          "dataplanes": [
+            {
+              "created_at": "2026-02-18T20:09:44.220826+00:00",
+              "description": "Agent test dataplane",
+              "gateway_host": "127.0.0.1",
+              "id": "cf14b7ee-8081-4ad4-90ee-ef8192c21ebb",
+              "name": "agent-test-dataplane",
+              "team": "33722fd0-ca45-4b62-87e0-adb232f50a9a",
+              "updated_at": "2026-02-18T20:09:44.220826+00:00"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771453810-ZvdXmgi9MR7eZnLEDXmd",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All 4 pre-flight checks passed \u2705 and I found the dataplane. Now let me create the cluster and proceed with the deployment.\n\n## Step 2: Create Cluster",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01KE5ues61PJvDba3JZ9MpBj",
+                  "function": {
+                    "arguments": "{\"name\": \"tf58d93b-cluster\", \"serviceName\": \"httpbin-test\", \"endpoints\": [{\"address\":\"httpbin-test\",\"port\":80}]}",
+                    "name": "cp_create_cluster"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453810,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 157,
+          "prompt_tokens": 23926,
+          "total_tokens": 24083,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.074133,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.074133,
+            "upstream_inference_prompt_cost": 0.071778,
+            "upstream_inference_completions_cost": 0.002355
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_cluster"
+      ]
+    },
+    {
+      "turn": 2,
+      "response": {
+        "id": "gen-1771453814-hTHJFO3IwxbzueTdrGqZ",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Cluster created \u2705. Now create the route configuration.\n\n## Step 3: Create Route Configuration",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01Hap8UuG3xtHHuT3tfEaxnr",
+                  "function": {
+                    "arguments": "{\"name\": \"tf58d93b-rc\", \"virtualHosts\": [{\"name\":\"tf58d93b-vhost\",\"domains\":[\"*\"],\"routes\":[{\"name\":\"tf58d93b-route\",\"match\":{\"path\":{\"type\":\"prefix\",\"value\":\"/\"}},\"action\":{\"type\":\"forward\",\"cluster\":\"tf58d93b-cluster\"}}]}]}",
+                    "name": "cp_create_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453814,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 182,
+          "prompt_tokens": 24193,
+          "total_tokens": 24375,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.075309,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.075309,
+            "upstream_inference_prompt_cost": 0.072579,
+            "upstream_inference_completions_cost": 0.00273
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_route_config"
+      ]
+    },
+    {
+      "turn": 3,
+      "response": {
+        "id": "gen-1771453817-zgFV9cEmd59D7WcESuRD",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Route config created \u2705 with the virtual host and route. Now create the listener.\n\n## Step 4: Create Listener",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01CPFFzz3wkXSVSPetwvwBeA",
+                  "function": {
+                    "arguments": "{\"name\": \"tf58d93b-listener\", \"port\": 23065, \"routeConfigName\": \"tf58d93b-rc\", \"dataplaneId\": \"cf14b7ee-8081-4ad4-90ee-ef8192c21ebb\"}",
+                    "name": "cp_create_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453817,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 176,
+          "prompt_tokens": 24483,
+          "total_tokens": 24659,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076089,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076089,
+            "upstream_inference_prompt_cost": 0.073449,
+            "upstream_inference_completions_cost": 0.00264
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_create_listener"
+      ]
+    },
+    {
+      "turn": 4,
+      "response": {
+        "id": "gen-1771453820-2IXgNfMnpDH4rvZCwtIK",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Listener created \u2705. Now let's verify the full deployment.\n\n## Step 5: Verification",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01HJqwAwMU8SHV2YKGvpRxtC",
+                  "function": {
+                    "arguments": "{\"name\": \"tf58d93b-cluster\"}",
+                    "name": "cp_query_service"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_016HQLQAg96mn2zUVCbegJ2Z",
+                  "function": {
+                    "arguments": "{\"path\": \"/\", \"port\": 23065}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_bdrk_01BFej59Sb7wFXCtSt1gasVA",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 2
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453821,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 162,
+          "prompt_tokens": 24776,
+          "total_tokens": 24938,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076758,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076758,
+            "upstream_inference_prompt_cost": 0.074328,
+            "upstream_inference_completions_cost": 0.00243
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_query_service",
+        "ops_trace_request",
+        "ops_config_validate"
+      ]
+    },
+    {
+      "turn": 5,
+      "response": {
+        "id": "gen-1771453824-riJyY8xhHiscTECby3bw",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All verifications passed \u2705. Here's the complete deployment summary:\n\n---\n\n## \u2705 Deployment Summary\n\n| Resource | Name | Details |\n|---|---|---|\n| **Cluster** | `tf58d93b-cluster` | `httpbin-test:80`, ROUND_ROBIN |\n| **Route Config** | `tf58d93b-rc` | Prefix `/` \u2192 `tf58d93b-cluster` |\n| **Virtual Host** | `tf58d93b-vhost` | Domains: `[\"*\"]` |\n| **Listener** | `tf58d93b-listener` | `0.0.0.0:23065` |\n\n### \ud83d\udd0d Trace Result\nThe request path `/` on port `23065` traces cleanly through the full pipeline:\n```\ntf58d93b-listener:23065 \u2192 tf58d93b-rc \u2192 tf58d93b-vhost \u2192 tf58d93b-route \u2192 tf58d93b-cluster \u2192 httpbin-test:80\n```\n\n### \ud83d\udee1\ufe0f Validation\n- **0 errors, 0 warnings** \u2014 configuration is fully valid\n\n### \ud83c\udf10 Access URL\n```\nhttp://127.0.0.1:23065/\n```\n\nAll exact names were used as specified \u2014 no renaming or modifications were made.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771453824,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 319,
+          "prompt_tokens": 25419,
+          "total_tokens": 25738,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.081042,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.081042,
+            "upstream_inference_prompt_cost": 0.076257,
+            "upstream_inference_completions_cost": 0.004785
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": []
+    },
+    {
+      "turn": 6,
+      "response": {
+        "id": "gen-1771453831-tKdd3dh2xjCdC25K6A9a",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll start by checking the existing listener details and any existing filters in parallel to understand the current setup before creating and attaching the rate limit filter.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01MNoa6zSrGHHBUJUW11z4UN",
+                  "function": {
+                    "arguments": "{\"name\": \"tf58d93b-listener\"}",
+                    "name": "cp_get_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_016JXswhbi3JfNZdeTNk3k5D",
+                  "function": {
+                    "arguments": "{\"filter_type\": \"local_rate_limit\"}",
+                    "name": "cp_list_filters"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453831,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 136,
+          "prompt_tokens": 23261,
+          "total_tokens": 23397,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.071823,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.071823,
+            "upstream_inference_prompt_cost": 0.069783,
+            "upstream_inference_completions_cost": 0.00204
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_get_listener",
+        "cp_list_filters"
+      ]
+    },
+    {
+      "turn": 7,
+      "response": {
+        "id": "gen-1771453834-K5KLhFKZWjoGWQgDSjVH",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "The listener `tf58d93b-listener` exists on port 23065, and there are no existing rate limit filters. Now I'll create the rate limit filter with 100 requests per minute (100 tokens per 60,000ms fill interval).",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_015VSAGVJJoHqDZRnnTcJwSR",
+                  "function": {
+                    "arguments": "{\"name\": \"tf58d93b-ratelimit\", \"filterType\": \"local_rate_limit\", \"description\": \"Rate limit filter allowing 100 requests per minute for tf58d93b-listener\", \"configuration\": {\"stat_prefix\":\"tf58d93b_rate_limit\",\"token_bucket\":{\"max_tokens\":100,\"tokens_per_fill\":100,\"fill_interval_ms\":60000},\"status_code\":429}}",
+                    "name": "cp_create_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453834,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 265,
+          "prompt_tokens": 23760,
+          "total_tokens": 24025,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.075255,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.075255,
+            "upstream_inference_prompt_cost": 0.07128,
+            "upstream_inference_completions_cost": 0.003975
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_filter"
+      ]
+    },
+    {
+      "turn": 8,
+      "response": {
+        "id": "gen-1771453839-JMjMLRyPecURxk4u2K0v",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Filter created successfully! Now I'll attach it to the `tf58d93b-listener`.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01WvT39Pw8cNfZK7RsRXB66L",
+                  "function": {
+                    "arguments": "{\"filter\": \"tf58d93b-ratelimit\", \"listener\": \"tf58d93b-listener\"}",
+                    "name": "cp_attach_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453839,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 107,
+          "prompt_tokens": 24123,
+          "total_tokens": 24230,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.073974,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.073974,
+            "upstream_inference_prompt_cost": 0.072369,
+            "upstream_inference_completions_cost": 0.001605
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_attach_filter"
+      ]
+    },
+    {
+      "turn": 9,
+      "response": {
+        "id": "gen-1771453842-v9nKOnKWobReNmURD8Nr",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Filter attached! Let me now verify the full setup by checking the filter's attachments.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01HfkixN14huFoxj1CMLp3JZ",
+                  "function": {
+                    "arguments": "{\"filter\": \"tf58d93b-ratelimit\"}",
+                    "name": "cp_list_filter_attachments"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771453843,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 85,
+          "prompt_tokens": 24310,
+          "total_tokens": 24395,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.074205,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.074205,
+            "upstream_inference_prompt_cost": 0.07293,
+            "upstream_inference_completions_cost": 0.001275
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_list_filter_attachments"
+      ]
+    },
+    {
+      "turn": 10,
+      "response": {
+        "id": "gen-1771453845-pFQ3YQKAyDPUPkcE3lLL",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Everything is confirmed and working. Here's a full summary of what was deployed:\n\n---\n\n## \u2705 Deployment Summary\n\n### \ud83d\udd27 Filter Created: `tf58d93b-ratelimit`\n| Property | Value |\n|---|---|\n| **Type** | `local_rate_limit` |\n| **Max Tokens** | 100 requests |\n| **Refill Rate** | 100 tokens per 60,000ms (1 minute) |\n| **Rate Limit Status Code** | `429 Too Many Requests` |\n| **Stat Prefix** | `tf58d93b_rate_limit` |\n\n### \ud83d\udd17 Attached To: `tf58d93b-listener`\n| Property | Value |\n|---|---|\n| **Listener** | `tf58d93b-listener` |\n| **Port** | `23065` |\n| **Protocol** | `HTTP` |\n| **Attachment Order** | `0` (first in chain) |\n| **Scope** | All traffic through the listener |\n\n### \ud83d\udee1\ufe0f Behavior\n- Every client making requests through `tf58d93b-listener` (port `23065`) is subject to a **100 requests/minute** limit.\n- Requests exceeding the limit will receive an **HTTP 429** response.\n- The token bucket refills **100 tokens every 60 seconds**.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771453845,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 331,
+          "prompt_tokens": 24701,
+          "total_tokens": 25032,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.079068,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.079068,
+            "upstream_inference_prompt_cost": 0.074103,
+            "upstream_inference_completions_cost": 0.004965
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": []
+    }
+  ]
+}

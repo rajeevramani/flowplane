@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS teams (
     owner_user_id TEXT,                            -- Team owner (nullable)
     settings TEXT,                                 -- JSON settings (default filters, headers, etc.)
     status TEXT NOT NULL DEFAULT 'active',         -- active|inactive|archived
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 

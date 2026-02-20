@@ -1,0 +1,1317 @@
+{
+  "meta": {
+    "recorded_at": "2026-02-18T22:34:53.620778+00:00",
+    "model": "anthropic/claude-sonnet-4-6",
+    "prefix": "te6813f7",
+    "ports": [
+      25217
+    ]
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "response": {
+        "id": "gen-1771454010-MOthCy0NYrEvuyoi9Mjx",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll deploy this API with exactly the specified configuration. Let me start with pre-flight checks and gathering existing resources in parallel.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01XVb1wmRhjMac9DUJbbs5Xy",
+                  "function": {
+                    "arguments": "{\"cluster_name\": \"te6813f7-cluster\", \"route_config_name\": \"te6813f7-rc\", \"listener_name\": \"te6813f7-listener\", \"listen_port\": 25217}",
+                    "name": "dev_preflight_check"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_01W6NNW9VUFXpakuZUWc1uSe",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_dataplanes"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454010,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 186,
+          "prompt_tokens": 23337,
+          "total_tokens": 23523,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.072801,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.072801,
+            "upstream_inference_prompt_cost": 0.070011,
+            "upstream_inference_completions_cost": 0.00279
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "dev_preflight_check",
+        "cp_list_dataplanes"
+      ],
+      "tool_results": {
+        "cp_list_dataplanes": {
+          "count": 1,
+          "dataplanes": [
+            {
+              "created_at": "2026-02-18T20:09:44.220826+00:00",
+              "description": "Agent test dataplane",
+              "gateway_host": "127.0.0.1",
+              "id": "cf14b7ee-8081-4ad4-90ee-ef8192c21ebb",
+              "name": "agent-test-dataplane",
+              "team": "33722fd0-ca45-4b62-87e0-adb232f50a9a",
+              "updated_at": "2026-02-18T20:09:44.220826+00:00"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "turn": 1,
+      "response": {
+        "id": "gen-1771454013-rToqv2ateHNrLrkXAbdb",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All preflight checks passed. Port 25217 is available, all names are free, and I have the dataplane ID. Now let me create the cluster:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_011vqrRKsXvnyw3r9YZnNNtW",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-cluster\", \"serviceName\": \"httpbin-test\", \"endpoints\": [{\"address\":\"httpbin-test\",\"port\":80}]}",
+                    "name": "cp_create_cluster"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454013,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 150,
+          "prompt_tokens": 23930,
+          "total_tokens": 24080,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.07404,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.07404,
+            "upstream_inference_prompt_cost": 0.07179,
+            "upstream_inference_completions_cost": 0.00225
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_create_cluster"
+      ]
+    },
+    {
+      "turn": 2,
+      "response": {
+        "id": "gen-1771454017-68dGPLkHhaXkzeEySion",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Cluster created. Now let me create the route configuration with both `/get` and `/post` routes under `te6813f7-vhost`:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01HxMAA13T3C7MmNkwo8L5Cu",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-rc\", \"virtualHosts\": [{\"name\":\"te6813f7-vhost\",\"domains\":[\"*\"],\"routes\":[{\"name\":\"get-route\",\"match\":{\"path\":{\"type\":\"prefix\",\"value\":\"/get\"}},\"action\":{\"type\":\"forward\",\"cluster\":\"te6813f7-cluster\"}},{\"name\":\"post-route\",\"match\":{\"path\":{\"type\":\"prefix\",\"value\":\"/post\"}},\"action\":{\"type\":\"forward\",\"cluster\":\"te6813f7-cluster\"}}]}]}",
+                    "name": "cp_create_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454017,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 275,
+          "prompt_tokens": 24192,
+          "total_tokens": 24467,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076701,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076701,
+            "upstream_inference_prompt_cost": 0.072576,
+            "upstream_inference_completions_cost": 0.004125
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_route_config"
+      ]
+    },
+    {
+      "turn": 3,
+      "response": {
+        "id": "gen-1771454021-91sNWJQ7TQYIbMXAAzs4",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Route config created with both routes. Now let me create the listener:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_01Jsj85dxyyrq6ZayJquRQzQ",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-listener\", \"port\": 25217, \"routeConfigName\": \"te6813f7-rc\", \"dataplaneId\": \"cf14b7ee-8081-4ad4-90ee-ef8192c21ebb\"}",
+                    "name": "cp_create_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454021,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 162,
+          "prompt_tokens": 24538,
+          "total_tokens": 24700,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076044,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076044,
+            "upstream_inference_prompt_cost": 0.073614,
+            "upstream_inference_completions_cost": 0.00243
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_create_listener"
+      ]
+    },
+    {
+      "turn": 4,
+      "response": {
+        "id": "gen-1771454025-5G0Jx9GPKqvmFXYsVcLd",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Listener is live. Now let me run full verification in parallel:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01HyxF2bZfi1u8W4HDnSmAFF",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-cluster\"}",
+                    "name": "cp_query_service"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_014CRFtEVPaXfDsREpVC8nr8",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_bdrk_016fsnofWxaE5dP2Sek8yJCV",
+                  "function": {
+                    "arguments": "{\"path\": \"/get\", \"port\": 25217}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 2
+                },
+                {
+                  "id": "toolu_bdrk_01Y1BWAhfSxDWK4VTZLL5bXa",
+                  "function": {
+                    "arguments": "{\"path\": \"/post\", \"port\": 25217}",
+                    "name": "ops_trace_request"
+                  },
+                  "type": "function",
+                  "index": 3
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454025,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 211,
+          "prompt_tokens": 24816,
+          "total_tokens": 25027,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.077613,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.077613,
+            "upstream_inference_prompt_cost": 0.074448,
+            "upstream_inference_completions_cost": 0.003165
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_query_service",
+        "ops_config_validate",
+        "ops_trace_request",
+        "ops_trace_request"
+      ]
+    },
+    {
+      "turn": 5,
+      "response": {
+        "id": "gen-1771454028-q8mGGMNdpUtYBBn7i7Ra",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "All checks green. Here's the complete deployment summary:\n\n---\n\n## \u2705 Deployment Complete\n\n### Resources Created (exact names as specified)\n\n| Resource | Name | Details |\n|---|---|---|\n| **Cluster** | `te6813f7-cluster` | `httpbin-test:80`, ROUND_ROBIN |\n| **Route Config** | `te6813f7-rc` | 2 routes, 1 virtual host |\n| **Virtual Host** | `te6813f7-vhost` | domains: `[\"*\"]` |\n| **Listener** | `te6813f7-listener` | `0.0.0.0:25217` \u2192 HTTP |\n\n### Routes (under `te6813f7-vhost`)\n\n| Route Name | Match Type | Path | Target Cluster |\n|---|---|---|---|\n| `get-route` | prefix | `/get` | `te6813f7-cluster` |\n| `post-route` | prefix | `/post` | `te6813f7-cluster` |\n\n### Trace Results \u2705\n\nBoth paths resolve correctly:\n- **`/get`** \u2192 `te6813f7-listener:25217` \u2192 `te6813f7-rc` \u2192 `te6813f7-vhost` \u2192 `get-route` \u2192 `te6813f7-cluster` \u2192 `httpbin-test:80`\n- **`/post`** \u2192 `te6813f7-listener:25217` \u2192 `te6813f7-rc` \u2192 `te6813f7-vhost` \u2192 `post-route` \u2192 `te6813f7-cluster` \u2192 `httpbin-test:80`\n\n### Access URLs\n- `http://127.0.0.1:25217/get`\n- `http://127.0.0.1:25217/post`\n\n### Validation Note\nThe 2 warnings from `ops_config_validate` are pre-existing orphan clusters (`auth-example-443-cluster`, `auth-example-443-cluster-2`) unrelated to this deployment \u2014 **no errors** and the new resources are fully wired.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771454028,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 501,
+          "prompt_tokens": 25896,
+          "total_tokens": 26397,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.085203,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.085203,
+            "upstream_inference_prompt_cost": 0.077688,
+            "upstream_inference_completions_cost": 0.007515
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": []
+    },
+    {
+      "turn": 6,
+      "response": {
+        "id": "gen-1771454038-SOsHrbCQsJTYYi708dDK",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I'll start by gathering information about the existing listener and any current filters in parallel.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01A6h8QdwR2a2Xy1EiW2Lxif",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-listener\"}",
+                    "name": "cp_get_listener"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_011cjDRCqkz7QZzr3bcSNNor",
+                  "function": {
+                    "arguments": "{\"filter_type\": \"local_rate_limit\"}",
+                    "name": "cp_list_filters"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454038,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 123,
+          "prompt_tokens": 23260,
+          "total_tokens": 23383,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.071625,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.071625,
+            "upstream_inference_prompt_cost": 0.06978,
+            "upstream_inference_completions_cost": 0.001845
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_get_listener",
+        "cp_list_filters"
+      ]
+    },
+    {
+      "turn": 7,
+      "response": {
+        "id": "gen-1771454041-87IOq0YHy1n4RsGspZfW",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Good. I can see the listener uses route config `te6813f7-rc`. Now let me check the virtual host to confirm its details, and also check if there's already a rate limit filter attached to this listener:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01Ci3QL1hy8N6R2qUVXL4o7d",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-rc\"}",
+                    "name": "cp_get_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454041,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 111,
+          "prompt_tokens": 23996,
+          "total_tokens": 24107,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.073653,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.073653,
+            "upstream_inference_prompt_cost": 0.071988,
+            "upstream_inference_completions_cost": 0.001665
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_get_route_config"
+      ]
+    },
+    {
+      "turn": 8,
+      "response": {
+        "id": "gen-1771454044-Bl27inZyhZbl8Na1RyN7",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "The virtual host `te6813f7-vhost` is confirmed. Now I'll create a new rate limit filter scoped to this listener/virtual host \u2014 100 requests per minute:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01Ex95wwPCaQ9L5HDT2f7hYr",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-ratelimit\", \"filterType\": \"local_rate_limit\", \"description\": \"Rate limit filter allowing 100 requests per minute for te6813f7-vhost\", \"configuration\": {\"stat_prefix\":\"te6813f7_rate_limit\",\"token_bucket\":{\"max_tokens\":100,\"tokens_per_fill\":100,\"fill_interval_ms\":60000},\"status_code\":429}}",
+                    "name": "cp_create_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454044,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 252,
+          "prompt_tokens": 24389,
+          "total_tokens": 24641,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076947,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076947,
+            "upstream_inference_prompt_cost": 0.073167,
+            "upstream_inference_completions_cost": 0.00378
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_filter"
+      ]
+    },
+    {
+      "turn": 9,
+      "response": {
+        "id": "gen-1771454048-hvV0n9gDVl8TxyBKezr3",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Filter created! Now I'll attach it to the listener `te6813f7-listener`:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01F8dz8jRd1Svxx1taZ7nz7e",
+                  "function": {
+                    "arguments": "{\"filter\": \"te6813f7-ratelimit\", \"listener\": \"te6813f7-listener\", \"order\": 10}",
+                    "name": "cp_attach_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454048,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 124,
+          "prompt_tokens": 24738,
+          "total_tokens": 24862,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076074,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076074,
+            "upstream_inference_prompt_cost": 0.074214,
+            "upstream_inference_completions_cost": 0.00186
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_attach_filter"
+      ]
+    },
+    {
+      "turn": 10,
+      "response": {
+        "id": "gen-1771454051-6UUjfOe1b1jMXOv91mh4",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Attached! Let me verify the full setup:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01Xi7ScdGyMszESSS5SvRhxn",
+                  "function": {
+                    "arguments": "{\"filter\": \"te6813f7-ratelimit\"}",
+                    "name": "cp_list_filter_attachments"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454051,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 77,
+          "prompt_tokens": 24942,
+          "total_tokens": 25019,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.075981,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.075981,
+            "upstream_inference_prompt_cost": 0.074826,
+            "upstream_inference_completions_cost": 0.001155
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_list_filter_attachments"
+      ]
+    },
+    {
+      "turn": 11,
+      "response": {
+        "id": "gen-1771454053-eshk9MhG6dpT0z0BS1hW",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Everything is confirmed. Here's a summary of what was deployed:\n\n---\n\n## \u2705 Rate Limit Filter Deployment Summary\n\n| Resource | Name | Details |\n|---|---|---|\n| **Filter** | `te6813f7-ratelimit` | `local_rate_limit` type |\n| **Attached To** | `te6813f7-listener` | Order: 10 |\n| **Scope** | `te6813f7-vhost` (via listener) | All routes: `/get`, `/post` |\n\n### Rate Limit Policy\n- **Limit:** 100 requests per minute\n- **Refill:** 100 tokens every 60,000ms (1 minute)\n- **Burst:** Up to 100 requests (max token bucket size)\n- **Rejected Response:** HTTP `429 Too Many Requests`\n- **Stat Prefix:** `te6813f7_rate_limit` (for Envoy metrics)\n\n### How it Works\nThe `local_rate_limit` filter is attached at the **listener level** (order 10, running before the router). This means **all traffic** entering through `te6813f7-listener` \u2014 regardless of which route (`/get` or `/post`) is matched within `te6813f7-vhost` \u2014 is subject to the shared 100 req/min token bucket. Once the bucket is exhausted, subsequent requests receive a `429` until the next 60-second refill cycle.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771454053,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 343,
+          "prompt_tokens": 25324,
+          "total_tokens": 25667,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.081117,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.081117,
+            "upstream_inference_prompt_cost": 0.075972,
+            "upstream_inference_completions_cost": 0.005145
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": []
+    },
+    {
+      "turn": 12,
+      "response": {
+        "id": "gen-1771454061-iFWrnQz560JQufKTV49j",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Let me start by gathering all the information I need \u2014 the existing rate limit filter, the route config details, and the virtual host setup.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01B9kZv2rLaYUUjgZTBmLVXZ",
+                  "function": {
+                    "arguments": "{\"filter_type\": \"local_rate_limit\"}",
+                    "name": "cp_list_filters"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_01SbyZoTYoiPndXBwLNecQK8",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_virtual_hosts"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454061,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 113,
+          "prompt_tokens": 23268,
+          "total_tokens": 23381,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.071499,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.071499,
+            "upstream_inference_prompt_cost": 0.069804,
+            "upstream_inference_completions_cost": 0.001695
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_list_filters",
+        "cp_list_virtual_hosts"
+      ]
+    },
+    {
+      "turn": 13,
+      "response": {
+        "id": "gen-1771454064-xYDfrV5IpsnWdRfT2C7C",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Good \u2014 I can see the `te6813f7-ratelimit` filter (100 req/min global) and the virtual host. Now let me fetch the route config details and the filter attachments simultaneously.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_01DDEMyYtJrNP2r2gyezyxAA",
+                  "function": {
+                    "arguments": "{\"filter\": \"te6813f7-ratelimit\"}",
+                    "name": "cp_list_filter_attachments"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_bdrk_01PoLFBuFvhxr41DFfAuyECt",
+                  "function": {
+                    "arguments": "{\"route_config\": \"te6813f7-vhost\"}",
+                    "name": "cp_list_routes"
+                  },
+                  "type": "function",
+                  "index": 1
+                },
+                {
+                  "id": "toolu_bdrk_012GvWDrjGXVYZudtxBQVyHn",
+                  "function": {
+                    "arguments": "",
+                    "name": "cp_list_route_configs"
+                  },
+                  "type": "function",
+                  "index": 2
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454064,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 183,
+          "prompt_tokens": 24106,
+          "total_tokens": 24289,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.075063,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.075063,
+            "upstream_inference_prompt_cost": 0.072318,
+            "upstream_inference_completions_cost": 0.002745
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_list_filter_attachments",
+        "cp_list_routes",
+        "cp_list_route_configs"
+      ]
+    },
+    {
+      "turn": 14,
+      "response": {
+        "id": "gen-1771454068-BloMHPG9tVq5w8vySMCL",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Let me get the full route config details to see all the routes (the list by virtual host name didn't match \u2014 the actual route config is `te6813f7-rc`).",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_bdrk_016mVruLwDP5g2TCEmNzEy94",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-rc\"}",
+                    "name": "cp_get_route_config"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454068,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 103,
+          "prompt_tokens": 24831,
+          "total_tokens": 24934,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.076038,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.076038,
+            "upstream_inference_prompt_cost": 0.074493,
+            "upstream_inference_completions_cost": 0.001545
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": [
+        "cp_get_route_config"
+      ]
+    },
+    {
+      "turn": 15,
+      "response": {
+        "id": "gen-1771454072-7QKJb8xTljzal9vutELM",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "I have the full picture now. Here's the plan:\n- **`/get`** \u2192 keeps the global `te6813f7-ratelimit` at 100 req/min (already applied at listener level \u2705)\n- **`/post`** \u2192 needs a **new** dedicated rate limit filter at 10 req/min, attached to the `post-route` route config scope\n\nLet me create the new per-route rate limit filter for `/post`:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01TTGKoTpqsCLhNYv8ChxU2y",
+                  "function": {
+                    "arguments": "{\"name\": \"te6813f7-post-ratelimit\", \"filterType\": \"local_rate_limit\", \"description\": \"Per-route rate limit override for /post \u2014 10 requests per minute\", \"configuration\": {\"stat_prefix\":\"te6813f7_post_rate_limit\",\"token_bucket\":{\"max_tokens\":10,\"tokens_per_fill\":10,\"fill_interval_ms\":60000},\"status_code\":429}}",
+                    "name": "cp_create_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454072,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 317,
+          "prompt_tokens": 25216,
+          "total_tokens": 25533,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.080403,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.080403,
+            "upstream_inference_prompt_cost": 0.075648,
+            "upstream_inference_completions_cost": 0.004755
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_create_filter"
+      ]
+    },
+    {
+      "turn": 16,
+      "response": {
+        "id": "gen-1771454079-AlEooydYl8PEAeQHmAAm",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Filter created. Now I need to attach it to the `post-route` specifically. Since per-route attachment targets the route config with a settings override scoped to the `/post` route, let me attach it to the route config with the per-route settings:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_vrtx_015wub4Pvy84Kjs3PCTtgftM",
+                  "function": {
+                    "arguments": "{\"filter\": \"te6813f7-post-ratelimit\", \"route_config\": \"te6813f7-rc\", \"order\": 10, \"settings\": {\"route\":\"post-route\",\"token_bucket\":{\"max_tokens\":10,\"tokens_per_fill\":10,\"fill_interval_ms\":60000}}}",
+                    "name": "cp_attach_filter"
+                  },
+                  "type": "function",
+                  "index": 0
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454079,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 221,
+          "prompt_tokens": 25633,
+          "total_tokens": 25854,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.080214,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.080214,
+            "upstream_inference_prompt_cost": 0.076899,
+            "upstream_inference_completions_cost": 0.003315
+          }
+        },
+        "provider": "Google"
+      },
+      "tool_names": [
+        "cp_attach_filter"
+      ]
+    },
+    {
+      "turn": 17,
+      "response": {
+        "id": "gen-1771454083-aFeNjBRZN9dj2MzjdeYW",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Attached. Now let me verify the full configuration is correct:",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": [
+                {
+                  "id": "toolu_01P2jTbeC7AeJZe8oLzUcE9J",
+                  "function": {
+                    "arguments": "{\"filter\": \"te6813f7-post-ratelimit\"}",
+                    "name": "cp_list_filter_attachments"
+                  },
+                  "type": "function",
+                  "index": 0
+                },
+                {
+                  "id": "toolu_01DamZJuDEEWYriTtoeFvfX2",
+                  "function": {
+                    "arguments": "",
+                    "name": "ops_config_validate"
+                  },
+                  "type": "function",
+                  "index": 1
+                }
+              ],
+              "reasoning": null
+            },
+            "native_finish_reason": "tool_calls"
+          }
+        ],
+        "created": 1771454083,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 103,
+          "prompt_tokens": 25940,
+          "total_tokens": 26043,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.079365,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.079365,
+            "upstream_inference_prompt_cost": 0.07782,
+            "upstream_inference_completions_cost": 0.001545
+          }
+        },
+        "provider": "Anthropic"
+      },
+      "tool_names": [
+        "cp_list_filter_attachments",
+        "ops_config_validate"
+      ]
+    },
+    {
+      "turn": 18,
+      "response": {
+        "id": "gen-1771454086-0UcLev3tHg1wj4TirNnf",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+              "content": "Config is valid for our deployment (the 2 warnings are pre-existing orphan clusters unrelated to this change \u2014 no errors). Everything is wired up correctly.\n\n---\n\n## \u2705 Deployment Summary\n\nHere's what was configured to override the rate limit on `/post`:\n\n### Rate Limit Architecture\n\n| Route | Filter | Limit | Attachment |\n|-------|--------|-------|------------|\n| `/get` | `te6813f7-ratelimit` | **100 req/min** | Listener-level (global, unchanged) |\n| `/post` | `te6813f7-post-ratelimit` | **10 req/min** | Route config `te6813f7-rc`, scoped to `post-route` |\n\n### Resources Created\n\n| Resource | Name | Details |\n|----------|------|---------|\n| **New Filter** | `te6813f7-post-ratelimit` | `local_rate_limit`, 10 tokens/60s, HTTP 429 on exceed |\n| **Filter Attachment** | \u2192 `te6813f7-rc` | Scoped to `post-route` in virtual host `te6813f7-vhost` |\n\n### How It Works\n- The **global `te6813f7-ratelimit`** filter is attached at the **listener level** (`te6813f7-listener`), applying 100 req/min to all routes including `/get`.\n- The **new `te6813f7-post-ratelimit`** filter is attached at the **route config level**, scoped specifically to `post-route` (`/post`), enforcing a stricter **10 req/min** override. Requests exceeding this cap will receive `HTTP 429 Too Many Requests`.",
+              "refusal": null,
+              "role": "assistant",
+              "audio": null,
+              "function_call": null,
+              "tool_calls": null,
+              "reasoning": null
+            },
+            "native_finish_reason": "stop"
+          }
+        ],
+        "created": 1771454086,
+        "model": "anthropic/claude-sonnet-4.6",
+        "object": "chat.completion",
+        "service_tier": null,
+        "system_fingerprint": null,
+        "usage": {
+          "completion_tokens": 411,
+          "prompt_tokens": 26603,
+          "total_tokens": 27014,
+          "completion_tokens_details": {
+            "accepted_prediction_tokens": null,
+            "audio_tokens": null,
+            "reasoning_tokens": 0,
+            "rejected_prediction_tokens": null
+          },
+          "prompt_tokens_details": {
+            "audio_tokens": null,
+            "cached_tokens": 0,
+            "cache_write_tokens": 0
+          },
+          "cost": 0.085974,
+          "is_byok": false,
+          "cost_details": {
+            "upstream_inference_cost": 0.085974,
+            "upstream_inference_prompt_cost": 0.079809,
+            "upstream_inference_completions_cost": 0.006165
+          }
+        },
+        "provider": "Amazon Bedrock"
+      },
+      "tool_names": []
+    }
+  ]
+}

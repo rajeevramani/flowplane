@@ -1,0 +1,2797 @@
+openapi: 3.0.3
+info:
+  title: MockBank Financial API
+  description: RESTful API for MockBank Financial services
+  version: 1.0.0
+  contact:
+    name: MockBank Support
+    url: https://www.mockbank.com
+    email: support@mockbank.com
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: Customers
+    description: Customer management
+  - name: Accounts
+    description: Bank account operations
+  - name: Transactions
+    description: Transaction history
+  - name: Cards
+    description: Debit and credit card management
+  - name: Beneficiaries
+    description: Transfer beneficiary management
+  - name: Transfers
+    description: Money transfer operations
+  - name: Loans
+    description: Loan management
+  - name: Bill Payments
+    description: Bill payment operations
+  - name: Notifications
+    description: Customer notifications
+  - name: Branches
+    description: Bank branch information
+  - name: ATMs
+    description: ATM locations
+  - name: Exchange Rates
+    description: Currency exchange rates
+  - name: Investments
+    description: Investment accounts
+  - name: Holdings
+    description: Investment holdings
+  - name: Bank Info
+    description: Bank information
+
+paths:
+  # Customers
+  /v2/api/customers:
+    get:
+      tags: [Customers]
+      summary: List all customers
+      operationId: getCustomers
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Customer'
+    post:
+      tags: [Customers]
+      summary: Create a new customer
+      operationId: createCustomer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerInput'
+      responses:
+        '201':
+          description: Customer created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+
+  /v2/api/customers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Customers]
+      summary: Get a customer by ID
+      operationId: getCustomerById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Customers]
+      summary: Replace a customer
+      operationId: replaceCustomer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerInput'
+      responses:
+        '200':
+          description: Customer replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Customers]
+      summary: Update a customer
+      operationId: updateCustomer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerInput'
+      responses:
+        '200':
+          description: Customer updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Customers]
+      summary: Delete a customer
+      operationId: deleteCustomer
+      responses:
+        '200':
+          description: Customer deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Accounts
+  /v2/api/accounts:
+    get:
+      tags: [Accounts]
+      summary: List all accounts
+      operationId: getAccounts
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: integer
+          description: Filter by customer ID
+        - name: accountType
+          in: query
+          schema:
+            type: string
+            enum: [checking, savings, money_market]
+          description: Filter by account type
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Account'
+    post:
+      tags: [Accounts]
+      summary: Create a new account
+      operationId: createAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountInput'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+
+  /v2/api/accounts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Accounts]
+      summary: Get an account by ID
+      operationId: getAccountById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Accounts]
+      summary: Replace an account
+      operationId: replaceAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountInput'
+      responses:
+        '200':
+          description: Account replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Accounts]
+      summary: Update an account
+      operationId: updateAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountInput'
+      responses:
+        '200':
+          description: Account updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Accounts]
+      summary: Delete an account
+      operationId: deleteAccount
+      responses:
+        '200':
+          description: Account deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Transactions
+  /v2/api/transactions:
+    get:
+      tags: [Transactions]
+      summary: List all transactions
+      operationId: getTransactions
+      parameters:
+        - name: accountId
+          in: query
+          schema:
+            type: integer
+          description: Filter by account ID
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [debit, credit]
+          description: Filter by transaction type
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transaction'
+    post:
+      tags: [Transactions]
+      summary: Create a new transaction
+      operationId: createTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionInput'
+      responses:
+        '201':
+          description: Transaction created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+
+  /v2/api/transactions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Transactions]
+      summary: Get a transaction by ID
+      operationId: getTransactionById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Transactions]
+      summary: Replace a transaction
+      operationId: replaceTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionInput'
+      responses:
+        '200':
+          description: Transaction replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Transactions]
+      summary: Update a transaction
+      operationId: updateTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionInput'
+      responses:
+        '200':
+          description: Transaction updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Transactions]
+      summary: Delete a transaction
+      operationId: deleteTransaction
+      responses:
+        '200':
+          description: Transaction deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Cards
+  /v2/api/cards:
+    get:
+      tags: [Cards]
+      summary: List all cards
+      operationId: getCards
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: integer
+          description: Filter by customer ID
+        - name: cardType
+          in: query
+          schema:
+            type: string
+            enum: [debit, credit]
+          description: Filter by card type
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Card'
+    post:
+      tags: [Cards]
+      summary: Create a new card
+      operationId: createCard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardInput'
+      responses:
+        '201':
+          description: Card created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Card'
+
+  /v2/api/cards/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Cards]
+      summary: Get a card by ID
+      operationId: getCardById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Card'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Cards]
+      summary: Replace a card
+      operationId: replaceCard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardInput'
+      responses:
+        '200':
+          description: Card replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Card'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Cards]
+      summary: Update a card
+      operationId: updateCard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardInput'
+      responses:
+        '200':
+          description: Card updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Card'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Cards]
+      summary: Delete a card
+      operationId: deleteCard
+      responses:
+        '200':
+          description: Card deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Beneficiaries
+  /v2/api/beneficiaries:
+    get:
+      tags: [Beneficiaries]
+      summary: List all beneficiaries
+      operationId: getBeneficiaries
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: integer
+          description: Filter by customer ID
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Beneficiary'
+    post:
+      tags: [Beneficiaries]
+      summary: Create a new beneficiary
+      operationId: createBeneficiary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeneficiaryInput'
+      responses:
+        '201':
+          description: Beneficiary created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Beneficiary'
+
+  /v2/api/beneficiaries/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Beneficiaries]
+      summary: Get a beneficiary by ID
+      operationId: getBeneficiaryById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Beneficiary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Beneficiaries]
+      summary: Replace a beneficiary
+      operationId: replaceBeneficiary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeneficiaryInput'
+      responses:
+        '200':
+          description: Beneficiary replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Beneficiary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Beneficiaries]
+      summary: Update a beneficiary
+      operationId: updateBeneficiary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeneficiaryInput'
+      responses:
+        '200':
+          description: Beneficiary updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Beneficiary'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Beneficiaries]
+      summary: Delete a beneficiary
+      operationId: deleteBeneficiary
+      responses:
+        '200':
+          description: Beneficiary deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Transfers
+  /v2/api/transfers:
+    get:
+      tags: [Transfers]
+      summary: List all transfers
+      operationId: getTransfers
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: integer
+          description: Filter by customer ID
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, scheduled, completed, failed, cancelled]
+          description: Filter by status
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [internal, external]
+          description: Filter by transfer type
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transfer'
+    post:
+      tags: [Transfers]
+      summary: Create a new transfer
+      operationId: createTransfer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferInput'
+      responses:
+        '201':
+          description: Transfer created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+
+  /v2/api/transfers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Transfers]
+      summary: Get a transfer by ID
+      operationId: getTransferById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Transfers]
+      summary: Replace a transfer
+      operationId: replaceTransfer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferInput'
+      responses:
+        '200':
+          description: Transfer replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Transfers]
+      summary: Update a transfer
+      operationId: updateTransfer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferInput'
+      responses:
+        '200':
+          description: Transfer updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Transfers]
+      summary: Delete a transfer
+      operationId: deleteTransfer
+      responses:
+        '200':
+          description: Transfer deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Loans
+  /v2/api/loans:
+    get:
+      tags: [Loans]
+      summary: List all loans
+      operationId: getLoans
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: integer
+          description: Filter by customer ID
+        - name: loanType
+          in: query
+          schema:
+            type: string
+            enum: [mortgage, auto, personal, business]
+          description: Filter by loan type
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Loan'
+    post:
+      tags: [Loans]
+      summary: Create a new loan
+      operationId: createLoan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoanInput'
+      responses:
+        '201':
+          description: Loan created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loan'
+
+  /v2/api/loans/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Loans]
+      summary: Get a loan by ID
+      operationId: getLoanById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Loans]
+      summary: Replace a loan
+      operationId: replaceLoan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoanInput'
+      responses:
+        '200':
+          description: Loan replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Loans]
+      summary: Update a loan
+      operationId: updateLoan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoanInput'
+      responses:
+        '200':
+          description: Loan updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Loans]
+      summary: Delete a loan
+      operationId: deleteLoan
+      responses:
+        '200':
+          description: Loan deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Bill Payments
+  /v2/api/billPayments:
+    get:
+      tags: [Bill Payments]
+      summary: List all bill payments
+      operationId: getBillPayments
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: integer
+          description: Filter by customer ID
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BillPayment'
+    post:
+      tags: [Bill Payments]
+      summary: Create a new bill payment
+      operationId: createBillPayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillPaymentInput'
+      responses:
+        '201':
+          description: Bill payment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPayment'
+
+  /v2/api/billPayments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Bill Payments]
+      summary: Get a bill payment by ID
+      operationId: getBillPaymentById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPayment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Bill Payments]
+      summary: Replace a bill payment
+      operationId: replaceBillPayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillPaymentInput'
+      responses:
+        '200':
+          description: Bill payment replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPayment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Bill Payments]
+      summary: Update a bill payment
+      operationId: updateBillPayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillPaymentInput'
+      responses:
+        '200':
+          description: Bill payment updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPayment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Bill Payments]
+      summary: Delete a bill payment
+      operationId: deleteBillPayment
+      responses:
+        '200':
+          description: Bill payment deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Notifications
+  /v2/api/notifications:
+    get:
+      tags: [Notifications]
+      summary: List all notifications
+      operationId: getNotifications
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: integer
+          description: Filter by customer ID
+        - name: read
+          in: query
+          schema:
+            type: boolean
+          description: Filter by read status
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [normal, high]
+          description: Filter by priority
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Notification'
+    post:
+      tags: [Notifications]
+      summary: Create a new notification
+      operationId: createNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationInput'
+      responses:
+        '201':
+          description: Notification created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+
+  /v2/api/notifications/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Notifications]
+      summary: Get a notification by ID
+      operationId: getNotificationById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Notifications]
+      summary: Replace a notification
+      operationId: replaceNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationInput'
+      responses:
+        '200':
+          description: Notification replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Notifications]
+      summary: Update a notification
+      operationId: updateNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationInput'
+      responses:
+        '200':
+          description: Notification updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Notifications]
+      summary: Delete a notification
+      operationId: deleteNotification
+      responses:
+        '200':
+          description: Notification deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Branches
+  /v2/api/branches:
+    get:
+      tags: [Branches]
+      summary: List all branches
+      operationId: getBranches
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Branch'
+    post:
+      tags: [Branches]
+      summary: Create a new branch
+      operationId: createBranch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BranchInput'
+      responses:
+        '201':
+          description: Branch created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+
+  /v2/api/branches/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Branches]
+      summary: Get a branch by ID
+      operationId: getBranchById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Branches]
+      summary: Replace a branch
+      operationId: replaceBranch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BranchInput'
+      responses:
+        '200':
+          description: Branch replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Branches]
+      summary: Update a branch
+      operationId: updateBranch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BranchInput'
+      responses:
+        '200':
+          description: Branch updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Branches]
+      summary: Delete a branch
+      operationId: deleteBranch
+      responses:
+        '200':
+          description: Branch deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ATMs
+  /v2/api/atms:
+    get:
+      tags: [ATMs]
+      summary: List all ATMs
+      operationId: getAtms
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [online, offline, maintenance]
+          description: Filter by status
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Atm'
+    post:
+      tags: [ATMs]
+      summary: Create a new ATM
+      operationId: createAtm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AtmInput'
+      responses:
+        '201':
+          description: ATM created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Atm'
+
+  /v2/api/atms/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [ATMs]
+      summary: Get an ATM by ID
+      operationId: getAtmById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Atm'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [ATMs]
+      summary: Replace an ATM
+      operationId: replaceAtm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AtmInput'
+      responses:
+        '200':
+          description: ATM replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Atm'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [ATMs]
+      summary: Update an ATM
+      operationId: updateAtm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AtmInput'
+      responses:
+        '200':
+          description: ATM updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Atm'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [ATMs]
+      summary: Delete an ATM
+      operationId: deleteAtm
+      responses:
+        '200':
+          description: ATM deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Exchange Rates
+  /v2/api/exchangeRates:
+    get:
+      tags: [Exchange Rates]
+      summary: List all exchange rates
+      operationId: getExchangeRates
+      parameters:
+        - name: fromCurrency
+          in: query
+          schema:
+            type: string
+          description: Filter by source currency
+        - name: toCurrency
+          in: query
+          schema:
+            type: string
+          description: Filter by target currency
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExchangeRate'
+    post:
+      tags: [Exchange Rates]
+      summary: Create a new exchange rate
+      operationId: createExchangeRate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExchangeRateInput'
+      responses:
+        '201':
+          description: Exchange rate created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExchangeRate'
+
+  /v2/api/exchangeRates/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Exchange Rates]
+      summary: Get an exchange rate by ID
+      operationId: getExchangeRateById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExchangeRate'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Exchange Rates]
+      summary: Replace an exchange rate
+      operationId: replaceExchangeRate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExchangeRateInput'
+      responses:
+        '200':
+          description: Exchange rate replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExchangeRate'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Exchange Rates]
+      summary: Update an exchange rate
+      operationId: updateExchangeRate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExchangeRateInput'
+      responses:
+        '200':
+          description: Exchange rate updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExchangeRate'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Exchange Rates]
+      summary: Delete an exchange rate
+      operationId: deleteExchangeRate
+      responses:
+        '200':
+          description: Exchange rate deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Investments
+  /v2/api/investments:
+    get:
+      tags: [Investments]
+      summary: List all investment accounts
+      operationId: getInvestments
+      parameters:
+        - name: customerId
+          in: query
+          schema:
+            type: integer
+          description: Filter by customer ID
+        - name: accountType
+          in: query
+          schema:
+            type: string
+            enum: [brokerage, ira, 401k]
+          description: Filter by account type
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Investment'
+    post:
+      tags: [Investments]
+      summary: Create a new investment account
+      operationId: createInvestment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvestmentInput'
+      responses:
+        '201':
+          description: Investment account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Investment'
+
+  /v2/api/investments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Investments]
+      summary: Get an investment account by ID
+      operationId: getInvestmentById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Investment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Investments]
+      summary: Replace an investment account
+      operationId: replaceInvestment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvestmentInput'
+      responses:
+        '200':
+          description: Investment account replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Investment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Investments]
+      summary: Update an investment account
+      operationId: updateInvestment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvestmentInput'
+      responses:
+        '200':
+          description: Investment account updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Investment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Investments]
+      summary: Delete an investment account
+      operationId: deleteInvestment
+      responses:
+        '200':
+          description: Investment account deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Holdings
+  /v2/api/holdings:
+    get:
+      tags: [Holdings]
+      summary: List all holdings
+      operationId: getHoldings
+      parameters:
+        - name: investmentId
+          in: query
+          schema:
+            type: integer
+          description: Filter by investment account ID
+        - name: symbol
+          in: query
+          schema:
+            type: string
+          description: Filter by stock symbol
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Holding'
+    post:
+      tags: [Holdings]
+      summary: Create a new holding
+      operationId: createHolding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HoldingInput'
+      responses:
+        '201':
+          description: Holding created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Holding'
+
+  /v2/api/holdings/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Holdings]
+      summary: Get a holding by ID
+      operationId: getHoldingById
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Holding'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Holdings]
+      summary: Replace a holding
+      operationId: replaceHolding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HoldingInput'
+      responses:
+        '200':
+          description: Holding replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Holding'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Holdings]
+      summary: Update a holding
+      operationId: updateHolding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HoldingInput'
+      responses:
+        '200':
+          description: Holding updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Holding'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Holdings]
+      summary: Delete a holding
+      operationId: deleteHolding
+      responses:
+        '200':
+          description: Holding deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Bank Info
+  /v2/api/bankInfo:
+    get:
+      tags: [Bank Info]
+      summary: Get bank information
+      operationId: getBankInfo
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankInfo'
+    put:
+      tags: [Bank Info]
+      summary: Replace bank information
+      operationId: replaceBankInfo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankInfoInput'
+      responses:
+        '200':
+          description: Bank info replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankInfo'
+    patch:
+      tags: [Bank Info]
+      summary: Update bank information
+      operationId: updateBankInfo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankInfoInput'
+      responses:
+        '200':
+          description: Bank info updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankInfo'
+
+components:
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+      description: Resource ID
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Not found
+
+  schemas:
+    # Address
+    Address:
+      type: object
+      properties:
+        street:
+          type: string
+          example: "123 Main Street"
+        city:
+          type: string
+          example: "New York"
+        state:
+          type: string
+          example: "NY"
+        zipCode:
+          type: string
+          example: "10001"
+        country:
+          type: string
+          example: "USA"
+
+    # Coordinates
+    Coordinates:
+      type: object
+      properties:
+        latitude:
+          type: number
+          format: double
+          example: 40.7074
+        longitude:
+          type: number
+          format: double
+          example: -74.0104
+
+    # Business Hours
+    BusinessHours:
+      type: object
+      properties:
+        monday:
+          type: string
+          example: "9:00 AM - 5:00 PM"
+        tuesday:
+          type: string
+          example: "9:00 AM - 5:00 PM"
+        wednesday:
+          type: string
+          example: "9:00 AM - 5:00 PM"
+        thursday:
+          type: string
+          example: "9:00 AM - 5:00 PM"
+        friday:
+          type: string
+          example: "9:00 AM - 6:00 PM"
+        saturday:
+          type: string
+          example: "10:00 AM - 2:00 PM"
+        sunday:
+          type: string
+          example: "Closed"
+
+    # Customer
+    Customer:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        firstName:
+          type: string
+          example: "John"
+        lastName:
+          type: string
+          example: "Smith"
+        email:
+          type: string
+          format: email
+          example: "john.smith@email.com"
+        phone:
+          type: string
+          example: "+1-555-0101"
+        dateOfBirth:
+          type: string
+          format: date
+          example: "1985-03-15"
+        ssn:
+          type: string
+          example: "***-**-1234"
+        address:
+          $ref: '#/components/schemas/Address'
+        customerSince:
+          type: string
+          format: date
+          example: "2018-06-20"
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+          example: "active"
+        kycVerified:
+          type: boolean
+          example: true
+
+    CustomerInput:
+      type: object
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        dateOfBirth:
+          type: string
+          format: date
+        ssn:
+          type: string
+        address:
+          $ref: '#/components/schemas/Address'
+        customerSince:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+        kycVerified:
+          type: boolean
+
+    # Account
+    Account:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+        accountNumber:
+          type: string
+          example: "1001-2345-6789"
+        accountType:
+          type: string
+          enum: [checking, savings, money_market]
+          example: "checking"
+        accountName:
+          type: string
+          example: "Primary Checking"
+        balance:
+          type: number
+          format: double
+          example: 15420.50
+        availableBalance:
+          type: number
+          format: double
+          example: 15220.50
+        currency:
+          type: string
+          example: "USD"
+        status:
+          type: string
+          enum: [active, inactive, closed]
+          example: "active"
+        openedDate:
+          type: string
+          format: date
+          example: "2018-06-20"
+        interestRate:
+          type: number
+          format: double
+          example: 0.01
+        overdraftLimit:
+          type: number
+          format: double
+          example: 500.00
+        minimumBalance:
+          type: number
+          format: double
+          example: 500.00
+
+    AccountInput:
+      type: object
+      properties:
+        customerId:
+          type: integer
+        accountNumber:
+          type: string
+        accountType:
+          type: string
+          enum: [checking, savings, money_market]
+        accountName:
+          type: string
+        balance:
+          type: number
+          format: double
+        availableBalance:
+          type: number
+          format: double
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, closed]
+        openedDate:
+          type: string
+          format: date
+        interestRate:
+          type: number
+          format: double
+        overdraftLimit:
+          type: number
+          format: double
+        minimumBalance:
+          type: number
+          format: double
+
+    # Transaction
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        accountId:
+          type: integer
+        type:
+          type: string
+          enum: [debit, credit]
+          example: "debit"
+        category:
+          type: string
+          example: "shopping"
+        amount:
+          type: number
+          format: double
+          example: 125.99
+        currency:
+          type: string
+          example: "USD"
+        description:
+          type: string
+          example: "Amazon.com Purchase"
+        merchantName:
+          type: string
+          nullable: true
+          example: "Amazon"
+        merchantCategory:
+          type: string
+          example: "online_retail"
+        date:
+          type: string
+          format: date-time
+          example: "2024-12-26T10:30:00Z"
+        status:
+          type: string
+          enum: [pending, completed, failed, cancelled]
+          example: "completed"
+        reference:
+          type: string
+          example: "TXN-2024122600001"
+
+    TransactionInput:
+      type: object
+      properties:
+        accountId:
+          type: integer
+        type:
+          type: string
+          enum: [debit, credit]
+        category:
+          type: string
+        amount:
+          type: number
+          format: double
+        currency:
+          type: string
+        description:
+          type: string
+        merchantName:
+          type: string
+          nullable: true
+        merchantCategory:
+          type: string
+        date:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, completed, failed, cancelled]
+        reference:
+          type: string
+
+    # Card
+    Card:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+        accountId:
+          type: integer
+          nullable: true
+        cardNumber:
+          type: string
+          example: "****-****-****-4532"
+        cardType:
+          type: string
+          enum: [debit, credit]
+          example: "debit"
+        cardBrand:
+          type: string
+          enum: [Visa, Mastercard, Amex, Discover]
+          example: "Visa"
+        cardName:
+          type: string
+          example: "John Smith"
+        expiryDate:
+          type: string
+          example: "12/2027"
+        status:
+          type: string
+          enum: [active, inactive, blocked, expired]
+          example: "active"
+        dailyLimit:
+          type: number
+          format: double
+          example: 5000.00
+        monthlyLimit:
+          type: number
+          format: double
+          example: 25000.00
+        creditLimit:
+          type: number
+          format: double
+        availableCredit:
+          type: number
+          format: double
+        currentBalance:
+          type: number
+          format: double
+        minimumPayment:
+          type: number
+          format: double
+        paymentDueDate:
+          type: string
+          format: date
+        apr:
+          type: number
+          format: double
+        isContactless:
+          type: boolean
+          example: true
+        isVirtual:
+          type: boolean
+          example: false
+        issueDate:
+          type: string
+          format: date
+          example: "2024-01-15"
+        rewardsPoints:
+          type: integer
+
+    CardInput:
+      type: object
+      properties:
+        customerId:
+          type: integer
+        accountId:
+          type: integer
+          nullable: true
+        cardNumber:
+          type: string
+        cardType:
+          type: string
+          enum: [debit, credit]
+        cardBrand:
+          type: string
+          enum: [Visa, Mastercard, Amex, Discover]
+        cardName:
+          type: string
+        expiryDate:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, blocked, expired]
+        dailyLimit:
+          type: number
+          format: double
+        monthlyLimit:
+          type: number
+          format: double
+        creditLimit:
+          type: number
+          format: double
+        availableCredit:
+          type: number
+          format: double
+        currentBalance:
+          type: number
+          format: double
+        minimumPayment:
+          type: number
+          format: double
+        paymentDueDate:
+          type: string
+          format: date
+        apr:
+          type: number
+          format: double
+        isContactless:
+          type: boolean
+        isVirtual:
+          type: boolean
+        issueDate:
+          type: string
+          format: date
+        rewardsPoints:
+          type: integer
+
+    # Beneficiary
+    Beneficiary:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+        name:
+          type: string
+          example: "Jane Smith"
+        nickname:
+          type: string
+          example: "Mom"
+        accountNumber:
+          type: string
+          example: "****6789"
+        bankName:
+          type: string
+          example: "Chase Bank"
+        routingNumber:
+          type: string
+          example: "021000021"
+        accountType:
+          type: string
+          enum: [checking, savings]
+          example: "checking"
+        email:
+          type: string
+          format: email
+          example: "jane.smith@email.com"
+        phone:
+          type: string
+          example: "+1-555-0201"
+        status:
+          type: string
+          enum: [active, inactive]
+          example: "active"
+        addedDate:
+          type: string
+          format: date
+          example: "2020-03-15"
+
+    BeneficiaryInput:
+      type: object
+      properties:
+        customerId:
+          type: integer
+        name:
+          type: string
+        nickname:
+          type: string
+        accountNumber:
+          type: string
+        bankName:
+          type: string
+        routingNumber:
+          type: string
+        accountType:
+          type: string
+          enum: [checking, savings]
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
+        addedDate:
+          type: string
+          format: date
+
+    # Transfer
+    Transfer:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+        fromAccountId:
+          type: integer
+        toAccountId:
+          type: integer
+          nullable: true
+        beneficiaryId:
+          type: integer
+          nullable: true
+        amount:
+          type: number
+          format: double
+          example: 500.00
+        currency:
+          type: string
+          example: "USD"
+        type:
+          type: string
+          enum: [internal, external]
+          example: "internal"
+        description:
+          type: string
+          example: "Monthly savings transfer"
+        scheduledDate:
+          type: string
+          format: date-time
+          nullable: true
+        executedDate:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [pending, scheduled, completed, failed, cancelled]
+          example: "completed"
+        reference:
+          type: string
+          example: "TRF-2024121500001"
+        recurring:
+          type: boolean
+        frequency:
+          type: string
+          enum: [daily, weekly, biweekly, monthly, quarterly, annually]
+
+    TransferInput:
+      type: object
+      properties:
+        customerId:
+          type: integer
+        fromAccountId:
+          type: integer
+        toAccountId:
+          type: integer
+          nullable: true
+        beneficiaryId:
+          type: integer
+          nullable: true
+        amount:
+          type: number
+          format: double
+        currency:
+          type: string
+        type:
+          type: string
+          enum: [internal, external]
+        description:
+          type: string
+        scheduledDate:
+          type: string
+          format: date-time
+          nullable: true
+        executedDate:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          enum: [pending, scheduled, completed, failed, cancelled]
+        reference:
+          type: string
+        recurring:
+          type: boolean
+        frequency:
+          type: string
+          enum: [daily, weekly, biweekly, monthly, quarterly, annually]
+
+    # Loan
+    Loan:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+        loanType:
+          type: string
+          enum: [mortgage, auto, personal, business, student]
+          example: "mortgage"
+        loanName:
+          type: string
+          example: "Home Mortgage"
+        principalAmount:
+          type: number
+          format: double
+          example: 350000.00
+        currentBalance:
+          type: number
+          format: double
+          example: 285420.50
+        interestRate:
+          type: number
+          format: double
+          example: 6.25
+        monthlyPayment:
+          type: number
+          format: double
+          example: 2156.14
+        termMonths:
+          type: integer
+          example: 360
+        remainingMonths:
+          type: integer
+          example: 288
+        startDate:
+          type: string
+          format: date
+          example: "2021-03-01"
+        endDate:
+          type: string
+          format: date
+          example: "2051-03-01"
+        nextPaymentDate:
+          type: string
+          format: date
+          example: "2025-01-01"
+        status:
+          type: string
+          enum: [active, paid_off, defaulted, deferred]
+          example: "active"
+        collateral:
+          type: string
+          nullable: true
+          example: "123 Main Street, New York, NY 10001"
+        latePaymentFee:
+          type: number
+          format: double
+          example: 125.00
+        autopayEnabled:
+          type: boolean
+          example: true
+
+    LoanInput:
+      type: object
+      properties:
+        customerId:
+          type: integer
+        loanType:
+          type: string
+          enum: [mortgage, auto, personal, business, student]
+        loanName:
+          type: string
+        principalAmount:
+          type: number
+          format: double
+        currentBalance:
+          type: number
+          format: double
+        interestRate:
+          type: number
+          format: double
+        monthlyPayment:
+          type: number
+          format: double
+        termMonths:
+          type: integer
+        remainingMonths:
+          type: integer
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        nextPaymentDate:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [active, paid_off, defaulted, deferred]
+        collateral:
+          type: string
+          nullable: true
+        latePaymentFee:
+          type: number
+          format: double
+        autopayEnabled:
+          type: boolean
+
+    # Bill Payment
+    BillPayment:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+        payeeName:
+          type: string
+          example: "ConEdison"
+        payeeAccountNumber:
+          type: string
+          example: "****4567"
+        category:
+          type: string
+          example: "utilities"
+        amount:
+          type: number
+          format: double
+          example: 145.50
+        frequency:
+          type: string
+          enum: [once, weekly, biweekly, monthly, quarterly, annually]
+          example: "monthly"
+        nextDueDate:
+          type: string
+          format: date
+          example: "2025-01-18"
+        autopayEnabled:
+          type: boolean
+          example: true
+        fromAccountId:
+          type: integer
+        status:
+          type: string
+          enum: [active, inactive, cancelled]
+          example: "active"
+
+    BillPaymentInput:
+      type: object
+      properties:
+        customerId:
+          type: integer
+        payeeName:
+          type: string
+        payeeAccountNumber:
+          type: string
+        category:
+          type: string
+        amount:
+          type: number
+          format: double
+        frequency:
+          type: string
+          enum: [once, weekly, biweekly, monthly, quarterly, annually]
+        nextDueDate:
+          type: string
+          format: date
+        autopayEnabled:
+          type: boolean
+        fromAccountId:
+          type: integer
+        status:
+          type: string
+          enum: [active, inactive, cancelled]
+
+    # Notification
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+        type:
+          type: string
+          enum: [transaction, payment_due, deposit, security, low_balance, promotion]
+          example: "transaction"
+        title:
+          type: string
+          example: "Purchase Alert"
+        message:
+          type: string
+          example: "A purchase of $125.99 was made at Amazon.com"
+        date:
+          type: string
+          format: date-time
+          example: "2024-12-26T10:30:00Z"
+        read:
+          type: boolean
+          example: false
+        priority:
+          type: string
+          enum: [low, normal, high]
+          example: "normal"
+
+    NotificationInput:
+      type: object
+      properties:
+        customerId:
+          type: integer
+        type:
+          type: string
+          enum: [transaction, payment_due, deposit, security, low_balance, promotion]
+        title:
+          type: string
+        message:
+          type: string
+        date:
+          type: string
+          format: date-time
+        read:
+          type: boolean
+        priority:
+          type: string
+          enum: [low, normal, high]
+
+    # Branch
+    Branch:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          example: "Manhattan Main Branch"
+        address:
+          type: string
+          example: "100 Wall Street, New York, NY 10005"
+        phone:
+          type: string
+          example: "+1-212-555-0100"
+        email:
+          type: string
+          format: email
+          example: "manhattan.main@mockbank.com"
+        hours:
+          $ref: '#/components/schemas/BusinessHours'
+        services:
+          type: array
+          items:
+            type: string
+          example: ["deposits", "withdrawals", "loans", "safe_deposit"]
+        hasATM:
+          type: boolean
+          example: true
+        hasDriveThru:
+          type: boolean
+          example: false
+        coordinates:
+          $ref: '#/components/schemas/Coordinates'
+
+    BranchInput:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          format: email
+        hours:
+          $ref: '#/components/schemas/BusinessHours'
+        services:
+          type: array
+          items:
+            type: string
+        hasATM:
+          type: boolean
+        hasDriveThru:
+          type: boolean
+        coordinates:
+          $ref: '#/components/schemas/Coordinates'
+
+    # ATM
+    Atm:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          example: "Times Square ATM"
+        address:
+          type: string
+          example: "1500 Broadway, New York, NY 10036"
+        status:
+          type: string
+          enum: [online, offline, maintenance]
+          example: "online"
+        features:
+          type: array
+          items:
+            type: string
+          example: ["cash_withdrawal", "deposits", "balance_inquiry", "transfers"]
+        is24Hours:
+          type: boolean
+          example: true
+        coordinates:
+          $ref: '#/components/schemas/Coordinates'
+
+    AtmInput:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        status:
+          type: string
+          enum: [online, offline, maintenance]
+        features:
+          type: array
+          items:
+            type: string
+        is24Hours:
+          type: boolean
+        coordinates:
+          $ref: '#/components/schemas/Coordinates'
+
+    # Exchange Rate
+    ExchangeRate:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        fromCurrency:
+          type: string
+          example: "USD"
+        toCurrency:
+          type: string
+          example: "EUR"
+        rate:
+          type: number
+          format: double
+          example: 0.9245
+        lastUpdated:
+          type: string
+          format: date-time
+          example: "2024-12-26T00:00:00Z"
+
+    ExchangeRateInput:
+      type: object
+      properties:
+        fromCurrency:
+          type: string
+        toCurrency:
+          type: string
+        rate:
+          type: number
+          format: double
+        lastUpdated:
+          type: string
+          format: date-time
+
+    # Investment
+    Investment:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        customerId:
+          type: integer
+        accountType:
+          type: string
+          enum: [brokerage, ira, 401k, roth_ira]
+          example: "brokerage"
+        accountNumber:
+          type: string
+          example: "INV-001-2345"
+        totalValue:
+          type: number
+          format: double
+          example: 87500.00
+        cashBalance:
+          type: number
+          format: double
+          example: 5200.00
+        contributionLimit:
+          type: number
+          format: double
+        contributedYTD:
+          type: number
+          format: double
+        status:
+          type: string
+          enum: [active, inactive, closed]
+          example: "active"
+        openedDate:
+          type: string
+          format: date
+          example: "2019-05-15"
+
+    InvestmentInput:
+      type: object
+      properties:
+        customerId:
+          type: integer
+        accountType:
+          type: string
+          enum: [brokerage, ira, 401k, roth_ira]
+        accountNumber:
+          type: string
+        totalValue:
+          type: number
+          format: double
+        cashBalance:
+          type: number
+          format: double
+        contributionLimit:
+          type: number
+          format: double
+        contributedYTD:
+          type: number
+          format: double
+        status:
+          type: string
+          enum: [active, inactive, closed]
+        openedDate:
+          type: string
+          format: date
+
+    # Holding
+    Holding:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        investmentId:
+          type: integer
+        symbol:
+          type: string
+          example: "AAPL"
+        name:
+          type: string
+          example: "Apple Inc."
+        quantity:
+          type: integer
+          example: 50
+        averageCost:
+          type: number
+          format: double
+          example: 145.00
+        currentPrice:
+          type: number
+          format: double
+          example: 193.42
+        marketValue:
+          type: number
+          format: double
+          example: 9671.00
+        gain:
+          type: number
+          format: double
+          example: 2421.00
+        gainPercent:
+          type: number
+          format: double
+          example: 33.39
+
+    HoldingInput:
+      type: object
+      properties:
+        investmentId:
+          type: integer
+        symbol:
+          type: string
+        name:
+          type: string
+        quantity:
+          type: integer
+        averageCost:
+          type: number
+          format: double
+        currentPrice:
+          type: number
+          format: double
+        marketValue:
+          type: number
+          format: double
+        gain:
+          type: number
+          format: double
+        gainPercent:
+          type: number
+          format: double
+
+    # Bank Info
+    BankInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "MockBank Financial"
+        routingNumber:
+          type: string
+          example: "021000089"
+        swiftCode:
+          type: string
+          example: "MOCKUS33"
+        customerService:
+          type: string
+          example: "+1-800-555-BANK"
+        fraudHotline:
+          type: string
+          example: "+1-800-555-FRAUD"
+        website:
+          type: string
+          format: uri
+          example: "https://www.mockbank.com"
+        mobileApp:
+          type: object
+          properties:
+            ios:
+              type: string
+              format: uri
+            android:
+              type: string
+              format: uri
+        socialMedia:
+          type: object
+          properties:
+            twitter:
+              type: string
+            facebook:
+              type: string
+            linkedin:
+              type: string
+
+    BankInfoInput:
+      type: object
+      properties:
+        name:
+          type: string
+        routingNumber:
+          type: string
+        swiftCode:
+          type: string
+        customerService:
+          type: string
+        fraudHotline:
+          type: string
+        website:
+          type: string
+          format: uri
+        mobileApp:
+          type: object
+          properties:
+            ios:
+              type: string
+              format: uri
+            android:
+              type: string
+              format: uri
+        socialMedia:
+          type: object
+          properties:
+            twitter:
+              type: string
+            facebook:
+              type: string
+            linkedin:
+              type: string

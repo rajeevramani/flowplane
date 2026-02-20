@@ -10,7 +10,7 @@ use tracing::{info, instrument};
 use crate::{
     domain::{
         validate_wasm_binary, AttachmentPoint, CustomWasmFilterId, EnvoyFilterMetadata,
-        FilterCapabilities, FilterSchemaDefinition, FilterSchemaSource, PerRouteBehavior,
+        FilterCapabilities, FilterSchemaDefinition, FilterSchemaSource, PerRouteBehavior, UiHints,
     },
     errors::{FlowplaneError, Result},
     storage::{
@@ -220,14 +220,29 @@ impl CustomWasmFilterService {
 
     /// Delete a custom WASM filter
     ///
-    /// Note: This will fail if any filter instances are using this custom filter type.
-    /// The caller should check for usage before calling this method.
+    /// Returns a 409 Conflict error if any filter instances are using this custom filter type.
     #[instrument(skip(self))]
     pub async fn delete_custom_filter(&self, id: &CustomWasmFilterId) -> Result<()> {
         let repository = self.repository()?;
 
-        // TODO: Check if any filter instances are using this custom filter type
-        // This requires checking the filters table for filter_type = "custom_wasm_{id}"
+        // Check if any filter instances are using this custom filter type
+        let filter_type = format!("custom_wasm_{}", id);
+        let filter_repo = self
+            .xds_state
+            .filter_repository
+            .as_ref()
+            .ok_or_else(|| FlowplaneError::internal("Filter repository not configured"))?;
+
+        let usage_count = filter_repo.count_by_filter_type(&filter_type).await?;
+        if usage_count > 0 {
+            return Err(FlowplaneError::conflict(
+                format!(
+                    "Cannot delete custom filter: {} filter instance(s) are using this type",
+                    usage_count
+                ),
+                "CustomWasmFilter",
+            ));
+        }
 
         repository.delete(id).await?;
 
@@ -293,7 +308,10 @@ impl CustomWasmFilterService {
             config_schema: data.config_schema.clone(),
             per_route_config_schema: data.per_route_config_schema.clone(),
             proto_mapping: HashMap::new(),
-            ui_hints: None, // TODO: Parse ui_hints from data.ui_hints
+            ui_hints: data
+                .ui_hints
+                .as_ref()
+                .and_then(|v| serde_json::from_value::<UiHints>(v.clone()).ok()),
             source: FilterSchemaSource::Custom,
             is_implemented: true,
         }

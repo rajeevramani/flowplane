@@ -54,12 +54,14 @@ impl UserService {
     ///
     /// This will hash the password and create the user in the database.
     /// An audit log entry will be recorded.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_user(
         &self,
         email: String,
         password: String,
         name: String,
         is_admin: bool,
+        org_id: crate::domain::OrgId,
         created_by: Option<String>,
         auth_context: Option<&AuthContext>,
     ) -> Result<User> {
@@ -76,6 +78,8 @@ impl UserService {
 
         // Create user
         let user_id = UserId::new();
+        let org_id_for_audit = Some(org_id.as_str().to_string());
+
         let new_user = NewUser {
             id: user_id.clone(),
             email: email.clone(),
@@ -83,6 +87,7 @@ impl UserService {
             name: name.clone(),
             status: UserStatus::Active,
             is_admin,
+            org_id,
         };
 
         let user = self.user_repository.create_user(new_user).await?;
@@ -95,6 +100,7 @@ impl UserService {
             serde_json::json!({
                 "name": name,
                 "is_admin": is_admin,
+                "org_id": org_id_for_audit,
                 "created_by": created_by,
             }),
         );
@@ -352,19 +358,23 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::not_found("User", user_id.as_str()))?;
 
-        // Validate team exists (if team repository is available)
-        if let Some(ref team_repo) = self.team_repository {
-            if team_repo.get_team_by_name(&team).await?.is_none() {
-                return Err(Error::validation(format!(
+        // Resolve team name to UUID (FK migration: team column stores UUIDs)
+        let team_id = if let Some(ref team_repo) = self.team_repository {
+            let team_record = team_repo.get_team_by_name(&team).await?.ok_or_else(|| {
+                Error::validation(format!(
                     "Team '{}' does not exist. Please create the team first.",
                     team
-                )));
-            }
-        }
+                ))
+            })?;
+            team_record.id.to_string()
+        } else {
+            // No team repo available, assume team is already a UUID
+            team.clone()
+        };
 
         // Check if membership already exists
         if let Some(_existing) =
-            self.membership_repository.get_user_team_membership(user_id, &team).await?
+            self.membership_repository.get_user_team_membership(user_id, &team_id).await?
         {
             return Err(Error::validation(format!(
                 "User '{}' is already a member of team '{}'",
@@ -377,7 +387,7 @@ impl UserService {
         let new_membership = NewUserTeamMembership {
             id: membership_id,
             user_id: user_id.clone(),
-            team: team.clone(),
+            team: team_id.clone(),
             scopes: scopes.clone(),
         };
 
@@ -420,11 +430,17 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::not_found("User", user_id.as_str()))?;
 
+        // Resolve team name to UUID for DB lookup
+        let team_id = self.resolve_team_id(team).await?;
+
         // Verify membership exists
-        let membership =
-            self.membership_repository.get_user_team_membership(user_id, team).await?.ok_or_else(
-                || Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team)),
-            )?;
+        let membership = self
+            .membership_repository
+            .get_user_team_membership(user_id, &team_id)
+            .await?
+            .ok_or_else(|| {
+                Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team))
+            })?;
 
         // Delete membership
         self.membership_repository.delete_membership(&membership.id).await?;
@@ -466,11 +482,17 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::not_found("User", user_id.as_str()))?;
 
+        // Resolve team name to UUID for DB lookup
+        let team_id = self.resolve_team_id(team).await?;
+
         // Verify membership exists
-        let membership =
-            self.membership_repository.get_user_team_membership(user_id, team).await?.ok_or_else(
-                || Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team)),
-            )?;
+        let membership = self
+            .membership_repository
+            .get_user_team_membership(user_id, &team_id)
+            .await?
+            .ok_or_else(|| {
+                Error::not_found("TeamMembership", format!("{}/{}", user_id.as_str(), team))
+            })?;
 
         // Store old scopes for audit
         let old_scopes = membership.scopes.clone();
@@ -517,26 +539,39 @@ impl UserService {
 
     /// List all users in a team.
     pub async fn list_team_users(&self, team: &str) -> Result<Vec<UserTeamMembership>> {
-        self.membership_repository.list_team_members(team).await
+        let team_id = self.resolve_team_id(team).await?;
+        self.membership_repository.list_team_members(&team_id).await
+    }
+
+    /// Resolve a team name to its UUID. Idempotent: UUIDs pass through.
+    async fn resolve_team_id(&self, team: &str) -> Result<String> {
+        // If already a UUID, pass through
+        if uuid::Uuid::parse_str(team).is_ok() {
+            return Ok(team.to_string());
+        }
+        if let Some(ref team_repo) = self.team_repository {
+            let team_record = team_repo
+                .get_team_by_name(team)
+                .await?
+                .ok_or_else(|| Error::not_found("Team", team))?;
+            Ok(team_record.id.to_string())
+        } else {
+            Ok(team.to_string())
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::OrgId;
     use crate::storage::repositories::user::{SqlxTeamMembershipRepository, SqlxUserRepository};
+    use crate::storage::test_helpers::TestDatabase;
     use crate::storage::DbPool;
-    use sqlx::sqlite::SqlitePoolOptions;
 
-    async fn setup_test_service() -> (UserService, DbPool) {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect("sqlite::memory:")
-            .await
-            .expect("create sqlite pool");
-
-        // Run migrations
-        crate::storage::run_migrations(&pool).await.expect("run migrations");
+    async fn setup_test_service() -> (TestDatabase, UserService, DbPool) {
+        let test_db = TestDatabase::new("user_service").await;
+        let pool = test_db.pool.clone();
 
         let user_repo = Arc::new(SqlxUserRepository::new(pool.clone()));
         let membership_repo = Arc::new(SqlxTeamMembershipRepository::new(pool.clone()));
@@ -547,25 +582,28 @@ mod tests {
         let service =
             UserService::with_team_validation(user_repo, membership_repo, team_repo, audit_repo);
 
-        (service, pool)
+        (test_db, service, pool)
     }
 
-    /// Helper to create a test team in the database
-    async fn create_test_team(pool: &DbPool, name: &str, display_name: &str) {
+    /// Helper to create a test team in the database, returns team ID
+    async fn create_test_team(pool: &DbPool, name: &str, display_name: &str) -> String {
+        let team_id = format!("team-{}", uuid::Uuid::new_v4());
         sqlx::query(
-            "INSERT INTO teams (id, name, display_name, status) VALUES (?, ?, ?, 'active')",
+            "INSERT INTO teams (id, name, display_name, org_id, status) VALUES ($1, $2, $3, $4, 'active') ON CONFLICT (org_id, name) DO NOTHING",
         )
-        .bind(format!("team-{}", uuid::Uuid::new_v4()))
+        .bind(&team_id)
         .bind(name)
         .bind(display_name)
+        .bind(crate::storage::test_helpers::TEST_ORG_ID)
         .execute(pool)
         .await
         .expect("create test team");
+        team_id
     }
 
     #[tokio::test]
     async fn test_create_user() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -573,6 +611,7 @@ mod tests {
                 "SecurePassword123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 Some("admin".to_string()),
                 None,
             )
@@ -587,7 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_duplicate_user_fails() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         // Create first user
         service
@@ -596,6 +635,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -609,6 +649,7 @@ mod tests {
                 "Password456".to_string(),
                 "Another User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -620,7 +661,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_user() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let created = service
             .create_user(
@@ -628,6 +669,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -644,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_users() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         // Create multiple users
         for i in 1..=3 {
@@ -654,6 +696,7 @@ mod tests {
                     "Password123".to_string(),
                     format!("User {}", i),
                     false,
+                    OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                     None,
                     None,
                 )
@@ -667,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_user() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -675,6 +718,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -700,7 +744,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_user() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -708,6 +752,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -722,10 +767,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_team_membership() {
-        let (service, pool) = setup_test_service().await;
+        let (_db, service, pool) = setup_test_service().await;
 
         // Create the team first
-        create_test_team(&pool, "team-alpha", "Team Alpha").await;
+        let team_id = create_test_team(&pool, "team-alpha", "Team Alpha").await;
 
         let user = service
             .create_user(
@@ -733,6 +778,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -751,13 +797,13 @@ mod tests {
             .expect("add team membership");
 
         assert_eq!(membership.user_id, user.id);
-        assert_eq!(membership.team, "team-alpha");
+        assert_eq!(membership.team, team_id);
         assert_eq!(membership.scopes.len(), 2);
     }
 
     #[tokio::test]
     async fn test_remove_team_membership() {
-        let (service, pool) = setup_test_service().await;
+        let (_db, service, pool) = setup_test_service().await;
 
         // Create the team first
         create_test_team(&pool, "team-alpha", "Team Alpha").await;
@@ -768,6 +814,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -796,7 +843,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_user_teams() {
-        let (service, pool) = setup_test_service().await;
+        let (_db, service, pool) = setup_test_service().await;
 
         // Create teams first
         for (name, display) in
@@ -811,6 +858,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -837,7 +885,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_team_membership_validates_team_exists() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -845,6 +893,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -873,7 +922,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_team_membership_scopes() {
-        let (service, pool) = setup_test_service().await;
+        let (_db, service, pool) = setup_test_service().await;
 
         // Create the team first
         create_test_team(&pool, "team-alpha", "Team Alpha").await;
@@ -884,6 +933,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )
@@ -924,7 +974,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_team_membership_scopes_user_not_found() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let fake_user_id = UserId::new();
         let result = service
@@ -948,7 +998,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_team_membership_scopes_membership_not_found() {
-        let (service, _pool) = setup_test_service().await;
+        let (_db, service, _pool) = setup_test_service().await;
 
         let user = service
             .create_user(
@@ -956,6 +1006,7 @@ mod tests {
                 "Password123".to_string(),
                 "Test User".to_string(),
                 false,
+                OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
                 None,
                 None,
             )

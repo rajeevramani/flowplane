@@ -3,8 +3,8 @@
 CREATE TABLE listener_filters (
     listener_id TEXT NOT NULL,
     filter_id TEXT NOT NULL,
-    filter_order INTEGER NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    filter_order BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (listener_id) REFERENCES listeners(id) ON DELETE CASCADE,
     FOREIGN KEY (filter_id) REFERENCES filters(id) ON DELETE RESTRICT,

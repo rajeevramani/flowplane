@@ -11,8 +11,8 @@ CREATE TABLE virtual_hosts (
     name TEXT NOT NULL,                           -- VirtualHost name
     domains TEXT NOT NULL,                        -- JSON array of domains
     rule_order INTEGER NOT NULL,                  -- Position in virtual_hosts array
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (route_id) REFERENCES routes(id) ON DELETE CASCADE,
     UNIQUE(route_id, name)

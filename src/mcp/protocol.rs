@@ -5,13 +5,12 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Supported MCP protocol versions (oldest to newest)
-pub const SUPPORTED_VERSIONS: &[&str] = &[
-    "2024-11-05", // Initial stable release
-    "2025-03-26", // Added streamable HTTP
-    "2025-06-18", // Claude Desktop current
-    "2025-11-25", // Latest spec
-];
+/// Supported MCP protocol version (2025-11-25 only)
+///
+/// As of this version, we only support MCP 2025-11-25 (Streamable HTTP transport).
+/// Older protocol versions are not supported. Use mcp-remote bridge for clients
+/// that don't yet support 2025-11-25 (e.g., Claude Desktop using 2025-06-18).
+pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// JSON-RPC 2.0 Request
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -70,19 +69,47 @@ pub struct InitializeRequest {
 /// Backward compatibility alias
 pub type InitializeParams = InitializeRequest;
 
+/// Client information provided during initialization (MCP 2025-11-25)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ClientInfo {
+    /// Required client name
     pub name: String,
+
+    /// Required client version
     pub version: String,
+
+    /// Optional human-readable display title
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+
+    /// Optional client description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Optional display icons
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
+
+    /// Optional website URL for client information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub website_url: Option<String>,
 }
 
-/// MCP Initialize Response
+/// MCP Initialize Response (MCP 2025-11-25)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResponse {
     pub protocol_version: String,
     pub capabilities: Capabilities,
     pub server_info: ServerInfo,
+
+    /// Optional server-specific instructions for the client
+    ///
+    /// These instructions provide guidance on how to use the server,
+    /// what tools are available, and any special considerations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 /// Backward compatibility alias
@@ -100,15 +127,42 @@ impl Default for InitializedNotification {
     }
 }
 
+/// Server information provided during initialization (MCP 2025-11-25)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
+    /// Required server name
     pub name: String,
+
+    /// Required server version
     pub version: String,
+
+    /// Optional human-readable display title
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+
+    /// Optional server description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Optional display icons
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
+
+    /// Optional website URL for server information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub website_url: Option<String>,
 }
 
-/// MCP Capabilities for both client and server
+/// MCP Capabilities for both client and server (MCP 2025-11-25)
+///
+/// This struct handles both client and server capabilities:
+/// - Server capabilities: tools, resources, prompts, logging, completions, tasks
+/// - Client capabilities: roots, sampling
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Capabilities {
+    // Server capabilities
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,7 +172,19 @@ pub struct Capabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logging: Option<LoggingCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub completions: Option<CompletionsCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<TasksCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental: Option<ExperimentalCapabilities>,
+
+    // Client capabilities (MCP 2025-11-25)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roots: Option<RootsCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<SamplingCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<serde_json::Value>,
 }
 
 /// Backward compatibility aliases
@@ -154,19 +220,193 @@ pub struct PromptsCapability {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct LoggingCapability {}
 
+/// Experimental capabilities (MCP 2025-11-25)
+///
+/// The spec defines this as `{ [key: string]: object }` - a map of experimental
+/// feature names to their configuration objects. Using serde_json::Value for
+/// maximum flexibility in accepting any experimental capabilities from clients.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
-pub struct ExperimentalCapabilities {
+#[serde(transparent)]
+pub struct ExperimentalCapabilities(pub serde_json::Value);
+
+/// Client capability for providing filesystem roots (MCP 2025-11-25)
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RootsCapability {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sse: Option<bool>,
+    pub list_changed: Option<bool>,
 }
 
-/// MCP Tool Definition
+/// Client capability for LLM sampling (MCP 2025-11-25)
+///
+/// Indicates client support for server-initiated sampling requests,
+/// including context inclusion and tool use during sampling.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SamplingCapability {
+    /// Whether the client supports context inclusion via includeContext parameter
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
+
+    /// Whether the client supports tool use via tools and toolChoice parameters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<serde_json::Value>,
+}
+
+// -----------------------------------------------------------------------------
+// Completions and Tasks Capabilities (MCP 2025-11-25)
+// -----------------------------------------------------------------------------
+
+/// Completions capability for server-side autocompletion (MCP 2025-11-25)
+///
+/// The spec defines this as just `completions?: object` - an empty object
+/// whose presence indicates the server supports argument autocompletion.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct CompletionsCapability {}
+
+/// Tasks capability for client/server task management (MCP 2025-11-25)
+///
+/// Capability flags can be either booleans or objects with nested configuration.
+/// Using serde_json::Value to accept both formats from different MCP clients.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TasksCapability {
+    /// Task listing capability (bool or object)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list: Option<serde_json::Value>,
+
+    /// Task cancellation capability (bool or object)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<serde_json::Value>,
+
+    /// Task request capabilities
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests: Option<TaskRequests>,
+}
+
+/// Task request capability configuration (MCP 2025-11-25)
+///
+/// Specifies which types of task requests a client/server supports.
+/// - Server capabilities use: `tools: { call?: object }`
+/// - Client capabilities use: `sampling: { createMessage?: object }`, `elicitation: { create?: object }`
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRequests {
+    /// Server: Tool call capabilities for tasks (e.g., `{ call: {} }`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<serde_json::Value>,
+
+    /// Client: Sampling request capabilities (e.g., `{ createMessage: {} }`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<serde_json::Value>,
+
+    /// Client: Elicitation request capabilities (e.g., `{ create: {} }`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<serde_json::Value>,
+}
+
+// -----------------------------------------------------------------------------
+// Icon and Annotation Types (MCP 2025-11-25)
+// -----------------------------------------------------------------------------
+
+/// Icon for display in user interfaces
+///
+/// Icons can be used for tools, servers, and clients to provide visual
+/// representation in MCP host UIs.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Icon {
+    /// URL or data URI of the icon resource
+    pub src: String,
+
+    /// MIME type of the icon (e.g., "image/png", "image/svg+xml")
+    pub mime_type: String,
+
+    /// Optional size hints (e.g., ["48x48", "any"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sizes: Option<Vec<String>>,
+
+    /// Optional theme variant ("light" or "dark")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+}
+
+/// Tool behavioral hints and metadata (MCP 2025-11-25)
+///
+/// Annotations provide hints about tool behavior that clients can use
+/// for UI presentation and decision-making.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ToolAnnotations {
+    /// Hints about tool behavior (free-form JSON, untrusted unless from trusted server)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hints: Option<serde_json::Value>,
+}
+
+/// MCP Tool Definition (MCP 2025-11-25)
+///
+/// Enhanced tool definition with optional fields for title, icons,
+/// output schema, and behavioral annotations.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Tool {
+    /// Unique identifier for the tool (1-128 characters)
     pub name: String,
-    pub description: String,
+
+    /// Optional human-readable display title (different from name)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+
+    /// Human-readable description (optional per MCP 2025-11-25)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// JSON Schema for input validation
     pub input_schema: serde_json::Value,
+
+    /// Optional JSON Schema for output structure
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+
+    /// Optional display icons
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
+
+    /// Optional behavioral annotations
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+}
+
+impl Tool {
+    /// Create a new tool with required fields, defaulting optional fields to None
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: serde_json::Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            title: None,
+            description: Some(description.into()),
+            input_schema,
+            output_schema: None,
+            icons: None,
+            annotations: None,
+        }
+    }
+}
+
+impl Default for Tool {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            title: None,
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+            icons: None,
+            annotations: None,
+        }
+    }
 }
 
 /// MCP Tools List Response
@@ -428,16 +668,95 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_definition() {
+    fn test_tool_definition_minimal() {
+        // Test Tool with only required fields
         let tool = Tool {
             name: "test_tool".to_string(),
-            description: "A test tool".to_string(),
+            title: None,
+            description: Some("A test tool".to_string()),
             input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+            icons: None,
+            annotations: None,
         };
 
         let serialized = serde_json::to_value(&tool).expect("Failed to serialize");
         assert_eq!(serialized["name"], "test_tool");
         assert_eq!(serialized["description"], "A test tool");
+        // Optional fields should not be present in serialized output
+        assert!(serialized.get("title").is_none());
+        assert!(serialized.get("outputSchema").is_none());
+        assert!(serialized.get("icons").is_none());
+        assert!(serialized.get("annotations").is_none());
+    }
+
+    #[test]
+    fn test_tool_definition_full() {
+        // Test Tool with all fields (MCP 2025-11-25)
+        let tool = Tool {
+            name: "test_tool".to_string(),
+            title: Some("Test Tool".to_string()),
+            description: Some("A test tool with all fields".to_string()),
+            input_schema: serde_json::json!({"type": "object", "properties": {"arg": {"type": "string"}}}),
+            output_schema: Some(
+                serde_json::json!({"type": "object", "properties": {"result": {"type": "string"}}}),
+            ),
+            icons: Some(vec![Icon {
+                src: "data:image/png;base64,ABC123".to_string(),
+                mime_type: "image/png".to_string(),
+                sizes: Some(vec!["48x48".to_string()]),
+                theme: Some("light".to_string()),
+            }]),
+            annotations: Some(ToolAnnotations {
+                hints: Some(serde_json::json!({"category": "test", "priority": "low"})),
+            }),
+        };
+
+        let serialized = serde_json::to_value(&tool).expect("Failed to serialize");
+        assert_eq!(serialized["name"], "test_tool");
+        assert_eq!(serialized["title"], "Test Tool");
+        assert_eq!(serialized["description"], "A test tool with all fields");
+        assert!(serialized["inputSchema"].is_object());
+        assert!(serialized["outputSchema"].is_object());
+        assert!(serialized["icons"].is_array());
+        assert!(serialized["annotations"].is_object());
+    }
+
+    #[test]
+    fn test_icon_serialization() {
+        let icon = Icon {
+            src: "https://example.com/icon.png".to_string(),
+            mime_type: "image/png".to_string(),
+            sizes: Some(vec!["32x32".to_string(), "48x48".to_string()]),
+            theme: Some("dark".to_string()),
+        };
+
+        let serialized = serde_json::to_value(&icon).expect("Failed to serialize");
+        assert_eq!(serialized["src"], "https://example.com/icon.png");
+        assert_eq!(serialized["mimeType"], "image/png");
+        assert_eq!(serialized["sizes"][0], "32x32");
+        assert_eq!(serialized["theme"], "dark");
+    }
+
+    #[test]
+    fn test_tool_annotations_serialization() {
+        let annotations = ToolAnnotations {
+            hints: Some(serde_json::json!({"destructive": true, "confirmation": "required"})),
+        };
+
+        let serialized = serde_json::to_value(&annotations).expect("Failed to serialize");
+        assert!(serialized["hints"]["destructive"].as_bool().unwrap());
+        assert_eq!(serialized["hints"]["confirmation"], "required");
+    }
+
+    #[test]
+    fn test_tool_deserialization_minimal() {
+        // Test deserializing a Tool with only required fields (backward compat)
+        let json = r#"{"name":"test","inputSchema":{"type":"object"}}"#;
+        let tool: Tool = serde_json::from_str(json).expect("Failed to deserialize");
+        assert_eq!(tool.name, "test");
+        assert!(tool.description.is_none());
+        assert!(tool.title.is_none());
     }
 
     #[test]
@@ -471,5 +790,342 @@ mod tests {
 
         assert_eq!(resource.uri, "flowplane://clusters/prod");
         assert_eq!(resource.name, "Production Cluster");
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 1.3: Completions and Tasks Capability Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_completions_capability_serialization() {
+        // Test CompletionsCapability (empty object per MCP 2025-11-25 spec)
+        let capability = CompletionsCapability::default();
+        let serialized = serde_json::to_value(&capability).expect("Failed to serialize");
+        assert!(serialized.is_object());
+        // Empty object - presence indicates support
+        assert_eq!(serialized, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_tasks_capability_serialization() {
+        // Test minimal TasksCapability
+        let capability = TasksCapability::default();
+        let serialized = serde_json::to_value(&capability).expect("Failed to serialize");
+        assert!(serialized.is_object());
+
+        // Test server-style tasks capability (tools.call)
+        let capability = TasksCapability {
+            list: Some(serde_json::json!({})),
+            cancel: Some(serde_json::json!({})),
+            requests: Some(TaskRequests {
+                tools: Some(serde_json::json!({"call": {}})),
+                sampling: None,
+                elicitation: None,
+            }),
+        };
+        let serialized = serde_json::to_value(&capability).expect("Failed to serialize");
+        assert!(serialized["list"].is_object());
+        assert!(serialized["cancel"].is_object());
+        assert!(serialized["requests"]["tools"]["call"].is_object());
+
+        // Test client-style tasks capability (sampling.createMessage, elicitation.create)
+        let capability = TasksCapability {
+            list: Some(serde_json::json!({})),
+            cancel: Some(serde_json::json!({})),
+            requests: Some(TaskRequests {
+                tools: None,
+                sampling: Some(serde_json::json!({"createMessage": {}})),
+                elicitation: Some(serde_json::json!({"create": {}})),
+            }),
+        };
+        let serialized = serde_json::to_value(&capability).expect("Failed to serialize");
+        assert!(serialized["list"].is_object());
+        assert!(serialized["cancel"].is_object());
+        assert!(serialized["requests"]["sampling"]["createMessage"].is_object());
+        assert!(serialized["requests"]["elicitation"]["create"].is_object());
+    }
+
+    #[test]
+    fn test_enhanced_capabilities_serialization() {
+        // Test Capabilities with completions and tasks fields
+        let capabilities = Capabilities {
+            tools: Some(ToolCapabilities { list_changed: Some(true) }),
+            completions: Some(CompletionsCapability {}), // Empty object per spec
+            tasks: Some(TasksCapability {
+                list: Some(serde_json::json!({})),
+                cancel: Some(serde_json::json!({})),
+                requests: None,
+            }),
+            ..Default::default()
+        };
+
+        let serialized = serde_json::to_value(&capabilities).expect("Failed to serialize");
+        assert!(serialized["tools"]["listChanged"].as_bool().unwrap());
+        // Completions is an empty object (presence indicates support)
+        assert!(serialized["completions"].is_object());
+        assert!(serialized["tasks"]["list"].is_object());
+        assert!(serialized["tasks"]["cancel"].is_object());
+        // Optional fields should not be serialized
+        assert!(serialized.get("resources").is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 1.4: Enhanced Info Struct Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_enhanced_client_info_serialization() {
+        // Test minimal ClientInfo (backward compatible)
+        let client_info = ClientInfo {
+            name: "test-client".to_string(),
+            version: "1.0.0".to_string(),
+            title: None,
+            description: None,
+            icons: None,
+            website_url: None,
+        };
+        let serialized = serde_json::to_value(&client_info).expect("Failed to serialize");
+        assert_eq!(serialized["name"], "test-client");
+        assert_eq!(serialized["version"], "1.0.0");
+        assert!(serialized.get("title").is_none());
+
+        // Test full ClientInfo with all new fields
+        let client_info = ClientInfo {
+            name: "test-client".to_string(),
+            version: "1.0.0".to_string(),
+            title: Some("Test Client".to_string()),
+            description: Some("A test MCP client".to_string()),
+            icons: Some(vec![Icon {
+                src: "https://example.com/icon.png".to_string(),
+                mime_type: "image/png".to_string(),
+                sizes: Some(vec!["32x32".to_string()]),
+                theme: None,
+            }]),
+            website_url: Some("https://example.com".to_string()),
+        };
+        let serialized = serde_json::to_value(&client_info).expect("Failed to serialize");
+        assert_eq!(serialized["title"], "Test Client");
+        assert_eq!(serialized["description"], "A test MCP client");
+        assert_eq!(serialized["websiteUrl"], "https://example.com");
+        assert!(serialized["icons"].is_array());
+    }
+
+    #[test]
+    fn test_enhanced_server_info_serialization() {
+        // Test minimal ServerInfo (backward compatible)
+        let server_info = ServerInfo {
+            name: "flowplane-mcp".to_string(),
+            version: "0.0.3".to_string(),
+            title: None,
+            description: None,
+            icons: None,
+            website_url: None,
+        };
+        let serialized = serde_json::to_value(&server_info).expect("Failed to serialize");
+        assert_eq!(serialized["name"], "flowplane-mcp");
+        assert_eq!(serialized["version"], "0.0.3");
+        assert!(serialized.get("title").is_none());
+
+        // Test full ServerInfo with all new fields
+        let server_info = ServerInfo {
+            name: "flowplane-mcp".to_string(),
+            version: "0.0.3".to_string(),
+            title: Some("Flowplane MCP Server".to_string()),
+            description: Some("Envoy control plane MCP server".to_string()),
+            icons: Some(vec![Icon {
+                src: "data:image/svg+xml;base64,PHN2Zy8+".to_string(),
+                mime_type: "image/svg+xml".to_string(),
+                sizes: Some(vec!["any".to_string()]),
+                theme: Some("light".to_string()),
+            }]),
+            website_url: Some("https://flowplane.dev".to_string()),
+        };
+        let serialized = serde_json::to_value(&server_info).expect("Failed to serialize");
+        assert_eq!(serialized["title"], "Flowplane MCP Server");
+        assert_eq!(serialized["description"], "Envoy control plane MCP server");
+        assert_eq!(serialized["websiteUrl"], "https://flowplane.dev");
+        assert!(serialized["icons"].is_array());
+    }
+
+    #[test]
+    fn test_enhanced_initialize_response_serialization() {
+        // Test InitializeResponse without instructions (backward compatible)
+        let response = InitializeResponse {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            capabilities: Capabilities::default(),
+            server_info: ServerInfo {
+                name: "flowplane-mcp".to_string(),
+                version: "0.0.3".to_string(),
+                title: None,
+                description: None,
+                icons: None,
+                website_url: None,
+            },
+            instructions: None,
+        };
+        let serialized = serde_json::to_value(&response).expect("Failed to serialize");
+        assert_eq!(serialized["protocolVersion"], PROTOCOL_VERSION);
+        assert!(serialized.get("instructions").is_none());
+
+        // Test InitializeResponse with instructions
+        let response = InitializeResponse {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            capabilities: Capabilities::default(),
+            server_info: ServerInfo {
+                name: "flowplane-mcp".to_string(),
+                version: "0.0.3".to_string(),
+                title: None,
+                description: None,
+                icons: None,
+                website_url: None,
+            },
+            instructions: Some("Use list_clusters to see available clusters.".to_string()),
+        };
+        let serialized = serde_json::to_value(&response).expect("Failed to serialize");
+        assert_eq!(serialized["instructions"], "Use list_clusters to see available clusters.");
+    }
+
+    #[test]
+    fn test_client_info_deserialization_backward_compatible() {
+        // Test deserializing old-style ClientInfo (only name and version)
+        let json = r#"{"name":"old-client","version":"0.1.0"}"#;
+        let client_info: ClientInfo = serde_json::from_str(json).expect("Failed to deserialize");
+        assert_eq!(client_info.name, "old-client");
+        assert_eq!(client_info.version, "0.1.0");
+        assert!(client_info.title.is_none());
+        assert!(client_info.description.is_none());
+        assert!(client_info.icons.is_none());
+        assert!(client_info.website_url.is_none());
+    }
+
+    #[test]
+    fn test_server_info_deserialization_backward_compatible() {
+        // Test deserializing old-style ServerInfo (only name and version)
+        let json = r#"{"name":"old-server","version":"1.0.0"}"#;
+        let server_info: ServerInfo = serde_json::from_str(json).expect("Failed to deserialize");
+        assert_eq!(server_info.name, "old-server");
+        assert_eq!(server_info.version, "1.0.0");
+        assert!(server_info.title.is_none());
+        assert!(server_info.description.is_none());
+        assert!(server_info.icons.is_none());
+        assert!(server_info.website_url.is_none());
+    }
+
+    // -------------------------------------------------------------------------
+    // MCP 2025-11-25 Sampling Capability Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sampling_capability_with_context_and_tools() {
+        // Test deserializing SamplingCapability with context and tools (MCP Inspector format)
+        let json = r#"{
+            "protocolVersion": "2025-11-25",
+            "capabilities": {
+                "sampling": {
+                    "context": {},
+                    "tools": {}
+                }
+            },
+            "clientInfo": {
+                "name": "mcp-inspector",
+                "version": "1.0.0"
+            }
+        }"#;
+
+        let request: InitializeRequest = serde_json::from_str(json)
+            .expect("Should deserialize MCP 2025-11-25 sampling capability");
+        assert_eq!(request.protocol_version, "2025-11-25");
+        assert!(request.capabilities.sampling.is_some());
+        let sampling = request.capabilities.sampling.unwrap();
+        assert!(sampling.context.is_some());
+        assert!(sampling.tools.is_some());
+    }
+
+    #[test]
+    fn test_sampling_capability_empty() {
+        // Test deserializing SamplingCapability as empty object (backward compatible)
+        let json = r#"{
+            "protocolVersion": "2025-11-25",
+            "capabilities": {
+                "sampling": {}
+            },
+            "clientInfo": {
+                "name": "test-client",
+                "version": "1.0.0"
+            }
+        }"#;
+
+        let request: InitializeRequest =
+            serde_json::from_str(json).expect("Should deserialize empty sampling capability");
+        assert!(request.capabilities.sampling.is_some());
+        let sampling = request.capabilities.sampling.unwrap();
+        assert!(sampling.context.is_none());
+        assert!(sampling.tools.is_none());
+    }
+
+    #[test]
+    fn test_sampling_capability_partial() {
+        // Test deserializing SamplingCapability with only tools (partial)
+        let json = r#"{
+            "protocolVersion": "2025-11-25",
+            "capabilities": {
+                "sampling": {
+                    "tools": {}
+                }
+            },
+            "clientInfo": {
+                "name": "test-client",
+                "version": "1.0.0"
+            }
+        }"#;
+
+        let request: InitializeRequest =
+            serde_json::from_str(json).expect("Should deserialize partial sampling capability");
+        let sampling = request.capabilities.sampling.unwrap();
+        assert!(sampling.context.is_none());
+        assert!(sampling.tools.is_some());
+    }
+
+    #[test]
+    fn test_mcp_inspector_payload() {
+        // Test exact payload from MCP Inspector v0.19.0
+        let json = r#"{
+            "protocolVersion": "2025-11-25",
+            "capabilities": {
+                "sampling": {},
+                "elicitation": {},
+                "roots": {"listChanged": true},
+                "tasks": {
+                    "list": {},
+                    "cancel": {},
+                    "requests": {
+                        "sampling": {"createMessage": {}},
+                        "elicitation": {"create": {}}
+                    }
+                }
+            },
+            "clientInfo": {
+                "name": "inspector-client",
+                "version": "0.19.0"
+            }
+        }"#;
+
+        let request: InitializeRequest =
+            serde_json::from_str(json).expect("Should deserialize MCP Inspector payload");
+        assert_eq!(request.protocol_version, "2025-11-25");
+        assert_eq!(request.client_info.name, "inspector-client");
+        assert!(request.capabilities.sampling.is_some());
+        assert!(request.capabilities.elicitation.is_some());
+        assert!(request.capabilities.roots.is_some());
+        assert!(request.capabilities.tasks.is_some());
+
+        let tasks = request.capabilities.tasks.unwrap();
+        assert!(tasks.list.is_some());
+        assert!(tasks.cancel.is_some());
+        assert!(tasks.requests.is_some());
+
+        let requests = tasks.requests.unwrap();
+        assert!(requests.sampling.is_some());
+        assert!(requests.elicitation.is_some());
     }
 }

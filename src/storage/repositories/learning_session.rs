@@ -6,7 +6,7 @@
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Row, Sqlite};
+use sqlx::{FromRow, Row};
 use tracing::instrument;
 
 /// Learning session status
@@ -280,7 +280,7 @@ impl LearningSessionRepository {
     /// Get learning session by ID
     #[instrument(skip(self), fields(session_id = %id), name = "db_get_learning_session_by_id")]
     pub async fn get_by_id(&self, id: &str) -> Result<LearningSessionData> {
-        let row = sqlx::query_as::<Sqlite, LearningSessionRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(
             "SELECT id, team, route_pattern, cluster_name, http_methods, status,
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,
@@ -311,7 +311,7 @@ impl LearningSessionRepository {
     /// Get learning session by ID and team (for authorization)
     #[instrument(skip(self), fields(session_id = %id, team = %team), name = "db_get_learning_session_by_id_and_team")]
     pub async fn get_by_id_and_team(&self, id: &str, team: &str) -> Result<LearningSessionData> {
-        let row = sqlx::query_as::<Sqlite, LearningSessionRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(
             "SELECT id, team, route_pattern, cluster_name, http_methods, status,
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,
@@ -378,7 +378,7 @@ impl LearningSessionRepository {
         };
 
         let rows = if let Some(status_str) = status_str {
-            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+            sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(query)
                 .bind(team)
                 .bind(status_str)
                 .bind(limit)
@@ -386,7 +386,7 @@ impl LearningSessionRepository {
                 .fetch_all(&self.pool)
                 .await
         } else {
-            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+            sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(query)
                 .bind(team)
                 .bind(limit)
                 .bind(offset)
@@ -445,14 +445,14 @@ impl LearningSessionRepository {
         };
 
         let rows: Vec<LearningSessionRow> = if let Some(status) = status_str {
-            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+            sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(query)
                 .bind(status)
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(&self.pool)
                 .await
         } else {
-            sqlx::query_as::<Sqlite, LearningSessionRow>(query)
+            sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(query)
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(&self.pool)
@@ -472,7 +472,7 @@ impl LearningSessionRepository {
     /// List all active learning sessions (for Access Log Service)
     #[instrument(skip(self), name = "db_list_active_learning_sessions")]
     pub async fn list_active(&self) -> Result<Vec<LearningSessionData>> {
-        let rows = sqlx::query_as::<Sqlite, LearningSessionRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, LearningSessionRow>(
             "SELECT id, team, route_pattern, cluster_name, http_methods, status,
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,
@@ -751,5 +751,234 @@ mod tests {
 
         // Test invalid
         assert!("invalid".parse::<LearningSessionStatus>().is_err());
+    }
+
+    #[cfg(feature = "postgres_tests")]
+    mod postgres_tests {
+        use super::*;
+        use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEST_TEAM_ID};
+
+        #[tokio::test]
+        async fn test_create_and_get_learning_session() {
+            let test_db = TestDatabase::new("ls_create_get").await;
+            let pool = test_db.pool.clone();
+            let repo = LearningSessionRepository::new(pool);
+
+            let request = CreateLearningSessionRequest {
+                team: TEST_TEAM_ID.to_string(),
+                route_pattern: "/api/users/*".to_string(),
+                cluster_name: Some("test-cluster".to_string()),
+                http_methods: Some(vec!["GET".to_string(), "POST".to_string()]),
+                target_sample_count: 50,
+                max_duration_seconds: Some(3600),
+                triggered_by: Some("test-user".to_string()),
+                deployment_version: Some("v1.0.0".to_string()),
+                configuration_snapshot: Some(serde_json::json!({"key": "value"})),
+            };
+
+            let created = repo.create(request).await.expect("create should succeed");
+
+            assert_eq!(created.team, TEST_TEAM_ID);
+            assert_eq!(created.route_pattern, "/api/users/*");
+            assert_eq!(created.cluster_name, Some("test-cluster".to_string()));
+            assert_eq!(created.http_methods, Some(vec!["GET".to_string(), "POST".to_string()]));
+            assert_eq!(created.status, LearningSessionStatus::Pending);
+            assert_eq!(created.target_sample_count, 50);
+            assert_eq!(created.current_sample_count, 0);
+            assert_eq!(created.triggered_by, Some("test-user".to_string()));
+            assert_eq!(created.deployment_version, Some("v1.0.0".to_string()));
+            assert!(created.ends_at.is_some());
+            assert!(created.configuration_snapshot.is_some());
+
+            // Get it back by ID
+            let fetched = repo.get_by_id(&created.id).await.expect("get_by_id should succeed");
+            assert_eq!(fetched.id, created.id);
+            assert_eq!(fetched.team, created.team);
+            assert_eq!(fetched.route_pattern, created.route_pattern);
+            assert_eq!(fetched.status, LearningSessionStatus::Pending);
+        }
+
+        #[tokio::test]
+        async fn test_list_by_team() {
+            let test_db = TestDatabase::new("ls_list_by_team").await;
+            let pool = test_db.pool.clone();
+            let repo = LearningSessionRepository::new(pool);
+
+            // Create 2 sessions for TEST_TEAM_ID
+            for i in 0..2 {
+                let request = CreateLearningSessionRequest {
+                    team: TEST_TEAM_ID.to_string(),
+                    route_pattern: format!("/api/route-{}", i),
+                    cluster_name: None,
+                    http_methods: None,
+                    target_sample_count: 10,
+                    max_duration_seconds: None,
+                    triggered_by: None,
+                    deployment_version: None,
+                    configuration_snapshot: None,
+                };
+                repo.create(request).await.expect("create should succeed");
+            }
+
+            // Create 1 session for TEAM_A_ID
+            let request = CreateLearningSessionRequest {
+                team: TEAM_A_ID.to_string(),
+                route_pattern: "/api/team-a-route".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 10,
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+            repo.create(request).await.expect("create should succeed");
+
+            let test_team_sessions = repo
+                .list_by_team(TEST_TEAM_ID, None, None, None)
+                .await
+                .expect("list_by_team should succeed");
+            assert_eq!(test_team_sessions.len(), 2);
+
+            let team_a_sessions = repo
+                .list_by_team(TEAM_A_ID, None, None, None)
+                .await
+                .expect("list_by_team should succeed");
+            assert_eq!(team_a_sessions.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn test_transition_status() {
+            let test_db = TestDatabase::new("ls_transition_status").await;
+            let pool = test_db.pool.clone();
+            let repo = LearningSessionRepository::new(pool);
+
+            let request = CreateLearningSessionRequest {
+                team: TEST_TEAM_ID.to_string(),
+                route_pattern: "/api/status-test".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 10,
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+            let session = repo.create(request).await.expect("create should succeed");
+            assert_eq!(session.status, LearningSessionStatus::Pending);
+
+            // Pending -> Active
+            let ok = repo
+                .transition_status(
+                    &session.id,
+                    LearningSessionStatus::Pending,
+                    LearningSessionStatus::Active,
+                )
+                .await
+                .expect("transition should succeed");
+            assert!(ok, "Pending -> Active should succeed");
+            let fetched = repo.get_by_id(&session.id).await.unwrap();
+            assert_eq!(fetched.status, LearningSessionStatus::Active);
+
+            // Active -> Completing
+            let ok = repo
+                .transition_status(
+                    &session.id,
+                    LearningSessionStatus::Active,
+                    LearningSessionStatus::Completing,
+                )
+                .await
+                .expect("transition should succeed");
+            assert!(ok, "Active -> Completing should succeed");
+            let fetched = repo.get_by_id(&session.id).await.unwrap();
+            assert_eq!(fetched.status, LearningSessionStatus::Completing);
+
+            // Completing -> Completed
+            let ok = repo
+                .transition_status(
+                    &session.id,
+                    LearningSessionStatus::Completing,
+                    LearningSessionStatus::Completed,
+                )
+                .await
+                .expect("transition should succeed");
+            assert!(ok, "Completing -> Completed should succeed");
+            let fetched = repo.get_by_id(&session.id).await.unwrap();
+            assert_eq!(fetched.status, LearningSessionStatus::Completed);
+
+            // Wrong from_status should return false (not an error)
+            let ok = repo
+                .transition_status(
+                    &session.id,
+                    LearningSessionStatus::Pending,
+                    LearningSessionStatus::Active,
+                )
+                .await
+                .expect("transition should succeed (but not match)");
+            assert!(!ok, "Wrong from_status should return false");
+        }
+
+        #[tokio::test]
+        async fn test_increment_sample_count() {
+            let test_db = TestDatabase::new("ls_increment_count").await;
+            let pool = test_db.pool.clone();
+            let repo = LearningSessionRepository::new(pool);
+
+            let request = CreateLearningSessionRequest {
+                team: TEST_TEAM_ID.to_string(),
+                route_pattern: "/api/count-test".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 10,
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+            let session = repo.create(request).await.expect("create should succeed");
+            assert_eq!(session.current_sample_count, 0);
+
+            // Increment 3 times
+            let count = repo.increment_sample_count(&session.id).await.expect("increment 1");
+            assert_eq!(count, 1);
+            let count = repo.increment_sample_count(&session.id).await.expect("increment 2");
+            assert_eq!(count, 2);
+            let count = repo.increment_sample_count(&session.id).await.expect("increment 3");
+            assert_eq!(count, 3);
+
+            // Verify via get_by_id
+            let fetched = repo.get_by_id(&session.id).await.unwrap();
+            assert_eq!(fetched.current_sample_count, 3);
+        }
+
+        #[tokio::test]
+        async fn test_delete_learning_session() {
+            let test_db = TestDatabase::new("ls_delete").await;
+            let pool = test_db.pool.clone();
+            let repo = LearningSessionRepository::new(pool);
+
+            let request = CreateLearningSessionRequest {
+                team: TEST_TEAM_ID.to_string(),
+                route_pattern: "/api/delete-test".to_string(),
+                cluster_name: None,
+                http_methods: None,
+                target_sample_count: 10,
+                max_duration_seconds: None,
+                triggered_by: None,
+                deployment_version: None,
+                configuration_snapshot: None,
+            };
+            let session = repo.create(request).await.expect("create should succeed");
+
+            // Verify it exists
+            repo.get_by_id(&session.id).await.expect("session should exist before delete");
+
+            // Delete it
+            repo.delete(&session.id, TEST_TEAM_ID).await.expect("delete should succeed");
+
+            // Verify get_by_id returns not found
+            let result = repo.get_by_id(&session.id).await;
+            assert!(result.is_err(), "get_by_id should return error after delete");
+        }
     }
 }

@@ -8,7 +8,12 @@ use crate::support::{read_json, send_request, setup_test_app};
 async fn contract_patch_tokens_updates_metadata() {
     let app = setup_test_app().await;
 
-    let admin = app.issue_token("token-writer", &["tokens:write", "tokens:read"]).await;
+    let admin = app
+        .issue_token(
+            "token-writer",
+            &["admin:all", "tokens:write", "tokens:read", "routes:read", "clusters:read"],
+        )
+        .await;
 
     let created = app
         .token_service

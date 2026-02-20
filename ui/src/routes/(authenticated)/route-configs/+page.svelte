@@ -34,11 +34,16 @@
 		RouteListStatsDto,
 		RouteListQueryParams
 	} from '$lib/types/route-view';
+	import type { SessionInfoResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
+	import { adminSummary, adminSummaryLoading, adminSummaryError, getAdminSummary } from '$lib/stores/adminSummary';
+	import AdminResourceSummary from '$lib/components/AdminResourceSummary.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import Pagination from '$lib/components/Pagination.svelte';
 	import { McpBadge, McpEnableModal, McpQuickToggle } from '$lib/components/mcp';
+
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 
 	// View mode: 'grouped' (hierarchical) or 'flat' (table)
 	let viewMode = $state<'grouped' | 'flat'>('flat');
@@ -99,6 +104,12 @@
 	});
 
 	onMount(async () => {
+		sessionInfo = await apiClient.getSessionInfo();
+		if (sessionInfo.isPlatformAdmin) {
+			try { await getAdminSummary(); } catch { /* handled by store */ }
+			isLoading = false;
+			return;
+		}
 		await loadData();
 	});
 
@@ -225,7 +236,7 @@
 		loadingMcpTools = true;
 		try {
 			const response = await apiClient.listMcpTools(currentTeam);
-			mcpTools = response.tools;
+			mcpTools = response.items;
 		} catch (e) {
 			console.error('Failed to load MCP tools:', e);
 			mcpTools = [];
@@ -504,6 +515,21 @@
 	}
 </script>
 
+{#if sessionInfo?.isPlatformAdmin}
+<div class="w-full px-4 sm:px-6 lg:px-8 py-8">
+	<div class="mb-8">
+		<h1 class="text-3xl font-bold text-gray-900">Routes</h1>
+		<p class="mt-2 text-sm text-gray-600">Platform-wide route summary across all organizations and teams.</p>
+	</div>
+	{#if $adminSummaryLoading}
+		<div class="flex items-center justify-center py-12"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>
+	{:else if $adminSummaryError}
+		<div class="bg-red-50 border border-red-200 rounded-md p-4"><p class="text-sm text-red-800">{$adminSummaryError}</p></div>
+	{:else if $adminSummary}
+		<AdminResourceSummary summary={$adminSummary} highlightResource="routeConfigs" />
+	{/if}
+</div>
+{:else}
 <div class="w-full px-4 sm:px-6 lg:px-8 py-8">
 	<!-- Header -->
 	<div class="mb-8 flex items-start justify-between">
@@ -1174,6 +1200,7 @@
 		{/if}
 	{/if}
 </div>
+{/if}
 
 <!-- MCP Enable Modal -->
 {#if showMcpModal && selectedRoute && mcpStatus}

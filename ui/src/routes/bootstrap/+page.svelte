@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { bootstrapSchema, type BootstrapSchema } from '$lib/schemas/auth';
+	import PasswordStrengthMeter from '$lib/components/PasswordStrengthMeter.svelte';
 
 	let name = $state('');
 	let email = $state('');
@@ -12,31 +13,6 @@
 	let fieldErrors = $state<Record<string, string>>({});
 	let isSubmitting = $state(false);
 	let isCheckingStatus = $state(true);
-
-	// Password strength calculation
-	const passwordStrength = $derived(() => {
-		if (!password) return { score: 0, label: '', color: '' };
-
-		let score = 0;
-		// Length check
-		if (password.length >= 8) score++;
-		if (password.length >= 12) score++;
-		// Complexity checks
-		if (/[a-z]/.test(password)) score++;
-		if (/[A-Z]/.test(password)) score++;
-		if (/[0-9]/.test(password)) score++;
-		if (/[^a-zA-Z0-9]/.test(password)) score++;
-
-		const strength = Math.min(score, 4);
-		const labels = ['Weak', 'Fair', 'Good', 'Strong'];
-		const colors = ['bg-red-500', 'bg-orange-500', 'bg-yellow-500', 'bg-green-500'];
-
-		return {
-			score: strength,
-			label: labels[strength - 1] || '',
-			color: colors[strength - 1] || ''
-		};
-	});
 
 	onMount(async () => {
 		try {
@@ -172,24 +148,7 @@
 						{#if fieldErrors.password}
 							<p class="mt-1 text-sm text-red-600">{fieldErrors.password}</p>
 						{/if}
-
-						<!-- Password strength meter -->
-						{#if password.length > 0}
-							<div class="mt-2">
-								<div class="flex items-center gap-2">
-									<div class="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-										<div
-											class="h-full transition-all duration-300 {passwordStrength().color}"
-											style="width: {(passwordStrength().score / 4) * 100}%"
-										></div>
-									</div>
-									<span class="text-xs text-gray-600">{passwordStrength().label}</span>
-								</div>
-								<p class="mt-1 text-xs text-gray-500">
-									Use at least 8 characters with a mix of letters, numbers, and symbols
-								</p>
-							</div>
-						{/if}
+						<PasswordStrengthMeter {password} />
 					</div>
 
 					<!-- Confirm Password field -->

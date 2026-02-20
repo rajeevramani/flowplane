@@ -89,7 +89,8 @@
 		</div>
 
 		<p class="text-center text-xs text-gray-500">
-			Flowplane API Gateway - Session-based Authentication
+			Need an account? Contact your organization administrator for an invitation.
+			Have an invitation link? Check your email.
 		</p>
 	</div>
 </div>

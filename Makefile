@@ -19,8 +19,10 @@
 #   make clean           - Remove volumes and orphan containers
 
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
-        build build-backend build-ui info prune \
-        vault-setup test fmt clippy check
+        build build-backend build-ui build-cli info prune seed \
+        vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
+        test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps \
+        test-agents-up test-agents-down test-agents test-agents-envoy
 
 .DEFAULT_GOAL := help
 
@@ -84,6 +86,7 @@ help: ## Show this help message
 	@echo "  $(CYAN)make build$(RESET)           - Build combined Docker image"
 	@echo "  $(CYAN)make build-backend$(RESET)   - Build backend-only image (optimized)"
 	@echo "  $(CYAN)make build-ui$(RESET)        - Build frontend-only image"
+	@echo "  $(CYAN)make build-cli$(RESET)       - Build flowplane-cli binary"
 	@echo ""
 	@echo "$(GREEN)Operations:$(RESET)"
 	@echo "  $(CYAN)make down$(RESET)            - Stop all services"
@@ -94,11 +97,27 @@ help: ## Show this help message
 	@echo "  $(CYAN)make info$(RESET)            - Show disk usage and image sizes"
 	@echo ""
 	@echo "$(GREEN)Development:$(RESET)"
+	@echo "  $(CYAN)make dev-db$(RESET)          - Start PostgreSQL for local dev"
 	@echo "  $(CYAN)make test$(RESET)            - Run cargo tests"
+	@echo "  $(CYAN)make test-ui$(RESET)         - Run UI component tests (Vitest)"
+	@echo "  $(CYAN)make test-ui-watch$(RESET)   - Run UI tests in watch mode"
+	@echo "  $(CYAN)make test-ui-e2e$(RESET)     - Run UI E2E tests (Playwright)"
+	@echo "  $(CYAN)make test-e2e$(RESET)        - Run E2E smoke tests (cleanup containers after)"
+	@echo "  $(CYAN)make test-e2e-full$(RESET)   - Run full E2E suite with mTLS (cleanup after)"
+	@echo "  $(CYAN)make test-e2e-mtls$(RESET)   - Run mTLS E2E tests only (cleanup after)"
+	@echo "  $(CYAN)make test-cleanup$(RESET)    - Remove orphaned testcontainer containers"
 	@echo "  $(CYAN)make fmt$(RESET)             - Run cargo fmt"
 	@echo "  $(CYAN)make clippy$(RESET)          - Run cargo clippy"
 	@echo "  $(CYAN)make check$(RESET)           - Run fmt + clippy + test"
 	@echo "  $(CYAN)make vault-setup$(RESET)     - Run Vault PKI setup script"
+	@echo "  $(CYAN)make seed$(RESET)            - Seed dev data (org, team, API, users)"
+	@echo "  $(CYAN)make seed-info$(RESET)       - Display seed data credentials"
+	@echo ""
+	@echo "$(GREEN)Agent Tests:$(RESET)"
+	@echo "  $(CYAN)make test-agents-up$(RESET)    - Start isolated agent test env"
+	@echo "  $(CYAN)make test-agents-down$(RESET)  - Tear down agent test env"
+	@echo "  $(CYAN)make test-agents$(RESET)       - Run agent integration tests"
+	@echo "  $(CYAN)make test-agents-envoy$(RESET) - Run agent tests with Envoy"
 	@echo ""
 	@echo "$(GREEN)Examples:$(RESET)"
 	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)  - Backend + Jaeger + httpbin"
@@ -181,6 +200,27 @@ up-full: _ensure-network ## Start backend + UI + Jaeger + Vault (full stack)
 	@echo "  Jaeger UI:  http://localhost:16686"
 	@echo "  httpbin:    http://localhost:8000"
 
+seed: ## Seed dev data: org, org-admin, team, API, tokens
+	@./scripts/seed-data.sh
+
+seed-info: ## Display seed data credentials and configuration
+	@echo ""
+	@echo "$(CYAN)━━━ Flowplane Seed Info ━━━$(RESET)"
+	@echo ""
+	@echo "  $(GREEN)Credentials:$(RESET)"
+	@echo "    Platform admin:  $(CYAN)admin@flowplane.local$(RESET) / $(CYAN)Admin123!$(RESET)"
+	@echo "    Org admin:       $(CYAN)orgadmin@acme-corp.local$(RESET) / $(CYAN)OrgAdmin123!$(RESET)"
+	@echo ""
+	@echo "  $(GREEN)Resources:$(RESET)"
+	@echo "    Org:             $(CYAN)acme-corp$(RESET)"
+	@echo "    Team:            $(CYAN)engineering$(RESET)"
+	@echo "    Listener port:   $(CYAN)10016$(RESET)"
+	@echo "    API spec:        $(CYAN)httpbin.yaml$(RESET)"
+	@echo ""
+	@echo "  $(YELLOW)Note: API tokens are generated during 'make seed' and shown only once.$(RESET)"
+	@echo "  $(YELLOW)To view/rotate tokens, login to the UI or use the API.$(RESET)"
+	@echo ""
+
 # =============================================================================
 # Container Operations
 # =============================================================================
@@ -230,13 +270,79 @@ build-ui: ## Build frontend-only Docker image
 	$(DOCKER) build -f Dockerfile.ui -t $(UI_IMAGE):$(VERSION) -t $(UI_IMAGE):latest .
 	@echo "$(GREEN)Image built: $(UI_IMAGE):$(VERSION)$(RESET)"
 
+build-cli: ## Build the CLI binary (flowplane-cli)
+	@echo "$(CYAN)Building flowplane-cli...$(RESET)"
+	cargo build --release --bin flowplane-cli
+	@echo "$(GREEN)CLI built: target/release/flowplane-cli$(RESET)"
+	@echo "  Run: ./target/release/flowplane-cli --help"
+
 # =============================================================================
 # Development Targets
 # =============================================================================
 
-test: ## Run cargo tests
+dev-db: _ensure-network ## Start PostgreSQL for local development
+	@echo "$(CYAN)Starting PostgreSQL...$(RESET)"
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) up -d postgres
+	@echo "$(GREEN)PostgreSQL running on localhost:5432$(RESET)"
+	@echo "  URL: postgresql://flowplane:flowplane@localhost:5432/flowplane"
+
+test: ## Run cargo tests (requires Docker/Podman for testcontainers)
 	@echo "$(CYAN)Running tests...$(RESET)"
-	cargo test --all-features
+	cargo test --features postgres_tests
+
+test-ui: ## Run UI component tests (Vitest)
+	@echo "$(CYAN)Running UI component tests...$(RESET)"
+	cd ui && npx vitest run
+
+test-ui-watch: ## Run UI component tests in watch mode
+	@echo "$(CYAN)Running UI tests in watch mode...$(RESET)"
+	cd ui && npx vitest
+
+test-ui-e2e: _ensure-e2e-deps ## Run UI E2E tests (self-contained)
+	@echo "$(CYAN)Running UI E2E tests...$(RESET)"
+	cd ui && npx playwright test; \
+	TEST_EXIT=$$?; \
+	echo ""; \
+	echo "$(GREEN)HTML report: make test-ui-report$(RESET)"; \
+	echo "$(CYAN)Stopping PostgreSQL...$(RESET)"; \
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v >/dev/null 2>&1 || true; \
+	echo "$(GREEN)Cleanup complete.$(RESET)"; \
+	exit $$TEST_EXIT
+
+test-ui-report: ## Open Playwright HTML test report
+	cd ui && npx playwright show-report
+
+test-e2e: ## Run E2E smoke tests and clean up containers
+	@echo "$(CYAN)Running E2E smoke tests...$(RESET)"
+	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-e2e-full: ## Run full E2E suite and clean up containers
+	@echo "$(CYAN)Running full E2E suite...$(RESET)"
+	RUN_E2E=1 RUST_LOG=info FLOWPLANE_E2E_MTLS=1 cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-e2e-mtls: ## Run mTLS E2E tests and clean up containers
+	@echo "$(CYAN)Running mTLS E2E tests...$(RESET)"
+	FLOWPLANE_E2E_MTLS=1 RUN_E2E=1 RUST_LOG=info cargo test --test e2e "test_24_mtls" -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-cleanup: ## Remove orphaned testcontainer PostgreSQL containers
+	@CONTAINERS=$$($(DOCKER) ps -q --filter "label=org.testcontainers.managed-by=testcontainers" --filter "ancestor=postgres" 2>/dev/null); \
+	if [ -n "$$CONTAINERS" ]; then \
+		echo "$(YELLOW)Stopping $$(echo "$$CONTAINERS" | wc -l | tr -d ' ') testcontainer(s)...$(RESET)"; \
+		$(DOCKER) stop --time 5 $$CONTAINERS 2>/dev/null || true; \
+		$(DOCKER) rm -f $$CONTAINERS 2>/dev/null || true; \
+		echo "$(GREEN)Testcontainers cleaned up.$(RESET)"; \
+	else \
+		echo "$(GREEN)No orphaned testcontainers found.$(RESET)"; \
+	fi
 
 fmt: ## Run cargo fmt
 	@echo "$(CYAN)Running cargo fmt...$(RESET)"
@@ -246,7 +352,7 @@ clippy: ## Run cargo clippy
 	@echo "$(CYAN)Running cargo clippy...$(RESET)"
 	cargo clippy --all-targets --all-features -- -D warnings
 
-check: fmt clippy test ## Run fmt + clippy + test
+check: fmt clippy test test-ui ## Run fmt + clippy + test + UI tests
 	@echo "$(GREEN)All checks passed!$(RESET)"
 
 vault-setup: ## Run Vault PKI setup script
@@ -291,6 +397,56 @@ prune: down ## Aggressive cleanup (images + volumes + cache)
 # Internal Targets
 # =============================================================================
 
+_ensure-e2e-deps:
+	@echo "$(CYAN)Ensuring fresh PostgreSQL for E2E tests...$(RESET)"
+	@$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v >/dev/null 2>&1 || true
+	@$(MAKE) dev-db
+	@sleep 3
+	@if [ ! -f target/debug/flowplane ]; then \
+		echo "$(CYAN)Building backend...$(RESET)"; \
+		cargo build; \
+	fi
+	@if [ ! -d ui/build ]; then \
+		echo "$(CYAN)Building UI...$(RESET)"; \
+		cd ui && npm run build; \
+	fi
+
 _ensure-network:
 	@$(DOCKER) network inspect flowplane-network >/dev/null 2>&1 || \
 		$(DOCKER) network create flowplane-network >/dev/null 2>&1
+
+# =============================================================================
+# Agent Integration Tests
+# =============================================================================
+
+AGENT_TEST_COMPOSE := -f agents/testing/docker-compose.test.yml
+
+test-agents-up: ## Start isolated agent test env (postgres + CP + httpbin)
+	@echo "$(CYAN)Starting agent test environment...$(RESET)"
+	$(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) up -d
+	@echo ""
+	@echo "$(GREEN)Agent test env started!$(RESET)"
+	@echo "  CP HTTP:  http://localhost:8090"
+	@echo "  CP xDS:   localhost:50052"
+	@echo "  httpbin:  internal (via flowplane-test-network)"
+
+test-agents-down: ## Tear down agent test env
+	@echo "$(CYAN)Stopping agent test environment...$(RESET)"
+	$(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) down -v
+	@echo "$(GREEN)Agent test env stopped.$(RESET)"
+
+test-agents: ## Run agent integration tests (bring up, run pytest, tear down)
+	@echo "$(CYAN)Running agent integration tests...$(RESET)"
+	$(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) up -d --wait
+	cd agents && FLOWPLANE_TEST_URL=http://localhost:8090 python -m pytest tests/ -v; \
+	TEST_EXIT=$$?; \
+	cd .. && $(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) down -v; \
+	exit $$TEST_EXIT
+
+test-agents-envoy: ## Run agent tests with Envoy (includes traffic/learning tests)
+	@echo "$(CYAN)Running agent integration tests with Envoy...$(RESET)"
+	$(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) up -d --wait
+	cd agents && FLOWPLANE_TEST_URL=http://localhost:8090 WITH_ENVOY=1 python -m pytest tests/ -v; \
+	TEST_EXIT=$$?; \
+	cd .. && $(DOCKER_COMPOSE) $(AGENT_TEST_COMPOSE) down -v; \
+	exit $$TEST_EXIT

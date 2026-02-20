@@ -5,8 +5,9 @@
 
 pub mod types;
 
+use super::team_access::TeamPath;
 pub use types::{
-    CreateSecretReferenceRequest, CreateSecretRequest, ListSecretsQuery, SecretResponse, TeamPath,
+    CreateSecretReferenceRequest, CreateSecretRequest, ListSecretsQuery, SecretResponse,
     TeamSecretPath, UpdateSecretRequest,
 };
 
@@ -20,13 +21,17 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{get_effective_team_scopes, verify_team_access},
+        handlers::{
+            pagination::PaginatedResponse,
+            team_access::{
+                get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+                verify_team_access,
+            },
+        },
         routes::ApiState,
     },
-    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::SecretSpec,
-    errors::Error,
     storage::CreateSecretRequest as DbCreateSecretRequest,
     storage::UpdateSecretRequest as DbUpdateSecretRequest,
 };
@@ -52,10 +57,26 @@ pub async fn create_secret_handler(
     Json(payload): Json<CreateSecretRequest>,
 ) -> Result<(StatusCode, Json<SecretResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
-    require_resource_access(&context, "secrets", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "secrets",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID for database operations
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Validate the configuration matches the secret type
     let spec: SecretSpec = serde_json::from_value(payload.configuration.clone()).map_err(|e| {
@@ -85,7 +106,7 @@ pub async fn create_secret_handler(
         .ok_or_else(|| ApiError::service_unavailable("Secret repository unavailable"))?;
 
     // Check for duplicate name
-    if repo.get_by_name(&team, &payload.name).await.is_ok() {
+    if repo.get_by_name(&team_id, &payload.name).await.is_ok() {
         return Err(ApiError::Conflict(format!(
             "Secret with name '{}' already exists in team '{}'",
             payload.name, team
@@ -98,7 +119,7 @@ pub async fn create_secret_handler(
         secret_type: payload.secret_type,
         description: payload.description,
         configuration: spec,
-        team: team.clone(),
+        team: team_id.clone(),
         expires_at: payload.expires_at,
     };
 
@@ -126,10 +147,26 @@ pub async fn create_secret_reference_handler(
     Json(payload): Json<CreateSecretReferenceRequest>,
 ) -> Result<(StatusCode, Json<SecretResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
-    require_resource_access(&context, "secrets", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "secrets",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID for database operations
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Validate backend type
     let valid_backends = ["vault", "aws_secrets_manager", "gcp_secret_manager"];
@@ -151,7 +188,7 @@ pub async fn create_secret_reference_handler(
         .ok_or_else(|| ApiError::service_unavailable("Secret repository unavailable"))?;
 
     // Check for duplicate name
-    if repo.get_by_name(&team, &payload.name).await.is_ok() {
+    if repo.get_by_name(&team_id, &payload.name).await.is_ok() {
         return Err(ApiError::Conflict(format!(
             "Secret with name '{}' already exists in team '{}'",
             payload.name, team
@@ -166,7 +203,7 @@ pub async fn create_secret_reference_handler(
         backend: payload.backend,
         reference: payload.reference,
         reference_version: payload.reference_version,
-        team: team.clone(),
+        team: team_id.clone(),
         expires_at: payload.expires_at,
     };
 
@@ -179,12 +216,11 @@ pub async fn create_secret_reference_handler(
     get,
     path = "/api/v1/teams/{team}/secrets",
     params(
-        ("limit" = Option<i64>, Query, description = "Maximum number of secrets to return"),
-        ("offset" = Option<i64>, Query, description = "Offset for pagination"),
-        ("secret_type" = Option<String>, Query, description = "Filter by secret type"),
+        ("team" = String, Path, description = "Team name"),
+        ListSecretsQuery
     ),
     responses(
-        (status = 200, description = "List of secrets (metadata only)", body = [SecretResponse]),
+        (status = 200, description = "List of secrets (metadata only)", body = PaginatedResponse<SecretResponse>),
         (status = 503, description = "Secret repository unavailable"),
     ),
     tag = "Secrets"
@@ -195,13 +231,30 @@ pub async fn list_secrets_handler(
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
     Query(params): Query<ListSecretsQuery>,
-) -> Result<Json<Vec<SecretResponse>>, ApiError> {
+) -> Result<Json<PaginatedResponse<SecretResponse>>, ApiError> {
     // Authorization: require secrets:read scope
-    require_resource_access(&context, "secrets", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "secrets",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID for database operations
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Verify team access - user must have access to the requested team
-    let team_scopes = get_effective_team_scopes(&context);
-    if !team_scopes.is_empty() && !team_scopes.contains(&team) {
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    if !team_scopes.is_empty() && !team_scopes.contains(&team_id) {
         return Err(ApiError::NotFound("Team not found".to_string()));
     }
 
@@ -212,7 +265,7 @@ pub async fn list_secrets_handler(
         .ok_or_else(|| ApiError::service_unavailable("Secret repository unavailable"))?;
 
     let secrets = repo
-        .list_by_teams(&[team], params.limit.map(|l| l as i32), params.offset.map(|o| o as i32))
+        .list_by_teams(&[team_id], Some(params.limit as i32), Some(params.offset as i32))
         .await
         .map_err(ApiError::from)?;
 
@@ -223,8 +276,9 @@ pub async fn list_secrets_handler(
     };
 
     let responses: Vec<SecretResponse> = secrets.iter().map(SecretResponse::from_data).collect();
+    let total = responses.len() as i64;
 
-    Ok(Json(responses))
+    Ok(Json(PaginatedResponse::new(responses, total, params.limit, params.offset)))
 }
 
 #[utoipa::path(
@@ -248,7 +302,23 @@ pub async fn get_secret_handler(
     Path(path): Path<TeamSecretPath>,
 ) -> Result<Json<SecretResponse>, ApiError> {
     // Authorization: require secrets:read scope
-    require_resource_access(&context, "secrets", "read", Some(&path.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "secrets",
+        "read",
+        Some(&path.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID for database operations
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &path.team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let repo = state
         .xds_state
@@ -261,11 +331,12 @@ pub async fn get_secret_handler(
     })?;
 
     // Verify team access using unified verifier
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let secret = verify_team_access(secret, &team_scopes).await?;
 
     // Verify the secret belongs to the specified team (URL consistency)
-    if secret.team != path.team {
+    if secret.team != team_id {
         return Err(ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id)));
     }
 
@@ -296,10 +367,26 @@ pub async fn update_secret_handler(
     Json(payload): Json<UpdateSecretRequest>,
 ) -> Result<Json<SecretResponse>, ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Authorization: require secrets:write scope
-    require_resource_access(&context, "secrets", "write", Some(&path.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "secrets",
+        "write",
+        Some(&path.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID for database operations
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &path.team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let repo = state
         .xds_state
@@ -313,11 +400,12 @@ pub async fn update_secret_handler(
     })?;
 
     // Verify team access using unified verifier
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Verify the secret belongs to the specified team (URL consistency)
-    if existing.team != path.team {
+    if existing.team != team_id {
         return Err(ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id)));
     }
 
@@ -378,7 +466,23 @@ pub async fn delete_secret_handler(
     Path(path): Path<TeamSecretPath>,
 ) -> Result<StatusCode, ApiError> {
     // Authorization: require secrets:write scope
-    require_resource_access(&context, "secrets", "write", Some(&path.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "secrets",
+        "write",
+        Some(&path.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID for database operations
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &path.team,
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let repo = state
         .xds_state
@@ -392,11 +496,12 @@ pub async fn delete_secret_handler(
     })?;
 
     // Verify team access using unified verifier
-    let team_scopes = get_effective_team_scopes(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Verify the secret belongs to the specified team (URL consistency)
-    if existing.team != path.team {
+    if existing.team != team_id {
         return Err(ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id)));
     }
 

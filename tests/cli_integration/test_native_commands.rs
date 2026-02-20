@@ -1,3 +1,6 @@
+// NOTE: Requires PostgreSQL - disabled until Phase 4
+#![cfg(feature = "postgres_tests")]
+
 //! Integration tests for native resource CLI commands
 //!
 //! Tests:
@@ -10,7 +13,7 @@ use super::support::{run_cli_command, TestServer};
 #[tokio::test]
 async fn test_cluster_list_json() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("cluster-list-token", &["clusters:read"]).await;
+    let token_response = server.issue_admin_token("cluster-list-token", &["clusters:read"]).await;
 
     let result = run_cli_command(&[
         "cluster",
@@ -35,7 +38,8 @@ async fn test_cluster_list_json() {
 #[tokio::test]
 async fn test_cluster_list_yaml() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("cluster-list-yaml-token", &["clusters:read"]).await;
+    let token_response =
+        server.issue_admin_token("cluster-list-yaml-token", &["clusters:read"]).await;
 
     let result = run_cli_command(&[
         "cluster",
@@ -60,7 +64,8 @@ async fn test_cluster_list_yaml() {
 #[tokio::test]
 async fn test_cluster_list_table() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("cluster-list-table-token", &["clusters:read"]).await;
+    let token_response =
+        server.issue_admin_token("cluster-list-table-token", &["clusters:read"]).await;
 
     let result = run_cli_command(&[
         "cluster",
@@ -91,7 +96,7 @@ async fn test_cluster_list_table() {
 #[tokio::test]
 async fn test_cluster_get_with_invalid_id() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("cluster-get-token", &["clusters:read"]).await;
+    let token_response = server.issue_admin_token("cluster-get-token", &["clusters:read"]).await;
 
     let result = run_cli_command(&[
         "cluster",
@@ -116,7 +121,7 @@ async fn test_cluster_get_with_invalid_id() {
 #[tokio::test]
 async fn test_listener_list_json() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("listener-list-token", &["listeners:read"]).await;
+    let token_response = server.issue_admin_token("listener-list-token", &["listeners:read"]).await;
 
     let result = run_cli_command(&[
         "listener",
@@ -141,7 +146,8 @@ async fn test_listener_list_json() {
 #[tokio::test]
 async fn test_listener_list_yaml() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("listener-list-yaml-token", &["listeners:read"]).await;
+    let token_response =
+        server.issue_admin_token("listener-list-yaml-token", &["listeners:read"]).await;
 
     let result = run_cli_command(&[
         "listener",
@@ -166,7 +172,8 @@ async fn test_listener_list_yaml() {
 #[tokio::test]
 async fn test_listener_list_table() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("listener-list-table-token", &["listeners:read"]).await;
+    let token_response =
+        server.issue_admin_token("listener-list-table-token", &["listeners:read"]).await;
 
     let result = run_cli_command(&[
         "listener",
@@ -186,7 +193,7 @@ async fn test_listener_list_table() {
 #[tokio::test]
 async fn test_listener_get_with_invalid_id() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("listener-get-token", &["listeners:read"]).await;
+    let token_response = server.issue_admin_token("listener-get-token", &["listeners:read"]).await;
 
     let result = run_cli_command(&[
         "listener",
@@ -211,7 +218,7 @@ async fn test_listener_get_with_invalid_id() {
 #[tokio::test]
 async fn test_route_list_json() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("route-list-token", &["routes:read"]).await;
+    let token_response = server.issue_admin_token("route-list-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[
         "route",
@@ -236,7 +243,7 @@ async fn test_route_list_json() {
 #[tokio::test]
 async fn test_route_list_yaml() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("route-list-yaml-token", &["routes:read"]).await;
+    let token_response = server.issue_admin_token("route-list-yaml-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[
         "route",
@@ -261,7 +268,7 @@ async fn test_route_list_yaml() {
 #[tokio::test]
 async fn test_route_list_table() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("route-list-table-token", &["routes:read"]).await;
+    let token_response = server.issue_admin_token("route-list-table-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[
         "route",
@@ -281,7 +288,7 @@ async fn test_route_list_table() {
 #[tokio::test]
 async fn test_route_get_with_invalid_id() {
     let server = TestServer::start().await;
-    let token_response = server.issue_token("route-get-token", &["routes:read"]).await;
+    let token_response = server.issue_admin_token("route-get-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[
         "route",
@@ -324,7 +331,7 @@ async fn test_native_resource_without_auth() {
 #[tokio::test]
 async fn test_native_resource_with_insufficient_scope() {
     let server = TestServer::start().await;
-    // Create token with only routes:read, not clusters:read
+    // Create token with only routes:read, not clusters:read (no admin:all for insufficient scope test)
     let token_response = server.issue_token("limited-token", &["routes:read"]).await;
 
     let result = run_cli_command(&[

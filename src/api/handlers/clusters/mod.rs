@@ -12,8 +12,10 @@ mod validation;
 // Re-export public types for backward compatibility
 pub use types::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
-    EndpointRequest, HealthCheckRequest, ListClustersQuery, OutlierDetectionRequest,
+    EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
 };
+
+use super::pagination::{PaginatedResponse, PaginationQuery};
 
 use axum::{
     extract::{Path, Query, State},
@@ -23,10 +25,13 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::ApiError,
+        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
+        routes::ApiState,
+    },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
-    errors::Error,
     internal_api::{
         ClusterOperations, CreateClusterRequest, InternalAuthContext, ListClustersRequest,
         UpdateClusterRequest,
@@ -56,10 +61,18 @@ pub async fn create_cluster_handler(
     Json(payload): Json<types::CreateClusterBody>,
 ) -> Result<(StatusCode, Json<types::ClusterResponse>), ApiError> {
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
-    require_resource_access(&context, "clusters", "write", Some(&payload.team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "clusters",
+        "write",
+        Some(&payload.team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Convert REST body to internal request
     let ClusterConfigParts { name, service_name, config } =
@@ -70,7 +83,11 @@ pub async fn create_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.create(internal_req, &auth).await?;
 
     // Convert to response
@@ -83,35 +100,39 @@ pub async fn create_cluster_handler(
 #[utoipa::path(
     get,
     path = "/api/v1/clusters",
-    params(
-        ("limit" = Option<i32>, Query, description = "Maximum number of clusters to return"),
-        ("offset" = Option<i32>, Query, description = "Offset for paginated results"),
-    ),
+    params(PaginationQuery),
     responses(
-        (status = 200, description = "List of clusters", body = [ClusterResponse]),
+        (status = 200, description = "List of clusters", body = PaginatedResponse<ClusterResponse>),
         (status = 503, description = "Cluster repository unavailable"),
     ),
     tag = "Clusters"
 )]
-#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = ?params.limit, offset = ?params.offset))]
+#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
 pub async fn list_clusters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(params): Query<types::ListClustersQuery>,
-) -> Result<Json<Vec<types::ClusterResponse>>, ApiError> {
+    Query(params): Query<PaginationQuery>,
+) -> Result<Json<PaginatedResponse<types::ClusterResponse>>, ApiError> {
     // Authorization: require clusters:read scope
     require_resource_access(&context, "clusters", "read", None)?;
 
+    let (limit, offset) = params.clamp(1000);
+
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let list_req = ListClustersRequest {
-        limit: params.limit,
-        offset: params.offset,
+        limit: Some(limit as i32),
+        offset: Some(offset as i32),
         include_defaults: true, // REST API includes default resources
     };
 
     let result = ops.list(list_req, &auth).await?;
+    let total = result.count as i64;
 
     // Convert to response DTOs
     let service = ClusterService::new(state.xds_state.clone());
@@ -120,7 +141,7 @@ pub async fn list_clusters_handler(
         clusters.push(cluster_response_from_data(&service, row)?);
     }
 
-    Ok(Json(clusters))
+    Ok(Json(PaginatedResponse::new(clusters, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -145,7 +166,11 @@ pub async fn get_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let cluster = ops.get(&name, &auth).await?;
 
     // Convert to response DTO
@@ -179,7 +204,7 @@ pub async fn update_cluster_handler(
     require_resource_access(&context, "clusters", "write", None)?;
 
     use validator::Validate;
-    payload.validate().map_err(|err| ApiError::from(Error::from(err)))?;
+    payload.validate().map_err(ApiError::from)?;
 
     let ClusterConfigParts { name: payload_name, service_name, config } =
         cluster_parts_from_body(payload);
@@ -196,7 +221,11 @@ pub async fn update_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     let result = ops.update(&name, internal_req, &auth).await?;
 
     // Convert to response DTO
@@ -228,7 +257,11 @@ pub async fn delete_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = InternalAuthContext::from_rest(&context);
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -243,71 +276,34 @@ mod tests {
     use axum::response::IntoResponse;
     use axum::{Extension, Json};
     use serde_json::Value;
-    use sqlx::Executor;
-    use std::sync::Arc;
 
-    use crate::auth::models::AuthContext;
-    use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
-    use crate::xds::XdsState;
+    use crate::api::test_utils::{create_test_state, team_auth_context};
+    use crate::storage::test_helpers::{PLATFORM_TEAM_ID, TEAM_A_ID, TEAM_B_ID};
 
     use types::{
         CircuitBreakerThresholdsRequest, CircuitBreakersRequest, CreateClusterBody,
-        EndpointRequest, HealthCheckRequest, ListClustersQuery, OutlierDetectionRequest,
+        EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
     };
+    // PaginationQuery and PaginatedResponse come from `use super::*;`
 
-    /// Create an admin AuthContext for testing with full permissions
-    fn admin_context() -> AuthContext {
-        AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("test-token"),
-            "test-admin".to_string(),
-            vec!["admin:all".to_string()],
-        )
-    }
+    // Use test_utils::create_test_state() which runs full migrations
+    // and test_utils::team_auth_context() for team-scoped permissions
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
+    async fn setup_state() -> (crate::storage::test_helpers::TestDatabase, ApiState) {
+        use crate::api::test_utils::TestTeamBuilder;
+
+        let (_db, state) = create_test_state().await;
+
+        // Create commonly used teams for tests
+        let cluster_repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let pool = cluster_repo.pool().clone();
+
+        // Create teams that tests commonly reference
+        for team_name in &["test-team", "team-a", "team-b", "platform"] {
+            TestTeamBuilder::new(team_name).insert(&pool).await;
         }
-    }
 
-    async fn setup_state() -> ApiState {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create clusters table for repository usage.
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS clusters (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                service_name TEXT NOT NULL,
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(name, version)
-            )
-        "#,
-        )
-        .await
-        .expect("create table");
-
-        let state = XdsState::with_database(SimpleXdsConfig::default(), pool);
-        let stats_cache = Arc::new(crate::services::stats_cache::StatsCache::with_defaults());
-        let mcp_connection_manager = crate::mcp::create_connection_manager();
-        let mcp_session_manager = crate::mcp::create_session_manager();
-        ApiState {
-            xds_state: Arc::new(state),
-            filter_schema_registry: None,
-            stats_cache,
-            mcp_connection_manager,
-            mcp_session_manager,
-        }
+        (_db, state)
     }
 
     fn sample_request() -> CreateClusterBody {
@@ -354,12 +350,12 @@ mod tests {
 
     #[tokio::test]
     async fn create_cluster_applies_defaults_and_persists() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let body = sample_request();
 
         let response = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Json(body.clone()),
         )
         .await
@@ -382,13 +378,17 @@ mod tests {
 
     #[tokio::test]
     async fn create_cluster_validates_missing_endpoints() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut body = sample_request();
         body.endpoints.clear();
 
-        let err = create_cluster_handler(State(state), Extension(admin_context()), Json(body))
-            .await
-            .expect_err("expected validation error");
+        let err = create_cluster_handler(
+            State(state),
+            Extension(team_auth_context("test-team")),
+            Json(body),
+        )
+        .await
+        .expect_err("expected validation error");
 
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -396,42 +396,48 @@ mod tests {
 
     #[tokio::test]
     async fn list_clusters_returns_created_cluster() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
-                .await
-                .expect("create cluster");
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(team_auth_context("test-team")),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let response = list_clusters_handler(
             State(state),
-            Extension(admin_context()),
-            Query(ListClustersQuery::default()),
+            Extension(team_auth_context("test-team")),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list clusters");
 
-        let clusters = response.0;
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].name, "api-cluster");
+        let clusters = &response.0.items;
+        // Seed data adds global clusters; verify our created cluster is present
+        assert!(clusters.iter().any(|c| c.name == "api-cluster"));
     }
 
     #[tokio::test]
     async fn get_cluster_returns_cluster_details() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
-                .await
-                .expect("create cluster");
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(team_auth_context("test-team")),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let response = get_cluster_handler(
             State(state),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Path("api-cluster".to_string()),
         )
         .await
@@ -444,12 +450,12 @@ mod tests {
 
     #[tokio::test]
     async fn update_cluster_persists_changes() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut body = sample_request();
 
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Json(body.clone()),
         )
         .await
@@ -461,7 +467,7 @@ mod tests {
 
         let response = update_cluster_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Path("api-cluster".to_string()),
             Json(body),
         )
@@ -479,18 +485,21 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cluster_removes_record() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let body = sample_request();
 
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
-                .await
-                .expect("create cluster");
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(team_auth_context("test-team")),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
         assert_eq!(created.name, "api-cluster");
 
         let status = delete_cluster_handler(
             State(state.clone()),
-            Extension(admin_context()),
+            Extension(team_auth_context("test-team")),
             Path("api-cluster".to_string()),
         )
         .await
@@ -542,13 +551,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_clusters_filters_by_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert clusters for different teams
-        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+        insert_cluster_with_team(&state, "team-a-cluster", Some(TEAM_A_ID))
             .await
             .expect("insert team-a cluster");
-        insert_cluster_with_team(&state, "team-b-cluster", Some("team-b"))
+        insert_cluster_with_team(&state, "team-b-cluster", Some(TEAM_B_ID))
             .await
             .expect("insert team-b cluster");
         insert_cluster_with_team(&state, "global-cluster", None)
@@ -560,13 +569,13 @@ mod tests {
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(team_a_context),
-            Query(ListClustersQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list clusters for team-a");
 
-        let clusters = response.0;
-        assert_eq!(clusters.len(), 2);
+        let clusters = &response.0.items;
+        // Should see team-a-cluster + global clusters (seed + test-created)
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"team-a-cluster"));
         assert!(names.contains(&"global-cluster"));
@@ -577,37 +586,44 @@ mod tests {
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(team_b_context),
-            Query(ListClustersQuery::default()),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
         .expect("list clusters for team-b");
 
-        let clusters = response.0;
-        assert_eq!(clusters.len(), 2);
+        let clusters = &response.0.items;
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"team-b-cluster"));
         assert!(names.contains(&"global-cluster"));
         assert!(!names.contains(&"team-a-cluster"));
 
-        // Admin should see all clusters
+        // Multi-team user should see clusters from all their teams
+        let multi_team = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("multi-team-token"),
+            "multi-team-user".into(),
+            vec!["team:team-a:clusters:read".into(), "team:team-b:clusters:read".into()],
+        );
         let response = list_clusters_handler(
             State(state.clone()),
-            Extension(admin_context()),
-            Query(ListClustersQuery::default()),
+            Extension(multi_team),
+            Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
-        .expect("list clusters for admin");
+        .expect("list clusters for multi-team user");
 
-        let clusters = response.0;
-        assert_eq!(clusters.len(), 3);
+        let clusters = &response.0.items;
+        let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"team-a-cluster"));
+        assert!(names.contains(&"team-b-cluster"));
+        assert!(names.contains(&"global-cluster"));
     }
 
     #[tokio::test]
     async fn get_cluster_rejects_cross_team_access() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert a cluster for team-a
-        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+        insert_cluster_with_team(&state, "team-a-cluster", Some(TEAM_A_ID))
             .await
             .expect("insert team-a cluster");
 
@@ -643,7 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_cluster_allows_global_cluster_access() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert a global cluster (no team)
         insert_cluster_with_team(&state, "global-cluster", None)
@@ -672,10 +688,10 @@ mod tests {
 
     #[tokio::test]
     async fn update_cluster_rejects_cross_team_access() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert a cluster for team-a
-        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+        insert_cluster_with_team(&state, "team-a-cluster", Some(TEAM_A_ID))
             .await
             .expect("insert team-a cluster");
 
@@ -716,13 +732,13 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cluster_rejects_cross_team_access() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
 
         // Insert clusters for different teams
-        insert_cluster_with_team(&state, "team-a-cluster", Some("team-a"))
+        insert_cluster_with_team(&state, "team-a-cluster", Some(TEAM_A_ID))
             .await
             .expect("insert team-a cluster");
-        insert_cluster_with_team(&state, "team-b-cluster", Some("team-b"))
+        insert_cluster_with_team(&state, "team-b-cluster", Some(TEAM_B_ID))
             .await
             .expect("insert team-b cluster");
 
@@ -761,7 +777,7 @@ mod tests {
 
     #[tokio::test]
     async fn team_scoped_user_creates_team_scoped_cluster() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let mut body = sample_request();
         body.team = "team-a".to_string(); // Explicitly set team to match user's scope
 
@@ -775,7 +791,7 @@ mod tests {
         // Verify the cluster was assigned to team-a
         let repo = state.xds_state.cluster_repository.as_ref().unwrap();
         let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
-        assert_eq!(stored.team, Some("team-a".to_string()));
+        assert_eq!(stored.team, Some(TEAM_A_ID.to_string()));
 
         // Verify that team-b user cannot access it
         let team_b_context = team_context("team-b", "clusters", &["read"]);
@@ -789,21 +805,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_user_creates_team_owned_cluster() {
-        let state = setup_state().await;
+    async fn team_user_creates_team_owned_cluster() {
+        let (_db, state) = setup_state().await;
         let mut body = sample_request();
-        body.team = "platform".to_string(); // Admin explicitly specifies team
+        body.team = "platform".to_string(); // User explicitly specifies their team
 
-        // Admin creates a cluster for a specific team
-        let (_status, Json(created)) =
-            create_cluster_handler(State(state.clone()), Extension(admin_context()), Json(body))
-                .await
-                .expect("create cluster");
+        // Team user creates a cluster for their team
+        let (_status, Json(created)) = create_cluster_handler(
+            State(state.clone()),
+            Extension(team_context("platform", "clusters", &["write"])),
+            Json(body),
+        )
+        .await
+        .expect("create cluster");
 
         // Verify the cluster is owned by the platform team
         let repo = state.xds_state.cluster_repository.as_ref().unwrap();
         let stored = repo.get_by_name(&created.name).await.expect("stored cluster");
-        assert_eq!(stored.team, Some("platform".to_string()));
+        assert_eq!(stored.team, Some(PLATFORM_TEAM_ID.to_string()));
 
         // Verify that team users with platform team scope can access it
         let platform_team_context = team_context("platform", "clusters", &["read"]);

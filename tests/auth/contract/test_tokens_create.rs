@@ -10,7 +10,9 @@ use crate::support::{read_json, send_request, setup_test_app};
 async fn contract_post_tokens_creates_token() {
     let app = setup_test_app().await;
 
-    let admin = app.issue_token("admin-writer", &["tokens:write", "tokens:read"]).await;
+    let admin = app
+        .issue_token("admin-writer", &["admin:all", "tokens:write", "tokens:read", "clusters:read"])
+        .await;
 
     let response = send_request(
         &app,

@@ -62,12 +62,12 @@ impl AppConfig {
             return Err(FlowplaneError::validation("Server and xDS ports cannot be the same"));
         }
 
-        // Validate database URL format
+        // Validate database URL format - PostgreSQL only
         if !self.database.url.starts_with("postgresql://")
-            && !self.database.url.starts_with("sqlite://")
+            && !self.database.url.starts_with("postgres://")
         {
             return Err(FlowplaneError::validation(
-                "Database URL must start with 'postgresql://' or 'sqlite://'",
+                "Database URL must start with 'postgresql://' or 'postgres://'",
             ));
         }
 
@@ -166,7 +166,7 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            url: "sqlite://./data/flowplane.db".to_string(),
+            url: "postgresql://localhost:5432/flowplane".to_string(),
             max_connections: 10,
             min_connections: 0,
             connect_timeout_seconds: 10,
@@ -191,20 +191,10 @@ impl DatabaseConfig {
         }
     }
 
-    /// Check if this is a SQLite configuration
-    pub fn is_sqlite(&self) -> bool {
-        self.url.starts_with("sqlite://")
-    }
-
-    /// Check if this is a PostgreSQL configuration
-    pub fn is_postgresql(&self) -> bool {
-        self.url.starts_with("postgresql://")
-    }
-
     /// Create DatabaseConfig from environment variables
     pub fn from_env() -> Self {
         let url = std::env::var("FLOWPLANE_DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite://./data/flowplane.db".to_string());
+            .unwrap_or_else(|_| "postgresql://localhost:5432/flowplane".to_string());
 
         let max_connections = std::env::var("FLOWPLANE_DATABASE_MAX_CONNECTIONS")
             .ok()
@@ -406,6 +396,29 @@ pub struct AuthConfig {
     /// Default user role for new users
     #[validate(length(min = 1, message = "Default role cannot be empty"))]
     pub default_role: String,
+
+    /// Set Secure flag on session cookies (default: true).
+    /// Set to false only for local HTTP development.
+    /// Env: FLOWPLANE_COOKIE_SECURE
+    pub cookie_secure: bool,
+
+    /// Invitation expiry in hours (default: 48).
+    /// Env: FLOWPLANE_INVITE_EXPIRY_HOURS
+    pub invite_expiry_hours: i64,
+
+    /// Base URL for generating invite links (default: http://localhost:8080).
+    /// Env: FLOWPLANE_BASE_URL
+    #[validate(length(min = 1, message = "Base URL cannot be empty"))]
+    pub base_url: String,
+
+    /// Trusted proxy header for client IP extraction (default: X-Forwarded-For).
+    /// Env: FLOWPLANE_TRUSTED_PROXY_HEADER
+    pub trusted_proxy_header: String,
+
+    /// Trusted proxy depth — how many hops back to trust (default: 1).
+    /// 0 = peer IP only (no proxy), 1 = trust last XFF entry (single LB).
+    /// Env: FLOWPLANE_TRUSTED_PROXY_DEPTH
+    pub trusted_proxy_depth: usize,
 }
 
 impl Default for AuthConfig {
@@ -418,6 +431,11 @@ impl Default for AuthConfig {
             jwt_audience: "flowplane-api".to_string(),
             enable_rbac: true,
             default_role: "user".to_string(),
+            cookie_secure: true,
+            invite_expiry_hours: 48,
+            base_url: "http://localhost:8080".to_string(),
+            trusted_proxy_header: "X-Forwarded-For".to_string(),
+            trusted_proxy_depth: 1,
         }
     }
 }
@@ -426,6 +444,28 @@ impl AuthConfig {
     /// Get token expiry as Duration
     pub fn token_expiry(&self) -> Duration {
         Duration::from_secs(self.token_expiry_seconds)
+    }
+
+    /// Build AuthConfig from environment variables, with defaults
+    pub fn from_env() -> Self {
+        Self {
+            cookie_secure: std::env::var("FLOWPLANE_COOKIE_SECURE")
+                .map(|s| s.to_lowercase() != "false" && s != "0")
+                .unwrap_or(true),
+            invite_expiry_hours: std::env::var("FLOWPLANE_INVITE_EXPIRY_HOURS")
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(48),
+            base_url: std::env::var("FLOWPLANE_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            trusted_proxy_header: std::env::var("FLOWPLANE_TRUSTED_PROXY_HEADER")
+                .unwrap_or_else(|_| "X-Forwarded-For".to_string()),
+            trusted_proxy_depth: std::env::var("FLOWPLANE_TRUSTED_PROXY_DEPTH")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(1),
+            ..Default::default()
+        }
     }
 }
 
@@ -534,16 +574,24 @@ mod tests {
     }
 
     #[test]
-    fn test_database_config_type_detection() {
-        let sqlite_config =
-            DatabaseConfig { url: "sqlite://./test.db".to_string(), ..Default::default() };
-        assert!(sqlite_config.is_sqlite());
-        assert!(!sqlite_config.is_postgresql());
-
+    fn test_database_config_postgresql_urls() {
         let pg_config =
             DatabaseConfig { url: "postgresql://localhost/test".to_string(), ..Default::default() };
-        assert!(!pg_config.is_sqlite());
-        assert!(pg_config.is_postgresql());
+        let config = AppConfig { database: pg_config, ..Default::default() };
+        assert!(config.validate().is_ok());
+
+        let pg_config2 =
+            DatabaseConfig { url: "postgres://localhost/test".to_string(), ..Default::default() };
+        let config2 = AppConfig { database: pg_config2, ..Default::default() };
+        assert!(config2.validate().is_ok());
+    }
+
+    #[test]
+    fn test_database_config_rejects_sqlite() {
+        let sqlite_config =
+            DatabaseConfig { url: "sqlite://./test.db".to_string(), ..Default::default() };
+        let config = AppConfig { database: sqlite_config, ..Default::default() };
+        assert!(config.validate().is_err());
     }
 
     #[test]

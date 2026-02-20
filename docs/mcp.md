@@ -11,98 +11,148 @@ Flowplane implements MCP with two distinct endpoints serving different purposes:
 
 ### Protocol Support
 
-Flowplane implements MCP protocol versions: `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`
+Flowplane implements MCP protocol version: **`2025-11-25`** (exclusive, no backward compatibility)
 
-The server automatically negotiates the highest compatible version with the client.
+Older protocol versions (2024-11-05, 2025-03-26, 2025-06-18) are not supported. For clients that don't support 2025-11-25 yet (e.g., Claude Desktop), use [mcp-remote](https://github.com/modelcontextprotocol/mcp-remote) as a protocol bridge.
 
 ## Transport Options
 
-Flowplane supports three transport mechanisms for MCP communication:
+Flowplane uses Streamable HTTP for MCP communication:
 
-### 1. Stdio (CLI)
+### Streamable HTTP (MCP 2025-11-25)
 
-The stdio transport reads JSON-RPC messages from stdin and writes responses to stdout. This is ideal for local development and command-line integration.
+Unified HTTP transport supporting stateful sessions, streaming, and standard request-response patterns. A single endpoint handles POST (requests), GET (SSE streaming), and DELETE (session termination).
 
-```bash
-flowplane mcp serve --team <team-name>
-```
+**Endpoints:**
+- `/api/v1/mcp/cp` - Control Plane tools
+- `/api/v1/mcp/api` - Gateway API tools
 
-**Use cases:**
-- Local development and testing
-- Integration with CLI tools
-- Claude Desktop configuration
+#### Required Headers
 
-### 2. HTTP
+| Header | Direction | Required | Description |
+|--------|-----------|----------|-------------|
+| `MCP-Protocol-Version` | Request | Yes | Must be `2025-11-25` |
+| `MCP-Session-Id` | Request | After init | Session identifier (UUID v4) |
+| `MCP-Session-Id` | Response | Yes | Echo/assign session ID |
+| `Accept` | Request | For SSE | `text/event-stream` for SSE, `application/json` for JSON |
 
-Stateless HTTP transport for single request-response operations.
+#### Session Lifecycle
 
-**Control Plane endpoint:**
+**1. Initialize Session (POST)**
 ```bash
 POST /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
 Authorization: Bearer <token>
 Content-Type: application/json
 
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "tools/list",
-  "params": {}
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {},
+    "clientInfo": { "name": "my-client", "version": "1.0.0" }
+  }
 }
 ```
 
-**Gateway API endpoint:**
-```bash
-POST /api/v1/mcp/api?team=<team-name>
-Authorization: Bearer <token>
+**Response:**
+```
+HTTP/1.1 200 OK
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
 Content-Type: application/json
 
 {
   "jsonrpc": "2.0",
   "id": 1,
+  "result": {
+    "protocolVersion": "2025-11-25",
+    "serverInfo": { "name": "flowplane", "version": "0.1.0" },
+    "capabilities": { ... }
+  }
+}
+```
+
+**2. Subsequent Requests (POST)**
+```bash
+POST /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "id": 2,
   "method": "tools/list",
   "params": {}
 }
 ```
 
-**Use cases:**
-- Stateless AI agent interactions
-- Programmatic integrations
-- Testing and debugging
-
-### 3. Server-Sent Events (SSE)
-
-SSE transport provides real-time streaming for progress updates, logs, and responses.
-
-**Establish SSE connection:**
+**3. Open SSE Stream (GET)**
 ```bash
-GET /api/v1/mcp/cp/sse?team=<team-name>
+GET /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
+Authorization: Bearer <token>
+Accept: text/event-stream
+```
+
+**Response:**
+```
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
+
+event: endpoint
+data: {"sessionId":"mcp-550e8400-e29b-41d4-a716-446655440000"}
+
+event: ping
+data: {}
+```
+
+**4. Terminate Session (DELETE)**
+```bash
+DELETE /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
 Authorization: Bearer <token>
 ```
 
-**Response headers:**
+**Response:**
 ```
-Mcp-Connection-Id: <connection-id>
+HTTP/1.1 204 No Content
 ```
 
-Use the `Mcp-Connection-Id` header value in subsequent HTTP POST requests to `/api/v1/mcp/cp` to link them to the SSE stream.
+#### SSE Resumability
 
-**Example HTTP request with SSE linkage:**
+Clients can resume SSE streams after disconnection using `Last-Event-ID`:
+
 ```bash
-POST /api/v1/mcp/cp?team=<team-name>
+GET /api/v1/mcp/cp?team=<team-name>
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: <session-id>
+Last-Event-ID: <connection-id>:<sequence>
 Authorization: Bearer <token>
-Mcp-Connection-Id: <connection-id>
+Accept: text/event-stream
 ```
 
-**Use cases:**
-- Long-running operations requiring progress updates
-- Real-time log streaming
-- Interactive AI agent sessions
+The server replays buffered messages (up to 500) with sequence numbers greater than the provided ID.
 
-**SSE Events:**
+#### SSE Events
+
+- `endpoint` - Initial connection established with session info
 - `message` - JSON-RPC response messages
 - `progress` - Progress notifications for long-running operations
 - `log` - Server log messages
 - `ping` - Heartbeat (every 10 seconds)
+
+**Use cases:**
+- Stateful AI agent sessions
+- Long-running operations requiring progress updates
+- Real-time log streaming
+- Programmatic integrations
 
 ## Authentication & Authorization
 
@@ -140,7 +190,27 @@ Team identity is resolved in the following priority order:
 
 ## Control Plane (CP) Tools
 
-The CP endpoint exposes 19 built-in tools for managing Flowplane infrastructure.
+The CP endpoint exposes 60 built-in tools for managing Flowplane infrastructure (~60% CP API coverage).
+
+### Tool Categories
+
+| Category | Tools | Coverage |
+|----------|-------|----------|
+| Clusters | 6 (list, get, health, create, update, delete) | 100% |
+| Listeners | 7 (list, get, status, query_port, create, update, delete) | 100% |
+| Route Configs | 5 (list, get, create, update, delete) | 100% |
+| Routes | 5 (list, get, create, update, delete) | 100% |
+| Virtual Hosts | 5 (list, get, create, update, delete) | 100% |
+| Filters | 8 (list, get, create, update, delete, attach, detach, list attachments) | 100% |
+| Query Tools | 2 (query_path, query_service) | 100% |
+| Learning Sessions | 4 (list, get, create, delete) | 100% |
+| Aggregated Schemas | 3 (list, get, export_openapi) | 100% |
+| OpenAPI Imports | 2 (list, get) | 100% |
+| Dataplanes | 5 (list, get, create, update, delete) | 100% |
+| Filter Types | 2 (list, get) | 100% |
+| Ops Agent | 4 (trace_request, topology, config_validate, audit_query) | 100% |
+| Dev Agent | 1 (preflight_check) | 100% |
+| DevOps Agent | 1 (get_deployment_status) | 100% |
 
 ### Read-Only Tools
 
@@ -243,6 +313,109 @@ Retrieves filter configuration and metadata.
 
 **`cp_delete_filter`** - Delete a filter.
 
+#### Virtual Host Operations
+
+**`cp_list_virtual_hosts`** - List virtual hosts within a route configuration.
+
+**`cp_get_virtual_host`** - Get detailed virtual host configuration.
+
+**`cp_create_virtual_host`** - Create a new virtual host with domains and routes.
+
+**`cp_update_virtual_host`** - Update virtual host domains and configuration.
+
+**`cp_delete_virtual_host`** - Delete a virtual host (cascades to routes).
+
+#### Individual Route Operations
+
+**`cp_get_route`** - Get route details within virtual host hierarchy.
+
+**`cp_create_route`** - Create a route with path matching and action.
+
+**`cp_update_route`** - Update route configuration.
+
+**`cp_delete_route`** - Delete a route.
+
+#### Filter Attachment Operations
+
+**`cp_attach_filter`** - Attach a filter to a listener or route configuration.
+
+**`cp_detach_filter`** - Detach a filter from a resource.
+
+**`cp_list_filter_attachments`** - List all attachments for a filter.
+
+#### Learning Session Operations
+
+**`cp_list_learning_sessions`** - List API learning sessions.
+
+**`cp_get_learning_session`** - Get learning session details.
+
+**`cp_create_learning_session`** - Start a new learning session for traffic analysis.
+
+**`cp_delete_learning_session`** - Delete a learning session.
+
+#### Aggregated Schema Operations
+
+**`cp_list_aggregated_schemas`** - List discovered API schemas from traffic.
+
+**`cp_get_aggregated_schema`** - Get detailed schema information.
+
+**`cp_export_schema_openapi`** - Export aggregated schemas as an OpenAPI specification.
+
+**Input schema:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "schema_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of aggregated schema IDs to export"
+    }
+  },
+  "required": ["schema_ids"]
+}
+```
+
+#### OpenAPI Import Operations
+
+**`cp_list_openapi_imports`** - List OpenAPI specification imports.
+
+**`cp_get_openapi_import`** - Get import details and status.
+
+#### Dataplane Operations
+
+**`cp_list_dataplanes`** - List registered dataplanes.
+
+**`cp_get_dataplane`** - Get dataplane configuration and status.
+
+**`cp_create_dataplane`** - Register a new dataplane instance.
+
+**`cp_update_dataplane`** - Update dataplane configuration.
+
+**`cp_delete_dataplane`** - Unregister a dataplane.
+
+#### Filter Type Discovery
+
+**`cp_list_filter_types`** - List available filter types with schemas.
+
+**`cp_get_filter_type`** - Get filter type schema and capabilities.
+
+### DevOps Agent Tools
+
+Status aggregation tools for deployment monitoring:
+
+#### `devops_get_deployment_status`
+Get aggregated status across clusters, listeners, and filters.
+
+**Input schema:**
+```json
+{
+  "include_details": true
+}
+```
+
+**Returns:** Summary of all resources with health status counts.
+
 ## Resources
 
 Resources provide read-only access to Flowplane entities via structured URIs.
@@ -333,7 +506,7 @@ Use the `resources/read` method with a resource URI:
 
 ## Prompts
 
-Flowplane provides 5 built-in prompts for common troubleshooting and analysis workflows.
+Flowplane provides 7 built-in prompts for common troubleshooting and analysis workflows.
 
 ### Available Prompts
 
@@ -385,6 +558,20 @@ Analyze listener configuration and provide optimization recommendations.
 Suggest performance optimizations for Flowplane configuration.
 
 **Arguments:**
+- `team` (required) - Team identifier
+
+#### 6. `dev_deploy_and_verify`
+Guide deployment of a service through the gateway with verification steps.
+
+**Arguments:**
+- `service_name` (required) - Name of the service to deploy
+- `team` (required) - Team identifier
+
+#### 7. `dev_learn_and_document`
+Guide API learning session creation and OpenAPI documentation export.
+
+**Arguments:**
+- `route_config_name` (required) - Route configuration to learn from
 - `team` (required) - Team identifier
 
 ### Using Prompts
@@ -579,7 +766,7 @@ Authorization: Bearer <token>
 {
   "connections": [
     {
-      "connection_id": "conn_abc123",
+      "connection_id": "conn-production-550e8400-e29b-41d4-a716-446655440000",
       "team": "production",
       "created_at": "2026-01-25T10:00:00Z",
       "last_activity": "2026-01-25T10:15:00Z",
@@ -596,6 +783,14 @@ Authorization: Bearer <token>
   "total_count": 1
 }
 ```
+
+### Session IDs
+
+Session IDs in MCP 2025-11-25 use cryptographically secure UUID v4 format:
+- Format: `mcp-{uuid}` (e.g., `mcp-550e8400-e29b-41d4-a716-446655440000`)
+- Generated on first `initialize` request
+- Must be included in `MCP-Session-Id` header for all subsequent requests
+- Sessions expire after 1 hour (configurable via `MCP_SESSION_TTL_SECS`)
 
 ## Server Capabilities
 
@@ -622,7 +817,7 @@ When clients send an `initialize` request, Flowplane advertises the following ca
 
 ## Claude Desktop Configuration
 
-To use Flowplane with Claude Desktop, add the following to your MCP configuration file:
+To use Flowplane with Claude Desktop, configure it to connect via Streamable HTTP. Add the following to your MCP configuration file:
 
 **macOS/Linux:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 
@@ -632,32 +827,16 @@ To use Flowplane with Claude Desktop, add the following to your MCP configuratio
 {
   "mcpServers": {
     "flowplane-cp": {
-      "command": "flowplane",
-      "args": ["mcp", "serve", "--team", "production"],
-      "env": {
-        "DATABASE_URL": "sqlite:///path/to/flowplane.db"
+      "url": "http://localhost:8080/api/v1/mcp/cp?team=production",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
       }
     }
   }
 }
 ```
 
-**With custom database:**
-```json
-{
-  "mcpServers": {
-    "flowplane-cp": {
-      "command": "flowplane",
-      "args": [
-        "mcp",
-        "serve",
-        "--team", "production",
-        "--database-url", "sqlite:///Users/you/flowplane/data/flowplane.db"
-      ]
-    }
-  }
-}
-```
+> **Note:** For Claude Desktop versions that don't yet support Streamable HTTP (MCP 2025-11-25), use [mcp-remote](https://github.com/modelcontextprotocol/mcp-remote) as a protocol bridge.
 
 Restart Claude Desktop to activate the MCP server. Claude will now have access to all CP tools, resources, and prompts for managing your Flowplane configuration.
 
@@ -667,18 +846,20 @@ The [MCP Inspector](https://github.com/modelcontextprotocol/inspector) provides 
 
 ### Connecting to Flowplane
 
-Connect using SSE transport with your API token in the Authorization header:
+Connect using HTTP transport with the required MCP 2025-11-25 headers:
 
 ```bash
 # Control Plane tools
-npx @modelcontextprotocol/inspector sse \
-  "http://localhost:8080/api/v1/mcp/cp/sse?team=engineering" \
-  --header "Authorization: Bearer <your-token>"
+npx @modelcontextprotocol/inspector http \
+  "http://localhost:8080/api/v1/mcp/cp?team=engineering" \
+  --header "Authorization: Bearer <your-token>" \
+  --header "MCP-Protocol-Version: 2025-11-25"
 
 # Gateway API tools
-npx @modelcontextprotocol/inspector sse \
-  "http://localhost:8080/api/v1/mcp/api/sse?team=engineering" \
-  --header "Authorization: Bearer <your-token>"
+npx @modelcontextprotocol/inspector http \
+  "http://localhost:8080/api/v1/mcp/api?team=engineering" \
+  --header "Authorization: Bearer <your-token>" \
+  --header "MCP-Protocol-Version: 2025-11-25"
 ```
 
 ### Authentication
@@ -724,12 +905,15 @@ POST /api/v1/auth/tokens
 }
 ```
 
-### 2. Initialize MCP Connection (HTTP)
+### 2. Initialize MCP Connection (Streamable HTTP)
 
 ```bash
+# Initialize and save the session ID from response header
 curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
   -H "Authorization: Bearer <token>" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
   -H "Content-Type: application/json" \
+  -D - \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -743,13 +927,17 @@ curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
       }
     }
   }'
+# Response includes: MCP-Session-Id: mcp-<uuid>
 ```
 
 ### 3. List Available Tools
 
 ```bash
+# Use the MCP-Session-Id from the initialize response
 curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
   -H "Authorization: Bearer <token>" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -H "MCP-Session-Id: <session-id-from-step-2>" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -764,6 +952,8 @@ curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
 ```bash
 curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
   -H "Authorization: Bearer <token>" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -H "MCP-Session-Id: <session-id>" \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -866,7 +1056,7 @@ Flowplane returns standard JSON-RPC 2.0 error responses:
 
 ### Development
 
-1. **Test with stdio** - Use stdio transport for local development and debugging
+1. **Test with MCP Inspector** - Use the MCP Inspector for local development and debugging
 2. **Validate schemas** - Use the input_schema to validate arguments before calling tools
 3. **Handle errors gracefully** - All tools can fail; check for error responses
 4. **Use prompts** - Built-in prompts provide LLMs with structured troubleshooting workflows
@@ -897,9 +1087,19 @@ Flowplane returns standard JSON-RPC 2.0 error responses:
 **Problem:** `Unsupported protocol version` error.
 
 **Solution:**
-- Check client is requesting a supported version (2024-11-05 through 2025-11-25)
-- Update client or server to compatible versions
-- Use an empty version string to default to oldest supported version
+- Flowplane only supports protocol version `2025-11-25`
+- Ensure `MCP-Protocol-Version: 2025-11-25` header is included in all requests
+- For clients using older versions, use [mcp-remote](https://github.com/modelcontextprotocol/mcp-remote) as a bridge
+
+### Session Management Errors
+
+**Problem:** `Session not found` or `Invalid session ID` errors.
+
+**Solution:**
+- Ensure you're including `MCP-Session-Id` header after initialization
+- Session IDs must match the UUID v4 format: `mcp-{uuid}`
+- Sessions expire after 1 hour of inactivity
+- Re-initialize if session has expired
 
 ### SSE Connection Drops
 
@@ -910,6 +1110,7 @@ Flowplane returns standard JSON-RPC 2.0 error responses:
 - Verify no proxy/firewall is terminating long-lived connections
 - Monitor heartbeat pings (every 10 seconds)
 - Check connection limit hasn't been reached
+- Use `Last-Event-ID` header to resume and replay missed messages
 
 ### Tool Not Found
 

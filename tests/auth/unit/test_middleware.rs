@@ -1,3 +1,7 @@
+// NOTE: This file requires PostgreSQL - disabled until Phase 4 of PostgreSQL migration
+// To run these tests: cargo test --features postgres_tests
+#![cfg(feature = "postgres_tests")]
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -12,101 +16,38 @@ use flowplane::auth::{
     token_service::TokenService,
 };
 use flowplane::storage::repository::{AuditLogRepository, SqlxTokenRepository, TokenRepository};
-use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-async fn setup_pool() -> flowplane::storage::DbPool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("create sqlite pool");
+#[allow(clippy::duplicate_mod)]
+#[path = "../test_schema.rs"]
+mod test_schema;
+use test_schema::{create_test_pool, TestDatabase};
 
-    sqlx::query(
-        r#"
-        CREATE TABLE personal_access_tokens (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            token_hash TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL,
-            expires_at DATETIME,
-            last_used_at DATETIME,
-            created_by TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            is_setup_token BOOLEAN NOT NULL DEFAULT FALSE,
-            max_usage_count INTEGER,
-            usage_count INTEGER NOT NULL DEFAULT 0,
-            failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until DATETIME,
-            csrf_token TEXT,
-            user_id TEXT,
-            user_email TEXT
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-        CREATE TABLE token_scopes (
-            id TEXT PRIMARY KEY,
-            token_id TEXT NOT NULL,
-            scope TEXT NOT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (token_id) REFERENCES personal_access_tokens(id) ON DELETE CASCADE
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        r#"
-        CREATE TABLE audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            resource_type TEXT NOT NULL,
-            resource_id TEXT,
-            resource_name TEXT,
-            action TEXT NOT NULL,
-            old_configuration TEXT,
-            new_configuration TEXT,
-            user_id TEXT,
-            client_ip TEXT,
-            user_agent TEXT,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    pool
-}
-
-async fn setup_services(
-) -> (TokenService, Arc<AuthService>, Arc<SessionService>, Arc<SqlxTokenRepository>) {
-    let pool = setup_pool().await;
+async fn setup_services() -> (
+    TestDatabase,
+    TokenService,
+    Arc<AuthService>,
+    Arc<SessionService>,
+    Arc<SqlxTokenRepository>,
+    flowplane::storage::DbPool,
+) {
+    let test_db = create_test_pool().await;
+    let pool = test_db.pool.clone();
     let repo = Arc::new(SqlxTokenRepository::new(pool.clone()));
-    let audit = Arc::new(AuditLogRepository::new(pool));
+    let audit = Arc::new(AuditLogRepository::new(pool.clone()));
 
     let token_service = TokenService::new(repo.clone(), audit.clone());
     let auth_service = Arc::new(AuthService::new(repo.clone(), audit.clone()));
     let session_service = Arc::new(SessionService::new(repo.clone(), audit));
 
-    (token_service, auth_service, session_service, repo)
+    (test_db, token_service, auth_service, session_service, repo, pool)
 }
 
 fn secured_router(
     auth_service: Arc<AuthService>,
     session_service: Arc<SessionService>,
+    pool: flowplane::storage::DbPool,
     scopes: Vec<&str>,
 ) -> Router {
     let scope_layer = {
@@ -114,7 +55,7 @@ fn secured_router(
         middleware::from_fn_with_state(required, ensure_scopes)
     };
 
-    let auth_state = (auth_service, session_service);
+    let auth_state = (auth_service, session_service, pool);
 
     Router::new()
         .route("/secure", get(|| async { StatusCode::OK }))
@@ -125,8 +66,8 @@ fn secured_router(
 
 #[tokio::test]
 async fn missing_bearer_returns_unauthorized() {
-    let (_, auth_service, session_service, _) = setup_services().await;
-    let app = secured_router(auth_service, session_service, vec!["clusters:read"]);
+    let (_db, _, auth_service, session_service, _, pool) = setup_services().await;
+    let app = secured_router(auth_service, session_service, pool, vec!["clusters:read"]);
 
     let response =
         app.oneshot(Request::builder().uri("/secure").body(Body::empty()).unwrap()).await.unwrap();
@@ -136,7 +77,7 @@ async fn missing_bearer_returns_unauthorized() {
 
 #[tokio::test]
 async fn insufficient_scope_returns_forbidden() {
-    let (token_service, auth_service, session_service, _) = setup_services().await;
+    let (_db, token_service, auth_service, session_service, _, pool) = setup_services().await;
     let token = token_service
         .create_token(
             flowplane::auth::validation::CreateTokenRequest {
@@ -153,7 +94,7 @@ async fn insufficient_scope_returns_forbidden() {
         .await
         .unwrap();
 
-    let app = secured_router(auth_service, session_service, vec!["clusters:write"]);
+    let app = secured_router(auth_service, session_service, pool, vec!["clusters:write"]);
 
     let response = app
         .oneshot(
@@ -171,7 +112,7 @@ async fn insufficient_scope_returns_forbidden() {
 
 #[tokio::test]
 async fn valid_token_allows_request() {
-    let (token_service, auth_service, session_service, _) = setup_services().await;
+    let (_db, token_service, auth_service, session_service, _, pool) = setup_services().await;
     let token = token_service
         .create_token(
             flowplane::auth::validation::CreateTokenRequest {
@@ -188,7 +129,7 @@ async fn valid_token_allows_request() {
         .await
         .unwrap();
 
-    let app = secured_router(auth_service, session_service, vec!["clusters:read"]);
+    let app = secured_router(auth_service, session_service, pool, vec!["clusters:read"]);
 
     let response = app
         .oneshot(
@@ -269,12 +210,12 @@ async fn create_test_session(
 
 #[tokio::test]
 async fn session_cookie_get_request_succeeds_without_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo, pool) = setup_services().await;
 
     let (session_token, _csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:read"]).await;
 
-    let app = secured_router(auth_service, session_service, vec!["clusters:read"]);
+    let app = secured_router(auth_service, session_service, pool, vec!["clusters:read"]);
 
     // GET request with session cookie should succeed without CSRF token
     let cookie = Cookie::new(SESSION_COOKIE_NAME, session_token);
@@ -294,14 +235,17 @@ async fn session_cookie_get_request_succeeds_without_csrf() {
 
 #[tokio::test]
 async fn session_cookie_post_request_fails_without_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo, pool) = setup_services().await;
 
     let (session_token, _csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:write"]).await;
 
     let app = Router::new()
         .route("/secure", post(|| async { StatusCode::OK }))
-        .layer(middleware::from_fn_with_state((auth_service, session_service), authenticate))
+        .layer(middleware::from_fn_with_state(
+            (auth_service, session_service, pool.clone()),
+            authenticate,
+        ))
         .with_state(());
 
     // POST request with session cookie but no CSRF token should fail
@@ -323,14 +267,17 @@ async fn session_cookie_post_request_fails_without_csrf() {
 
 #[tokio::test]
 async fn session_cookie_post_request_succeeds_with_valid_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo, pool) = setup_services().await;
 
     let (session_token, csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:write"]).await;
 
     let app = Router::new()
         .route("/secure", post(|| async { StatusCode::OK }))
-        .layer(middleware::from_fn_with_state((auth_service, session_service), authenticate))
+        .layer(middleware::from_fn_with_state(
+            (auth_service, session_service, pool.clone()),
+            authenticate,
+        ))
         .with_state(());
 
     // POST request with session cookie and valid CSRF token should succeed
@@ -353,14 +300,17 @@ async fn session_cookie_post_request_succeeds_with_valid_csrf() {
 
 #[tokio::test]
 async fn session_cookie_post_request_fails_with_invalid_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo, pool) = setup_services().await;
 
     let (session_token, _csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:write"]).await;
 
     let app = Router::new()
         .route("/secure", post(|| async { StatusCode::OK }))
-        .layer(middleware::from_fn_with_state((auth_service, session_service), authenticate))
+        .layer(middleware::from_fn_with_state(
+            (auth_service, session_service, pool.clone()),
+            authenticate,
+        ))
         .with_state(());
 
     // POST request with session cookie and WRONG CSRF token should fail
@@ -383,14 +333,17 @@ async fn session_cookie_post_request_fails_with_invalid_csrf() {
 
 #[tokio::test]
 async fn bearer_session_token_post_request_succeeds_with_valid_csrf() {
-    let (_, auth_service, session_service, token_repo) = setup_services().await;
+    let (_db, _, auth_service, session_service, token_repo, pool) = setup_services().await;
 
     let (session_token, csrf_token) =
         create_test_session(session_service.clone(), token_repo, vec!["clusters:write"]).await;
 
     let app = Router::new()
         .route("/secure", post(|| async { StatusCode::OK }))
-        .layer(middleware::from_fn_with_state((auth_service, session_service), authenticate))
+        .layer(middleware::from_fn_with_state(
+            (auth_service, session_service, pool.clone()),
+            authenticate,
+        ))
         .with_state(());
 
     // POST request with Bearer session token and valid CSRF token should succeed
@@ -412,7 +365,7 @@ async fn bearer_session_token_post_request_succeeds_with_valid_csrf() {
 
 #[tokio::test]
 async fn pat_tokens_bypass_csrf_validation() {
-    let (token_service, auth_service, session_service, _) = setup_services().await;
+    let (_db, token_service, auth_service, session_service, _, pool) = setup_services().await;
 
     let token = token_service
         .create_token(
@@ -432,7 +385,10 @@ async fn pat_tokens_bypass_csrf_validation() {
 
     let app = Router::new()
         .route("/secure", post(|| async { StatusCode::OK }))
-        .layer(middleware::from_fn_with_state((auth_service, session_service), authenticate))
+        .layer(middleware::from_fn_with_state(
+            (auth_service, session_service, pool.clone()),
+            authenticate,
+        ))
         .with_state(());
 
     // POST request with PAT token should succeed without CSRF token

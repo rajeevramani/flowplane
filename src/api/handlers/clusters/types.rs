@@ -275,9 +275,3 @@ pub struct ClusterResponse {
     pub import_id: Option<String>,
     pub config: ClusterSpec,
 }
-
-#[derive(Debug, Default, Deserialize)]
-pub struct ListClustersQuery {
-    pub limit: Option<i32>,
-    pub offset: Option<i32>,
-}

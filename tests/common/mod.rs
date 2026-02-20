@@ -4,4 +4,5 @@
 
 #![allow(dead_code)]
 
+pub mod db_metadata;
 pub mod test_db;

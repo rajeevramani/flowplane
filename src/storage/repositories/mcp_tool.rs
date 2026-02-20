@@ -7,7 +7,7 @@ use crate::domain::{McpToolCategory, McpToolId, McpToolSourceType, RouteId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Database row structure for MCP tools
@@ -59,6 +59,24 @@ pub struct McpToolData {
     pub confidence: Option<f64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl crate::api::handlers::TeamOwned for McpToolData {
+    fn team(&self) -> Option<&str> {
+        Some(&self.team)
+    }
+
+    fn resource_name(&self) -> &str {
+        &self.name
+    }
+
+    fn resource_type() -> &'static str {
+        "MCP tool"
+    }
+
+    fn resource_type_metric() -> &'static str {
+        "mcp_tools"
+    }
 }
 
 impl TryFrom<McpToolRow> for McpToolData {
@@ -236,7 +254,7 @@ impl McpToolRepository {
     /// Get MCP tool by ID
     #[instrument(skip(self), fields(mcp_tool_id = %id), name = "db_get_mcp_tool_by_id")]
     pub async fn get_by_id(&self, id: &McpToolId) -> Result<Option<McpToolData>> {
-        let row = sqlx::query_as::<Sqlite, McpToolRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, McpToolRow>(
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
                     listener_port, host_header, enabled, confidence, created_at, updated_at
@@ -259,7 +277,7 @@ impl McpToolRepository {
     /// Get MCP tool by name and team
     #[instrument(skip(self), fields(team = %team, tool_name = %name), name = "db_get_mcp_tool_by_name")]
     pub async fn get_by_name(&self, team: &str, name: &str) -> Result<Option<McpToolData>> {
-        let row = sqlx::query_as::<Sqlite, McpToolRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, McpToolRow>(
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
                     listener_port, host_header, enabled, confidence, created_at, updated_at
@@ -283,7 +301,7 @@ impl McpToolRepository {
     /// Get MCP tool by route ID
     #[instrument(skip(self), fields(route_id = %route_id), name = "db_get_mcp_tool_by_route_id")]
     pub async fn get_by_route_id(&self, route_id: &RouteId) -> Result<Option<McpToolData>> {
-        let row = sqlx::query_as::<Sqlite, McpToolRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, McpToolRow>(
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
                     listener_port, host_header, enabled, confidence, created_at, updated_at
@@ -310,7 +328,7 @@ impl McpToolRepository {
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
                     listener_port, host_header, enabled, confidence, created_at, updated_at
-             FROM mcp_tools WHERE team = $1 AND enabled = 1
+             FROM mcp_tools WHERE team = $1 AND enabled = true
              ORDER BY created_at DESC"
         } else {
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
@@ -320,7 +338,7 @@ impl McpToolRepository {
              ORDER BY created_at DESC"
         };
 
-        let rows = sqlx::query_as::<Sqlite, McpToolRow>(query)
+        let rows = sqlx::query_as::<sqlx::Postgres, McpToolRow>(query)
             .bind(team)
             .fetch_all(&self.pool)
             .await
@@ -342,7 +360,7 @@ impl McpToolRepository {
         team: &str,
         category: McpToolCategory,
     ) -> Result<Vec<McpToolData>> {
-        let rows = sqlx::query_as::<Sqlite, McpToolRow>(
+        let rows = sqlx::query_as::<sqlx::Postgres, McpToolRow>(
             "SELECT id, team, name, description, category, source_type, input_schema, output_schema,
                     learned_schema_id, schema_source, route_id, http_method, http_path, cluster_name,
                     listener_port, host_header, enabled, confidence, created_at, updated_at
@@ -497,7 +515,7 @@ impl McpToolRepository {
     #[instrument(skip(self), fields(team = %team), name = "db_count_enabled_mcp_tools_by_team")]
     pub async fn count_enabled_by_team(&self, team: &str) -> Result<i64> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM mcp_tools WHERE team = $1 AND enabled = 1",
+            "SELECT COUNT(*) FROM mcp_tools WHERE team = $1 AND enabled = true",
         )
         .bind(team)
         .fetch_one(&self.pool)
@@ -525,27 +543,29 @@ impl McpToolRepository {
 
         // Admin bypass: empty teams = count all enabled MCP tools
         if teams.is_empty() {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mcp_tools WHERE enabled = 1")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, "Failed to count all enabled MCP tools (admin bypass)");
-                    FlowplaneError::Database {
-                        source: e,
-                        context: "Failed to count all enabled MCP tools".to_string(),
-                    }
-                })?;
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM mcp_tools WHERE enabled = true",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to count all enabled MCP tools (admin bypass)");
+                FlowplaneError::Database {
+                    source: e,
+                    context: "Failed to count all enabled MCP tools".to_string(),
+                }
+            })?;
             return Ok(count);
         }
 
         // Build IN clause for team filtering
         let placeholders: Vec<String> = (1..=teams.len()).map(|i| format!("${}", i)).collect();
         let query_str = format!(
-            "SELECT COUNT(*) FROM mcp_tools WHERE team IN ({}) AND enabled = 1",
+            "SELECT COUNT(*) FROM mcp_tools WHERE team IN ({}) AND enabled = true",
             placeholders.join(", ")
         );
 
-        let mut query = sqlx::query_scalar::<Sqlite, i64>(&query_str);
+        let mut query = sqlx::query_scalar::<sqlx::Postgres, i64>(&query_str);
         for team in teams {
             query = query.bind(team);
         }
@@ -610,7 +630,7 @@ impl McpToolRepository {
         name: &str,
     ) -> Result<Option<McpToolWithGateway>> {
         // Query that joins mcp_tools -> listeners -> dataplanes to get gateway_host
-        let row = sqlx::query_as::<Sqlite, McpToolWithGatewayRow>(
+        let row = sqlx::query_as::<sqlx::Postgres, McpToolWithGatewayRow>(
             r#"
             SELECT
                 t.id, t.team, t.name, t.description, t.category, t.source_type,

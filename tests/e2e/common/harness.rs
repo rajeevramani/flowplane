@@ -15,14 +15,42 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tempfile::TempDir;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
 use tracing::info;
 
 use super::control_plane::{ControlPlaneConfig, ControlPlaneHandle};
-use super::envoy::{EnvoyConfig, EnvoyHandle};
+use super::envoy::{EnvoyConfig, EnvoyHandle, EnvoyXdsTlsConfig};
 use super::mocks::MockServices;
 use super::ports::{PortAllocator, TestPorts};
 use super::shared_infra::SharedInfrastructure;
 use super::timeout::{with_timeout, TestTimeout};
+
+// ============================================================================
+// mTLS Certificate Configuration
+// ============================================================================
+
+/// Certificate paths for mTLS configuration.
+///
+/// Stores only paths to certificate files, not owned certificate objects.
+/// The underlying TempDir ownership is handled by SharedInfrastructure (shared mode)
+/// or by the TestHarness _temp_dir field (isolated mode).
+#[derive(Debug, Clone)]
+pub struct MtlsCertPaths {
+    /// CA certificate path (for Envoy trust store)
+    pub ca_cert_path: PathBuf,
+    /// Server certificate path (only used in isolated mode)
+    pub server_cert_path: PathBuf,
+    /// Server key path (only used in isolated mode)
+    pub server_key_path: PathBuf,
+    /// Client certificate path (for Envoy xDS connection)
+    pub client_cert_path: PathBuf,
+    /// Client key path (for Envoy xDS connection)
+    pub client_key_path: PathBuf,
+    /// SPIFFE URI embedded in client certificate
+    pub spiffe_uri: String,
+}
 
 /// Test harness configuration
 #[derive(Debug, Clone)]
@@ -37,6 +65,8 @@ pub struct TestHarnessConfig {
     pub start_ext_authz_mock: bool,
     /// Use shared infrastructure (faster, less isolation)
     pub use_shared: bool,
+    /// Enable mTLS for xDS connection (requires FLOWPLANE_E2E_MTLS=1 in shared mode)
+    pub enable_mtls: bool,
 }
 
 impl TestHarnessConfig {
@@ -47,13 +77,33 @@ impl TestHarnessConfig {
             start_envoy: true,
             start_auth_mocks: true, // Shared infra always has auth
             start_ext_authz_mock: false,
-            use_shared: true, // Default to shared mode
+            use_shared: true,   // Default to shared mode
+            enable_mtls: false, // Default to no mTLS
         }
     }
 
     /// Use isolated infrastructure (slower but fully isolated)
     pub fn isolated(mut self) -> Self {
         self.use_shared = false;
+        self
+    }
+
+    /// Enable mTLS for xDS connection.
+    ///
+    /// In shared mode: Requires `FLOWPLANE_E2E_MTLS=1` environment variable to be set
+    /// when the test suite starts. The shared infrastructure will initialize the CA.
+    ///
+    /// In isolated mode: Creates a new CA and certificates for this test instance.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let harness = TestHarness::start(
+    ///     TestHarnessConfig::new("test_mtls").with_mtls()
+    /// ).await?;
+    /// assert!(harness.has_mtls());
+    /// ```
+    pub fn with_mtls(mut self) -> Self {
+        self.enable_mtls = true;
         self
     }
 
@@ -97,10 +147,24 @@ pub struct TestHarness {
     mocks_owned: Option<MockServices>,
     /// Temp directory for test artifacts (cleaned up on drop)
     _temp_dir: Option<TempDir>,
-    /// Database path
-    pub db_path: PathBuf,
+    /// Database URL
+    pub db_url: String,
     /// Whether we're using shared mode
     is_shared: bool,
+    /// mTLS certificate paths (if mTLS enabled)
+    mtls_cert_paths: Option<MtlsCertPaths>,
+    /// mTLS CA (kept alive to prevent TempDir cleanup in isolated mode)
+    #[allow(dead_code)]
+    _mtls_ca: Option<crate::tls::support::TestCertificateAuthority>,
+    /// mTLS server cert (kept alive to prevent TempDir cleanup in isolated mode)
+    #[allow(dead_code)]
+    _mtls_server_cert: Option<crate::tls::support::TestCertificateFiles>,
+    /// mTLS client cert (kept alive to prevent TempDir cleanup in isolated mode)
+    #[allow(dead_code)]
+    _mtls_client_cert: Option<crate::tls::support::TestCertificateFiles>,
+    /// PostgreSQL container (kept alive in isolated mode)
+    #[allow(dead_code)]
+    _pg_container: Option<ContainerAsync<Postgres>>,
 }
 
 impl TestHarness {
@@ -120,6 +184,53 @@ impl TestHarness {
         } else {
             self.envoy_owned.as_ref()
         }
+    }
+
+    // ========================================================================
+    // mTLS Helper Methods
+    // ========================================================================
+
+    /// Check if mTLS is enabled for this test.
+    ///
+    /// Returns true if the test was started with `.with_mtls()` and
+    /// certificate generation succeeded.
+    pub fn has_mtls(&self) -> bool {
+        self.mtls_cert_paths.is_some()
+    }
+
+    /// Get SPIFFE URI from client certificate (if mTLS enabled).
+    ///
+    /// The SPIFFE URI is embedded in the client certificate's SAN extension
+    /// and is used for team-based authorization in xDS.
+    pub fn get_spiffe_uri(&self) -> Option<&str> {
+        self.mtls_cert_paths.as_ref().map(|m| m.spiffe_uri.as_str())
+    }
+
+    /// Extract team name from SPIFFE URI.
+    ///
+    /// Parses the SPIFFE URI format: `spiffe://flowplane.local/team/{team}/proxy/{proxy}`
+    /// and returns the team component.
+    ///
+    /// Returns `None` if mTLS is not enabled or the URI format is invalid.
+    pub fn get_mtls_team(&self) -> Option<String> {
+        self.get_spiffe_uri().and_then(|uri| {
+            // Expected format: spiffe://flowplane.local/team/{team}/proxy/{proxy}
+            // Parts: ["spiffe:", "", "flowplane.local", "team", "{team}", "proxy", "{proxy}"]
+            let parts: Vec<&str> = uri.split('/').collect();
+            if parts.len() >= 5 && parts[3] == "team" {
+                Some(parts[4].to_string())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Get mTLS certificate paths (if mTLS enabled).
+    ///
+    /// Useful for configuring additional components that need to use
+    /// the same certificates (e.g., for testing certificate validation).
+    pub fn mtls_certs(&self) -> Option<&MtlsCertPaths> {
+        self.mtls_cert_paths.as_ref()
     }
 }
 
@@ -176,6 +287,48 @@ impl TestHarness {
             "Using shared infrastructure"
         );
 
+        // Validate mTLS configuration consistency
+        if config.enable_mtls && shared.mtls_ca.is_none() {
+            anyhow::bail!(
+                "mTLS requested but shared infrastructure doesn't have it enabled. \
+                 Set FLOWPLANE_E2E_MTLS=1 and restart test run."
+            );
+        }
+
+        // Generate unique client certificate for this test (if mTLS enabled)
+        let mtls_cert_paths = if config.enable_mtls {
+            let ca = shared.mtls_ca.as_ref().expect("CA should exist after validation");
+
+            // Generate unique team name for this test
+            let team_name = super::shared_infra::unique_team_name(&config.test_name);
+            let spiffe_uri = crate::tls::support::TestCertificateAuthority::build_spiffe_uri(
+                "flowplane.local",
+                &team_name,
+                "test-proxy",
+            )?;
+
+            info!(
+                test = %config.test_name,
+                team = %team_name,
+                spiffe_uri = %spiffe_uri,
+                "Generating mTLS client certificate"
+            );
+
+            let client_cert =
+                ca.issue_client_cert(&spiffe_uri, "test-proxy", time::Duration::days(1))?;
+
+            Some(MtlsCertPaths {
+                ca_cert_path: ca.ca_cert_path.clone(),
+                server_cert_path: PathBuf::new(), // Not needed in shared mode
+                server_key_path: PathBuf::new(),  // Not needed in shared mode
+                client_cert_path: client_cert.cert_path.clone(),
+                client_key_path: client_cert.key_path.clone(),
+                spiffe_uri,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             ports,
             cp_owned: None,
@@ -183,21 +336,100 @@ impl TestHarness {
             envoy_owned: None,
             mocks_owned: None,
             _temp_dir: None,
-            db_path: shared.db_path.clone(),
+            db_url: shared.db_url.clone(),
             is_shared: true,
+            mtls_cert_paths,
+            // In shared mode, cert lifetimes are managed by SharedInfrastructure
+            _mtls_ca: None,
+            _mtls_server_cert: None,
+            _mtls_client_cert: None,
+            _pg_container: None,
         })
     }
 
     /// Start with isolated infrastructure (slower but fully isolated)
     async fn start_isolated(config: TestHarnessConfig) -> anyhow::Result<Self> {
+        use crate::tls::support::TestCertificateAuthority;
+
         // Allocate ports
         let mut port_allocator = PortAllocator::for_test(&config.test_name);
         let ports = port_allocator.allocate_test_ports();
         info!(?ports, "Allocated ports for isolated test");
 
-        // Create temp directory for test artifacts
+        // Create temp directory for test artifacts (certs, etc.)
         let temp_dir = tempfile::tempdir()?;
-        let db_path = temp_dir.path().join("flowplane-e2e.db");
+
+        // Start PostgreSQL container for isolated E2E database
+        info!("Starting PostgreSQL container for isolated E2E test...");
+        let pg_container = Postgres::default()
+            .start()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start PostgreSQL container: {}", e))?;
+
+        let pg_host = pg_container
+            .get_host()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get PostgreSQL container host: {}", e))?;
+        let pg_port = pg_container
+            .get_host_port_ipv4(5432)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get PostgreSQL container port: {}", e))?;
+        let db_url = format!("postgresql://postgres:postgres@{}:{}/postgres", pg_host, pg_port);
+        info!(db_url = %db_url, "PostgreSQL container ready for isolated E2E test");
+
+        // Generate mTLS certificates if enabled
+        let (mtls_cert_paths, xds_tls_config, mtls_ca, mtls_server_cert, mtls_client_cert) =
+            if config.enable_mtls {
+                info!("Initializing mTLS for isolated test");
+
+                let ca = TestCertificateAuthority::new(
+                    "Flowplane E2E Isolated Test CA",
+                    time::Duration::days(1),
+                )?;
+
+                // Issue server cert for CP
+                // NOTE: server_cert and client_cert must be stored in TestHarness to keep
+                // their TempDirs alive - otherwise the cert files get deleted!
+                let server_cert = ca.issue_server_cert(&["localhost"], time::Duration::days(1))?;
+
+                // Issue client cert for Envoy
+                let team_name = super::shared_infra::unique_team_name(&config.test_name);
+                let spiffe_uri = TestCertificateAuthority::build_spiffe_uri(
+                    "flowplane.local",
+                    &team_name,
+                    "test-proxy",
+                )?;
+
+                info!(
+                    test = %config.test_name,
+                    team = %team_name,
+                    spiffe_uri = %spiffe_uri,
+                    "Generated mTLS certificates for isolated test"
+                );
+
+                let client_cert =
+                    ca.issue_client_cert(&spiffe_uri, "test-proxy", time::Duration::days(1))?;
+
+                let cert_paths = MtlsCertPaths {
+                    ca_cert_path: ca.ca_cert_path.clone(),
+                    server_cert_path: server_cert.cert_path.clone(),
+                    server_key_path: server_cert.key_path.clone(),
+                    client_cert_path: client_cert.cert_path.clone(),
+                    client_key_path: client_cert.key_path.clone(),
+                    spiffe_uri,
+                };
+
+                let xds_tls = flowplane::config::XdsTlsConfig {
+                    cert_path: server_cert.cert_path.to_string_lossy().to_string(),
+                    key_path: server_cert.key_path.to_string_lossy().to_string(),
+                    client_ca_path: Some(ca.ca_cert_path.to_string_lossy().to_string()),
+                    require_client_cert: true,
+                };
+
+                (Some(cert_paths), Some(xds_tls), Some(ca), Some(server_cert), Some(client_cert))
+            } else {
+                (None, None, None, None, None)
+            };
 
         // Start mock services
         let mocks = if config.start_auth_mocks && config.start_ext_authz_mock {
@@ -214,9 +446,13 @@ impl TestHarness {
         // Drop the port allocator to release the reserved ports before servers bind
         drop(port_allocator);
 
-        // Start control plane
-        let cp_config =
-            ControlPlaneConfig::new(db_path.clone(), ports.api, ports.xds, ports.listener);
+        // Start control plane with optional TLS
+        let mut cp_config =
+            ControlPlaneConfig::new(db_url.clone(), ports.api, ports.xds, ports.listener);
+        if let Some(tls) = xds_tls_config {
+            cp_config = cp_config.with_xds_tls(tls);
+        }
+
         let cp = with_timeout(TestTimeout::startup("Starting control plane"), async {
             ControlPlaneHandle::start(cp_config).await
         })
@@ -229,7 +465,23 @@ impl TestHarness {
 
         // Start Envoy if available and requested
         let envoy = if config.start_envoy && EnvoyHandle::is_available() {
-            let envoy_config = EnvoyConfig::new(ports.envoy_admin, ports.xds);
+            // Configure Envoy with team metadata for xDS authorization
+            // Use the shared team name so Envoy can see test resources
+            let mut envoy_config =
+                EnvoyConfig::new(ports.envoy_admin, ports.xds).with_metadata(serde_json::json!({
+                    "team": super::shared_infra::E2E_SHARED_TEAM
+                }));
+
+            // Configure Envoy with mTLS client certificates if enabled
+            if let Some(ref cert_paths) = mtls_cert_paths {
+                let tls_config = EnvoyXdsTlsConfig {
+                    ca_cert: cert_paths.ca_cert_path.clone(),
+                    client_cert: Some(cert_paths.client_cert_path.clone()),
+                    client_key: Some(cert_paths.client_key_path.clone()),
+                };
+                envoy_config = envoy_config.with_xds_tls(tls_config);
+            }
+
             let envoy = EnvoyHandle::start(envoy_config)?;
 
             with_timeout(TestTimeout::startup("Envoy ready"), async { envoy.wait_ready().await })
@@ -251,8 +503,13 @@ impl TestHarness {
             envoy_owned: envoy,
             mocks_owned: Some(mocks),
             _temp_dir: Some(temp_dir),
-            db_path,
+            db_url,
             is_shared: false,
+            mtls_cert_paths,
+            _mtls_ca: mtls_ca,
+            _mtls_server_cert: mtls_server_cert,
+            _mtls_client_cert: mtls_client_cert,
+            _pg_container: Some(pg_container),
         })
     }
 

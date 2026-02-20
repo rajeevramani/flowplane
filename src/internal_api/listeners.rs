@@ -50,11 +50,18 @@ impl ListenerOperations {
         req: CreateListenerRequest,
         auth: &InternalAuthContext,
     ) -> Result<OperationResult<ListenerData>, InternalError> {
+        // Resolve team name to UUID for database storage
+        let resolved_team = self
+            .xds_state
+            .resolve_optional_team(req.team.as_deref())
+            .await
+            .map_err(InternalError::from)?;
+
         // 1. Verify team access (can create in this team?)
-        if !auth.can_create_for_team(req.team.as_deref()) {
+        if !auth.can_create_for_team(resolved_team.as_deref()) {
             return Err(InternalError::forbidden(format!(
                 "Cannot create listener for team '{}'",
-                req.team.as_deref().unwrap_or("global")
+                resolved_team.as_deref().unwrap_or("global")
             )));
         }
 
@@ -68,13 +75,16 @@ impl ListenerOperations {
                 req.port,
                 req.protocol.unwrap_or_else(|| "HTTP".to_string()),
                 req.config,
-                req.team,
+                resolved_team,
                 req.dataplane_id,
             )
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
-                if err_str.contains("already exists") || err_str.contains("UNIQUE constraint") {
+                if err_str.contains("already exists")
+                    || err_str.contains("UNIQUE constraint")
+                    || err_str.contains("unique constraint")
+                {
                     InternalError::already_exists("Listener", &req.name)
                 } else if err_str.contains("not found") {
                     InternalError::not_found("Dataplane", &dataplane_id)
@@ -260,76 +270,29 @@ impl ListenerOperations {
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
-    use crate::storage::{create_pool, DatabaseConfig};
+    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
     use crate::xds::listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig};
-    use sqlx::Executor;
 
-    fn create_test_config() -> DatabaseConfig {
-        DatabaseConfig {
-            url: "sqlite://:memory:".to_string(),
-            auto_migrate: false,
-            ..Default::default()
-        }
-    }
+    async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
+        let test_db = TestDatabase::new("internal_api_listeners").await;
+        let pool = test_db.pool.clone();
 
-    async fn setup_state() -> Arc<XdsState> {
-        let pool = create_pool(&create_test_config()).await.expect("pool");
-
-        // Create listeners table for repository usage
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS listeners (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                address TEXT NOT NULL,
-                port INTEGER,
-                protocol TEXT NOT NULL DEFAULT 'HTTP',
-                configuration TEXT NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'native_api' CHECK (source IN ('native_api', 'openapi_import')),
-                team TEXT,
-                import_id TEXT,
-                dataplane_id TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .await
-        .expect("create listeners table");
-
-        // Create dataplanes table
-        pool.execute(
-            r#"
-            CREATE TABLE IF NOT EXISTS dataplanes (
-                id TEXT PRIMARY KEY,
-                team TEXT NOT NULL,
-                name TEXT NOT NULL,
-                gateway_host TEXT,
-                description TEXT,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(team, name)
-            )
-        "#,
-        )
-        .await
-        .expect("create dataplanes table");
-
-        // Insert test dataplanes for various teams
-        pool.execute(
+        // Insert test dataplanes for various teams (using team UUIDs from seed data)
+        sqlx::query(
             r#"
             INSERT INTO dataplanes (id, team, name, gateway_host, description)
             VALUES
-                ('dp-test-123', 'test-team', 'test-dataplane', '10.0.0.1', 'Test dataplane'),
-                ('dp-team-a-123', 'team-a', 'team-a-dataplane', '10.0.0.2', 'Team A dataplane'),
-                ('dp-team-b-123', 'team-b', 'team-b-dataplane', '10.0.0.3', 'Team B dataplane')
+                ('dp-test-123', '00000000-0000-0000-0000-000000000001', 'test-dataplane', '10.0.0.1', 'Test dataplane'),
+                ('dp-team-a-123', '00000000-0000-0000-0000-000000000002', 'team-a-dataplane', '10.0.0.2', 'Team A dataplane'),
+                ('dp-team-b-123', '00000000-0000-0000-0000-000000000003', 'team-b-dataplane', '10.0.0.3', 'Team B dataplane')
         "#,
         )
+        .execute(&pool)
         .await
         .expect("insert test dataplanes");
 
-        Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool))
+        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+        (test_db, state)
     }
 
     fn sample_config() -> ListenerConfig {
@@ -356,16 +319,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_listener_admin() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let req = CreateListenerRequest {
             name: "test-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-test-123".to_string(),
         };
@@ -382,16 +345,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_listener_team_user() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateListenerRequest {
             name: "team-listener".to_string(),
             address: "127.0.0.1".to_string(),
             port: 9090,
             protocol: Some("HTTPS".to_string()),
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-team-a-123".to_string(),
         };
@@ -402,16 +365,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_listener_wrong_team() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::for_team("team-a");
+        let auth = InternalAuthContext::for_team(TEAM_A_ID);
 
         let req = CreateListenerRequest {
             name: "wrong-team-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("team-b".to_string()), // Different team
+            team: Some(TEAM_B_ID.to_string()), // Different team
             config: sample_config(),
             dataplane_id: "dp-team-b-123".to_string(),
         };
@@ -423,9 +386,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_listener_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         let result = ops.get("nonexistent", &auth).await;
         assert!(result.is_err());
@@ -434,24 +397,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_listener_cross_team_returns_not_found() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
 
-        // Create listener as admin for team-a
-        let admin_auth = InternalAuthContext::admin();
+        // Create listener as team-a user
+        let admin_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let req = CreateListenerRequest {
             name: "team-a-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("team-a".to_string()),
+            team: Some(TEAM_A_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-team-a-123".to_string(),
         };
         ops.create(req, &admin_auth).await.expect("create listener");
 
         // Try to access from team-b
-        let team_b_auth = InternalAuthContext::for_team("team-b");
+        let team_b_auth = InternalAuthContext::for_team(TEAM_B_ID);
         let result = ops.get("team-a-listener", &team_b_auth).await;
 
         assert!(result.is_err());
@@ -461,15 +424,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_listeners_team_filtering() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
-        let admin_auth = InternalAuthContext::admin();
+        let admin_auth =
+            InternalAuthContext::for_teams(vec![TEAM_A_ID.to_string(), TEAM_B_ID.to_string()]);
 
         // Create listeners for different teams
-        for (name, port, team) in [
-            ("listener-a1", 8081, "team-a"),
-            ("listener-b1", 8082, "team-b"),
-            ("listener-a2", 8083, "team-a"),
+        for (name, port, team, dp_id) in [
+            ("listener-a1", 8081, TEAM_A_ID, "dp-team-a-123"),
+            ("listener-b1", 8082, TEAM_B_ID, "dp-team-b-123"),
+            ("listener-a2", 8083, TEAM_A_ID, "dp-team-a-123"),
         ] {
             let req = CreateListenerRequest {
                 name: name.to_string(),
@@ -478,28 +442,28 @@ mod tests {
                 protocol: Some("HTTP".to_string()),
                 team: Some(team.to_string()),
                 config: sample_config(),
-                dataplane_id: format!("dp-{}-123", team),
+                dataplane_id: dp_id.to_string(),
             };
             ops.create(req, &admin_auth).await.expect("create listener");
         }
 
         // List as team-a
-        let team_a_auth = InternalAuthContext::for_team("team-a");
+        let team_a_auth = InternalAuthContext::for_team(TEAM_A_ID);
         let list_req = ListListenersRequest { include_defaults: true, ..Default::default() };
         let result = ops.list(list_req, &team_a_auth).await.expect("list listeners");
 
         // Should only see team-a listeners
         assert_eq!(result.count, 2);
         for listener in &result.listeners {
-            assert_eq!(listener.team.as_deref(), Some("team-a"));
+            assert_eq!(listener.team.as_deref(), Some(TEAM_A_ID));
         }
     }
 
     #[tokio::test]
     async fn test_update_listener() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a listener
         let create_req = CreateListenerRequest {
@@ -507,7 +471,7 @@ mod tests {
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-test-123".to_string(),
         };
@@ -535,9 +499,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_listener() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state.clone());
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Create a listener
         let create_req = CreateListenerRequest {
@@ -545,7 +509,7 @@ mod tests {
             address: "0.0.0.0".to_string(),
             port: 8080,
             protocol: Some("HTTP".to_string()),
-            team: Some("test-team".to_string()),
+            team: Some(TEST_TEAM_ID.to_string()),
             config: sample_config(),
             dataplane_id: "dp-test-123".to_string(),
         };
@@ -562,9 +526,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_default_listener_blocked() {
-        let state = setup_state().await;
+        let (_db, state) = setup_state().await;
         let ops = ListenerOperations::new(state);
-        let auth = InternalAuthContext::admin();
+        let auth = InternalAuthContext::for_team(TEST_TEAM_ID);
 
         // Try to delete the default gateway listener
         let result = ops.delete("default-gateway-listener", &auth).await;

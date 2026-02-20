@@ -5,7 +5,7 @@
 
 pub mod types;
 
-pub use types::{ListMcpToolsQuery, ListMcpToolsResponse, McpToolResponse, UpdateMcpToolBody};
+pub use types::{ListMcpToolsQuery, McpToolResponse, UpdateMcpToolBody};
 
 use axum::{
     extract::{Path, Query, State},
@@ -14,8 +14,18 @@ use axum::{
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    auth::{authorization::require_resource_access, models::AuthContext},
+    api::{
+        error::ApiError,
+        handlers::{
+            pagination::PaginatedResponse,
+            team_access::{
+                get_effective_team_ids, require_resource_access_resolved, resolve_team_name,
+                team_repo_from_state, verify_team_access,
+            },
+        },
+        routes::ApiState,
+    },
+    auth::models::AuthContext,
     storage::UpdateMcpToolRequest,
 };
 
@@ -29,7 +39,7 @@ use crate::{
         ListMcpToolsQuery
     ),
     responses(
-        (status = 200, description = "List of MCP tools", body = ListMcpToolsResponse),
+        (status = 200, description = "List of MCP tools", body = PaginatedResponse<McpToolResponse>),
         (status = 403, description = "Forbidden - insufficient permissions"),
     ),
     tag = "MCP Tools"
@@ -40,9 +50,20 @@ pub async fn list_mcp_tools_handler(
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
     Query(query): Query<ListMcpToolsQuery>,
-) -> Result<Json<ListMcpToolsResponse>, ApiError> {
+) -> Result<Json<PaginatedResponse<McpToolResponse>>, ApiError> {
     // Authorization: require mcp:read scope
-    require_resource_access(&context, "mcp", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     // === Phase 1: Get CP (built-in) tools ===
     let cp_tools: Vec<McpToolResponse> = crate::mcp::tools::get_all_tools()
@@ -54,7 +75,7 @@ pub async fn list_mcp_tools_handler(
     let enabled_only = query.enabled.unwrap_or(false);
     let db_tools: Vec<McpToolResponse> = match state.xds_state.mcp_tool_repository.as_ref() {
         Some(repo) => repo
-            .list_by_team(&team, enabled_only)
+            .list_by_team(&team_id, enabled_only)
             .await
             .map_err(ApiError::from)?
             .into_iter()
@@ -94,15 +115,15 @@ pub async fn list_mcp_tools_handler(
 
     // === Phase 5: Pagination ===
     let total = tools.len() as i64;
-    let limit = query.limit.unwrap_or(100).min(1000); // Cap at 1000
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.min(1000); // Cap at 1000
+    let offset = query.offset;
 
     let start = offset as usize;
     let end = (offset + limit) as usize;
     let paginated_tools =
         if start < tools.len() { tools[start..end.min(tools.len())].to_vec() } else { vec![] };
 
-    Ok(Json(ListMcpToolsResponse { tools: paginated_tools, total, limit, offset }))
+    Ok(Json(PaginatedResponse::new(paginated_tools, total, limit, offset)))
 }
 
 #[utoipa::path(
@@ -126,12 +147,23 @@ pub async fn get_mcp_tool_handler(
     Path((team, name)): Path<(String, String)>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
     // Authorization: require mcp:read scope
-    require_resource_access(&context, "mcp", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Check if it's a built-in CP tool first
     if let Some(cp_tool) = crate::mcp::tools::get_all_tools().into_iter().find(|t| t.name == name) {
         return Ok(Json(McpToolResponse::from_builtin_tool(&cp_tool, &team)));
     }
+
+    // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     // Otherwise, look in the database
     let repo = state
@@ -140,17 +172,15 @@ pub async fn get_mcp_tool_handler(
         .as_ref()
         .ok_or_else(|| ApiError::service_unavailable("MCP tool repository unavailable"))?;
 
-    let tool = repo.get_by_name(&team, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
-        ApiError::NotFound(format!("MCP tool '{}' not found in team '{}'", name, team))
-    })?;
+    let tool =
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
+            ApiError::NotFound(format!("MCP tool '{}' not found in team '{}'", name, team))
+        })?;
 
-    // Verify team ownership (should already be correct from get_by_name, but double-check)
-    if tool.team != team {
-        return Err(ApiError::NotFound(format!(
-            "MCP tool '{}' not found in team '{}'",
-            name, team
-        )));
-    }
+    // Verify team access using the unified team access verification
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let tool = verify_team_access(tool, &team_scopes).await?;
 
     Ok(Json(McpToolResponse::from(tool)))
 }
@@ -179,7 +209,15 @@ pub async fn update_mcp_tool_handler(
     Json(payload): Json<UpdateMcpToolBody>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
     // Authorization: require mcp:write scope
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Check if it's a built-in CP tool - these cannot be modified
     if crate::mcp::tools::get_all_tools().iter().any(|t| t.name == name) {
@@ -189,6 +227,9 @@ pub async fn update_mcp_tool_handler(
         )));
     }
 
+    // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+
     let repo = state
         .xds_state
         .mcp_tool_repository
@@ -197,17 +238,14 @@ pub async fn update_mcp_tool_handler(
 
     // Get existing tool to verify ownership and get ID
     let existing =
-        repo.get_by_name(&team, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
+        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
             ApiError::NotFound(format!("MCP tool '{}' not found in team '{}'", name, team))
         })?;
 
-    // Verify team ownership
-    if existing.team != team {
-        return Err(ApiError::NotFound(format!(
-            "MCP tool '{}' not found in team '{}'",
-            name, team
-        )));
-    }
+    // Verify team access using the unified team access verification
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let existing = verify_team_access(existing, &team_scopes).await?;
 
     // Build update request - pass all provided fields
     let update_request = UpdateMcpToolRequest {
@@ -241,30 +279,9 @@ pub use types::{
     LearnedSchemaInfoResponse,
 };
 
-use std::sync::Arc;
-
+use crate::api::handlers::team_access::get_db_pool;
 use crate::domain::RouteId;
 use crate::services::{McpService, McpServiceError};
-
-/// Get the database pool from ApiState
-fn get_db_pool(state: &ApiState) -> Result<Arc<sqlx::SqlitePool>, ApiError> {
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .ok_or_else(|| ApiError::ServiceUnavailable("Database not available".to_string()))?;
-    Ok(Arc::new(cluster_repo.pool().clone()))
-}
-
-/// Convert McpServiceError to ApiError
-fn to_api_error(e: McpServiceError) -> ApiError {
-    match e {
-        McpServiceError::NotFound(msg) => ApiError::NotFound(msg),
-        McpServiceError::Validation(msg) => ApiError::BadRequest(msg),
-        McpServiceError::Database(e) => ApiError::Internal(format!("Database error: {}", e)),
-        McpServiceError::Internal(msg) => ApiError::Internal(msg),
-    }
-}
 
 #[utoipa::path(
     get,
@@ -287,16 +304,27 @@ pub async fn check_learned_schema_handler(
     Path((team, route_id)): Path<(String, String)>,
 ) -> Result<Json<CheckLearnedSchemaResponse>, ApiError> {
     // Authorization: require mcp:read scope
-    require_resource_access(&context, "mcp", "read", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     let db_pool = get_db_pool(&state)?;
     let mcp_service = McpService::new(db_pool);
     let route_id = RouteId::from_string(route_id);
 
     let availability = mcp_service
-        .check_learned_schema_availability(&team, &route_id)
+        .check_learned_schema_availability(&team_id, &route_id)
         .await
-        .map_err(to_api_error)?;
+        .map_err(ApiError::from)?;
 
     Ok(Json(CheckLearnedSchemaResponse {
         available: availability.available,
@@ -338,20 +366,32 @@ pub async fn apply_learned_schema_handler(
     Json(payload): Json<ApplyLearnedSchemaRequest>,
 ) -> Result<Json<ApplyLearnedSchemaResponse>, ApiError> {
     // Authorization: require mcp:write scope
-    require_resource_access(&context, "mcp", "write", Some(&team))?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "mcp",
+        "write",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     let db_pool = get_db_pool(&state)?;
     let mcp_service = McpService::new(db_pool);
     let route_id = RouteId::from_string(route_id);
     let force = payload.force.unwrap_or(false);
 
-    let result =
-        mcp_service.apply_learned_schema(&team, &route_id, force).await.map_err(|e| match &e {
+    let result = mcp_service.apply_learned_schema(&team_id, &route_id, force).await.map_err(
+        |e| match &e {
             McpServiceError::Validation(msg) if msg.contains("force=true") => {
                 ApiError::Conflict(msg.clone())
             }
-            _ => to_api_error(e),
-        })?;
+            _ => ApiError::from(e),
+        },
+    )?;
 
     Ok(Json(ApplyLearnedSchemaResponse {
         success: true,

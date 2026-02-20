@@ -11,8 +11,8 @@
 CREATE TABLE listener_routes (
     listener_id TEXT NOT NULL,
     route_id TEXT NOT NULL,
-    route_order INTEGER NOT NULL,             -- Order for RDS config names
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    route_order BIGINT NOT NULL,             -- Order for RDS config names
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (listener_id) REFERENCES listeners(id) ON DELETE CASCADE,
     FOREIGN KEY (route_id) REFERENCES routes(id) ON DELETE CASCADE,

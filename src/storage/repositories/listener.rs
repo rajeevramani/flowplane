@@ -7,7 +7,7 @@ use crate::domain::ListenerId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Sqlite};
+use sqlx::FromRow;
 use tracing::instrument;
 
 /// Internal database row structure for listeners.
@@ -25,6 +25,7 @@ struct ListenerRow {
     pub version: i64,
     pub source: String,
     pub team: Option<String>,
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub dataplane_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -47,7 +48,8 @@ struct ListenerRow {
 /// - `configuration`: JSON-encoded xDS configuration
 /// - `version`: Version number for optimistic locking
 /// - `source`: API source that created this resource ("native", "gateway", "platform")
-/// - `team`: Optional team identifier for multi-tenancy
+/// - `team`: Optional team UUID (used for access control)
+/// - `team_name`: Optional team display name (resolved via JOIN, used for API responses)
 /// - `created_at`: Timestamp of creation
 /// - `updated_at`: Timestamp of last modification
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +62,10 @@ pub struct ListenerData {
     pub configuration: String,
     pub version: i64,
     pub source: String,
+    /// Team UUID (used for access control)
     pub team: Option<String>,
+    /// Team display name (resolved via JOIN, used for API responses)
+    pub team_name: Option<String>,
     pub import_id: Option<String>,
     pub dataplane_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -79,6 +84,7 @@ impl From<ListenerRow> for ListenerData {
             version: row.version,
             source: row.source,
             team: row.team,
+            team_name: row.team_name,
             import_id: row.import_id,
             dataplane_id: row.dataplane_id,
             created_at: row.created_at,
@@ -268,8 +274,9 @@ impl ListenerRepository {
     /// - [`FlowplaneError::Database`] if query execution fails
     #[instrument(skip(self), fields(listener_id = %id), name = "db_get_listener_by_id")]
     pub async fn get_by_id(&self, id: &ListenerId) -> Result<ListenerData> {
-        let row = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners WHERE id = $1"
+        let row = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id WHERE l.id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -292,8 +299,9 @@ impl ListenerRepository {
 
     #[instrument(skip(self), fields(listener_name = %name), name = "db_get_listener_by_name")]
     pub async fn get_by_name(&self, name: &str) -> Result<ListenerData> {
-        let row = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners WHERE name = $1 ORDER BY version DESC LIMIT 1"
+        let row = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id WHERE l.name = $1 ORDER BY l.version DESC LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -320,8 +328,9 @@ impl ListenerRepository {
         let limit = limit.unwrap_or(100).min(1000);
         let offset = offset.unwrap_or(0);
 
-        let rows = sqlx::query_as::<Sqlite, ListenerRow>(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at FROM listeners ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        let rows = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id ORDER BY l.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -340,47 +349,8 @@ impl ListenerRepository {
 
     /// Lists listeners filtered by team names for multi-tenancy support.
     ///
-    /// This method is critical for enforcing team-based access control.
-    /// Returns listeners that belong to any of the specified teams, and
-    /// optionally includes team-agnostic listeners (where team is NULL).
-    ///
-    /// # Arguments
-    ///
-    /// * `teams` - List of team identifiers to filter by. If empty, returns all listeners.
-    /// * `include_default` - If true, also include listeners with team=NULL (default listeners)
-    /// * `limit` - Maximum number of results (default: 100, max: 1000)
-    /// * `offset` - Number of results to skip for pagination
-    ///
-    /// # Returns
-    ///
-    /// A vector of [`ListenerData`] matching the team filter.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Get listeners for specific teams (excluding default listeners)
-    /// let listeners = repo.list_by_teams(
-    ///     &["team-alpha".to_string(), "team-beta".to_string()],
-    ///     false,
-    ///     Some(50),
-    ///     Some(0)
-    /// ).await?;
-    ///
-    /// // Get listeners including default listeners
-    /// let listeners = repo.list_by_teams(
-    ///     &["team-alpha".to_string()],
-    ///     true,
-    ///     None,
-    ///     None
-    /// ).await?;
-    ///
-    /// // Get all listeners (admin access)
-    /// let all_listeners = repo.list_by_teams(&[], true, None, None).await?;
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// - [`FlowplaneError::Database`] if query execution fails
+    /// Empty teams = no resource access. The caller (handler layer) is responsible
+    /// for populating teams correctly.
     #[instrument(skip(self), fields(teams = ?teams, limit = ?limit, offset = ?offset), name = "db_list_listeners_by_teams")]
     pub async fn list_by_teams(
         &self,
@@ -389,9 +359,8 @@ impl ListenerRepository {
         limit: Option<i32>,
         offset: Option<i32>,
     ) -> Result<Vec<ListenerData>> {
-        // If no teams specified, return all listeners (admin:all or resource-level scope)
         if teams.is_empty() {
-            return self.list(limit, offset).await;
+            return Ok(vec![]);
         }
 
         let limit = limit.unwrap_or(100).min(1000);
@@ -406,20 +375,20 @@ impl ListenerRepository {
             .join(", ");
 
         // Always include NULL team listeners (default resources)
-        let where_clause = format!("WHERE team IN ({}) OR team IS NULL", placeholders);
+        let where_clause = format!("WHERE l.team IN ({}) OR l.team IS NULL", placeholders);
 
         let query_str = format!(
-            "SELECT id, name, address, port, protocol, configuration, version, source, team, import_id, dataplane_id, created_at, updated_at \
-             FROM listeners \
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id \
              {} \
-             ORDER BY created_at DESC \
+             ORDER BY l.created_at DESC \
              LIMIT ${} OFFSET ${}",
             where_clause,
             teams.len() + 1,
             teams.len() + 2
         );
 
-        let mut query = sqlx::query_as::<Sqlite, ListenerRow>(&query_str);
+        let mut query = sqlx::query_as::<sqlx::Postgres, ListenerRow>(&query_str);
 
         // Bind team names
         for team in teams {
@@ -440,10 +409,45 @@ impl ListenerRepository {
         Ok(rows.into_iter().map(ListenerData::from).collect())
     }
 
+    /// List only default/shared listeners (team IS NULL)
+    ///
+    /// Used for Allowlist scope where clients should only see shared infrastructure,
+    /// not team-specific resources.
+    #[instrument(skip(self), fields(limit = ?limit, offset = ?offset), name = "db_list_default_listeners")]
+    pub async fn list_default_only(
+        &self,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> Result<Vec<ListenerData>> {
+        let limit = limit.unwrap_or(100).min(1000);
+        let offset = offset.unwrap_or(0);
+
+        let rows = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id \
+             WHERE l.team IS NULL \
+             ORDER BY l.created_at DESC \
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to list default listeners");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to list default listeners".to_string(),
+            }
+        })?;
+
+        Ok(rows.into_iter().map(ListenerData::from).collect())
+    }
+
     /// Count listeners created from a specific import (tracked via import_id in the configuration JSON)
     #[instrument(skip(self), fields(import_id = %import_id), name = "db_count_listeners_by_import")]
     pub async fn count_by_import(&self, import_id: &str) -> Result<i64> {
-        sqlx::query_scalar::<Sqlite, i64>(
+        sqlx::query_scalar::<sqlx::Postgres, i64>(
             "SELECT COUNT(*) FROM listeners WHERE import_id = $1",
         )
         .bind(import_id)
@@ -571,7 +575,7 @@ impl ListenerRepository {
 
     #[instrument(skip(self), fields(listener_name = %name), name = "db_exists_listener_by_name")]
     pub async fn exists_by_name(&self, name: &str) -> Result<bool> {
-        let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners WHERE name = $1")
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>("SELECT COUNT(*) FROM listeners WHERE name = $1")
             .bind(name)
             .fetch_one(&self.pool)
             .await
@@ -588,7 +592,7 @@ impl ListenerRepository {
 
     #[instrument(skip(self), name = "db_count_listeners")]
     pub async fn count(&self) -> Result<i64> {
-        let count = sqlx::query_scalar::<Sqlite, i64>("SELECT COUNT(*) FROM listeners")
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>("SELECT COUNT(*) FROM listeners")
             .fetch_one(&self.pool)
             .await
             .map_err(|e| {
@@ -625,13 +629,12 @@ impl ListenerRepository {
         route_config_name: &str,
         teams: &[&str],
     ) -> Result<Vec<ListenerData>> {
-        // Get all listeners (optionally filtered by team)
-        let listeners = if teams.is_empty() {
-            self.list(Some(1000), Some(0)).await?
-        } else {
-            let team_strings: Vec<String> = teams.iter().map(|s| s.to_string()).collect();
-            self.list_by_teams(&team_strings, true, Some(1000), Some(0)).await?
-        };
+        // Get listeners filtered by team (empty teams = no results)
+        if teams.is_empty() {
+            return Ok(vec![]);
+        }
+        let team_strings: Vec<String> = teams.iter().map(|s| s.to_string()).collect();
+        let listeners = self.list_by_teams(&team_strings, true, Some(1000), Some(0)).await?;
 
         // Filter listeners that reference this route_config_name in their configuration
         let matching_listeners: Vec<ListenerData> = listeners
