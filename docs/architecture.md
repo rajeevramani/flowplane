@@ -334,4 +334,4 @@ Contributions aligning with these principles help keep Flowplane predictable and
 3. Documentation – Update OpenAPI specs and user-facing docs
 4. Backward compatibility – Database migrations must not break existing deployments
 
-See [contributing.md](contributing.md) for development workflow and PR guidelines.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for development workflow and PR guidelines.

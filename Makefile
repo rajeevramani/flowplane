@@ -19,7 +19,7 @@
 #   make clean           - Remove volumes and orphan containers
 
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
-        build build-backend build-ui info prune seed \
+        build build-backend build-ui build-cli info prune seed \
         vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
         test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps \
         test-agents-up test-agents-down test-agents test-agents-envoy
@@ -86,6 +86,7 @@ help: ## Show this help message
 	@echo "  $(CYAN)make build$(RESET)           - Build combined Docker image"
 	@echo "  $(CYAN)make build-backend$(RESET)   - Build backend-only image (optimized)"
 	@echo "  $(CYAN)make build-ui$(RESET)        - Build frontend-only image"
+	@echo "  $(CYAN)make build-cli$(RESET)       - Build flowplane-cli binary"
 	@echo ""
 	@echo "$(GREEN)Operations:$(RESET)"
 	@echo "  $(CYAN)make down$(RESET)            - Stop all services"
@@ -268,6 +269,12 @@ build-ui: ## Build frontend-only Docker image
 	@echo "$(CYAN)Building UI Docker image...$(RESET)"
 	$(DOCKER) build -f Dockerfile.ui -t $(UI_IMAGE):$(VERSION) -t $(UI_IMAGE):latest .
 	@echo "$(GREEN)Image built: $(UI_IMAGE):$(VERSION)$(RESET)"
+
+build-cli: ## Build the CLI binary (flowplane-cli)
+	@echo "$(CYAN)Building flowplane-cli...$(RESET)"
+	cargo build --release --bin flowplane-cli
+	@echo "$(GREEN)CLI built: target/release/flowplane-cli$(RESET)"
+	@echo "  Run: ./target/release/flowplane-cli --help"
 
 # =============================================================================
 # Development Targets

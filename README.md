@@ -1,8 +1,6 @@
 # Flowplane
 
-![Version](https://img.shields.io/badge/version-0.0.14-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
+![Version](https://img.shields.io/static/v1?label=version&message=0.1.0&color=blue) ![Status](https://img.shields.io/static/v1?label=status&message=early%20alpha&color=orange) ![License](https://img.shields.io/badge/license-MIT-green) ![Rust](https://img.shields.io/badge/rust-2021_edition-orange)
 
 ![Flowplane Demo](docs/images/flowplane-demo.gif)
 
@@ -53,16 +51,20 @@ Flowplane exposes 60 MCP tools and 7 prompt templates, enabling AI agents to dep
 **Quick Demo:**
 
 ```bash
-# Start Flowplane and seed demo data
-make up && make seed
+# Start Flowplane with httpbin and Envoy, then seed demo data
+make up HTTPBIN=1 ENVOY=1 && make seed
 
 # Run the dev agent (requires an OpenAI-compatible LLM)
 FLOWPLANE_URL=http://localhost:8080 \
 FLOWPLANE_TEAM=engineering \
 FLOWPLANE_TOKEN=<token from seed output> \
-LLM_API_KEY=<your key> \
+LLM_BASE_URL=<your LLM endpoint> \
+LLM_API_KEY=<your LLM API key> \
+LLM_MODEL=<model name> \
 python agents/dev_agent.py "Expose httpbin at localhost:8000 on path / at port 10001"
 ```
+
+> `make seed` prints the API token and team name. LLM can be any OpenAI-compatible endpoint — e.g. `http://localhost:11434/v1` for Ollama with `qwen3-coder-next:cloud`, or `https://api.openai.com/v1` with `gpt-4o`.
 
 Tested with GPT-4o and Qwen 3 (via Ollama). See [agents/README.md](agents/README.md) for details and [MCP Integration](docs/mcp.md) for protocol documentation.
 
@@ -81,53 +83,34 @@ Tested with GPT-4o and Qwen 3 (via Ollama). See [agents/README.md](agents/README
 
 ## Quick Start
 
-### Docker (Recommended)
+### Docker Compose (Recommended)
+
+The fastest way to a working setup:
 
 ```bash
-# Docker Compose is recommended for full setup (includes PostgreSQL).
-# For a quick preview of the API server only:
-docker run -d \
-  --name flowplane \
-  -p 8080:8080 \
-  -p 50051:50051 \
-  -v flowplane_data:/app/data \
-  ghcr.io/rajeevramani/flowplane:latest
+git clone https://github.com/rajeevramani/flowplane.git
+cd flowplane
+make up HTTPBIN=1 ENVOY=1    # Start Flowplane + Envoy + httpbin
+make seed                     # Bootstrap admin, org, team, import httpbin API
 ```
 
-#### Access Points
-
-| Service    | URL                               |
-|------------|-----------------------------------|
-| API        | http://localhost:8080/api/v1/     |
-| UI         | http://localhost:8080/            |
-| Swagger UI | http://localhost:8080/swagger-ui/ |
-| xDS (gRPC) | localhost:50051                   |
-
-> **Ports are configurable**: `FLOWPLANE_API_PORT` (default: 8080), `FLOWPLANE_XDS_PORT` (default: 50051 in Docker, 18000 for local dev). See [Configuration](docs/configuration.md).
-
-
-### Development with Docker Compose
-
-If you've cloned the repository, use `make` for easier management:
+Seed creates an admin user, organization (`acme-corp`), team (`engineering`), imports the [httpbin OpenAPI spec](.local/openapi/httpbin.yaml) into routes and clusters, spins up a dataplane with a listener on port 10016, and prints API tokens. Test it:
 
 ```bash
-# Start backend + UI
-make up
+curl http://localhost:10016/get  # Traffic flowing through Envoy → httpbin 🎉
+```
 
-# Start with tracing (Jaeger)
-make up-tracing
+Open the [Web UI](http://localhost:8080) to see what was created, or explore the [Swagger UI](http://localhost:8080/swagger-ui/) for the full API.
 
-# Start with mTLS (Vault)
-make up-mtls
+For more `make` options:
 
-# Add httpbin test service
-make up HTTPBIN=1
-
-# Stop all services
-make down
-
-# View all options
-make help
+```bash
+make up                        # Backend + UI only
+make up HTTPBIN=1              # Add httpbin test service
+make up-tracing                # With Jaeger tracing
+make up-mtls                   # With mTLS (Vault)
+make down                      # Stop all services
+make help                      # All options
 ```
 
 ### Binary
@@ -146,6 +129,10 @@ tar xzf flowplane-aarch64-apple-darwin.tar.gz
 # Run
 ./flowplane-*/flowplane
 ```
+
+### Manual Setup (Optional)
+
+> If you used `make seed` above, skip this section — everything below is already configured. These steps explain what seed does under the hood, or let you customize the setup.
 
 ### Platform Setup
 
@@ -316,6 +303,8 @@ curl --request POST \
 # Test the proxy
 curl http://localhost:10000/get
 ```
+
+> **Tip:** Instead of manually creating clusters, routes, and listeners, import an OpenAPI spec to generate everything automatically. See [OpenAPI Import](docs/getting-started.md#openapi-import) or use `make seed` which demonstrates this with the httpbin spec.
 
 ## Architecture
 

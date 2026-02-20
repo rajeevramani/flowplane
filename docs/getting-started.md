@@ -46,7 +46,7 @@ git clone https://github.com/rajeevramani/flowplane.git
 cd flowplane
 
 # Start with Docker Compose
-docker-compose up -d
+make up
 ```
 
 Services start at:
@@ -54,7 +54,50 @@ Services start at:
 - **Swagger UI**: http://localhost:8080/swagger-ui/
 - **xDS**: localhost:50051 (gRPC)
 
-## First Run
+## Quick Start (2 minutes)
+
+The fastest path from clone to working proxy:
+
+```bash
+# Start Flowplane with Envoy and httpbin
+make up HTTPBIN=1 ENVOY=1
+
+# Seed demo data (admin, org, team, httpbin API via OpenAPI import)
+make seed
+
+# Test it — traffic flows through Envoy to httpbin!
+curl http://localhost:10016/get
+```
+
+**What `make seed` creates:**
+
+| Resource | Value |
+|---|---|
+| Platform admin | `admin@flowplane.local` / `Admin123!` |
+| Org admin | `orgadmin@acme-corp.local` / `OrgAdmin123!` |
+| Organization | `acme-corp` |
+| Team | `engineering` |
+| API | httpbin (imported from OpenAPI spec) |
+| Listener | port 10016 (Envoy proxy) |
+| API tokens | Printed to terminal |
+
+**Access points:**
+
+| Service | URL |
+|---|---|
+| Web UI | http://localhost:8080 |
+| API | http://localhost:8080/api/v1/ |
+| Swagger UI | http://localhost:8080/swagger-ui/ |
+| Envoy proxy | http://localhost:10016 |
+| xDS (gRPC) | localhost:50051 |
+
+> Want to understand each step? Continue to [Manual Setup](#manual-setup) below.
+
+---
+
+## Manual Setup
+
+> Skip this section if you used `make seed` above — everything below is already configured.
 
 ### 1. Start the Control Plane
 
@@ -351,14 +394,22 @@ See the [README](../README.md) for the full list of environment variables.
 
 ## Next Steps
 
-- [API Reference](api.md) - Complete API documentation
-- [Authentication](authentication.md) - Token management and RBAC
-- [HTTP Filters](filters.md) - Configure rate limiting, JWT, OAuth2, CORS
+- [Swagger UI](http://localhost:8080/swagger-ui/) - Interactive API reference
+- [HTTP Filters](filters.md) - Rate limiting, JWT, OAuth2, CORS, and 15 more
+- [Configuration](configuration.md) - Environment variables and settings
 - [Architecture](architecture.md) - System design overview
-- [Operations](operations.md) - Deployment and monitoring
+- [Tracing & Operations](tracing-operations.md) - Observability and monitoring
+- [TLS](tls.md) - TLS termination and mTLS
+- [Secrets Management (SDS)](secrets-sds.md) - Certificate and secret management
+- [MCP Integration](mcp.md) - AI agent tools and prompts
+- [CLI](cli.md) - Command-line interface
 
 ### Cookbooks
 
-- [Cluster Cookbook](cluster-cookbook.md) - Health checks, circuit breakers, TLS
 - [Routing Cookbook](routing-cookbook.md) - Weighted routes, redirects, rewrites
-- [Listener Cookbook](listener-cookbook.md) - TLS termination, filter chains
+
+### Deployment
+
+- [Kubernetes](deployment/kubernetes.md)
+- [Multi-Region](deployment/multi-region.md)
+- [Multi-Dataplane](deployment/multi-dataplane.md)

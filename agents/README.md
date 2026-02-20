@@ -5,8 +5,8 @@ Lightweight, model-agnostic AI agents that connect to Flowplane's MCP server for
 ## Quick Start
 
 ```bash
-# From the project root - start Flowplane and seed demo data
-make up && make seed
+# From the project root - start Flowplane with httpbin + Envoy, then seed demo data
+make up HTTPBIN=1 ENVOY=1 && make seed
 
 # Set environment (use the org-admin token from seed output)
 export FLOWPLANE_URL=http://localhost:8080

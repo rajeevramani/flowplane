@@ -4,19 +4,48 @@ The Flowplane CLI (`flowplane-cli`) provides command-line access for managing re
 
 ## Installation
 
-The CLI binary is included in release archives:
+### From release archives
+
+Pre-built binaries are included in [GitHub Releases](https://github.com/rajeevramani/flowplane/releases):
 
 ```bash
-# After extracting the release
+# After extracting the release archive
 ./flowplane-cli --help
 ```
 
-Build from source:
+### Build from source (cloned repo)
+
+If you've cloned the repository:
 
 ```bash
-cargo build --release --bin flowplane-cli
+make build-cli
 ./target/release/flowplane-cli --help
 ```
+
+### Quick setup after `make seed`
+
+If you're already running Flowplane via Docker Compose with `make up && make seed`, you can configure the CLI to use the seeded credentials:
+
+```bash
+# Build the CLI
+make build-cli
+
+# Initialize config
+./target/release/flowplane-cli config init
+
+# Set the API URL (defaults to http://localhost:8080 but check your config)
+./target/release/flowplane-cli config set base_url http://localhost:8080
+
+# Use the org-admin token printed by make seed
+./target/release/flowplane-cli config set token <org-admin-token-from-seed>
+
+# Verify — list clusters created by seed
+./target/release/flowplane-cli cluster list
+```
+
+> **Tip:** If you get connection errors like `error sending request for url`, check your `~/.flowplane/config.toml` — the `base_url` may be pointing to the wrong host. Run `flowplane-cli config show` to verify.
+
+> **Prerequisites for building:** Rust (2021 edition) and protoc (Protocol Buffers compiler). See [Requirements](../README.md#requirements).
 
 ## Configuration
 
@@ -287,42 +316,67 @@ flowplane-cli route delete api-routes --yes
 
 ### Teams
 
-Manage teams for multi-tenant resource isolation.
+Manage teams within an organization. All team commands require `--org` to specify the organization.
 
 #### Create
 
 ```bash
-flowplane-cli team create --file team.json
+flowplane-cli team create --org acme-corp --file team.json
 ```
 
 #### List
 
 ```bash
-flowplane-cli team list
-flowplane-cli team list --limit 10 --output table
+# List teams in an organization (org-admin)
+flowplane-cli team list --org acme-corp
+flowplane-cli team list --org acme-corp --output table
+
+# List all teams across all orgs (platform admin only)
+flowplane-cli team list --admin
 ```
 
 #### Get
 
 ```bash
-flowplane-cli team get team-123
-flowplane-cli team get team-123 --output yaml
+flowplane-cli team get --org acme-corp engineering
+flowplane-cli team get --org acme-corp engineering --output yaml
 ```
 
 #### Update
 
 ```bash
-flowplane-cli team update team-123 --file updated.json
+flowplane-cli team update --org acme-corp engineering --file updated.json
 ```
 
 #### Delete
 
 ```bash
-flowplane-cli team delete team-123
-flowplane-cli team delete team-123 --yes
+flowplane-cli team delete --org acme-corp engineering
+flowplane-cli team delete --org acme-corp engineering --yes
 ```
 
 Note: Delete fails if the team owns resources due to foreign key constraints.
+
+### MCP Integration
+
+Flowplane exposes MCP (Model Context Protocol) over HTTP on the running server. Configure your MCP client (Claude Desktop, Cursor, etc.) to connect directly:
+
+```json
+{
+  "mcpServers": {
+    "flowplane": {
+      "url": "http://localhost:8080/api/v1/mcp/cp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+No CLI binary or database credentials required — uses the same API token as other commands.
+
+See [MCP Integration](mcp.md) for the full list of 60 tools and 7 prompt templates.
 
 ## Output Formats
 
@@ -357,32 +411,27 @@ Available scopes for API tokens:
 ### Complete Workflow
 
 ```bash
-# 1. Initialize CLI config
+# 1. Start Flowplane and seed demo data
+make up HTTPBIN=1 ENVOY=1 && make seed
+
+# 2. Build the CLI
+make build-cli
+
+# 3. Initialize CLI config with seed credentials
 flowplane-cli config init
+flowplane-cli config set base_url http://localhost:8080
+flowplane-cli config set token <org-admin-token-from-seed>
 
-# 2. Bootstrap admin user (first-time setup)
-flowplane-cli auth bootstrap \
-  --email admin@example.com \
-  --password secure123 \
-  --name "Admin"
+# 4. Explore what seed created
+flowplane-cli cluster list --output table
+flowplane-cli listener list --output table
+flowplane-cli route list --output table
+flowplane-cli team list --org acme-corp
 
-# 3. Create an API token
-flowplane-cli auth create-token \
-  --name admin-token \
-  --scope admin:all \
-  --expires-in 30d
-
-# 4. Save token to config
-flowplane-cli config set token fp_pat_xxxxx
-
-# 5. Create resources
+# 5. Create additional resources
 flowplane-cli cluster create --file cluster.json
 flowplane-cli route create --file route.json
 flowplane-cli listener create --file listener.json
-
-# 6. Verify
-flowplane-cli cluster list --output table
-flowplane-cli listener list --output table
 ```
 
 ### CI/CD Integration

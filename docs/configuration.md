@@ -102,4 +102,4 @@ export FLOWPLANE_SERVICE_NAME=flowplane-control-plane
 export RUST_LOG=info,flowplane=info,sqlx=warn
 ```
 
-See [Operations Guide](operations.md) for production deployment details.
+See the [Kubernetes Deployment Guide](deployment/kubernetes.md) for production deployment details.

@@ -17,22 +17,9 @@ Older protocol versions (2024-11-05, 2025-03-26, 2025-06-18) are not supported. 
 
 ## Transport Options
 
-Flowplane supports two transport mechanisms for MCP communication:
+Flowplane uses Streamable HTTP for MCP communication:
 
-### 1. Stdio (CLI)
-
-The stdio transport reads JSON-RPC messages from stdin and writes responses to stdout. This is ideal for local development and command-line integration.
-
-```bash
-flowplane mcp serve --team <team-name>
-```
-
-**Use cases:**
-- Local development and testing
-- Integration with CLI tools
-- Claude Desktop configuration
-
-### 2. Streamable HTTP (MCP 2025-11-25)
+### Streamable HTTP (MCP 2025-11-25)
 
 Unified HTTP transport supporting stateful sessions, streaming, and standard request-response patterns. A single endpoint handles POST (requests), GET (SSE streaming), and DELETE (session termination).
 
@@ -81,7 +68,7 @@ Content-Type: application/json
   "id": 1,
   "result": {
     "protocolVersion": "2025-11-25",
-    "serverInfo": { "name": "flowplane", "version": "0.0.14" },
+    "serverInfo": { "name": "flowplane", "version": "0.1.0" },
     "capabilities": { ... }
   }
 }
@@ -830,7 +817,7 @@ When clients send an `initialize` request, Flowplane advertises the following ca
 
 ## Claude Desktop Configuration
 
-To use Flowplane with Claude Desktop, add the following to your MCP configuration file:
+To use Flowplane with Claude Desktop, configure it to connect via Streamable HTTP. Add the following to your MCP configuration file:
 
 **macOS/Linux:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 
@@ -840,32 +827,16 @@ To use Flowplane with Claude Desktop, add the following to your MCP configuratio
 {
   "mcpServers": {
     "flowplane-cp": {
-      "command": "flowplane",
-      "args": ["mcp", "serve", "--team", "production"],
-      "env": {
-        "DATABASE_URL": "postgresql://flowplane:password@localhost:5432/flowplane"
+      "url": "http://localhost:8080/api/v1/mcp/cp?team=production",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
       }
     }
   }
 }
 ```
 
-**With custom database:**
-```json
-{
-  "mcpServers": {
-    "flowplane-cp": {
-      "command": "flowplane",
-      "args": [
-        "mcp",
-        "serve",
-        "--team", "production",
-        "--database-url", "postgresql://flowplane:password@localhost:5432/flowplane"
-      ]
-    }
-  }
-}
-```
+> **Note:** For Claude Desktop versions that don't yet support Streamable HTTP (MCP 2025-11-25), use [mcp-remote](https://github.com/modelcontextprotocol/mcp-remote) as a protocol bridge.
 
 Restart Claude Desktop to activate the MCP server. Claude will now have access to all CP tools, resources, and prompts for managing your Flowplane configuration.
 
@@ -1085,7 +1056,7 @@ Flowplane returns standard JSON-RPC 2.0 error responses:
 
 ### Development
 
-1. **Test with stdio** - Use stdio transport for local development and debugging
+1. **Test with MCP Inspector** - Use the MCP Inspector for local development and debugging
 2. **Validate schemas** - Use the input_schema to validate arguments before calling tools
 3. **Handle errors gracefully** - All tools can fail; check for error responses
 4. **Use prompts** - Built-in prompts provide LLMs with structured troubleshooting workflows

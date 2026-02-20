@@ -18,7 +18,7 @@ pub mod protocol;
 pub mod resources;
 pub mod response_builders;
 pub mod security;
-pub mod server;
+// pub mod server; // Removed — MCP stdio server replaced by HTTP endpoint
 pub mod session;
 pub mod streamable_http;
 pub mod tool_registry;
@@ -49,7 +49,7 @@ pub use security::{
     get_default_origin_allowlist, load_origin_allowlist_from_env, validate_origin_header,
     validate_session_id_format,
 };
-pub use server::McpStdioServer;
+// McpStdioServer removed — MCP is served via HTTP at /api/v1/mcp/cp
 pub use session::{
     create_session_manager, create_session_manager_with_ttl, McpSession, SessionId, SessionManager,
     SharedSessionManager,
