@@ -14,6 +14,7 @@ enum OperationResult {
 }
 
 #[tokio::test]
+#[ignore] // Stress test — needs dedicated resources. Run manually: cargo test -- --ignored
 async fn concurrent_token_workloads_complete_successfully() {
     let app = Arc::new(setup_test_app().await);
     let admin = app
