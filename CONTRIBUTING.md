@@ -107,7 +107,7 @@ The development database requires a running PostgreSQL instance. Set the connect
 
 We use release branches: `feature/task-X → release/v0.0.X → main`
 
-1. **Start a task**: Review the feature in `.local/features/features.md`
+1. **Start a task**: Pick an open issue from [GitHub Issues](https://github.com/rajeevramani/flowplane/issues)
 2. **Create feature branch** from release (not main):
    ```bash
    git checkout release/v0.0.X
@@ -151,7 +151,7 @@ cd ui && pnpm check
 
 1. Ensure all pre-commit checks pass
 2. Keep PRs focused and small
-3. Reference the related feature from `.local/features/features.md`
+3. Reference the related GitHub issue in your PR
 4. Wait for CI to pass before requesting review
 5. Address review feedback promptly
 
@@ -234,7 +234,7 @@ flowplane/
 ├── migrations/             # PostgreSQL migrations
 ├── tests/                  # Integration and E2E tests
 ├── docs/                   # Documentation
-└── .local/features/        # Feature tracking (internal)
+└── examples/               # Example specs and configs
 ```
 
 ## License

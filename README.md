@@ -83,8 +83,6 @@ Tested with GPT-4o and Qwen 3 (via Ollama). See [agents/README.md](agents/README
 
 ## Quick Start
 
-### Docker Compose (Recommended)
-
 The fastest way to a working setup:
 
 ```bash
@@ -94,7 +92,7 @@ make up HTTPBIN=1 ENVOY=1    # Start Flowplane + Envoy + httpbin
 make seed                     # Bootstrap admin, org, team, import httpbin API
 ```
 
-Seed creates an admin user, organization (`acme-corp`), team (`engineering`), imports the [httpbin OpenAPI spec](.local/openapi/httpbin.yaml) into routes and clusters, spins up a dataplane with a listener on port 10016, and prints API tokens. Test it:
+Seed creates an admin user, organization (`acme-corp`), team (`engineering`), imports the [httpbin OpenAPI spec](examples/openapi/httpbin.yaml) into routes and clusters, spins up a dataplane with a listener on port 10016, and prints API tokens. Test it:
 
 ```bash
 curl http://localhost:10016/get  # Traffic flowing through Envoy → httpbin 🎉
@@ -394,8 +392,6 @@ graph TD
 
 ### Architecture
 - [Architecture Overview](docs/architecture.md)
-- [Architecture Decision Records](docs/adr/README.md)
-
 ### Contributing
 - [Contributing](CONTRIBUTING.md)
 

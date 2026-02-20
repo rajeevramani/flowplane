@@ -24,7 +24,7 @@ ORG_ADMIN_NAME="Acme Org Admin"
 # Team + resources
 TEAM_NAME="engineering"
 LISTENER_PORT=10016
-OPENAPI_SPEC="$PROJECT_DIR/.local/openapi/httpbin.yaml"
+OPENAPI_SPEC="$PROJECT_DIR/examples/openapi/httpbin.yaml"
 
 # Colors
 CYAN='\033[36m'
