@@ -83,6 +83,21 @@ If a requested port is taken, pick the next available port in the range.
 - Virtual host domains: ["*"]
 - Match type: prefix
 
+## Filter Configuration
+When the user requests filters (JWT auth, CORS, rate limiting, etc.):
+
+1. **Create the filter** with cp_create_filter including ALL required fields
+2. **Attach the filter** with cp_attach_filter to the listener or route config
+3. **Verify the filter** is attached by calling cp_get_filter and checking \
+the "listenerInstallations" or "routeConfigInstallations" arrays
+
+### JWT Authentication Filters
+- **MUST include `rules`** — a JWT filter without rules does NOT enforce authentication
+- Use simplified match format: `{"prefix": "/api"}` or `{"exact": "/health"}`
+- Example rules: `[{"match": {"prefix": "/api"}, "requires": {"type": "provider_name", "provider_name": "my-provider"}}]`
+- For remote JWKS, include `timeout_seconds` in the http_uri
+- NEVER create a JWT filter without rules — it will pass all traffic through unauthenticated
+
 ## Error Handling & Recovery
 When a tool call fails, do NOT retry with the same parameters. Instead:
 
@@ -93,10 +108,15 @@ port number or a path segment) and retry.
 retry with the corrected reference.
 - **CONFLICT**: Get the conflicting resource details (cp_get_*) before \
 retrying. Understand what conflicts before choosing a resolution.
+- **CRITICAL**: When retrying a filter creation after a failure, do NOT \
+silently drop required fields (like rules). If a field is rejected, use \
+cp_get_filter_type to understand the correct format, then retry with ALL \
+necessary fields preserved.
 
 ## Response Guidelines
 - Report each step as you complete it
 - After deployment, run verification (query_service + config_validate + trace_request)
+- After filter attachment, verify with cp_get_filter to confirm installations are present
 - Present a deployment summary with all resource names and the final trace result
 - Include the final access URL (e.g., http://localhost:10001/api/orders)
 - If any step fails, stop and report the issue with a suggested fix
