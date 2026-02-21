@@ -20,7 +20,7 @@ use crate::{
         },
         routes::ApiState,
     },
-    auth::authorization::{extract_team_scopes, require_resource_access},
+    auth::authorization::require_resource_access,
     auth::models::AuthContext,
 };
 
@@ -267,9 +267,13 @@ pub async fn list_aggregated_schemas_handler(
         .await?;
         requested_team.clone()
     } else {
-        // Fall back to first team scope from auth context
+        // Fall back to first team scope from auth context (includes org admin expansion)
         require_resource_access(&context, "aggregated-schemas", "read", None)?;
-        let team_scopes = extract_team_scopes(&context);
+        let team_repo = team_repo_from_state(&state)?;
+        let team_scopes = crate::api::handlers::team_access::get_effective_team_scopes_with_org(
+            &context, team_repo,
+        )
+        .await;
         team_scopes
             .first()
             .ok_or_else(|| {

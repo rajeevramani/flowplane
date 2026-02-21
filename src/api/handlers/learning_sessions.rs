@@ -22,7 +22,7 @@ use crate::{
         },
         routes::ApiState,
     },
-    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
+    auth::authorization::{has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     storage::repositories::{
@@ -157,9 +157,17 @@ fn session_response_from_data(
 }
 
 /// Extract a single team from auth context for team-scoped operations.
+/// Uses org-admin-expanded scopes so org admins can access their org's teams.
 /// Returns BadRequest error if no team scope is available.
-fn require_single_team_scope(context: &AuthContext) -> Result<String, ApiError> {
-    extract_team_scopes(context).into_iter().next().ok_or_else(|| {
+async fn require_single_team_scope(
+    context: &AuthContext,
+    state: &ApiState,
+) -> Result<String, ApiError> {
+    let team_repo = team_repo_from_state(state)?;
+    let team_scopes =
+        crate::api::handlers::team_access::get_effective_team_scopes_with_org(context, team_repo)
+            .await;
+    team_scopes.into_iter().next().ok_or_else(|| {
         ApiError::BadRequest("Team scope required for learning sessions".to_string())
     })
 }
@@ -335,7 +343,7 @@ pub async fn list_learning_sessions_handler(
         })?
     } else {
         // Extract team from auth context for non-admin users and resolve to UUID
-        let team_name = require_single_team_scope(&context)?;
+        let team_name = require_single_team_scope(&context, &state).await?;
         use crate::storage::repositories::TeamRepository as _;
         let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
         let team_ids = team_repo
