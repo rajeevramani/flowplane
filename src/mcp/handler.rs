@@ -54,17 +54,17 @@ const SERVER_INSTRUCTIONS: &str = r#"# Flowplane API Gateway Control Plane
 - NOT_FOUND: create the prerequisite first
 - CONFLICT: check existing resource, suggest resolution"#;
 
-/// Validate MCP protocol version (2025-11-25 only)
+/// Validate MCP protocol version against the supported versions list.
 ///
-/// We only support the 2025-11-25 protocol version. Older versions are rejected
-/// with an error message suggesting mcp-remote bridge for backward compatibility.
+/// We support all versions listed in SUPPORTED_VERSIONS. Versions not in this
+/// list are rejected with an error message listing the supported versions.
 fn validate_protocol_version(client_version: &str) -> Result<(), McpError> {
-    if client_version == PROTOCOL_VERSION {
+    if SUPPORTED_VERSIONS.contains(&client_version) {
         Ok(())
     } else {
         Err(McpError::UnsupportedProtocolVersion {
             client: client_version.to_string(),
-            supported: vec![PROTOCOL_VERSION.to_string()],
+            supported: SUPPORTED_VERSIONS.iter().map(|v| v.to_string()).collect(),
         })
     }
 }
@@ -214,25 +214,25 @@ impl McpHandler {
             "Received initialize request"
         );
 
-        // Validate protocol version - only 2025-11-25 is supported
+        // Validate protocol version against supported versions
         if let Err(e) = validate_protocol_version(&params.protocol_version) {
             error!(
                 client_version = %params.protocol_version,
-                supported_version = %PROTOCOL_VERSION,
-                "Unsupported protocol version - only 2025-11-25 is supported"
+                supported_versions = ?SUPPORTED_VERSIONS,
+                "Unsupported protocol version"
             );
             return self.error_response(id, e);
         }
 
         debug!(
-            protocol_version = %PROTOCOL_VERSION,
+            protocol_version = %params.protocol_version,
             "Protocol version validated"
         );
 
         self.initialized = true;
 
         let result = InitializeResult {
-            protocol_version: PROTOCOL_VERSION.to_string(),
+            protocol_version: params.protocol_version.clone(),
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: Some(false) }),
                 resources: Some(ResourcesCapability {
@@ -1148,14 +1148,15 @@ mod tests {
 
     #[test]
     fn test_version_validation_rejects_older_version() {
-        // Older versions are rejected - no backward compatibility
-        let result = validate_protocol_version("2025-06-18");
+        // Truly unsupported older versions are rejected
+        let result = validate_protocol_version("2024-11-05");
         assert!(result.is_err());
 
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
-                assert_eq!(client, "2025-06-18");
-                assert_eq!(supported, vec!["2025-11-25".to_string()]);
+                assert_eq!(client, "2024-11-05");
+                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
@@ -1163,14 +1164,15 @@ mod tests {
 
     #[test]
     fn test_version_validation_rejects_newer_version() {
-        // Newer versions are also rejected - exact match only
+        // Newer unknown versions are rejected
         let result = validate_protocol_version("2026-01-01");
         assert!(result.is_err());
 
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
                 assert_eq!(client, "2026-01-01");
-                assert_eq!(supported, vec!["2025-11-25".to_string()]);
+                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
@@ -1185,8 +1187,9 @@ mod tests {
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
                 assert_eq!(client, "2024-11-05");
-                assert_eq!(supported.len(), 1);
-                assert_eq!(supported[0], "2025-11-25");
+                assert_eq!(supported.len(), 2);
+                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
@@ -1202,6 +1205,7 @@ mod tests {
 
         assert!(message.contains("2023-12-31"));
         assert!(message.contains("2025-11-25"));
+        assert!(message.contains("2025-03-26"));
     }
 
     #[test]
@@ -1221,8 +1225,9 @@ mod tests {
         assert!(data.get("supportedVersions").is_some());
 
         let supported = data["supportedVersions"].as_array().unwrap();
-        assert_eq!(supported.len(), 1);
-        assert_eq!(supported[0], "2025-11-25");
+        assert_eq!(supported.len(), 2);
+        assert!(supported.iter().any(|v| v == "2025-11-25"));
+        assert!(supported.iter().any(|v| v == "2025-03-26"));
     }
 
     #[tokio::test]
@@ -1258,16 +1263,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_initialize_with_older_version_rejected() {
+    async fn test_initialize_with_2025_03_26_succeeds() {
         let (_db, mut handler) = create_test_handler().await;
 
-        // 2025-06-18 was previously supported but is now rejected
+        // 2025-03-26 is now a supported version
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(JsonRpcId::Number(1)),
             method: "initialize".to_string(),
             params: serde_json::json!({
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": "2025-03-26",
                 "capabilities": {},
                 "clientInfo": {
                     "name": "test-client",
@@ -1278,20 +1283,16 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
-        assert!(response.result.is_none());
-        assert!(response.error.is_some());
-
-        let error = response.error.unwrap();
-        assert_eq!(error.code, error_codes::INVALID_REQUEST);
-        assert!(error.message.contains("Unsupported protocol version"));
-        assert!(!handler.initialized);
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+        assert!(handler.initialized);
     }
 
     #[tokio::test]
     async fn test_initialize_with_newer_version_rejected() {
         let (_db, mut handler) = create_test_handler().await;
 
-        // Future versions are rejected - no negotiation
+        // Future unknown versions are rejected
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(JsonRpcId::Number(1)),
@@ -1308,7 +1309,6 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
-        // Newer versions are rejected - exact match only
         assert!(response.result.is_none());
         assert!(response.error.is_some());
 
@@ -1316,6 +1316,56 @@ mod tests {
         assert_eq!(error.code, error_codes::INVALID_REQUEST);
         assert!(error.message.contains("Unsupported protocol version"));
         assert!(!handler.initialized);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_with_2025_03_26_returns_matching_version() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2025-03-26");
+    }
+
+    #[tokio::test]
+    async fn test_initialize_with_2025_11_25_returns_matching_version() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2025-11-25");
     }
 
     #[tokio::test]

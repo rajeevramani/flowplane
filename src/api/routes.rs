@@ -317,7 +317,7 @@ fn build_cors_layer() -> CorsLayer {
             header::AUTHORIZATION,
             header::ACCEPT,
             HeaderName::from_static("x-csrf-token"),
-            // MCP 2025-11-25 protocol headers
+            // MCP 2025-03-26 protocol headers
             HeaderName::from_static("mcp-protocol-version"),
             HeaderName::from_static("mcp-session-id"),
             HeaderName::from_static("last-event-id"),
@@ -645,7 +645,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
         .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
         .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
-        // MCP protocol endpoints - Control Plane tools (Streamable HTTP 2025-11-25)
+        // MCP protocol endpoints - Control Plane tools (Streamable HTTP 2025-03-26)
         .route(
             "/api/v1/mcp/cp",
             post(crate::mcp::post_handler_cp)
@@ -653,7 +653,7 @@ pub fn build_router_with_registry(
                 .delete(crate::mcp::delete_handler_cp),
         )
         .route("/api/v1/mcp/cp/connections", get(crate::mcp::list_connections_handler))
-        // MCP protocol endpoints - API tools (Streamable HTTP 2025-11-25)
+        // MCP protocol endpoints - API tools (Streamable HTTP 2025-03-26)
         .route(
             "/api/v1/mcp/api",
             post(crate::mcp::post_handler_api)

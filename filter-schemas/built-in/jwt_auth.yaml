@@ -42,6 +42,44 @@ config_schema:
             description: Acceptable audience values (aud claim)
             items:
               type: string
+          subjects:
+            type: object
+            title: Subject Matcher
+            description: Optional subject matcher for the JWT sub claim
+            required:
+              - type
+              - value
+            properties:
+              type:
+                type: string
+                title: Match Type
+                description: How to match the subject value
+                enum:
+                  - exact
+                  - prefix
+                  - suffix
+                  - contains
+                  - regex
+              value:
+                type: string
+                title: Match Value
+                description: The value to match against
+          require_expiration:
+            type: boolean
+            title: Require Expiration
+            description: Require JWT expiration claim to be present
+            default: false
+          max_lifetime_seconds:
+            type: integer
+            title: Max Lifetime (seconds)
+            description: Maximum lifetime in seconds for accepted JWTs
+            minimum: 1
+          clock_skew_seconds:
+            type: integer
+            title: Clock Skew (seconds)
+            description: Tolerated clock skew when validating exp/nbf claims
+            minimum: 0
+            default: 60
           jwks:
             type: object
             title: JWKS Configuration
@@ -70,39 +108,237 @@ config_schema:
                     title: Cluster Name
                     description: The cluster to use for fetching the JWKS
                     x-field-type: cluster_selector
-                  timeout_seconds:
+                  timeout_ms:
                     type: integer
-                    title: Timeout (seconds)
-                    description: Request timeout in seconds
-                    default: 5
+                    title: Timeout (ms)
+                    description: Request timeout in milliseconds
+                    default: 1000
                     minimum: 1
-                    maximum: 60
+              cache_duration_seconds:
+                type: integer
+                title: Cache Duration (seconds)
+                description: How long to cache the JWKS before refetching
+                minimum: 0
+              async_fetch:
+                type: object
+                title: Async Fetch
+                description: Asynchronous JWKS fetch configuration
+                properties:
+                  fast_listener:
+                    type: boolean
+                    title: Fast Listener
+                    description: Whether to use fast listener for async fetch
+                    default: false
+                  failed_refetch_duration_seconds:
+                    type: integer
+                    title: Failed Refetch Duration (seconds)
+                    description: Duration before retrying a failed JWKS fetch
+                    minimum: 0
+              retry_policy:
+                type: object
+                title: Retry Policy
+                description: Retry policy for JWKS fetch failures
+                properties:
+                  num_retries:
+                    type: integer
+                    title: Number of Retries
+                    description: Maximum number of retry attempts
+                    minimum: 0
+                  retry_backoff:
+                    type: object
+                    title: Retry Backoff
+                    description: Backoff configuration between retries
+                    properties:
+                      base_interval_ms:
+                        type: integer
+                        title: Base Interval (ms)
+                        description: Base interval between retries in milliseconds
+                        minimum: 1
+                      max_interval_ms:
+                        type: integer
+                        title: Max Interval (ms)
+                        description: Maximum interval between retries in milliseconds
+                        minimum: 1
               inline_string:
                 type: string
                 title: Inline JWKS
                 description: The JWKS JSON content inline (for local type)
+              inline_bytes:
+                type: string
+                title: Inline JWKS (base64)
+                description: The JWKS content as base64-encoded bytes (for local type)
               filename:
                 type: string
                 title: JWKS Filename
                 description: Path to a file containing the JWKS (for local type)
+              environment_variable:
+                type: string
+                title: Environment Variable
+                description: Name of environment variable containing the JWKS (for local type)
           forward:
             type: boolean
             title: Forward JWT
             description: Forward the original JWT to upstream
             default: false
+          from_headers:
+            type: array
+            title: From Headers
+            description: Headers to extract JWT from
+            items:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  title: Header Name
+                  description: Name of the header to extract JWT from
+                value_prefix:
+                  type: string
+                  title: Value Prefix
+                  description: Prefix to strip from the header value (e.g. "Bearer ")
+          from_params:
+            type: array
+            title: From Query Parameters
+            description: Query parameter names to extract JWT from
+            items:
+              type: string
+          from_cookies:
+            type: array
+            title: From Cookies
+            description: Cookie names to extract JWT from
+            items:
+              type: string
           forward_payload_header:
             type: string
             title: Payload Header
-            description: Forward JWT payload as a header with this name
+            description: Forward JWT payload as a base64url-encoded header with this name
+          pad_forward_payload_header:
+            type: boolean
+            title: Pad Forward Payload Header
+            description: Whether to pad the forwarded payload header with base64 padding
+            default: false
           payload_in_metadata:
             type: string
             title: Payload Metadata Key
-            description: Store JWT payload in metadata with this key
+            description: Store JWT payload in dynamic metadata with this key
+          header_in_metadata:
+            type: string
+            title: Header Metadata Key
+            description: Store JWT header in dynamic metadata with this key
+          failed_status_in_metadata:
+            type: string
+            title: Failed Status Metadata Key
+            description: Store JWT failure status info in dynamic metadata with this key
+          normalize_payload_in_metadata:
+            type: object
+            title: Normalize Payload
+            description: Normalization options when writing payload to metadata
+            properties:
+              space_delimited_claims:
+                type: array
+                title: Space-Delimited Claims
+                description: Claims that should be split by space into arrays
+                items:
+                  type: string
+          jwt_cache_config:
+            type: object
+            title: JWT Cache
+            description: Provider-level JWT cache configuration
+            properties:
+              jwt_cache_size:
+                type: integer
+                title: Cache Size
+                description: Maximum number of JWTs to cache
+                minimum: 0
+              jwt_max_token_size:
+                type: integer
+                title: Max Token Size
+                description: Maximum JWT token size in bytes to cache
+                minimum: 0
+          claim_to_headers:
+            type: array
+            title: Claim to Headers
+            description: Forward JWT claims as upstream request headers
+            items:
+              type: object
+              required:
+                - header_name
+                - claim_name
+              properties:
+                header_name:
+                  type: string
+                  title: Header Name
+                  description: Name of the header to set
+                claim_name:
+                  type: string
+                  title: Claim Name
+                  description: Name of the JWT claim to extract
+          clear_route_cache:
+            type: boolean
+            title: Clear Route Cache
+            description: Whether routing cache should be cleared when metadata is updated
+            default: false
+    rules:
+      type: array
+      title: Requirement Rules
+      description: Ordered list of rules that map route matches to JWT requirements. IMPORTANT - empty rules with no filter_state_rules means JWT is enforced on all paths by default.
+      items:
+        type: object
+        properties:
+          match:
+            type: object
+            title: Route Match
+            description: Route match condition. If omitted, the rule applies to all traffic.
+          requires:
+            type: object
+            title: Requirement
+            description: Inline JWT requirement definition
+          requirement_name:
+            type: string
+            title: Requirement Name
+            description: Reference to a named requirement from requirement_map
+    requirement_map:
+      type: object
+      title: Requirement Map
+      description: Map of reusable named JWT requirement definitions
+      additionalProperties:
+        type: object
+        title: JWT Requirement
+        description: A JWT requirement definition
     bypass_cors_preflight:
       type: boolean
       title: Bypass CORS Preflight
       description: Skip JWT validation for CORS preflight (OPTIONS) requests
       default: false
+    strip_failure_response:
+      type: boolean
+      title: Strip Failure Response
+      description: Whether to strip WWW-Authenticate details on JWT failure responses
+      default: false
+    filter_state_rules:
+      type: object
+      title: Filter State Rules
+      description: Optional filter-level requirement selector driven by filter state
+      required:
+        - name
+        - requires
+      properties:
+        name:
+          type: string
+          title: Filter State Name
+          description: The name of the filter state key to read
+        requires:
+          type: object
+          title: Requirements Map
+          description: Map of filter state values to JWT requirements
+          additionalProperties:
+            type: object
+            title: JWT Requirement
+    stat_prefix:
+      type: string
+      title: Stats Prefix
+      description: Optional statistics prefix override for this filter instance
 
 per_route_config_schema:
   type: object
@@ -126,8 +362,17 @@ ui_hints:
         - providers
       collapsible: false
       collapsed_by_default: false
-    - name: Options
+    - name: Rules & Requirements
+      fields:
+        - rules
+        - requirement_map
+      collapsible: true
+      collapsed_by_default: false
+    - name: Advanced
       fields:
         - bypass_cors_preflight
+        - strip_failure_response
+        - filter_state_rules
+        - stat_prefix
       collapsible: true
       collapsed_by_default: true

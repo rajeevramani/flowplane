@@ -115,6 +115,10 @@ pub struct LearningSessionResponse {
 #[derive(Debug, Deserialize, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ListLearningSessionsQuery {
+    /// Team name to filter sessions by (uses UI-selected team)
+    #[serde(default)]
+    pub team: Option<String>,
+
     #[serde(default)]
     pub status: Option<String>,
 
@@ -295,6 +299,7 @@ pub async fn create_learning_session_handler(
     get,
     path = "/api/v1/learning-sessions",
     params(
+        ("team" = Option<String>, Query, description = "Team name to filter by (from UI team selector)"),
         ("status" = Option<String>, Query, description = "Filter by status"),
         ("limit" = Option<i32>, Query, description = "Limit results"),
         ("offset" = Option<i32>, Query, description = "Offset for pagination")
@@ -312,8 +317,24 @@ pub async fn list_learning_sessions_handler(
     Extension(context): Extension<AuthContext>,
     Query(query): Query<ListLearningSessionsQuery>,
 ) -> Result<Json<Vec<LearningSessionResponse>>, ApiError> {
-    // Authorization: require learning-sessions:read scope
-    require_resource_access(&context, "learning-sessions", "read", None)?;
+    // Determine team: use query parameter if provided, otherwise fall back to first team scope
+    let team_name = if let Some(ref requested_team) = query.team {
+        // Verify user has access to the requested team
+        require_resource_access_resolved(
+            &state,
+            &context,
+            "learning-sessions",
+            "read",
+            Some(requested_team),
+            context.org_id.as_ref(),
+        )
+        .await?;
+        requested_team.clone()
+    } else {
+        // Fall back to first team scope from auth context (includes org admin expansion)
+        require_resource_access(&context, "learning-sessions", "read", None)?;
+        require_single_team_scope(&context, &state).await?
+    };
 
     // Get repository
     let repo = state
@@ -332,34 +353,32 @@ pub async fn list_learning_sessions_handler(
         .transpose()
         .map_err(|e| ApiError::BadRequest(format!("Invalid status filter: {}", e)))?;
 
-    // List sessions based on authorization
-    // Admin users (with admin:all scope) can see all sessions across all teams
-    // Regular users can only see sessions for their team
-    let sessions = if has_admin_bypass(&context) {
+    // List sessions: admin without team filter sees all, otherwise filter by team
+    let sessions = if has_admin_bypass(&context) && query.team.is_none() {
         tracing::info!(user_id = ?context.user_id, "Admin listing all learning sessions");
         session_repo.list_all(status_filter, query.limit, query.offset).await.map_err(|e| {
             tracing::error!(error = %e, "Failed to list all learning sessions");
             ApiError::Internal(format!("Failed to list learning sessions: {}", e))
         })?
     } else {
-        // Extract team from auth context for non-admin users and resolve to UUID
-        let team_name = require_single_team_scope(&context, &state).await?;
+        // Resolve team name to UUID
         use crate::storage::repositories::TeamRepository as _;
         let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
         let team_ids = team_repo
-            .resolve_team_ids(context.org_id.as_ref(), &[team_name])
+            .resolve_team_ids(context.org_id.as_ref(), std::slice::from_ref(&team_name))
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
-        let team = team_ids
+        let team_id = team_ids
             .into_iter()
             .next()
-            .ok_or_else(|| ApiError::NotFound("Team not found".to_string()))?;
-        session_repo.list_by_team(&team, status_filter, query.limit, query.offset).await.map_err(
-            |e| {
-                tracing::error!(error = %e, team = %team, "Failed to list learning sessions");
+            .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team_name)))?;
+        session_repo
+            .list_by_team(&team_id, status_filter, query.limit, query.offset)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, team = %team_name, "Failed to list learning sessions");
                 ApiError::Internal(format!("Failed to list learning sessions: {}", e))
-            },
-        )?
+            })?
     };
 
     let responses: Vec<LearningSessionResponse> =
@@ -982,6 +1001,7 @@ mod tests {
         #[test]
         fn test_list_query_default_values() {
             let query: ListLearningSessionsQuery = serde_json::from_str("{}").unwrap();
+            assert!(query.team.is_none());
             assert!(query.status.is_none());
             assert!(query.limit.is_none());
             assert!(query.offset.is_none());
@@ -991,9 +1011,18 @@ mod tests {
         fn test_list_query_with_values() {
             let query: ListLearningSessionsQuery =
                 serde_json::from_str(r#"{"status": "active", "limit": 50, "offset": 10}"#).unwrap();
+            assert_eq!(query.team, None);
             assert_eq!(query.status, Some("active".to_string()));
             assert_eq!(query.limit, Some(50));
             assert_eq!(query.offset, Some(10));
+        }
+
+        #[test]
+        fn test_list_query_with_team() {
+            let query: ListLearningSessionsQuery =
+                serde_json::from_str(r#"{"team": "engineering", "status": "active"}"#).unwrap();
+            assert_eq!(query.team, Some("engineering".to_string()));
+            assert_eq!(query.status, Some("active".to_string()));
         }
     }
 }
