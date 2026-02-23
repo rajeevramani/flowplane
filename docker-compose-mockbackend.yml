@@ -1,0 +1,32 @@
+# Standalone MockBank API service for development
+# Can be composed with any other docker-compose configuration
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose-mockbackend.yml up -d
+#
+# Or via Make:
+#   make up MOCKBACKEND=1
+#
+# Access:
+#   - MockBank API: http://localhost:3001/v2/api/customers
+
+services:
+  mockbank-api:
+    build:
+      context: ./examples/mockbank
+      dockerfile: Dockerfile
+    container_name: flowplane-mockbank
+    ports:
+      - "3001:3000"
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/v2/api/customers').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  flowplane-network:
+    external: true
