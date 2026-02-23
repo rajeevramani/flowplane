@@ -421,7 +421,7 @@
 						console.log('Route match:', route.match);
 						console.log('Route path:', route.match?.path);
 
-						const method = route.match?.headers?.find((h: any) => h.name === ':method')?.value || 'GET';
+						const method = route.match?.headers?.find((h: any) => h.name === ':method')?.value || '*';
 						const action = route.action || {};
 						const retryPolicy = action.retryPolicy;
 						const pathObj = route.match?.path;
@@ -504,12 +504,7 @@
 							path: r.pathType === 'template'
 								? { type: r.pathType, template: r.path }
 								: { type: r.pathType, value: r.path },
-							headers: [
-								{
-									name: ':method',
-									value: r.method
-								}
-							]
+							headers: r.method && r.method !== '*' ? [{ name: ':method', value: r.method }] : []
 						},
 						action
 					};

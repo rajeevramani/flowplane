@@ -497,13 +497,6 @@ async fn get_handler(
         "SSE connection established"
     );
 
-    // Create the endpoint URI that clients should use to POST messages
-    let endpoint_uri =
-        format!("{}?team={}&sessionId={}", scope.endpoint_path(), team, session_id_str);
-
-    // Create initial endpoint event (required by MCP spec)
-    let initial_event = Event::default().event("endpoint").data(endpoint_uri);
-
     // Get message buffer for this connection to track sequence
     let message_buffer = connection_manager
         .get_message_buffer(&connection_id)
@@ -539,9 +532,8 @@ async fn get_handler(
         format_sse_event_with_id(&message, &event_id)
     });
 
-    // Combine streams: initial → replayed → live
-    let initial_stream = tokio_stream::once(Ok::<_, Infallible>(initial_event));
-    let combined_stream = initial_stream.chain(replayed_stream).chain(event_stream);
+    // Combine streams: replayed → live
+    let combined_stream = replayed_stream.chain(event_stream);
 
     // Wrap with cleanup stream to unregister connection when client disconnects
     let cleanup_stream = CleanupStream::new(

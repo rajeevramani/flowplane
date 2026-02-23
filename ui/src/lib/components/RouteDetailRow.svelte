@@ -114,7 +114,7 @@
 				<tr class="hover:bg-gray-100">
 					<td class="py-2 pr-4">
 						<Badge variant={getMethodBadgeVariant(route.method)} size="sm">
-							{route.method.toUpperCase()}
+							{route.method === '*' ? 'ANY' : route.method.toUpperCase()}
 						</Badge>
 					</td>
 					<td class="py-2 pr-4">

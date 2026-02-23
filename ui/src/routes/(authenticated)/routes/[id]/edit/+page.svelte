@@ -138,7 +138,7 @@
 				}
 			}
 			if (methodsSet.size === 0) {
-				methodsSet.add('GET');
+				methodsSet.add('*');
 			}
 			httpMethods = methodsSet;
 
