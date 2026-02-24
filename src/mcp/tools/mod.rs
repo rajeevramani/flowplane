@@ -124,7 +124,9 @@ pub use dev_agent::{dev_preflight_check_tool, execute_dev_preflight_check};
 // Re-export Ops agent tools
 pub use ops_agent::{execute_ops_audit_query, ops_audit_query_tool};
 pub use ops_agent::{execute_ops_config_validate, execute_ops_topology, execute_ops_trace_request};
-pub use ops_agent::{ops_config_validate_tool, ops_topology_tool, ops_trace_request_tool};
+pub use ops_agent::{execute_ops_nack_history, execute_ops_xds_delivery_status};
+pub use ops_agent::{ops_config_validate_tool, ops_nack_history_tool, ops_topology_tool};
+pub use ops_agent::{ops_trace_request_tool, ops_xds_delivery_status_tool};
 
 // Re-export cluster query service tool
 pub use clusters::{cp_query_service_tool, execute_query_service};
@@ -238,6 +240,8 @@ pub fn get_all_tools() -> Vec<Tool> {
         ops_topology_tool(),
         ops_config_validate_tool(),
         ops_audit_query_tool(),
+        ops_xds_delivery_status_tool(),
+        ops_nack_history_tool(),
         // Dev agent workflow tools
         dev_preflight_check_tool(),
         cp_query_service_tool(),
@@ -288,8 +292,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 4 ops agent + 3 dev agent = 60 total
-        assert_eq!(tools.len(), 60);
+        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 6 ops agent + 3 dev agent = 62 total
+        assert_eq!(tools.len(), 62);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 

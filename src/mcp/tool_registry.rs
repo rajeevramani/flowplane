@@ -877,6 +877,25 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             },
         );
 
+        m.insert(
+            "ops_xds_delivery_status",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "xDS delivery status requires clusters:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
+            "ops_nack_history",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "NACK history requires clusters:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+
         // ============================================================================
         // AUDIT TOOLS (requires audit:* scope — NOT covered by cp:read)
         // ============================================================================

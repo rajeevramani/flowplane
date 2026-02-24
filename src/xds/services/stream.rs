@@ -59,6 +59,7 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::Status;
 use tracing::{debug, error, info, warn};
 
+use crate::storage::repositories::nack_event::CreateNackEventRequest;
 use crate::xds::state::XdsState;
 use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
@@ -97,6 +98,73 @@ pub fn extract_trace_context(metadata: &tonic::metadata::MetadataMap) -> opentel
 struct LastDiscoverySnapshot {
     version: Arc<str>,
     nonce: Arc<str>,
+}
+
+/// Extract resource names from an Envoy NACK error message.
+///
+/// Envoy error messages often contain resource names in patterns like:
+/// - `name: "my-cluster"` or `name:"my-cluster"`
+/// - Resource names embedded in error text
+///
+/// Returns a JSON array string if names are found, None otherwise.
+fn extract_resource_names_from_error(error_message: &str) -> Option<String> {
+    let mut names: Vec<String> = Vec::new();
+
+    // Match patterns like: name: "foo" or name:"foo"
+    let mut remaining = error_message;
+    while let Some(pos) = remaining.find("name:") {
+        let after_name = &remaining[pos + 5..];
+        // Skip whitespace
+        let trimmed = after_name.trim_start();
+        if let Some(after_quote) = trimmed.strip_prefix('"') {
+            if let Some(end_quote) = after_quote.find('"') {
+                let name = &after_quote[..end_quote];
+                if !name.is_empty() {
+                    names.push(name.to_string());
+                }
+                remaining = &after_quote[end_quote + 1..];
+                continue;
+            }
+        }
+        remaining = after_name;
+    }
+
+    if names.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&names).ok()
+    }
+}
+
+/// Persist a NACK event to the database asynchronously.
+///
+/// Spawns a background task so the stream loop is never blocked.
+/// Failures are logged but do not affect stream processing.
+fn persist_nack_event(
+    state: &Arc<XdsState>,
+    team: Option<String>,
+    request: CreateNackEventRequest,
+) {
+    let team = match team {
+        Some(t) => t,
+        None => {
+            warn!("Cannot persist NACK event: no team context for stream");
+            return;
+        }
+    };
+
+    let repo = match state.nack_event_repository.as_ref() {
+        Some(r) => r.clone(),
+        None => return, // No repository configured (file-based mode)
+    };
+
+    let type_url = request.type_url.clone();
+    tokio::spawn(async move {
+        let request = CreateNackEventRequest { team, ..request };
+        if let Err(e) = repo.insert(request).await {
+            warn!(error = %e, type_url = %type_url, "Failed to persist NACK event to database");
+        }
+    });
 }
 
 /// Extract team identifier from Envoy node metadata
@@ -279,6 +347,7 @@ where
                             let label_for_task = label.clone();
                             let tracker = last_sent.clone();
                             let subscribed_for_task = subscribed_types.clone();
+                            let team_for_nack = team_for_stream.clone();
 
                             tokio::spawn(async move {
                                 let node_id = discovery_request
@@ -339,6 +408,31 @@ where
                                         stream = %label_for_task,
                                         "Envoy rejected previous xDS response"
                                     );
+
+                                    // Persist NACK event to database (non-blocking)
+                                    {
+                                        let team = team_for_nack.lock().await.clone();
+                                        let resource_names = if !discovery_request.resource_names.is_empty() {
+                                            serde_json::to_string(&discovery_request.resource_names).ok()
+                                        } else {
+                                            extract_resource_names_from_error(&error_detail.message)
+                                        };
+                                        persist_nack_event(
+                                            &state,
+                                            team,
+                                            CreateNackEventRequest {
+                                                team: String::new(), // Filled by persist_nack_event
+                                                dataplane_name: node_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                                                type_url: discovery_request.type_url.clone(),
+                                                version_rejected: last_snapshot.as_ref().map(|s| s.version.as_ref().to_string()).unwrap_or_else(|| "unknown".to_string()),
+                                                nonce: discovery_request.response_nonce.clone(),
+                                                error_code: error_detail.code as i64,
+                                                error_message: error_detail.message.clone(),
+                                                node_id: node_id.clone(),
+                                                resource_names,
+                                            },
+                                        );
+                                    }
 
                                     // Check if config has changed since the NACKed version was sent
                                     // If unchanged, don't retry with the same bad config - wait for a fix
@@ -690,6 +784,28 @@ where
                                             stream = %label,
                                             "Envoy rejected previous delta xDS response"
                                         );
+
+                                        // Persist delta NACK event to database (non-blocking)
+                                        {
+                                            let team = team_for_stream.lock().await.clone();
+                                            let delta_node_id = delta_request.node.as_ref().map(|n| n.id.clone());
+                                            let resource_names = extract_resource_names_from_error(&error_detail.message);
+                                            persist_nack_event(
+                                                &state_clone,
+                                                team,
+                                                CreateNackEventRequest {
+                                                    team: String::new(), // Filled by persist_nack_event
+                                                    dataplane_name: delta_node_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                                                    type_url: delta_request.type_url.clone(),
+                                                    version_rejected: "unknown".to_string(), // Delta protocol doesn't track version the same way
+                                                    nonce: delta_request.response_nonce.clone(),
+                                                    error_code: error_detail.code as i64,
+                                                    error_message: error_detail.message.clone(),
+                                                    node_id: delta_node_id,
+                                                    resource_names,
+                                                },
+                                            );
+                                        }
                                     } else {
                                     info!(
                                         nonce = %delta_request.response_nonce,

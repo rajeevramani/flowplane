@@ -48,6 +48,7 @@ const SERVER_INSTRUCTIONS: &str = r#"# Flowplane API Gateway Control Plane
 2. ops_trace_request: trace a specific request path
 3. ops_config_validate: find configuration problems
 4. ops_audit_query: review recent changes
+5. ops_xds_delivery_status: check if Envoy accepted or rejected config
 
 ## Error Recovery
 - ALREADY_EXISTS: use update tool or choose different name
@@ -283,7 +284,7 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        // Use get_all_tools() as single source of truth (60 tools)
+        // Use get_all_tools() as single source of truth (61 tools)
         let mut tools = tools::get_all_tools();
 
         // Enrich tool descriptions with risk level hints from the registry
@@ -368,6 +369,19 @@ impl McpHandler {
             }
             "ops_audit_query" => {
                 tools::execute_ops_audit_query(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
+            }
+            "ops_xds_delivery_status" => {
+                tools::execute_ops_xds_delivery_status(
+                    &self.db_pool,
+                    &team,
+                    self.org_id.as_ref(),
+                    args,
+                )
+                .await
+            }
+            "ops_nack_history" => {
+                tools::execute_ops_nack_history(&self.db_pool, &team, self.org_id.as_ref(), args)
                     .await
             }
             // Dev agent tools (db_pool only)
