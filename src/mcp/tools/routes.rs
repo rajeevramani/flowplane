@@ -883,9 +883,10 @@ pub async fn execute_create_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
-    })?;
+    let virtual_hosts =
+        args.get("virtualHosts").or_else(|| args.get("virtual_hosts")).ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
+        })?;
 
     tracing::debug!(
         team = %team,
@@ -973,9 +974,10 @@ pub async fn execute_update_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
-    })?;
+    let virtual_hosts =
+        args.get("virtualHosts").or_else(|| args.get("virtual_hosts")).ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
+        })?;
 
     tracing::debug!(
         team = %team,
@@ -1498,7 +1500,7 @@ pub async fn execute_create_route(
             "cluster": cluster_name
         })),
         None,
-        None,
+        Some("Route saved to DB index only. To make it live in Envoy, use cp_update_route_config with the full virtualHosts array including this new route."),
     );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;

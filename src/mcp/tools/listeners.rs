@@ -592,6 +592,7 @@ pub async fn execute_create_listener(
     let protocol = args.get("protocol").and_then(|v| v.as_str()).unwrap_or("HTTP").to_string();
     let dataplane_id = args
         .get("dataplaneId")
+        .or_else(|| args.get("dataplane_id"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
             McpError::InvalidParams(
@@ -610,34 +611,38 @@ pub async fn execute_create_listener(
     );
 
     // 2. Build ListenerConfig
-    let route_config_name = args.get("routeConfigName").and_then(|v| v.as_str());
+    let route_config_name = args
+        .get("routeConfigName")
+        .or_else(|| args.get("route_config_name"))
+        .and_then(|v| v.as_str());
 
-    let filter_chains = if let Some(fc_json) = args.get("filterChains") {
-        serde_json::from_value(fc_json.clone())
-            .map_err(|e| McpError::InvalidParams(format!("Invalid filterChains: {}", e)))?
-    } else if let Some(rc_name) = route_config_name {
-        vec![FilterChainConfig {
-            name: Some("default".to_string()),
-            filters: vec![FilterConfig {
-                name: "envoy.filters.network.http_connection_manager".to_string(),
-                filter_type: FilterType::HttpConnectionManager {
-                    route_config_name: Some(rc_name.to_string()),
-                    inline_route_config: None,
-                    access_log: None,
-                    tracing: None,
-                    http_filters: vec![HttpFilterConfigEntry {
-                        name: None,
-                        is_optional: false,
-                        disabled: false,
-                        filter: HttpFilterKind::Router,
-                    }],
-                },
-            }],
-            tls_context: None,
-        }]
-    } else {
-        vec![]
-    };
+    let filter_chains =
+        if let Some(fc_json) = args.get("filterChains").or_else(|| args.get("filter_chains")) {
+            serde_json::from_value(fc_json.clone())
+                .map_err(|e| McpError::InvalidParams(format!("Invalid filterChains: {}", e)))?
+        } else if let Some(rc_name) = route_config_name {
+            vec![FilterChainConfig {
+                name: Some("default".to_string()),
+                filters: vec![FilterConfig {
+                    name: "envoy.filters.network.http_connection_manager".to_string(),
+                    filter_type: FilterType::HttpConnectionManager {
+                        route_config_name: Some(rc_name.to_string()),
+                        inline_route_config: None,
+                        access_log: None,
+                        tracing: None,
+                        http_filters: vec![HttpFilterConfigEntry {
+                            name: None,
+                            is_optional: false,
+                            disabled: false,
+                            filter: HttpFilterKind::Router,
+                        }],
+                    },
+                }],
+                tls_context: None,
+            }]
+        } else {
+            vec![]
+        };
 
     let config = ListenerConfig {
         name: name.to_string(),
@@ -734,9 +739,12 @@ pub async fn execute_update_listener(
         .map_err(|e| McpError::InvalidParams(format!("Failed to parse listener config: {}", e)))?;
 
     // 5. Apply updates to config
-    let route_config_name = args.get("routeConfigName").and_then(|v| v.as_str());
+    let route_config_name = args
+        .get("routeConfigName")
+        .or_else(|| args.get("route_config_name"))
+        .and_then(|v| v.as_str());
 
-    if let Some(fc_json) = args.get("filterChains") {
+    if let Some(fc_json) = args.get("filterChains").or_else(|| args.get("filter_chains")) {
         config.filter_chains = serde_json::from_value(fc_json.clone())
             .map_err(|e| McpError::InvalidParams(format!("Invalid filterChains: {}", e)))?;
     } else if let Some(rc_name) = route_config_name {
@@ -781,7 +789,11 @@ pub async fn execute_update_listener(
     let address = args.get("address").and_then(|v| v.as_str()).map(|s| s.to_string());
     let port = args.get("port").and_then(|v| v.as_u64()).map(|p| p as u16);
     let protocol = args.get("protocol").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let dataplane_id = args.get("dataplaneId").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let dataplane_id = args
+        .get("dataplaneId")
+        .or_else(|| args.get("dataplane_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // Update config address/port if provided
     if let Some(ref addr) = address {

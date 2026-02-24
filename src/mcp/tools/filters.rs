@@ -504,9 +504,13 @@ pub async fn execute_create_filter(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let filter_type = args.get("filterType").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: filterType".to_string())
-    })?;
+    let filter_type = args
+        .get("filterType")
+        .or_else(|| args.get("filter_type"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: filterType".to_string())
+        })?;
 
     let configuration = args.get("configuration").ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: configuration".to_string())
@@ -622,7 +626,11 @@ pub async fn execute_update_filter(
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     // 3. Parse optional updates (auto-wrap config if needed)
-    let new_name = args.get("newName").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let new_name = args
+        .get("newName")
+        .or_else(|| args.get("new_name"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let new_description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
     let new_config = if let Some(config_json) = args.get("configuration") {
         // Look up existing filter to get its type for auto-wrapping
