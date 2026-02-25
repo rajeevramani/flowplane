@@ -94,6 +94,65 @@ pub fn filter_headers(
         .collect()
 }
 
+/// Header names whose values must be redacted (case-insensitive)
+const SENSITIVE_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+    "x-csrf-token",
+    "x-session-id",
+];
+
+/// Redact the value of sensitive headers while preserving the scheme.
+///
+/// Non-sensitive headers keep their original value. Sensitive headers get
+/// their value replaced with a redacted placeholder that preserves the
+/// auth scheme (Bearer, Basic, etc.) for OpenAPI security scheme detection.
+///
+/// # Examples
+/// ```
+/// use flowplane::xds::services::access_log_service::redact_header_value;
+/// assert_eq!(redact_header_value("Authorization", "Bearer eyJhbG..."), "Bearer ***");
+/// assert_eq!(redact_header_value("authorization", "Basic dXNlcjpw"), "Basic ***");
+/// assert_eq!(redact_header_value("Cookie", "session=abc123"), "***");
+/// assert_eq!(redact_header_value("Content-Type", "application/json"), "application/json");
+/// assert_eq!(redact_header_value("X-Api-Key", "sk-12345"), "***");
+/// ```
+pub fn redact_header_value(name: &str, value: &str) -> String {
+    let lower = name.to_lowercase();
+    if !SENSITIVE_HEADERS.contains(&lower.as_str()) {
+        return value.to_string();
+    }
+
+    // For Authorization/Proxy-Authorization, preserve the scheme
+    if lower == "authorization" || lower == "proxy-authorization" {
+        if let Some((scheme, _)) = value.split_once(' ') {
+            return format!("{} ***", scheme);
+        }
+    }
+
+    "***".to_string()
+}
+
+/// Filter infrastructure headers and redact sensitive values.
+///
+/// Combines `filter_headers` (removes Envoy/proxy headers) with
+/// `redact_header_value` (masks sensitive credentials). Returns
+/// headers ready for schema storage.
+pub fn filter_and_redact_headers(
+    headers: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter(|(key, _)| should_include_header(key))
+        .take(20)
+        .map(|(k, v)| (k.clone(), redact_header_value(k, v)))
+        .collect()
+}
+
 use async_trait::async_trait;
 use envoy_types::pb::envoy::data::accesslog::v3::{HttpAccessLogEntry, TcpAccessLogEntry};
 use envoy_types::pb::envoy::service::accesslog::v3::{
@@ -484,17 +543,12 @@ impl FlowplaneAccessLogService {
                 .cloned()
                 .unwrap_or_else(|| request.path.clone());
 
-            // Extract limited headers (first 20 headers to avoid excessive memory)
-            let headers: Vec<(String, String)> = request
-                .request_headers
-                .iter()
-                .take(20)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-
-            // Build headers map for correlation extraction
+            // Build headers map for correlation extraction and filtering
             let headers_map: std::collections::HashMap<String, String> =
                 request.request_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+            // Filter infrastructure headers and redact sensitive values
+            let headers = filter_and_redact_headers(&headers_map);
 
             // Extract x-request-id for correlation with ExtProc body captures
             let request_id = Self::extract_request_id_from_headers(&headers_map);
@@ -531,13 +585,10 @@ impl FlowplaneAccessLogService {
             if let Some(response) = &entry.response {
                 let status = response.response_code.as_ref().map(|c| c.value).unwrap_or(0);
 
-                // Extract limited headers (first 20 headers to avoid excessive memory)
-                let headers: Vec<(String, String)> = response
-                    .response_headers
-                    .iter()
-                    .take(20)
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
+                // Filter infrastructure headers and redact sensitive values
+                let resp_headers_map: std::collections::HashMap<String, String> =
+                    response.response_headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let headers = filter_and_redact_headers(&resp_headers_map);
 
                 // Body extraction limitation: The HttpResponseProperties protobuf from Envoy
                 // does NOT include body content by default. Bodies are captured via ExtProc

@@ -153,6 +153,8 @@ pub struct OpenApiExportResponse {
     pub info: OpenApiInfo,
     pub paths: serde_json::Value,
     pub components: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -834,6 +836,7 @@ fn build_openapi_spec(
         components: serde_json::json!({
             "schemas": {}
         }),
+        security: None,
     }
 }
 
@@ -901,6 +904,30 @@ pub fn build_unified_openapi_spec(
             if let Some(path_info) = method_params.get(method_key) {
                 if !path_info.query_params.is_empty() {
                     all_params.extend(build_query_parameters(&path_info.query_params));
+                }
+            }
+        }
+
+        // Add request headers as OpenAPI header parameters (skip auth-related ones
+        // which are handled via securitySchemes)
+        if let Some(schema) = endpoint_schemas.first() {
+            if let Some(ref headers) = schema.request_headers {
+                if let Some(arr) = headers.as_array() {
+                    for entry in arr {
+                        if let Some(name) = entry.get("name").and_then(|n| n.as_str()) {
+                            let lower = name.to_lowercase();
+                            // Auth headers go into securitySchemes, not parameters
+                            if lower == "authorization" || lower == "x-api-key" {
+                                continue;
+                            }
+                            all_params.push(serde_json::json!({
+                                "name": name,
+                                "in": "header",
+                                "required": false,
+                                "schema": { "type": "string" }
+                            }));
+                        }
+                    }
                 }
             }
         }
@@ -992,6 +1019,31 @@ pub fn build_unified_openapi_spec(
             }
         }
 
+        // Add response headers to all response objects
+        if let Some(schema) = endpoint_schemas.first() {
+            if let Some(ref headers) = schema.response_headers {
+                if let Some(arr) = headers.as_array() {
+                    if !arr.is_empty() {
+                        let mut header_map = serde_json::json!({});
+                        for entry in arr {
+                            if let Some(name) = entry.get("name").and_then(|n| n.as_str()) {
+                                header_map[name] = serde_json::json!({
+                                    "schema": { "type": "string" },
+                                    "description": format!("Observed header: {}", name)
+                                });
+                            }
+                        }
+                        // Apply to all response objects
+                        if let Some(responses) = operation["responses"].as_object_mut() {
+                            for (_code, resp) in responses.iter_mut() {
+                                resp["headers"] = header_map.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Ensure responses object is not empty (OpenAPI requires at least one response)
         if operation["responses"].as_object().is_some_and(|m| m.is_empty()) {
             operation["responses"]["default"] = serde_json::json!({
@@ -1031,6 +1083,60 @@ pub fn build_unified_openapi_spec(
         options.description.clone()
     };
 
+    // Detect security schemes from observed request headers across all schemas
+    let mut security_schemes = serde_json::json!({});
+    let mut global_security: Vec<serde_json::Value> = Vec::new();
+    let mut seen_auth_schemes: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for schema in schemas {
+        if let Some(ref headers) = schema.request_headers {
+            if let Some(arr) = headers.as_array() {
+                for entry in arr {
+                    let name = entry.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let example = entry.get("example").and_then(|e| e.as_str()).unwrap_or("");
+                    let lower = name.to_lowercase();
+
+                    if lower == "authorization" {
+                        // Detect scheme from redacted example: "Bearer ***", "Basic ***"
+                        let scheme_lower =
+                            example.split_whitespace().next().unwrap_or("").to_lowercase();
+                        if scheme_lower == "bearer" && seen_auth_schemes.insert("bearerAuth".into())
+                        {
+                            security_schemes["bearerAuth"] = serde_json::json!({
+                                "type": "http",
+                                "scheme": "bearer"
+                            });
+                            global_security.push(serde_json::json!({"bearerAuth": []}));
+                        } else if scheme_lower == "basic"
+                            && seen_auth_schemes.insert("basicAuth".into())
+                        {
+                            security_schemes["basicAuth"] = serde_json::json!({
+                                "type": "http",
+                                "scheme": "basic"
+                            });
+                            global_security.push(serde_json::json!({"basicAuth": []}));
+                        }
+                    } else if lower == "x-api-key" && seen_auth_schemes.insert("apiKeyAuth".into())
+                    {
+                        security_schemes["apiKeyAuth"] = serde_json::json!({
+                            "type": "apiKey",
+                            "in": "header",
+                            "name": name
+                        });
+                        global_security.push(serde_json::json!({"apiKeyAuth": []}));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut components = serde_json::json!({"schemas": {}});
+    if security_schemes.as_object().is_some_and(|m| !m.is_empty()) {
+        components["securitySchemes"] = security_schemes;
+    }
+
+    let security = if global_security.is_empty() { None } else { Some(global_security) };
+
     OpenApiExportResponse {
         openapi: "3.1.0".to_string(),
         info: OpenApiInfo {
@@ -1039,9 +1145,8 @@ pub fn build_unified_openapi_spec(
             description,
         },
         paths,
-        components: serde_json::json!({
-            "schemas": {}
-        }),
+        components,
+        security,
     }
 }
 
@@ -1227,6 +1332,8 @@ mod tests {
             response_schemas: Some(serde_json::json!({
                 "200": {"type": "object", "properties": {"id": {"type": "integer"}}}
             })),
+            request_headers: None,
+            response_headers: None,
             sample_count,
             confidence_score: confidence,
             breaking_changes: None,
@@ -1378,6 +1485,8 @@ mod tests {
                 serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}}),
             ),
             response_schemas: None, // No response captured
+            request_headers: None,
+            response_headers: None,
             sample_count: 5,
             confidence_score: 0.8,
             breaking_changes: None,
@@ -1437,6 +1546,8 @@ mod tests {
             response_schemas: Some(serde_json::json!({
                 status_code: {"type": "object", "properties": {"id": {"type": "integer"}}}
             })),
+            request_headers: None,
+            response_headers: None,
             sample_count,
             confidence_score: confidence,
             breaking_changes: None,
@@ -1514,6 +1625,8 @@ mod tests {
             previous_version_id: None,
             request_schema: Some(serde_json::json!({"type": "object"})),
             response_schemas: Some(serde_json::json!({})), // Empty map
+            request_headers: None,
+            response_headers: None,
             sample_count: 3,
             confidence_score: 0.7,
             breaking_changes: None,
@@ -1566,6 +1679,8 @@ mod tests {
                 response_schemas: Some(serde_json::json!({
                     "200": {"type": "object", "properties": {"id": {"type": "integer"}}}
                 })),
+                request_headers: None,
+                response_headers: None,
                 sample_count: 10,
                 confidence_score: 0.9,
                 breaking_changes: None,
