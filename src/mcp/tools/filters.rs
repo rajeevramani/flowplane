@@ -11,7 +11,8 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_delete_response, build_rich_create_response, build_update_response,
+    build_delete_response, build_rich_create_response, build_rich_delete_response,
+    build_update_response,
 };
 use crate::xds::XdsState;
 use serde_json::{json, Value};
@@ -709,8 +710,8 @@ pub async fn execute_delete_filter(
 
     ops.delete(name, &auth).await?;
 
-    // 3. Format success response (minimal token-efficient format)
-    let output = build_delete_response();
+    // 3. Format response with confirmation
+    let output = build_rich_delete_response("filter", name, None);
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -976,7 +977,7 @@ pub async fn execute_attach_filter(
         unreachable!()
     };
 
-    // 4. Format rich response with target confirmation
+    // 4. Format rich response with target confirmation and next-step guidance
     let attachment_id = format!("{}-{}", filter, target_name);
     let output = build_rich_create_response(
         "filter_attachment",
@@ -984,7 +985,10 @@ pub async fn execute_attach_filter(
         &attachment_id,
         Some(json!({"target_type": target_type, "target_name": target_name})),
         None,
-        None,
+        Some(&format!(
+            "Verify with cp_get_filter('{}') — check listenerInstallations or routeConfigInstallations",
+            filter
+        )),
     );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;

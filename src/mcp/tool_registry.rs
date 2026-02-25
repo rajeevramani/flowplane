@@ -641,6 +641,24 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
                 risk_level: RiskLevel::Low,
             },
         );
+        m.insert(
+            "cp_activate_learning_session",
+            ToolAuthorization {
+                resource: "learning-sessions",
+                action: "write",
+                description: "Activate learning session requires learning-sessions:write",
+                risk_level: RiskLevel::Low,
+            },
+        );
+        m.insert(
+            "ops_learning_session_health",
+            ToolAuthorization {
+                resource: "learning-sessions",
+                action: "read",
+                description: "Learning session health check requires learning-sessions:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
 
         // ============================================================================
         // AGGREGATED SCHEMA TOOLS
@@ -1453,6 +1471,7 @@ mod tests {
             "dev_preflight_check",
             "cp_query_service",
             "cp_export_schema_openapi",
+            "ops_learning_session_health",
         ];
 
         for tool_name in &read_tools {

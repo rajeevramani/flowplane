@@ -18,42 +18,52 @@ use crate::xds::XdsState;
 
 /// Server instructions provided to LLM clients during initialization.
 ///
-/// This shapes how every AI agent interacts with Flowplane — explaining terminology,
-/// resource creation order, smart defaults, and diagnostic workflows.
+/// This shapes how every AI agent interacts with Flowplane — explaining
+/// resource creation order, xDS delivery semantics, and diagnostic workflows.
+/// Keep this slim (~30 lines). Per-filter and per-resource guidance is
+/// delivered contextually in tool responses and `cp_get_filter_type`.
 const SERVER_INSTRUCTIONS: &str = r#"# Flowplane API Gateway Control Plane
 
-## Terminology
-- Backend = Cluster (upstream service with endpoints)
-- Entry Point = Listener (address:port where traffic enters)
-- Routing Rules = Route Configuration (path matching + forwarding)
-- Policy = Filter (rate limiting, CORS, auth, headers)
-
 ## Resource Creation Order (ALWAYS follow)
-1. Backends (clusters) — must exist before routes reference them
-2. Routing Rules (route configs with virtual hosts and routes)
-3. Policies (filters) — create then attach
-4. Entry Points (listeners) — bind to routing rules
+1. Clusters (backends) — must exist before routes reference them
+2. Route Configs (routing rules with virtual hosts)
+3. Filters — create then attach to listeners or routes
+4. Listeners (entry points) — bind to route configs
 
 ## Before Creating Resources
 - cp_query_port: check if port is available
 - cp_query_path: check if path is already routed
 - dev_preflight_check: comprehensive pre-creation validation
 
-## Smart Defaults
-- Listen address: 0.0.0.0 | Protocol: HTTP | LB: ROUND_ROBIN
-- Virtual host domains: ["*"] | Match type: prefix
+## xDS Delivery (How Config Reaches Envoy)
+- Flowplane pushes config to Envoy via xDS protocol
+- If Envoy rejects a config, it NACKs and keeps the PREVIOUS valid config
+- A NACK on one resource blocks ALL resources of that type in that batch
+- Example: A bad cluster NACKs the entire CDS update, blocking unrelated clusters
+- Use ops_xds_delivery_status to check if Envoy accepted or rejected config
+
+## Route Matching: First-Match Wins
+- Routes in a virtual host are evaluated top-to-bottom in array order
+- The FIRST matching route handles the request
+- More specific paths must come BEFORE broader prefixes
+- Example: /api/health must come before /api in the routes array
+
+## Route Config Updates Are Full Replacement
+- cp_update_route_config replaces the entire virtualHosts array
+- Always fetch existing config with cp_get_route_config first
+- Include ALL existing routes plus any new ones
 
 ## Diagnostic Workflow
 1. ops_topology: understand the full gateway layout
 2. ops_trace_request: trace a specific request path
 3. ops_config_validate: find configuration problems
-4. ops_audit_query: review recent changes
-5. ops_xds_delivery_status: check if Envoy accepted or rejected config
+4. ops_xds_delivery_status: check if Envoy accepted config
+5. ops_nack_history: see recent config rejections
 
 ## Error Recovery
-- ALREADY_EXISTS: use update tool or choose different name
+- ALREADY_EXISTS: query existing resource, reuse or choose different name
 - NOT_FOUND: create the prerequisite first
-- CONFLICT: check existing resource, suggest resolution"#;
+- CONFLICT: check existing resource, resolve before retrying"#;
 
 /// Validate MCP protocol version against the supported versions list.
 ///
@@ -284,7 +294,7 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        // Use get_all_tools() as single source of truth (61 tools)
+        // Use get_all_tools() as single source of truth (63 tools)
         let mut tools = tools::get_all_tools();
 
         // Enrich tool descriptions with risk level hints from the registry
@@ -409,7 +419,9 @@ impl McpHandler {
             | "cp_list_learning_sessions"
             | "cp_get_learning_session"
             | "cp_create_learning_session"
+            | "cp_activate_learning_session"
             | "cp_delete_learning_session"
+            | "ops_learning_session_health"
             | "cp_create_cluster"
             | "cp_update_cluster"
             | "cp_delete_cluster"
@@ -711,8 +723,26 @@ impl McpHandler {
                         )
                         .await
                     }
+                    "cp_activate_learning_session" => {
+                        tools::execute_activate_learning_session(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
                     "cp_delete_learning_session" => {
                         tools::execute_delete_learning_session(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "ops_learning_session_health" => {
+                        tools::execute_ops_learning_session_health(
                             xds_state,
                             &team,
                             self.org_id.as_ref(),

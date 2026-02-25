@@ -17,6 +17,22 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  IMPORTANT: filter_enabled and filter_enforced BOTH default to 0%.
+  The filter does NOTHING unless you explicitly set these.
+  Flowplane sets sensible defaults, but agents should be aware.
+
+  REQUIRED: stat_prefix (namespace for metrics)
+
+  TOKEN BUCKET:
+  - max_tokens: burst capacity
+  - tokens_per_fill: sustained rate per fill_interval
+  - fill_interval_ms: refill period
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — disable rate limiting for this route
+  - Full config replacement — provide complete LocalRateLimit config
+
 config_schema:
   type: object
   required:

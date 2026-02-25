@@ -13,8 +13,8 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_delete_response, build_query_response, build_rich_create_response, build_update_response,
-    ResourceRef,
+    build_query_response, build_rich_create_response, build_rich_delete_response,
+    build_update_response, ResourceRef,
 };
 use crate::storage::DbPool;
 use crate::xds::filters::http::{HttpFilterConfigEntry, HttpFilterKind};
@@ -851,8 +851,10 @@ pub async fn execute_delete_listener(
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     ops.delete(name, &auth).await?;
 
-    // 3. Format success response (minimal token-efficient format)
-    let output = build_delete_response();
+    // 3. Format response with next-step guidance
+    let mut output = build_rich_delete_response("listener", name, None);
+    output["next_step"] =
+        json!("Route config still exists — use cp_delete_route_config if removing the full API");
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 

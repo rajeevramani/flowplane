@@ -212,8 +212,8 @@ impl LearningSessionOperations {
             "Learning session created via internal API"
         );
 
-        // 4. Auto-start if requested
-        let session = if req.auto_start.unwrap_or(false) {
+        // 4. Auto-start if requested (default: true — matches MCP tool docs)
+        let session = if req.auto_start.unwrap_or(true) {
             // Use the existing learning session service from XdsState if available
             if let Some(service) = self.xds_state.get_learning_session_service() {
                 // Activate the session
@@ -248,7 +248,7 @@ impl LearningSessionOperations {
             created
         };
 
-        let message = if req.auto_start.unwrap_or(false) {
+        let message = if req.auto_start.unwrap_or(true) {
             "Learning session created and activated successfully."
         } else {
             "Learning session created successfully. Use activate to start collecting samples."

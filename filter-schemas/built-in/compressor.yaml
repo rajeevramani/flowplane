@@ -17,6 +17,15 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  DEFAULTS:
+  - min_content_length: 30 bytes
+  - Compresses: text/html, application/json, text/plain, etc.
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — skip compression for this route
+  - Config replacement to change algorithm or settings per route
+
 config_schema:
   type: object
   properties:

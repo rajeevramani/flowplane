@@ -17,6 +17,29 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  PREREQUISITES:
+  - Remote JWKS requires a TLS cluster for the IDP (e.g., auth0.com:443)
+  - Check cp_list_clusters first — reuse an existing IDP cluster if one exists
+  - If no cluster exists, create one with useTls=true before creating the filter
+  - If the JWKS cluster is NACKed (by any bad cluster in the batch), JWT filter
+    cannot fetch keys and ALL protected requests return 401
+
+  RULES:
+  - A filter with NO rules passes all traffic unauthenticated
+  - Rules use first-match semantics (same as routes)
+  - Each rule needs a "match" and a "requires"
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — skip JWT entirely for this route
+  - { "requirement_name": "<name>" } — select from requirement_map
+  - requirement_map must be defined in the filter config
+
+  REQUIREMENT TYPES:
+  - allow_missing: accept requests without tokens, reject invalid tokens
+  - allow_missing_or_failed: accept both missing and invalid tokens
+  - provider_name: require valid token from specific provider
+
 config_schema:
   type: object
   required:

@@ -207,7 +207,7 @@ pub async fn execute_get_filter_type(
     })?;
 
     // Transform to JSON response
-    let result = json!({
+    let mut result = json!({
         "name": schema.name,
         "display_name": schema.display_name,
         "description": schema.description,
@@ -238,6 +238,11 @@ pub async fn execute_get_filter_type(
             schema.name
         ),
     });
+
+    // Include per-filter-type instructions if available
+    if let Some(instructions) = &schema.instructions {
+        result["instructions"] = json!(instructions);
+    }
 
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
