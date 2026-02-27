@@ -36,7 +36,7 @@ async fn create_test_handler() -> (TestDatabase, McpHandler) {
         "test".to_string(),
         vec!["admin:all".to_string()],
     );
-    let handler = McpHandler::new(Arc::new(pool), "test-team".to_string(), context);
+    let handler = McpHandler::new(Arc::new(pool), vec!["test-team".to_string()], context);
     (test_db, handler)
 }
 
@@ -421,8 +421,8 @@ async fn test_session_multiple_teams() {
     let id1 = SessionId::from_token("team1-token");
     let id2 = SessionId::from_token("team2-token");
 
-    let _ = manager.get_or_create_for_team(&id1, "team1");
-    let _ = manager.get_or_create_for_team(&id2, "team2");
+    let _ = manager.get_or_create_for_teams(&id1, &["team1".to_string()]);
+    let _ = manager.get_or_create_for_teams(&id2, &["team2".to_string()]);
 
     let team1_sessions = manager.list_sessions_by_team("team1");
     let team2_sessions = manager.list_sessions_by_team("team2");
@@ -715,9 +715,9 @@ async fn test_session_isolation_between_teams() {
     let id2 = SessionId::from_token("token2");
     let id3 = SessionId::from_token("token3");
 
-    let _ = manager.get_or_create_for_team(&id1, "team-a");
-    let _ = manager.get_or_create_for_team(&id2, "team-a");
-    let _ = manager.get_or_create_for_team(&id3, "team-b");
+    let _ = manager.get_or_create_for_teams(&id1, &["team-a".to_string()]);
+    let _ = manager.get_or_create_for_teams(&id2, &["team-a".to_string()]);
+    let _ = manager.get_or_create_for_teams(&id3, &["team-b".to_string()]);
 
     let team_a_sessions = manager.list_sessions_by_team("team-a");
     let team_b_sessions = manager.list_sessions_by_team("team-b");

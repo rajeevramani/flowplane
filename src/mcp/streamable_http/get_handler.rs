@@ -34,9 +34,7 @@ use crate::mcp::error::McpError;
 use crate::mcp::notifications::NotificationMessage;
 use crate::mcp::protocol::{error_codes, JsonRpcError, JsonRpcResponse};
 use crate::mcp::session::SessionId;
-use crate::mcp::transport_common::{
-    extract_mcp_headers, extract_team, get_db_pool, validate_team_org_membership,
-};
+use crate::mcp::transport_common::{extract_mcp_headers, extract_teams};
 use crate::mcp::SharedConnectionManager;
 
 use super::McpScope;
@@ -306,7 +304,7 @@ async fn get_handler(
     state: ApiState,
     context: AuthContext,
     headers: HeaderMap,
-    query: SseQuery,
+    _query: SseQuery,
 ) -> Result<impl IntoResponse, axum::response::Response> {
     let connection_manager = state.mcp_connection_manager.clone();
     let session_manager = state.mcp_session_manager.clone();
@@ -356,51 +354,10 @@ async fn get_handler(
         ));
     }
 
-    // Extract team
-    let team = match extract_team(query.team.as_deref(), &context) {
-        Ok(t) => t,
-        Err(e) => {
-            error!(error = %e, "Failed to extract team for SSE");
-            return Err(error_response(error_codes::INVALID_REQUEST, e));
-        }
-    };
-
-    // Validate team belongs to caller's org (prevents cross-org team access via query param)
-    if let Some(ref org_id) = context.org_id {
-        if let Ok(db_pool) = get_db_pool(&state) {
-            if let Err(e) = validate_team_org_membership(&team, org_id, &db_pool).await {
-                error!(error = %e, team = %team, "Team org membership validation failed");
-                return Err(error_response(error_codes::INVALID_REQUEST, e));
-            }
-        }
-    }
-
-    // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
-    let team = match get_db_pool(&state) {
-        Ok(db_pool) => match crate::mcp::transport_common::resolve_team_id(&team, &db_pool).await {
-            Ok(team_id) => team_id,
-            Err(e) => {
-                error!(error = %e, "Failed to resolve team name to UUID");
-                return Err(error_response(error_codes::INVALID_REQUEST, e));
-            }
-        },
-        Err(_) => team, // Fallback to name if DB unavailable
-    };
-
-    // Validate session ownership
-    if let Err(e) = session_manager.validate_session_ownership(&session_id, &team) {
-        warn!(
-            session_id = %session_id_str,
-            team = %team,
-            error = %e,
-            "Session ownership validation failed"
-        );
-        // Return 404 to avoid leaking info about other teams' sessions
-        return Err(error_response(
-            error_codes::INVALID_REQUEST,
-            "Session not found or expired".to_string(),
-        ));
-    }
+    // Extract all authorized teams from token scopes.
+    // Use first team for SSE connection registration (connection manager is single-team).
+    let teams = extract_teams(&context);
+    let team = teams.into_iter().next().unwrap_or_default();
 
     // Register SSE connection
     let (connection_id, receiver) = match connection_manager.register(team.clone()) {

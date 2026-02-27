@@ -48,6 +48,46 @@ pub enum ResponseMode {
     Sse,
 }
 
+/// Extract all team names the caller has explicit scope for.
+///
+/// Parses all team names from token scopes (patterns like `team:X:resource:action`
+/// and `team:X:*:*`). Returns deduplicated vec of team names in order of appearance.
+///
+/// For `admin:all`-only tokens (no org/team scopes), returns empty vec since
+/// governance/audit tools operate without team context. Per-tool-call auth handles
+/// resource authorization.
+///
+/// # Arguments
+/// * `context` - Authentication context with token scopes
+///
+/// # Returns
+/// Vec of team names the caller has explicit access to (may be empty)
+pub fn extract_teams(context: &AuthContext) -> Vec<String> {
+    // admin:all without org/team scopes → governance only, no team context
+    if context.has_scope("admin:all") {
+        let has_org_or_team_scopes =
+            context.scopes().any(|s| s.starts_with("org:") || s.starts_with("team:"));
+        if !has_org_or_team_scopes {
+            return vec![];
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut teams = Vec::new();
+
+    for scope in context.scopes() {
+        if let Some(team_part) = scope.strip_prefix("team:") {
+            if let Some(team_name) = team_part.split(':').next() {
+                if !team_name.is_empty() && seen.insert(team_name.to_string()) {
+                    teams.push(team_name.to_string());
+                }
+            }
+        }
+    }
+
+    teams
+}
+
 /// Extract team name from query parameter or auth context
 ///
 /// Priority order:
@@ -275,6 +315,68 @@ mod tests {
             "test-token".to_string(),
             scopes.into_iter().map(|s| s.to_string()).collect(),
         )
+    }
+
+    // -------------------------------------------------------------------------
+    // extract_teams() Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_teams_single_team() {
+        let context = test_context(vec!["team:acme-corp:mcp:read"]);
+        let teams = extract_teams(&context);
+        assert_eq!(teams, vec!["acme-corp".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_teams_multiple_teams() {
+        let context = test_context(vec![
+            "team:team-a:cp:read",
+            "team:team-a:cp:write",
+            "team:team-b:cp:read",
+        ]);
+        let teams = extract_teams(&context);
+        assert_eq!(teams.len(), 2);
+        assert!(teams.contains(&"team-a".to_string()));
+        assert!(teams.contains(&"team-b".to_string()));
+    }
+
+    #[test]
+    fn test_extract_teams_deduplicates() {
+        let context =
+            test_context(vec!["team:acme:cp:read", "team:acme:cp:write", "team:acme:api:read"]);
+        let teams = extract_teams(&context);
+        assert_eq!(teams, vec!["acme".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_teams_admin_only_returns_empty() {
+        let context = test_context(vec!["admin:all"]);
+        let teams = extract_teams(&context);
+        assert!(teams.is_empty());
+    }
+
+    #[test]
+    fn test_extract_teams_admin_with_team_scopes() {
+        let context = test_context(vec!["admin:all", "team:eng:cp:read", "team:platform:cp:write"]);
+        let teams = extract_teams(&context);
+        assert_eq!(teams.len(), 2);
+        assert!(teams.contains(&"eng".to_string()));
+        assert!(teams.contains(&"platform".to_string()));
+    }
+
+    #[test]
+    fn test_extract_teams_no_team_scopes_returns_empty() {
+        let context = test_context(vec!["some:other:scope"]);
+        let teams = extract_teams(&context);
+        assert!(teams.is_empty());
+    }
+
+    #[test]
+    fn test_extract_teams_empty_scopes_returns_empty() {
+        let context = test_context(vec![]);
+        let teams = extract_teams(&context);
+        assert!(teams.is_empty());
     }
 
     // -------------------------------------------------------------------------

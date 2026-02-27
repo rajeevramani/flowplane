@@ -19,7 +19,8 @@ use crate::storage::DbPool;
 
 pub struct McpApiHandler {
     db_pool: Arc<DbPool>,
-    team: String,
+    /// Teams this session has access to (multi-team support)
+    teams: Vec<String>,
     context: AuthContext,
     gateway_executor: GatewayExecutor,
     #[allow(dead_code)]
@@ -27,10 +28,10 @@ pub struct McpApiHandler {
 }
 
 impl McpApiHandler {
-    pub fn new(db_pool: Arc<DbPool>, team: String, context: AuthContext) -> Self {
+    pub fn new(db_pool: Arc<DbPool>, teams: Vec<String>, context: AuthContext) -> Self {
         Self {
             db_pool,
-            team,
+            teams,
             context,
             gateway_executor: GatewayExecutor::new(),
             initialized: false,
@@ -45,7 +46,7 @@ impl McpApiHandler {
         debug!(
             method = %method,
             id = ?id,
-            team = %self.team,
+            teams = ?self.teams,
             "Handling MCP API request"
         );
 
@@ -147,49 +148,36 @@ impl McpApiHandler {
     }
 
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
-        debug!(team = %self.team, "Listing API tools");
-
-        // Check read access — return empty list rather than an error to avoid
-        // leaking information about tool existence to unauthorized callers.
-        if !check_resource_access(&self.context, "api", "read", Some(&self.team)) {
-            debug!(team = %self.team, "Returning empty tools list: caller lacks team:{}:api:read scope", self.team);
-            let result = ToolsListResult { tools: vec![], next_cursor: None };
-            return match serde_json::to_value(result) {
-                Ok(value) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id,
-                    result: Some(value),
-                    error: None,
-                },
-                Err(e) => self.error_response(id, McpError::SerializationError(e)),
-            };
-        }
+        debug!(teams = ?self.teams, "Listing API tools");
 
         let repo = McpToolRepository::new((*self.db_pool).clone());
 
-        // Query enabled API tools for this team
-        let tools_data = match repo.list_by_category(&self.team, McpToolCategory::GatewayApi).await
-        {
-            Ok(tools) => tools.into_iter().filter(|t| t.enabled).collect::<Vec<_>>(),
-            Err(e) => {
-                error!(error = %e, team = %self.team, "Failed to list API tools");
-                return self.error_response(
-                    id,
-                    McpError::InternalError(format!("Failed to list API tools: {}", e)),
-                );
-            }
-        };
+        let mut all_tools: Vec<Tool> = Vec::new();
 
-        // Convert to MCP Tool format
-        // MCP spec requires inputSchema to always be a valid JSON object
-        let tools: Vec<Tool> = tools_data
-            .into_iter()
-            .map(|t| {
+        // Collect tools from all authorized teams
+        for team in &self.teams {
+            // Check read access — skip team rather than error to avoid leaking info
+            if !check_resource_access(&self.context, "api", "read", Some(team)) {
+                debug!(team = %team, "Skipping team: caller lacks team:{}:api:read scope", team);
+                continue;
+            }
+
+            let tools_data = match repo.list_by_category(team, McpToolCategory::GatewayApi).await {
+                Ok(tools) => tools.into_iter().filter(|t| t.enabled).collect::<Vec<_>>(),
+                Err(e) => {
+                    error!(error = %e, team = %team, "Failed to list API tools");
+                    return self.error_response(
+                        id,
+                        McpError::InternalError(format!("Failed to list API tools: {}", e)),
+                    );
+                }
+            };
+
+            for t in tools_data {
                 let mut tool = Tool::new(
                     t.name.clone(),
                     t.description.clone().unwrap_or_default(),
                     if t.input_schema.is_null() || !t.input_schema.is_object() {
-                        // Fallback to empty object schema if stored value is null or not an object
                         serde_json::json!({
                             "type": "object",
                             "properties": {},
@@ -199,15 +187,19 @@ impl McpApiHandler {
                         t.input_schema.clone()
                     },
                 );
-                // Forward output_schema from learned/OpenAPI data to MCP protocol
                 tool.output_schema = t.output_schema.clone();
-                tool
-            })
-            .collect();
+                all_tools.push(tool);
+            }
+        }
 
-        debug!(count = tools.len(), team = %self.team, "Found API tools");
+        // If no teams, return empty list (admin:all tokens with no team scopes)
+        if self.teams.is_empty() {
+            debug!("No teams in session — returning empty API tools list");
+        } else {
+            debug!(count = all_tools.len(), "Found API tools across all teams");
+        }
 
-        let result = ToolsListResult { tools, next_cursor: None };
+        let result = ToolsListResult { tools: all_tools, next_cursor: None };
 
         match serde_json::to_value(result) {
             Ok(value) => {
@@ -229,40 +221,52 @@ impl McpApiHandler {
             }
         };
 
-        debug!(tool_name = %params.name, team = %self.team, "Executing API tool call");
+        debug!(tool_name = %params.name, teams = ?self.teams, "Executing API tool call");
 
-        // Check execute access before any DB lookup to prevent tool existence leakage.
-        if !check_resource_access(&self.context, "api", "execute", Some(&self.team)) {
+        // Filter to teams with api:execute access — check auth before any DB lookup.
+        let authorized_teams: Vec<&String> = self
+            .teams
+            .iter()
+            .filter(|t| check_resource_access(&self.context, "api", "execute", Some(t)))
+            .collect();
+
+        if authorized_teams.is_empty() {
             return self.error_response(
                 id,
-                McpError::Forbidden(format!(
-                    "Access denied: calling gateway tool requires team:{}:api:execute scope",
-                    self.team
-                )),
+                McpError::Forbidden(
+                    "Access denied: calling gateway tool requires api:execute scope".to_string(),
+                ),
             );
         }
 
         let repo = McpToolRepository::new((*self.db_pool).clone());
 
-        // Find the tool by name and team with gateway_host resolved from dataplane
-        let tool = match repo.get_by_name_with_gateway(&self.team, &params.name).await {
-            Ok(Some(t)) if t.enabled => t,
-            Ok(Some(_)) => {
-                return self.error_response(
-                    id,
-                    McpError::ToolNotFound(format!("Tool '{}' is disabled", params.name)),
-                );
+        // Search for the tool across all authorized teams.
+        let mut found_tool = None;
+        for team in &authorized_teams {
+            match repo.get_by_name_with_gateway(team, &params.name).await {
+                Ok(Some(t)) if t.enabled => {
+                    found_tool = Some(t);
+                    break;
+                }
+                Ok(Some(_)) => {
+                    // Tool exists but is disabled — continue searching other teams
+                    continue;
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    error!(error = %e, tool_name = %params.name, "Failed to get API tool");
+                    return self.error_response(
+                        id,
+                        McpError::InternalError(format!("Failed to get tool: {}", e)),
+                    );
+                }
             }
-            Ok(None) => {
-                return self.error_response(id, McpError::ToolNotFound(params.name));
-            }
-            Err(e) => {
-                error!(error = %e, tool_name = %params.name, "Failed to get API tool");
-                return self.error_response(
-                    id,
-                    McpError::InternalError(format!("Failed to get tool: {}", e)),
-                );
-            }
+        }
+
+        let tool = match found_tool {
+            Some(t) => t,
+            None => return self.error_response(id, McpError::ToolNotFound(params.name)),
         };
 
         // Verify it's a gateway API tool
@@ -284,7 +288,7 @@ impl McpApiHandler {
             _ => {
                 error!(
                     tool_name = %params.name,
-                    team = %self.team,
+                    team = %tool.team,
                     "Tool cannot execute: listener has no dataplane with gateway_host"
                 );
                 return self.error_response(
@@ -413,7 +417,7 @@ mod tests {
         let pool = _db.pool.clone();
 
         let mut handler =
-            McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
+            McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], test_context());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -435,7 +439,7 @@ mod tests {
         let pool = _db.pool.clone();
 
         let mut handler =
-            McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
+            McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], test_context());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -469,7 +473,7 @@ mod tests {
         let pool = _db.pool.clone();
 
         let mut handler =
-            McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
+            McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], test_context());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -491,7 +495,8 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_version_ok").await;
         let pool = _db.pool.clone();
 
-        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
+        let handler =
+            McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], test_context());
 
         let result = handler.negotiate_version("2025-11-25");
         assert!(result.is_ok());
@@ -503,7 +508,8 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_version_bad").await;
         let pool = _db.pool.clone();
 
-        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
+        let handler =
+            McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], test_context());
 
         let result = handler.negotiate_version("2020-01-01");
         assert!(result.is_err());
@@ -522,7 +528,8 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_version_2025_03_26").await;
         let pool = _db.pool.clone();
 
-        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
+        let handler =
+            McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], test_context());
 
         let result = handler.negotiate_version("2025-03-26");
         assert!(result.is_ok());
@@ -535,7 +542,7 @@ mod tests {
         let pool = _db.pool.clone();
 
         let mut handler =
-            McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
+            McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], test_context());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -569,7 +576,7 @@ mod tests {
         let pool = _db.pool.clone();
         let ctx = context_with_scopes(vec!["team:test-team:api:read"]);
 
-        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), ctx);
+        let mut handler = McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], ctx);
 
         let response = handler
             .handle_request(JsonRpcRequest {
@@ -592,7 +599,7 @@ mod tests {
         let pool = _db.pool.clone();
         let ctx = context_with_scopes(vec![]); // no scopes
 
-        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), ctx);
+        let mut handler = McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], ctx);
 
         let response = handler
             .handle_request(JsonRpcRequest {
@@ -620,7 +627,7 @@ mod tests {
         let pool = _db.pool.clone();
         let ctx = context_with_scopes(vec!["team:test-team:api:execute"]);
 
-        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), ctx);
+        let mut handler = McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], ctx);
 
         let response = handler
             .handle_request(JsonRpcRequest {
@@ -653,7 +660,7 @@ mod tests {
         let pool = _db.pool.clone();
         let ctx = context_with_scopes(vec![]); // no scopes
 
-        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), ctx);
+        let mut handler = McpApiHandler::new(Arc::new(pool), vec!["test-team".to_string()], ctx);
 
         let response = handler
             .handle_request(JsonRpcRequest {

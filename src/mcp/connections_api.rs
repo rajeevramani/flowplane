@@ -128,7 +128,7 @@ pub async fn list_connections_handler(
 
         connections.push(ConnectionInfo {
             connection_id: session_id,
-            team: session.team.unwrap_or_else(|| team.clone()),
+            team: session.teams.first().cloned().unwrap_or_else(|| team.clone()),
             created_at: created_at.to_rfc3339(),
             last_activity: last_activity.to_rfc3339(),
             log_level: format!("{:?}", session.log_level).to_lowercase(),
