@@ -58,9 +58,7 @@ pub use streamable_http::{
     delete_handler_api, delete_handler_cp, get_handler_api, get_handler_cp, post_handler_api,
     post_handler_cp, McpScope,
 };
-pub use tool_registry::{
-    check_scope_grants_authorization, get_tool_authorization, ToolAuthorization,
-};
+pub use tool_registry::{get_tool_authorization, ToolAuthorization};
 pub use transport_common::{
     check_method_authorization, determine_response_mode, error_response_json, extract_mcp_headers,
     extract_team, get_db_pool, validate_protocol_version, McpHeaders, ResponseMode, ScopeConfig,

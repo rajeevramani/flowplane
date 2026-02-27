@@ -6,12 +6,13 @@ use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, error, warn};
 
+use crate::auth::authorization::check_resource_access;
 use crate::auth::models::AuthContext;
 use crate::mcp::error::McpError;
 use crate::mcp::logging::SetLogLevelParams;
 use crate::mcp::protocol::*;
 use crate::mcp::resources;
-use crate::mcp::tool_registry::{check_scope_grants_authorization, get_tool_authorization};
+use crate::mcp::tool_registry::get_tool_authorization;
 use crate::mcp::tools;
 use crate::storage::DbPool;
 use crate::xds::XdsState;
@@ -1160,25 +1161,15 @@ impl McpHandler {
         }
     }
 
-    /// Check if the current token has authorization to execute the given tool
+    /// Check if the current token has authorization to execute the given tool.
     ///
-    /// Uses the tool registry to lookup required scopes and checks against
-    /// the token's scopes. Implements hierarchical scope matching:
-    /// - `admin:all` grants all access
-    /// - `cp:read` grants all CP read operations
-    /// - `cp:write` grants all CP write/delete operations
-    /// - Specific scopes like `clusters:read` for granular control
+    /// Uses the unified check_resource_access() that REST handlers also use,
+    /// enforcing team-scoped permissions (team:{team}:{resource}:{action}).
     fn check_tool_authorization(&self, tool_name: &str) -> Result<(), McpError> {
-        // Lookup tool authorization requirements
-        let auth = get_tool_authorization(tool_name).ok_or_else(|| {
-            McpError::ToolNotFound(format!(
-                "Tool '{}' is not registered in the authorization registry",
-                tool_name
-            ))
-        })?;
+        let auth = get_tool_authorization(tool_name)
+            .ok_or_else(|| McpError::ToolNotFound(format!("Unknown tool: {}", tool_name)))?;
 
-        // Check if any scope grants the required authorization
-        if check_scope_grants_authorization(self.context.scopes().map(|s| s.as_str()), auth) {
+        if check_resource_access(&self.context, auth.resource, auth.action, Some(&self.team)) {
             debug!(
                 tool_name = %tool_name,
                 resource = %auth.resource,
@@ -1188,18 +1179,9 @@ impl McpHandler {
             return Ok(());
         }
 
-        // Build helpful error message
-        let required_scope = format!("{}:{}", auth.resource, auth.action);
-        let fallback_info =
-            if ["clusters", "listeners", "routes", "filters"].contains(&auth.resource) {
-                format!(" Alternatively, 'cp:{}' grants access to all core resources.", auth.action)
-            } else {
-                String::new()
-            };
-
         Err(McpError::Forbidden(format!(
-            "Access denied: Tool '{}' requires scope '{}' or 'admin:all'.{} Your token has scopes: {:?}",
-            tool_name, required_scope, fallback_info, self.context.scopes().collect::<Vec<_>>()
+            "Access denied: {} requires team:{}:{}:{}",
+            tool_name, self.team, auth.resource, auth.action
         )))
     }
 

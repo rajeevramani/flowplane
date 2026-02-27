@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, error};
 
+use crate::auth::authorization::check_resource_access;
 use crate::auth::models::AuthContext;
 use crate::domain::McpToolCategory;
 use crate::mcp::error::McpError;
@@ -19,8 +20,6 @@ use crate::storage::DbPool;
 pub struct McpApiHandler {
     db_pool: Arc<DbPool>,
     team: String,
-    /// Authentication context for future use in authorization checks (Task 1.3)
-    #[allow(dead_code)]
     context: AuthContext,
     gateway_executor: GatewayExecutor,
     #[allow(dead_code)]
@@ -150,6 +149,22 @@ impl McpApiHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!(team = %self.team, "Listing API tools");
 
+        // Check read access — return empty list rather than an error to avoid
+        // leaking information about tool existence to unauthorized callers.
+        if !check_resource_access(&self.context, "api", "read", Some(&self.team)) {
+            debug!(team = %self.team, "Returning empty tools list: caller lacks team:{}:api:read scope", self.team);
+            let result = ToolsListResult { tools: vec![], next_cursor: None };
+            return match serde_json::to_value(result) {
+                Ok(value) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(e) => self.error_response(id, McpError::SerializationError(e)),
+            };
+        }
+
         let repo = McpToolRepository::new((*self.db_pool).clone());
 
         // Query enabled API tools for this team
@@ -215,6 +230,17 @@ impl McpApiHandler {
         };
 
         debug!(tool_name = %params.name, team = %self.team, "Executing API tool call");
+
+        // Check execute access before any DB lookup to prevent tool existence leakage.
+        if !check_resource_access(&self.context, "api", "execute", Some(&self.team)) {
+            return self.error_response(
+                id,
+                McpError::Forbidden(format!(
+                    "Access denied: calling gateway tool requires team:{}:api:execute scope",
+                    self.team
+                )),
+            );
+        }
 
         let repo = McpToolRepository::new((*self.db_pool).clone());
 
@@ -373,6 +399,14 @@ mod tests {
         AuthContext::new(TokenId::from_string("test-token".to_string()), "test".to_string(), vec![])
     }
 
+    fn context_with_scopes(scopes: Vec<&str>) -> AuthContext {
+        AuthContext::new(
+            TokenId::from_string("test-token".to_string()),
+            "test".to_string(),
+            scopes.into_iter().map(|s| s.to_string()).collect(),
+        )
+    }
+
     #[tokio::test]
     async fn test_ping() {
         let _db = TestDatabase::new("mcp_api_handler_ping").await;
@@ -525,5 +559,123 @@ mod tests {
         let result = response.result.unwrap();
         assert_eq!(result["protocolVersion"], "2025-03-26");
         assert_eq!(result["serverInfo"]["name"], "flowplane-mcp-api");
+    }
+
+    // --- Authorization tests ---
+
+    #[tokio::test]
+    async fn test_tools_list_with_read_scope_succeeds() {
+        let _db = TestDatabase::new("mcp_api_handler_list_read_scope").await;
+        let pool = _db.pool.clone();
+        let ctx = context_with_scopes(vec!["team:test-team:api:read"]);
+
+        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        // Auth passed — no error, returns tools array (empty since no tools seeded)
+        assert!(response.error.is_none(), "Expected no error, got: {:?}", response.error);
+        let result = response.result.expect("Expected result");
+        assert!(result["tools"].is_array(), "Expected tools array in result");
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_without_read_scope_returns_empty() {
+        let _db = TestDatabase::new("mcp_api_handler_list_no_scope").await;
+        let pool = _db.pool.clone();
+        let ctx = context_with_scopes(vec![]); // no scopes
+
+        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        // Auth denied — returns empty list rather than error (prevents info leakage)
+        assert!(
+            response.error.is_none(),
+            "Expected no error (empty list), got: {:?}",
+            response.error
+        );
+        let result = response.result.expect("Expected result");
+        let tools = result["tools"].as_array().expect("Expected tools array");
+        assert!(tools.is_empty(), "Expected empty tools list for unauthorized caller");
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_with_execute_scope_reaches_tool_lookup() {
+        let _db = TestDatabase::new("mcp_api_handler_call_execute_scope").await;
+        let pool = _db.pool.clone();
+        let ctx = context_with_scopes(vec!["team:test-team:api:execute"]);
+
+        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/call".to_string(),
+                params: serde_json::json!({ "name": "nonexistent-tool", "arguments": {} }),
+            })
+            .await;
+
+        // Auth check passed — ToolNotFound (not Forbidden) proves we reached the DB lookup
+        assert!(response.error.is_some());
+        let error = response.error.unwrap();
+        assert_eq!(
+            error.code,
+            error_codes::METHOD_NOT_FOUND,
+            "Expected ToolNotFound error code, got: {}",
+            error.code
+        );
+        assert!(
+            !error.message.contains("Forbidden"),
+            "Expected ToolNotFound error, not Forbidden; got: {}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_without_execute_scope_returns_forbidden() {
+        let _db = TestDatabase::new("mcp_api_handler_call_no_scope").await;
+        let pool = _db.pool.clone();
+        let ctx = context_with_scopes(vec![]); // no scopes
+
+        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/call".to_string(),
+                params: serde_json::json!({ "name": "any-tool", "arguments": {} }),
+            })
+            .await;
+
+        // Auth denied — Forbidden before any DB lookup
+        assert!(response.error.is_some());
+        let error = response.error.unwrap();
+        assert!(
+            error.message.contains("Forbidden"),
+            "Expected Forbidden error, got: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("api:execute"),
+            "Error should mention required scope, got: {}",
+            error.message
+        );
     }
 }

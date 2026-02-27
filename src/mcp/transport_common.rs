@@ -93,7 +93,7 @@ pub enum ResponseMode {
 pub fn extract_team(team_query: Option<&str>, context: &AuthContext) -> Result<String, String> {
     // Platform admin with only admin:all (no org/team scopes) cannot specify teams.
     // Governance/audit tools operate without team context.
-    // Tool-level auth (check_scope_grants_authorization) also blocks resource tools
+    // Tool-level auth (check_resource_access) also blocks resource tools
     // for admin:all, but this provides defense-in-depth.
     if context.has_scope("admin:all") {
         let has_org_or_team_scopes =
@@ -253,7 +253,7 @@ pub fn check_method_authorization(
 
     // Platform admin: limited MCP method access for governance/audit only.
     // admin:all grants tools/list (discover audit tools) and tools/call (invoke audit tools).
-    // Tool-level auth (check_scope_grants_authorization) further restricts to governance tools.
+    // Tool-level auth (check_resource_access) further restricts to governance tools.
     if context.has_scope("admin:all") {
         return match method {
             "tools/list" | "tools/call" => Ok(()),
@@ -266,7 +266,7 @@ pub fn check_method_authorization(
     }
 
     // Org-scoped roles: grant method access based on role level.
-    // Layer 2 (check_scope_grants_authorization) handles tool-level restrictions.
+    // Layer 2 (check_resource_access) handles tool-level restrictions.
     // Cross-org isolation enforced by validate_team_org_membership() at transport layer.
     if let Some(role) = has_org_scope(context) {
         return match role {
