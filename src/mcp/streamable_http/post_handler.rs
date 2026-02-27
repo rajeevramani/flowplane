@@ -26,9 +26,8 @@ use crate::mcp::protocol::{
 use crate::mcp::security::{generate_secure_session_id, validate_session_id_format};
 use crate::mcp::session::SessionId;
 use crate::mcp::transport_common::{
-    check_method_authorization, determine_response_mode, error_response_json, extract_mcp_headers,
-    extract_team, get_db_pool, validate_protocol_version, validate_team_org_membership,
-    ResponseMode,
+    determine_response_mode, error_response_json, extract_mcp_headers, extract_team, get_db_pool,
+    validate_protocol_version, validate_team_org_membership, ResponseMode,
 };
 
 use super::McpScope;
@@ -127,8 +126,6 @@ async fn post_handler(
     query: PostQuery,
     request: JsonRpcRequest,
 ) -> impl IntoResponse {
-    let scope_config = scope.scope_config();
-
     debug!(
         method = %request.method,
         id = ?request.id,
@@ -280,13 +277,6 @@ async fn post_handler(
     }
 
     debug!(team = %team, method = %request.method, "Processing MCP request");
-
-    // Check authorization
-    if let Err(e) = check_method_authorization(&request.method, &context, scope_config) {
-        error!(error = %e, method = %request.method, "Authorization failed");
-        return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
-            .into_response();
-    }
 
     // Get database pool
     let db_pool = match get_db_pool(&state) {
@@ -456,17 +446,6 @@ async fn post_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_scope_config() {
-        let cp_config = McpScope::ControlPlane.scope_config();
-        assert_eq!(cp_config.read_scope, "mcp:read");
-        assert_eq!(cp_config.execute_scope, "mcp:execute");
-
-        let api_config = McpScope::GatewayApi.scope_config();
-        assert_eq!(api_config.read_scope, "api:read");
-        assert_eq!(api_config.execute_scope, "api:execute");
-    }
 
     #[test]
     fn test_notification_detection() {

@@ -60,7 +60,6 @@ pub use streamable_http::{
 };
 pub use tool_registry::{get_tool_authorization, ToolAuthorization};
 pub use transport_common::{
-    check_method_authorization, determine_response_mode, error_response_json, extract_mcp_headers,
-    extract_team, get_db_pool, validate_protocol_version, McpHeaders, ResponseMode, ScopeConfig,
-    API_SCOPES, CP_SCOPES,
+    determine_response_mode, error_response_json, extract_mcp_headers, extract_team, get_db_pool,
+    validate_protocol_version, McpHeaders, ResponseMode,
 };
