@@ -122,7 +122,7 @@ impl Default for ProcessorConfig {
 }
 
 /// Inferred schema record ready for database persistence
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct InferredSchemaRecord {
     pub session_id: String,
     pub team: String,
@@ -131,6 +131,8 @@ pub struct InferredSchemaRecord {
     pub request_schema: Option<String>,  // JSON Schema as string
     pub response_schema: Option<String>, // JSON Schema as string
     pub response_status_code: Option<u32>,
+    pub request_headers: Option<String>, // JSON array: [{"name":"...", "example":"..."}]
+    pub response_headers: Option<String>, // JSON array: [{"name":"...", "example":"..."}]
 }
 
 /// Wrapper for pending log entries with creation timestamp for TTL cleanup
@@ -858,6 +860,29 @@ impl AccessLogProcessor {
         let path_without_query = entry.path.split('?').next().unwrap_or(&entry.path);
         let normalized_path = normalize_path(path_without_query, path_norm_config);
 
+        // Serialize headers as JSON arrays of {name, example} objects
+        let request_headers_json = if entry.request_headers.is_empty() {
+            None
+        } else {
+            let arr: Vec<serde_json::Value> = entry
+                .request_headers
+                .iter()
+                .map(|(k, v)| serde_json::json!({"name": k, "example": v}))
+                .collect();
+            Some(serde_json::to_string(&arr)?)
+        };
+
+        let response_headers_json = if entry.response_headers.is_empty() {
+            None
+        } else {
+            let arr: Vec<serde_json::Value> = entry
+                .response_headers
+                .iter()
+                .map(|(k, v)| serde_json::json!({"name": k, "example": v}))
+                .collect();
+            Some(serde_json::to_string(&arr)?)
+        };
+
         let record = InferredSchemaRecord {
             session_id: entry.session_id.clone(),
             team: entry.team.clone(),
@@ -866,6 +891,8 @@ impl AccessLogProcessor {
             request_schema: inferred_request_schema,
             response_schema: inferred_response_schema,
             response_status_code: Some(entry.response_status),
+            request_headers: request_headers_json,
+            response_headers: response_headers_json,
         };
 
         match schema_tx.try_send(record) {
@@ -978,8 +1005,9 @@ impl AccessLogProcessor {
                 INSERT INTO inferred_schemas (
                     team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
+                    request_headers, response_headers,
                     sample_count, confidence
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 1.0)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 1.0)
                 "#,
             )
             .bind(&record.team)
@@ -989,6 +1017,8 @@ impl AccessLogProcessor {
             .bind(&record.request_schema)
             .bind(&record.response_schema)
             .bind(record.response_status_code.map(|s| s as i64))
+            .bind(&record.request_headers)
+            .bind(&record.response_headers)
             .execute(&mut *tx)
             .await?;
         }
@@ -1727,6 +1757,7 @@ mod tests {
                     request_schema: None,
                     response_schema: Some(r#"{"type":"object","properties":{"id":{"type":"integer"}}}"#.to_string()),
                     response_status_code: Some(200),
+                    ..Default::default()
                 },
                 InferredSchemaRecord {
                     session_id: session_id.clone(),
@@ -1736,6 +1767,7 @@ mod tests {
                     request_schema: Some(r#"{"type":"object","properties":{"name":{"type":"string"}}}"#.to_string()),
                     response_schema: Some(r#"{"type":"object","properties":{"id":{"type":"integer"}}}"#.to_string()),
                     response_status_code: Some(201),
+                    ..Default::default()
                 },
                 InferredSchemaRecord {
                     session_id: session_id.clone(),
@@ -1745,6 +1777,7 @@ mod tests {
                     request_schema: None,
                     response_schema: None,
                     response_status_code: Some(204),
+                    ..Default::default()
                 },
                 InferredSchemaRecord {
                     session_id: session_id.clone(),
@@ -1754,6 +1787,7 @@ mod tests {
                     request_schema: Some(r#"{"type":"object","properties":{"name":{"type":"string"}}}"#.to_string()),
                     response_schema: Some(r#"{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"}}}"#.to_string()),
                     response_status_code: Some(200),
+                    ..Default::default()
                 },
             ];
 
@@ -1824,6 +1858,7 @@ mod tests {
                     request_schema: None,
                     response_schema: None,
                     response_status_code: Some(200),
+                    ..Default::default()
                 },
                 InferredSchemaRecord {
                     session_id: session_id.clone(),
@@ -1833,6 +1868,7 @@ mod tests {
                     request_schema: None,
                     response_schema: None,
                     response_status_code: None,
+                    ..Default::default()
                 },
             ];
 
@@ -1881,6 +1917,7 @@ mod tests {
                     request_schema: None,
                     response_schema: None,
                     response_status_code: Some(200),
+                    ..Default::default()
                 },
                 InferredSchemaRecord {
                     session_id: session_id.clone(),
@@ -1890,6 +1927,7 @@ mod tests {
                     request_schema: None,
                     response_schema: None,
                     response_status_code: Some(201),
+                    ..Default::default()
                 },
                 InferredSchemaRecord {
                     session_id: "nonexistent-session-id".to_string(), // FK violation
@@ -1899,6 +1937,7 @@ mod tests {
                     request_schema: None,
                     response_schema: None,
                     response_status_code: Some(204),
+                    ..Default::default()
                 },
             ];
 

@@ -58,6 +58,7 @@ coverage/
 .claude/
 CLAUDE.md
 CLAUDE.md.backup
+CLAUDE.md.bak
 
 Database
 data/*

@@ -113,12 +113,7 @@
 							path: r.pathType === 'template'
 								? { type: r.pathType, template: r.path }
 								: { type: r.pathType, value: r.path },
-							headers: [
-								{
-									name: ':method',
-									value: r.method
-								}
-							]
+							headers: r.method && r.method !== '*' ? [{ name: ':method', value: r.method }] : []
 						},
 						action
 					};

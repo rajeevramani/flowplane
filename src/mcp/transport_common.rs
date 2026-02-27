@@ -16,7 +16,7 @@ use crate::api::routes::ApiState;
 use crate::auth::authorization::parse_org_from_scope;
 use crate::auth::models::AuthContext;
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse, PROTOCOL_VERSION};
+use crate::mcp::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse, SUPPORTED_VERSIONS};
 
 #[allow(unused_imports)]
 use crate::mcp::protocol::error_codes;
@@ -391,24 +391,24 @@ pub fn determine_response_mode(accept_header: Option<&str>) -> ResponseMode {
     }
 }
 
-/// Validate MCP protocol version (MCP 2025-11-25 requirement)
+/// Validate MCP protocol version
 ///
-/// Ensures client protocol version exactly matches server's supported version.
-/// No backward compatibility - clients must use MCP 2025-11-25.
+/// Accepts any version listed in SUPPORTED_VERSIONS. Clients should prefer the
+/// current PROTOCOL_VERSION, but older supported versions are also accepted.
 ///
 /// # Arguments
 /// * `version` - Protocol version string from client (e.g., "2025-11-25")
 ///
 /// # Returns
-/// - `Ok(())` if version matches exactly
+/// - `Ok(())` if version is in SUPPORTED_VERSIONS
 /// - `Err(McpError::UnsupportedProtocolVersion)` otherwise
 pub fn validate_protocol_version(version: &str) -> Result<(), McpError> {
-    if version == PROTOCOL_VERSION {
+    if SUPPORTED_VERSIONS.contains(&version) {
         Ok(())
     } else {
         Err(McpError::UnsupportedProtocolVersion {
             client: version.to_string(),
-            supported: vec![PROTOCOL_VERSION.to_string()],
+            supported: SUPPORTED_VERSIONS.iter().map(|v| v.to_string()).collect(),
         })
     }
 }
@@ -824,7 +824,14 @@ mod tests {
 
     #[test]
     fn test_validate_protocol_version_exact_match() {
+        // Both supported versions must be accepted
         assert!(validate_protocol_version("2025-11-25").is_ok());
+        assert!(validate_protocol_version("2025-03-26").is_ok());
+    }
+
+    #[test]
+    fn test_validate_protocol_version_2025_03_26_accepted() {
+        assert!(validate_protocol_version("2025-03-26").is_ok());
     }
 
     #[test]
@@ -834,7 +841,9 @@ mod tests {
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
                 assert_eq!(client, "2024-11-05");
-                assert_eq!(supported, vec!["2025-11-25"]);
+                // Both supported versions must appear in the error
+                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }

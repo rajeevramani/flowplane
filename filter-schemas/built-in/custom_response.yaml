@@ -17,6 +17,14 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  Replaces or modifies responses based on HTTP status code matching.
+  Use to customize error pages (e.g., return branded 404/500 pages).
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — skip custom responses for this route
+  - Full config replacement
+
 config_schema:
   type: object
   properties:

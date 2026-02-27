@@ -9,8 +9,9 @@
 #
 # Optional services:
 #   make up HTTPBIN=1    - Add httpbin to any configuration
+#   make up MOCKBACKEND=1 - Add MockBank API
 #   make up ENVOY=1      - Add platform-admin Envoy proxy
-#   make up ENVOY=1 HTTPBIN=1  - Combine multiple options
+#   make up ENVOY=1 HTTPBIN=1 MOCKBACKEND=1  - Combine multiple options
 #
 # Operations:
 #   make down            - Stop all services
@@ -65,6 +66,13 @@ else
     ENVOY_COMPOSE :=
 endif
 
+# Conditional mockbackend - adds MockBank API to any configuration
+ifdef MOCKBACKEND
+    MOCKBACKEND_COMPOSE := -f docker-compose-mockbackend.yml
+else
+    MOCKBACKEND_COMPOSE :=
+endif
+
 # =============================================================================
 # Help
 # =============================================================================
@@ -80,6 +88,7 @@ help: ## Show this help message
 	@echo ""
 	@echo "$(GREEN)Optional Services:$(RESET)"
 	@echo "  $(CYAN)HTTPBIN=1$(RESET)            - Add httpbin (e.g., make up HTTPBIN=1)"
+	@echo "  $(CYAN)MOCKBACKEND=1$(RESET)       - Add MockBank API (e.g., make up MOCKBACKEND=1)"
 	@echo "  $(CYAN)ENVOY=1$(RESET)              - Add platform-admin Envoy proxy (e.g., make up ENVOY=1)"
 	@echo ""
 	@echo "$(GREEN)Build Targets:$(RESET)"
@@ -120,9 +129,10 @@ help: ## Show this help message
 	@echo "  $(CYAN)make test-agents-envoy$(RESET) - Run agent tests with Envoy"
 	@echo ""
 	@echo "$(GREEN)Examples:$(RESET)"
-	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)  - Backend + Jaeger + httpbin"
-	@echo "  $(CYAN)make up ENVOY=1 HTTPBIN=1$(RESET)  - Backend + Envoy + httpbin"
-	@echo "  $(CYAN)make up-full$(RESET)               - Full stack with all services"
+	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)            - Backend + Jaeger + httpbin"
+	@echo "  $(CYAN)make up ENVOY=1 HTTPBIN=1$(RESET)            - Backend + Envoy + httpbin"
+	@echo "  $(CYAN)make up HTTPBIN=1 MOCKBACKEND=1$(RESET)      - Backend + httpbin + MockBank"
+	@echo "  $(CYAN)make up-full$(RESET)                         - Full stack with all services"
 
 # =============================================================================
 # Boot Configurations
@@ -130,7 +140,7 @@ help: ## Show this help message
 
 up: _ensure-network ## Start backend + UI
 	@echo "$(CYAN)Starting Flowplane (Backend + UI)...$(RESET)"
-	$(DOCKER_COMPOSE) $(BASE_COMPOSE) $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) $(HTTPBIN_COMPOSE) $(MOCKBACKEND_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
@@ -139,6 +149,9 @@ up: _ensure-network ## Start backend + UI
 	@echo "  xDS gRPC:   localhost:50051"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
+endif
+ifdef MOCKBACKEND
+	@echo "  MockBank:   http://localhost:3001/v2/api/customers"
 endif
 ifdef ENVOY
 	@echo "  Envoy (platform-admin):"
@@ -148,7 +161,7 @@ endif
 
 up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
 	@echo "$(CYAN)Starting Flowplane with Vault (mTLS)...$(RESET)"
-	$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-mtls-dev.yml $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-mtls-dev.yml $(HTTPBIN_COMPOSE) $(MOCKBACKEND_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
@@ -158,6 +171,9 @@ up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
 	@echo "  Vault UI:   http://localhost:8200 (token: flowplane-dev-token)"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
+endif
+ifdef MOCKBACKEND
+	@echo "  MockBank:   http://localhost:3001/v2/api/customers"
 endif
 ifdef ENVOY
 	@echo "  Envoy (platform-admin):"
@@ -170,7 +186,7 @@ endif
 
 up-tracing: _ensure-network ## Start backend + UI + Jaeger
 	@echo "$(CYAN)Starting Flowplane with Jaeger (tracing)...$(RESET)"
-	$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
+	$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml $(HTTPBIN_COMPOSE) $(MOCKBACKEND_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
@@ -180,6 +196,9 @@ up-tracing: _ensure-network ## Start backend + UI + Jaeger
 	@echo "  Jaeger UI:  http://localhost:16686"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
+endif
+ifdef MOCKBACKEND
+	@echo "  MockBank:   http://localhost:3001/v2/api/customers"
 endif
 ifdef ENVOY
 	@echo "  Envoy (platform-admin):"
@@ -232,6 +251,7 @@ down: ## Stop all services
 	-$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-secrets-tracing.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-httpbin.yml down 2>/dev/null || true
+	-$(DOCKER_COMPOSE) -f docker-compose-mockbackend.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-envoy.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-monitoring.yml down 2>/dev/null || true
 	@echo "$(GREEN)All services stopped.$(RESET)"

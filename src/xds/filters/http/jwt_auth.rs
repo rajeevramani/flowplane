@@ -68,6 +68,27 @@ impl JwtAuthenticationConfig {
                 .iter()
                 .map(JwtRequirementRuleConfig::to_proto)
                 .collect::<Result<_, _>>()?;
+        } else if self.filter_state_rules.is_none() {
+            // When no explicit rules are provided and no filter_state_rules are set,
+            // default to requiring JWT on all paths. This matches Envoy's expected
+            // behaviour: if providers are configured, authentication should be enforced.
+            let requirement = if self.providers.len() == 1 {
+                let provider_name = self.providers.keys().next().unwrap().clone();
+                JwtRequirementConfig::ProviderName { provider_name }
+            } else {
+                // Multiple providers: require any of them
+                let requirements = self
+                    .providers
+                    .keys()
+                    .map(|name| JwtRequirementConfig::ProviderName { provider_name: name.clone() })
+                    .collect();
+                JwtRequirementConfig::RequiresAny { requirements }
+            };
+
+            proto.rules = vec![RequirementRule {
+                r#match: None, // matches all paths
+                requirement_type: Some(RequirementType::Requires(requirement.to_proto()?)),
+            }];
         }
 
         if !self.requirement_map.is_empty() {
@@ -922,6 +943,104 @@ mod tests {
             "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication"
         );
         assert!(!any.value.is_empty());
+    }
+
+    #[test]
+    fn empty_rules_generates_default_require_all_paths() {
+        // When no rules are provided, the filter should generate a default rule
+        // that requires JWT on all paths (catch-all). This prevents the bug where
+        // an empty rules array means "don't enforce JWT on any path".
+        let config = JwtAuthenticationConfig {
+            rules: vec![],
+            requirement_map: HashMap::new(),
+            providers: HashMap::from([("auth0".into(), sample_provider())]),
+            filter_state_rules: None,
+            bypass_cors_preflight: None,
+            strip_failure_response: None,
+            stat_prefix: None,
+        };
+
+        let any = config.to_any().expect("to_any should succeed");
+        assert!(!any.value.is_empty());
+
+        // Decode and verify the proto has a rule
+        use prost::Message;
+        let decoded = JwtAuthentication::decode(any.value.as_slice()).expect("decode");
+        assert_eq!(decoded.rules.len(), 1, "should have exactly one default rule");
+
+        let rule = &decoded.rules[0];
+        assert!(rule.r#match.is_none(), "default rule should match all paths");
+        assert!(rule.requirement_type.is_some(), "default rule should have a requirement");
+
+        // Verify it requires the provider
+        match &rule.requirement_type {
+            Some(RequirementType::Requires(req)) => match &req.requires_type {
+                Some(jwt_requirement::RequiresType::ProviderName(name)) => {
+                    assert_eq!(name, "auth0");
+                }
+                other => panic!("expected ProviderName, got {:?}", other),
+            },
+            other => panic!("expected Requires, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn empty_rules_with_multiple_providers_generates_requires_any() {
+        let config = JwtAuthenticationConfig {
+            rules: vec![],
+            requirement_map: HashMap::new(),
+            providers: HashMap::from([
+                ("provider_a".into(), sample_provider()),
+                ("provider_b".into(), sample_provider()),
+            ]),
+            filter_state_rules: None,
+            bypass_cors_preflight: None,
+            strip_failure_response: None,
+            stat_prefix: None,
+        };
+
+        let any = config.to_any().expect("to_any");
+        use prost::Message;
+        let decoded = JwtAuthentication::decode(any.value.as_slice()).expect("decode");
+        assert_eq!(decoded.rules.len(), 1);
+
+        match &decoded.rules[0].requirement_type {
+            Some(RequirementType::Requires(req)) => match &req.requires_type {
+                Some(jwt_requirement::RequiresType::RequiresAny(or_list)) => {
+                    assert_eq!(or_list.requirements.len(), 2);
+                }
+                other => panic!("expected RequiresAny, got {:?}", other),
+            },
+            other => panic!("expected Requires, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn empty_rules_with_filter_state_rules_skips_default() {
+        // When filter_state_rules are set, don't generate default rules
+        let config = JwtAuthenticationConfig {
+            rules: vec![],
+            requirement_map: HashMap::new(),
+            providers: HashMap::from([("auth0".into(), sample_provider())]),
+            filter_state_rules: Some(JwtFilterStateRuleConfig {
+                name: "selector".into(),
+                requires: HashMap::from([(
+                    "issuer1".into(),
+                    JwtRequirementConfig::ProviderName { provider_name: "auth0".into() },
+                )]),
+            }),
+            bypass_cors_preflight: None,
+            strip_failure_response: None,
+            stat_prefix: None,
+        };
+
+        let any = config.to_any().expect("to_any");
+        use prost::Message;
+        let decoded = JwtAuthentication::decode(any.value.as_slice()).expect("decode");
+        assert!(
+            decoded.rules.is_empty(),
+            "should not generate default rules when filter_state_rules are set"
+        );
     }
 
     #[test]

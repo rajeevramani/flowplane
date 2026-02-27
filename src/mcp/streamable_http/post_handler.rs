@@ -20,7 +20,9 @@ use crate::mcp::api_handler::McpApiHandler;
 use crate::mcp::connection::ConnectionId;
 use crate::mcp::handler::McpHandler;
 use crate::mcp::notifications::NotificationMessage;
-use crate::mcp::protocol::{error_codes, InitializeParams, JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::protocol::{
+    error_codes, InitializeParams, JsonRpcRequest, JsonRpcResponse, PROTOCOL_VERSION,
+};
 use crate::mcp::security::{generate_secure_session_id, validate_session_id_format};
 use crate::mcp::session::SessionId;
 use crate::mcp::transport_common::{
@@ -51,7 +53,7 @@ const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 /// Handle Control Plane JSON-RPC requests.
 ///
 /// # Headers
-/// - `MCP-Protocol-Version`: Required - must be "2025-11-25"
+/// - `MCP-Protocol-Version`: Optional - supported versions: 2025-11-25, 2025-03-26
 /// - `MCP-Session-Id`: Required after initialize
 /// - `Accept`: `application/json` or `text/event-stream`
 ///
@@ -86,7 +88,7 @@ pub async fn post_handler_cp(
 /// Handle Gateway API JSON-RPC requests.
 ///
 /// # Headers
-/// - `MCP-Protocol-Version`: Required - must be "2025-11-25"
+/// - `MCP-Protocol-Version`: Optional - supported versions: 2025-11-25, 2025-03-26
 /// - `MCP-Session-Id`: Required after initialize
 /// - `Accept`: `application/json` or `text/event-stream`
 ///
@@ -326,6 +328,9 @@ async fn post_handler(
         }
     };
 
+    // Detect if the original request was a notification (no id per JSON-RPC 2.0)
+    let is_notification = request.id.is_none();
+
     // On successful initialize, mark session as initialized
     if is_initialize && response.error.is_none() {
         if let Some(params) = &init_params {
@@ -353,6 +358,37 @@ async fn post_handler(
             );
         }
     }
+
+    // JSON-RPC notifications (no id) get 202 Accepted with no body per spec
+    if is_notification {
+        let session_header = HeaderName::from_static(MCP_SESSION_ID_HEADER);
+        let version_header = HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER);
+        let negotiated_version = state
+            .mcp_session_manager
+            .get_protocol_version(&session_id)
+            .unwrap_or_else(|| PROTOCOL_VERSION.to_string());
+        return (
+            StatusCode::ACCEPTED,
+            [(session_header, session_id_str), (version_header, negotiated_version)],
+        )
+            .into_response();
+    }
+
+    // Compute negotiated protocol version for response headers
+    let negotiated_version = if is_initialize {
+        response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(PROTOCOL_VERSION)
+            .to_string()
+    } else {
+        state
+            .mcp_session_manager
+            .get_protocol_version(&session_id)
+            .unwrap_or_else(|| PROTOCOL_VERSION.to_string())
+    };
 
     // Determine response mode
     let accept_header = headers.get("accept").and_then(|v| v.to_str().ok());
@@ -402,7 +438,7 @@ async fn post_handler(
             let version_header = HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER);
             (
                 StatusCode::ACCEPTED,
-                [(session_header, session_id_str), (version_header, "2025-11-25".to_string())],
+                [(session_header, session_id_str), (version_header, negotiated_version.clone())],
             )
                 .into_response()
         }
@@ -411,7 +447,7 @@ async fn post_handler(
             let session_header = HeaderName::from_static(MCP_SESSION_ID_HEADER);
             let version_header = HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER);
             (
-                [(session_header, session_id_str), (version_header, "2025-11-25".to_string())],
+                [(session_header, session_id_str), (version_header, negotiated_version)],
                 Json(response),
             )
                 .into_response()
@@ -432,5 +468,26 @@ mod tests {
         let api_config = McpScope::GatewayApi.scope_config();
         assert_eq!(api_config.read_scope, "api:read");
         assert_eq!(api_config.execute_scope, "api:execute");
+    }
+
+    #[test]
+    fn test_notification_detection() {
+        // Notifications have no id
+        let notification = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "notifications/initialized".to_string(),
+            params: serde_json::Value::Null,
+        };
+        assert!(notification.id.is_none());
+
+        // Requests have an id
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(crate::mcp::protocol::JsonRpcId::Number(1)),
+            method: "tools/list".to_string(),
+            params: serde_json::Value::Null,
+        };
+        assert!(request.id.is_some());
     }
 }

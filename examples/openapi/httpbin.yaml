@@ -3,7 +3,7 @@ info:
   title: FastAPI Httpbin
   version: 0.0.54
 servers:
-  - url: https://httpbin.org
+  - url: http://httpbin:80
 paths:
   /get:
     get:

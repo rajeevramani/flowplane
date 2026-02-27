@@ -20,6 +20,8 @@ struct AggregatedSchemaRow {
     pub previous_version_id: Option<i64>,
     pub request_schema: Option<String>,   // JSON Schema as string
     pub response_schemas: Option<String>, // JSON object as string
+    pub request_headers: Option<String>,  // JSON array of {name, example}
+    pub response_headers: Option<String>, // JSON array of {name, example}
     pub sample_count: i64,
     pub confidence_score: f64,
     pub breaking_changes: Option<String>, // JSON array as string
@@ -40,6 +42,8 @@ pub struct AggregatedSchemaData {
     pub previous_version_id: Option<i64>,
     pub request_schema: Option<serde_json::Value>,
     pub response_schemas: Option<serde_json::Value>,
+    pub request_headers: Option<serde_json::Value>, // JSON array of {name, example}
+    pub response_headers: Option<serde_json::Value>, // JSON array of {name, example}
     pub sample_count: i64,
     pub confidence_score: f64,
     pub breaking_changes: Option<Vec<serde_json::Value>>,
@@ -63,6 +67,16 @@ impl TryFrom<AggregatedSchemaRow> for AggregatedSchemaData {
                 |e| FlowplaneError::validation(format!("Invalid response_schemas JSON: {}", e)),
             )?;
 
+        let request_headers =
+            row.request_headers.as_ref().map(|s| serde_json::from_str(s)).transpose().map_err(
+                |e| FlowplaneError::validation(format!("Invalid request_headers JSON: {}", e)),
+            )?;
+
+        let response_headers =
+            row.response_headers.as_ref().map(|s| serde_json::from_str(s)).transpose().map_err(
+                |e| FlowplaneError::validation(format!("Invalid response_headers JSON: {}", e)),
+            )?;
+
         let breaking_changes =
             row.breaking_changes.as_ref().map(|s| serde_json::from_str(s)).transpose().map_err(
                 |e| FlowplaneError::validation(format!("Invalid breaking_changes JSON: {}", e)),
@@ -77,6 +91,8 @@ impl TryFrom<AggregatedSchemaRow> for AggregatedSchemaData {
             previous_version_id: row.previous_version_id,
             request_schema,
             response_schemas,
+            request_headers,
+            response_headers,
             sample_count: row.sample_count,
             confidence_score: row.confidence_score,
             breaking_changes,
@@ -118,6 +134,8 @@ pub struct CreateAggregatedSchemaRequest {
     pub http_method: String,
     pub request_schema: Option<serde_json::Value>,
     pub response_schemas: Option<serde_json::Value>,
+    pub request_headers: Option<serde_json::Value>, // JSON array of {name, example}
+    pub response_headers: Option<serde_json::Value>, // JSON array of {name, example}
     pub sample_count: i64,
     pub confidence_score: f64,
     pub breaking_changes: Option<Vec<serde_json::Value>>,
@@ -164,6 +182,16 @@ impl AggregatedSchemaRepository {
                 |e| FlowplaneError::validation(format!("Invalid breaking_changes: {}", e)),
             )?;
 
+        let request_headers_json =
+            request.request_headers.as_ref().map(serde_json::to_string).transpose().map_err(
+                |e| FlowplaneError::validation(format!("Invalid request_headers: {}", e)),
+            )?;
+
+        let response_headers_json =
+            request.response_headers.as_ref().map(serde_json::to_string).transpose().map_err(
+                |e| FlowplaneError::validation(format!("Invalid response_headers: {}", e)),
+            )?;
+
         // Use a transaction to atomically determine version and insert
         // This prevents race conditions where concurrent aggregations get the same version
         let mut tx = self.pool.begin().await.map_err(|e| FlowplaneError::Database {
@@ -192,9 +220,10 @@ impl AggregatedSchemaRepository {
         let result = sqlx::query(
             "INSERT INTO aggregated_api_schemas (
                 team, path, http_method, version, previous_version_id,
-                request_schema, response_schemas, sample_count, confidence_score,
+                request_schema, response_schemas, request_headers, response_headers,
+                sample_count, confidence_score,
                 breaking_changes, first_observed, last_observed, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING id",
         )
         .bind(&request.team)
@@ -204,6 +233,8 @@ impl AggregatedSchemaRepository {
         .bind(request.previous_version_id)
         .bind(&request_schema_json)
         .bind(&response_schemas_json)
+        .bind(&request_headers_json)
+        .bind(&response_headers_json)
         .bind(request.sample_count)
         .bind(request.confidence_score)
         .bind(&breaking_changes_json)
@@ -280,6 +311,16 @@ impl AggregatedSchemaRepository {
                     |e| FlowplaneError::validation(format!("Invalid breaking_changes: {}", e)),
                 )?;
 
+            let request_headers_json =
+                request.request_headers.as_ref().map(serde_json::to_string).transpose().map_err(
+                    |e| FlowplaneError::validation(format!("Invalid request_headers: {}", e)),
+                )?;
+
+            let response_headers_json =
+                request.response_headers.as_ref().map(serde_json::to_string).transpose().map_err(
+                    |e| FlowplaneError::validation(format!("Invalid response_headers: {}", e)),
+                )?;
+
             // Determine next version number within the transaction
             let version_result = sqlx::query(
                 "SELECT COALESCE(MAX(version), 0) + 1 as next_version
@@ -301,9 +342,10 @@ impl AggregatedSchemaRepository {
             let result = sqlx::query(
                 "INSERT INTO aggregated_api_schemas (
                     team, path, http_method, version, previous_version_id,
-                    request_schema, response_schemas, sample_count, confidence_score,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
                     breaking_changes, first_observed, last_observed, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 RETURNING id",
             )
             .bind(&request.team)
@@ -313,6 +355,8 @@ impl AggregatedSchemaRepository {
             .bind(request.previous_version_id)
             .bind(&request_schema_json)
             .bind(&response_schemas_json)
+            .bind(&request_headers_json)
+            .bind(&response_headers_json)
             .bind(request.sample_count)
             .bind(request.confidence_score)
             .bind(&breaking_changes_json)
@@ -365,7 +409,8 @@ impl AggregatedSchemaRepository {
     pub async fn get_by_id(&self, id: i64) -> Result<AggregatedSchemaData> {
         let row = sqlx::query_as::<sqlx::Postgres, AggregatedSchemaRow>(
             "SELECT id, team, path, http_method, version, previous_version_id,
-                    request_schema, response_schemas, sample_count, confidence_score,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
                     breaking_changes, first_observed, last_observed, created_at, updated_at
              FROM aggregated_api_schemas WHERE id = $1",
         )
@@ -409,7 +454,8 @@ impl AggregatedSchemaRepository {
 
         let query = format!(
             "SELECT id, team, path, http_method, version, previous_version_id,
-                    request_schema, response_schemas, sample_count, confidence_score,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
                     breaking_changes, first_observed, last_observed, created_at, updated_at
              FROM aggregated_api_schemas
              WHERE id IN ({})
@@ -443,7 +489,8 @@ impl AggregatedSchemaRepository {
     ) -> Result<Option<AggregatedSchemaData>> {
         let row = sqlx::query_as::<sqlx::Postgres, AggregatedSchemaRow>(
             "SELECT id, team, path, http_method, version, previous_version_id,
-                    request_schema, response_schemas, sample_count, confidence_score,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
                     breaking_changes, first_observed, last_observed, created_at, updated_at
              FROM aggregated_api_schemas
              WHERE team = $1 AND path = $2 AND http_method = $3
@@ -471,7 +518,8 @@ impl AggregatedSchemaRepository {
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<AggregatedSchemaData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, AggregatedSchemaRow>(
             "SELECT id, team, path, http_method, version, previous_version_id,
-                    request_schema, response_schemas, sample_count, confidence_score,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
                     breaking_changes, first_observed, last_observed, created_at, updated_at
              FROM aggregated_api_schemas
              WHERE team = $1
@@ -496,7 +544,8 @@ impl AggregatedSchemaRepository {
     pub async fn list_latest_by_team(&self, team: &str) -> Result<Vec<AggregatedSchemaData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, AggregatedSchemaRow>(
             "SELECT a.id, a.team, a.path, a.http_method, a.version, a.previous_version_id,
-                    a.request_schema, a.response_schemas, a.sample_count, a.confidence_score,
+                    a.request_schema, a.response_schemas, a.request_headers, a.response_headers,
+                    a.sample_count, a.confidence_score,
                     a.breaking_changes, a.first_observed, a.last_observed, a.created_at, a.updated_at
              FROM aggregated_api_schemas a
              INNER JOIN (
@@ -535,7 +584,8 @@ impl AggregatedSchemaRepository {
     ) -> Result<Vec<AggregatedSchemaData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, AggregatedSchemaRow>(
             "SELECT id, team, path, http_method, version, previous_version_id,
-                    request_schema, response_schemas, sample_count, confidence_score,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
                     breaking_changes, first_observed, last_observed, created_at, updated_at
              FROM aggregated_api_schemas
              WHERE team = $1 AND path = $2 AND http_method = $3
@@ -568,7 +618,8 @@ impl AggregatedSchemaRepository {
     ) -> Result<Option<AggregatedSchemaData>> {
         let row = sqlx::query_as::<sqlx::Postgres, AggregatedSchemaRow>(
             "SELECT id, team, path, http_method, version, previous_version_id,
-                    request_schema, response_schemas, sample_count, confidence_score,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
                     breaking_changes, first_observed, last_observed, created_at, updated_at
              FROM aggregated_api_schemas
              WHERE team = $1 AND path = $2 AND http_method = $3 AND version = $4",
@@ -601,7 +652,8 @@ impl AggregatedSchemaRepository {
     ) -> Result<Vec<AggregatedSchemaData>> {
         let mut query = String::from(
             "SELECT id, team, path, http_method, version, previous_version_id,
-                    request_schema, response_schemas, sample_count, confidence_score,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
                     breaking_changes, first_observed, last_observed, created_at, updated_at
              FROM aggregated_api_schemas
              WHERE team = $1",
@@ -672,6 +724,8 @@ mod tests {
             response_schemas: Some(serde_json::json!({
                 "200": {"type": "object", "properties": {"id": {"type": "integer"}}}
             })),
+            request_headers: None,
+            response_headers: None,
             sample_count: 10,
             confidence_score: 0.95,
             breaking_changes: None,
@@ -709,6 +763,8 @@ mod tests {
             http_method: "POST".to_string(),
             request_schema: Some(serde_json::json!({"type": "object"})),
             response_schemas: None,
+            request_headers: None,
+            response_headers: None,
             sample_count: 5,
             confidence_score: 0.8,
             breaking_changes: None,
@@ -727,6 +783,8 @@ mod tests {
             http_method: "POST".to_string(),
             request_schema: Some(serde_json::json!({"type": "object"})),
             response_schemas: None,
+            request_headers: None,
+            response_headers: None,
             sample_count: 10,
             confidence_score: 0.9,
             breaking_changes: Some(vec![serde_json::json!({"type": "field_added"})]),
@@ -756,6 +814,8 @@ mod tests {
                 http_method: "GET".to_string(),
                 request_schema: None,
                 response_schemas: Some(serde_json::json!({"version": i})),
+                request_headers: None,
+                response_headers: None,
                 sample_count: i * 5,
                 confidence_score: 0.8,
                 breaking_changes: None,
@@ -790,6 +850,8 @@ mod tests {
                     http_method: "GET".to_string(),
                     request_schema: None,
                     response_schemas: Some(serde_json::json!({"version": version})),
+                    request_headers: None,
+                    response_headers: None,
                     sample_count: version * 5,
                     confidence_score: 0.8,
                     breaking_changes: None,
@@ -829,6 +891,8 @@ mod tests {
                 http_method: "GET".to_string(),
                 request_schema: None,
                 response_schemas: Some(serde_json::json!({"type": "object"})),
+                request_headers: None,
+                response_headers: None,
                 sample_count: 10,
                 confidence_score: 0.9,
                 breaking_changes: None,
@@ -876,6 +940,8 @@ mod tests {
                 http_method: "GET".to_string(),
                 request_schema: None,
                 response_schemas: None,
+                request_headers: None,
+                response_headers: None,
                 sample_count: 5,
                 confidence_score: 0.8,
                 breaking_changes: None,
@@ -909,6 +975,8 @@ mod tests {
             http_method: "GET".to_string(),
             request_schema: None,
             response_schemas: None,
+            request_headers: None,
+            response_headers: None,
             sample_count: 5,
             confidence_score: 0.8,
             breaking_changes: None,

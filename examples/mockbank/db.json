@@ -1,0 +1,1012 @@
+{
+  "customers": [
+    {
+      "id": 1,
+      "firstName": "John",
+      "lastName": "Smith",
+      "email": "john.smith@email.com",
+      "phone": "+1-555-0101",
+      "dateOfBirth": "1985-03-15",
+      "ssn": "***-**-1234",
+      "address": {
+        "street": "123 Main Street",
+        "city": "New York",
+        "state": "NY",
+        "zipCode": "10001",
+        "country": "USA"
+      },
+      "customerSince": "2018-06-20",
+      "status": "active",
+      "kycVerified": true
+    },
+    {
+      "id": 2,
+      "firstName": "Sarah",
+      "lastName": "Johnson",
+      "email": "sarah.johnson@email.com",
+      "phone": "+1-555-0102",
+      "dateOfBirth": "1990-07-22",
+      "ssn": "***-**-5678",
+      "address": {
+        "street": "456 Oak Avenue",
+        "city": "Los Angeles",
+        "state": "CA",
+        "zipCode": "90001",
+        "country": "USA"
+      },
+      "customerSince": "2020-01-15",
+      "status": "active",
+      "kycVerified": true
+    },
+    {
+      "id": 3,
+      "firstName": "Michael",
+      "lastName": "Williams",
+      "email": "m.williams@email.com",
+      "phone": "+1-555-0103",
+      "dateOfBirth": "1978-11-30",
+      "ssn": "***-**-9012",
+      "address": {
+        "street": "789 Pine Road",
+        "city": "Chicago",
+        "state": "IL",
+        "zipCode": "60601",
+        "country": "USA"
+      },
+      "customerSince": "2015-09-10",
+      "status": "active",
+      "kycVerified": true
+    }
+  ],
+  "accounts": [
+    {
+      "id": 1,
+      "customerId": 1,
+      "accountNumber": "1001-2345-6789",
+      "accountType": "checking",
+      "accountName": "Primary Checking",
+      "balance": 15420.50,
+      "availableBalance": 15220.50,
+      "currency": "USD",
+      "status": "active",
+      "openedDate": "2018-06-20",
+      "interestRate": 0.01,
+      "overdraftLimit": 500.00
+    },
+    {
+      "id": 2,
+      "customerId": 1,
+      "accountNumber": "1001-2345-6790",
+      "accountType": "savings",
+      "accountName": "Emergency Fund",
+      "balance": 52000.00,
+      "availableBalance": 52000.00,
+      "currency": "USD",
+      "status": "active",
+      "openedDate": "2018-07-15",
+      "interestRate": 4.25,
+      "minimumBalance": 500.00
+    },
+    {
+      "id": 3,
+      "customerId": 1,
+      "accountNumber": "1001-2345-6791",
+      "accountType": "money_market",
+      "accountName": "High Yield Savings",
+      "balance": 125000.00,
+      "availableBalance": 125000.00,
+      "currency": "USD",
+      "status": "active",
+      "openedDate": "2020-03-01",
+      "interestRate": 5.10,
+      "minimumBalance": 10000.00
+    },
+    {
+      "id": 4,
+      "customerId": 2,
+      "accountNumber": "2001-3456-7890",
+      "accountType": "checking",
+      "accountName": "Daily Checking",
+      "balance": 8750.25,
+      "availableBalance": 8550.25,
+      "currency": "USD",
+      "status": "active",
+      "openedDate": "2020-01-15",
+      "interestRate": 0.01,
+      "overdraftLimit": 300.00
+    },
+    {
+      "id": 5,
+      "customerId": 2,
+      "accountNumber": "2001-3456-7891",
+      "accountType": "savings",
+      "accountName": "Vacation Fund",
+      "balance": 15600.00,
+      "availableBalance": 15600.00,
+      "currency": "USD",
+      "status": "active",
+      "openedDate": "2020-02-20",
+      "interestRate": 4.25,
+      "minimumBalance": 100.00
+    },
+    {
+      "id": 6,
+      "customerId": 3,
+      "accountNumber": "3001-4567-8901",
+      "accountType": "checking",
+      "accountName": "Business Checking",
+      "balance": 45890.75,
+      "availableBalance": 44890.75,
+      "currency": "USD",
+      "status": "active",
+      "openedDate": "2015-09-10",
+      "interestRate": 0.02,
+      "overdraftLimit": 2000.00
+    }
+  ],
+  "transactions": [
+    {
+      "id": 1,
+      "accountId": 1,
+      "type": "debit",
+      "category": "shopping",
+      "amount": 125.99,
+      "currency": "USD",
+      "description": "Amazon.com Purchase",
+      "merchantName": "Amazon",
+      "merchantCategory": "online_retail",
+      "date": "2024-12-26T10:30:00Z",
+      "status": "completed",
+      "reference": "TXN-2024122600001"
+    },
+    {
+      "id": 2,
+      "accountId": 1,
+      "type": "credit",
+      "category": "income",
+      "amount": 4500.00,
+      "currency": "USD",
+      "description": "Payroll Deposit - Acme Corp",
+      "merchantName": "Acme Corporation",
+      "merchantCategory": "payroll",
+      "date": "2024-12-20T08:00:00Z",
+      "status": "completed",
+      "reference": "TXN-2024122000001"
+    },
+    {
+      "id": 3,
+      "accountId": 1,
+      "type": "debit",
+      "category": "utilities",
+      "amount": 145.50,
+      "currency": "USD",
+      "description": "Electric Bill Payment",
+      "merchantName": "ConEdison",
+      "merchantCategory": "utilities",
+      "date": "2024-12-18T14:20:00Z",
+      "status": "completed",
+      "reference": "TXN-2024121800001"
+    },
+    {
+      "id": 4,
+      "accountId": 1,
+      "type": "debit",
+      "category": "food",
+      "amount": 67.85,
+      "currency": "USD",
+      "description": "Whole Foods Market",
+      "merchantName": "Whole Foods",
+      "merchantCategory": "grocery",
+      "date": "2024-12-17T18:45:00Z",
+      "status": "completed",
+      "reference": "TXN-2024121700001"
+    },
+    {
+      "id": 5,
+      "accountId": 1,
+      "type": "debit",
+      "category": "transfer",
+      "amount": 500.00,
+      "currency": "USD",
+      "description": "Transfer to Savings",
+      "merchantName": null,
+      "merchantCategory": "transfer",
+      "date": "2024-12-15T09:00:00Z",
+      "status": "completed",
+      "reference": "TXN-2024121500001"
+    },
+    {
+      "id": 6,
+      "accountId": 2,
+      "type": "credit",
+      "category": "transfer",
+      "amount": 500.00,
+      "currency": "USD",
+      "description": "Transfer from Checking",
+      "merchantName": null,
+      "merchantCategory": "transfer",
+      "date": "2024-12-15T09:00:00Z",
+      "status": "completed",
+      "reference": "TXN-2024121500002"
+    },
+    {
+      "id": 7,
+      "accountId": 2,
+      "type": "credit",
+      "category": "interest",
+      "amount": 184.17,
+      "currency": "USD",
+      "description": "Monthly Interest Credit",
+      "merchantName": null,
+      "merchantCategory": "interest",
+      "date": "2024-12-01T00:00:00Z",
+      "status": "completed",
+      "reference": "TXN-2024120100001"
+    },
+    {
+      "id": 8,
+      "accountId": 4,
+      "type": "debit",
+      "category": "entertainment",
+      "amount": 15.99,
+      "currency": "USD",
+      "description": "Netflix Subscription",
+      "merchantName": "Netflix",
+      "merchantCategory": "streaming",
+      "date": "2024-12-22T00:00:00Z",
+      "status": "completed",
+      "reference": "TXN-2024122200001"
+    },
+    {
+      "id": 9,
+      "accountId": 4,
+      "type": "debit",
+      "category": "food",
+      "amount": 42.50,
+      "currency": "USD",
+      "description": "Uber Eats Order",
+      "merchantName": "Uber Eats",
+      "merchantCategory": "food_delivery",
+      "date": "2024-12-21T19:30:00Z",
+      "status": "completed",
+      "reference": "TXN-2024122100001"
+    },
+    {
+      "id": 10,
+      "accountId": 6,
+      "type": "credit",
+      "category": "income",
+      "amount": 12500.00,
+      "currency": "USD",
+      "description": "Client Payment - Invoice #1234",
+      "merchantName": "Tech Solutions Inc",
+      "merchantCategory": "business_income",
+      "date": "2024-12-19T11:00:00Z",
+      "status": "completed",
+      "reference": "TXN-2024121900001"
+    }
+  ],
+  "cards": [
+    {
+      "id": 1,
+      "customerId": 1,
+      "accountId": 1,
+      "cardNumber": "****-****-****-4532",
+      "cardType": "debit",
+      "cardBrand": "Visa",
+      "cardName": "John Smith",
+      "expiryDate": "12/2027",
+      "status": "active",
+      "dailyLimit": 5000.00,
+      "monthlyLimit": 25000.00,
+      "isContactless": true,
+      "isVirtual": false,
+      "issueDate": "2024-01-15"
+    },
+    {
+      "id": 2,
+      "customerId": 1,
+      "accountId": null,
+      "cardNumber": "****-****-****-8821",
+      "cardType": "credit",
+      "cardBrand": "Mastercard",
+      "cardName": "John Smith",
+      "expiryDate": "08/2026",
+      "status": "active",
+      "creditLimit": 15000.00,
+      "availableCredit": 12450.00,
+      "currentBalance": 2550.00,
+      "minimumPayment": 75.00,
+      "paymentDueDate": "2025-01-15",
+      "apr": 18.99,
+      "isContactless": true,
+      "isVirtual": false,
+      "issueDate": "2021-08-10",
+      "rewardsPoints": 25680
+    },
+    {
+      "id": 3,
+      "customerId": 2,
+      "accountId": 4,
+      "cardNumber": "****-****-****-7756",
+      "cardType": "debit",
+      "cardBrand": "Visa",
+      "cardName": "Sarah Johnson",
+      "expiryDate": "03/2028",
+      "status": "active",
+      "dailyLimit": 3000.00,
+      "monthlyLimit": 15000.00,
+      "isContactless": true,
+      "isVirtual": false,
+      "issueDate": "2024-03-20"
+    },
+    {
+      "id": 4,
+      "customerId": 2,
+      "accountId": null,
+      "cardNumber": "****-****-****-1199",
+      "cardType": "credit",
+      "cardBrand": "Visa",
+      "cardName": "Sarah Johnson",
+      "expiryDate": "11/2027",
+      "status": "active",
+      "creditLimit": 8000.00,
+      "availableCredit": 6200.00,
+      "currentBalance": 1800.00,
+      "minimumPayment": 45.00,
+      "paymentDueDate": "2025-01-10",
+      "apr": 21.99,
+      "isContactless": true,
+      "isVirtual": false,
+      "issueDate": "2022-11-05",
+      "rewardsPoints": 12450
+    },
+    {
+      "id": 5,
+      "customerId": 3,
+      "accountId": 6,
+      "cardNumber": "****-****-****-3344",
+      "cardType": "debit",
+      "cardBrand": "Mastercard",
+      "cardName": "Michael Williams",
+      "expiryDate": "06/2026",
+      "status": "active",
+      "dailyLimit": 10000.00,
+      "monthlyLimit": 50000.00,
+      "isContactless": true,
+      "isVirtual": false,
+      "issueDate": "2023-06-01"
+    }
+  ],
+  "beneficiaries": [
+    {
+      "id": 1,
+      "customerId": 1,
+      "name": "Jane Smith",
+      "nickname": "Mom",
+      "accountNumber": "****6789",
+      "bankName": "Chase Bank",
+      "routingNumber": "021000021",
+      "accountType": "checking",
+      "email": "jane.smith@email.com",
+      "phone": "+1-555-0201",
+      "status": "active",
+      "addedDate": "2020-03-15"
+    },
+    {
+      "id": 2,
+      "customerId": 1,
+      "name": "Robert Smith",
+      "nickname": "Brother",
+      "accountNumber": "****4321",
+      "bankName": "Bank of America",
+      "routingNumber": "026009593",
+      "accountType": "savings",
+      "email": "rob.smith@email.com",
+      "phone": "+1-555-0202",
+      "status": "active",
+      "addedDate": "2021-07-20"
+    },
+    {
+      "id": 3,
+      "customerId": 1,
+      "name": "Acme Landlord LLC",
+      "nickname": "Rent",
+      "accountNumber": "****8765",
+      "bankName": "Wells Fargo",
+      "routingNumber": "121000248",
+      "accountType": "checking",
+      "email": "payments@acmelandlord.com",
+      "phone": "+1-555-0300",
+      "status": "active",
+      "addedDate": "2019-01-10"
+    },
+    {
+      "id": 4,
+      "customerId": 2,
+      "name": "Emily Johnson",
+      "nickname": "Sister",
+      "accountNumber": "****5555",
+      "bankName": "Citibank",
+      "routingNumber": "021000089",
+      "accountType": "checking",
+      "email": "emily.j@email.com",
+      "phone": "+1-555-0203",
+      "status": "active",
+      "addedDate": "2022-05-12"
+    }
+  ],
+  "transfers": [
+    {
+      "id": 1,
+      "customerId": 1,
+      "fromAccountId": 1,
+      "toAccountId": 2,
+      "amount": 500.00,
+      "currency": "USD",
+      "type": "internal",
+      "description": "Monthly savings transfer",
+      "scheduledDate": null,
+      "executedDate": "2024-12-15T09:00:00Z",
+      "status": "completed",
+      "reference": "TRF-2024121500001"
+    },
+    {
+      "id": 2,
+      "customerId": 1,
+      "fromAccountId": 1,
+      "beneficiaryId": 3,
+      "amount": 2200.00,
+      "currency": "USD",
+      "type": "external",
+      "description": "Monthly rent payment",
+      "scheduledDate": "2025-01-01T08:00:00Z",
+      "executedDate": null,
+      "status": "scheduled",
+      "reference": "TRF-2024122500001",
+      "recurring": true,
+      "frequency": "monthly"
+    },
+    {
+      "id": 3,
+      "customerId": 1,
+      "fromAccountId": 1,
+      "beneficiaryId": 1,
+      "amount": 200.00,
+      "currency": "USD",
+      "type": "external",
+      "description": "Birthday gift",
+      "scheduledDate": null,
+      "executedDate": "2024-12-10T14:30:00Z",
+      "status": "completed",
+      "reference": "TRF-2024121000001"
+    },
+    {
+      "id": 4,
+      "customerId": 2,
+      "fromAccountId": 4,
+      "toAccountId": 5,
+      "amount": 300.00,
+      "currency": "USD",
+      "type": "internal",
+      "description": "Vacation fund contribution",
+      "scheduledDate": null,
+      "executedDate": "2024-12-20T10:00:00Z",
+      "status": "completed",
+      "reference": "TRF-2024122000001"
+    }
+  ],
+  "loans": [
+    {
+      "id": 1,
+      "customerId": 1,
+      "loanType": "mortgage",
+      "loanName": "Home Mortgage",
+      "principalAmount": 350000.00,
+      "currentBalance": 285420.50,
+      "interestRate": 6.25,
+      "monthlyPayment": 2156.14,
+      "termMonths": 360,
+      "remainingMonths": 288,
+      "startDate": "2021-03-01",
+      "endDate": "2051-03-01",
+      "nextPaymentDate": "2025-01-01",
+      "status": "active",
+      "collateral": "123 Main Street, New York, NY 10001",
+      "latePaymentFee": 125.00,
+      "autopayEnabled": true
+    },
+    {
+      "id": 2,
+      "customerId": 1,
+      "loanType": "auto",
+      "loanName": "Auto Loan - Tesla Model 3",
+      "principalAmount": 45000.00,
+      "currentBalance": 18750.00,
+      "interestRate": 4.99,
+      "monthlyPayment": 849.22,
+      "termMonths": 60,
+      "remainingMonths": 24,
+      "startDate": "2022-01-15",
+      "endDate": "2027-01-15",
+      "nextPaymentDate": "2025-01-15",
+      "status": "active",
+      "collateral": "2022 Tesla Model 3 VIN: 5YJ3E1EA1NF123456",
+      "latePaymentFee": 50.00,
+      "autopayEnabled": true
+    },
+    {
+      "id": 3,
+      "customerId": 2,
+      "loanType": "personal",
+      "loanName": "Personal Loan",
+      "principalAmount": 15000.00,
+      "currentBalance": 8200.00,
+      "interestRate": 9.99,
+      "monthlyPayment": 318.71,
+      "termMonths": 60,
+      "remainingMonths": 28,
+      "startDate": "2022-08-01",
+      "endDate": "2027-08-01",
+      "nextPaymentDate": "2025-01-01",
+      "status": "active",
+      "collateral": null,
+      "latePaymentFee": 35.00,
+      "autopayEnabled": false
+    },
+    {
+      "id": 4,
+      "customerId": 3,
+      "loanType": "business",
+      "loanName": "Small Business Loan",
+      "principalAmount": 100000.00,
+      "currentBalance": 62500.00,
+      "interestRate": 7.50,
+      "monthlyPayment": 1987.26,
+      "termMonths": 60,
+      "remainingMonths": 36,
+      "startDate": "2023-01-01",
+      "endDate": "2028-01-01",
+      "nextPaymentDate": "2025-01-01",
+      "status": "active",
+      "collateral": "Business assets and equipment",
+      "latePaymentFee": 150.00,
+      "autopayEnabled": true
+    }
+  ],
+  "billPayments": [
+    {
+      "id": 1,
+      "customerId": 1,
+      "payeeName": "ConEdison",
+      "payeeAccountNumber": "****4567",
+      "category": "utilities",
+      "amount": 145.50,
+      "frequency": "monthly",
+      "nextDueDate": "2025-01-18",
+      "autopayEnabled": true,
+      "fromAccountId": 1,
+      "status": "active"
+    },
+    {
+      "id": 2,
+      "customerId": 1,
+      "payeeName": "Verizon Wireless",
+      "payeeAccountNumber": "****8901",
+      "category": "phone",
+      "amount": 85.00,
+      "frequency": "monthly",
+      "nextDueDate": "2025-01-05",
+      "autopayEnabled": true,
+      "fromAccountId": 1,
+      "status": "active"
+    },
+    {
+      "id": 3,
+      "customerId": 1,
+      "payeeName": "Netflix",
+      "payeeAccountNumber": "****2345",
+      "category": "entertainment",
+      "amount": 15.99,
+      "frequency": "monthly",
+      "nextDueDate": "2025-01-22",
+      "autopayEnabled": true,
+      "fromAccountId": 1,
+      "status": "active"
+    },
+    {
+      "id": 4,
+      "customerId": 2,
+      "payeeName": "AT&T",
+      "payeeAccountNumber": "****6789",
+      "category": "phone",
+      "amount": 95.00,
+      "frequency": "monthly",
+      "nextDueDate": "2025-01-10",
+      "autopayEnabled": false,
+      "fromAccountId": 4,
+      "status": "active"
+    },
+    {
+      "id": 5,
+      "customerId": 2,
+      "payeeName": "LA Water & Power",
+      "payeeAccountNumber": "****1234",
+      "category": "utilities",
+      "amount": 75.00,
+      "frequency": "monthly",
+      "nextDueDate": "2025-01-15",
+      "autopayEnabled": true,
+      "fromAccountId": 4,
+      "status": "active"
+    }
+  ],
+  "notifications": [
+    {
+      "id": 1,
+      "customerId": 1,
+      "type": "transaction",
+      "title": "Purchase Alert",
+      "message": "A purchase of $125.99 was made at Amazon.com",
+      "date": "2024-12-26T10:30:00Z",
+      "read": false,
+      "priority": "normal"
+    },
+    {
+      "id": 2,
+      "customerId": 1,
+      "type": "payment_due",
+      "title": "Credit Card Payment Due",
+      "message": "Your Mastercard payment of $75.00 is due on January 15, 2025",
+      "date": "2024-12-25T08:00:00Z",
+      "read": true,
+      "priority": "high"
+    },
+    {
+      "id": 3,
+      "customerId": 1,
+      "type": "deposit",
+      "title": "Direct Deposit Received",
+      "message": "Payroll deposit of $4,500.00 from Acme Corporation",
+      "date": "2024-12-20T08:00:00Z",
+      "read": true,
+      "priority": "normal"
+    },
+    {
+      "id": 4,
+      "customerId": 1,
+      "type": "security",
+      "title": "New Device Login",
+      "message": "Your account was accessed from a new device in New York, NY",
+      "date": "2024-12-18T15:45:00Z",
+      "read": true,
+      "priority": "high"
+    },
+    {
+      "id": 5,
+      "customerId": 2,
+      "type": "low_balance",
+      "title": "Low Balance Alert",
+      "message": "Your checking account balance is below $1,000",
+      "date": "2024-12-24T09:00:00Z",
+      "read": false,
+      "priority": "high"
+    }
+  ],
+  "branches": [
+    {
+      "id": 1,
+      "name": "Manhattan Main Branch",
+      "address": "100 Wall Street, New York, NY 10005",
+      "phone": "+1-212-555-0100",
+      "email": "manhattan.main@mockbank.com",
+      "hours": {
+        "monday": "9:00 AM - 5:00 PM",
+        "tuesday": "9:00 AM - 5:00 PM",
+        "wednesday": "9:00 AM - 5:00 PM",
+        "thursday": "9:00 AM - 5:00 PM",
+        "friday": "9:00 AM - 6:00 PM",
+        "saturday": "10:00 AM - 2:00 PM",
+        "sunday": "Closed"
+      },
+      "services": ["deposits", "withdrawals", "loans", "safe_deposit", "notary", "currency_exchange"],
+      "hasATM": true,
+      "hasDriveThru": false,
+      "coordinates": {
+        "latitude": 40.7074,
+        "longitude": -74.0104
+      }
+    },
+    {
+      "id": 2,
+      "name": "Los Angeles Downtown",
+      "address": "555 S Grand Ave, Los Angeles, CA 90071",
+      "phone": "+1-213-555-0200",
+      "email": "la.downtown@mockbank.com",
+      "hours": {
+        "monday": "9:00 AM - 5:00 PM",
+        "tuesday": "9:00 AM - 5:00 PM",
+        "wednesday": "9:00 AM - 5:00 PM",
+        "thursday": "9:00 AM - 5:00 PM",
+        "friday": "9:00 AM - 6:00 PM",
+        "saturday": "9:00 AM - 1:00 PM",
+        "sunday": "Closed"
+      },
+      "services": ["deposits", "withdrawals", "loans", "safe_deposit", "currency_exchange"],
+      "hasATM": true,
+      "hasDriveThru": true,
+      "coordinates": {
+        "latitude": 34.0522,
+        "longitude": -118.2547
+      }
+    },
+    {
+      "id": 3,
+      "name": "Chicago Loop Branch",
+      "address": "200 S LaSalle St, Chicago, IL 60604",
+      "phone": "+1-312-555-0300",
+      "email": "chicago.loop@mockbank.com",
+      "hours": {
+        "monday": "8:30 AM - 5:00 PM",
+        "tuesday": "8:30 AM - 5:00 PM",
+        "wednesday": "8:30 AM - 5:00 PM",
+        "thursday": "8:30 AM - 5:00 PM",
+        "friday": "8:30 AM - 6:00 PM",
+        "saturday": "9:00 AM - 12:00 PM",
+        "sunday": "Closed"
+      },
+      "services": ["deposits", "withdrawals", "loans", "safe_deposit", "notary", "business_services"],
+      "hasATM": true,
+      "hasDriveThru": false,
+      "coordinates": {
+        "latitude": 41.8781,
+        "longitude": -87.6298
+      }
+    }
+  ],
+  "atms": [
+    {
+      "id": 1,
+      "name": "Times Square ATM",
+      "address": "1500 Broadway, New York, NY 10036",
+      "status": "online",
+      "features": ["cash_withdrawal", "deposits", "balance_inquiry", "transfers"],
+      "is24Hours": true,
+      "coordinates": {
+        "latitude": 40.7580,
+        "longitude": -73.9855
+      }
+    },
+    {
+      "id": 2,
+      "name": "Central Park South ATM",
+      "address": "768 5th Ave, New York, NY 10019",
+      "status": "online",
+      "features": ["cash_withdrawal", "balance_inquiry"],
+      "is24Hours": true,
+      "coordinates": {
+        "latitude": 40.7644,
+        "longitude": -73.9735
+      }
+    },
+    {
+      "id": 3,
+      "name": "Hollywood Blvd ATM",
+      "address": "6801 Hollywood Blvd, Los Angeles, CA 90028",
+      "status": "online",
+      "features": ["cash_withdrawal", "deposits", "balance_inquiry", "transfers"],
+      "is24Hours": true,
+      "coordinates": {
+        "latitude": 34.1016,
+        "longitude": -118.3401
+      }
+    },
+    {
+      "id": 4,
+      "name": "Michigan Ave ATM",
+      "address": "625 N Michigan Ave, Chicago, IL 60611",
+      "status": "maintenance",
+      "features": ["cash_withdrawal", "deposits", "balance_inquiry"],
+      "is24Hours": true,
+      "coordinates": {
+        "latitude": 41.8932,
+        "longitude": -87.6245
+      }
+    }
+  ],
+  "exchangeRates": [
+    {
+      "id": 1,
+      "fromCurrency": "USD",
+      "toCurrency": "EUR",
+      "rate": 0.9245,
+      "lastUpdated": "2024-12-26T00:00:00Z"
+    },
+    {
+      "id": 2,
+      "fromCurrency": "USD",
+      "toCurrency": "GBP",
+      "rate": 0.7892,
+      "lastUpdated": "2024-12-26T00:00:00Z"
+    },
+    {
+      "id": 3,
+      "fromCurrency": "USD",
+      "toCurrency": "JPY",
+      "rate": 157.25,
+      "lastUpdated": "2024-12-26T00:00:00Z"
+    },
+    {
+      "id": 4,
+      "fromCurrency": "USD",
+      "toCurrency": "CAD",
+      "rate": 1.4385,
+      "lastUpdated": "2024-12-26T00:00:00Z"
+    },
+    {
+      "id": 5,
+      "fromCurrency": "USD",
+      "toCurrency": "AUD",
+      "rate": 1.6042,
+      "lastUpdated": "2024-12-26T00:00:00Z"
+    },
+    {
+      "id": 6,
+      "fromCurrency": "USD",
+      "toCurrency": "CHF",
+      "rate": 0.8956,
+      "lastUpdated": "2024-12-26T00:00:00Z"
+    },
+    {
+      "id": 7,
+      "fromCurrency": "USD",
+      "toCurrency": "INR",
+      "rate": 84.12,
+      "lastUpdated": "2024-12-26T00:00:00Z"
+    },
+    {
+      "id": 8,
+      "fromCurrency": "USD",
+      "toCurrency": "MXN",
+      "rate": 20.15,
+      "lastUpdated": "2024-12-26T00:00:00Z"
+    }
+  ],
+  "investments": [
+    {
+      "id": 1,
+      "customerId": 1,
+      "accountType": "brokerage",
+      "accountNumber": "INV-001-2345",
+      "totalValue": 87500.00,
+      "cashBalance": 5200.00,
+      "status": "active",
+      "openedDate": "2019-05-15"
+    },
+    {
+      "id": 2,
+      "customerId": 1,
+      "accountType": "ira",
+      "accountNumber": "IRA-001-6789",
+      "totalValue": 125000.00,
+      "cashBalance": 2500.00,
+      "contributionLimit": 7000.00,
+      "contributedYTD": 7000.00,
+      "status": "active",
+      "openedDate": "2018-01-10"
+    },
+    {
+      "id": 3,
+      "customerId": 3,
+      "accountType": "brokerage",
+      "accountNumber": "INV-003-4567",
+      "totalValue": 250000.00,
+      "cashBalance": 15000.00,
+      "status": "active",
+      "openedDate": "2016-03-20"
+    }
+  ],
+  "holdings": [
+    {
+      "id": 1,
+      "investmentId": 1,
+      "symbol": "AAPL",
+      "name": "Apple Inc.",
+      "quantity": 50,
+      "averageCost": 145.00,
+      "currentPrice": 193.42,
+      "marketValue": 9671.00,
+      "gain": 2421.00,
+      "gainPercent": 33.39
+    },
+    {
+      "id": 2,
+      "investmentId": 1,
+      "symbol": "MSFT",
+      "name": "Microsoft Corporation",
+      "quantity": 30,
+      "averageCost": 280.00,
+      "currentPrice": 374.58,
+      "marketValue": 11237.40,
+      "gain": 2837.40,
+      "gainPercent": 33.77
+    },
+    {
+      "id": 3,
+      "investmentId": 1,
+      "symbol": "VOO",
+      "name": "Vanguard S&P 500 ETF",
+      "quantity": 100,
+      "averageCost": 380.00,
+      "currentPrice": 433.92,
+      "marketValue": 43392.00,
+      "gain": 5392.00,
+      "gainPercent": 14.19
+    },
+    {
+      "id": 4,
+      "investmentId": 2,
+      "symbol": "VTI",
+      "name": "Vanguard Total Stock Market ETF",
+      "quantity": 200,
+      "averageCost": 185.00,
+      "currentPrice": 237.85,
+      "marketValue": 47570.00,
+      "gain": 10570.00,
+      "gainPercent": 28.56
+    },
+    {
+      "id": 5,
+      "investmentId": 2,
+      "symbol": "BND",
+      "name": "Vanguard Total Bond Market ETF",
+      "quantity": 500,
+      "averageCost": 72.00,
+      "currentPrice": 71.86,
+      "marketValue": 35930.00,
+      "gain": -70.00,
+      "gainPercent": -0.19
+    },
+    {
+      "id": 6,
+      "investmentId": 3,
+      "symbol": "GOOGL",
+      "name": "Alphabet Inc.",
+      "quantity": 100,
+      "averageCost": 95.00,
+      "currentPrice": 177.24,
+      "marketValue": 17724.00,
+      "gain": 8224.00,
+      "gainPercent": 86.57
+    },
+    {
+      "id": 7,
+      "investmentId": 3,
+      "symbol": "AMZN",
+      "name": "Amazon.com Inc.",
+      "quantity": 75,
+      "averageCost": 105.00,
+      "currentPrice": 188.43,
+      "marketValue": 14132.25,
+      "gain": 6257.25,
+      "gainPercent": 79.46
+    }
+  ],
+  "bankInfo": {
+    "name": "MockBank Financial",
+    "routingNumber": "021000089",
+    "swiftCode": "MOCKUS33",
+    "customerService": "+1-800-555-BANK",
+    "fraudHotline": "+1-800-555-FRAUD",
+    "website": "https://www.mockbank.com",
+    "mobileApp": {
+      "ios": "https://apps.apple.com/mockbank",
+      "android": "https://play.google.com/mockbank"
+    },
+    "socialMedia": {
+      "twitter": "@MockBank",
+      "facebook": "MockBankFinancial",
+      "linkedin": "mockbank-financial"
+    }
+  }
+}

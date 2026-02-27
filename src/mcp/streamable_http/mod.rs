@@ -13,7 +13,7 @@
 //! - DELETE: Terminate session
 //!
 //! # Headers (MCP 2025-11-25)
-//! - `MCP-Protocol-Version`: Required - must be "2025-11-25"
+//! - `MCP-Protocol-Version`: Optional - supported versions: 2025-11-25, 2025-03-26
 //! - `MCP-Session-Id`: Required after initialize - UUID v4 format
 //! - `Accept`: `application/json` or `text/event-stream` for response mode
 

@@ -471,7 +471,21 @@ fn transform_route(route: &Value) -> Value {
 }
 
 /// Transform path from MCP format to internal enum format.
-fn transform_path(path: &Value) -> Value {
+///
+/// MCP-friendly: `{"type": "prefix", "value": "/api"}`
+/// Internal:     `{"Prefix": "/api"}`
+///
+/// Also accepts the simplified agent format: `{"prefix": "/api"}` → `{"Prefix": "/api"}`
+pub(crate) fn transform_path(path: &Value) -> Value {
+    // If already in internal format (PascalCase keys), pass through
+    if path.get("Prefix").is_some()
+        || path.get("Exact").is_some()
+        || path.get("Regex").is_some()
+        || path.get("Template").is_some()
+    {
+        return path.clone();
+    }
+
     let path_type = path.get("type").and_then(|t| t.as_str()).unwrap_or("prefix");
 
     match path_type {

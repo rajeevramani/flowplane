@@ -17,6 +17,16 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  FAILURE MODES:
+  - failure_mode_allow: false (default) — deny when auth service is down
+  - failure_mode_allow: true — allow when auth service is down (risky)
+  - Default timeout: 200ms — may need increasing for slow auth services
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — skip external auth for this route
+  - Context extensions can add per-route metadata to auth requests
+
 config_schema:
   type: object
   required:

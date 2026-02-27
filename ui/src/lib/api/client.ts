@@ -1031,11 +1031,12 @@ class ApiClient {
 	// ============================================================================
 
 	/**
-	 * List learning sessions for the current user's team.
+	 * List learning sessions for the specified team.
 	 * Supports filtering by status and pagination.
 	 */
 	async listLearningSessions(query?: ListLearningSessionsQuery): Promise<LearningSessionResponse[]> {
 		const params = new URLSearchParams();
+		if (query?.team) params.append('team', query.team);
 		if (query?.status) params.append('status', query.status);
 		if (query?.limit) params.append('limit', query.limit.toString());
 		if (query?.offset) params.append('offset', query.offset.toString());

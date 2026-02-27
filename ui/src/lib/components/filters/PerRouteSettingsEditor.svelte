@@ -16,6 +16,17 @@
 
 	let { filterTypeInfo, settings, onSettingsChange, disabled = false }: Props = $props();
 
+	// Derive a FilterTypeInfo that uses per-route schema when available
+	const perRouteFilterTypeInfo = $derived<FilterTypeInfo>(
+		filterTypeInfo.perRouteConfigSchema
+			? {
+					...filterTypeInfo,
+					configSchema: filterTypeInfo.perRouteConfigSchema,
+					uiHints: filterTypeInfo.perRouteUiHints ?? filterTypeInfo.uiHints
+				}
+			: filterTypeInfo
+	);
+
 	// Local state for behavior selection
 	let behavior = $state<FilterConfigBehavior>(settings?.behavior ?? 'use_base');
 	let overrideConfig = $state<Record<string, unknown>>(settings?.config ?? {});
@@ -187,7 +198,7 @@
 				<div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
 					<h4 class="text-sm font-medium text-gray-700 mb-3">Override Configuration</h4>
 					<DynamicFilterForm
-						filterType={filterTypeInfo}
+						filterType={perRouteFilterTypeInfo}
 						config={overrideConfig}
 						onConfigChange={handleConfigChange}
 					/>

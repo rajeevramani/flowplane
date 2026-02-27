@@ -18,53 +18,64 @@ use crate::xds::XdsState;
 
 /// Server instructions provided to LLM clients during initialization.
 ///
-/// This shapes how every AI agent interacts with Flowplane — explaining terminology,
-/// resource creation order, smart defaults, and diagnostic workflows.
+/// This shapes how every AI agent interacts with Flowplane — explaining
+/// resource creation order, xDS delivery semantics, and diagnostic workflows.
+/// Keep this slim (~30 lines). Per-filter and per-resource guidance is
+/// delivered contextually in tool responses and `cp_get_filter_type`.
 const SERVER_INSTRUCTIONS: &str = r#"# Flowplane API Gateway Control Plane
 
-## Terminology
-- Backend = Cluster (upstream service with endpoints)
-- Entry Point = Listener (address:port where traffic enters)
-- Routing Rules = Route Configuration (path matching + forwarding)
-- Policy = Filter (rate limiting, CORS, auth, headers)
-
 ## Resource Creation Order (ALWAYS follow)
-1. Backends (clusters) — must exist before routes reference them
-2. Routing Rules (route configs with virtual hosts and routes)
-3. Policies (filters) — create then attach
-4. Entry Points (listeners) — bind to routing rules
+1. Clusters (backends) — must exist before routes reference them
+2. Route Configs (routing rules with virtual hosts)
+3. Filters — create then attach to listeners or routes
+4. Listeners (entry points) — bind to route configs
 
 ## Before Creating Resources
 - cp_query_port: check if port is available
 - cp_query_path: check if path is already routed
 - dev_preflight_check: comprehensive pre-creation validation
 
-## Smart Defaults
-- Listen address: 0.0.0.0 | Protocol: HTTP | LB: ROUND_ROBIN
-- Virtual host domains: ["*"] | Match type: prefix
+## xDS Delivery (How Config Reaches Envoy)
+- Flowplane pushes config to Envoy via xDS protocol
+- If Envoy rejects a config, it NACKs and keeps the PREVIOUS valid config
+- A NACK on one resource blocks ALL resources of that type in that batch
+- Example: A bad cluster NACKs the entire CDS update, blocking unrelated clusters
+- Use ops_xds_delivery_status to check if Envoy accepted or rejected config
+
+## Route Matching: First-Match Wins
+- Routes in a virtual host are evaluated top-to-bottom in array order
+- The FIRST matching route handles the request
+- More specific paths must come BEFORE broader prefixes
+- Example: /api/health must come before /api in the routes array
+
+## Route Config Updates Are Full Replacement
+- cp_update_route_config replaces the entire virtualHosts array
+- Always fetch existing config with cp_get_route_config first
+- Include ALL existing routes plus any new ones
 
 ## Diagnostic Workflow
 1. ops_topology: understand the full gateway layout
 2. ops_trace_request: trace a specific request path
 3. ops_config_validate: find configuration problems
-4. ops_audit_query: review recent changes
+4. ops_xds_delivery_status: check if Envoy accepted config
+5. ops_nack_history: see recent config rejections
 
 ## Error Recovery
-- ALREADY_EXISTS: use update tool or choose different name
+- ALREADY_EXISTS: query existing resource, reuse or choose different name
 - NOT_FOUND: create the prerequisite first
-- CONFLICT: check existing resource, suggest resolution"#;
+- CONFLICT: check existing resource, resolve before retrying"#;
 
-/// Validate MCP protocol version (2025-11-25 only)
+/// Validate MCP protocol version against the supported versions list.
 ///
-/// We only support the 2025-11-25 protocol version. Older versions are rejected
-/// with an error message suggesting mcp-remote bridge for backward compatibility.
+/// We support all versions listed in SUPPORTED_VERSIONS. Versions not in this
+/// list are rejected with an error message listing the supported versions.
 fn validate_protocol_version(client_version: &str) -> Result<(), McpError> {
-    if client_version == PROTOCOL_VERSION {
+    if SUPPORTED_VERSIONS.contains(&client_version) {
         Ok(())
     } else {
         Err(McpError::UnsupportedProtocolVersion {
             client: client_version.to_string(),
-            supported: vec![PROTOCOL_VERSION.to_string()],
+            supported: SUPPORTED_VERSIONS.iter().map(|v| v.to_string()).collect(),
         })
     }
 }
@@ -214,25 +225,25 @@ impl McpHandler {
             "Received initialize request"
         );
 
-        // Validate protocol version - only 2025-11-25 is supported
+        // Validate protocol version against supported versions
         if let Err(e) = validate_protocol_version(&params.protocol_version) {
             error!(
                 client_version = %params.protocol_version,
-                supported_version = %PROTOCOL_VERSION,
-                "Unsupported protocol version - only 2025-11-25 is supported"
+                supported_versions = ?SUPPORTED_VERSIONS,
+                "Unsupported protocol version"
             );
             return self.error_response(id, e);
         }
 
         debug!(
-            protocol_version = %PROTOCOL_VERSION,
+            protocol_version = %params.protocol_version,
             "Protocol version validated"
         );
 
         self.initialized = true;
 
         let result = InitializeResult {
-            protocol_version: PROTOCOL_VERSION.to_string(),
+            protocol_version: params.protocol_version.clone(),
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: Some(false) }),
                 resources: Some(ResourcesCapability {
@@ -283,7 +294,7 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        // Use get_all_tools() as single source of truth (60 tools)
+        // Use get_all_tools() as single source of truth (63 tools)
         let mut tools = tools::get_all_tools();
 
         // Enrich tool descriptions with risk level hints from the registry
@@ -370,6 +381,19 @@ impl McpHandler {
                 tools::execute_ops_audit_query(&self.db_pool, &team, self.org_id.as_ref(), args)
                     .await
             }
+            "ops_xds_delivery_status" => {
+                tools::execute_ops_xds_delivery_status(
+                    &self.db_pool,
+                    &team,
+                    self.org_id.as_ref(),
+                    args,
+                )
+                .await
+            }
+            "ops_nack_history" => {
+                tools::execute_ops_nack_history(&self.db_pool, &team, self.org_id.as_ref(), args)
+                    .await
+            }
             // Dev agent tools (db_pool only)
             "dev_preflight_check" => {
                 tools::execute_dev_preflight_check(&self.db_pool, &team, self.org_id.as_ref(), args)
@@ -395,7 +419,9 @@ impl McpHandler {
             | "cp_list_learning_sessions"
             | "cp_get_learning_session"
             | "cp_create_learning_session"
+            | "cp_activate_learning_session"
             | "cp_delete_learning_session"
+            | "ops_learning_session_health"
             | "cp_create_cluster"
             | "cp_update_cluster"
             | "cp_delete_cluster"
@@ -697,8 +723,26 @@ impl McpHandler {
                         )
                         .await
                     }
+                    "cp_activate_learning_session" => {
+                        tools::execute_activate_learning_session(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
                     "cp_delete_learning_session" => {
                         tools::execute_delete_learning_session(
+                            xds_state,
+                            &team,
+                            self.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "ops_learning_session_health" => {
+                        tools::execute_ops_learning_session_health(
                             xds_state,
                             &team,
                             self.org_id.as_ref(),
@@ -1148,14 +1192,15 @@ mod tests {
 
     #[test]
     fn test_version_validation_rejects_older_version() {
-        // Older versions are rejected - no backward compatibility
-        let result = validate_protocol_version("2025-06-18");
+        // Truly unsupported older versions are rejected
+        let result = validate_protocol_version("2024-11-05");
         assert!(result.is_err());
 
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
-                assert_eq!(client, "2025-06-18");
-                assert_eq!(supported, vec!["2025-11-25".to_string()]);
+                assert_eq!(client, "2024-11-05");
+                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
@@ -1163,14 +1208,15 @@ mod tests {
 
     #[test]
     fn test_version_validation_rejects_newer_version() {
-        // Newer versions are also rejected - exact match only
+        // Newer unknown versions are rejected
         let result = validate_protocol_version("2026-01-01");
         assert!(result.is_err());
 
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
                 assert_eq!(client, "2026-01-01");
-                assert_eq!(supported, vec!["2025-11-25".to_string()]);
+                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
@@ -1185,8 +1231,9 @@ mod tests {
         match result.unwrap_err() {
             McpError::UnsupportedProtocolVersion { client, supported } => {
                 assert_eq!(client, "2024-11-05");
-                assert_eq!(supported.len(), 1);
-                assert_eq!(supported[0], "2025-11-25");
+                assert_eq!(supported.len(), 2);
+                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
@@ -1202,6 +1249,7 @@ mod tests {
 
         assert!(message.contains("2023-12-31"));
         assert!(message.contains("2025-11-25"));
+        assert!(message.contains("2025-03-26"));
     }
 
     #[test]
@@ -1221,8 +1269,9 @@ mod tests {
         assert!(data.get("supportedVersions").is_some());
 
         let supported = data["supportedVersions"].as_array().unwrap();
-        assert_eq!(supported.len(), 1);
-        assert_eq!(supported[0], "2025-11-25");
+        assert_eq!(supported.len(), 2);
+        assert!(supported.iter().any(|v| v == "2025-11-25"));
+        assert!(supported.iter().any(|v| v == "2025-03-26"));
     }
 
     #[tokio::test]
@@ -1258,16 +1307,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_initialize_with_older_version_rejected() {
+    async fn test_initialize_with_2025_03_26_succeeds() {
         let (_db, mut handler) = create_test_handler().await;
 
-        // 2025-06-18 was previously supported but is now rejected
+        // 2025-03-26 is now a supported version
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(JsonRpcId::Number(1)),
             method: "initialize".to_string(),
             params: serde_json::json!({
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": "2025-03-26",
                 "capabilities": {},
                 "clientInfo": {
                     "name": "test-client",
@@ -1278,20 +1327,16 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
-        assert!(response.result.is_none());
-        assert!(response.error.is_some());
-
-        let error = response.error.unwrap();
-        assert_eq!(error.code, error_codes::INVALID_REQUEST);
-        assert!(error.message.contains("Unsupported protocol version"));
-        assert!(!handler.initialized);
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+        assert!(handler.initialized);
     }
 
     #[tokio::test]
     async fn test_initialize_with_newer_version_rejected() {
         let (_db, mut handler) = create_test_handler().await;
 
-        // Future versions are rejected - no negotiation
+        // Future unknown versions are rejected
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(JsonRpcId::Number(1)),
@@ -1308,7 +1353,6 @@ mod tests {
 
         let response = handler.handle_request(request).await;
 
-        // Newer versions are rejected - exact match only
         assert!(response.result.is_none());
         assert!(response.error.is_some());
 
@@ -1316,6 +1360,56 @@ mod tests {
         assert_eq!(error.code, error_codes::INVALID_REQUEST);
         assert!(error.message.contains("Unsupported protocol version"));
         assert!(!handler.initialized);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_with_2025_03_26_returns_matching_version() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2025-03-26");
+    }
+
+    #[tokio::test]
+    async fn test_initialize_with_2025_11_25_returns_matching_version() {
+        let (_db, mut handler) = create_test_handler().await;
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2025-11-25");
     }
 
     #[tokio::test]

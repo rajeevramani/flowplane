@@ -3,6 +3,7 @@
 //! Control Plane tools for managing filters.
 
 use crate::domain::OrgId;
+use crate::internal_api::routes::transform_path;
 use crate::internal_api::{
     CreateFilterRequest, FilterOperations, InternalAuthContext, ListFiltersRequest,
     UpdateFilterRequest,
@@ -10,7 +11,8 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_delete_response, build_rich_create_response, build_update_response,
+    build_delete_response, build_rich_create_response, build_rich_delete_response,
+    build_update_response,
 };
 use crate::xds::XdsState;
 use serde_json::{json, Value};
@@ -274,6 +276,11 @@ local_rate_limit - Request Rate Limiting:
 }
 
 jwt_auth - JWT Authentication:
+PREREQUISITE: Remote JWKS requires a cluster to fetch keys through Envoy.
+Before creating a jwt_auth filter with remote JWKS, check if a suitable cluster
+already exists for the JWKS host (cp_list_clusters). If not, create one with
+useTls: true pointing to the JWKS hostname on port 443. The "cluster" field in
+http_uri must reference this cluster by name.
 {
   "providers": {
     "my-provider": {
@@ -434,6 +441,56 @@ Authorization: Requires cp:write scope.
     )
 }
 
+// =============================================================================
+// MCP FORMAT TRANSFORMS
+// =============================================================================
+
+/// Transform JWT auth configuration from MCP-friendly format to internal format.
+///
+/// Agents send `rules[].match` in simplified format: `{"prefix": "/api"}`
+/// or MCP-style: `{"path": {"type": "prefix", "value": "/api"}}`.
+/// Internal serde expects: `{"path": {"Prefix": "/api"}}`.
+fn transform_jwt_auth_config(config: &Value) -> Value {
+    let mut config = config.clone();
+    if let Some(rules) = config.get_mut("rules").and_then(|r| r.as_array_mut()) {
+        for rule in rules.iter_mut() {
+            if let Some(match_val) = rule.get("match") {
+                rule["match"] = transform_route_match(match_val);
+            }
+        }
+    }
+    config
+}
+
+/// Transform a route match from agent-friendly formats to internal RouteMatchConfig.
+///
+/// Accepts three formats:
+///   Simplified:  `{"prefix": "/api"}`  → `{"path": {"Prefix": "/api"}}`
+///   MCP-style:   `{"path": {"type": "prefix", "value": "/api"}}` → `{"path": {"Prefix": "/api"}}`
+///   Internal:    `{"path": {"Prefix": "/api"}}` → pass through
+fn transform_route_match(match_val: &Value) -> Value {
+    // Case 1: Has a "path" field - transform the path value using the shared transform_path
+    if let Some(path) = match_val.get("path") {
+        let mut new_match = match_val.clone();
+        new_match["path"] = transform_path(path);
+        return new_match;
+    }
+
+    // Case 2: Simplified format - {"prefix": "/api"} or {"exact": "/api"}
+    if let Some(prefix) = match_val.get("prefix").and_then(|v| v.as_str()) {
+        return json!({"path": {"Prefix": prefix}});
+    }
+    if let Some(exact) = match_val.get("exact").and_then(|v| v.as_str()) {
+        return json!({"path": {"Exact": exact}});
+    }
+    if let Some(regex) = match_val.get("regex").and_then(|v| v.as_str()) {
+        return json!({"path": {"Regex": regex}});
+    }
+
+    // Case 3: Unknown format, pass through
+    match_val.clone()
+}
+
 /// Execute the cp_create_filter tool using the internal API layer.
 #[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_create_filter")]
 pub async fn execute_create_filter(
@@ -448,9 +505,13 @@ pub async fn execute_create_filter(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let filter_type = args.get("filterType").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: filterType".to_string())
-    })?;
+    let filter_type = args
+        .get("filterType")
+        .or_else(|| args.get("filter_type"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: filterType".to_string())
+        })?;
 
     let configuration = args.get("configuration").ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: configuration".to_string())
@@ -466,6 +527,14 @@ pub async fn execute_create_filter(
     );
 
     // 2. Parse configuration into FilterConfig enum
+    // For jwt_auth, transform rules[].match from MCP-friendly format to internal format.
+    // Agents send {"prefix": "/api"} but serde expects {"path": {"Prefix": "/api"}}.
+    let configuration = if filter_type == "jwt_auth" {
+        &transform_jwt_auth_config(configuration)
+    } else {
+        configuration
+    };
+
     // Auto-wrap with type envelope so agents can pass flat config matching the schema
     // from cp_get_filter_type. Also accept pre-wrapped {"type": "...", "config": {...}}.
     let wrapped = if configuration.get("type").is_some() && configuration.get("config").is_some() {
@@ -558,11 +627,21 @@ pub async fn execute_update_filter(
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
     // 3. Parse optional updates (auto-wrap config if needed)
-    let new_name = args.get("newName").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let new_name = args
+        .get("newName")
+        .or_else(|| args.get("new_name"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let new_description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
     let new_config = if let Some(config_json) = args.get("configuration") {
         // Look up existing filter to get its type for auto-wrapping
         let existing = ops.get(name, &auth).await?;
+        // For jwt_auth, transform rules[].match from MCP-friendly format
+        let config_json = if existing.filter_type == "jwt_auth" {
+            transform_jwt_auth_config(config_json)
+        } else {
+            config_json.clone()
+        };
         let wrapped = if config_json.get("type").is_some() && config_json.get("config").is_some() {
             config_json.clone()
         } else {
@@ -631,8 +710,8 @@ pub async fn execute_delete_filter(
 
     ops.delete(name, &auth).await?;
 
-    // 3. Format success response (minimal token-efficient format)
-    let output = build_delete_response();
+    // 3. Format response with confirmation
+    let output = build_rich_delete_response("filter", name, None);
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -898,7 +977,7 @@ pub async fn execute_attach_filter(
         unreachable!()
     };
 
-    // 4. Format rich response with target confirmation
+    // 4. Format rich response with target confirmation and next-step guidance
     let attachment_id = format!("{}-{}", filter, target_name);
     let output = build_rich_create_response(
         "filter_attachment",
@@ -906,7 +985,10 @@ pub async fn execute_attach_filter(
         &attachment_id,
         Some(json!({"target_type": target_type, "target_name": target_name})),
         None,
-        None,
+        Some(&format!(
+            "Verify with cp_get_filter('{}') — check listenerInstallations or routeConfigInstallations",
+            filter
+        )),
     );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
@@ -1160,5 +1242,123 @@ mod tests {
         // Check required field
         let required = tool.input_schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("filter")));
+    }
+
+    // =========================================================================
+    // JWT auth rules transform tests
+    // =========================================================================
+
+    #[test]
+    fn test_transform_route_match_simplified_prefix() {
+        let input = json!({"prefix": "/api"});
+        let result = transform_route_match(&input);
+        assert_eq!(result, json!({"path": {"Prefix": "/api"}}));
+    }
+
+    #[test]
+    fn test_transform_route_match_simplified_exact() {
+        let input = json!({"exact": "/health"});
+        let result = transform_route_match(&input);
+        assert_eq!(result, json!({"path": {"Exact": "/health"}}));
+    }
+
+    #[test]
+    fn test_transform_route_match_simplified_regex() {
+        let input = json!({"regex": "/users/[0-9]+"});
+        let result = transform_route_match(&input);
+        assert_eq!(result, json!({"path": {"Regex": "/users/[0-9]+"}}));
+    }
+
+    #[test]
+    fn test_transform_route_match_mcp_format() {
+        let input = json!({"path": {"type": "prefix", "value": "/api"}});
+        let result = transform_route_match(&input);
+        assert_eq!(result, json!({"path": {"Prefix": "/api"}}));
+    }
+
+    #[test]
+    fn test_transform_route_match_internal_passthrough() {
+        let input = json!({"path": {"Prefix": "/api"}});
+        let result = transform_route_match(&input);
+        assert_eq!(result, json!({"path": {"Prefix": "/api"}}));
+    }
+
+    #[test]
+    fn test_transform_jwt_auth_config_with_rules() {
+        let input = json!({
+            "providers": {
+                "auth0": {
+                    "issuer": "https://auth.example.com",
+                    "audiences": ["api"],
+                    "jwks": {"type": "local", "inline_string": "{}"}
+                }
+            },
+            "rules": [{
+                "match": {"prefix": "/api"},
+                "requires": {"type": "provider_name", "provider_name": "auth0"}
+            }]
+        });
+
+        let result = transform_jwt_auth_config(&input);
+
+        // Rules should be transformed
+        let rules = result["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["match"], json!({"path": {"Prefix": "/api"}}));
+        // Requires should be untouched
+        assert_eq!(
+            rules[0]["requires"],
+            json!({"type": "provider_name", "provider_name": "auth0"})
+        );
+        // Providers should be untouched
+        assert!(result["providers"]["auth0"]["issuer"].is_string());
+    }
+
+    #[test]
+    fn test_transform_jwt_auth_config_without_rules() {
+        let input = json!({
+            "providers": {
+                "auth0": {
+                    "issuer": "https://auth.example.com",
+                    "audiences": ["api"],
+                    "jwks": {"type": "local", "inline_string": "{}"}
+                }
+            }
+        });
+
+        let result = transform_jwt_auth_config(&input);
+        // Should be unchanged
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_transform_jwt_auth_config_roundtrip_deserialization() {
+        // Verify that after transformation, the config deserializes correctly
+        let agent_input = json!({
+            "providers": {
+                "auth0": {
+                    "issuer": "https://auth.example.com",
+                    "audiences": ["api"],
+                    "jwks": {"type": "local", "inline_string": "{\"keys\":[]}"}
+                }
+            },
+            "rules": [{
+                "match": {"prefix": "/api"},
+                "requires": {"type": "provider_name", "provider_name": "auth0"}
+            }]
+        });
+
+        let transformed = transform_jwt_auth_config(&agent_input);
+        let wrapped = json!({"type": "jwt_auth", "config": transformed});
+        let config: crate::domain::FilterConfig = serde_json::from_value(wrapped)
+            .expect("Transformed JWT config should deserialize successfully");
+
+        match config {
+            crate::domain::FilterConfig::JwtAuth(jwt) => {
+                assert!(jwt.providers.contains_key("auth0"));
+                assert_eq!(jwt.rules.len(), 1);
+            }
+            _ => panic!("Expected JwtAuth config"),
+        }
     }
 }
