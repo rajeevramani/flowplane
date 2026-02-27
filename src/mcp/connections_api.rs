@@ -46,16 +46,16 @@ fn extract_team(query: &ConnectionsQuery, context: &AuthContext) -> Result<Strin
     Err("Unable to determine team. Please provide team via query parameter".to_string())
 }
 
-/// GET /api/v1/mcp/cp/connections
+/// GET /api/v1/mcp/connections
 ///
-/// List active MCP Control Plane connections and sessions for a team.
+/// List active MCP connections and sessions for a team.
 ///
 /// This endpoint returns both:
-/// - **SSE connections**: Real-time streaming connections established via `/api/v1/mcp/cp/sse`
-/// - **HTTP sessions**: Stateless HTTP-only sessions from clients using `/api/v1/mcp/cp`
+/// - **SSE connections**: Real-time streaming connections established via `GET /api/v1/mcp`
+/// - **HTTP sessions**: Stateless HTTP-only sessions from clients using `POST /api/v1/mcp`
 ///
 /// # Authentication
-/// Requires a valid bearer token with `mcp:read` scope.
+/// Requires a valid bearer token with `team:{name}:mcp:read` scope (or org admin).
 ///
 /// # Query Parameters
 /// - `team`: Optional team name. Required for admin users.
@@ -65,7 +65,7 @@ fn extract_team(query: &ConnectionsQuery, context: &AuthContext) -> Result<Strin
 /// protocol version, initialization status, and connection type.
 #[utoipa::path(
     get,
-    path = "/api/v1/mcp/cp/connections",
+    path = "/api/v1/mcp/connections",
     params(
         ("team" = Option<String>, Query, description = "Team name (required for admin users)")
     ),
@@ -82,16 +82,16 @@ pub async fn list_connections_handler(
     Extension(context): Extension<AuthContext>,
     Query(query): Query<ConnectionsQuery>,
 ) -> Result<Json<ConnectionsListResult>, (StatusCode, String)> {
-    // Check authorization — mcp:read, admin:all, or any org scope grants access
-    let has_org_scope = context
-        .scopes()
-        .any(|s| s.starts_with("org:") && s.matches(':').count() == 2 && !s.contains("::"));
-    if !context.has_scope("mcp:read") && !context.has_scope("admin:all") && !has_org_scope {
-        return Err((StatusCode::FORBIDDEN, "Missing required scope 'mcp:read'".to_string()));
-    }
-
-    // Extract team
+    // Extract team first, then check resource access for that team
     let team = extract_team(&query, &context).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    // Check authorization via unified resource access model
+    if !crate::auth::authorization::check_resource_access(&context, "mcp", "read", Some(&team)) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("Access denied: requires mcp:read access for team '{}'", team),
+        ));
+    }
 
     // Validate team belongs to caller's org (prevents cross-org team access via query param)
     if let Some(ref org_id) = context.org_id {

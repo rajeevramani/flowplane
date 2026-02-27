@@ -17,7 +17,7 @@ import httpx
 
 class FlowplaneMCPClient:
     def __init__(self, base_url: str, team: str, token: str):
-        self.endpoint = f"{base_url}/api/v1/mcp/cp?team={team}"
+        self.endpoint = f"{base_url}/api/v1/mcp?team={team}"
         self.token = token
         self.session_id: str | None = None
         self._request_id = 0

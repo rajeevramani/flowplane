@@ -5,7 +5,7 @@ license: Apache-2.0
 metadata:
   author: rajeevramani
   version: "0.1.0"
-compatibility: Requires Flowplane MCP server connection (control plane at /api/v1/mcp/cp, gateway API at /api/v1/mcp/api)
+compatibility: Requires Flowplane MCP server connection at /api/v1/mcp
 ---
 
 # Flowplane API Skill
@@ -14,12 +14,11 @@ Configure and manage API gateway resources through Flowplane's MCP tools. This s
 
 ## 1. MCP Connection Setup
 
-Flowplane exposes two MCP endpoints:
+Flowplane exposes a unified MCP endpoint:
 
 | Endpoint | Purpose | Scopes Required |
 |----------|---------|----------------|
-| `/api/v1/mcp/cp` | Control plane tools — manage clusters, routes, listeners, filters | `mcp:read`, `mcp:execute`, `cp:read` |
-| `/api/v1/mcp/api` | Gateway API tools — invoke backend APIs through Envoy | `api:read`, `api:execute` |
+| `/api/v1/mcp` | All tools — control plane management and gateway API execution | `team:{name}:cp:read` / `team:{name}:cp:write` for CP tools; `team:{name}:api:read` / `team:{name}:api:execute` for gateway tools |
 
 **Authentication:** Bearer token in `Authorization` header. All requests require a valid token.
 
