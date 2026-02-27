@@ -55,6 +55,6 @@ pub use session::{
 pub use streamable_http::{delete_handler, get_handler, post_handler};
 pub use tool_registry::{get_tool_authorization, ToolAuthorization};
 pub use transport_common::{
-    determine_response_mode, error_response_json, extract_mcp_headers, extract_team, get_db_pool,
+    determine_response_mode, error_response_json, extract_mcp_headers, get_db_pool,
     validate_protocol_version, McpHeaders, ResponseMode,
 };

@@ -9,13 +9,11 @@
 //! - Session ID format validation
 //! - Response mode determination (JSON vs SSE)
 
-use axum::http::HeaderMap;
-use tracing::debug;
-
 use crate::api::routes::ApiState;
 use crate::auth::models::AuthContext;
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse, SUPPORTED_VERSIONS};
+use axum::http::HeaderMap;
 
 #[allow(unused_imports)]
 use crate::mcp::protocol::error_codes;
@@ -86,54 +84,6 @@ pub fn extract_teams(context: &AuthContext) -> Vec<String> {
     }
 
     teams
-}
-
-/// Extract team name from query parameter or auth context
-///
-/// Priority order:
-/// 1. Query parameter `?team=<name>` (highest priority)
-/// 2. Token scopes with pattern `team:{name}:*`
-/// 3. Admin users with `admin:all` MUST provide team via query parameter
-///
-/// # Arguments
-/// * `team_query` - Optional team name from query parameter
-/// * `context` - Authentication context with token scopes
-///
-/// # Returns
-/// Team name on success, descriptive error message on failure
-pub fn extract_team(team_query: Option<&str>, context: &AuthContext) -> Result<String, String> {
-    // Platform admin with only admin:all (no org/team scopes) cannot specify teams.
-    // Governance/audit tools operate without team context.
-    // Tool-level auth (check_resource_access) also blocks resource tools
-    // for admin:all, but this provides defense-in-depth.
-    if context.has_scope("admin:all") {
-        let has_org_or_team_scopes =
-            context.scopes().any(|s| s.starts_with("org:") || s.starts_with("team:"));
-        if !has_org_or_team_scopes {
-            return Err("Platform admin cannot specify team for MCP operations. \
-                 Governance/audit tools do not require team context. \
-                 Use org-scoped token for resource operations."
-                .to_string());
-        }
-    }
-
-    // Priority 1: Query parameter
-    if let Some(team) = team_query {
-        debug!(team = %team, "Team extracted from query parameter");
-        return Ok(team.to_string());
-    }
-
-    // Priority 2: Extract team from scopes (pattern: team:{name}:*)
-    for scope in context.scopes() {
-        if let Some(team_part) = scope.strip_prefix("team:") {
-            if let Some(team_name) = team_part.split(':').next() {
-                debug!(team = %team_name, scope = %scope, "Team extracted from token scope");
-                return Ok(team_name.to_string());
-            }
-        }
-    }
-
-    Err("Unable to determine team. Please provide team via query parameter".to_string())
 }
 
 /// Resolve a team name to its UUID.
@@ -377,78 +327,6 @@ mod tests {
         let context = test_context(vec![]);
         let teams = extract_teams(&context);
         assert!(teams.is_empty());
-    }
-
-    // -------------------------------------------------------------------------
-    // Team Extraction Tests
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_team_from_query_parameter() {
-        let context = test_context(vec![]);
-        let result = extract_team(Some("acme-corp"), &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "acme-corp");
-    }
-
-    #[test]
-    fn test_extract_team_from_scope() {
-        let context = test_context(vec!["team:acme-corp:mcp:read"]);
-        let result = extract_team(None, &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "acme-corp");
-    }
-
-    #[test]
-    fn test_extract_team_query_takes_priority_over_scope() {
-        let context = test_context(vec!["team:old-team:mcp:read"]);
-        let result = extract_team(Some("new-team"), &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "new-team");
-    }
-
-    #[test]
-    fn test_extract_team_admin_only_blocked() {
-        // admin:all without org/team scopes cannot specify teams at all
-        let context = test_context(vec!["admin:all"]);
-        let result = extract_team(None, &context);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Platform admin cannot specify team"));
-    }
-
-    #[test]
-    fn test_extract_team_admin_only_with_query_still_blocked() {
-        // admin:all without org/team scopes blocked even with query param (defense-in-depth)
-        let context = test_context(vec!["admin:all"]);
-        let result = extract_team(Some("target-team"), &context);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Platform admin cannot specify team"));
-    }
-
-    #[test]
-    fn test_extract_team_admin_with_org_scopes_uses_query() {
-        // admin:all WITH org scopes can specify teams (e.g., dual-role token)
-        let context = test_context(vec!["admin:all", "org:acme:admin", "team:acme-eng:cp:read"]);
-        let result = extract_team(Some("acme-eng"), &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "acme-eng");
-    }
-
-    #[test]
-    fn test_extract_team_admin_with_org_scopes_extracts_from_scope() {
-        // admin:all WITH team scopes falls through to scope extraction
-        let context = test_context(vec!["admin:all", "team:acme-eng:cp:read"]);
-        let result = extract_team(None, &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "acme-eng");
-    }
-
-    #[test]
-    fn test_extract_team_no_team_found() {
-        let context = test_context(vec!["some:other:scope"]);
-        let result = extract_team(None, &context);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unable to determine team"));
     }
 
     // -------------------------------------------------------------------------

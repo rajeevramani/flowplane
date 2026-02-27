@@ -51,7 +51,7 @@ pub async fn list_mcp_tools_handler(
     Path(team): Path<String>,
     Query(query): Query<ListMcpToolsQuery>,
 ) -> Result<Json<PaginatedResponse<McpToolResponse>>, ApiError> {
-    // Authorization: require mcp:read scope
+    // Authorization: require team mcp:read access
     require_resource_access_resolved(
         &state,
         &context,
@@ -146,7 +146,7 @@ pub async fn get_mcp_tool_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, name)): Path<(String, String)>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
-    // Authorization: require mcp:read scope
+    // Authorization: require team mcp:read access
     require_resource_access_resolved(
         &state,
         &context,
@@ -303,7 +303,7 @@ pub async fn check_learned_schema_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_id)): Path<(String, String)>,
 ) -> Result<Json<CheckLearnedSchemaResponse>, ApiError> {
-    // Authorization: require mcp:read scope
+    // Authorization: require team mcp:read access
     require_resource_access_resolved(
         &state,
         &context,
