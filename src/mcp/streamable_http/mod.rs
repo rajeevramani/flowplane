@@ -39,14 +39,6 @@ pub enum McpScope {
 }
 
 impl McpScope {
-    /// Get the scope configuration for authorization
-    pub fn scope_config(&self) -> &'static crate::mcp::transport_common::ScopeConfig {
-        match self {
-            McpScope::ControlPlane => &crate::mcp::transport_common::CP_SCOPES,
-            McpScope::GatewayApi => &crate::mcp::transport_common::API_SCOPES,
-        }
-    }
-
     /// Get the endpoint path for this scope
     pub fn endpoint_path(&self) -> &'static str {
         match self {

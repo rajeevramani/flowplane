@@ -35,8 +35,7 @@ use crate::mcp::notifications::NotificationMessage;
 use crate::mcp::protocol::{error_codes, JsonRpcError, JsonRpcResponse};
 use crate::mcp::session::SessionId;
 use crate::mcp::transport_common::{
-    check_method_authorization, extract_mcp_headers, extract_team, get_db_pool,
-    validate_team_org_membership,
+    extract_mcp_headers, extract_team, get_db_pool, validate_team_org_membership,
 };
 use crate::mcp::SharedConnectionManager;
 
@@ -311,7 +310,6 @@ async fn get_handler(
 ) -> Result<impl IntoResponse, axum::response::Response> {
     let connection_manager = state.mcp_connection_manager.clone();
     let session_manager = state.mcp_session_manager.clone();
-    let scope_config = scope.scope_config();
 
     // Extract MCP headers
     let mcp_headers = extract_mcp_headers(&headers);
@@ -402,12 +400,6 @@ async fn get_handler(
             error_codes::INVALID_REQUEST,
             "Session not found or expired".to_string(),
         ));
-    }
-
-    // Check authorization
-    if let Err(e) = check_method_authorization("tools/list", &context, scope_config) {
-        error!(error = %e, "SSE authorization failed");
-        return Err(error_response(error_codes::INVALID_REQUEST, e));
     }
 
     // Register SSE connection
