@@ -84,7 +84,8 @@ fn validate_protocol_version(client_version: &str) -> Result<(), McpError> {
 pub struct McpHandler {
     db_pool: Arc<DbPool>,
     xds_state: Option<Arc<XdsState>>,
-    team: String,
+    /// Teams this session has access to (multi-team support)
+    teams: Vec<String>,
     /// Full authentication context for tool-level authorization and org isolation
     context: AuthContext,
     initialized: bool,
@@ -95,12 +96,12 @@ impl McpHandler {
     ///
     /// # Arguments
     /// * `db_pool` - Database connection pool
-    /// * `team` - Team context for multi-tenancy
+    /// * `teams` - Team names this session is authorized for
     /// * `context` - Authentication context carrying scopes and org identity
     // org_id is None in CLI context: direct machine access with admin:all scopes.
     // Org isolation is only enforced on the HTTP MCP path via `with_xds_state`.
-    pub fn new(db_pool: Arc<DbPool>, team: String, context: AuthContext) -> Self {
-        Self { db_pool, xds_state: None, team, context, initialized: false }
+    pub fn new(db_pool: Arc<DbPool>, teams: Vec<String>, context: AuthContext) -> Self {
+        Self { db_pool, xds_state: None, teams, context, initialized: false }
     }
 
     /// Create a new MCP handler with full read/write capabilities
@@ -108,15 +109,15 @@ impl McpHandler {
     /// # Arguments
     /// * `db_pool` - Database connection pool
     /// * `xds_state` - XDS state for control plane operations
-    /// * `team` - Team context for multi-tenancy
+    /// * `teams` - Team names this session is authorized for
     /// * `context` - Authentication context carrying scopes and org identity
     pub fn with_xds_state(
         db_pool: Arc<DbPool>,
         xds_state: Arc<XdsState>,
-        team: String,
+        teams: Vec<String>,
         context: AuthContext,
     ) -> Self {
-        Self { db_pool, xds_state: Some(xds_state), team, context, initialized: false }
+        Self { db_pool, xds_state: Some(xds_state), teams, context, initialized: false }
     }
 
     /// Resolve team name to UUID for database queries.
@@ -126,22 +127,22 @@ impl McpHandler {
     /// but direct-DB tools and the reporting repository need the UUID passed in.
     ///
     /// Returns the team name unchanged if it's already a UUID or is empty.
-    async fn resolve_team_uuid(&self) -> Result<String, McpError> {
-        if self.team.is_empty() {
-            return Ok(self.team.clone());
+    async fn resolve_team_uuid(&self, team: &str) -> Result<String, McpError> {
+        if team.is_empty() {
+            return Ok(team.to_string());
         }
-        if uuid::Uuid::parse_str(&self.team).is_ok() {
-            return Ok(self.team.clone());
+        if uuid::Uuid::parse_str(team).is_ok() {
+            return Ok(team.to_string());
         }
         let row: Option<(String,)> = sqlx::query_as("SELECT id FROM teams WHERE name = $1")
-            .bind(&self.team)
+            .bind(team)
             .fetch_optional(&*self.db_pool)
             .await
             .map_err(|e| {
-                McpError::InternalError(format!("Failed to resolve team '{}': {}", self.team, e))
+                McpError::InternalError(format!("Failed to resolve team '{}': {}", team, e))
             })?;
         row.map(|r| r.0)
-            .ok_or_else(|| McpError::InternalError(format!("Team '{}' not found", self.team)))
+            .ok_or_else(|| McpError::InternalError(format!("Team '{}' not found", team)))
     }
 
     /// Handle an incoming JSON-RPC request
@@ -326,27 +327,48 @@ impl McpHandler {
             }
         };
 
-        debug!(tool_name = %params.name, "Executing tool call");
+        let args = params.arguments.unwrap_or(serde_json::json!({}));
 
-        // Check tool-level authorization
-        if let Err(auth_error) = self.check_tool_authorization(&params.name) {
+        // Extract team from tool arguments (CP tools pass their team explicitly)
+        let tool_team = args.get("team").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+        // Validate the requested team is in this session's authorized teams.
+        // If self.teams is empty (admin:all governance token), skip the check —
+        // check_tool_authorization will still enforce resource-level permissions.
+        if !tool_team.is_empty() && !self.teams.is_empty() && !self.teams.contains(&tool_team) {
             warn!(
                 tool_name = %params.name,
-                team = %self.team,
+                tool_team = %tool_team,
+                "Requested team not in session's authorized teams"
+            );
+            return self.error_response(
+                id,
+                McpError::Forbidden(format!(
+                    "Team '{}' is not accessible with your token scopes",
+                    tool_team
+                )),
+            );
+        }
+
+        debug!(tool_name = %params.name, team = %tool_team, "Executing tool call");
+
+        // Check tool-level authorization using the per-call team
+        if let Err(auth_error) = self.check_tool_authorization(&params.name, &tool_team) {
+            warn!(
+                tool_name = %params.name,
+                team = %tool_team,
                 error = %auth_error,
                 "Tool authorization failed"
             );
             return self.error_response(id, auth_error);
         }
 
-        let args = params.arguments.unwrap_or(serde_json::json!({}));
-
         // Resolve team name → UUID once for all tool dispatches.
         // Resource tables store UUIDs, not names.
-        let team = match self.resolve_team_uuid().await {
+        let team = match self.resolve_team_uuid(&tool_team).await {
             Ok(t) => t,
             Err(e) => {
-                warn!(team = %self.team, error = %e, "Failed to resolve team UUID");
+                warn!(team = %tool_team, error = %e, "Failed to resolve team UUID");
                 return self.error_response(id, e);
             }
         };
@@ -1021,9 +1043,11 @@ impl McpHandler {
     }
 
     async fn handle_resources_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
-        debug!(team = %self.team, "Listing available resources");
+        let team_display = self.teams.first().map(|s| s.as_str()).unwrap_or("multi-team");
+        debug!(team = %team_display, "Listing available resources");
 
-        let team = match self.resolve_team_uuid().await {
+        let first_team = self.teams.first().cloned().unwrap_or_default();
+        let team = match self.resolve_team_uuid(&first_team).await {
             Ok(t) => t,
             Err(e) => return self.error_response(id, e),
         };
@@ -1165,15 +1189,22 @@ impl McpHandler {
     ///
     /// Uses the unified check_resource_access() that REST handlers also use,
     /// enforcing team-scoped permissions (team:{team}:{resource}:{action}).
-    fn check_tool_authorization(&self, tool_name: &str) -> Result<(), McpError> {
+    ///
+    /// # Arguments
+    /// * `tool_name` - Name of the tool to authorize
+    /// * `team` - Team extracted from tool arguments (empty string for governance tools)
+    fn check_tool_authorization(&self, tool_name: &str, team: &str) -> Result<(), McpError> {
         let auth = get_tool_authorization(tool_name)
             .ok_or_else(|| McpError::ToolNotFound(format!("Unknown tool: {}", tool_name)))?;
 
-        if check_resource_access(&self.context, auth.resource, auth.action, Some(&self.team)) {
+        let team_opt = if team.is_empty() { None } else { Some(team) };
+
+        if check_resource_access(&self.context, auth.resource, auth.action, team_opt) {
             debug!(
                 tool_name = %tool_name,
                 resource = %auth.resource,
                 action = %auth.action,
+                team = %team,
                 "Tool authorization granted"
             );
             return Ok(());
@@ -1181,7 +1212,7 @@ impl McpHandler {
 
         Err(McpError::Forbidden(format!(
             "Access denied: {} requires team:{}:{}:{}",
-            tool_name, self.team, auth.resource, auth.action
+            tool_name, team, auth.resource, auth.action
         )))
     }
 
@@ -1228,7 +1259,7 @@ mod tests {
             "test".to_string(),
             vec!["admin:all".to_string()],
         );
-        let handler = McpHandler::new(Arc::new(pool), "test-team".to_string(), context);
+        let handler = McpHandler::new(Arc::new(pool), vec!["test-team".to_string()], context);
         (test_db, handler)
     }
 

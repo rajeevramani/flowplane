@@ -26,8 +26,8 @@ use crate::mcp::protocol::{
 use crate::mcp::security::{generate_secure_session_id, validate_session_id_format};
 use crate::mcp::session::SessionId;
 use crate::mcp::transport_common::{
-    determine_response_mode, error_response_json, extract_mcp_headers, extract_team, get_db_pool,
-    validate_protocol_version, validate_team_org_membership, ResponseMode,
+    determine_response_mode, error_response_json, extract_mcp_headers, extract_teams, get_db_pool,
+    validate_protocol_version, ResponseMode,
 };
 
 use super::McpScope;
@@ -221,62 +221,19 @@ async fn post_handler(
         (sid, session_id_str, false)
     };
 
-    // Extract team from query or context
-    let team = match extract_team(query.team.as_deref(), &context) {
-        Ok(team) => team,
-        Err(e) => {
-            error!(error = %e, "Failed to extract team");
-            return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
-                .into_response();
-        }
-    };
+    // Extract all authorized teams from token scopes.
+    // ?team= query param is accepted but ignored — multi-team sessions eliminate
+    // the need to specify a team at connection time.
+    let teams = extract_teams(&context);
 
-    // Validate team belongs to caller's org (prevents cross-org team access via query param)
-    if let Some(ref org_id) = context.org_id {
-        if let Ok(db_pool) = get_db_pool(&state) {
-            if let Err(e) = validate_team_org_membership(&team, org_id, &db_pool).await {
-                error!(error = %e, team = %team, "Team org membership validation failed");
-                return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
-                    .into_response();
-            }
-        }
-    }
-
-    // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
-    let team = match get_db_pool(&state) {
-        Ok(db_pool) => match crate::mcp::transport_common::resolve_team_id(&team, &db_pool).await {
-            Ok(team_id) => team_id,
-            Err(e) => {
-                error!(error = %e, "Failed to resolve team name to UUID");
-                return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
-                    .into_response();
-            }
-        },
-        Err(_) => team, // Fallback to name if DB unavailable
-    };
-
-    // For new sessions, create the session in the manager
+    // For new sessions, create the session bound to the token's authorized teams.
+    // For existing sessions, the session ID is the security boundary — any valid
+    // token that presents a known session ID may use it.
     if is_new_session {
-        let _ = state.mcp_session_manager.get_or_create_for_team(&session_id, &team);
-    } else {
-        // Validate session ownership for existing sessions
-        if let Err(_e) = state.mcp_session_manager.validate_session_ownership(&session_id, &team) {
-            warn!(
-                session_id = %session_id_str,
-                team = %team,
-                "Session ownership validation failed"
-            );
-            // Return generic error to avoid leaking info
-            return Json(error_response_json(
-                error_codes::INVALID_REQUEST,
-                "Session not found or expired".to_string(),
-                request.id,
-            ))
-            .into_response();
-        }
+        let _ = state.mcp_session_manager.get_or_create_for_teams(&session_id, &teams);
     }
 
-    debug!(team = %team, method = %request.method, "Processing MCP request");
+    debug!(teams = ?teams, method = %request.method, "Processing MCP request");
 
     // Get database pool
     let db_pool = match get_db_pool(&state) {
@@ -305,13 +262,13 @@ async fn post_handler(
             let mut handler = McpHandler::with_xds_state(
                 db_pool,
                 state.xds_state.clone(),
-                team.clone(),
+                teams.clone(),
                 context.clone(),
             );
             handler.handle_request(request.clone()).await
         }
         McpScope::GatewayApi => {
-            let mut handler = McpApiHandler::new(db_pool, team.clone(), context.clone());
+            let mut handler = McpApiHandler::new(db_pool, teams.clone(), context.clone());
             handler.handle_request(request.clone()).await
         }
     };
@@ -330,17 +287,17 @@ async fn post_handler(
                 .unwrap_or(&params.protocol_version)
                 .to_string();
 
-            state.mcp_session_manager.mark_initialized_with_team(
+            state.mcp_session_manager.mark_initialized_with_teams(
                 &session_id,
                 protocol_version,
                 params.client_info.clone(),
-                Some(team.clone()),
+                teams.clone(),
             );
 
             info!(
                 session_id = %session_id_str,
                 client = %params.client_info.name,
-                team = %team,
+                teams = ?teams,
                 scope = ?scope,
                 "Session initialized"
             );
