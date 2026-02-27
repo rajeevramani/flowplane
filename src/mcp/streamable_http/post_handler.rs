@@ -312,18 +312,16 @@ async fn post_handler(
     // Route to appropriate handler
     let response = match scope {
         McpScope::ControlPlane => {
-            let scopes: Vec<String> = context.scopes().map(|s| s.to_string()).collect();
             let mut handler = McpHandler::with_xds_state(
                 db_pool,
                 state.xds_state.clone(),
                 team.clone(),
-                scopes,
-                context.org_id.clone(),
+                context.clone(),
             );
             handler.handle_request(request.clone()).await
         }
         McpScope::GatewayApi => {
-            let mut handler = McpApiHandler::new(db_pool, team.clone());
+            let mut handler = McpApiHandler::new(db_pool, team.clone(), context.clone());
             handler.handle_request(request.clone()).await
         }
     };

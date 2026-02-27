@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, error};
 
+use crate::auth::models::AuthContext;
 use crate::domain::McpToolCategory;
 use crate::mcp::error::McpError;
 use crate::mcp::gateway::GatewayExecutor;
@@ -18,14 +19,23 @@ use crate::storage::DbPool;
 pub struct McpApiHandler {
     db_pool: Arc<DbPool>,
     team: String,
+    /// Authentication context for future use in authorization checks (Task 1.3)
+    #[allow(dead_code)]
+    context: AuthContext,
     gateway_executor: GatewayExecutor,
     #[allow(dead_code)]
     initialized: bool,
 }
 
 impl McpApiHandler {
-    pub fn new(db_pool: Arc<DbPool>, team: String) -> Self {
-        Self { db_pool, team, gateway_executor: GatewayExecutor::new(), initialized: false }
+    pub fn new(db_pool: Arc<DbPool>, team: String, context: AuthContext) -> Self {
+        Self {
+            db_pool,
+            team,
+            context,
+            gateway_executor: GatewayExecutor::new(),
+            initialized: false,
+        }
     }
 
     /// Handle an incoming JSON-RPC request for API tools
@@ -355,14 +365,21 @@ impl McpApiHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::models::AuthContext;
+    use crate::domain::TokenId;
     use crate::storage::test_helpers::TestDatabase;
+
+    fn test_context() -> AuthContext {
+        AuthContext::new(TokenId::from_string("test-token".to_string()), "test".to_string(), vec![])
+    }
 
     #[tokio::test]
     async fn test_ping() {
         let _db = TestDatabase::new("mcp_api_handler_ping").await;
         let pool = _db.pool.clone();
 
-        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+        let mut handler =
+            McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -383,7 +400,8 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_init").await;
         let pool = _db.pool.clone();
 
-        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+        let mut handler =
+            McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -416,7 +434,8 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_not_found").await;
         let pool = _db.pool.clone();
 
-        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+        let mut handler =
+            McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -438,7 +457,7 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_version_ok").await;
         let pool = _db.pool.clone();
 
-        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
 
         let result = handler.negotiate_version("2025-11-25");
         assert!(result.is_ok());
@@ -450,7 +469,7 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_version_bad").await;
         let pool = _db.pool.clone();
 
-        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
 
         let result = handler.negotiate_version("2020-01-01");
         assert!(result.is_err());
@@ -469,7 +488,7 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_version_2025_03_26").await;
         let pool = _db.pool.clone();
 
-        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
 
         let result = handler.negotiate_version("2025-03-26");
         assert!(result.is_ok());
@@ -481,7 +500,8 @@ mod tests {
         let _db = TestDatabase::new("mcp_api_handler_init_2025_03_26").await;
         let pool = _db.pool.clone();
 
-        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+        let mut handler =
+            McpApiHandler::new(Arc::new(pool), "test-team".to_string(), test_context());
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
