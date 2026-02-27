@@ -13,6 +13,8 @@
 mod common;
 
 use common::test_db::TestDatabase;
+use flowplane::auth::models::AuthContext;
+use flowplane::domain::TokenId;
 use flowplane::mcp::error::McpError;
 use flowplane::mcp::handler::McpHandler;
 use flowplane::mcp::protocol::*;
@@ -29,8 +31,12 @@ async fn create_test_handler() -> (TestDatabase, McpHandler) {
     let test_db = TestDatabase::new("mcp_edge_cases").await;
     let pool = test_db.pool.clone();
     // Use admin:all scope for tests to bypass authorization
-    let handler =
-        McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()]);
+    let context = AuthContext::new(
+        TokenId::from_string("test-token".to_string()),
+        "test".to_string(),
+        vec!["admin:all".to_string()],
+    );
+    let handler = McpHandler::new(Arc::new(pool), "test-team".to_string(), context);
     (test_db, handler)
 }
 
