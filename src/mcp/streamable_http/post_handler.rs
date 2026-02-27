@@ -16,8 +16,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::api::routes::ApiState;
 use crate::auth::models::AuthContext;
-use crate::mcp::api_handler::McpApiHandler;
 use crate::mcp::connection::ConnectionId;
+use crate::mcp::gateway::GatewayExecutor;
 use crate::mcp::handler::McpHandler;
 use crate::mcp::notifications::NotificationMessage;
 use crate::mcp::protocol::{
@@ -29,8 +29,6 @@ use crate::mcp::transport_common::{
     determine_response_mode, error_response_json, extract_mcp_headers, extract_teams, get_db_pool,
     validate_protocol_version, ResponseMode,
 };
-
-use super::McpScope;
 
 /// Query parameters for POST endpoint
 #[derive(Debug, Deserialize)]
@@ -47,9 +45,10 @@ const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 /// Header name for protocol version in responses
 const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 
-/// POST /api/v1/mcp/cp
+/// POST /api/v1/mcp
 ///
-/// Handle Control Plane JSON-RPC requests.
+/// Handle MCP JSON-RPC requests for both Control Plane and Gateway API tools.
+/// Dispatches tool calls to CP tool executors or GatewayExecutor based on tool name.
 ///
 /// # Headers
 /// - `MCP-Protocol-Version`: Optional - supported versions: 2025-11-25, 2025-03-26
@@ -60,7 +59,7 @@ const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 /// - `MCP-Session-Id`: Assigned on initialize, echoed on subsequent requests
 #[utoipa::path(
     post,
-    path = "/api/v1/mcp/cp",
+    path = "/api/v1/mcp",
     request_body = JsonRpcRequest,
     responses(
         (status = 200, description = "JSON-RPC response", body = JsonRpcResponse),
@@ -72,65 +71,17 @@ const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
     ),
     tag = "MCP Protocol"
 )]
-pub async fn post_handler_cp(
+pub async fn post_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     headers: HeaderMap,
     Query(query): Query<PostQuery>,
     Json(request): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
-    post_handler(McpScope::ControlPlane, state, context, headers, query, request).await
-}
-
-/// POST /api/v1/mcp/api
-///
-/// Handle Gateway API JSON-RPC requests.
-///
-/// # Headers
-/// - `MCP-Protocol-Version`: Optional - supported versions: 2025-11-25, 2025-03-26
-/// - `MCP-Session-Id`: Required after initialize
-/// - `Accept`: `application/json` or `text/event-stream`
-///
-/// # Response Headers
-/// - `MCP-Session-Id`: Assigned on initialize, echoed on subsequent requests
-#[utoipa::path(
-    post,
-    path = "/api/v1/mcp/api",
-    request_body = JsonRpcRequest,
-    responses(
-        (status = 200, description = "JSON-RPC response", body = JsonRpcResponse),
-        (status = 202, description = "Response sent via SSE"),
-        (status = 400, description = "Invalid request"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 500, description = "Internal server error")
-    ),
-    tag = "MCP Protocol"
-)]
-pub async fn post_handler_api(
-    State(state): State<ApiState>,
-    Extension(context): Extension<AuthContext>,
-    headers: HeaderMap,
-    Query(query): Query<PostQuery>,
-    Json(request): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
-    post_handler(McpScope::GatewayApi, state, context, headers, query, request).await
-}
-
-/// Generic POST handler for JSON-RPC requests
-async fn post_handler(
-    scope: McpScope,
-    state: ApiState,
-    context: AuthContext,
-    headers: HeaderMap,
-    query: PostQuery,
-    request: JsonRpcRequest,
 ) -> impl IntoResponse {
     debug!(
         method = %request.method,
         id = ?request.id,
         token_name = %context.token_name,
-        scope = ?scope,
         "Received MCP POST request"
     );
 
@@ -256,21 +207,16 @@ async fn post_handler(
         None
     };
 
-    // Route to appropriate handler
-    let response = match scope {
-        McpScope::ControlPlane => {
-            let mut handler = McpHandler::with_xds_state(
-                db_pool,
-                state.xds_state.clone(),
-                teams.clone(),
-                context.clone(),
-            );
-            handler.handle_request(request.clone()).await
-        }
-        McpScope::GatewayApi => {
-            let mut handler = McpApiHandler::new(db_pool, teams.clone(), context.clone());
-            handler.handle_request(request.clone()).await
-        }
+    // Unified handler dispatches to CP tools or GatewayExecutor based on tool name
+    let response = {
+        let mut handler = McpHandler::with_gateway(
+            db_pool,
+            state.xds_state.clone(),
+            teams.clone(),
+            context.clone(),
+            GatewayExecutor::new(),
+        );
+        handler.handle_request(request.clone()).await
     };
 
     // Detect if the original request was a notification (no id per JSON-RPC 2.0)
@@ -298,7 +244,6 @@ async fn post_handler(
                 session_id = %session_id_str,
                 client = %params.client_info.name,
                 teams = ?teams,
-                scope = ?scope,
                 "Session initialized"
             );
         }

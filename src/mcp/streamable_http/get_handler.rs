@@ -37,8 +37,6 @@ use crate::mcp::session::SessionId;
 use crate::mcp::transport_common::{extract_mcp_headers, extract_teams};
 use crate::mcp::SharedConnectionManager;
 
-use super::McpScope;
-
 /// Event ID for SSE resumability (MCP 2025-11-25)
 ///
 /// Format: `{connection_id}:{sequence}`
@@ -226,45 +224,9 @@ fn error_response(code: i32, message: String) -> axum::response::Response {
     (status, Json(body)).into_response()
 }
 
-/// GET /api/v1/mcp/cp
+/// GET /api/v1/mcp
 ///
-/// Open SSE stream for Control Plane notifications.
-///
-/// # Headers
-/// - `MCP-Session-Id`: Required - existing session ID
-///
-/// # Response Headers
-/// - `MCP-Session-Id`: Echo of session ID
-///
-/// # Events
-/// - `message`: JSON-RPC response messages
-/// - `progress`: Progress notifications for long-running operations
-/// - `log`: Log messages from the server
-/// - `ping`: Heartbeat events
-#[utoipa::path(
-    get,
-    path = "/api/v1/mcp/cp",
-    responses(
-        (status = 200, description = "SSE stream established"),
-        (status = 400, description = "Invalid or missing session"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 429, description = "Connection limit exceeded")
-    ),
-    tag = "MCP Protocol"
-)]
-pub async fn get_handler_cp(
-    State(state): State<ApiState>,
-    Extension(context): Extension<AuthContext>,
-    headers: HeaderMap,
-    Query(query): Query<SseQuery>,
-) -> Result<impl IntoResponse, axum::response::Response> {
-    get_handler(McpScope::ControlPlane, state, context, headers, query).await
-}
-
-/// GET /api/v1/mcp/api
-///
-/// Open SSE stream for Gateway API notifications.
+/// Open SSE stream for server notifications.
 ///
 /// # Headers
 /// - `MCP-Session-Id`: Required - existing session ID
@@ -279,7 +241,7 @@ pub async fn get_handler_cp(
 /// - `ping`: Heartbeat events
 #[utoipa::path(
     get,
-    path = "/api/v1/mcp/api",
+    path = "/api/v1/mcp",
     responses(
         (status = 200, description = "SSE stream established"),
         (status = 400, description = "Invalid or missing session"),
@@ -289,22 +251,11 @@ pub async fn get_handler_cp(
     ),
     tag = "MCP Protocol"
 )]
-pub async fn get_handler_api(
+pub async fn get_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     headers: HeaderMap,
-    Query(query): Query<SseQuery>,
-) -> Result<impl IntoResponse, axum::response::Response> {
-    get_handler(McpScope::GatewayApi, state, context, headers, query).await
-}
-
-/// Generic GET handler for SSE streaming
-async fn get_handler(
-    scope: McpScope,
-    state: ApiState,
-    context: AuthContext,
-    headers: HeaderMap,
-    _query: SseQuery,
+    Query(_query): Query<SseQuery>,
 ) -> Result<impl IntoResponse, axum::response::Response> {
     let connection_manager = state.mcp_connection_manager.clone();
     let session_manager = state.mcp_session_manager.clone();
@@ -317,7 +268,6 @@ async fn get_handler(
         Some(id) => id.clone(),
         None => {
             warn!(
-                scope = ?scope,
                 token = %context.token_name,
                 "GET request missing MCP-Session-Id header"
             );
@@ -345,7 +295,6 @@ async fn get_handler(
     if !session_manager.exists(&session_id) {
         warn!(
             session_id = %session_id_str,
-            scope = ?scope,
             "GET request for non-existent session"
         );
         return Err(error_response(
@@ -441,7 +390,6 @@ async fn get_handler(
         session_id = %session_id_str,
         team = %team,
         token_name = %context.token_name,
-        scope = ?scope,
         replayed_count = replayed_messages.len(),
         "SSE connection established"
     );
