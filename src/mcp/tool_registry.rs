@@ -641,6 +641,24 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
                 risk_level: RiskLevel::Low,
             },
         );
+        m.insert(
+            "cp_activate_learning_session",
+            ToolAuthorization {
+                resource: "learning-sessions",
+                action: "write",
+                description: "Activate learning session requires learning-sessions:write",
+                risk_level: RiskLevel::Low,
+            },
+        );
+        m.insert(
+            "ops_learning_session_health",
+            ToolAuthorization {
+                resource: "learning-sessions",
+                action: "read",
+                description: "Learning session health check requires learning-sessions:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
 
         // ============================================================================
         // AGGREGATED SCHEMA TOOLS
@@ -873,6 +891,25 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
                 resource: "clusters",
                 action: "read",
                 description: "Validate config requires clusters:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+
+        m.insert(
+            "ops_xds_delivery_status",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "xDS delivery status requires clusters:read or cp:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
+            "ops_nack_history",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "NACK history requires clusters:read or cp:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -1434,6 +1471,7 @@ mod tests {
             "dev_preflight_check",
             "cp_query_service",
             "cp_export_schema_openapi",
+            "ops_learning_session_health",
         ];
 
         for tool_name in &read_tools {

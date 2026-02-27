@@ -21,6 +21,7 @@ pub mod listener;
 pub mod listener_auto_filter;
 pub mod listener_route_config;
 pub mod mcp_tool;
+pub mod nack_event;
 pub mod organization;
 pub mod proxy_certificate;
 pub mod reporting;
@@ -84,6 +85,7 @@ pub use listener_route_config::{ListenerRouteConfigData, ListenerRouteConfigRepo
 pub use mcp_tool::{
     CreateMcpToolRequest, McpToolData, McpToolRepository, McpToolWithGateway, UpdateMcpToolRequest,
 };
+pub use nack_event::{CreateNackEventRequest, NackEventData, NackEventRepository};
 pub use organization::{
     OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
     SqlxOrganizationRepository,

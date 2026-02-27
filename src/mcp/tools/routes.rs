@@ -11,8 +11,8 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_delete_response, build_query_response, build_rich_create_response, build_update_response,
-    ResourceRef,
+    build_delete_response, build_query_response, build_rich_create_response,
+    build_rich_delete_response, build_update_response, ResourceRef,
 };
 use crate::storage::DbPool;
 use crate::xds::XdsState;
@@ -883,9 +883,10 @@ pub async fn execute_create_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
-    })?;
+    let virtual_hosts =
+        args.get("virtualHosts").or_else(|| args.get("virtual_hosts")).ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
+        })?;
 
     tracing::debug!(
         team = %team,
@@ -973,9 +974,10 @@ pub async fn execute_update_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
-    })?;
+    let virtual_hosts =
+        args.get("virtualHosts").or_else(|| args.get("virtual_hosts")).ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
+        })?;
 
     tracing::debug!(
         team = %team,
@@ -1007,8 +1009,11 @@ pub async fn execute_update_route_config(
 
     let result = ops.update(name, req, &auth).await?;
 
-    // 5. Format success response (minimal token-efficient format)
-    let output = build_update_response("route_config", &result.data.name, result.data.id.as_ref());
+    // 5. Format response with next-step guidance
+    let mut output =
+        build_update_response("route_config", &result.data.name, result.data.id.as_ref());
+    output["next_step"] =
+        json!("Verify with ops_trace_request to confirm routing works as expected");
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -1055,8 +1060,10 @@ pub async fn execute_delete_route_config(
 
     ops.delete(name, &auth).await?;
 
-    // 3. Format success response (minimal token-efficient format)
-    let output = build_delete_response();
+    // 3. Format response with next-step guidance
+    let mut output = build_rich_delete_response("route_config", name, None);
+    output["next_step"] =
+        json!("Clusters still exist — use cp_delete_cluster if removing the full API");
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -1498,7 +1505,7 @@ pub async fn execute_create_route(
             "cluster": cluster_name
         })),
         None,
-        None,
+        Some("Route saved to DB index only. To make it live in Envoy, use cp_update_route_config with the full virtualHosts array including this new route."),
     );
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;

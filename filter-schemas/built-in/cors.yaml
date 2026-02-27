@@ -17,6 +17,16 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — disable CORS for this route
+  - Full config replacement — provide complete CORS policy
+
+  BEHAVIOR:
+  - Preflight OPTIONS requests are handled by the filter directly
+  - They do NOT reach the upstream service
+  - allow_origin_string_match is the field for allowed origins
+
 config_schema:
   type: object
   required:

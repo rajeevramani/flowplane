@@ -340,13 +340,13 @@ impl McpApiHandler {
     }
 
     fn negotiate_version(&self, client_version: &str) -> Result<String, McpError> {
-        // Only support MCP 2025-11-25 per Phase 1.1 (Single Version Support)
-        if client_version == PROTOCOL_VERSION {
-            Ok(PROTOCOL_VERSION.to_string())
+        // Support all versions listed in SUPPORTED_VERSIONS; echo back the client's version
+        if SUPPORTED_VERSIONS.contains(&client_version) {
+            Ok(client_version.to_string())
         } else {
             Err(McpError::UnsupportedProtocolVersion {
                 client: client_version.to_string(),
-                supported: vec![PROTOCOL_VERSION.to_string()],
+                supported: SUPPORTED_VERSIONS.iter().map(|s| s.to_string()).collect(),
             })
         }
     }
@@ -457,9 +457,53 @@ mod tests {
         match result {
             Err(McpError::UnsupportedProtocolVersion { client, supported }) => {
                 assert_eq!(client, "2020-01-01");
-                assert!(!supported.is_empty());
+                assert!(supported.contains(&"2025-11-25".to_string()));
+                assert!(supported.contains(&"2025-03-26".to_string()));
             }
             _ => panic!("Expected UnsupportedProtocolVersion error"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_version_negotiation_2025_03_26() {
+        let _db = TestDatabase::new("mcp_api_handler_version_2025_03_26").await;
+        let pool = _db.pool.clone();
+
+        let handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+
+        let result = handler.negotiate_version("2025-03-26");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "2025-03-26");
+    }
+
+    #[tokio::test]
+    async fn test_initialize_with_2025_03_26() {
+        let _db = TestDatabase::new("mcp_api_handler_init_2025_03_26").await;
+        let pool = _db.pool.clone();
+
+        let mut handler = McpApiHandler::new(Arc::new(pool), "test-team".to_string());
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Number(1)),
+            method: "initialize".to_string(),
+            params: serde_json::json!({
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0.0"
+                }
+            }),
+        };
+
+        let response = handler.handle_request(request).await;
+
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
+
+        let result = response.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2025-03-26");
+        assert_eq!(result["serverInfo"]["name"], "flowplane-mcp-api");
     }
 }

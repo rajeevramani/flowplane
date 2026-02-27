@@ -62,6 +62,14 @@ pub struct FilterTypeInfo {
     /// UI hints for form generation (if available)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_hints: Option<FilterTypeUiHints>,
+
+    /// JSON Schema for per-route configuration (if different from base config)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_route_config_schema: Option<serde_json::Value>,
+
+    /// UI hints for per-route form generation (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_route_ui_hints: Option<FilterTypeUiHints>,
 }
 
 /// UI hints for filter form generation.
@@ -183,6 +191,8 @@ pub async fn list_filter_types_handler(
                 },
                 config_schema: schema.config_schema.clone(),
                 ui_hints,
+                per_route_config_schema: schema.per_route_config_schema.clone(),
+                per_route_ui_hints: None,
             }
         })
         .collect();
@@ -266,6 +276,8 @@ pub async fn get_filter_type_handler(
         },
         config_schema: schema.config_schema.clone(),
         ui_hints,
+        per_route_config_schema: schema.per_route_config_schema.clone(),
+        per_route_ui_hints: None,
     };
 
     Ok(Json(filter_info))
@@ -329,6 +341,8 @@ mod tests {
             source: "built_in".to_string(),
             config_schema: serde_json::json!({"type": "object"}),
             ui_hints: None,
+            per_route_config_schema: None,
+            per_route_ui_hints: None,
         };
 
         let json = serde_json::to_string(&info).expect("serialize");
@@ -341,6 +355,17 @@ mod tests {
         let parsed: FilterTypeInfo = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.name, "header_mutation");
         assert_eq!(parsed.display_name, "Header Mutation");
+        // Optional fields should not appear in JSON when None
+        assert!(!json.contains("perRouteConfigSchema"));
+        assert!(!json.contains("perRouteUiHints"));
+
+        // With per_route_config_schema set
+        let info_with_per_route = FilterTypeInfo {
+            per_route_config_schema: Some(serde_json::json!({"type": "object", "properties": {}})),
+            ..info
+        };
+        let json_with = serde_json::to_string(&info_with_per_route).expect("serialize");
+        assert!(json_with.contains("perRouteConfigSchema"));
     }
 
     #[test]

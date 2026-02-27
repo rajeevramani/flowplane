@@ -73,6 +73,17 @@
 		onExpand
 	}: Props = $props();
 
+	// Derive a FilterTypeInfo that uses per-route schema when available
+	const perRouteFilterTypeInfo = $derived<FilterTypeInfo>(
+		filterTypeInfo.perRouteConfigSchema
+			? {
+					...filterTypeInfo,
+					configSchema: filterTypeInfo.perRouteConfigSchema,
+					uiHints: filterTypeInfo.perRouteUiHints ?? filterTypeInfo.uiHints
+				}
+			: filterTypeInfo
+	);
+
 	// Local editing state (not synced to server until Save is clicked)
 	let showOverridePanel = $state(false);
 	let behavior = $state<'use_base' | 'disable' | 'override'>(settings?.behavior ?? 'use_base');
@@ -449,7 +460,7 @@
 						<div>
 							<h4 class="text-sm font-medium text-gray-700 mb-3">Override Configuration</h4>
 							<DynamicFilterForm
-								filterType={filterTypeInfo}
+								filterType={perRouteFilterTypeInfo}
 								config={overrideConfig}
 								onConfigChange={handleConfigChange}
 							/>

@@ -17,6 +17,14 @@ capabilities:
 
 is_implemented: false
 
+instructions: |
+  Distributed rate limiting — requires an external gRPC rate limit service.
+  Use local_rate_limit for simpler per-instance rate limiting.
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — disable rate limiting for this route
+  - Full config replacement with different domain per route
+
 config_schema:
   type: object
   required:

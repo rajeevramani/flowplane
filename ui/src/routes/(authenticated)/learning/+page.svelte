@@ -63,7 +63,10 @@
 		error = null;
 
 		try {
-			const query = statusFilter ? { status: statusFilter } : undefined;
+			const query: import('$lib/api/types').ListLearningSessionsQuery = {
+				team: currentTeam || undefined,
+				status: statusFilter || undefined,
+			};
 			sessions = await apiClient.listLearningSessions(query);
 
 			// Auto-enable polling if there are active sessions
@@ -88,7 +91,10 @@
 		pollingEnabled = true;
 		pollingInterval = setInterval(async () => {
 			try {
-				const query = statusFilter ? { status: statusFilter } : undefined;
+				const query: import('$lib/api/types').ListLearningSessionsQuery = {
+					team: currentTeam || undefined,
+					status: statusFilter || undefined,
+				};
 				sessions = await apiClient.listLearningSessions(query);
 
 				// Stop polling if no more active sessions

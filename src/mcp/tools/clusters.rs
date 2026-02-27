@@ -14,8 +14,8 @@ use crate::internal_api::{
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_delete_response, build_query_response, build_rich_create_response, build_update_response,
-    ResourceRef,
+    build_query_response, build_rich_create_response, build_rich_delete_response,
+    build_update_response, ResourceRef,
 };
 use crate::storage::repositories::ClusterEndpointRepository;
 use crate::xds::{ClusterSpec, EndpointSpec, XdsState};
@@ -720,9 +720,13 @@ pub async fn execute_create_cluster(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let service_name = args.get("serviceName").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: serviceName".to_string())
-    })?;
+    let service_name = args
+        .get("serviceName")
+        .or_else(|| args.get("service_name"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: serviceName".to_string())
+        })?;
 
     let endpoints_json = args.get("endpoints").ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: endpoints".to_string())
@@ -746,21 +750,28 @@ pub async fn execute_create_cluster(
     // 3. Build ClusterSpec from args
     let mut cluster_spec = ClusterSpec {
         endpoints,
-        connect_timeout_seconds: args.get("connectTimeoutSeconds").and_then(|v| v.as_u64()),
-        lb_policy: args.get("lbPolicy").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        use_tls: args.get("useTls").and_then(|v| v.as_bool()),
+        connect_timeout_seconds: args
+            .get("connectTimeoutSeconds")
+            .or_else(|| args.get("connect_timeout_seconds"))
+            .and_then(|v| v.as_u64()),
+        lb_policy: args
+            .get("lbPolicy")
+            .or_else(|| args.get("lb_policy"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        use_tls: args.get("useTls").or_else(|| args.get("use_tls")).and_then(|v| v.as_bool()),
         ..Default::default()
     };
 
     // 4. Parse health check if provided
-    if let Some(hc_json) = args.get("healthCheck") {
+    if let Some(hc_json) = args.get("healthCheck").or_else(|| args.get("health_check")) {
         if let Some(hc) = parse_health_check(hc_json) {
             cluster_spec.health_checks = vec![hc];
         }
     }
 
     // 5. Parse circuit breakers if provided
-    if let Some(cb_json) = args.get("circuitBreakers") {
+    if let Some(cb_json) = args.get("circuitBreakers").or_else(|| args.get("circuit_breakers")) {
         cluster_spec.circuit_breakers = parse_circuit_breakers(cb_json);
     }
 
@@ -854,30 +865,42 @@ pub async fn execute_update_cluster(
             .map_err(|e| McpError::InvalidParams(format!("Invalid endpoints: {}", e)))?;
     }
 
-    if let Some(timeout) = args.get("connectTimeoutSeconds").and_then(|v| v.as_u64()) {
+    if let Some(timeout) = args
+        .get("connectTimeoutSeconds")
+        .or_else(|| args.get("connect_timeout_seconds"))
+        .and_then(|v| v.as_u64())
+    {
         cluster_spec.connect_timeout_seconds = Some(timeout);
     }
 
-    if let Some(lb_policy) = args.get("lbPolicy").and_then(|v| v.as_str()) {
+    if let Some(lb_policy) =
+        args.get("lbPolicy").or_else(|| args.get("lb_policy")).and_then(|v| v.as_str())
+    {
         cluster_spec.lb_policy = Some(lb_policy.to_string());
     }
 
-    if let Some(use_tls) = args.get("useTls").and_then(|v| v.as_bool()) {
+    if let Some(use_tls) =
+        args.get("useTls").or_else(|| args.get("use_tls")).and_then(|v| v.as_bool())
+    {
         cluster_spec.use_tls = Some(use_tls);
     }
 
-    if let Some(hc_json) = args.get("healthCheck") {
+    if let Some(hc_json) = args.get("healthCheck").or_else(|| args.get("health_check")) {
         if let Some(hc) = parse_health_check(hc_json) {
             cluster_spec.health_checks = vec![hc];
         }
     }
 
-    if let Some(cb_json) = args.get("circuitBreakers") {
+    if let Some(cb_json) = args.get("circuitBreakers").or_else(|| args.get("circuit_breakers")) {
         cluster_spec.circuit_breakers = parse_circuit_breakers(cb_json);
     }
 
     // 5. Get service name (use existing if not provided)
-    let service_name = args.get("serviceName").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let service_name = args
+        .get("serviceName")
+        .or_else(|| args.get("service_name"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // 6. Create request and use internal API layer
     let internal_req = InternalUpdateRequest { service_name, config: cluster_spec };
@@ -929,8 +952,9 @@ pub async fn execute_delete_cluster(
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
     ops.delete(name, &auth).await?;
 
-    // 3. Format success response (minimal token-efficient format)
-    let output = build_delete_response();
+    // 3. Format response with next-step guidance
+    let mut output = build_rich_delete_response("cluster", name, None);
+    output["next_step"] = json!("Check cp_list_routes — routes referencing this cluster will fail");
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 

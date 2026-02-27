@@ -1110,6 +1110,10 @@ export interface FilterTypeInfo {
 	configSchema: JSONSchema7;
 	/** UI hints for form generation (if available) */
 	uiHints?: FilterTypeUiHints;
+	/** JSON Schema for per-route configuration (if different from base config) */
+	perRouteConfigSchema?: JSONSchema7;
+	/** UI hints for per-route form generation (if available) */
+	perRouteUiHints?: FilterTypeUiHints;
 }
 
 /** Response for listing all filter types */
@@ -1477,6 +1481,7 @@ export interface CreateLearningSessionRequest {
 
 /** Query parameters for listing learning sessions */
 export interface ListLearningSessionsQuery {
+	team?: string;
 	status?: LearningSessionStatus;
 	limit?: number;
 	offset?: number;

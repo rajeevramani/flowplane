@@ -89,13 +89,19 @@ impl LearningSessionAccessLogConfig {
             additional_request_headers_to_log: vec![
                 "content-type".to_string(),
                 "content-length".to_string(),
+                "accept".to_string(),
                 "user-agent".to_string(),
+                "authorization".to_string(),
+                "proxy-authorization".to_string(),
+                "x-api-key".to_string(),
+                "x-auth-token".to_string(),
                 "x-request-id".to_string(),
                 "x-envoy-original-path".to_string(), // Original path before rewriting
             ],
             additional_response_headers_to_log: vec![
                 "content-type".to_string(),
                 "content-length".to_string(),
+                "www-authenticate".to_string(),
             ],
             additional_response_trailers_to_log: Vec::new(),
         };
@@ -193,7 +199,12 @@ mod tests {
         // Verify headers to log
         assert!(decoded.additional_request_headers_to_log.contains(&"content-type".to_string()));
         assert!(decoded.additional_request_headers_to_log.contains(&"user-agent".to_string()));
+        assert!(decoded.additional_request_headers_to_log.contains(&"authorization".to_string()));
+        assert!(decoded.additional_request_headers_to_log.contains(&"x-api-key".to_string()));
         assert!(decoded.additional_response_headers_to_log.contains(&"content-type".to_string()));
+        assert!(decoded
+            .additional_response_headers_to_log
+            .contains(&"www-authenticate".to_string()));
     }
 
     #[test]

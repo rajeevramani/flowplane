@@ -33,10 +33,7 @@ use crate::{
         },
         routes::ApiState,
     },
-    auth::{
-        authorization::{extract_team_scopes, has_admin_bypass},
-        models::AuthContext,
-    },
+    auth::{authorization::has_admin_bypass, models::AuthContext},
     domain::{RouteConfigId, RouteMetadataSourceType},
     openapi::{build_gateway_plan, GatewayOptions, RouteMetadataEntry},
     storage::{
@@ -199,17 +196,6 @@ pub async fn import_openapi_handler(
         context.org_id.as_ref(),
     )
     .await?;
-
-    // Team-scoped users validation (skip for admins)
-    if !has_admin_bypass(&context) {
-        let team_scopes = extract_team_scopes(&context);
-        if !team_scopes.is_empty() && !team_scopes.contains(&params.team) {
-            return Err(ApiError::Forbidden(format!(
-                "Cannot import for team '{}' - not in your team scopes",
-                params.team
-            )));
-        }
-    }
 
     // Read request body
     let (parts, body) = request.into_parts();
@@ -428,15 +414,6 @@ pub async fn list_imports_handler(
         context.org_id.as_ref(),
     )
     .await?;
-
-    // Team-scoped users validation
-    let team_scopes = extract_team_scopes(&context);
-    if !team_scopes.is_empty() && !team_scopes.contains(&team.to_string()) {
-        return Err(ApiError::Forbidden(format!(
-            "Cannot list imports for team '{}' - not in your team scopes",
-            team
-        )));
-    }
 
     let imports = import_repo.list_by_team(team).await.map_err(ApiError::from)?;
 

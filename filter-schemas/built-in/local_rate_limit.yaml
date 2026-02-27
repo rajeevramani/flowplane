@@ -17,6 +17,22 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  IMPORTANT: filter_enabled and filter_enforced BOTH default to 0%.
+  The filter does NOTHING unless you explicitly set these.
+  Flowplane sets sensible defaults, but agents should be aware.
+
+  REQUIRED: stat_prefix (namespace for metrics)
+
+  TOKEN BUCKET:
+  - max_tokens: burst capacity
+  - tokens_per_fill: sustained rate per fill_interval
+  - fill_interval_ms: refill period
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — disable rate limiting for this route
+  - Full config replacement — provide complete LocalRateLimit config
+
 config_schema:
   type: object
   required:
@@ -54,15 +70,57 @@ config_schema:
           minimum: 1
           default: 1000
     filter_enabled:
-      type: boolean
+      type: object
       title: Filter Enabled
-      description: Whether rate limiting is enabled
-      default: true
+      description: Fraction of requests where rate limiting is enabled. Defaults to 100% if not set.
+      required:
+        - numerator
+      properties:
+        runtime_key:
+          type: string
+          title: Runtime Key
+          description: Optional runtime key for dynamic percentage overrides
+        numerator:
+          type: integer
+          title: Numerator
+          description: Numerator value for the fraction
+          minimum: 0
+          default: 100
+        denominator:
+          type: string
+          title: Denominator
+          description: Denominator specifying the unit of the numerator
+          enum:
+            - hundred
+            - ten_thousand
+            - million
+          default: hundred
     filter_enforced:
-      type: boolean
+      type: object
       title: Filter Enforced
-      description: Whether to enforce rate limiting (reject requests) or just track
-      default: true
+      description: Fraction of enabled requests where the rate limit is enforced (reject requests) vs just tracked. Defaults to 100% if not set.
+      required:
+        - numerator
+      properties:
+        runtime_key:
+          type: string
+          title: Runtime Key
+          description: Optional runtime key for dynamic percentage overrides
+        numerator:
+          type: integer
+          title: Numerator
+          description: Numerator value for the fraction
+          minimum: 0
+          default: 100
+        denominator:
+          type: string
+          title: Denominator
+          description: Denominator specifying the unit of the numerator
+          enum:
+            - hundred
+            - ten_thousand
+            - million
+          default: hundred
     status_code:
       type: integer
       title: Response Status Code
@@ -70,6 +128,25 @@ config_schema:
       minimum: 100
       maximum: 599
       default: 429
+    per_downstream_connection:
+      type: boolean
+      title: Per Downstream Connection
+      description: Apply rate limit on a per-connection basis instead of shared global tokens
+      default: false
+    rate_limited_as_resource_exhausted:
+      type: boolean
+      title: Rate Limited As Resource Exhausted
+      description: Enable gRPC RESOURCE_EXHAUSTED status instead of UNAVAILABLE when rate limited
+      default: false
+    max_dynamic_descriptors:
+      type: integer
+      title: Max Dynamic Descriptors
+      description: Maximum number of dynamic descriptors cached for wildcard descriptors
+      minimum: 0
+    always_consume_default_token_bucket:
+      type: boolean
+      title: Always Consume Default Token Bucket
+      description: Whether to always consume the default token bucket even when descriptor matches
 
 ui_hints:
   form_layout: sections
@@ -89,5 +166,9 @@ ui_hints:
         - filter_enabled
         - filter_enforced
         - status_code
+        - per_downstream_connection
+        - rate_limited_as_resource_exhausted
+        - max_dynamic_descriptors
+        - always_consume_default_token_bucket
       collapsible: true
       collapsed_by_default: true

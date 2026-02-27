@@ -308,6 +308,7 @@ impl CustomWasmFilterService {
             config_schema: data.config_schema.clone(),
             per_route_config_schema: data.per_route_config_schema.clone(),
             proto_mapping: HashMap::new(),
+            instructions: None,
             ui_hints: data
                 .ui_hints
                 .as_ref()

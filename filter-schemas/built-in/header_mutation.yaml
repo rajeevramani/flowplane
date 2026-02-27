@@ -17,6 +17,18 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  EVALUATION ORDER:
+  - Default: most-specific (route) evaluated first, then vhost, then global
+  - Set most_specific_header_mutations_wins: true to reverse
+
+  WARNING: Mutations to :path or :authority can affect route selection
+  if filters later in the chain clear the route cache.
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — skip header mutation for this route
+  - Full config replacement
+
 config_schema:
   type: object
   properties:

@@ -5,12 +5,18 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Supported MCP protocol version (2025-11-25 only)
+/// Current (preferred) MCP protocol version
 ///
-/// As of this version, we only support MCP 2025-11-25 (Streamable HTTP transport).
-/// Older protocol versions are not supported. Use mcp-remote bridge for clients
-/// that don't yet support 2025-11-25 (e.g., Claude Desktop using 2025-06-18).
+/// This is the version advertised in server responses. Clients negotiating a version
+/// should prefer this one. Both this version and older entries in SUPPORTED_VERSIONS
+/// are accepted during protocol-version validation.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// All MCP protocol versions accepted by this server (newest first)
+///
+/// Clients may send any version listed here in the `mcp-protocol-version` header and
+/// the server will accept the request. The preferred version remains PROTOCOL_VERSION.
+pub const SUPPORTED_VERSIONS: &[&str] = &["2025-11-25", "2025-03-26"];
 
 /// JSON-RPC 2.0 Request
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

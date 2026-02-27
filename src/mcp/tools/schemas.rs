@@ -292,7 +292,7 @@ pub async fn execute_export_schema_openapi(
         &export_request,
     );
 
-    let output = json!({
+    let mut output = json!({
         "success": true,
         "openapi": openapi_response.openapi,
         "info": {
@@ -305,6 +305,10 @@ pub async fn execute_export_schema_openapi(
         "schema_count": schema_data.len(),
         "message": format!("Exported {} schema(s) as OpenAPI 3.1", schema_data.len())
     });
+
+    if let Some(security) = &openapi_response.security {
+        output["security"] = json!(security);
+    }
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
     Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
@@ -357,6 +361,8 @@ pub async fn execute_list_aggregated_schemas(
                 "http_method": s.http_method,
                 "request_schema": request_schema,
                 "response_schemas": response_schemas,
+                "request_headers": s.request_headers,
+                "response_headers": s.response_headers,
                 "sample_count": s.sample_count,
                 "confidence_score": s.confidence_score,
                 "version": s.version,
@@ -423,6 +429,8 @@ pub async fn execute_get_aggregated_schema(
         "http_method": schema.http_method,
         "request_schema": request_schema,
         "response_schemas": response_schemas,
+        "request_headers": schema.request_headers,
+        "response_headers": schema.response_headers,
         "sample_count": schema.sample_count,
         "confidence_score": schema.confidence_score,
         "version": schema.version,

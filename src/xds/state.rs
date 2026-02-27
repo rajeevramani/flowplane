@@ -95,6 +95,8 @@ pub struct XdsState {
     pub mcp_tool_repository: Option<crate::storage::McpToolRepository>,
     /// Team repository for resolving team names to IDs
     pub team_repository: Option<SqlxTeamRepository>,
+    /// NACK event repository for persisting xDS rejection events
+    pub nack_event_repository: Option<crate::storage::NackEventRepository>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -126,6 +128,7 @@ impl XdsState {
             custom_wasm_filter_repository: None,
             mcp_tool_repository: None,
             team_repository: None,
+            nack_event_repository: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -155,6 +158,9 @@ impl XdsState {
 
         // Team repository for name → ID resolution
         let team_repository = SqlxTeamRepository::new(pool.clone());
+
+        // NACK event repository for persisting xDS rejection events
+        let nack_event_repository = crate::storage::NackEventRepository::new(pool.clone());
 
         // Initialize secret repository and encryption service if encryption key is configured
         let (secret_repository, encryption_service) =
@@ -207,6 +213,7 @@ impl XdsState {
             custom_wasm_filter_repository: Some(custom_wasm_filter_repository),
             mcp_tool_repository: Some(mcp_tool_repository),
             team_repository: Some(team_repository),
+            nack_event_repository: Some(nack_event_repository),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
