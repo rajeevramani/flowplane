@@ -143,5 +143,10 @@ __pycache__/
 venv/
 .venv/
 
+# Zitadel machine keys and credentials
+zitadel/machinekey/*.json
+zitadel/machinekey/*.txt
+poc/zitadel/machinekey/
+
 # Remove later
 deploy
