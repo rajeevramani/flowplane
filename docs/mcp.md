@@ -4,10 +4,10 @@ Flowplane provides comprehensive Model Context Protocol (MCP) support, enabling 
 
 ## Overview
 
-Flowplane implements MCP with two distinct endpoints serving different purposes:
+Flowplane implements MCP via a single unified endpoint that serves both control plane and gateway API tools:
 
-1. **Control Plane (CP) Tools** (`/api/v1/mcp/cp`) - For managing Flowplane infrastructure (clusters, listeners, routes, filters)
-2. **Gateway API Tools** (`/api/v1/mcp/api`) - For invoking backend APIs through the Envoy gateway
+- **Control Plane (CP) Tools** - For managing Flowplane infrastructure (clusters, listeners, routes, filters)
+- **Gateway API Tools** - For invoking backend APIs through the Envoy gateway
 
 ### Protocol Support
 
@@ -23,9 +23,8 @@ Flowplane uses Streamable HTTP for MCP communication:
 
 Unified HTTP transport supporting stateful sessions, streaming, and standard request-response patterns. A single endpoint handles POST (requests), GET (SSE streaming), and DELETE (session termination).
 
-**Endpoints:**
-- `/api/v1/mcp/cp` - Control Plane tools
-- `/api/v1/mcp/api` - Gateway API tools
+**Endpoint:**
+- `/api/v1/mcp` - Unified endpoint for all tools (CP and Gateway API)
 
 #### Required Headers
 
@@ -40,7 +39,7 @@ Unified HTTP transport supporting stateful sessions, streaming, and standard req
 
 **1. Initialize Session (POST)**
 ```bash
-POST /api/v1/mcp/cp?team=<team-name>
+POST /api/v1/mcp?team=<team-name>
 MCP-Protocol-Version: 2025-11-25
 Authorization: Bearer <token>
 Content-Type: application/json
@@ -76,7 +75,7 @@ Content-Type: application/json
 
 **2. Subsequent Requests (POST)**
 ```bash
-POST /api/v1/mcp/cp?team=<team-name>
+POST /api/v1/mcp?team=<team-name>
 MCP-Protocol-Version: 2025-11-25
 MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
 Authorization: Bearer <token>
@@ -92,7 +91,7 @@ Content-Type: application/json
 
 **3. Open SSE Stream (GET)**
 ```bash
-GET /api/v1/mcp/cp?team=<team-name>
+GET /api/v1/mcp?team=<team-name>
 MCP-Protocol-Version: 2025-11-25
 MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
 Authorization: Bearer <token>
@@ -114,7 +113,7 @@ data: {}
 
 **4. Terminate Session (DELETE)**
 ```bash
-DELETE /api/v1/mcp/cp?team=<team-name>
+DELETE /api/v1/mcp?team=<team-name>
 MCP-Protocol-Version: 2025-11-25
 MCP-Session-Id: mcp-550e8400-e29b-41d4-a716-446655440000
 Authorization: Bearer <token>
@@ -130,7 +129,7 @@ HTTP/1.1 204 No Content
 Clients can resume SSE streams after disconnection using `Last-Event-ID`:
 
 ```bash
-GET /api/v1/mcp/cp?team=<team-name>
+GET /api/v1/mcp?team=<team-name>
 MCP-Protocol-Version: 2025-11-25
 MCP-Session-Id: <session-id>
 Last-Event-ID: <connection-id>:<sequence>
@@ -168,25 +167,20 @@ Team identity is resolved in the following priority order:
 
 ### Required Scopes
 
-#### Control Plane Tools (`/api/v1/mcp/cp`)
+Authorization uses team-scoped permissions. All scopes follow the pattern `team:{name}:{resource}:{action}`.
 
-| Method | Required Scope | Description |
-|--------|---------------|-------------|
+#### Unified Endpoint (`/api/v1/mcp`)
+
+| Operation | Required Scope | Description |
+|-----------|---------------|-------------|
 | `initialize`, `initialized`, `ping` | None | Protocol handshake |
-| `tools/list`, `resources/list`, `prompts/list` | `mcp:read` | List available tools, resources, prompts |
-| `tools/call`, `prompts/get` | `mcp:execute` | Execute tools and render prompts |
-| `resources/read` | `cp:read` | Read resource details |
-| `logging/setLevel` | `mcp:read` | Set log level for connection |
+| List/read CP tools (`tools/list`, `resources/list`, `prompts/list`) | `team:{name}:cp:read` | List control plane tools and resources |
+| Execute CP tools (`tools/call` for CP tools) | `team:{name}:cp:read` or `team:{name}:{resource}:read` | Execute control plane operations |
+| Write CP resources (`tools/call` for create/update/delete) | `team:{name}:cp:write` or `team:{name}:{resource}:write` | Modify control plane resources |
+| List gateway API tools | `team:{name}:api:read` | List gateway API tools |
+| Execute gateway API tools | `team:{name}:api:execute` | Call upstream APIs through the gateway |
 
-#### Gateway API Tools (`/api/v1/mcp/api`)
-
-| Method | Required Scope | Description |
-|--------|---------------|-------------|
-| `initialize`, `initialized`, `ping` | None | Protocol handshake |
-| `tools/list` | `api:read` | List available API tools |
-| `tools/call` | `api:execute` | Execute API gateway requests |
-
-**Note:** Users with `admin:all` scope have access to all operations but must specify the team via query parameter.
+**Note:** Org admins (`org:{name}:admin`) have implicit access to all teams in their org. Platform admin (`admin:all`) does not grant access to tenant resources — use org-scoped or team-scoped tokens.
 
 ## Control Plane (CP) Tools
 
@@ -757,7 +751,7 @@ Monitor active MCP connections and sessions.
 ### List Connections
 
 ```bash
-GET /api/v1/mcp/cp/connections
+GET /api/v1/mcp/connections
 Authorization: Bearer <token>
 ```
 
@@ -796,7 +790,7 @@ Session IDs in MCP 2025-11-25 use cryptographically secure UUID v4 format:
 
 When clients send an `initialize` request, Flowplane advertises the following capabilities:
 
-### Control Plane (`/api/v1/mcp/cp`)
+### Unified Endpoint (`/api/v1/mcp`)
 
 ```json
 {
@@ -804,14 +798,6 @@ When clients send an `initialize` request, Flowplane advertises the following ca
   "resources": { "subscribe": false, "listChanged": false },
   "prompts": { "listChanged": false },
   "logging": {}
-}
-```
-
-### Gateway API (`/api/v1/mcp/api`)
-
-```json
-{
-  "tools": { "listChanged": false }
 }
 ```
 
@@ -826,8 +812,8 @@ To use Flowplane with Claude Desktop, configure it to connect via Streamable HTT
 ```json
 {
   "mcpServers": {
-    "flowplane-cp": {
-      "url": "http://localhost:8080/api/v1/mcp/cp?team=production",
+    "flowplane": {
+      "url": "http://localhost:8080/api/v1/mcp?team=production",
       "headers": {
         "Authorization": "Bearer <your-token>"
       }
@@ -849,15 +835,8 @@ The [MCP Inspector](https://github.com/modelcontextprotocol/inspector) provides 
 Connect using HTTP transport with the required MCP 2025-11-25 headers:
 
 ```bash
-# Control Plane tools
 npx @modelcontextprotocol/inspector http \
-  "http://localhost:8080/api/v1/mcp/cp?team=engineering" \
-  --header "Authorization: Bearer <your-token>" \
-  --header "MCP-Protocol-Version: 2025-11-25"
-
-# Gateway API tools
-npx @modelcontextprotocol/inspector http \
-  "http://localhost:8080/api/v1/mcp/api?team=engineering" \
+  "http://localhost:8080/api/v1/mcp?team=engineering" \
   --header "Authorization: Bearer <your-token>" \
   --header "MCP-Protocol-Version: 2025-11-25"
 ```
@@ -878,13 +857,7 @@ Results are displayed inline with syntax highlighting:
 
 ![MCP Inspector - Tool Result](images/mcp-inspector-tool-result.png)
 
-### CP vs API Endpoints
-
-The **CP endpoint** (`/api/v1/mcp/cp`) exposes Resources, Prompts, and Tools tabs for full control plane management.
-
-The **API endpoint** (`/api/v1/mcp/api`) exposes only Tools - dynamically generated from routes with MCP enabled:
-
-![MCP Inspector - API Endpoint](images/mcp-inspector-api-endpoint.png)
+The unified endpoint exposes Resources, Prompts, and Tools tabs. Control plane tools appear alongside dynamically generated gateway API tools (from routes with MCP enabled).
 
 ## Quick Start Example
 
@@ -894,14 +867,14 @@ The **API endpoint** (`/api/v1/mcp/api`) exposes only Tools - dynamically genera
 # Using the CLI
 flowplane auth tokens create \
   --name "mcp-client" \
-  --scopes "mcp:read,mcp:execute,cp:read" \
+  --scopes "team:production:cp:read,team:production:cp:write" \
   --team production
 
 # Or via REST API
 POST /api/v1/auth/tokens
 {
   "name": "mcp-client",
-  "scopes": ["team:production:mcp:read", "team:production:mcp:execute", "team:production:cp:read"]
+  "scopes": ["team:production:cp:read", "team:production:cp:write"]
 }
 ```
 
@@ -909,7 +882,7 @@ POST /api/v1/auth/tokens
 
 ```bash
 # Initialize and save the session ID from response header
-curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
+curl -X POST http://localhost:8080/api/v1/mcp?team=production \
   -H "Authorization: Bearer <token>" \
   -H "MCP-Protocol-Version: 2025-11-25" \
   -H "Content-Type: application/json" \
@@ -934,7 +907,7 @@ curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
 
 ```bash
 # Use the MCP-Session-Id from the initialize response
-curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
+curl -X POST http://localhost:8080/api/v1/mcp?team=production \
   -H "Authorization: Bearer <token>" \
   -H "MCP-Protocol-Version: 2025-11-25" \
   -H "MCP-Session-Id: <session-id-from-step-2>" \
@@ -950,7 +923,7 @@ curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
 ### 4. Execute a Tool
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/mcp/cp?team=production \
+curl -X POST http://localhost:8080/api/v1/mcp?team=production \
   -H "Authorization: Bearer <token>" \
   -H "MCP-Protocol-Version: 2025-11-25" \
   -H "MCP-Session-Id: <session-id>" \
@@ -1043,7 +1016,7 @@ Flowplane returns standard JSON-RPC 2.0 error responses:
 ### Security
 
 1. **Use dedicated tokens** - Create separate tokens for MCP clients with minimal required scopes
-2. **Scope isolation** - Grant only necessary scopes (`mcp:read` for read-only, `mcp:execute` for operations)
+2. **Scope isolation** - Grant only necessary scopes (`team:{name}:cp:read` for read-only, `team:{name}:cp:write` for write operations)
 3. **Team boundaries** - Always specify the team to prevent cross-team access
 4. **Token rotation** - Rotate MCP tokens periodically
 

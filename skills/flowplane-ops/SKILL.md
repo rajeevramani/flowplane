@@ -5,7 +5,7 @@ license: Apache-2.0
 metadata:
   author: rajeevramani
   version: "0.1.0"
-compatibility: Requires Flowplane MCP server connection (control plane at /api/v1/mcp/cp)
+compatibility: Requires Flowplane MCP server connection at /api/v1/mcp
 ---
 
 # Flowplane Ops Skill
@@ -14,9 +14,9 @@ Diagnose, inspect, and monitor a Flowplane API gateway. This skill is **read-onl
 
 ## 1. MCP Connection
 
-**Endpoint:** `/api/v1/mcp/cp` (Streamable HTTP, MCP protocol version `2025-11-25`)
+**Endpoint:** `/api/v1/mcp` (Streamable HTTP, MCP protocol version `2025-11-25`)
 
-**Authentication:** Bearer token in `Authorization` header. Required scopes: `mcp:read`, `mcp:execute`, `cp:read`.
+**Authentication:** Bearer token in `Authorization` header. Required scope: `team:{name}:cp:read` (or org admin).
 
 **Team Resolution:** Team context comes from:
 1. `?team=<name>` query parameter

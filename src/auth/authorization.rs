@@ -1512,19 +1512,14 @@ mod tests {
         // The HTTP method is always POST but the actual operation is in the request body
         // The handler implements its own authorization based on the JSON-RPC method field
         assert_eq!(
-            resource_from_path("/api/v1/mcp/cp"),
+            resource_from_path("/api/v1/mcp"),
             None,
-            "MCP CP JSON-RPC endpoint should bypass resource-level auth (method-level auth inside handler)"
+            "Unified MCP endpoint should bypass resource-level auth (method-level auth inside handler)"
         );
         assert_eq!(
-            resource_from_path("/api/v1/mcp/cp/connections"),
+            resource_from_path("/api/v1/mcp/connections"),
             None,
-            "MCP CP connections endpoint should bypass resource-level auth"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/mcp/api"),
-            None,
-            "MCP API tools endpoint should bypass resource-level auth"
+            "MCP connections endpoint should bypass resource-level auth"
         );
 
         // Org-scoped endpoints use handler-level auth, not resource-level scopes

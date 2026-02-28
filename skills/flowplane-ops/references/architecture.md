@@ -92,6 +92,5 @@ API Request (JSON)
 ## MCP Integration
 
 Flowplane exposes 60+ MCP tools for AI-driven gateway management:
-- **CP endpoint** (`/api/v1/mcp/cp`): Full control plane tools, resources, and prompts
-- **API endpoint** (`/api/v1/mcp/api`): Gateway API execution tools (dynamically generated from routes)
+- **Unified endpoint** (`/api/v1/mcp`): All tools — control plane management and gateway API execution
 - Three built-in agent personas: Dev, Ops, DevOps

@@ -645,21 +645,14 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
         .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
         .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
-        // MCP protocol endpoints - Control Plane tools (Streamable HTTP 2025-03-26)
+        // MCP protocol endpoint - unified CP and Gateway API tools (Streamable HTTP 2025-11-25)
         .route(
-            "/api/v1/mcp/cp",
-            post(crate::mcp::post_handler_cp)
-                .get(crate::mcp::get_handler_cp)
-                .delete(crate::mcp::delete_handler_cp),
+            "/api/v1/mcp",
+            post(crate::mcp::post_handler)
+                .get(crate::mcp::get_handler)
+                .delete(crate::mcp::delete_handler),
         )
-        .route("/api/v1/mcp/cp/connections", get(crate::mcp::list_connections_handler))
-        // MCP protocol endpoints - API tools (Streamable HTTP 2025-03-26)
-        .route(
-            "/api/v1/mcp/api",
-            post(crate::mcp::post_handler_api)
-                .get(crate::mcp::get_handler_api)
-                .delete(crate::mcp::delete_handler_api),
-        )
+        .route("/api/v1/mcp/connections", get(crate::mcp::list_connections_handler))
         // MCP tools management endpoints
         .route("/api/v1/teams/{team}/mcp/tools", get(list_mcp_tools_handler))
         .route("/api/v1/teams/{team}/mcp/tools/{name}", get(get_mcp_tool_handler))

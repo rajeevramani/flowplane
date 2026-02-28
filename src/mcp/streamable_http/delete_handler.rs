@@ -17,11 +17,9 @@ use crate::mcp::connection::ConnectionId;
 use crate::mcp::session::SessionId;
 use crate::mcp::transport_common::extract_mcp_headers;
 
-use super::McpScope;
-
-/// DELETE /api/v1/mcp/cp
+/// DELETE /api/v1/mcp
 ///
-/// Terminate a Control Plane MCP session.
+/// Terminate an MCP session.
 ///
 /// # Headers
 /// - `MCP-Session-Id`: Required - session ID to terminate
@@ -32,7 +30,7 @@ use super::McpScope;
 /// - 404 Not Found: Session not found
 #[utoipa::path(
     delete,
-    path = "/api/v1/mcp/cp",
+    path = "/api/v1/mcp",
     responses(
         (status = 200, description = "Session terminated"),
         (status = 400, description = "Invalid session ID"),
@@ -40,48 +38,9 @@ use super::McpScope;
     ),
     tag = "MCP Protocol"
 )]
-pub async fn delete_handler_cp(
+pub async fn delete_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    delete_handler(McpScope::ControlPlane, state, context, headers).await
-}
-
-/// DELETE /api/v1/mcp/api
-///
-/// Terminate a Gateway API MCP session.
-///
-/// # Headers
-/// - `MCP-Session-Id`: Required - session ID to terminate
-///
-/// # Returns
-/// - 200 OK: Session terminated successfully
-/// - 400 Bad Request: Missing or invalid session ID header
-/// - 404 Not Found: Session not found
-#[utoipa::path(
-    delete,
-    path = "/api/v1/mcp/api",
-    responses(
-        (status = 200, description = "Session terminated"),
-        (status = 400, description = "Invalid session ID"),
-        (status = 404, description = "Session not found")
-    ),
-    tag = "MCP Protocol"
-)]
-pub async fn delete_handler_api(
-    State(state): State<ApiState>,
-    Extension(context): Extension<AuthContext>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    delete_handler(McpScope::GatewayApi, state, context, headers).await
-}
-
-/// Generic DELETE handler for session termination
-async fn delete_handler(
-    scope: McpScope,
-    state: ApiState,
-    context: AuthContext,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     // Extract MCP headers
@@ -92,7 +51,6 @@ async fn delete_handler(
         Some(id) => id,
         None => {
             warn!(
-                scope = ?scope,
                 token = %context.token_name,
                 "DELETE request missing MCP-Session-Id header"
             );
@@ -117,7 +75,6 @@ async fn delete_handler(
     if !state.mcp_session_manager.exists(&session_id) {
         debug!(
             session_id = %session_id_str,
-            scope = ?scope,
             "DELETE request for non-existent session"
         );
         return StatusCode::NOT_FOUND;
@@ -131,7 +88,6 @@ async fn delete_handler(
     if !removed {
         debug!(
             session_id = %session_id_str,
-            scope = ?scope,
             "Session already removed during DELETE"
         );
         return StatusCode::NOT_FOUND;
@@ -150,7 +106,6 @@ async fn delete_handler(
 
     debug!(
         session_id = %session_id_str,
-        scope = ?scope,
         token = %context.token_name,
         "Session terminated via DELETE"
     );
@@ -160,11 +115,8 @@ async fn delete_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn test_scope_endpoint_paths() {
-        assert_eq!(McpScope::ControlPlane.endpoint_path(), "/api/v1/mcp/cp");
-        assert_eq!(McpScope::GatewayApi.endpoint_path(), "/api/v1/mcp/api");
+    fn test_delete_handler_endpoint_path() {
+        assert_eq!("/api/v1/mcp", "/api/v1/mcp");
     }
 }

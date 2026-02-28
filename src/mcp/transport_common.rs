@@ -9,46 +9,15 @@
 //! - Session ID format validation
 //! - Response mode determination (JSON vs SSE)
 
-use axum::http::HeaderMap;
-use tracing::debug;
-
 use crate::api::routes::ApiState;
-use crate::auth::authorization::parse_org_from_scope;
 use crate::auth::models::AuthContext;
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{JsonRpcError, JsonRpcId, JsonRpcResponse, SUPPORTED_VERSIONS};
+use axum::http::HeaderMap;
 
 #[allow(unused_imports)]
 use crate::mcp::protocol::error_codes;
 use crate::storage::DbPool;
-
-/// Scope configuration for method authorization
-///
-/// Different transport endpoints use different scope prefixes:
-/// - Control Plane (CP): `mcp:read`, `mcp:execute`, `cp:read`
-/// - API: `api:read`, `api:execute`, no resource scope
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScopeConfig {
-    /// Scope required for read operations (e.g., "mcp:read", "api:read")
-    pub read_scope: &'static str,
-
-    /// Scope required for execute operations (e.g., "mcp:execute", "api:execute")
-    pub execute_scope: &'static str,
-
-    /// Optional scope for resource read operations (e.g., Some("cp:read"), None for API)
-    pub resource_read_scope: Option<&'static str>,
-}
-
-/// Control Plane scope configuration
-pub const CP_SCOPES: ScopeConfig = ScopeConfig {
-    read_scope: "mcp:read",
-    execute_scope: "mcp:execute",
-    resource_read_scope: Some("cp:read"),
-};
-
-/// API scope configuration
-pub const API_SCOPES: ScopeConfig =
-    ScopeConfig { read_scope: "api:read", execute_scope: "api:execute", resource_read_scope: None };
 
 /// MCP 2025-11-25 protocol headers
 ///
@@ -77,52 +46,44 @@ pub enum ResponseMode {
     Sse,
 }
 
-/// Extract team name from query parameter or auth context
+/// Extract all team names the caller has explicit scope for.
 ///
-/// Priority order:
-/// 1. Query parameter `?team=<name>` (highest priority)
-/// 2. Token scopes with pattern `team:{name}:*`
-/// 3. Admin users with `admin:all` MUST provide team via query parameter
+/// Parses all team names from token scopes (patterns like `team:X:resource:action`
+/// and `team:X:*:*`). Returns deduplicated vec of team names in order of appearance.
+///
+/// For `admin:all`-only tokens (no org/team scopes), returns empty vec since
+/// governance/audit tools operate without team context. Per-tool-call auth handles
+/// resource authorization.
 ///
 /// # Arguments
-/// * `team_query` - Optional team name from query parameter
 /// * `context` - Authentication context with token scopes
 ///
 /// # Returns
-/// Team name on success, descriptive error message on failure
-pub fn extract_team(team_query: Option<&str>, context: &AuthContext) -> Result<String, String> {
-    // Platform admin with only admin:all (no org/team scopes) cannot specify teams.
-    // Governance/audit tools operate without team context.
-    // Tool-level auth (check_scope_grants_authorization) also blocks resource tools
-    // for admin:all, but this provides defense-in-depth.
+/// Vec of team names the caller has explicit access to (may be empty)
+pub fn extract_teams(context: &AuthContext) -> Vec<String> {
+    // admin:all without org/team scopes → governance only, no team context
     if context.has_scope("admin:all") {
         let has_org_or_team_scopes =
             context.scopes().any(|s| s.starts_with("org:") || s.starts_with("team:"));
         if !has_org_or_team_scopes {
-            return Err("Platform admin cannot specify team for MCP operations. \
-                 Governance/audit tools do not require team context. \
-                 Use org-scoped token for resource operations."
-                .to_string());
+            return vec![];
         }
     }
 
-    // Priority 1: Query parameter
-    if let Some(team) = team_query {
-        debug!(team = %team, "Team extracted from query parameter");
-        return Ok(team.to_string());
-    }
+    let mut seen = std::collections::HashSet::new();
+    let mut teams = Vec::new();
 
-    // Priority 2: Extract team from scopes (pattern: team:{name}:*)
     for scope in context.scopes() {
         if let Some(team_part) = scope.strip_prefix("team:") {
             if let Some(team_name) = team_part.split(':').next() {
-                debug!(team = %team_name, scope = %scope, "Team extracted from token scope");
-                return Ok(team_name.to_string());
+                if !team_name.is_empty() && seen.insert(team_name.to_string()) {
+                    teams.push(team_name.to_string());
+                }
             }
         }
     }
 
-    Err("Unable to determine team. Please provide team via query parameter".to_string())
+    teams
 }
 
 /// Resolve a team name to its UUID.
@@ -184,166 +145,6 @@ pub async fn validate_team_org_membership(
     }
 
     Ok(())
-}
-
-/// Scan auth context scopes for org-level role.
-///
-/// Returns the highest role found ("admin" > "member" > "viewer") or None.
-/// Guards against empty org names (e.g., `org::admin` is rejected).
-fn has_org_scope(context: &AuthContext) -> Option<&'static str> {
-    let mut best_priority = 0u8; // 0=none, 1=viewer, 2=member, 3=admin
-
-    for scope in context.scopes() {
-        if let Some((org_name, role)) = parse_org_from_scope(scope) {
-            if org_name.is_empty() {
-                continue;
-            }
-            let priority = match role.as_str() {
-                "admin" => 3,
-                "member" => 2,
-                "viewer" => 1,
-                _ => continue,
-            };
-            if priority > best_priority {
-                best_priority = priority;
-            }
-        }
-    }
-
-    match best_priority {
-        3 => Some("admin"),
-        2 => Some("member"),
-        1 => Some("viewer"),
-        _ => None,
-    }
-}
-
-/// Check if auth context has required scope for the given MCP method
-///
-/// Uses configurable scope prefixes to support both CP and API endpoints.
-/// Special methods (`initialize`, `initialized`, `ping`) require no scope.
-/// Platform admin (`admin:all`) is restricted to `tools/list` and `tools/call` only
-/// (governance/audit access). Tool-level auth further restricts which tools can be called.
-/// Org-scoped roles (`org:X:admin`, `org:X:member`, `org:X:viewer`) grant method
-/// access appropriate to their role level. Layer 2 (tool_registry) handles tool-level auth.
-///
-/// # Arguments
-/// * `method` - MCP method name (e.g., "tools/list", "tools/call")
-/// * `context` - Authentication context with token scopes
-/// * `config` - Scope configuration (defines read/execute/resource scopes)
-///
-/// # Returns
-/// `Ok(())` if authorized, `Err(message)` with required scope on failure
-pub fn check_method_authorization(
-    method: &str,
-    context: &AuthContext,
-    config: &ScopeConfig,
-) -> Result<(), String> {
-    // Special methods require no scope
-    match method {
-        "initialize"
-        | "initialized"
-        | "ping"
-        | "notifications/initialized"
-        | "notifications/cancelled" => {
-            return Ok(());
-        }
-        _ => {}
-    }
-
-    // Platform admin: limited MCP method access for governance/audit only.
-    // admin:all grants tools/list (discover audit tools) and tools/call (invoke audit tools).
-    // Tool-level auth (check_scope_grants_authorization) further restricts to governance tools.
-    if context.has_scope("admin:all") {
-        return match method {
-            "tools/list" | "tools/call" => Ok(()),
-            _ => Err(format!(
-                "Platform admin does not have access to MCP method '{}'. \
-                 Use org-scoped token for resource operations.",
-                method
-            )),
-        };
-    }
-
-    // Org-scoped roles: grant method access based on role level.
-    // Layer 2 (check_scope_grants_authorization) handles tool-level restrictions.
-    // Cross-org isolation enforced by validate_team_org_membership() at transport layer.
-    if let Some(role) = has_org_scope(context) {
-        return match role {
-            // Org admin & member: full method access (Layer 2 handles tool restrictions)
-            "admin" | "member" => Ok(()),
-            // Viewer: read-oriented methods + tools/call (Layer 2 enforces read-only at tool level)
-            "viewer" => match method {
-                "tools/list" | "tools/call" | "resources/list" | "resources/read"
-                | "prompts/list" | "logging/setLevel" => Ok(()),
-                _ => Err(format!(
-                    "Viewer role does not have access to MCP method '{}'. \
-                     Viewers can list/read resources and call read-only tools.",
-                    method
-                )),
-            },
-            _ => Err(format!("Unknown org role for MCP method '{}'", method)),
-        };
-    }
-
-    // Method-specific authorization
-    match method {
-        // Read operations
-        "tools/list" | "resources/list" | "prompts/list" => {
-            if context.has_scope(config.read_scope) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "Missing required scope '{}' for method '{}'",
-                    config.read_scope, method
-                ))
-            }
-        }
-
-        // Execute operations
-        "tools/call" | "prompts/get" => {
-            if context.has_scope(config.execute_scope) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "Missing required scope '{}' for method '{}'",
-                    config.execute_scope, method
-                ))
-            }
-        }
-
-        // Resource read operations (only for CP endpoints)
-        "resources/read" => {
-            if let Some(resource_scope) = config.resource_read_scope {
-                if context.has_scope(resource_scope) {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "Missing required scope '{}' for method '{}'",
-                        resource_scope, method
-                    ))
-                }
-            } else {
-                // No resource scope configured - deny
-                Err("Resource operations not supported for this endpoint".to_string())
-            }
-        }
-
-        // Logging operations (use read scope)
-        "logging/setLevel" => {
-            if context.has_scope(config.read_scope) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "Missing required scope '{}' for method '{}'",
-                    config.read_scope, method
-                ))
-            }
-        }
-
-        // Unknown methods - allow (handler will deal with it)
-        _ => Ok(()),
-    }
 }
 
 /// Extract MCP 2025-11-25 protocol headers from HTTP request
@@ -467,295 +268,65 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Team Extraction Tests
+    // extract_teams() Tests
     // -------------------------------------------------------------------------
 
     #[test]
-    fn test_extract_team_from_query_parameter() {
-        let context = test_context(vec![]);
-        let result = extract_team(Some("acme-corp"), &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "acme-corp");
-    }
-
-    #[test]
-    fn test_extract_team_from_scope() {
+    fn test_extract_teams_single_team() {
         let context = test_context(vec!["team:acme-corp:mcp:read"]);
-        let result = extract_team(None, &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "acme-corp");
+        let teams = extract_teams(&context);
+        assert_eq!(teams, vec!["acme-corp".to_string()]);
     }
 
     #[test]
-    fn test_extract_team_query_takes_priority_over_scope() {
-        let context = test_context(vec!["team:old-team:mcp:read"]);
-        let result = extract_team(Some("new-team"), &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "new-team");
+    fn test_extract_teams_multiple_teams() {
+        let context = test_context(vec![
+            "team:team-a:cp:read",
+            "team:team-a:cp:write",
+            "team:team-b:cp:read",
+        ]);
+        let teams = extract_teams(&context);
+        assert_eq!(teams.len(), 2);
+        assert!(teams.contains(&"team-a".to_string()));
+        assert!(teams.contains(&"team-b".to_string()));
     }
 
     #[test]
-    fn test_extract_team_admin_only_blocked() {
-        // admin:all without org/team scopes cannot specify teams at all
+    fn test_extract_teams_deduplicates() {
+        let context =
+            test_context(vec!["team:acme:cp:read", "team:acme:cp:write", "team:acme:api:read"]);
+        let teams = extract_teams(&context);
+        assert_eq!(teams, vec!["acme".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_teams_admin_only_returns_empty() {
         let context = test_context(vec!["admin:all"]);
-        let result = extract_team(None, &context);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Platform admin cannot specify team"));
+        let teams = extract_teams(&context);
+        assert!(teams.is_empty());
     }
 
     #[test]
-    fn test_extract_team_admin_only_with_query_still_blocked() {
-        // admin:all without org/team scopes blocked even with query param (defense-in-depth)
-        let context = test_context(vec!["admin:all"]);
-        let result = extract_team(Some("target-team"), &context);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Platform admin cannot specify team"));
+    fn test_extract_teams_admin_with_team_scopes() {
+        let context = test_context(vec!["admin:all", "team:eng:cp:read", "team:platform:cp:write"]);
+        let teams = extract_teams(&context);
+        assert_eq!(teams.len(), 2);
+        assert!(teams.contains(&"eng".to_string()));
+        assert!(teams.contains(&"platform".to_string()));
     }
 
     #[test]
-    fn test_extract_team_admin_with_org_scopes_uses_query() {
-        // admin:all WITH org scopes can specify teams (e.g., dual-role token)
-        let context = test_context(vec!["admin:all", "org:acme:admin", "team:acme-eng:cp:read"]);
-        let result = extract_team(Some("acme-eng"), &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "acme-eng");
-    }
-
-    #[test]
-    fn test_extract_team_admin_with_org_scopes_extracts_from_scope() {
-        // admin:all WITH team scopes falls through to scope extraction
-        let context = test_context(vec!["admin:all", "team:acme-eng:cp:read"]);
-        let result = extract_team(None, &context);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "acme-eng");
-    }
-
-    #[test]
-    fn test_extract_team_no_team_found() {
+    fn test_extract_teams_no_team_scopes_returns_empty() {
         let context = test_context(vec!["some:other:scope"]);
-        let result = extract_team(None, &context);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unable to determine team"));
+        let teams = extract_teams(&context);
+        assert!(teams.is_empty());
     }
 
-    // -------------------------------------------------------------------------
-    // Authorization Tests - CP Scopes
-    // -------------------------------------------------------------------------
-
     #[test]
-    fn test_cp_authorization_initialize_no_scope() {
+    fn test_extract_teams_empty_scopes_returns_empty() {
         let context = test_context(vec![]);
-        assert!(check_method_authorization("initialize", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("initialized", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("ping", &context, &CP_SCOPES).is_ok());
-    }
-
-    #[test]
-    fn test_cp_authorization_tools_list_with_read() {
-        let context = test_context(vec!["mcp:read"]);
-        assert!(check_method_authorization("tools/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("resources/list", &context, &CP_SCOPES).is_ok());
-    }
-
-    #[test]
-    fn test_cp_authorization_tools_list_without_read() {
-        let context = test_context(vec![]);
-        let result = check_method_authorization("tools/list", &context, &CP_SCOPES);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("mcp:read"));
-    }
-
-    #[test]
-    fn test_cp_authorization_tools_call_with_execute() {
-        let context = test_context(vec!["mcp:execute"]);
-        assert!(check_method_authorization("tools/call", &context, &CP_SCOPES).is_ok());
-    }
-
-    #[test]
-    fn test_cp_authorization_tools_call_without_execute() {
-        let context = test_context(vec!["mcp:read"]);
-        let result = check_method_authorization("tools/call", &context, &CP_SCOPES);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("mcp:execute"));
-    }
-
-    #[test]
-    fn test_cp_authorization_resources_read_with_cp_read() {
-        let context = test_context(vec!["cp:read"]);
-        assert!(check_method_authorization("resources/read", &context, &CP_SCOPES).is_ok());
-    }
-
-    #[test]
-    fn test_cp_authorization_resources_read_without_cp_read() {
-        let context = test_context(vec!["mcp:read"]);
-        let result = check_method_authorization("resources/read", &context, &CP_SCOPES);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("cp:read"));
-    }
-
-    #[test]
-    fn test_cp_authorization_admin_governance_only() {
-        let context = test_context(vec!["admin:all"]);
-        // admin:all grants tools/list and tools/call (for audit tool access)
-        assert!(check_method_authorization("tools/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("tools/call", &context, &CP_SCOPES).is_ok());
-
-        // admin:all does NOT grant resources/read, resources/list, prompts, logging
-        assert!(check_method_authorization("resources/read", &context, &CP_SCOPES).is_err());
-        assert!(check_method_authorization("resources/list", &context, &CP_SCOPES).is_err());
-        assert!(check_method_authorization("prompts/list", &context, &CP_SCOPES).is_err());
-        assert!(check_method_authorization("prompts/get", &context, &CP_SCOPES).is_err());
-        assert!(check_method_authorization("logging/setLevel", &context, &CP_SCOPES).is_err());
-    }
-
-    #[test]
-    fn test_cp_authorization_admin_still_allows_special_methods() {
-        let context = test_context(vec!["admin:all"]);
-        // Special methods always allowed (no auth needed)
-        assert!(check_method_authorization("initialize", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("initialized", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("ping", &context, &CP_SCOPES).is_ok());
-    }
-
-    // -------------------------------------------------------------------------
-    // Authorization Tests - Org Scopes
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn test_cp_authorization_org_admin_all_methods() {
-        let context = test_context(vec!["org:acme:admin"]);
-        // Org admin gets all methods
-        assert!(check_method_authorization("tools/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("tools/call", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("resources/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("resources/read", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("prompts/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("prompts/get", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("logging/setLevel", &context, &CP_SCOPES).is_ok());
-    }
-
-    #[test]
-    fn test_cp_authorization_org_member_all_methods() {
-        let context = test_context(vec!["org:acme:member"]);
-        // Org member gets all methods (Layer 2 restricts to team-scoped tools)
-        assert!(check_method_authorization("tools/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("tools/call", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("resources/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("resources/read", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("prompts/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("prompts/get", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("logging/setLevel", &context, &CP_SCOPES).is_ok());
-    }
-
-    #[test]
-    fn test_cp_authorization_org_viewer_read_only() {
-        let context = test_context(vec!["org:acme:viewer"]);
-        // Viewer gets list/read/call methods
-        assert!(check_method_authorization("tools/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("tools/call", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("resources/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("resources/read", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("prompts/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("logging/setLevel", &context, &CP_SCOPES).is_ok());
-
-        // Viewer denied prompts/get (execute operation)
-        let result = check_method_authorization("prompts/get", &context, &CP_SCOPES);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Viewer role"));
-    }
-
-    #[test]
-    fn test_cp_authorization_org_admin_plus_admin_all() {
-        // Dual role: admin:all takes precedence (governance only), but org scope grants resources
-        // admin:all check runs first and returns Ok for tools/list, tools/call
-        let context = test_context(vec!["admin:all", "org:acme:admin"]);
-        assert!(check_method_authorization("tools/list", &context, &CP_SCOPES).is_ok());
-        assert!(check_method_authorization("tools/call", &context, &CP_SCOPES).is_ok());
-        // admin:all blocks resources/list etc. — admin:all check runs first
-        assert!(check_method_authorization("resources/list", &context, &CP_SCOPES).is_err());
-    }
-
-    #[test]
-    fn test_cp_authorization_empty_org_name_denied() {
-        // Guard: org::admin (empty org name) should not grant access
-        let context = test_context(vec!["org::admin"]);
-        let result = check_method_authorization("tools/list", &context, &CP_SCOPES);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("mcp:read"));
-    }
-
-    #[test]
-    fn test_cp_authorization_org_scope_with_api_scopes() {
-        // Org scope works with API_SCOPES config too
-        let context = test_context(vec!["org:acme:admin"]);
-        assert!(check_method_authorization("tools/list", &context, &API_SCOPES).is_ok());
-        assert!(check_method_authorization("tools/call", &context, &API_SCOPES).is_ok());
-    }
-
-    // -------------------------------------------------------------------------
-    // has_org_scope helper tests
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn test_has_org_scope_admin() {
-        let context = test_context(vec!["org:acme:admin"]);
-        assert_eq!(has_org_scope(&context), Some("admin"));
-    }
-
-    #[test]
-    fn test_has_org_scope_member() {
-        let context = test_context(vec!["org:acme:member"]);
-        assert_eq!(has_org_scope(&context), Some("member"));
-    }
-
-    #[test]
-    fn test_has_org_scope_viewer() {
-        let context = test_context(vec!["org:acme:viewer"]);
-        assert_eq!(has_org_scope(&context), Some("viewer"));
-    }
-
-    #[test]
-    fn test_has_org_scope_picks_highest() {
-        let context = test_context(vec!["org:acme:viewer", "org:acme:admin"]);
-        assert_eq!(has_org_scope(&context), Some("admin"));
-    }
-
-    #[test]
-    fn test_has_org_scope_empty_org_name() {
-        let context = test_context(vec!["org::admin"]);
-        assert_eq!(has_org_scope(&context), None);
-    }
-
-    #[test]
-    fn test_has_org_scope_no_org_scopes() {
-        let context = test_context(vec!["mcp:read", "cp:write"]);
-        assert_eq!(has_org_scope(&context), None);
-    }
-
-    // -------------------------------------------------------------------------
-    // Authorization Tests - API Scopes
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn test_api_authorization_tools_list_with_api_read() {
-        let context = test_context(vec!["api:read"]);
-        assert!(check_method_authorization("tools/list", &context, &API_SCOPES).is_ok());
-    }
-
-    #[test]
-    fn test_api_authorization_tools_list_with_mcp_read_fails() {
-        let context = test_context(vec!["mcp:read"]);
-        let result = check_method_authorization("tools/list", &context, &API_SCOPES);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("api:read"));
-    }
-
-    #[test]
-    fn test_api_authorization_resources_read_not_supported() {
-        let context = test_context(vec!["api:read"]);
-        let result = check_method_authorization("resources/read", &context, &API_SCOPES);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Resource operations not supported"));
+        let teams = extract_teams(&context);
+        assert!(teams.is_empty());
     }
 
     // -------------------------------------------------------------------------
