@@ -10,15 +10,10 @@ use axum::{
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::auth::{
-    auth_service::AuthService,
-    middleware::{authenticate, ensure_dynamic_scopes},
-    session::SessionService,
-};
+use crate::auth::middleware::{authenticate, ensure_dynamic_scopes};
 use crate::domain::SharedFilterSchemaRegistry;
 use crate::observability::trace_http_requests;
 use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
-use crate::storage::repository::AuditLogRepository;
 use crate::xds::XdsState;
 
 use super::{
@@ -375,52 +370,24 @@ pub fn build_router_with_registry(
         auth_rate_limiters,
     };
 
-    let cluster_repo = match &state.cluster_repository {
-        Some(repo) => repo.clone(),
-        None => return docs::docs_router(),
-    };
-
-    // Spawn background task to expire stale invitations hourly
-    {
-        let pool = cluster_repo.pool().clone();
-        let invitation_repo = crate::storage::repositories::SqlxInvitationRepository::new(pool);
-        tokio::spawn(async move {
-            use crate::storage::repositories::InvitationRepository;
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        match invitation_repo.expire_stale_invitations().await {
-                            Ok(count) => {
-                                if count > 0 {
-                                    tracing::info!(expired = count, "expired stale invitations");
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to expire stale invitations");
-                            }
-                        }
-                    }
-                    _ = tokio::signal::ctrl_c() => {
-                        tracing::info!("invitation expiry task shutting down");
-                        break;
-                    }
-                }
-            }
-        });
+    // Early return: if no cluster repository is configured, only serve docs
+    if state.cluster_repository.is_none() {
+        return docs::docs_router();
     }
 
     let auth_layer = {
-        let pool = cluster_repo.pool().clone();
-        let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
-        let auth_service = Arc::new(AuthService::with_sqlx(pool.clone(), audit_repository.clone()));
-        let token_repo =
-            Arc::new(crate::storage::repository::SqlxTokenRepository::new(pool.clone()));
-        let session_service = Arc::new(SessionService::new(token_repo, audit_repository));
-
-        // Create a tuple state with auth services + pool for org context resolution
-        let auth_state = (auth_service, session_service, pool);
-        middleware::from_fn_with_state(auth_state, authenticate)
+        let zitadel_config = match crate::auth::zitadel::ZitadelConfig::from_env() {
+            Some(config) => config,
+            None => {
+                panic!("FLOWPLANE_ZITADEL_ISSUER is required — Zitadel is the sole auth provider")
+            }
+        };
+        tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
+        let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
+            jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
+            config: std::sync::Arc::new(zitadel_config),
+        };
+        middleware::from_fn_with_state(zitadel_state, authenticate)
     };
 
     let dynamic_scope_layer = middleware::from_fn(ensure_dynamic_scopes);
@@ -689,53 +656,11 @@ pub fn build_router_with_registry(
         .route("/api/v1/invitations/accept", post(accept_invitation_handler))
         .with_state(api_state.clone());
 
-    // Zitadel auth spike — active when FLOWPLANE_ZITADEL_ISSUER is set
-    let zitadel_api = if let Some(zitadel_config) = crate::auth::zitadel::ZitadelConfig::from_env()
-    {
-        tracing::info!(issuer = %zitadel_config.issuer, "Zitadel auth spike enabled");
-        let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
-            jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
-            config: Arc::new(zitadel_config),
-        };
-        let zitadel_auth = middleware::from_fn_with_state(
-            zitadel_state,
-            crate::auth::zitadel::authenticate_zitadel,
-        );
-        Some(
-            Router::new()
-                // MCP
-                .route(
-                    "/api/v1/zitadel/mcp",
-                    post(crate::mcp::post_handler)
-                        .get(crate::mcp::get_handler)
-                        .delete(crate::mcp::delete_handler),
-                )
-                // Representative REST endpoints
-                .route(
-                    "/api/v1/zitadel/teams/{team}/clusters",
-                    get(list_clusters_handler).post(create_cluster_handler),
-                )
-                .route(
-                    "/api/v1/zitadel/teams/{team}/route-configs",
-                    get(list_route_configs_handler),
-                )
-                .route("/api/v1/zitadel/teams/{team}/listeners", get(list_listeners_handler))
-                .with_state(api_state.clone())
-                .layer(zitadel_auth),
-        )
-    } else {
-        None
-    };
-
     // Build CORS layer for UI integration
     let cors_layer = build_cors_layer();
 
     // Build the API router with CORS
-    let mut api_router = secured_api.merge(public_api).merge(docs::docs_router());
-    if let Some(z) = zitadel_api {
-        api_router = api_router.merge(z);
-    }
-    let api_router = api_router.layer(cors_layer);
+    let api_router = secured_api.merge(public_api).merge(docs::docs_router()).layer(cors_layer);
 
     // Check if UI static files directory exists and add fallback service
     if let Some(ui_dir) = get_ui_static_dir() {

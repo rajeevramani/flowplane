@@ -8,43 +8,18 @@ use axum::{
     extract::{ConnectInfo, Extension, State},
     http::{header::AUTHORIZATION, header::USER_AGENT, Method, Request},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
-use axum_extra::extract::cookie::CookieJar;
 
 use crate::api::error::ApiError;
-use crate::auth::auth_service::AuthService;
 use crate::auth::authorization::{
-    action_from_request, extract_org_scopes, require_resource_access, resource_from_path,
+    action_from_request, require_resource_access, resource_from_path,
 };
 use crate::auth::models::{AuthContext, AuthError};
-use crate::auth::session::{SessionService, CSRF_HEADER_NAME, SESSION_COOKIE_NAME};
-use crate::storage::repositories::{OrganizationRepository, SqlxOrganizationRepository};
-use crate::storage::DbPool;
+use crate::auth::zitadel::{validate_zitadel_jwt, ZitadelAuthState};
 use tracing::{field, info_span, warn};
 
-pub type AuthServiceState = Arc<AuthService>;
-pub type SessionServiceState = Arc<SessionService>;
 pub type ScopeState = Arc<Vec<String>>;
-
-/// Helper to extract session token from cookies
-fn extract_session_from_cookie(jar: &CookieJar) -> Option<String> {
-    jar.get(SESSION_COOKIE_NAME).map(|cookie| cookie.value().to_string())
-}
-
-/// Helper to extract CSRF token from request headers
-fn extract_csrf_from_header(request: &Request<Body>) -> Option<String> {
-    request
-        .headers()
-        .get(CSRF_HEADER_NAME)
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_string())
-}
-
-/// Check if HTTP method requires CSRF validation
-fn is_state_changing_method(method: &Method) -> bool {
-    matches!(method, &Method::POST | &Method::PUT | &Method::PATCH | &Method::DELETE)
-}
 
 /// Extract client IP from the request, preferring X-Forwarded-For header
 fn extract_client_ip(request: &Request<Body>) -> Option<String> {
@@ -65,18 +40,17 @@ fn extract_user_agent(request: &Request<Body>) -> Option<String> {
     request.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
 }
 
-/// Middleware entry point that authenticates requests using the configured [`AuthService`] and [`SessionService`].
-/// Supports both Bearer token and cookie-based authentication with CSRF validation.
+/// Middleware entry point that authenticates requests using Zitadel JWT validation.
+///
+/// All API requests must include a valid Zitadel JWT in the `Authorization: Bearer <token>`
+/// header. The JWT is validated against the Zitadel JWKS endpoint, and role claims are
+/// mapped into Flowplane's `AuthContext` scopes.
 pub async fn authenticate(
-    State((auth_service, session_service, pool)): State<(
-        AuthServiceState,
-        SessionServiceState,
-        DbPool,
-    )>,
-    jar: CookieJar,
+    State(state): State<ZitadelAuthState>,
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
+    // Pass through OPTIONS (CORS preflight)
     if request.method() == Method::OPTIONS {
         return Ok(next.run(request).await);
     }
@@ -95,223 +69,38 @@ pub async fn authenticate(
     );
     let _guard = span.enter();
 
-    // First, try Bearer token from Authorization header
+    // Extract Bearer token
     let header =
         request.headers().get(AUTHORIZATION).and_then(|value| value.to_str().ok()).unwrap_or("");
 
-    let auth_context_result = if !header.is_empty() && header.starts_with("Bearer ") {
-        // Check if it's a session token or PAT
-        let token = header.strip_prefix("Bearer ").unwrap_or("");
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| ApiError::unauthorized("bearer token required"))?;
 
-        if token.starts_with("fp_session_") {
-            // Session token via Bearer header
-            // Validate CSRF for state-changing methods
-            if is_state_changing_method(method) {
-                let csrf_token = extract_csrf_from_header(&request);
-                if csrf_token.is_none() {
-                    warn!(%correlation_id, "CSRF token missing for state-changing request with session token");
-                    return Err(ApiError::forbidden("CSRF token required for this operation"));
-                }
+    // Validate Zitadel JWT
+    let mut context =
+        validate_zitadel_jwt(token, &state.config, &state.jwks_cache).await.map_err(|e| {
+            warn!(%correlation_id, error = ?e, "JWT authentication failed");
+            e
+        })?;
 
-                // Validate session and CSRF
-                let session_info = session_service
-                    .validate_session(token)
-                    .await
-                    .map_err(|e| ApiError::unauthorized(e.to_string()))?;
+    // Enrich with request context
+    let client_ip = extract_client_ip(&request);
+    let user_agent = extract_user_agent(&request);
+    context = context.with_request_context(client_ip, user_agent);
 
-                // Validate CSRF token
-                if let Some(csrf) = csrf_token {
-                    session_service
-                        .validate_csrf_token(&session_info.token.id, &csrf)
-                        .await
-                        .map_err(|_| ApiError::forbidden("Invalid CSRF token"))?;
-                }
-
-                // Use with_user if the token has user information, otherwise use new
-                Ok(
-                    if let (Some(user_id), Some(user_email)) =
-                        (&session_info.token.user_id, &session_info.token.user_email)
-                    {
-                        AuthContext::with_user(
-                            session_info.token.id,
-                            session_info.token.name,
-                            user_id.clone(),
-                            user_email.clone(),
-                            session_info.token.scopes,
-                        )
-                    } else {
-                        AuthContext::new(
-                            session_info.token.id,
-                            session_info.token.name,
-                            session_info.token.scopes,
-                        )
-                    },
-                )
-            } else {
-                // GET requests don't need CSRF validation
-                let session_info = session_service
-                    .validate_session(token)
-                    .await
-                    .map_err(|e| ApiError::unauthorized(e.to_string()))?;
-
-                // Use with_user if the token has user information, otherwise use new
-                Ok(
-                    if let (Some(user_id), Some(user_email)) =
-                        (&session_info.token.user_id, &session_info.token.user_email)
-                    {
-                        AuthContext::with_user(
-                            session_info.token.id,
-                            session_info.token.name,
-                            user_id.clone(),
-                            user_email.clone(),
-                            session_info.token.scopes,
-                        )
-                    } else {
-                        AuthContext::new(
-                            session_info.token.id,
-                            session_info.token.name,
-                            session_info.token.scopes,
-                        )
-                    },
-                )
-            }
-        } else {
-            // Regular PAT authentication - extract client context first
-            let client_ip = extract_client_ip(&request);
-            let user_agent = extract_user_agent(&request);
-            auth_service.authenticate(header, client_ip, user_agent).await
-        }
-    } else if let Some(session_token) = extract_session_from_cookie(&jar) {
-        // Authenticate using session cookie
-        // Validate CSRF for state-changing methods
-        if is_state_changing_method(method) {
-            let csrf_token = extract_csrf_from_header(&request);
-            if csrf_token.is_none() {
-                warn!(%correlation_id, "CSRF token missing for state-changing request");
-                return Err(ApiError::forbidden("CSRF token required for this operation"));
-            }
-
-            // Validate session and CSRF
-            let session_info = session_service
-                .validate_session(&session_token)
-                .await
-                .map_err(|e| ApiError::unauthorized(e.to_string()))?;
-
-            // Validate CSRF token
-            if let Some(csrf) = csrf_token {
-                session_service
-                    .validate_csrf_token(&session_info.token.id, &csrf)
-                    .await
-                    .map_err(|_| ApiError::forbidden("Invalid CSRF token"))?;
-            }
-
-            // Use with_user if the token has user information, otherwise use new
-            Ok(
-                if let (Some(user_id), Some(user_email)) =
-                    (&session_info.token.user_id, &session_info.token.user_email)
-                {
-                    AuthContext::with_user(
-                        session_info.token.id,
-                        session_info.token.name,
-                        user_id.clone(),
-                        user_email.clone(),
-                        session_info.token.scopes,
-                    )
-                } else {
-                    AuthContext::new(
-                        session_info.token.id,
-                        session_info.token.name,
-                        session_info.token.scopes,
-                    )
-                },
-            )
-        } else {
-            // GET requests don't need CSRF validation
-            let session_info = session_service
-                .validate_session(&session_token)
-                .await
-                .map_err(|e| ApiError::unauthorized(e.to_string()))?;
-
-            // Use with_user if the token has user information, otherwise use new
-            Ok(
-                if let (Some(user_id), Some(user_email)) =
-                    (&session_info.token.user_id, &session_info.token.user_email)
-                {
-                    AuthContext::with_user(
-                        session_info.token.id,
-                        session_info.token.name,
-                        user_id.clone(),
-                        user_email.clone(),
-                        session_info.token.scopes,
-                    )
-                } else {
-                    AuthContext::new(
-                        session_info.token.id,
-                        session_info.token.name,
-                        session_info.token.scopes,
-                    )
-                },
-            )
-        }
-    } else {
-        // No authentication credentials provided
-        Err(AuthError::MissingBearer)
-    };
-
-    match auth_context_result {
-        Ok(context) => {
-            // Extract request context (client IP and user agent)
-            let client_ip = extract_client_ip(&request);
-            let user_agent = extract_user_agent(&request);
-
-            // Add request context to auth context
-            let mut context = context.with_request_context(client_ip, user_agent);
-
-            // Populate org context from scopes (Phase 3.6)
-            // SECURITY: Fail-closed — if a token has org scopes but the org cannot be
-            // resolved, reject the request entirely. A token referencing a non-existent
-            // org is invalid and should not be honored.
-            let org_scopes = extract_org_scopes(&context);
-            if let Some((org_name, _role)) = org_scopes.first() {
-                let org_repo = SqlxOrganizationRepository::new(pool);
-                match org_repo.get_organization_by_name(org_name).await {
-                    Ok(Some(org)) => {
-                        context = context.with_org(org.id, org.name);
-                    }
-                    Ok(None) => {
-                        warn!(org_name = %org_name, "org scope references non-existent org, rejecting request");
-                        return Ok(ApiError::Unauthorized(format!(
-                            "Token references non-existent organization '{}'",
-                            org_name
-                        ))
-                        .into_response());
-                    }
-                    Err(e) => {
-                        warn!(org_name = %org_name, error = %e, "org lookup failed during authentication");
-                        return Ok(ApiError::ServiceUnavailable(
-                            "Organization validation temporarily unavailable".to_string(),
-                        )
-                        .into_response());
-                    }
-                }
-            }
-
-            let current_span = tracing::Span::current();
-            current_span.record("auth.token_id", field::display(&context.token_id));
-            if let Some(ref org_id) = context.org_id {
-                current_span.record("auth.org_id", field::display(org_id));
-            }
-            if let Some(ref org_name) = context.org_name {
-                current_span.record("auth.org_name", org_name.as_str());
-            }
-            request.extensions_mut().insert(context);
-            Ok(next.run(request).await)
-        }
-        Err(err) => {
-            warn!(%correlation_id, error = %err, "authentication failed");
-            Err(map_auth_error(err))
-        }
+    // Record auth context in tracing span
+    let current_span = tracing::Span::current();
+    current_span.record("auth.token_id", field::display(&context.token_id));
+    if let Some(ref org_id) = context.org_id {
+        current_span.record("auth.org_id", field::display(org_id));
     }
+    if let Some(ref org_name) = context.org_name {
+        current_span.record("auth.org_name", org_name.as_str());
+    }
+
+    request.extensions_mut().insert(context);
+    Ok(next.run(request).await)
 }
 
 /// Middleware entry point that verifies the caller has the required scopes.
@@ -360,15 +149,15 @@ pub async fn ensure_scopes(
 ///
 /// # How it works
 ///
-/// 1. Extracts the resource from the path (e.g., `/api/v1/route-configs` → "routes")
-/// 2. Derives the action from the HTTP method (e.g., GET → "read", POST → "write")
+/// 1. Extracts the resource from the path (e.g., `/api/v1/route-configs` -> "routes")
+/// 2. Derives the action from the HTTP method (e.g., GET -> "read", POST -> "write")
 /// 3. Checks permissions using `require_resource_access`
 ///
 /// # Examples
 ///
-/// - GET /api/v1/route-configs → requires "routes:read"
-/// - POST /api/v1/clusters → requires "clusters:write"
-/// - DELETE /api/v1/listeners/foo → requires "listeners:delete"
+/// - GET /api/v1/route-configs -> requires "routes:read"
+/// - POST /api/v1/clusters -> requires "clusters:write"
+/// - DELETE /api/v1/listeners/foo -> requires "listeners:delete"
 pub async fn ensure_dynamic_scopes(
     Extension(context): Extension<AuthContext>,
     request: Request<Body>,

@@ -1,6 +1,9 @@
-// NOTE: This file requires PostgreSQL - disabled until Phase 4 of PostgreSQL migration
-// To run these tests: cargo test --features postgres_tests
-#![cfg(feature = "postgres_tests")]
+// TODO: Remove in Task 2.3 (delete custom auth modules)
+// These tests validated the old PAT/session/CSRF middleware which has been
+// replaced by Zitadel JWT authentication. The middleware now takes
+// ZitadelAuthState instead of (AuthServiceState, SessionServiceState, DbPool).
+// Disabled: authenticate() now requires ZitadelAuthState, not (AuthService, SessionService, DbPool).
+#![cfg(any())]
 
 use axum::{
     body::Body,
