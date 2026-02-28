@@ -1,0 +1,4 @@
+.env
+__pycache__/
+last_run.json
+last_matrix_run.json

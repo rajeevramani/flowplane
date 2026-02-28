@@ -1,0 +1,92 @@
+# Zitadel Auth Spike — Flowplane + existing Zitadel
+#
+# Adds Flowplane (+ its PostgreSQL) to the existing Zitadel compose stack.
+# Flowplane runs on port 3001, Zitadel stays on 8080.
+#
+# Usage:
+#   # From poc/zitadel/ (Zitadel already running):
+#   docker compose -f docker-compose-spike.yml up -d --build
+#
+# Test:
+#   TOKEN=$(curl -s -X POST http://localhost:8080/oauth/v2/token \
+#     -H "Content-Type: application/x-www-form-urlencoded" \
+#     -d "grant_type=client_credentials&scope=openid urn:zitadel:iam:org:projects:roles urn:zitadel:iam:org:project:id:$(jq -r .project_id .credentials.json):aud" \
+#     -u "$(jq -r '.client_id + ":" + .client_secret' .credentials.json)" \
+#     | jq -r .access_token)
+#
+#   curl http://localhost:3001/api/v1/zitadel/teams/team-01/clusters -H "Authorization: Bearer $TOKEN"
+
+services:
+  flowplane-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: flowplane
+      POSTGRES_PASSWORD: flowplane
+      POSTGRES_DB: flowplane
+    ports:
+      - "5435:5432"
+    volumes:
+      - spike-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowplane -d flowplane"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - zitadel
+
+  flowplane:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: flowplane:spike
+    container_name: flowplane-spike
+    environment:
+      # Database
+      FLOWPLANE_DATABASE_URL: postgresql://flowplane:flowplane@flowplane-db:5432/flowplane
+      FLOWPLANE_DATABASE_AUTO_MIGRATE: "true"
+
+      # Server — port 3001 to avoid 8080 conflict with Zitadel
+      FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_API_PORT: 3001
+      FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_XDS_PORT: 50051
+      FLOWPLANE_COOKIE_SECURE: "false"
+
+      # Zitadel auth spike
+      # Issuer must match the JWT's "iss" claim (http://localhost:8080)
+      FLOWPLANE_ZITADEL_ISSUER: http://localhost:8080
+      # JWKS URL uses container hostname (reachable on internal network)
+      FLOWPLANE_ZITADEL_JWKS_URL: http://zitadel:8080/oauth/v2/keys
+      FLOWPLANE_ZITADEL_PROJECT_ID: "${ZITADEL_PROJECT_ID}"
+
+      # UI / CORS
+      FLOWPLANE_UI_ORIGIN: "http://localhost:3001,http://localhost:6274"
+
+      # Logging
+      RUST_LOG: info,flowplane=debug
+    ports:
+      - "3001:3001"
+      - "50051:50051"
+    depends_on:
+      flowplane-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - zitadel
+
+volumes:
+  spike-pgdata:
+
+networks:
+  zitadel:
+    external: true
+    name: zitadel_zitadel

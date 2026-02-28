@@ -689,11 +689,53 @@ pub fn build_router_with_registry(
         .route("/api/v1/invitations/accept", post(accept_invitation_handler))
         .with_state(api_state.clone());
 
+    // Zitadel auth spike — active when FLOWPLANE_ZITADEL_ISSUER is set
+    let zitadel_api = if let Some(zitadel_config) = crate::auth::zitadel::ZitadelConfig::from_env()
+    {
+        tracing::info!(issuer = %zitadel_config.issuer, "Zitadel auth spike enabled");
+        let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
+            jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
+            config: Arc::new(zitadel_config),
+        };
+        let zitadel_auth = middleware::from_fn_with_state(
+            zitadel_state,
+            crate::auth::zitadel::authenticate_zitadel,
+        );
+        Some(
+            Router::new()
+                // MCP
+                .route(
+                    "/api/v1/zitadel/mcp",
+                    post(crate::mcp::post_handler)
+                        .get(crate::mcp::get_handler)
+                        .delete(crate::mcp::delete_handler),
+                )
+                // Representative REST endpoints
+                .route(
+                    "/api/v1/zitadel/teams/{team}/clusters",
+                    get(list_clusters_handler).post(create_cluster_handler),
+                )
+                .route(
+                    "/api/v1/zitadel/teams/{team}/route-configs",
+                    get(list_route_configs_handler),
+                )
+                .route("/api/v1/zitadel/teams/{team}/listeners", get(list_listeners_handler))
+                .with_state(api_state.clone())
+                .layer(zitadel_auth),
+        )
+    } else {
+        None
+    };
+
     // Build CORS layer for UI integration
     let cors_layer = build_cors_layer();
 
     // Build the API router with CORS
-    let api_router = secured_api.merge(public_api).merge(docs::docs_router()).layer(cors_layer);
+    let mut api_router = secured_api.merge(public_api).merge(docs::docs_router());
+    if let Some(z) = zitadel_api {
+        api_router = api_router.merge(z);
+    }
+    let api_router = api_router.layer(cors_layer);
 
     // Check if UI static files directory exists and add fallback service
     if let Some(ui_dir) = get_ui_static_dir() {

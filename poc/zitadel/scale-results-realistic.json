@@ -1,0 +1,54 @@
+{
+  "mode": "realistic",
+  "roles_per_team": 8,
+  "results": [
+    {
+      "teams": 3,
+      "roles_per_team": 8,
+      "total_grants": 24,
+      "actual_roles_in_jwt": 24,
+      "jwt_raw_bytes": 2928,
+      "auth_header_bytes": 2935
+    },
+    {
+      "teams": 5,
+      "roles_per_team": 8,
+      "total_grants": 40,
+      "actual_roles_in_jwt": 40,
+      "jwt_raw_bytes": 4355,
+      "auth_header_bytes": 4362
+    },
+    {
+      "teams": 8,
+      "roles_per_team": 8,
+      "total_grants": 64,
+      "actual_roles_in_jwt": 64,
+      "jwt_raw_bytes": 6495,
+      "auth_header_bytes": 6502
+    },
+    {
+      "teams": 10,
+      "roles_per_team": 8,
+      "total_grants": 80,
+      "actual_roles_in_jwt": 80,
+      "jwt_raw_bytes": 7922,
+      "auth_header_bytes": 7929
+    },
+    {
+      "teams": 15,
+      "roles_per_team": 8,
+      "total_grants": 120,
+      "actual_roles_in_jwt": 120,
+      "jwt_raw_bytes": 11488,
+      "auth_header_bytes": 11495
+    },
+    {
+      "teams": 20,
+      "roles_per_team": 8,
+      "total_grants": 160,
+      "actual_roles_in_jwt": 160,
+      "jwt_raw_bytes": 15055,
+      "auth_header_bytes": 15062
+    }
+  ]
+}

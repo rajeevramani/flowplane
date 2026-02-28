@@ -23,6 +23,7 @@ pub mod user;
 pub mod user_service;
 pub mod user_validation;
 pub mod validation;
+pub mod zitadel;
 
 pub use hashing::{hash_password, verify_password};
 pub use jwt::{AuthService as JwtAuthService, Claims, Role};
