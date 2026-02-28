@@ -53,9 +53,15 @@ impl ZitadelConfig {
     /// Returns `None` when `FLOWPLANE_ZITADEL_ISSUER` is not set (opt-in).
     pub fn from_env() -> Option<Self> {
         let issuer = std::env::var("FLOWPLANE_ZITADEL_ISSUER").ok()?;
-        let project_id = std::env::var("FLOWPLANE_ZITADEL_PROJECT_ID").expect(
-            "FLOWPLANE_ZITADEL_PROJECT_ID is required when FLOWPLANE_ZITADEL_ISSUER is set",
-        );
+        let project_id = match std::env::var("FLOWPLANE_ZITADEL_PROJECT_ID") {
+            Ok(id) if !id.is_empty() => id,
+            _ => {
+                tracing::error!(
+                    "FLOWPLANE_ZITADEL_PROJECT_ID is required when FLOWPLANE_ZITADEL_ISSUER is set"
+                );
+                return None;
+            }
+        };
         let audience =
             std::env::var("FLOWPLANE_ZITADEL_AUDIENCE").unwrap_or_else(|_| project_id.clone());
         let jwks_url = std::env::var("FLOWPLANE_ZITADEL_JWKS_URL").unwrap_or_else(|_| {
