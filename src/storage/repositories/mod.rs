@@ -31,7 +31,6 @@ pub mod route_metadata;
 pub mod scope;
 pub mod secret;
 pub mod team;
-pub mod token;
 pub mod user;
 pub mod virtual_host;
 pub mod virtual_host_filter;
@@ -116,7 +115,6 @@ pub use secret::{
     UpdateSecretRequest,
 };
 pub use team::{SqlxTeamRepository, TeamRepository};
-pub use token::{SqlxTokenRepository, TokenRepository};
 pub use user::{
     SqlxTeamMembershipRepository, SqlxUserRepository, TeamMembershipRepository, UserRepository,
 };

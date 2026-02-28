@@ -19,9 +19,6 @@ pub use crate::storage::repositories::{
     ListenerRepository,
     RouteConfigData,
     RouteConfigRepository,
-    // Token repository
-    SqlxTokenRepository,
-    TokenRepository,
     UpdateClusterRequest,
     UpdateListenerRequest,
     UpdateRouteConfigRequest,

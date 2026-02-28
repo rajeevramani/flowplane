@@ -72,8 +72,8 @@ async fn main() -> Result<()> {
     info!(database = "postgresql", "Creating database connection pool");
     let pool = create_pool(&db_config).await?;
 
-    // Handle first-time startup: auto-generate setup token if needed
-    flowplane::startup::handle_first_time_startup(pool.clone()).await?;
+    // Handle first-time startup: check Zitadel configuration
+    flowplane::startup::handle_first_time_startup().await?;
 
     // Initialize scope registry for scope validation
     init_scope_registry(pool.clone()).await?;

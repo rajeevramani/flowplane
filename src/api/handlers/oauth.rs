@@ -299,6 +299,74 @@ impl DcrState {
     }
 }
 
+// ===== OAuth Metadata Endpoints =====
+
+/// OpenID Connect Discovery metadata (RFC 8414 / OpenID Connect Discovery 1.0).
+///
+/// Returns a document pointing agents to Zitadel's token, authorization,
+/// JWKS, and registration endpoints. Flowplane proxies DCR (`/api/v1/oauth/register`)
+/// while all other OAuth flows go directly to Zitadel.
+#[derive(Debug, Serialize)]
+pub struct OAuthMetadata {
+    pub issuer: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+    pub registration_endpoint: String,
+    pub scopes_supported: Vec<&'static str>,
+    pub response_types_supported: Vec<&'static str>,
+    pub grant_types_supported: Vec<&'static str>,
+    pub token_endpoint_auth_methods_supported: Vec<&'static str>,
+}
+
+/// Shared state for the metadata endpoint.
+#[derive(Clone)]
+pub struct OAuthMetadataState {
+    pub issuer: String,
+    pub registration_endpoint: String,
+}
+
+impl OAuthMetadataState {
+    /// Build metadata state from environment.
+    pub fn from_env() -> Option<Self> {
+        let issuer = std::env::var("FLOWPLANE_ZITADEL_ISSUER").ok()?;
+        if issuer.is_empty() {
+            return None;
+        }
+
+        // Registration endpoint is our DCR proxy
+        let api_base = std::env::var("FLOWPLANE_API_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        let registration_endpoint =
+            format!("{}/api/v1/oauth/register", api_base.trim_end_matches('/'));
+
+        Some(Self { issuer, registration_endpoint })
+    }
+}
+
+/// `GET /.well-known/openid-configuration`
+///
+/// Returns OAuth/OIDC metadata combining Zitadel endpoints with
+/// Flowplane's DCR proxy.
+#[instrument(skip(state))]
+pub async fn openid_configuration_handler(
+    State(state): State<OAuthMetadataState>,
+) -> Json<OAuthMetadata> {
+    let base = state.issuer.trim_end_matches('/');
+
+    Json(OAuthMetadata {
+        issuer: state.issuer.clone(),
+        authorization_endpoint: format!("{base}/oauth/v2/authorize"),
+        token_endpoint: format!("{base}/oauth/v2/token"),
+        jwks_uri: format!("{base}/oauth/v2/keys"),
+        registration_endpoint: state.registration_endpoint,
+        scopes_supported: vec!["openid", "profile", "email", "offline_access"],
+        response_types_supported: vec!["code", "id_token", "id_token token"],
+        grant_types_supported: vec!["authorization_code", "client_credentials", "refresh_token"],
+        token_endpoint_auth_methods_supported: vec!["client_secret_basic", "client_secret_post"],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +545,48 @@ mod tests {
         assert_eq!(json["grant_types"], serde_json::json!(["client_credentials"]));
         assert_eq!(json["token_endpoint_auth_method"], "client_secret_basic");
         assert_eq!(json["token_endpoint"], "http://localhost:8081/oauth/v2/token");
+    }
+
+    // --- Metadata tests ---
+
+    #[test]
+    fn metadata_state_requires_issuer() {
+        // No env vars set → None
+        std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER");
+        assert!(OAuthMetadataState::from_env().is_none());
+    }
+
+    #[test]
+    fn metadata_response_has_required_fields() {
+        let metadata = OAuthMetadata {
+            issuer: "https://auth.example.com".to_string(),
+            authorization_endpoint: "https://auth.example.com/oauth/v2/authorize".to_string(),
+            token_endpoint: "https://auth.example.com/oauth/v2/token".to_string(),
+            jwks_uri: "https://auth.example.com/oauth/v2/keys".to_string(),
+            registration_endpoint: "http://localhost:8080/api/v1/oauth/register".to_string(),
+            scopes_supported: vec!["openid", "profile", "email", "offline_access"],
+            response_types_supported: vec!["code", "id_token", "id_token token"],
+            grant_types_supported: vec![
+                "authorization_code",
+                "client_credentials",
+                "refresh_token",
+            ],
+            token_endpoint_auth_methods_supported: vec![
+                "client_secret_basic",
+                "client_secret_post",
+            ],
+        };
+
+        let json = serde_json::to_value(&metadata).unwrap();
+        assert_eq!(json["issuer"], "https://auth.example.com");
+        assert_eq!(json["token_endpoint"], "https://auth.example.com/oauth/v2/token");
+        assert_eq!(json["jwks_uri"], "https://auth.example.com/oauth/v2/keys");
+        assert_eq!(json["registration_endpoint"], "http://localhost:8080/api/v1/oauth/register");
+        assert!(json["grant_types_supported"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "client_credentials"));
     }
 
     #[test]

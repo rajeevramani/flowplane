@@ -467,6 +467,20 @@ pub fn build_router_with_registry(
         Router::new()
     };
 
+    // OAuth metadata endpoint (public, points to Zitadel)
+    let metadata_router =
+        if let Some(meta_state) = super::handlers::oauth::OAuthMetadataState::from_env() {
+            tracing::info!("OAuth metadata enabled at /.well-known/openid-configuration");
+            Router::new()
+                .route(
+                    "/.well-known/openid-configuration",
+                    get(super::handlers::oauth::openid_configuration_handler),
+                )
+                .with_state(meta_state)
+        } else {
+            Router::new()
+        };
+
     // Build CORS layer for UI integration
     let cors_layer = build_cors_layer();
 
@@ -474,6 +488,7 @@ pub fn build_router_with_registry(
     let api_router = secured_api
         .merge(public_api)
         .merge(dcr_router)
+        .merge(metadata_router)
         .merge(docs::docs_router())
         .layer(cors_layer);
 
