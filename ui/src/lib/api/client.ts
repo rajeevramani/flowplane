@@ -1,12 +1,10 @@
-// API client with CSRF token handling
+// API client with OIDC JWT authentication
 import { goto } from '$app/navigation';
 import { env } from '$env/dynamic/public';
 import { z } from 'zod';
 import { SecretResponseSchema, AdminListOrgsResponseSchema, AdminResourceSummarySchema, paginatedSchema } from './schemas';
+import { userManager } from '$lib/auth/oidc-config';
 import type {
-	LoginRequest,
-	LoginResponse,
-	ChangePasswordRequest,
 	BootstrapStatusResponse,
 	BootstrapInitializeRequest,
 	BootstrapInitializeResponse,
@@ -129,8 +127,6 @@ import type {
 	OrgRole,
 	// Invitation types
 	InviteTokenInfo,
-	AcceptInvitationRequest,
-	LoginResponse as InvitationLoginResponse,
 	PaginatedInvitations,
 	CreateInvitationRequest,
 	CreateInvitationResponse,
@@ -152,35 +148,20 @@ function parseResponse<T>(data: unknown, schema: z.ZodType<T>): T {
 }
 
 class ApiClient {
-	private csrfToken: string | null = null;
-
-	constructor() {
-		// Load CSRF token from sessionStorage on initialization
-		if (typeof window !== 'undefined') {
-			this.csrfToken = sessionStorage.getItem('csrf_token');
-		}
-	}
-
-	private getHeaders(includeCSRF: boolean = false): HeadersInit {
-		const headers: HeadersInit = {
+	private async getHeaders(): Promise<HeadersInit> {
+		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
 		};
 
-		if (includeCSRF && this.csrfToken) {
-			headers['X-CSRF-Token'] = this.csrfToken;
+		const user = await userManager.getUser();
+		if (user?.access_token) {
+			headers['Authorization'] = `Bearer ${user.access_token}`;
 		}
 
 		return headers;
 	}
 
 	private async handleResponse<T>(response: Response): Promise<T> {
-		// Check for CSRF token in response headers
-		const csrfHeader = response.headers.get('X-CSRF-Token');
-		if (csrfHeader) {
-			this.csrfToken = csrfHeader;
-			sessionStorage.setItem('csrf_token', csrfHeader);
-		}
-
 		if (!response.ok) {
 			// Handle 401 Unauthorized - redirect to login
 			if (response.status === 401) {
@@ -210,66 +191,61 @@ class ApiClient {
 		return response.json();
 	}
 
-	async login(credentials: LoginRequest): Promise<LoginResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
-			method: 'POST',
-			headers: this.getHeaders(),
-			body: JSON.stringify(credentials),
-			credentials: 'include', // Include cookies
-		});
-
-		const data = await this.handleResponse<LoginResponse>(response);
-
-		// Store CSRF token
-		if (data.csrfToken) {
-			this.csrfToken = data.csrfToken;
-			sessionStorage.setItem('csrf_token', data.csrfToken);
-		}
-
-		return data;
+	async login(): Promise<void> {
+		await userManager.signinRedirect();
 	}
 
 	async logout(): Promise<void> {
 		try {
-			const response = await fetch(`${API_BASE}/api/v1/auth/sessions/logout`, {
-				method: 'POST',
-				headers: this.getHeaders(true), // Include CSRF token
-				credentials: 'include',
-			});
-
-			await this.handleResponse(response);
+			await userManager.signoutRedirect();
 		} finally {
-			// Always clear local auth state
 			this.clearAuth();
 		}
 	}
 
 	async getSessionInfo(): Promise<SessionInfoResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/sessions/me`, {
-			method: 'GET',
-			headers: this.getHeaders(),
-			credentials: 'include',
-		});
+		const user = await userManager.getUser();
+		if (!user || user.expired) {
+			throw new Error('Not authenticated');
+		}
 
-		return this.handleResponse<SessionInfoResponse>(response);
-	}
+		const profile = user.profile;
 
-	async changePassword(request: ChangePasswordRequest): Promise<void> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/change-password`, {
-			method: 'POST',
-			headers: this.getHeaders(true), // Include CSRF token
-			body: JSON.stringify(request),
-			credentials: 'include',
-		});
+		// Extract name from OIDC standard claims
+		const name = (profile.name as string) ?? (profile.preferred_username as string) ?? '';
+		const email = (profile.email as string) ?? '';
 
-		await this.handleResponse<void>(response);
+		// Extract Zitadel role claims — shape: { [roleName]: { orgId: orgDomain } }
+		const roleClaims = Object.entries(profile).find(([key]) =>
+			key.startsWith('urn:zitadel:iam:org:project:')
+		);
+
+		const roles: string[] = [];
+		if (roleClaims) {
+			const roleObj = roleClaims[1];
+			if (roleObj && typeof roleObj === 'object') {
+				roles.push(...Object.keys(roleObj as Record<string, unknown>));
+			}
+		}
+
+		const isPlatformAdmin = roles.includes('admin:all');
+
+		return {
+			sessionId: user.session_state ?? '',
+			userId: profile.sub,
+			name,
+			email,
+			isAdmin: isPlatformAdmin,
+			isPlatformAdmin,
+			teams: [],
+			scopes: roles,
+			expiresAt: user.expires_at ? new Date(user.expires_at * 1000).toISOString() : null,
+			version: '',
+		};
 	}
 
 	clearAuth() {
-		this.csrfToken = null;
-		if (typeof window !== 'undefined') {
-			sessionStorage.removeItem('csrf_token');
-		}
+		userManager.removeUser();
 		// Clear org context to prevent session leaking across logins
 		currentOrg.set({ organization: null, role: null });
 	}
@@ -278,7 +254,7 @@ class ApiClient {
 	async get<T>(path: string): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: await this.getHeaders(),
 			credentials: 'include',
 		});
 
@@ -288,7 +264,7 @@ class ApiClient {
 	async post<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'POST',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -299,7 +275,7 @@ class ApiClient {
 	async put<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'PUT',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -310,7 +286,7 @@ class ApiClient {
 	async delete<T>(path: string): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'DELETE',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			credentials: 'include',
 		});
 
@@ -320,7 +296,7 @@ class ApiClient {
 	async patch<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'PATCH',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -332,7 +308,7 @@ class ApiClient {
 	async getBootstrapStatus(): Promise<BootstrapStatusResponse> {
 		const response = await fetch(`${API_BASE}/api/v1/bootstrap/status`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: { 'Content-Type': 'application/json' },
 		});
 
 		return this.handleResponse<BootstrapStatusResponse>(response);
@@ -343,7 +319,7 @@ class ApiClient {
 	): Promise<BootstrapInitializeResponse> {
 		const response = await fetch(`${API_BASE}/api/v1/bootstrap/initialize`, {
 			method: 'POST',
-			headers: this.getHeaders(),
+			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(data),
 		});
 
@@ -402,10 +378,11 @@ class ApiClient {
 		const isYaml = request.spec.trim().startsWith('openapi:') || request.spec.trim().startsWith('swagger:');
 		const contentType = isYaml ? 'application/yaml' : 'application/json';
 
+		const baseHeaders = await this.getHeaders();
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'POST',
 			headers: {
-				...this.getHeaders(true), // Include CSRF
+				...baseHeaders,
 				'Content-Type': contentType
 			},
 			body: request.spec,
@@ -1205,7 +1182,7 @@ class ApiClient {
 			`${API_BASE}/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}/download`,
 			{
 				method: 'GET',
-				headers: this.getHeaders(),
+				headers: await this.getHeaders(),
 				credentials: 'include'
 			}
 		);
@@ -1367,7 +1344,7 @@ class ApiClient {
 		try {
 			const response = await fetch(`${API_BASE}/api/v1/mcp/cp?team=${encodeURIComponent(team)}`, {
 				method: 'POST',
-				headers: this.getHeaders(true),
+				headers: await this.getHeaders(),
 				credentials: 'include',
 				body: JSON.stringify({
 					jsonrpc: '2.0',
@@ -1424,7 +1401,7 @@ class ApiClient {
 			`${API_BASE}/api/v1/mcp/cp/connections?team=${encodeURIComponent(team)}`,
 			{
 				method: 'GET',
-				headers: this.getHeaders(true),
+				headers: await this.getHeaders(),
 				credentials: 'include'
 			}
 		);
@@ -1528,7 +1505,7 @@ class ApiClient {
 
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: await this.getHeaders(),
 			credentials: 'include'
 		});
 
@@ -1650,40 +1627,6 @@ class ApiClient {
 		}
 
 		return response.json();
-	}
-
-	async acceptInvitation(req: AcceptInvitationRequest): Promise<InvitationLoginResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/invitations/accept`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(req),
-			credentials: 'include'
-		});
-
-		if (!response.ok) {
-			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-			try {
-				const errorData = await response.json();
-				errorMessage = errorData.message || errorMessage;
-			} catch {
-				// Use status text
-			}
-			throw new Error(errorMessage);
-		}
-
-		const data: InvitationLoginResponse = await response.json();
-
-		// Replicate CSRF token storage from login()
-		if (data.csrfToken) {
-			this.csrfToken = data.csrfToken;
-			try {
-				sessionStorage.setItem('csrf_token', data.csrfToken);
-			} catch {
-				// Safari private browsing may throw on sessionStorage write
-			}
-		}
-
-		return data;
 	}
 
 	async listOrgInvitations(

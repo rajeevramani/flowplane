@@ -7,7 +7,6 @@
 use flowplane::auth::authorization::{
     extract_org_scopes, has_admin_bypass, has_org_admin, has_org_membership,
 };
-use flowplane::auth::hashing;
 use flowplane::auth::models::AuthContext;
 use flowplane::auth::organization::{CreateOrganizationRequest, OrgRole, OrgStatus};
 use flowplane::auth::team::CreateTeamRequest;
@@ -418,7 +417,7 @@ async fn membership_role_upgrade_and_downgrade() {
 
     // Create two users, both as owners (so we can downgrade one)
     let user_repo = SqlxUserRepository::new(pool.clone());
-    let password_hash = hashing::hash_password("TestPass123!").expect("hash");
+    let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
 
     let user1_id = UserId::new();
     user_repo

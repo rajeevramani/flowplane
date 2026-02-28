@@ -42,6 +42,38 @@ use crate::{
 
 // ===== Helper Functions =====
 
+/// Derive default team scopes from an org role.
+///
+/// Previously lived in `auth::invitation_service`; inlined here after
+/// that module was deleted during the Zitadel migration.
+fn scopes_for_org_role(role: OrgRole, team_name: &str) -> Vec<String> {
+    match role {
+        OrgRole::Admin | OrgRole::Owner => {
+            vec![format!("team:{team_name}:*:*")]
+        }
+        OrgRole::Member => {
+            vec![
+                format!("team:{team_name}:routes:read"),
+                format!("team:{team_name}:routes:write"),
+                format!("team:{team_name}:clusters:read"),
+                format!("team:{team_name}:clusters:write"),
+                format!("team:{team_name}:listeners:read"),
+                format!("team:{team_name}:listeners:write"),
+                format!("team:{team_name}:filters:read"),
+                format!("team:{team_name}:filters:write"),
+                format!("team:{team_name}:stats:read"),
+            ]
+        }
+        OrgRole::Viewer => {
+            vec![
+                format!("team:{team_name}:routes:read"),
+                format!("team:{team_name}:clusters:read"),
+                format!("team:{team_name}:listeners:read"),
+            ]
+        }
+    }
+}
+
 /// Helper to create OrganizationRepository from ApiState.
 fn org_repository_for_state(state: &ApiState) -> Result<Arc<dyn OrganizationRepository>, ApiError> {
     let cluster_repo = state
@@ -850,7 +882,7 @@ pub async fn create_org_team(
     let org_members =
         org_membership_repo.list_org_members(&org.id).await.map_err(ApiError::from)?;
     for member in &org_members {
-        let scopes = crate::auth::invitation_service::scopes_for_role(member.role, &team.name);
+        let scopes = scopes_for_org_role(member.role, &team.name);
         let membership = crate::auth::user::NewUserTeamMembership {
             id: format!("utm_{}", uuid::Uuid::new_v4()),
             user_id: member.user_id.clone(),
@@ -1154,7 +1186,7 @@ pub async fn add_team_member(
 
     // Use provided scopes or derive defaults from org role
     let scopes = if payload.scopes.is_empty() {
-        crate::auth::invitation_service::scopes_for_role(org_membership.role, &team.name)
+        scopes_for_org_role(org_membership.role, &team.name)
     } else {
         payload.scopes
     };

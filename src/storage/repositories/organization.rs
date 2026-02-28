@@ -865,13 +865,12 @@ mod tests {
             .expect("create org");
 
         // Create a user
-        use crate::auth::hashing;
         use crate::auth::user::{NewUser, UserStatus};
         use crate::storage::repositories::{SqlxUserRepository, UserRepository};
 
         let user_repo = SqlxUserRepository::new(pool.clone());
         let user_id = UserId::new();
-        let password_hash = hashing::hash_password("TestPass123!").expect("hash password");
+        let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
         let user = user_repo
             .create_user(NewUser {
                 id: user_id.clone(),

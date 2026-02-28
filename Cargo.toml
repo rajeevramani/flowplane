@@ -163,8 +163,3 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Testcontainers for PostgreSQL integration tests
 testcontainers = "0.26"
 testcontainers-modules = { version = "0.14", features = ["postgres"] }
-
-[[bench]]
-name = "token_repository"
-harness = false
-required-features = ["postgres_tests"]

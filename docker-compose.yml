@@ -149,6 +149,10 @@ services:
       # JWKS fetched container-to-container (Zitadel listens on 8080 internally)
       FLOWPLANE_ZITADEL_JWKS_URL: http://zitadel:8080/oauth/v2/keys
       FLOWPLANE_ZITADEL_PROJECT_ID: ${ZITADEL_PROJECT_ID:-}
+
+      # DCR proxy — Zitadel Management API (container-to-container)
+      FLOWPLANE_ZITADEL_ADMIN_PAT: ${ZITADEL_ADMIN_PAT:-}
+      FLOWPLANE_ZITADEL_ADMIN_URL: http://zitadel:8080
     ports:
       - "8080:8080"   # HTTP API + UI
       - "50051:50051" # xDS gRPC (ADS + ALS + ExtProc all on this port)

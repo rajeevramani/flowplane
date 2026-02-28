@@ -115,7 +115,6 @@ impl TestApiStateBuilder {
                 mcp_session_manager,
                 certificate_rate_limiter,
                 auth_config: Arc::new(crate::config::AuthConfig::default()),
-                auth_rate_limiters: Arc::new(crate::api::routes::AuthRateLimiters::from_env()),
             },
         )
     }
@@ -320,7 +319,6 @@ impl TestUserBuilder {
 
     /// Insert the user into the database
     pub async fn insert(self, pool: &DbPool) -> UserId {
-        use crate::auth::hashing;
         use crate::auth::user::{NewUser, UserStatus};
         use crate::storage::repositories::SqlxUserRepository;
         use crate::storage::repositories::UserRepository;
@@ -328,9 +326,9 @@ impl TestUserBuilder {
         let repo = SqlxUserRepository::new(pool.clone());
         let user_id = UserId::new();
 
-        // Hash the password using the crate's hashing module
-        let password_hash =
-            hashing::hash_password(&self.password).expect("Failed to hash password");
+        // Dummy hash — Zitadel handles authentication, password_hash column
+        // kept until Task 2.5 drops the users table.
+        let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
 
         let new_user = NewUser {
             id: user_id.clone(),

@@ -15,7 +15,6 @@ pub mod filter;
 pub mod import_metadata;
 pub mod inferred_schema;
 pub mod instance_app;
-pub mod invitation;
 pub mod learning_session;
 pub mod listener;
 pub mod listener_auto_filter;
@@ -69,7 +68,6 @@ pub use instance_app::{
     app_ids, ExternalSecretsConfig, InstanceApp, InstanceAppRepository, SetAppStatusRequest,
     SqlxInstanceAppRepository, StatsDashboardConfig,
 };
-pub use invitation::{InvitationRepository, InvitationWithHash, SqlxInvitationRepository};
 pub use learning_session::{
     CreateLearningSessionRequest, LearningSessionData, LearningSessionRepository,
     LearningSessionStatus, UpdateLearningSessionRequest,

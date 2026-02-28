@@ -5,10 +5,8 @@
 
 // Authentication schemas
 export {
-	loginSchema,
-	type LoginSchema,
-	bootstrapSchema,
-	type BootstrapSchema
+	createInvitationSchema,
+	type CreateInvitationSchema
 } from './auth';
 
 // Route configuration schemas

@@ -8,6 +8,7 @@
 	import { checkStatsEnabled } from '$lib/stores/stats';
 	import { currentOrg } from '$lib/stores/org';
 	import { getAdminSummary } from '$lib/stores/adminSummary';
+	import { userManager } from '$lib/auth/oidc-config';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -35,6 +36,14 @@
 
 	onMount(async () => {
 		try {
+			// Check OIDC authentication
+			const user = await userManager.getUser();
+			if (!user || user.expired) {
+				goto('/login');
+				return;
+			}
+
+			// Build session info from OIDC token claims
 			sessionInfo = await apiClient.getSessionInfo();
 
 			// Populate org store from session info

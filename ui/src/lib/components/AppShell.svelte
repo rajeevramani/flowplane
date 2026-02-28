@@ -41,7 +41,7 @@
 	async function handleLogout() {
 		try {
 			await apiClient.logout();
-			goto('/login');
+			// signoutRedirect handles navigation to Zitadel's logout endpoint
 		} catch (error) {
 			console.error('Logout failed:', error);
 			goto('/login');

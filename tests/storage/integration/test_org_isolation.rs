@@ -5,7 +5,6 @@
 //! Verifies that organizations provide proper tenant boundaries: teams, members,
 //! and resources belonging to one org are not visible to another.
 
-use flowplane::auth::hashing;
 use flowplane::auth::organization::{CreateOrganizationRequest, OrgRole};
 use flowplane::auth::team::CreateTeamRequest;
 use flowplane::auth::user::{NewUser, UserStatus};
@@ -41,7 +40,7 @@ async fn create_org(pool: &DbPool, name: &str) -> OrgId {
 async fn create_user(pool: &DbPool, email: &str, org_id: OrgId) -> UserId {
     let user_repo = SqlxUserRepository::new(pool.clone());
     let user_id = UserId::new();
-    let password_hash = hashing::hash_password("TestPass123!").expect("hash password");
+    let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
     user_repo
         .create_user(NewUser {
             id: user_id.clone(),
@@ -256,7 +255,7 @@ async fn user_org_assignment() {
     // Create user with initial org
     let user_repo = SqlxUserRepository::new(pool.clone());
     let user_id = UserId::new();
-    let password_hash = hashing::hash_password("TestPass123!").expect("hash password");
+    let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
     let user = user_repo
         .create_user(NewUser {
             id: user_id.clone(),
