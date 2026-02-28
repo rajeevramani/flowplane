@@ -365,7 +365,7 @@ Flowplane exposes MCP (Model Context Protocol) over HTTP on the running server. 
 {
   "mcpServers": {
     "flowplane": {
-      "url": "http://localhost:8080/api/v1/mcp/cp",
+      "url": "http://localhost:8080/api/v1/mcp",
       "headers": {
         "Authorization": "Bearer <your-token>"
       }

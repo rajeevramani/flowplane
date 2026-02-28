@@ -52,8 +52,8 @@ pub struct McpSession {
     pub client_info: Option<ClientInfo>,
     /// Minimum log level for notifications
     pub log_level: LogLevel,
-    /// Team this session belongs to
-    pub team: Option<String>,
+    /// Teams this session has access to (multi-team support)
+    pub teams: Vec<String>,
     /// When the session was created
     pub created_at: Instant,
     /// When the session was last accessed
@@ -71,7 +71,7 @@ impl Default for McpSession {
             protocol_version: None,
             client_info: None,
             log_level: LogLevel::Info,
-            team: None,
+            teams: vec![],
             created_at: now,
             last_activity: now,
             connection_id: None,
@@ -80,15 +80,15 @@ impl Default for McpSession {
 }
 
 impl McpSession {
-    /// Create a new session for a specific team
-    pub fn for_team(team: String) -> Self {
+    /// Create a new session for a specific set of teams
+    pub fn for_teams(teams: Vec<String>) -> Self {
         let now = Instant::now();
         Self {
             initialized: false,
             protocol_version: None,
             client_info: None,
             log_level: LogLevel::Info,
-            team: Some(team),
+            teams,
             created_at: now,
             last_activity: now,
             connection_id: None,
@@ -142,17 +142,17 @@ impl SessionManager {
         session
     }
 
-    /// Get an existing session or create a new one for a specific team
+    /// Get an existing session or create a new one for a specific set of teams
     ///
     /// This method automatically updates the last activity timestamp.
-    pub fn get_or_create_for_team(&self, id: &SessionId, team: &str) -> McpSession {
-        let team_string = team.to_string();
+    pub fn get_or_create_for_teams(&self, id: &SessionId, teams: &[String]) -> McpSession {
+        let teams_vec = teams.to_vec();
         let mut session = self
             .sessions
             .entry(id.clone())
             .or_insert_with(|| {
-                debug!(session_id = %id, team = %team, "Created new MCP session for team");
-                McpSession::for_team(team_string.clone())
+                debug!(session_id = %id, team_count = teams.len(), "Created new MCP session for teams");
+                McpSession::for_teams(teams_vec.clone())
             })
             .clone();
 
@@ -160,39 +160,39 @@ impl SessionManager {
         session.touch();
         if let Some(mut entry) = self.sessions.get_mut(id) {
             entry.touch();
-            // Update team if not set
-            if entry.team.is_none() {
-                entry.team = Some(team_string);
+            // Update teams if not set
+            if entry.teams.is_empty() && !teams_vec.is_empty() {
+                entry.teams = teams_vec;
             }
         }
 
         session
     }
 
-    /// Mark a session as initialized
+    /// Mark a session as initialized (without team association)
     pub fn mark_initialized(
         &self,
         id: &SessionId,
         protocol_version: String,
         client_info: ClientInfo,
     ) {
-        self.mark_initialized_with_team(id, protocol_version, client_info, None);
+        self.mark_initialized_with_teams(id, protocol_version, client_info, vec![]);
     }
 
-    /// Mark a session as initialized with team info
-    pub fn mark_initialized_with_team(
+    /// Mark a session as initialized with multi-team info
+    pub fn mark_initialized_with_teams(
         &self,
         id: &SessionId,
         protocol_version: String,
         client_info: ClientInfo,
-        team: Option<String>,
+        teams: Vec<String>,
     ) {
         if let Some(mut session) = self.sessions.get_mut(id) {
             session.initialized = true;
             session.protocol_version = Some(protocol_version.clone());
             session.client_info = Some(client_info.clone());
-            if let Some(t) = &team {
-                session.team = Some(t.clone());
+            if !teams.is_empty() {
+                session.teams = teams.clone();
             }
             session.touch();
 
@@ -200,7 +200,7 @@ impl SessionManager {
                 session_id = %id,
                 protocol_version = %protocol_version,
                 client_name = %client_info.name,
-                team = ?team,
+                team_count = teams.len(),
                 "Marked session as initialized"
             );
         } else {
@@ -211,7 +211,7 @@ impl SessionManager {
                 protocol_version: Some(protocol_version.clone()),
                 client_info: Some(client_info.clone()),
                 log_level: LogLevel::Info,
-                team,
+                teams,
                 created_at: now,
                 last_activity: now,
                 connection_id: None,
@@ -226,11 +226,11 @@ impl SessionManager {
         }
     }
 
-    /// List all sessions for a specific team
+    /// List all sessions that include a specific team
     pub fn list_sessions_by_team(&self, team: &str) -> Vec<(String, McpSession)> {
         self.sessions
             .iter()
-            .filter(|entry| entry.team.as_deref() == Some(team))
+            .filter(|entry| entry.teams.iter().any(|t| t == team))
             .map(|entry| (entry.key().as_str().to_string(), entry.value().clone()))
             .collect()
     }
@@ -314,14 +314,16 @@ impl SessionManager {
 
     /// Validate session ownership by team (multi-tenancy check)
     ///
-    /// Ensures the requesting team owns the session.
+    /// Checks if `request_team` is in the session's list of authorized teams.
+    /// If the session has no teams assigned (empty vec), any team is allowed
+    /// for backward compatibility.
     ///
     /// # Arguments
     /// * `session_id` - Session to validate
     /// * `request_team` - Team making the request
     ///
     /// # Returns
-    /// Ok(()) if session belongs to request_team, Err if not found or mismatch
+    /// Ok(()) if session is accessible for request_team, Err if not found or mismatch
     pub fn validate_session_ownership(
         &self,
         session_id: &SessionId,
@@ -331,12 +333,17 @@ impl SessionManager {
             crate::mcp::error::McpError::InvalidParams(format!("Session not found: {}", session_id))
         })?;
 
-        if let Some(session_team) = &session.team {
-            crate::mcp::security::check_team_ownership(session_team, request_team)
+        // Backward compatible: empty teams means no restriction
+        if session.teams.is_empty() {
+            return Ok(());
+        }
+
+        if session.teams.iter().any(|t| t == request_team) {
+            Ok(())
         } else {
             Err(crate::mcp::error::McpError::Forbidden(format!(
-                "Session {} has no team assigned",
-                session_id
+                "Team '{}' is not authorized for this session",
+                request_team
             )))
         }
     }
@@ -447,6 +454,7 @@ mod tests {
         assert!(session.protocol_version.is_none());
         assert!(session.client_info.is_none());
         assert_eq!(session.log_level, LogLevel::Info);
+        assert!(session.teams.is_empty());
     }
 
     #[test]
@@ -693,7 +701,7 @@ mod tests {
         let session_id = SessionId::from_header("mcp-test-session");
 
         // Create session
-        let _ = manager.get_or_create_for_team(&session_id, "test-team");
+        let _ = manager.get_or_create_for_teams(&session_id, &["test-team".to_string()]);
 
         // Attach connection
         let attached = manager.attach_sse_connection(&session_id, "conn-test-123");
@@ -719,7 +727,7 @@ mod tests {
         let session_id = SessionId::from_header("mcp-test-session");
 
         // Create session and attach connection
-        let _ = manager.get_or_create_for_team(&session_id, "test-team");
+        let _ = manager.get_or_create_for_teams(&session_id, &["test-team".to_string()]);
         manager.attach_sse_connection(&session_id, "conn-test-123");
 
         // Detach connection
@@ -743,7 +751,7 @@ mod tests {
         let session_id = SessionId::from_header("mcp-test-session");
 
         // Create session for team-a
-        let _ = manager.get_or_create_for_team(&session_id, "team-a");
+        let _ = manager.get_or_create_for_teams(&session_id, &["team-a".to_string()]);
 
         // Validation should succeed for same team
         let result = manager.validate_session_ownership(&session_id, "team-a");
@@ -756,11 +764,39 @@ mod tests {
         let session_id = SessionId::from_header("mcp-test-session");
 
         // Create session for team-a
-        let _ = manager.get_or_create_for_team(&session_id, "team-a");
+        let _ = manager.get_or_create_for_teams(&session_id, &["team-a".to_string()]);
 
         // Validation should fail for different team
         let result = manager.validate_session_ownership(&session_id, "team-b");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_session_ownership_any_team_in_multi_team_session() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("mcp-multi-team-session");
+
+        // Create session for team-a and team-b
+        let _ = manager
+            .get_or_create_for_teams(&session_id, &["team-a".to_string(), "team-b".to_string()]);
+
+        // Validation should succeed for both teams
+        assert!(manager.validate_session_ownership(&session_id, "team-a").is_ok());
+        assert!(manager.validate_session_ownership(&session_id, "team-b").is_ok());
+        // Validation should fail for unrelated team
+        assert!(manager.validate_session_ownership(&session_id, "team-c").is_err());
+    }
+
+    #[test]
+    fn test_validate_session_ownership_empty_teams_allows_all() {
+        let manager = SessionManager::default();
+        let session_id = SessionId::from_header("mcp-empty-teams-session");
+
+        // Create session with no teams (default)
+        let _ = manager.get_or_create(&session_id);
+
+        // Backward compat: empty teams means no restriction
+        assert!(manager.validate_session_ownership(&session_id, "any-team").is_ok());
     }
 
     #[test]
@@ -774,9 +810,9 @@ mod tests {
     }
 
     #[test]
-    fn test_session_for_team_has_no_connection() {
-        let session = McpSession::for_team("test-team".to_string());
+    fn test_session_for_teams_has_no_connection() {
+        let session = McpSession::for_teams(vec!["test-team".to_string()]);
         assert!(session.connection_id.is_none());
-        assert_eq!(session.team, Some("test-team".to_string()));
+        assert_eq!(session.teams, vec!["test-team".to_string()]);
     }
 }

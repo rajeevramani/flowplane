@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-All control plane MCP tools grouped by category. Use via `tools/call` on the `/api/v1/mcp/cp` endpoint.
+All control plane MCP tools grouped by category. Use via `tools/call` on the `/api/v1/mcp` endpoint.
 
 ## Read / Query Tools
 

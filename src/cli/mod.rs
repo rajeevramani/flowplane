@@ -94,7 +94,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: teams::TeamCommands,
     },
-    // MCP is available via HTTP at /api/v1/mcp/cp (no CLI command needed)
+    // MCP is available via HTTP at /api/v1/mcp (no CLI command needed)
 }
 
 #[derive(Subcommand)]
@@ -170,7 +170,7 @@ pub async fn run_cli() -> anyhow::Result<()> {
                 cli.verbose,
             )?;
             teams::handle_team_command(command, &client).await?
-        } // MCP removed from CLI — use HTTP endpoint at /api/v1/mcp/cp
+        } // MCP removed from CLI — use HTTP endpoint at /api/v1/mcp
     }
 
     Ok(())
