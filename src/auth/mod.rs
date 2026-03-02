@@ -9,6 +9,7 @@ pub mod authorization;
 pub mod middleware;
 pub mod models;
 pub mod organization;
+pub mod permissions;
 pub mod scope_registry;
 pub mod team;
 pub mod user;
