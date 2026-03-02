@@ -23,8 +23,10 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::api::error::ApiError;
+use crate::auth::cache::PermissionCache;
 use crate::auth::models::AuthContext;
 use crate::domain::{OrgId, TokenId};
+use crate::storage::DbPool;
 
 /// How long to cache the JWKS before re-fetching.
 const JWKS_CACHE_TTL: Duration = Duration::from_secs(3600);
@@ -175,6 +177,10 @@ pub fn parse_role_claims(claims_map: &Value, project_id: &str) -> Vec<String> {
                 let action = parts[2];
                 scopes.push(format!("team:{team}:{resource}:{action}"));
             }
+            2 if parts[0] == "admin" && parts[1] == "all" => {
+                // Platform admin: admin:all → admin:all
+                scopes.push("admin:all".to_string());
+            }
             2 if parts[1] == "admin" => {
                 // Coarse admin: team:admin → team:{team}:*:*
                 let team = parts[0];
@@ -269,11 +275,78 @@ pub async fn validate_zitadel_jwt(
 // Axum middleware
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// JWT sub-only extraction (A.4)
+// ---------------------------------------------------------------------------
+
+/// Minimal decoded JWT claims for auth middleware use.
+pub struct JwtClaims {
+    pub sub: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+}
+
+/// Validate a Zitadel JWT and return only the core identity claims.
+///
+/// Unlike [`validate_zitadel_jwt`], this function does **not** parse role
+/// claims or build an [`AuthContext`]. Permissions are loaded separately from
+/// the database after the `sub` is extracted.
+pub async fn validate_jwt_extract_sub(
+    token: &str,
+    config: &ZitadelConfig,
+    jwks_cache: &JwksCache,
+) -> Result<JwtClaims, ApiError> {
+    let header = decode_header(token)
+        .map_err(|e| ApiError::unauthorized(format!("invalid JWT header: {e}")))?;
+
+    let kid =
+        header.kid.as_deref().ok_or_else(|| ApiError::unauthorized("JWT missing kid header"))?;
+
+    let jwks = jwks_cache.get().await?;
+    let jwk = jwks
+        .find(kid)
+        .ok_or_else(|| ApiError::unauthorized(format!("no JWKS key for kid={kid}")))?;
+
+    let decoding_key = match &jwk.algorithm {
+        AlgorithmParameters::RSA(rsa) => DecodingKey::from_rsa_components(&rsa.n, &rsa.e)
+            .map_err(|e| ApiError::Internal(format!("RSA key decode failed: {e}")))?,
+        other => {
+            return Err(ApiError::Internal(format!("unsupported JWK algorithm: {other:?}")));
+        }
+    };
+
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_issuer(&[&config.issuer]);
+    validation.set_audience(&[&config.audience]);
+
+    let token_data = decode::<Value>(token, &decoding_key, &validation)
+        .map_err(|e| ApiError::unauthorized(format!("JWT validation failed: {e}")))?;
+
+    let claims = token_data.claims;
+
+    let sub = claims
+        .get("sub")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ApiError::unauthorized("JWT missing sub claim"))?
+        .to_string();
+
+    let email = claims.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let name = claims.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    Ok(JwtClaims { sub, email, name })
+}
+
+// ---------------------------------------------------------------------------
+// Shared middleware state
+// ---------------------------------------------------------------------------
+
 /// Shared state for the Zitadel auth middleware.
 #[derive(Clone)]
 pub struct ZitadelAuthState {
     pub config: Arc<ZitadelConfig>,
     pub jwks_cache: JwksCache,
+    pub pool: DbPool,
+    pub permission_cache: Arc<PermissionCache>,
 }
 
 /// Axum middleware that validates Zitadel JWTs and inserts an `AuthContext`.
@@ -372,6 +445,28 @@ mod tests {
 
         let scopes = parse_role_claims(&claims, TEST_PROJECT_ID);
         assert_eq!(scopes, vec!["team:team-01:clusters:read"]);
+    }
+
+    #[test]
+    fn parse_role_claims_platform_admin() {
+        let claims = make_claims(json!({
+            "admin:all": { "org-abc": {} }
+        }));
+
+        let scopes = parse_role_claims(&claims, TEST_PROJECT_ID);
+        assert_eq!(scopes, vec!["admin:all"]);
+    }
+
+    #[test]
+    fn parse_role_claims_platform_admin_with_team_roles() {
+        let claims = make_claims(json!({
+            "admin:all": { "org-abc": {} },
+            "team-01:clusters:read": { "org-abc": {} }
+        }));
+
+        let mut scopes = parse_role_claims(&claims, TEST_PROJECT_ID);
+        scopes.sort();
+        assert_eq!(scopes, vec!["admin:all", "team:team-01:clusters:read"]);
     }
 
     #[test]

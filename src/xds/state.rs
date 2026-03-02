@@ -97,6 +97,8 @@ pub struct XdsState {
     pub team_repository: Option<SqlxTeamRepository>,
     /// NACK event repository for persisting xDS rejection events
     pub nack_event_repository: Option<crate::storage::NackEventRepository>,
+    /// Raw database pool, used by auth middleware for permission loading.
+    pub pool: Option<DbPool>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -129,6 +131,7 @@ impl XdsState {
             mcp_tool_repository: None,
             team_repository: None,
             nack_event_repository: None,
+            pool: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -136,6 +139,7 @@ impl XdsState {
 
     pub fn with_database(config: SimpleXdsConfig, pool: DbPool) -> Self {
         let (update_tx, _) = broadcast::channel(128);
+        let saved_pool = pool.clone();
         let cluster_repository = ClusterRepository::new(pool.clone());
         let route_config_repository = RouteConfigRepository::new(pool.clone());
         let listener_repository = ListenerRepository::new(pool.clone());
@@ -214,6 +218,7 @@ impl XdsState {
             mcp_tool_repository: Some(mcp_tool_repository),
             team_repository: Some(team_repository),
             nack_event_repository: Some(nack_event_repository),
+            pool: Some(saved_pool),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }

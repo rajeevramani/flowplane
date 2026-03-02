@@ -15,8 +15,13 @@ use crate::api::error::ApiError;
 use crate::auth::authorization::{
     action_from_request, require_resource_access, resource_from_path,
 };
+use crate::auth::cache::CachedPermissions;
 use crate::auth::models::{AuthContext, AuthError};
-use crate::auth::zitadel::{validate_zitadel_jwt, ZitadelAuthState};
+use crate::auth::permissions::load_user_permissions;
+use crate::auth::zitadel::{validate_jwt_extract_sub, ZitadelAuthState};
+use crate::domain::TokenId;
+use crate::storage::repositories::user::SqlxUserRepository;
+use crate::storage::repositories::UserRepository;
 use tracing::{field, info_span, warn};
 
 pub type ScopeState = Arc<Vec<String>>;
@@ -77,12 +82,59 @@ pub async fn authenticate(
         .strip_prefix("Bearer ")
         .ok_or_else(|| ApiError::unauthorized("bearer token required"))?;
 
-    // Validate Zitadel JWT
-    let mut context =
-        validate_zitadel_jwt(token, &state.config, &state.jwks_cache).await.map_err(|e| {
+    // Validate JWT — extract sub, email, name only (no role parsing)
+    let jwt_claims =
+        validate_jwt_extract_sub(token, &state.config, &state.jwks_cache).await.map_err(|e| {
             warn!(%correlation_id, error = ?e, "JWT authentication failed");
             e
         })?;
+
+    // Resolve user_id and scopes from cache or DB
+    let (user_id, user_email, scopes) = if let Some(cached) =
+        state.permission_cache.get(&jwt_claims.sub).await
+    {
+        cached
+    } else {
+        // JIT provision / update user from JWT claims
+        let user_repo = SqlxUserRepository::new(state.pool.clone());
+        let email = jwt_claims.email.as_deref().unwrap_or("");
+        let name = jwt_claims.name.as_deref().unwrap_or("");
+        let user = user_repo.upsert_from_jwt(&jwt_claims.sub, email, name).await.map_err(|e| {
+            warn!(%correlation_id, error = ?e, "Failed to upsert user from JWT");
+            ApiError::Internal(format!("user provisioning failed: {e}"))
+        })?;
+
+        let permissions = load_user_permissions(&state.pool, &user.id).await.map_err(|e| {
+            warn!(%correlation_id, error = ?e, "Failed to load user permissions");
+            ApiError::Internal(format!("permission loading failed: {e}"))
+        })?;
+
+        state
+            .permission_cache
+            .insert(
+                jwt_claims.sub.clone(),
+                CachedPermissions {
+                    scopes: permissions.clone(),
+                    user_id: user.id.clone(),
+                    email: Some(user.email.clone()),
+                    cached_at: std::time::Instant::now(),
+                },
+            )
+            .await;
+
+        (user.id, Some(user.email), permissions)
+    };
+
+    // Build AuthContext from DB-sourced data (no org context set here — set per handler)
+    let token_id = TokenId::from_string(format!("zitadel:{}", jwt_claims.sub));
+    let token_name = format!("zitadel/{}", jwt_claims.sub);
+    let mut context = AuthContext::with_user(
+        token_id,
+        token_name,
+        user_id,
+        user_email.unwrap_or_default(),
+        scopes.into_iter().collect(),
+    );
 
     // Enrich with request context
     let client_ip = extract_client_ip(&request);

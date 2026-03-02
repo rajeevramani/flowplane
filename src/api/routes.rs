@@ -215,9 +215,16 @@ pub fn build_router_with_registry(
             }
         };
         tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
+        let pool = state
+            .pool
+            .clone()
+            .expect("DB pool required for Zitadel auth middleware — start with --database");
+        let permission_cache = std::sync::Arc::new(crate::auth::cache::PermissionCache::from_env());
         let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
             jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
             config: std::sync::Arc::new(zitadel_config),
+            pool,
+            permission_cache,
         };
         middleware::from_fn_with_state(zitadel_state, authenticate)
     };
@@ -481,6 +488,18 @@ pub fn build_router_with_registry(
             Router::new()
         };
 
+    // Auth config endpoint (public, returns OIDC config for SPA runtime initialization)
+    let auth_config_router =
+        if let Some(auth_config_state) = super::handlers::oauth::AuthConfigState::from_env() {
+            tracing::info!("Auth config enabled at GET /api/v1/auth/config");
+            Router::new()
+                .route("/api/v1/auth/config", get(super::handlers::oauth::auth_config_handler))
+                .with_state(auth_config_state)
+        } else {
+            tracing::info!("Auth config disabled (FLOWPLANE_ZITADEL_SPA_CLIENT_ID not set)");
+            Router::new()
+        };
+
     // Build CORS layer for UI integration
     let cors_layer = build_cors_layer();
 
@@ -489,6 +508,7 @@ pub fn build_router_with_registry(
         .merge(public_api)
         .merge(dcr_router)
         .merge(metadata_router)
+        .merge(auth_config_router)
         .merge(docs::docs_router())
         .layer(cors_layer);
 
