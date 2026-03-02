@@ -72,10 +72,20 @@ api() {
   BODY=$(echo "$raw" | sed '$d')
 }
 
+# ── Container runtime ────────────────────────────────────────────
+if command -v docker &>/dev/null; then
+  CONTAINER_RT=docker
+elif command -v podman &>/dev/null; then
+  CONTAINER_RT=podman
+else
+  fail "Neither docker nor podman found"
+  exit 1
+fi
+
 # ── psql helper ─────────────────────────────────────────────────
 # Runs a SQL command against the flowplane-postgres container.
 psql_exec() {
-  docker exec flowplane-postgres psql -U flowplane -d flowplane -tAc "$1"
+  $CONTAINER_RT exec flowplane-postgres psql -U flowplane -d flowplane -tAc "$1"
 }
 
 # ── Wait for Zitadel ─────────────────────────────────────────────
@@ -279,6 +289,14 @@ seed_human_permissions() {
   local user_id
   user_id=$(psql_exec "SELECT id FROM users WHERE zitadel_sub = '${sub}';")
 
+  # Get team_id (FK requires UUID, not name)
+  local team_id
+  team_id=$(psql_exec "SELECT id FROM teams WHERE name = '${TEAM_NAME}' AND org_id = '${org_id}';")
+  if [ -z "$team_id" ]; then
+    fail "Team '${TEAM_NAME}' not found in org '${ORG_NAME}'"
+    exit 1
+  fi
+
   # Org membership (admin)
   psql_exec "INSERT INTO organization_memberships (id, user_id, org_id, role)
     VALUES (gen_random_uuid()::TEXT, '${user_id}', '${org_id}', 'admin')
@@ -288,7 +306,7 @@ seed_human_permissions() {
   # Team membership with full scopes
   local scopes='["clusters:read","clusters:write","routes:read","routes:write","listeners:read","listeners:write","filters:read","filters:write","learning:read","learning:write","secrets:read","secrets:write"]'
   psql_exec "INSERT INTO user_team_memberships (id, user_id, team, scopes)
-    VALUES (gen_random_uuid()::TEXT, '${user_id}', '${TEAM_NAME}', '${scopes}')
+    VALUES (gen_random_uuid()::TEXT, '${user_id}', '${team_id}', '${scopes}')
     ON CONFLICT (user_id, team) DO NOTHING;"
   ok "Team membership created (${TEAM_NAME})"
 
@@ -320,6 +338,14 @@ seed_machine_permissions() {
   local user_id
   user_id=$(psql_exec "SELECT id FROM users WHERE zitadel_sub = '${sub}';")
 
+  # Get team_id (FK requires UUID, not name)
+  local team_id
+  team_id=$(psql_exec "SELECT id FROM teams WHERE name = '${TEAM_NAME}' AND org_id = '${org_id}';")
+  if [ -z "$team_id" ]; then
+    fail "Team '${TEAM_NAME}' not found in org '${ORG_NAME}'"
+    exit 1
+  fi
+
   # Org membership (admin)
   psql_exec "INSERT INTO organization_memberships (id, user_id, org_id, role)
     VALUES (gen_random_uuid()::TEXT, '${user_id}', '${org_id}', 'admin')
@@ -329,7 +355,7 @@ seed_machine_permissions() {
   # Team membership with full scopes
   local scopes='["clusters:read","clusters:write","routes:read","routes:write","listeners:read","listeners:write","filters:read","filters:write","learning:read","learning:write","secrets:read","secrets:write"]'
   psql_exec "INSERT INTO user_team_memberships (id, user_id, team, scopes)
-    VALUES (gen_random_uuid()::TEXT, '${user_id}', '${TEAM_NAME}', '${scopes}')
+    VALUES (gen_random_uuid()::TEXT, '${user_id}', '${team_id}', '${scopes}')
     ON CONFLICT (user_id, team) DO NOTHING;"
   ok "Team membership created (${TEAM_NAME})"
 
