@@ -18,8 +18,8 @@ PROJECT_NAME="Flowplane"
 SPA_APP_NAME="Flowplane UI"
 SPA_REDIRECT_DOCKER="http://localhost:8080/auth/callback"
 SPA_REDIRECT_DEV="http://localhost:5173/auth/callback"
-SPA_POST_LOGOUT_DOCKER="http://localhost:8080"
-SPA_POST_LOGOUT_DEV="http://localhost:5173"
+SPA_POST_LOGOUT_DOCKER="http://localhost:8080/login"
+SPA_POST_LOGOUT_DEV="http://localhost:5173/login"
 
 # Colors
 CYAN='\033[36m'
