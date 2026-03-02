@@ -5,7 +5,7 @@ This directory contains Zod validation schemas for form validation across the ap
 ## Available Schemas
 
 ### Authentication (`auth.ts`)
-- `createInvitationSchema` - Invitation form validation (email + role)
+- `inviteMemberSchema` - Invite member form validation (email, role, firstName, lastName)
 
 ### Route Configuration (`route-config.ts`)
 Comprehensive schemas for route configuration forms:

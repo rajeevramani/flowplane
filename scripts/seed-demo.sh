@@ -9,6 +9,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Source auth helper (get_oidc_token) and env vars
+# shellcheck source=lib/zitadel-auth.sh
+source "${SCRIPT_DIR}/lib/zitadel-auth.sh"
+
+# Load Zitadel env (CLIENT_ID, PROJECT_ID)
+if [ -f "${PROJECT_DIR}/.env.zitadel" ]; then
+  # shellcheck source=/dev/null
+  source "${PROJECT_DIR}/.env.zitadel"
+fi
+
 ZITADEL_HOST="${ZITADEL_HOST:-http://localhost:8081}"
 FLOWPLANE_URL="${FLOWPLANE_URL:-http://localhost:8080}"
 PAT_FILE="${PROJECT_DIR}/zitadel/machinekey/admin-pat.txt"
@@ -23,6 +33,10 @@ HUMAN_USERNAME="demo@acme-corp.com"
 HUMAN_FIRST="Demo"
 HUMAN_LAST="User"
 HUMAN_PASSWORD="Flowplane1!"
+
+# Superadmin email (must match docker-compose.yml FLOWPLANE_SUPERADMIN_EMAIL)
+SUPERADMIN_EMAIL="${FLOWPLANE_SUPERADMIN_EMAIL:-admin@flowplane.local}"
+ADMIN_TOKEN=""
 
 # Machine user
 MACHINE_USERNAME="flowplane-agent"
@@ -118,6 +132,66 @@ wait_for_flowplane() {
   ok "Flowplane is ready"
 }
 
+# ── Wait for superadmin ────────────────────────────────────────
+# The superadmin user is seeded asynchronously on first startup.
+# Poll Zitadel until the superadmin user exists, then obtain a real
+# OIDC access token via the Session API flow (human users cannot get PATs).
+SUPERADMIN_PASSWORD="${FLOWPLANE_SUPERADMIN_INITIAL_PASSWORD:-Flowplane1!}"
+
+wait_for_superadmin() {
+  log "Waiting for superadmin seeding..."
+
+  # Poll until the superadmin user appears in Zitadel
+  local attempts=0 superadmin_id=""
+  while true; do
+    api POST /v2/users '{"queries":[{"emailQuery":{"emailAddress":"'"${SUPERADMIN_EMAIL}"'"}}]}'
+    superadmin_id=$(echo "$BODY" | jq -r '.result[0].userId // .result[0].id // empty' 2>/dev/null | head -1)
+    if [ -n "$superadmin_id" ] && [ "$superadmin_id" != "null" ]; then
+      ok "Superadmin found in Zitadel (id: ${superadmin_id})"
+      break
+    fi
+    attempts=$((attempts + 1))
+    if [ $attempts -ge 30 ]; then
+      fail "Superadmin user not found after 30 attempts"
+      exit 1
+    fi
+    sleep 2
+  done
+
+  # Obtain OIDC token via Session API + authorize flow
+  log "Obtaining OIDC token for superadmin..."
+  ADMIN_TOKEN=$(get_oidc_token "$SUPERADMIN_EMAIL" "$SUPERADMIN_PASSWORD")
+  if [ -z "$ADMIN_TOKEN" ]; then
+    fail "Failed to obtain OIDC token for superadmin"
+    exit 1
+  fi
+  ok "Superadmin OIDC token obtained"
+}
+
+# ── Invite human user via API ────────────────────────────────
+invite_user() {
+  local org_id="$1" email="$2" role="$3" first="$4" last="$5"
+
+  local raw http_code body
+  raw=$(curl -s -w '\n%{http_code}' \
+    -X POST \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\": \"${email}\", \"role\": \"${role}\", \"firstName\": \"${first}\", \"lastName\": \"${last}\"}" \
+    "${FLOWPLANE_URL}/api/v1/admin/organizations/${org_id}/invite")
+  http_code=$(echo "$raw" | tail -1)
+  body=$(echo "$raw" | sed '$d')
+
+  if [ "$http_code" = "201" ]; then
+    ok "User '${email}' invited to org (role: ${role})"
+  elif [ "$http_code" = "200" ]; then
+    skip "User '${email}' already a member (role: ${role})"
+  else
+    fail "Invite failed (HTTP ${http_code}): ${body}"
+    exit 1
+  fi
+}
+
 # ── Read PAT ───────────────────────────────────────────────────
 read_pat() {
   log "Waiting for admin PAT at ${PAT_FILE}..."
@@ -154,45 +228,6 @@ read_pat() {
     fi
     sleep 2
   done
-}
-
-# ── Create human user ────────────────────────────────────────────
-HUMAN_USER_ID=""
-
-create_human_user() {
-  log "Creating human user '${HUMAN_USERNAME}'..."
-  api POST /v2/users/human "{
-    \"username\": \"${HUMAN_USERNAME}\",
-    \"profile\": {
-      \"givenName\": \"${HUMAN_FIRST}\",
-      \"familyName\": \"${HUMAN_LAST}\"
-    },
-    \"email\": {
-      \"email\": \"${HUMAN_USERNAME}\",
-      \"isVerified\": true
-    },
-    \"password\": {
-      \"password\": \"${HUMAN_PASSWORD}\",
-      \"changeRequired\": false
-    }
-  }"
-
-  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-    HUMAN_USER_ID=$(echo "$BODY" | jq -r '.userId')
-    ok "Human user created (id: ${HUMAN_USER_ID})"
-  elif [ "$HTTP_CODE" = "409" ] || echo "$BODY" | grep -qi "already exists"; then
-    # Look up existing user
-    api POST /v2/users '{"queries":[{"userNameQuery":{"userName":"'"${HUMAN_USERNAME}"'"}}]}'
-    HUMAN_USER_ID=$(echo "$BODY" | jq -r '.result[0].userId // .result[0].id' 2>/dev/null | head -1)
-    if [ -z "$HUMAN_USER_ID" ] || [ "$HUMAN_USER_ID" = "null" ]; then
-      fail "Human user exists but could not find its ID"
-      exit 1
-    fi
-    skip "Human user '${HUMAN_USERNAME}' (id: ${HUMAN_USER_ID})"
-  else
-    fail "Create human user failed (HTTP ${HTTP_CODE}): ${BODY}"
-    exit 1
-  fi
 }
 
 # ── Create machine user ──────────────────────────────────────────
@@ -264,56 +299,8 @@ bootstrap_demo_org() {
   fi
 }
 
-# ── Seed human user permissions ──────────────────────────────────
-seed_human_permissions() {
-  log "Seeding DB permissions for human user '${HUMAN_USERNAME}'..."
-
-  # The Zitadel userId IS the sub claim
-  local sub="${HUMAN_USER_ID}"
-
-  # Upsert user row
-  psql_exec "INSERT INTO users (id, email, password_hash, name, status, is_admin, zitadel_sub)
-    VALUES (gen_random_uuid()::TEXT, '${HUMAN_USERNAME}', '', '${HUMAN_FIRST} ${HUMAN_LAST}', 'active', false, '${sub}')
-    ON CONFLICT (zitadel_sub) DO NOTHING;"
-  ok "User row upserted"
-
-  # Get org_id
-  local org_id
-  org_id=$(psql_exec "SELECT id FROM organizations WHERE name = '${ORG_NAME}';")
-  if [ -z "$org_id" ]; then
-    fail "Organization '${ORG_NAME}' not found in DB"
-    exit 1
-  fi
-
-  # Get user_id
-  local user_id
-  user_id=$(psql_exec "SELECT id FROM users WHERE zitadel_sub = '${sub}';")
-
-  # Get team_id (FK requires UUID, not name)
-  local team_id
-  team_id=$(psql_exec "SELECT id FROM teams WHERE name = '${TEAM_NAME}' AND org_id = '${org_id}';")
-  if [ -z "$team_id" ]; then
-    fail "Team '${TEAM_NAME}' not found in org '${ORG_NAME}'"
-    exit 1
-  fi
-
-  # Org membership (admin)
-  psql_exec "INSERT INTO organization_memberships (id, user_id, org_id, role)
-    VALUES (gen_random_uuid()::TEXT, '${user_id}', '${org_id}', 'admin')
-    ON CONFLICT (user_id, org_id) DO NOTHING;"
-  ok "Org membership created (admin)"
-
-  # Team membership with full scopes
-  local scopes='["clusters:read","clusters:write","routes:read","routes:write","listeners:read","listeners:write","filters:read","filters:write","learning:read","learning:write","secrets:read","secrets:write"]'
-  psql_exec "INSERT INTO user_team_memberships (id, user_id, team, scopes)
-    VALUES (gen_random_uuid()::TEXT, '${user_id}', '${team_id}', '${scopes}')
-    ON CONFLICT (user_id, team) DO NOTHING;"
-  ok "Team membership created (${TEAM_NAME})"
-
-  # TODO: Replace with POST /api/v1/admin/organizations/{org}/invite once Phase B lands
-}
-
 # ── Seed machine user permissions ────────────────────────────────
+# TODO: Replace with POST /api/v1/orgs/{org}/agents once Phase C lands
 seed_machine_permissions() {
   log "Seeding DB permissions for machine user '${MACHINE_USERNAME}'..."
 
@@ -359,7 +346,7 @@ seed_machine_permissions() {
     ON CONFLICT (user_id, team) DO NOTHING;"
   ok "Team membership created (${TEAM_NAME})"
 
-  # TODO: Replace with POST /api/v1/admin/organizations/{org}/invite once Phase B lands
+  # TODO: Replace with POST /api/v1/orgs/{org}/agents once Phase C lands
 }
 
 # ── Main ───────────────────────────────────────────────────────
@@ -372,11 +359,51 @@ main() {
   wait_for_flowplane
   read_pat
 
-  create_human_user
+  # Machine user is created in Zitadel directly (no invite API yet)
   create_machine_user
   generate_machine_secret
+
+  # Wait for superadmin to be seeded (async on first startup)
+  wait_for_superadmin
+
+  # Bootstrap creates the org + team in the Flowplane DB
   bootstrap_demo_org
-  seed_human_permissions
+
+  # Get org_id via API for the invite call
+  log "Looking up org '${ORG_NAME}'..."
+  local org_list_body
+  org_list_body=$(curl -s -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${FLOWPLANE_URL}/api/v1/admin/organizations")
+  ORG_ID=$(echo "$org_list_body" | jq -r ".items[] | select(.name==\"${ORG_NAME}\") | .id")
+  if [ -z "$ORG_ID" ] || [ "$ORG_ID" = "null" ]; then
+    fail "Could not find org '${ORG_NAME}' via API"
+    exit 1
+  fi
+  ok "Org '${ORG_NAME}' id: ${ORG_ID}"
+
+  # Invite human user via the API (creates Zitadel user + local DB records)
+  log "Inviting human user '${HUMAN_USERNAME}'..."
+  invite_user "$ORG_ID" "$HUMAN_USERNAME" "admin" "$HUMAN_FIRST" "$HUMAN_LAST"
+
+  # Set the demo user's password in Zitadel (invite creates user without password)
+  log "Setting password for demo user..."
+  api POST /v2/users '{"queries":[{"emailQuery":{"emailAddress":"'"${HUMAN_USERNAME}"'"}}]}'
+  local demo_user_id
+  demo_user_id=$(echo "$BODY" | jq -r '.result[0].userId // .result[0].id // empty' 2>/dev/null | head -1)
+  if [ -n "$demo_user_id" ] && [ "$demo_user_id" != "null" ]; then
+    local pw_body
+    pw_body=$(jq -n --arg p "$HUMAN_PASSWORD" '{newPassword: {password: $p, changeRequired: false}}')
+    api POST "/v2/users/${demo_user_id}/password" "$pw_body"
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+      ok "Password set for ${HUMAN_USERNAME}"
+    else
+      fail "Failed to set password (HTTP ${HTTP_CODE}): ${BODY}"
+    fi
+  else
+    fail "Could not find demo user in Zitadel to set password"
+  fi
+
+  # Machine user DB permissions still via psql_exec (until Phase C)
   seed_machine_permissions
 
   echo ""

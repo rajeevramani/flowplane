@@ -257,10 +257,8 @@ impl ZitadelAdminClient {
         });
 
         if let Some(password) = initial_password {
-            body["password"] = serde_json::json!({
-                "password": password,
-                "changeRequired": false,
-            });
+            // Management v1 AddHumanUser uses "initialPassword" (plain string)
+            body["initialPassword"] = serde_json::json!(password);
         }
 
         let req = self.http.post(&url).bearer_auth(&self.pat).json(&body);
@@ -285,6 +283,38 @@ impl ZitadelAdminClient {
             .map_err(|e| ApiError::internal(format!("Zitadel response parse failed: {e}")))?;
 
         Ok(result.user_id)
+    }
+
+    /// Set or reset a human user's password via the v2 API.
+    ///
+    /// Uses `POST /v2/users/{userId}/password` which works for both initial
+    /// password setting and password reset.
+    pub async fn set_user_password(&self, user_id: &str, password: &str) -> Result<(), ApiError> {
+        let url = format!("{}/v2/users/{}/password", self.base_url, user_id);
+        let body = serde_json::json!({
+            "newPassword": {
+                "password": password,
+                "changeRequired": false,
+            }
+        });
+
+        let req = self.http.post(&url).bearer_auth(&self.pat).json(&body);
+        let resp = self
+            .with_host_header(req)
+            .send()
+            .await
+            .map_err(|e| ApiError::internal(format!("Zitadel set password failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let resp_body = resp.text().await.unwrap_or_default();
+            tracing::error!(status = %status, body = %resp_body, "Zitadel set password error");
+            return Err(ApiError::internal(format!(
+                "Zitadel set password error ({status}): {resp_body}"
+            )));
+        }
+
+        Ok(())
     }
 
     /// Add a role grant for a user on a given project.

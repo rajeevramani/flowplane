@@ -425,8 +425,11 @@ pub fn extract_org_scopes(context: &AuthContext) -> Vec<(String, String)> {
 /// Check if the context has org admin privileges for a specific org.
 ///
 /// Returns `true` if the context has `org:{name}:admin` scope OR `admin:all`.
-/// Platform admin (`admin:all`) bypasses here because org management IS governance
-/// (creating invitations, adding org admins, managing org members).
+/// Platform admin (`admin:all`) bypasses here for governance operations
+/// (e.g., inviting the first org admin during onboarding).
+///
+/// For operations where platform admin should NOT have access (member management,
+/// team management), use `has_org_admin_only()` instead.
 pub fn has_org_admin(context: &AuthContext, org_name: &str) -> bool {
     has_admin_bypass(context) || context.has_scope(&format!("org:{}:admin", org_name))
 }
@@ -434,6 +437,25 @@ pub fn has_org_admin(context: &AuthContext, org_name: &str) -> bool {
 /// Require org admin access or return a 403 Forbidden error.
 pub fn require_org_admin(context: &AuthContext, org_name: &str) -> Result<(), AuthError> {
     if has_org_admin(context, org_name) {
+        Ok(())
+    } else {
+        Err(AuthError::Forbidden)
+    }
+}
+
+/// Check if the context has org admin privileges for a specific org.
+/// Unlike `has_org_admin`, this does NOT grant access to platform admin.
+/// Use this for operations where platform admin should not see into orgs
+/// (member management, team management).
+pub fn has_org_admin_only(context: &AuthContext, org_name: &str) -> bool {
+    context.has_scope(&format!("org:{}:admin", org_name))
+}
+
+/// Require org admin access (no platform admin bypass) or return 403.
+/// Use this instead of `require_org_admin` for operations where platform admin
+/// should NOT have access (member CRUD, team management).
+pub fn require_org_admin_only(context: &AuthContext, org_name: &str) -> Result<(), AuthError> {
+    if has_org_admin_only(context, org_name) {
         Ok(())
     } else {
         Err(AuthError::Forbidden)
@@ -1194,6 +1216,63 @@ mod tests {
         let ctx = admin_context();
         assert!(has_org_membership(&ctx, "acme"));
         assert!(has_org_membership(&ctx, "any-org"));
+    }
+
+    // === require_org_admin_only tests (no platform admin bypass) ===
+
+    fn org_admin_context_for(org_name: &str) -> AuthContext {
+        AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-admin-token"),
+            "org-admin".into(),
+            vec![format!("org:{}:admin", org_name)],
+        )
+    }
+
+    fn org_member_context_for(org_name: &str) -> AuthContext {
+        AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("org-member-token"),
+            "org-member".into(),
+            vec![format!("org:{}:member", org_name)],
+        )
+    }
+
+    #[test]
+    fn require_org_admin_only_allows_matching_org_admin() {
+        let ctx = org_admin_context_for("acme");
+        assert!(require_org_admin_only(&ctx, "acme").is_ok());
+    }
+
+    #[test]
+    fn require_org_admin_only_rejects_wrong_org_admin() {
+        let ctx = org_admin_context_for("acme");
+        assert!(require_org_admin_only(&ctx, "globex").is_err());
+    }
+
+    #[test]
+    fn require_org_admin_only_rejects_platform_admin() {
+        // KEY INVARIANT: platform admin (admin:all) must NOT bypass org admin for
+        // member/team management. This enforces the rule that platform admin
+        // cannot see into orgs.
+        let ctx = admin_context();
+        assert!(require_org_admin_only(&ctx, "acme").is_err());
+        assert!(require_org_admin_only(&ctx, "any-org").is_err());
+    }
+
+    #[test]
+    fn require_org_admin_only_rejects_regular_user() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("regular-token"),
+            "regular".into(),
+            vec!["routes:read".into()],
+        );
+        assert!(require_org_admin_only(&ctx, "acme").is_err());
+    }
+
+    #[test]
+    fn require_org_admin_only_rejects_org_member() {
+        let ctx = org_member_context_for("acme");
+        // Org member (non-admin) must not pass org admin check
+        assert!(require_org_admin_only(&ctx, "acme").is_err());
     }
 
     // === Org scope access in check_resource_access (team=None) ===

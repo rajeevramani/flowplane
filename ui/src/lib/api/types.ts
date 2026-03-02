@@ -1905,53 +1905,24 @@ export interface ListOrgTeamsResponse {
 }
 
 // ============================================================================
-// Invitation Types (Invite-Only Registration)
+// Invite Types (Instant Provisioning via Admin API)
 // ============================================================================
 
 export type InvitableRole = 'admin' | 'member' | 'viewer';
 
-export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
-
-export interface InviteTokenInfo {
-	orgName: string;
-	orgDisplayName: string;
+export interface InviteOrgMemberRequest {
 	email: string;
 	role: InvitableRole;
-	expiresAt: string;
+	firstName: string;
+	lastName: string;
 }
 
-export interface AcceptInvitationRequest {
-	token: string;
-	name: string;
-	password: string;
-}
-
-export interface InvitationResponse {
-	id: string;
+export interface InviteOrgMemberResponse {
+	userId: string;
 	email: string;
-	role: InvitableRole;
-	status: InvitationStatus;
-	invitedBy: string | null;
-	expiresAt: string;
-	createdAt: string;
-}
-
-export interface CreateInvitationRequest {
-	email: string;
-	role: InvitableRole;
-}
-
-export interface CreateInvitationResponse {
-	id: string;
-	email: string;
-	role: InvitableRole;
-	expiresAt: string;
-	inviteUrl: string;
-}
-
-export interface PaginatedInvitations {
-	invitations: InvitationResponse[];
-	total: number;
+	role: OrgRole;
+	orgId: string;
+	userCreated: boolean;
 }
 
 // ============================================================================

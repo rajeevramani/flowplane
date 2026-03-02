@@ -1,9 +1,10 @@
 //! Admin organization management API handlers.
 //!
 //! This module provides HTTP handlers for organization lifecycle management and
-//! organization membership operations. Organization creation and listing require
-//! platform admin (`admin:all` scope). Get, update, and delete accept platform
-//! admin or org admin. Membership endpoints accept platform admin or org admin.
+//! organization membership operations. Organization creation, listing, and deletion
+//! require platform admin (`admin:all` scope). Get accepts platform admin or org admin.
+//! Update, membership CRUD, and team management require org admin only (no platform
+//! admin bypass) to enforce the invariant that platform admin cannot see into orgs.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use validator::Validate;
 use crate::{
     api::{error::ApiError, handlers::team_access::require_admin, routes::ApiState},
     auth::{
-        authorization::{has_admin_bypass, has_org_admin},
+        authorization::{has_admin_bypass, has_org_admin, require_org_admin_only},
         models::AuthContext,
         organization::{
             CreateOrganizationRequest, OrgRole, OrganizationResponse, UpdateOrganizationRequest,
@@ -34,7 +35,7 @@ use crate::{
         repositories::{
             OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
             SqlxOrganizationRepository, SqlxTeamRepository, TeamMembershipRepository,
-            TeamRepository,
+            TeamRepository, UserRepository,
         },
         DbPool,
     },
@@ -140,6 +141,30 @@ pub struct UpdateOrgMemberRoleRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ListOrgMembersResponse {
     pub members: Vec<crate::auth::organization::OrgMembershipResponse>,
+}
+
+/// Request to invite a member to an organization by email.
+/// Creates the user in Zitadel if they don't exist, then provisions
+/// local user row, org membership, and team memberships.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteOrgMemberRequest {
+    #[validate(email)]
+    pub email: String,
+    pub role: OrgRole,
+    pub first_name: String,
+    pub last_name: String,
+}
+
+/// Response from inviting an org member.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteOrgMemberResponse {
+    pub user_id: String,
+    pub email: String,
+    pub role: OrgRole,
+    pub org_id: String,
+    pub user_created: bool,
 }
 
 // ===== Organization CRUD Endpoints (Platform Admin Only) =====
@@ -298,7 +323,7 @@ pub async fn admin_get_organization(
     Ok(Json(org.into()))
 }
 
-/// Update an organization (admin or org admin).
+/// Update an organization (org admin only).
 #[utoipa::path(
     put,
     path = "/api/v1/admin/organizations/{id}",
@@ -309,10 +334,10 @@ pub async fn admin_get_organization(
     responses(
         (status = 200, description = "Organization updated successfully", body = OrganizationResponse),
         (status = 400, description = "Validation error"),
-        (status = 403, description = "Admin or org admin privileges required"),
+        (status = 403, description = "Organization admin privileges required"),
         (status = 404, description = "Organization not found")
     ),
-    security(("bearer_auth" = ["admin:all"])),
+    security(("bearer_auth" = ["org:admin"])),
     tag = "Organizations"
 )]
 #[instrument(skip(state, payload), fields(org_id = %id, user_id = ?context.user_id))]
@@ -334,7 +359,8 @@ pub async fn admin_update_organization(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
-    require_admin_or_org_admin(&context, &existing_org.name)?;
+    require_org_admin_only(&context, &existing_org.name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     let org = repo.update_organization(&org_id, payload).await.map_err(ApiError::from)?;
 
@@ -383,9 +409,9 @@ pub async fn admin_delete_organization(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ===== Organization Membership Endpoints (Platform Admin or Org Admin) =====
+// ===== Organization Membership Endpoints (Org Admin Only) =====
 
-/// List members of an organization (admin or org admin).
+/// List members of an organization (org admin only).
 #[utoipa::path(
     get,
     path = "/api/v1/admin/organizations/{id}/members",
@@ -394,10 +420,10 @@ pub async fn admin_delete_organization(
     ),
     responses(
         (status = 200, description = "Organization members listed successfully", body = ListOrgMembersResponse),
-        (status = 403, description = "Admin or org admin privileges required"),
+        (status = 403, description = "Organization admin privileges required"),
         (status = 404, description = "Organization not found")
     ),
-    security(("bearer_auth" = ["admin:all"])),
+    security(("bearer_auth" = ["org:admin"])),
     tag = "Organizations"
 )]
 #[instrument(skip(state), fields(org_id = %id, user_id = ?context.user_id))]
@@ -416,7 +442,8 @@ pub async fn admin_list_org_members(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
-    require_admin_or_org_admin(&context, &org.name)?;
+    require_org_admin_only(&context, &org.name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     let membership_repo = org_membership_repository_for_state(&state)?;
     let members = membership_repo.list_org_members(&org_id).await.map_err(ApiError::from)?;
@@ -424,7 +451,7 @@ pub async fn admin_list_org_members(
     Ok(Json(ListOrgMembersResponse { members: members.into_iter().map(|m| m.into()).collect() }))
 }
 
-/// Add a member to an organization (admin or org admin).
+/// Add a member to an organization (org admin only).
 #[utoipa::path(
     post,
     path = "/api/v1/admin/organizations/{id}/members",
@@ -435,11 +462,11 @@ pub async fn admin_list_org_members(
     responses(
         (status = 201, description = "Member added successfully", body = crate::auth::organization::OrgMembershipResponse),
         (status = 400, description = "Validation error"),
-        (status = 403, description = "Admin or org admin privileges required"),
+        (status = 403, description = "Organization admin privileges required"),
         (status = 404, description = "Organization or user not found"),
         (status = 409, description = "User is already a member")
     ),
-    security(("bearer_auth" = ["admin:all"])),
+    security(("bearer_auth" = ["org:admin"])),
     tag = "Organizations"
 )]
 #[instrument(skip(state, payload), fields(org_id = %id, target_user_id = %payload.user_id, user_id = ?context.user_id))]
@@ -461,7 +488,8 @@ pub async fn admin_add_org_member(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
-    require_admin_or_org_admin(&context, &org.name)?;
+    require_org_admin_only(&context, &org.name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     // SECURITY: Check for cross-org isolation via org_memberships.
     // A user who already belongs to a different org cannot be added.
@@ -552,6 +580,11 @@ pub async fn admin_add_org_member(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to commit transaction: {}", e)))?;
 
+    // Evict permission cache so next request picks up new permissions
+    if let Some(ref cache) = state.permission_cache {
+        cache.evict_by_user_id(&payload.user_id).await;
+    }
+
     let role = crate::auth::organization::OrgRole::from_str(&row.3)
         .map_err(|e| ApiError::Internal(format!("Invalid role in DB: {}", e)))?;
 
@@ -567,7 +600,244 @@ pub async fn admin_add_org_member(
     Ok((StatusCode::CREATED, Json(membership.into())))
 }
 
-/// Update a member's role in an organization (admin or org admin).
+/// Invite a member to an organization by email (admin or org admin).
+///
+/// Creates the user in Zitadel if they don't exist, provisions a local user row,
+/// creates org membership and team memberships. Idempotent: re-inviting returns 200.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/organizations/{id}/invite",
+    params(
+        ("id" = String, Path, description = "Organization ID")
+    ),
+    request_body = InviteOrgMemberRequest,
+    responses(
+        (status = 201, description = "User invited successfully", body = InviteOrgMemberResponse),
+        (status = 200, description = "User already a member (idempotent)", body = InviteOrgMemberResponse),
+        (status = 400, description = "Validation error"),
+        (status = 403, description = "Admin or org admin privileges required"),
+        (status = 404, description = "Organization not found"),
+        (status = 503, description = "Zitadel admin client not configured")
+    ),
+    security(("bearer_auth" = ["admin:all", "org:admin"])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state, payload), fields(org_id = %id, email = %payload.email, user_id = ?context.user_id))]
+pub async fn admin_invite_org_member(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(payload): Json<InviteOrgMemberRequest>,
+) -> Result<(StatusCode, Json<InviteOrgMemberResponse>), ApiError> {
+    payload.validate().map_err(ApiError::from)?;
+
+    let org_id = OrgId::from_string(id);
+
+    // Resolve org
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_id(&org_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+
+    // Platform admin CAN invite (e.g. first org admin), org admin can invite their own org
+    require_admin_or_org_admin(&context, &org.name)?;
+
+    // Zitadel admin client required for user lookup/creation
+    let zitadel_client = state
+        .zitadel_admin
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Zitadel admin client not configured"))?;
+
+    // Step 1: Search Zitadel for existing user by email
+    let (zitadel_sub, user_created) = match zitadel_client
+        .search_user_by_email(&payload.email)
+        .await?
+    {
+        Some(sub) => (sub, false),
+        None => {
+            let sub = zitadel_client
+                .create_human_user(&payload.email, &payload.first_name, &payload.last_name, None)
+                .await?;
+            (sub, true)
+        }
+    };
+
+    // Step 2: JIT provision local user row
+    let pool = pool_for_state(&state)?;
+    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
+    let display_name = format!("{} {}", payload.first_name, payload.last_name);
+    let local_user =
+        user_repo
+            .upsert_from_jwt(&zitadel_sub, &payload.email, &display_name)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to provision local user: {e}")))?;
+
+    // Step 3: Transaction for org membership + team memberships
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to begin transaction: {e}")))?;
+
+    // Cross-org isolation: user in a different org -> 403
+    let other_org = sqlx::query_scalar::<_, String>(
+        "SELECT org_id FROM organization_memberships WHERE user_id = $1 AND org_id != $2 LIMIT 1",
+    )
+    .bind(local_user.id.as_str())
+    .bind(org_id.as_str())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to check org memberships: {e}")))?;
+
+    if let Some(ref existing_org_id) = other_org {
+        tracing::warn!(
+            attempted_org = %org.id,
+            user_org = %existing_org_id,
+            user_id = %local_user.id,
+            "cross-org invite violation: user belongs to different org"
+        );
+        return Err(ApiError::Forbidden(format!(
+            "Cross-organization access denied: user belongs to a different org, \
+             cannot be invited to org '{}'",
+            org.name
+        )));
+    }
+
+    // Check existing membership in this org
+    let existing_role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM organization_memberships WHERE user_id = $1 AND org_id = $2",
+    )
+    .bind(local_user.id.as_str())
+    .bind(org_id.as_str())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to check existing membership: {e}")))?;
+
+    let status_code = match existing_role {
+        Some(ref role_str) => {
+            let existing = OrgRole::from_str(role_str)
+                .map_err(|e| ApiError::Internal(format!("Invalid role in DB: {e}")))?;
+            if existing == payload.role {
+                // Idempotent: same role -> 200, no changes needed
+                tx.commit()
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("Failed to commit: {e}")))?;
+                return Ok((
+                    StatusCode::OK,
+                    Json(InviteOrgMemberResponse {
+                        user_id: local_user.id.to_string(),
+                        email: payload.email,
+                        role: payload.role,
+                        org_id: org_id.to_string(),
+                        user_created,
+                    }),
+                ));
+            }
+            // Different role -> update membership and re-create team memberships
+            sqlx::query(
+                "UPDATE organization_memberships SET role = $1 \
+                 WHERE user_id = $2 AND org_id = $3",
+            )
+            .bind(payload.role.as_str())
+            .bind(local_user.id.as_str())
+            .bind(org_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to update membership role: {e}")))?;
+
+            // Delete existing team memberships so we re-create with new scopes
+            sqlx::query("DELETE FROM user_team_memberships WHERE user_id = $1")
+                .bind(local_user.id.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    ApiError::Internal(format!("Failed to clear team memberships: {e}"))
+                })?;
+
+            StatusCode::OK
+        }
+        None => {
+            // New membership -> insert
+            let membership_id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now();
+            sqlx::query(
+                "INSERT INTO organization_memberships (id, user_id, org_id, role, created_at) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(&membership_id)
+            .bind(local_user.id.as_str())
+            .bind(org_id.as_str())
+            .bind(payload.role.as_str())
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to create membership: {e}")))?;
+
+            StatusCode::CREATED
+        }
+    };
+
+    // Create team memberships for all teams in the org
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    let teams = team_repo
+        .list_teams_by_org(&org_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list org teams: {e}")))?;
+
+    for team in &teams {
+        let scopes = scopes_for_org_role(payload.role, &team.name);
+        let scopes_json = serde_json::to_string(&scopes)
+            .map_err(|e| ApiError::Internal(format!("Failed to serialize scopes: {e}")))?;
+        let utm_id = format!("utm_{}", uuid::Uuid::new_v4());
+
+        sqlx::query(
+            "INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (user_id, team) DO NOTHING",
+        )
+        .bind(&utm_id)
+        .bind(local_user.id.as_str())
+        .bind(team.id.as_str())
+        .bind(&scopes_json)
+        .bind(chrono::Utc::now())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create team membership: {e}")))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to commit transaction: {e}")))?;
+
+    // Evict permission cache
+    if let Some(ref cache) = state.permission_cache {
+        cache.evict_by_user_id(&local_user.id).await;
+    }
+
+    tracing::info!(
+        user_id = %local_user.id,
+        email = %payload.email,
+        role = %payload.role,
+        org_id = %org_id,
+        user_created = user_created,
+        teams_count = teams.len(),
+        "invited member to organization"
+    );
+
+    Ok((
+        status_code,
+        Json(InviteOrgMemberResponse {
+            user_id: local_user.id.to_string(),
+            email: payload.email,
+            role: payload.role,
+            org_id: org_id.to_string(),
+            user_created,
+        }),
+    ))
+}
+
+/// Update a member's role in an organization (org admin only).
 ///
 /// Prevents downgrading the last owner of an organization.
 #[utoipa::path(
@@ -581,11 +851,11 @@ pub async fn admin_add_org_member(
     responses(
         (status = 200, description = "Member role updated successfully", body = crate::auth::organization::OrgMembershipResponse),
         (status = 400, description = "Validation error"),
-        (status = 403, description = "Admin or org admin privileges required"),
+        (status = 403, description = "Organization admin privileges required"),
         (status = 404, description = "Organization or membership not found"),
         (status = 409, description = "Cannot downgrade the last owner")
     ),
-    security(("bearer_auth" = ["admin:all"])),
+    security(("bearer_auth" = ["org:admin"])),
     tag = "Organizations"
 )]
 #[instrument(skip(state, payload), fields(org_id = %id, target_user_id = %user_id, user_id = ?context.user_id))]
@@ -608,7 +878,8 @@ pub async fn admin_update_org_member_role(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
-    require_admin_or_org_admin(&context, &org.name)?;
+    require_org_admin_only(&context, &org.name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     // Update role atomically (repository enforces last-owner constraint via transaction)
     let membership_repo = org_membership_repository_for_state(&state)?;
@@ -617,10 +888,15 @@ pub async fn admin_update_org_member_role(
         .await
         .map_err(ApiError::from)?;
 
+    // Evict permission cache so next request picks up new permissions
+    if let Some(ref cache) = state.permission_cache {
+        cache.evict_by_user_id(&target_user_id).await;
+    }
+
     Ok(Json(updated.into()))
 }
 
-/// Remove a member from an organization (admin or org admin).
+/// Remove a member from an organization (org admin only).
 ///
 /// Prevents removing the last owner of an organization.
 #[utoipa::path(
@@ -632,11 +908,11 @@ pub async fn admin_update_org_member_role(
     ),
     responses(
         (status = 204, description = "Member removed successfully"),
-        (status = 403, description = "Admin or org admin privileges required"),
+        (status = 403, description = "Organization admin privileges required"),
         (status = 404, description = "Organization or membership not found"),
         (status = 409, description = "Cannot remove the last owner")
     ),
-    security(("bearer_auth" = ["admin:all"])),
+    security(("bearer_auth" = ["org:admin"])),
     tag = "Organizations"
 )]
 #[instrument(skip(state), fields(org_id = %id, target_user_id = %user_id, user_id = ?context.user_id))]
@@ -656,11 +932,17 @@ pub async fn admin_remove_org_member(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
-    require_admin_or_org_admin(&context, &org.name)?;
+    require_org_admin_only(&context, &org.name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     // Delete atomically (repository enforces last-owner constraint via transaction)
     let membership_repo = org_membership_repository_for_state(&state)?;
     membership_repo.delete_membership(&target_user_id, &org_id).await.map_err(ApiError::from)?;
+
+    // Evict permission cache so next request picks up new permissions
+    if let Some(ref cache) = state.permission_cache {
+        cache.evict_by_user_id(&target_user_id).await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -800,8 +1082,8 @@ pub async fn create_org_team(
     Path(org_name): Path<String>,
     Json(mut payload): Json<crate::auth::team::CreateTeamRequest>,
 ) -> Result<(StatusCode, Json<crate::auth::team::Team>), ApiError> {
-    // Verify caller is org admin
-    crate::auth::authorization::require_org_admin(&context, &org_name)
+    // Verify caller is org admin (no platform admin bypass)
+    crate::auth::authorization::require_org_admin_only(&context, &org_name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     // Validate request
@@ -857,6 +1139,13 @@ pub async fn create_org_team(
         team_membership_repo.create_membership(membership).await.map_err(ApiError::from)?;
     }
 
+    // Evict permission cache for all org members — new team means new team memberships
+    if let Some(ref cache) = state.permission_cache {
+        for member in &org_members {
+            cache.evict_by_user_id(&member.user_id).await;
+        }
+    }
+
     Ok((StatusCode::CREATED, Json(team)))
 }
 
@@ -894,8 +1183,8 @@ pub async fn update_org_team(
     Path(path): Path<OrgTeamPath>,
     Json(payload): Json<crate::auth::team::UpdateTeamRequest>,
 ) -> Result<Json<crate::auth::team::Team>, ApiError> {
-    // Verify caller is org admin
-    crate::auth::authorization::require_org_admin(&context, &path.org_name)
+    // Verify caller is org admin (no platform admin bypass)
+    crate::auth::authorization::require_org_admin_only(&context, &path.org_name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     payload.validate().map_err(ApiError::from)?;
@@ -949,8 +1238,8 @@ pub async fn delete_org_team(
     Extension(context): Extension<AuthContext>,
     Path(path): Path<OrgTeamPath>,
 ) -> Result<StatusCode, ApiError> {
-    // Verify caller is org admin
-    crate::auth::authorization::require_org_admin(&context, &path.org_name)
+    // Verify caller is org admin (no platform admin bypass)
+    crate::auth::authorization::require_org_admin_only(&context, &path.org_name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     // Resolve org
@@ -1031,14 +1320,14 @@ pub struct ListTeamMembersResponse {
     pub members: Vec<TeamMemberResponse>,
 }
 
-/// Helper: resolve org + team from path, verify org admin.
+/// Helper: resolve org + team from path, verify org admin (no platform admin bypass).
 async fn resolve_org_team(
     state: &ApiState,
     context: &AuthContext,
     org_name: &str,
     team_name: &str,
 ) -> Result<(crate::auth::organization::OrganizationResponse, crate::auth::team::Team), ApiError> {
-    crate::auth::authorization::require_org_admin(context, org_name)
+    crate::auth::authorization::require_org_admin_only(context, org_name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     let org_repo = org_repository_for_state(state)?;
@@ -1165,6 +1454,11 @@ pub async fn add_team_member(
 
     let created = membership_repo.create_membership(membership).await.map_err(ApiError::from)?;
 
+    // Evict permission cache so next request picks up new permissions
+    if let Some(ref cache) = state.permission_cache {
+        cache.evict_by_user_id(&created.user_id).await;
+    }
+
     Ok((StatusCode::CREATED, Json(TeamMemberResponse::from(created))))
 }
 
@@ -1213,6 +1507,11 @@ pub async fn update_team_member_scopes(
         .await
         .map_err(ApiError::from)?;
 
+    // Evict permission cache so next request picks up new permissions
+    if let Some(ref cache) = state.permission_cache {
+        cache.evict_by_user_id(&target_user_id).await;
+    }
+
     Ok(Json(TeamMemberResponse::from(updated)))
 }
 
@@ -1258,6 +1557,11 @@ pub async fn remove_team_member(
         .delete_user_team_membership(&target_user_id, team.id.as_ref())
         .await
         .map_err(ApiError::from)?;
+
+    // Evict permission cache so next request picks up new permissions
+    if let Some(ref cache) = state.permission_cache {
+        cache.evict_by_user_id(&target_user_id).await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1363,6 +1667,8 @@ mod tests {
 
     #[test]
     fn test_require_org_admin_allows_admin() {
+        // Note: has_org_admin/require_org_admin still allows platform admin bypass for governance
+        // (invite endpoint). Use require_org_admin_only for member/team management.
         let ctx = org_admin_context("acme");
         assert!(crate::auth::authorization::require_org_admin(&ctx, "acme").is_ok());
     }
@@ -1435,13 +1741,13 @@ mod tests {
         assert!(require_admin(&ctx).is_err(), "Org member should NOT be able to delete orgs");
     }
 
-    // Tests for org-scoped team management (require_org_admin)
+    // Tests for org-scoped team management (require_org_admin_only — no platform admin bypass)
 
     #[test]
     fn org_admin_can_manage_own_teams() {
         let ctx = org_admin_context("acme-corp");
         assert!(
-            crate::auth::authorization::require_org_admin(&ctx, "acme-corp").is_ok(),
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_ok(),
             "Org admin should manage teams in their org"
         );
     }
@@ -1450,18 +1756,18 @@ mod tests {
     fn org_admin_cannot_manage_other_org_teams() {
         let ctx = org_admin_context("acme-corp");
         assert!(
-            crate::auth::authorization::require_org_admin(&ctx, "globex-corp").is_err(),
+            crate::auth::authorization::require_org_admin_only(&ctx, "globex-corp").is_err(),
             "Org admin should NOT manage teams in other orgs"
         );
     }
 
     #[test]
-    fn platform_admin_can_manage_any_org_teams() {
-        // admin:all bypasses org admin check (has_org_admin bypasses for admin:all)
+    fn platform_admin_cannot_manage_org_teams() {
+        // Platform admin must NOT bypass org admin for team/member management
         let ctx = admin_context();
         assert!(
-            crate::auth::authorization::require_org_admin(&ctx, "acme-corp").is_ok(),
-            "Platform admin should manage teams in any org"
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            "Platform admin should NOT manage teams in orgs"
         );
     }
 
@@ -1469,8 +1775,126 @@ mod tests {
     fn org_member_cannot_manage_teams() {
         let ctx = org_member_context("acme-corp");
         assert!(
-            crate::auth::authorization::require_org_admin(&ctx, "acme-corp").is_err(),
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
             "Org member should NOT manage teams"
         );
+    }
+
+    // Tests for org admin auth boundary (B.6 invariant: platform admin cannot manage org members)
+
+    #[test]
+    fn platform_admin_cannot_manage_org_members() {
+        let ctx = admin_context();
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            "Platform admin should NOT manage org members"
+        );
+    }
+
+    #[test]
+    fn org_admin_can_manage_own_org_members() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_ok(),
+            "Org admin should manage members in their org"
+        );
+    }
+
+    #[test]
+    fn org_admin_cannot_manage_other_org_members() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "globex-corp").is_err(),
+            "Org admin should NOT manage members in other orgs"
+        );
+    }
+
+    #[test]
+    fn has_org_admin_only_excludes_platform_admin() {
+        let ctx = admin_context();
+        assert!(
+            !crate::auth::authorization::has_org_admin_only(&ctx, "acme-corp"),
+            "has_org_admin_only must not grant access to platform admin"
+        );
+    }
+
+    #[test]
+    fn has_org_admin_only_allows_matching_org_admin() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::has_org_admin_only(&ctx, "acme-corp"),
+            "has_org_admin_only should allow matching org admin"
+        );
+        assert!(
+            !crate::auth::authorization::has_org_admin_only(&ctx, "globex-corp"),
+            "has_org_admin_only should reject non-matching org"
+        );
+    }
+
+    // Tests for scopes_for_org_role
+
+    #[test]
+    fn scopes_for_org_role_admin_returns_wildcard() {
+        let scopes = scopes_for_org_role(OrgRole::Admin, "engineering");
+        assert_eq!(scopes, vec!["team:engineering:*:*"]);
+    }
+
+    #[test]
+    fn scopes_for_org_role_owner_returns_wildcard() {
+        let scopes = scopes_for_org_role(OrgRole::Owner, "engineering");
+        assert_eq!(scopes, vec!["team:engineering:*:*"]);
+    }
+
+    #[test]
+    fn scopes_for_org_role_member_returns_specific() {
+        let scopes = scopes_for_org_role(OrgRole::Member, "eng");
+        assert!(scopes.contains(&"team:eng:routes:read".to_string()));
+        assert!(scopes.contains(&"team:eng:routes:write".to_string()));
+        assert!(scopes.contains(&"team:eng:clusters:read".to_string()));
+        assert!(scopes.contains(&"team:eng:clusters:write".to_string()));
+        assert!(scopes.contains(&"team:eng:listeners:read".to_string()));
+        assert!(scopes.contains(&"team:eng:listeners:write".to_string()));
+        assert!(scopes.contains(&"team:eng:filters:read".to_string()));
+        assert!(scopes.contains(&"team:eng:filters:write".to_string()));
+        assert!(scopes.contains(&"team:eng:stats:read".to_string()));
+        // Member should NOT have wildcard
+        assert!(!scopes.contains(&"team:eng:*:*".to_string()));
+    }
+
+    #[test]
+    fn scopes_for_org_role_viewer_returns_read_only() {
+        let scopes = scopes_for_org_role(OrgRole::Viewer, "frontend");
+        assert_eq!(scopes.len(), 3);
+        assert!(scopes.contains(&"team:frontend:routes:read".to_string()));
+        assert!(scopes.contains(&"team:frontend:clusters:read".to_string()));
+        assert!(scopes.contains(&"team:frontend:listeners:read".to_string()));
+        // Viewer should NOT have write scopes
+        for scope in &scopes {
+            assert!(!scope.contains("write"), "Viewer should not have write scopes");
+        }
+    }
+
+    // Tests for InviteOrgMemberRequest validation
+
+    #[test]
+    fn invite_request_rejects_invalid_email() {
+        let req = InviteOrgMemberRequest {
+            email: "not-an-email".to_string(),
+            role: OrgRole::Admin,
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+        };
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn invite_request_accepts_valid_email() {
+        let req = InviteOrgMemberRequest {
+            email: "valid@example.com".to_string(),
+            role: OrgRole::Admin,
+            first_name: "Test".to_string(),
+            last_name: "User".to_string(),
+        };
+        assert!(req.validate().is_ok());
     }
 }

@@ -204,6 +204,12 @@ pub async fn seed_superadmin(pool: DbPool, admin_client: ZitadelAdminClient) {
     let zitadel_sub = match admin_client.search_user_by_email(&email).await {
         Ok(Some(id)) => {
             tracing::info!(%email, "Superadmin already exists in Zitadel");
+            // Ensure password is set (user may have been created without one)
+            if let Some(ref pw) = initial_password {
+                if let Err(e) = admin_client.set_user_password(&id, pw).await {
+                    tracing::warn!(%email, error = ?e, "Could not set superadmin password (may already be set)");
+                }
+            }
             id
         }
         Ok(None) => {
