@@ -75,6 +75,21 @@ async fn main() -> Result<()> {
     // Handle first-time startup: check Zitadel configuration
     flowplane::startup::handle_first_time_startup().await?;
 
+    // Ensure platform org + team exist (idempotent, synchronous)
+    use flowplane::api::handlers::bootstrap::{ensure_platform_resources, seed_superadmin};
+    use flowplane::auth::zitadel_admin::ZitadelAdminClient;
+    let has_owner = ensure_platform_resources(&pool).await?;
+
+    // Spawn background superadmin seeding if no platform owner exists yet
+    if !has_owner {
+        if let Some(admin_client) = ZitadelAdminClient::from_env() {
+            let pool_clone = pool.clone();
+            tokio::spawn(async move {
+                seed_superadmin(pool_clone, admin_client).await;
+            });
+        }
+    }
+
     // Initialize scope registry for scope validation
     init_scope_registry(pool.clone()).await?;
     info!("Scope registry initialized");

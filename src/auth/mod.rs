@@ -6,6 +6,7 @@
 //! - Domain models for orgs, teams, tokens
 
 pub mod authorization;
+pub mod cache;
 pub mod middleware;
 pub mod models;
 pub mod organization;

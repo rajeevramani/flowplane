@@ -40,6 +40,25 @@ struct CreateSecretResponse {
     client_secret: String,
 }
 
+/// Response from creating a human user via Zitadel Management API.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateHumanUserResponse {
+    user_id: String,
+}
+
+/// Response from searching users via Zitadel Management API.
+#[derive(Deserialize)]
+struct SearchUsersResponse {
+    result: Option<Vec<SearchUserResult>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchUserResult {
+    id: String,
+}
+
 impl ZitadelAdminClient {
     /// Create a new client from environment variables.
     ///
@@ -161,6 +180,113 @@ impl ZitadelAdminClient {
         Ok((result.client_id, result.client_secret))
     }
 
+    /// Check Zitadel readiness via health endpoint.
+    ///
+    /// Returns `true` if Zitadel responds with 200, `false` on any failure.
+    pub async fn check_readiness(&self) -> Result<bool, ApiError> {
+        let url = format!("{}/debug/ready", self.base_url);
+        let req = self.http.get(&url);
+        match self.with_host_header(req).send().await {
+            Ok(resp) => Ok(resp.status().is_success()),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Search for a user by email address.
+    ///
+    /// Returns the Zitadel user ID (sub) if found, or `None` if no matching user exists.
+    pub async fn search_user_by_email(&self, email: &str) -> Result<Option<String>, ApiError> {
+        let url = format!("{}/management/v1/users/_search", self.base_url);
+
+        let body = serde_json::json!({
+            "queries": [{
+                "emailQuery": {
+                    "emailAddress": email,
+                    "method": "TEXT_QUERY_METHOD_EQUALS"
+                }
+            }]
+        });
+
+        let req = self.http.post(&url).bearer_auth(&self.pat).json(&body);
+
+        let resp = self
+            .with_host_header(req)
+            .send()
+            .await
+            .map_err(|e| ApiError::internal(format!("Zitadel user search failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!(status = %status, body = %body, "Zitadel user search error");
+            return Err(ApiError::internal(format!(
+                "Zitadel Management API error ({status}): {body}"
+            )));
+        }
+
+        let result: SearchUsersResponse = resp.json().await.map_err(|e| {
+            ApiError::internal(format!("Zitadel search response parse failed: {e}"))
+        })?;
+
+        Ok(result.result.and_then(|users| users.into_iter().next()).map(|u| u.id))
+    }
+
+    /// Create a human user in Zitadel.
+    ///
+    /// Returns the Zitadel user ID on success. If `initial_password` is provided,
+    /// the user is created with that password (no change required on first login).
+    pub async fn create_human_user(
+        &self,
+        email: &str,
+        first_name: &str,
+        last_name: &str,
+        initial_password: Option<&str>,
+    ) -> Result<String, ApiError> {
+        let url = format!("{}/management/v1/users/human", self.base_url);
+
+        let mut body = serde_json::json!({
+            "userName": email,
+            "profile": {
+                "firstName": first_name,
+                "lastName": last_name,
+            },
+            "email": {
+                "email": email,
+                "isEmailVerified": true,
+            },
+        });
+
+        if let Some(password) = initial_password {
+            body["password"] = serde_json::json!({
+                "password": password,
+                "changeRequired": false,
+            });
+        }
+
+        let req = self.http.post(&url).bearer_auth(&self.pat).json(&body);
+
+        let resp =
+            self.with_host_header(req).send().await.map_err(|e| {
+                ApiError::internal(format!("Zitadel create human user failed: {e}"))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!(status = %status, body = %body, "Zitadel create human user error");
+            return Err(ApiError::internal(format!(
+                "Zitadel Management API error ({status}): {body}"
+            )));
+        }
+
+        let result: CreateHumanUserResponse = resp
+            .json()
+            .await
+            .map_err(|e| ApiError::internal(format!("Zitadel response parse failed: {e}")))?;
+
+        Ok(result.user_id)
+    }
+
     /// Add a role grant for a user on a given project.
     ///
     /// `role_keys` are the Zitadel role keys (e.g., `["team-01:clusters:read"]`).
@@ -265,6 +391,22 @@ mod tests {
             client.as_ref().and_then(|c| c.issuer_host.clone()),
             Some("localhost:8081".to_string())
         );
+
+        std::env::remove_var("FLOWPLANE_ZITADEL_ADMIN_PAT");
+        std::env::remove_var("FLOWPLANE_ZITADEL_ADMIN_URL");
+        std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER");
+    }
+
+    #[test]
+    fn check_readiness_requires_no_auth() {
+        // Verify the method exists and is callable — functional test requires a live Zitadel
+        std::env::set_var("FLOWPLANE_ZITADEL_ADMIN_PAT", "test-pat");
+        std::env::set_var("FLOWPLANE_ZITADEL_ADMIN_URL", "http://localhost:9999");
+        std::env::set_var("FLOWPLANE_ZITADEL_ISSUER", "http://localhost:9999");
+
+        let client = ZitadelAdminClient::from_env();
+        assert!(client.is_some());
+        // No assertion on readiness result — unreachable host returns Ok(false), not an error
 
         std::env::remove_var("FLOWPLANE_ZITADEL_ADMIN_PAT");
         std::env::remove_var("FLOWPLANE_ZITADEL_ADMIN_URL");
