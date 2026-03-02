@@ -26,6 +26,7 @@ struct UserRow {
     pub status: String,
     pub is_admin: bool,
     pub org_id: String,
+    pub zitadel_sub: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -75,6 +76,16 @@ pub trait UserRepository: Send + Sync {
 
     /// Delete a user (this will cascade delete team memberships)
     async fn delete_user(&self, id: &UserId) -> Result<()>;
+
+    /// Find a user by their Zitadel subject identifier (`sub` claim).
+    async fn find_by_zitadel_sub(&self, sub: &str) -> Result<Option<User>>;
+
+    /// Upsert a user from JWT claims (JIT provisioning).
+    ///
+    /// If a user with the given `zitadel_sub` already exists, updates email/name
+    /// and returns the existing user. Otherwise creates a new user row.
+    /// This operation is idempotent.
+    async fn upsert_from_jwt(&self, sub: &str, email: &str, name: &str) -> Result<User>;
 }
 
 #[async_trait]
@@ -142,6 +153,7 @@ impl SqlxUserRepository {
             status,
             is_admin: row.is_admin,
             org_id: OrgId::from_string(row.org_id),
+            zitadel_sub: row.zitadel_sub,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -185,7 +197,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_id = %id), name = "db_get_user")]
     async fn get_user(&self, id: &UserId) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE id = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, zitadel_sub, created_at, updated_at FROM users WHERE id = $1",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -201,7 +213,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_by_email")]
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE email = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, zitadel_sub, created_at, updated_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -217,7 +229,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_with_password")]
     async fn get_user_with_password(&self, email: &str) -> Result<Option<(User, String)>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE email = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, zitadel_sub, created_at, updated_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -308,7 +320,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(limit = limit, offset = offset), name = "db_list_users")]
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>> {
         let rows = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, zitadel_sub, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
@@ -361,6 +373,53 @@ impl UserRepository for SqlxUserRepository {
             })?;
 
         Ok(())
+    }
+
+    #[instrument(skip(self), fields(zitadel_sub = %sub), name = "db_find_by_zitadel_sub")]
+    async fn find_by_zitadel_sub(&self, sub: &str) -> Result<Option<User>> {
+        let row = sqlx::query_as::<_, UserRow>(
+            "SELECT id, email, password_hash, name, status, is_admin, org_id, zitadel_sub, created_at, updated_at FROM users WHERE zitadel_sub = $1",
+        )
+        .bind(sub)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to find user by zitadel_sub".to_string(),
+        })?;
+
+        row.map(|r| self.row_to_user(r)).transpose()
+    }
+
+    #[instrument(skip(self), fields(zitadel_sub = %sub, email = %email), name = "db_upsert_from_jwt")]
+    async fn upsert_from_jwt(&self, sub: &str, email: &str, name: &str) -> Result<User> {
+        let id = UserId::new();
+
+        let row = sqlx::query_as::<_, UserRow>(
+            r#"
+            INSERT INTO users (id, email, password_hash, name, status, is_admin, org_id, zitadel_sub, created_at, updated_at)
+            VALUES ($1, $2, '', $3, 'active', false, '', $4, $5, $6)
+            ON CONFLICT (zitadel_sub) DO UPDATE SET
+                email = EXCLUDED.email,
+                name = EXCLUDED.name,
+                updated_at = EXCLUDED.updated_at
+            RETURNING id, email, password_hash, name, status, is_admin, org_id, zitadel_sub, created_at, updated_at
+            "#,
+        )
+        .bind(id.to_string())
+        .bind(email)
+        .bind(name)
+        .bind(sub)
+        .bind(Utc::now())
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to upsert user from JWT".to_string(),
+        })?;
+
+        self.row_to_user(row)
     }
 }
 
