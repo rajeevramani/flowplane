@@ -333,6 +333,8 @@ mod tests {
             mcp_session_manager,
             certificate_rate_limiter,
             auth_config: Arc::new(crate::config::AuthConfig::default()),
+            zitadel_admin: None,
+            permission_cache: None,
         };
 
         // Seed a cluster for route references

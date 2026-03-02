@@ -85,6 +85,12 @@ pub struct ApiState {
     pub certificate_rate_limiter: Arc<super::rate_limit::RateLimiter>,
     /// Authentication configuration (cookie_secure, invite settings, proxy config)
     pub auth_config: Arc<crate::config::AuthConfig>,
+    /// Zitadel Management API client for user provisioning (invite flow).
+    /// `None` when `FLOWPLANE_ZITADEL_ADMIN_PAT` is not configured.
+    pub zitadel_admin: Option<Arc<crate::auth::zitadel_admin::ZitadelAdminClient>>,
+    /// Permission cache shared with auth middleware for cache invalidation
+    /// after membership mutations.
+    pub permission_cache: Option<Arc<crate::auth::cache::PermissionCache>>,
 }
 
 /// Get the UI static files directory path from environment or default
@@ -192,6 +198,46 @@ pub fn build_router_with_registry(
         }
     }
 
+    // Early return: if no cluster repository is configured, only serve docs
+    if state.cluster_repository.is_none() {
+        return docs::docs_router();
+    }
+
+    // Create permission cache (shared between middleware and handlers for cache invalidation)
+    let permission_cache = Arc::new(crate::auth::cache::PermissionCache::from_env());
+
+    // Create Zitadel admin client for user provisioning (invite endpoint)
+    let zitadel_admin = crate::auth::zitadel_admin::ZitadelAdminClient::from_env().map(Arc::new);
+
+    let (auth_layer, api_permission_cache) = match crate::auth::zitadel::ZitadelConfig::from_env() {
+        Some(zitadel_config) => {
+            tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
+            let pool = state
+                .pool
+                .clone()
+                .expect("DB pool required for Zitadel auth middleware — start with --database");
+            let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
+                jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
+                config: std::sync::Arc::new(zitadel_config),
+                pool,
+                permission_cache: permission_cache.clone(),
+            };
+            (
+                tower::util::Either::Left(middleware::from_fn_with_state(
+                    zitadel_state,
+                    authenticate,
+                )),
+                Some(permission_cache),
+            )
+        }
+        None => {
+            tracing::warn!(
+                "Zitadel not configured — starting in degraded mode (auth endpoints return 503)"
+            );
+            (tower::util::Either::Right(middleware::from_fn(reject_all_auth)), None)
+        }
+    };
+
     let api_state = ApiState {
         xds_state: state.clone(),
         filter_schema_registry,
@@ -200,36 +246,8 @@ pub fn build_router_with_registry(
         mcp_session_manager,
         certificate_rate_limiter,
         auth_config,
-    };
-
-    // Early return: if no cluster repository is configured, only serve docs
-    if state.cluster_repository.is_none() {
-        return docs::docs_router();
-    }
-
-    let auth_layer = match crate::auth::zitadel::ZitadelConfig::from_env() {
-        Some(zitadel_config) => {
-            tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
-            let pool = state
-                .pool
-                .clone()
-                .expect("DB pool required for Zitadel auth middleware — start with --database");
-            let permission_cache =
-                std::sync::Arc::new(crate::auth::cache::PermissionCache::from_env());
-            let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
-                jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
-                config: std::sync::Arc::new(zitadel_config),
-                pool,
-                permission_cache,
-            };
-            tower::util::Either::Left(middleware::from_fn_with_state(zitadel_state, authenticate))
-        }
-        None => {
-            tracing::warn!(
-                "Zitadel not configured — starting in degraded mode (auth endpoints return 503)"
-            );
-            tower::util::Either::Right(middleware::from_fn(reject_all_auth))
-        }
+        zitadel_admin,
+        permission_cache: api_permission_cache,
     };
 
     let dynamic_scope_layer = middleware::from_fn(ensure_dynamic_scopes);
