@@ -34,7 +34,7 @@ use crate::{
         repositories::{
             OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
             SqlxOrganizationRepository, SqlxTeamRepository, TeamMembershipRepository,
-            TeamRepository, UserRepository,
+            TeamRepository,
         },
         DbPool,
     },
@@ -95,18 +95,6 @@ fn org_membership_repository_for_state(
     })?;
     let pool = cluster_repo.pool().clone();
     Ok(Arc::new(SqlxOrgMembershipRepository::new(pool)))
-}
-
-/// Helper to create UserRepository from ApiState.
-fn user_repository_for_state(state: &ApiState) -> Result<Arc<dyn UserRepository>, ApiError> {
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("User repository unavailable"))?;
-    let pool = cluster_repo.pool().clone();
-    Ok(Arc::new(crate::storage::repositories::SqlxUserRepository::new(pool)))
 }
 
 /// Helper to extract the database pool from ApiState.
@@ -475,59 +463,46 @@ pub async fn admin_add_org_member(
 
     require_admin_or_org_admin(&context, &org.name)?;
 
-    // SECURITY: Use a transaction with SELECT FOR UPDATE to prevent TOCTOU race
-    // on user.org_id. Without this, two concurrent requests could both see org_id=None
-    // and assign the user to different organizations simultaneously.
+    // SECURITY: Check for cross-org isolation via org_memberships.
+    // A user who already belongs to a different org cannot be added.
     let pool = pool_for_state(&state)?;
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to begin transaction: {}", e)))?;
 
-    // Lock the user row and get current org_id
-    let user_row = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT id, org_id FROM users WHERE id = $1 FOR UPDATE",
+    // Verify user exists
+    let user_exists = sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE id = $1")
+        .bind(payload.user_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to fetch user: {}", e)))?;
+
+    if user_exists.is_none() {
+        return Err(ApiError::NotFound("User not found".to_string()));
+    }
+
+    // Check if user has existing memberships in a DIFFERENT org
+    let other_org = sqlx::query_scalar::<_, String>(
+        "SELECT org_id FROM organization_memberships WHERE user_id = $1 AND org_id != $2 LIMIT 1",
     )
     .bind(payload.user_id.as_str())
+    .bind(org_id.as_str())
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|e| ApiError::Internal(format!("Failed to fetch user: {}", e)))?
-    .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    .map_err(|e| ApiError::Internal(format!("Failed to check org memberships: {}", e)))?;
 
-    let user_org_id = user_row.1;
-
-    // Cross-org isolation: verify user belongs to the same org, or auto-assign if unset
-    match user_org_id {
-        Some(ref existing_org_id) if *existing_org_id != org.id.as_str() => {
-            // No need to commit - rollback on drop is fine for read-only path
-            tracing::warn!(
-                attempted_org = %org.id,
-                user_org = %existing_org_id,
-                user_id = %payload.user_id,
-                "cross-org member add violation: user belongs to different org"
-            );
-            return Err(ApiError::Forbidden(format!(
-                "Cross-organization access denied: user belongs to org '{}', cannot be added to org '{}'",
-                existing_org_id, org.name
-            )));
-        }
-        None => {
-            // User has no org_id set -- auto-assign within the same transaction
-            tracing::info!(
-                user_id = %payload.user_id,
-                org_id = %org.id,
-                org_name = %org.name,
-                "auto-assigning user org_id during membership creation"
-            );
-            sqlx::query("UPDATE users SET org_id = $1, updated_at = $2 WHERE id = $3")
-                .bind(org.id.as_str())
-                .bind(chrono::Utc::now())
-                .bind(payload.user_id.as_str())
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to update user org: {}", e)))?;
-        }
-        _ => {} // org_id matches, no action needed
+    if let Some(ref existing_org_id) = other_org {
+        tracing::warn!(
+            attempted_org = %org.id,
+            user_org = %existing_org_id,
+            user_id = %payload.user_id,
+            "cross-org member add violation: user belongs to different org"
+        );
+        return Err(ApiError::Forbidden(format!(
+            "Cross-organization access denied: user belongs to a different org, cannot be added to org '{}'",
+            org.name
+        )));
     }
 
     // Check if already a member (within same transaction)
@@ -723,33 +698,23 @@ pub async fn get_current_org(
         .as_ref()
         .ok_or_else(|| ApiError::Unauthorized("User ID required".to_string()))?;
 
-    // Get user to retrieve org_id
-    let user_repo = user_repository_for_state(&state)?;
-    let user = user_repo
-        .get_user(user_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    // Look up org membership from org_memberships table (v3: source of truth)
+    let membership_repo = org_membership_repository_for_state(&state)?;
+    let memberships =
+        membership_repo.list_user_memberships(user_id).await.map_err(ApiError::from)?;
 
-    let org_id = user.org_id;
+    let membership = memberships
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound("User has no organization membership".to_string()))?;
 
     // Fetch organization
     let org_repo = org_repository_for_state(&state)?;
     let org = org_repo
-        .get_organization_by_id(&org_id)
+        .get_organization_by_id(&membership.org_id)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
-
-    // Fetch user's membership to get their role
-    let membership_repo = org_membership_repository_for_state(&state)?;
-    let membership = membership_repo
-        .get_membership(user_id, &org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| {
-            ApiError::NotFound("User is not a member of this organization".to_string())
-        })?;
 
     Ok(Json(CurrentOrgResponse { organization: org.into(), role: membership.role }))
 }

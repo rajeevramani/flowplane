@@ -428,7 +428,6 @@ async fn membership_role_upgrade_and_downgrade() {
             name: "User 1".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: org.id.clone(),
         })
         .await
         .expect("create user1");
@@ -442,7 +441,6 @@ async fn membership_role_upgrade_and_downgrade() {
             name: "User 2".to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id: org.id.clone(),
         })
         .await
         .expect("create user2");

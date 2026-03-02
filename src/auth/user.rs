@@ -10,7 +10,7 @@ use std::fmt;
 use std::str::FromStr;
 use utoipa::ToSchema;
 
-use crate::domain::{OrgId, UserId};
+use crate::domain::UserId;
 
 /// User status values stored in the database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -52,7 +52,6 @@ pub struct User {
     pub name: String,
     pub status: UserStatus,
     pub is_admin: bool,
-    pub org_id: OrgId,
     /// Zitadel subject identifier (`sub` claim from JWT).
     /// Bridges Zitadel identity to Flowplane permissions.
     pub zitadel_sub: Option<String>,
@@ -69,7 +68,6 @@ pub struct NewUser {
     pub name: String,
     pub status: UserStatus,
     pub is_admin: bool,
-    pub org_id: OrgId,
 }
 
 /// User update request.

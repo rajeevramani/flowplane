@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { userManager } from '$lib/auth/oidc-config';
+	import { getUserManager } from '$lib/auth/oidc-config';
 
 	let errorMessage = $state('');
 
 	onMount(async () => {
 		try {
+			const userManager = await getUserManager();
 			await userManager.signinRedirectCallback();
 			await goto('/dashboard');
 		} catch (error: unknown) {

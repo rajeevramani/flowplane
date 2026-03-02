@@ -3,7 +3,7 @@ import { goto } from '$app/navigation';
 import { env } from '$env/dynamic/public';
 import { z } from 'zod';
 import { SecretResponseSchema, AdminListOrgsResponseSchema, AdminResourceSummarySchema, paginatedSchema } from './schemas';
-import { userManager } from '$lib/auth/oidc-config';
+import { getUserManager } from '$lib/auth/oidc-config';
 import type {
 	BootstrapStatusResponse,
 	BootstrapInitializeRequest,
@@ -153,6 +153,7 @@ class ApiClient {
 			'Content-Type': 'application/json',
 		};
 
+		const userManager = await getUserManager();
 		const user = await userManager.getUser();
 		if (user?.access_token) {
 			headers['Authorization'] = `Bearer ${user.access_token}`;
@@ -192,11 +193,13 @@ class ApiClient {
 	}
 
 	async login(): Promise<void> {
+		const userManager = await getUserManager();
 		await userManager.signinRedirect();
 	}
 
 	async logout(): Promise<void> {
 		try {
+			const userManager = await getUserManager();
 			await userManager.signoutRedirect();
 		} finally {
 			this.clearAuth();
@@ -204,6 +207,7 @@ class ApiClient {
 	}
 
 	async getSessionInfo(): Promise<SessionInfoResponse> {
+		const userManager = await getUserManager();
 		const user = await userManager.getUser();
 		if (!user || user.expired) {
 			throw new Error('Not authenticated');
@@ -215,20 +219,61 @@ class ApiClient {
 		const name = (profile.name as string) ?? (profile.preferred_username as string) ?? '';
 		const email = (profile.email as string) ?? '';
 
-		// Extract Zitadel role claims — shape: { [roleName]: { orgId: orgDomain } }
-		const roleClaims = Object.entries(profile).find(([key]) =>
-			key.startsWith('urn:zitadel:iam:org:project:')
+		// Extract Zitadel role claims.
+		// Claim key: urn:zitadel:iam:org:project:{projectId}:roles
+		// Claim value: { [roleKey]: { [orgId]: { primaryDomain: string } } }
+		// orgId is the FIRST KEY of each role value object (not a named property).
+		const rawRoleEntry = Object.entries(profile).find(
+			([key]) => key.startsWith('urn:zitadel:iam:org:project:') && key.endsWith(':roles')
 		);
 
-		const roles: string[] = [];
-		if (roleClaims) {
-			const roleObj = roleClaims[1];
-			if (roleObj && typeof roleObj === 'object') {
-				roles.push(...Object.keys(roleObj as Record<string, unknown>));
+		const roleKeys: string[] = [];
+		let orgId: string | undefined;
+
+		if (rawRoleEntry) {
+			const roleClaimValue = rawRoleEntry[1];
+			if (
+				roleClaimValue !== null &&
+				typeof roleClaimValue === 'object' &&
+				!Array.isArray(roleClaimValue)
+			) {
+				const roleMap = roleClaimValue as Record<string, unknown>;
+				for (const [roleKey, roleValue] of Object.entries(roleMap)) {
+					roleKeys.push(roleKey);
+					// The first key of the role value object is the org ID
+					if (
+						orgId === undefined &&
+						roleValue !== null &&
+						typeof roleValue === 'object' &&
+						!Array.isArray(roleValue)
+					) {
+						const firstKey = Object.keys(roleValue as Record<string, unknown>)[0];
+						if (firstKey) {
+							orgId = firstKey;
+						}
+					}
+				}
 			}
 		}
 
-		const isPlatformAdmin = roles.includes('admin:all');
+		const isPlatformAdmin = roleKeys.includes('admin:all');
+
+		// Extract unique team names from role keys.
+		// Patterns: "team:resource:action" | "team:admin" | "admin:all"
+		// Take the segment before the first ":" and skip the platform-admin marker.
+		const teamSet = new Set<string>();
+		for (const roleKey of roleKeys) {
+			if (roleKey === 'admin:all') continue;
+			const firstColon = roleKey.indexOf(':');
+			if (firstColon > 0) {
+				teamSet.add(roleKey.slice(0, firstColon));
+			}
+		}
+		const teams = Array.from(teamSet);
+
+		// Org name may be present as a Zitadel resource-owner claim.
+		const rawOrgName = profile['urn:zitadel:iam:user:resourceowner:name'];
+		const orgName = typeof rawOrgName === 'string' ? rawOrgName : undefined;
 
 		return {
 			sessionId: user.session_state ?? '',
@@ -237,15 +282,17 @@ class ApiClient {
 			email,
 			isAdmin: isPlatformAdmin,
 			isPlatformAdmin,
-			teams: [],
-			scopes: roles,
+			teams,
+			scopes: roleKeys,
 			expiresAt: user.expires_at ? new Date(user.expires_at * 1000).toISOString() : null,
 			version: '',
+			orgId,
+			orgName,
 		};
 	}
 
 	clearAuth() {
-		userManager.removeUser();
+		getUserManager().then((um) => um.removeUser());
 		// Clear org context to prevent session leaking across logins
 		currentOrg.set({ organization: null, role: null });
 	}

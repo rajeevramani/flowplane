@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { userManager } from '$lib/auth/oidc-config';
+	import { getUserManager } from '$lib/auth/oidc-config';
 
 	let errorMessage = $state('');
 	let isRedirecting = $state(false);
@@ -9,6 +9,7 @@
 		isRedirecting = true;
 
 		try {
+			const userManager = await getUserManager();
 			await userManager.signinRedirect();
 		} catch (error: unknown) {
 			errorMessage =

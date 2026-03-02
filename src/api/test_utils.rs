@@ -337,7 +337,6 @@ impl TestUserBuilder {
             name: self.name,
             status: UserStatus::Active,
             is_admin: self.is_admin,
-            org_id: OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
         };
 
         repo.create_user(new_user).await.expect("Failed to create test user");

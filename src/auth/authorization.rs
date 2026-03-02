@@ -382,6 +382,30 @@ pub fn parse_org_from_scope(scope: &str) -> Option<(String, String)> {
     }
 }
 
+/// Extract all team names from team-scoped permissions in the context.
+///
+/// Parses scopes matching `team:{name}:*` (any variant, e.g. `team:X:*:*` or
+/// `team:X:clusters:read`) and returns a deduplicated list of team names.
+///
+/// The admin path (`admin:all`) is NOT handled here — callers should check
+/// `has_admin_bypass()` separately before calling this.
+pub fn extract_team_names(context: &AuthContext) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut teams = Vec::new();
+
+    for scope in context.scopes() {
+        if let Some(team_part) = scope.strip_prefix("team:") {
+            if let Some(team_name) = team_part.split(':').next() {
+                if !team_name.is_empty() && seen.insert(team_name.to_string()) {
+                    teams.push(team_name.to_string());
+                }
+            }
+        }
+    }
+
+    teams
+}
+
 /// Extract all organization names and roles from org-scoped permissions in the context.
 ///
 /// Parses scopes matching the pattern `org:{name}:admin|member` and
@@ -1041,6 +1065,62 @@ mod tests {
         assert_eq!(parse_org_from_scope("team:acme:routes:read"), None);
         assert_eq!(parse_org_from_scope("routes:read"), None);
         assert_eq!(parse_org_from_scope("org:acme"), None);
+    }
+
+    // === Team name extraction tests ===
+
+    #[test]
+    fn extract_team_names_fine_grained_scopes() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("t1"),
+            "t1".into(),
+            vec![
+                "team:platform:clusters:read".into(),
+                "team:platform:routes:write".into(),
+                "team:sre:listeners:read".into(),
+            ],
+        );
+        let mut teams = extract_team_names(&ctx);
+        teams.sort();
+        assert_eq!(teams, vec!["platform", "sre"]);
+    }
+
+    #[test]
+    fn extract_team_names_wildcard_scopes() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("t2"),
+            "t2".into(),
+            vec!["team:eng:*:*".into(), "team:ops:clusters:*".into()],
+        );
+        let mut teams = extract_team_names(&ctx);
+        teams.sort();
+        assert_eq!(teams, vec!["eng", "ops"]);
+    }
+
+    #[test]
+    fn extract_team_names_deduplicates() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("t3"),
+            "t3".into(),
+            vec![
+                "team:backend:clusters:read".into(),
+                "team:backend:clusters:write".into(),
+                "team:backend:routes:read".into(),
+            ],
+        );
+        let teams = extract_team_names(&ctx);
+        assert_eq!(teams, vec!["backend"]);
+    }
+
+    #[test]
+    fn extract_team_names_no_team_scopes() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("t4"),
+            "t4".into(),
+            vec!["admin:all".into(), "org:acme:admin".into()],
+        );
+        let teams = extract_team_names(&ctx);
+        assert!(teams.is_empty());
     }
 
     #[test]

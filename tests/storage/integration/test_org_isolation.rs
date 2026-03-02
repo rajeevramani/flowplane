@@ -36,8 +36,8 @@ async fn create_org(pool: &DbPool, name: &str) -> OrgId {
     org.id
 }
 
-/// Helper: create a user belonging to an org.
-async fn create_user(pool: &DbPool, email: &str, org_id: OrgId) -> UserId {
+/// Helper: create a user.
+async fn create_user(pool: &DbPool, email: &str) -> UserId {
     let user_repo = SqlxUserRepository::new(pool.clone());
     let user_id = UserId::new();
     let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
@@ -49,7 +49,6 @@ async fn create_user(pool: &DbPool, email: &str, org_id: OrgId) -> UserId {
             name: email.split('@').next().unwrap_or("user").to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id,
         })
         .await
         .unwrap_or_else(|e| panic!("Failed to create user '{}': {}", email, e));
@@ -208,8 +207,8 @@ async fn org_member_isolation() {
     let org_b_id = create_org(&pool, "org-members-b").await;
 
     // Create users
-    let user_a = create_user(&pool, "alice@org-a.com", org_a_id.clone()).await;
-    let user_b = create_user(&pool, "bob@org-b.com", org_b_id.clone()).await;
+    let user_a = create_user(&pool, "alice@org-a.com").await;
+    let user_b = create_user(&pool, "bob@org-b.com").await;
 
     // Create memberships
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
@@ -241,49 +240,6 @@ async fn org_member_isolation() {
 }
 
 // ---------------------------------------------------------------------------
-// Test: User org_id assignment via update_user_org
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn user_org_assignment() {
-    let test_db = TestDatabase::new("user_org_assignment").await;
-    let pool = test_db.pool().clone();
-
-    let org_id_initial = create_org(&pool, "org-assign-initial").await;
-    let org_id_target = create_org(&pool, "org-assign-target").await;
-
-    // Create user with initial org
-    let user_repo = SqlxUserRepository::new(pool.clone());
-    let user_id = UserId::new();
-    let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
-    let user = user_repo
-        .create_user(NewUser {
-            id: user_id.clone(),
-            email: "reassign@test.com".to_string(),
-            password_hash,
-            name: "Reassign User".to_string(),
-            status: UserStatus::Active,
-            is_admin: false,
-            org_id: org_id_initial.clone(),
-        })
-        .await
-        .expect("create user");
-
-    assert_eq!(user.org_id.as_str(), org_id_initial.as_str(), "User should start in initial org");
-
-    // Reassign user to target org
-    user_repo.update_user_org(&user_id, &org_id_target).await.expect("reassign user to org");
-
-    // Verify the assignment persists
-    let fetched = user_repo.get_user(&user_id).await.expect("get user").expect("user exists");
-    assert_eq!(
-        fetched.org_id.as_str(),
-        org_id_target.as_str(),
-        "User org reassignment should persist"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Test: Org with members cannot be deleted (FK on memberships)
 // ---------------------------------------------------------------------------
 
@@ -295,7 +251,7 @@ async fn org_deletion_with_members_rejected() {
     let org_id = create_org(&pool, "org-with-members").await;
 
     // Create a user and membership
-    let user_id = create_user(&pool, "member@org.com", org_id.clone()).await;
+    let user_id = create_user(&pool, "member@org.com").await;
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
     membership_repo
         .create_membership(&user_id, &org_id, OrgRole::Member)
@@ -351,7 +307,7 @@ async fn user_memberships_listed_correctly() {
     let org_a_id = create_org(&pool, "multi-org-a").await;
     let org_b_id = create_org(&pool, "multi-org-b").await;
 
-    let user_id = create_user(&pool, "multi-org-user@test.com", org_a_id.clone()).await;
+    let user_id = create_user(&pool, "multi-org-user@test.com").await;
 
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
 
@@ -383,7 +339,7 @@ async fn cannot_delete_last_owner() {
     let pool = test_db.pool().clone();
 
     let org_id = create_org(&pool, "owner-protect-org").await;
-    let user_id = create_user(&pool, "sole-owner@test.com", org_id.clone()).await;
+    let user_id = create_user(&pool, "sole-owner@test.com").await;
 
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
     membership_repo
@@ -666,7 +622,7 @@ async fn cannot_downgrade_last_owner() {
     let pool = test_db.pool().clone();
 
     let org_id = create_org(&pool, "owner-downgrade-org").await;
-    let user_id = create_user(&pool, "sole-owner-dg@test.com", org_id.clone()).await;
+    let user_id = create_user(&pool, "sole-owner-dg@test.com").await;
 
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
     membership_repo

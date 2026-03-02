@@ -879,7 +879,6 @@ mod tests {
                 name: "Test Member".to_string(),
                 status: UserStatus::Active,
                 is_admin: false,
-                org_id: org.id.clone(),
             })
             .await
             .expect("create user");

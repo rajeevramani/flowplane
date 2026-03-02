@@ -367,6 +367,59 @@ pub async fn openid_configuration_handler(
     })
 }
 
+// ===== SPA Auth Config Endpoint =====
+
+/// Response for `GET /api/v1/auth/config`.
+///
+/// Returns OIDC configuration so the SPA can initialize at runtime
+/// without needing values baked in at build time.
+#[derive(Debug, Serialize)]
+pub struct AuthConfigResponse {
+    pub issuer: String,
+    pub client_id: String,
+    pub app_url: String,
+}
+
+/// Shared state for the auth config endpoint.
+#[derive(Clone)]
+pub struct AuthConfigState {
+    pub issuer: String,
+    pub client_id: String,
+    pub app_url: String,
+}
+
+impl AuthConfigState {
+    /// Build auth config state from environment.
+    ///
+    /// Requires `FLOWPLANE_ZITADEL_ISSUER` and `FLOWPLANE_ZITADEL_SPA_CLIENT_ID`.
+    /// `FLOWPLANE_APP_URL` defaults to `http://localhost:8080`.
+    pub fn from_env() -> Option<Self> {
+        let issuer = std::env::var("FLOWPLANE_ZITADEL_ISSUER").ok()?;
+        if issuer.is_empty() {
+            return None;
+        }
+        let client_id = std::env::var("FLOWPLANE_ZITADEL_SPA_CLIENT_ID").ok()?;
+        if client_id.is_empty() {
+            return None;
+        }
+        let app_url = std::env::var("FLOWPLANE_APP_URL")
+            .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        Some(Self { issuer, client_id, app_url })
+    }
+}
+
+/// `GET /api/v1/auth/config`
+///
+/// Returns OIDC configuration for the SPA to initialize at runtime.
+#[instrument(skip(state))]
+pub async fn auth_config_handler(State(state): State<AuthConfigState>) -> Json<AuthConfigResponse> {
+    Json(AuthConfigResponse {
+        issuer: state.issuer.clone(),
+        client_id: state.client_id.clone(),
+        app_url: state.app_url.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,5 +652,37 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["error"], "invalid_client_metadata");
         assert_eq!(json["error_description"], "client_name is required");
+    }
+
+    // --- Auth config tests ---
+
+    #[test]
+    fn auth_config_requires_issuer() {
+        std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER");
+        std::env::set_var("FLOWPLANE_ZITADEL_SPA_CLIENT_ID", "test-client");
+        assert!(AuthConfigState::from_env().is_none());
+        std::env::remove_var("FLOWPLANE_ZITADEL_SPA_CLIENT_ID");
+    }
+
+    #[test]
+    fn auth_config_requires_client_id() {
+        std::env::set_var("FLOWPLANE_ZITADEL_ISSUER", "http://localhost:8081");
+        std::env::remove_var("FLOWPLANE_ZITADEL_SPA_CLIENT_ID");
+        assert!(AuthConfigState::from_env().is_none());
+        std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER");
+    }
+
+    #[test]
+    fn auth_config_response_serializes_correctly() {
+        let resp = AuthConfigResponse {
+            issuer: "http://localhost:8081".to_string(),
+            client_id: "123456789".to_string(),
+            app_url: "http://localhost:8080".to_string(),
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["issuer"], "http://localhost:8081");
+        assert_eq!(json["client_id"], "123456789");
+        assert_eq!(json["app_url"], "http://localhost:8080");
     }
 }

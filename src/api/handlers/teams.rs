@@ -15,7 +15,7 @@ use validator::Validate;
 use crate::{
     api::{error::ApiError, handlers::team_access::require_admin, routes::ApiState},
     auth::{
-        authorization::{extract_org_scopes, has_admin_bypass},
+        authorization::{extract_org_scopes, extract_team_names, has_admin_bypass},
         models::AuthContext,
         team::{CreateTeamRequest, Team, UpdateTeamRequest},
     },
@@ -77,9 +77,15 @@ pub async fn list_teams_handler(
             .map_err(|err| ApiError::from(Error::from(err)))?;
         org_teams.into_iter().map(|t| t.name).collect()
     } else {
-        // Non-admin users see only their teams from memberships
-        let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
-        if let Some(user_id) = &context.user_id {
+        // Zitadel JWT users: derive teams directly from JWT scope claims.
+        // Scopes like `team:X:*:*` and `team:X:resource:action` encode team
+        // membership explicitly so no DB membership row is needed.
+        let jwt_teams = extract_team_names(&context);
+        if !jwt_teams.is_empty() {
+            jwt_teams
+        } else if let Some(user_id) = &context.user_id {
+            // Legacy PAT users: resolve team membership from the DB.
+            let membership_repo = SqlxTeamMembershipRepository::new(pool.clone());
             let memberships = membership_repo
                 .list_user_memberships(user_id)
                 .await
@@ -97,7 +103,6 @@ pub async fn list_teams_handler(
                     .map_err(|err| ApiError::from(Error::from(err)))?
             }
         } else {
-            // If no user_id (shouldn't happen for authenticated users), return empty
             Vec::new()
         }
     };
