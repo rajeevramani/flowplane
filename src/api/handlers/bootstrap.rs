@@ -374,11 +374,9 @@ pub async fn bootstrap_initialize_handler(
             org_id: org.id.to_string(),
             team_id: team.id.to_string(),
             next_steps: vec![
-                "Assign role grants in Zitadel for your users".to_string(),
-                format!(
-                    "Role format: {}:<resource>:<action> (e.g., {}:clusters:read)",
-                    team.name, team.name
-                ),
+                "Add users via POST /api/v1/admin/organizations/{id}/members".to_string(),
+                "Permissions are managed in the Flowplane database, not Zitadel role grants"
+                    .to_string(),
             ],
         }),
     ))

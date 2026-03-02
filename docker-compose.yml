@@ -80,6 +80,8 @@ services:
       ZITADEL_EXTERNALDOMAIN: localhost
       ZITADEL_EXTERNALPORT: 8081
       ZITADEL_EXTERNALSECURE: "false"
+      # Disable Login V2 (requires separate app) — use built-in Login V1
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "false"
       # First instance admin user
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: zitadel-admin
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: Password1!
@@ -97,12 +99,6 @@ services:
       - ./zitadel/machinekey:/machinekey
     ports:
       - "8081:8080"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/debug/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
     networks:
       - flowplane-network
     restart: unless-stopped
@@ -114,6 +110,9 @@ services:
       dockerfile: Dockerfile
     image: flowplane:latest
     container_name: flowplane-control-plane
+    env_file:
+      - path: .env.zitadel
+        required: false
     environment:
       # Database configuration (PostgreSQL)
       FLOWPLANE_DATABASE_URL: postgresql://flowplane:flowplane@flowplane-postgres:5432/flowplane
@@ -148,11 +147,16 @@ services:
       FLOWPLANE_ZITADEL_ISSUER: http://localhost:8081
       # JWKS fetched container-to-container (Zitadel listens on 8080 internally)
       FLOWPLANE_ZITADEL_JWKS_URL: http://zitadel:8080/oauth/v2/keys
-      FLOWPLANE_ZITADEL_PROJECT_ID: ${ZITADEL_PROJECT_ID:-}
+      # PROJECT_ID, ADMIN_PAT, and SPA_CLIENT_ID are injected via .env.zitadel (written by setup-zitadel)
+      # SPA auth config — served at /api/v1/auth/config for runtime OIDC initialization
+      FLOWPLANE_APP_URL: http://localhost:8080
 
       # DCR proxy — Zitadel Management API (container-to-container)
-      FLOWPLANE_ZITADEL_ADMIN_PAT: ${ZITADEL_ADMIN_PAT:-}
       FLOWPLANE_ZITADEL_ADMIN_URL: http://zitadel:8080
+
+      # Superadmin seeding (platform admin created on first startup)
+      FLOWPLANE_SUPERADMIN_EMAIL: ${FLOWPLANE_SUPERADMIN_EMAIL:-admin@flowplane.local}
+      FLOWPLANE_SUPERADMIN_INITIAL_PASSWORD: ${FLOWPLANE_SUPERADMIN_INITIAL_PASSWORD:-Flowplane1!}
     ports:
       - "8080:8080"   # HTTP API + UI
       - "50051:50051" # xDS gRPC (ADS + ALS + ExtProc all on this port)
@@ -160,7 +164,7 @@ services:
       postgres:
         condition: service_healthy
       zitadel:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
       interval: 30s

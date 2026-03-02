@@ -20,7 +20,7 @@
 #   make clean           - Remove volumes and orphan containers
 
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
-        build build-backend build-ui build-cli info prune seed \
+        build build-backend build-ui build-cli info prune seed seed-info setup-zitadel \
         vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
         test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps \
         test-agents-up test-agents-down test-agents test-agents-envoy
@@ -81,7 +81,7 @@ help: ## Show this help message
 	@echo "$(CYAN)Flowplane Docker Compose Commands$(RESET)"
 	@echo ""
 	@echo "$(GREEN)Boot Configurations:$(RESET)"
-	@echo "  $(CYAN)make up$(RESET)              - Backend + UI"
+	@echo "  $(CYAN)make up$(RESET)              - Backend + UI + Zitadel (auto-configures on first run)"
 	@echo "  $(CYAN)make up-mtls$(RESET)         - Backend + UI + Vault (mTLS)"
 	@echo "  $(CYAN)make up-tracing$(RESET)      - Backend + UI + Jaeger"
 	@echo "  $(CYAN)make up-full$(RESET)         - Backend + UI + Jaeger + Vault + httpbin"
@@ -119,8 +119,9 @@ help: ## Show this help message
 	@echo "  $(CYAN)make clippy$(RESET)          - Run cargo clippy"
 	@echo "  $(CYAN)make check$(RESET)           - Run fmt + clippy + test"
 	@echo "  $(CYAN)make vault-setup$(RESET)     - Run Vault PKI setup script"
-	@echo "  $(CYAN)make seed$(RESET)            - Seed dev data (org, team, API, users)"
-	@echo "  $(CYAN)make seed-info$(RESET)       - Display seed data credentials"
+	@echo "  $(CYAN)make setup-zitadel$(RESET)  - Configure Zitadel platform infrastructure"
+	@echo "  $(CYAN)make seed$(RESET)            - Seed demo data (org, users, teams)"
+	@echo "  $(CYAN)make seed-info$(RESET)       - Display credentials and configuration"
 	@echo ""
 	@echo "$(GREEN)Agent Tests:$(RESET)"
 	@echo "  $(CYAN)make test-agents-up$(RESET)    - Start isolated agent test env"
@@ -138,7 +139,7 @@ help: ## Show this help message
 # Boot Configurations
 # =============================================================================
 
-up: _ensure-network ## Start backend + UI
+up: _ensure-network ## Start backend + UI (auto-configures Zitadel on first run)
 	@echo "$(CYAN)Starting Flowplane (Backend + UI)...$(RESET)"
 	$(DOCKER_COMPOSE) $(BASE_COMPOSE) $(HTTPBIN_COMPOSE) $(MOCKBACKEND_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
@@ -147,6 +148,7 @@ up: _ensure-network ## Start backend + UI
 	@echo "  UI:         http://localhost:8080/"
 	@echo "  Swagger:    http://localhost:8080/swagger-ui/"
 	@echo "  xDS gRPC:   localhost:50051"
+	@echo "  Zitadel:    http://localhost:8081 (admin: zitadel-admin / Password1!)"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
 endif
@@ -158,6 +160,11 @@ ifdef ENVOY
 	@echo "    Listener: http://localhost:10000"
 	@echo "    Admin:    http://localhost:9901"
 endif
+	@if [ ! -f .env.zitadel ]; then \
+		echo ""; \
+		echo "$(YELLOW)First run detected — configuring Zitadel...$(RESET)"; \
+		./scripts/setup-zitadel.sh; \
+	fi
 
 up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
 	@echo "$(CYAN)Starting Flowplane with Vault (mTLS)...$(RESET)"
@@ -219,25 +226,31 @@ up-full: _ensure-network ## Start backend + UI + Jaeger + Vault (full stack)
 	@echo "  Jaeger UI:  http://localhost:16686"
 	@echo "  httpbin:    http://localhost:8000"
 
-seed: ## Seed dev data: org, org-admin, team, API, tokens
-	@./scripts/seed-data.sh
+seed: ## Seed demo data (org, users, teams with DB permissions)
+	@./scripts/seed-demo.sh
 
-seed-info: ## Display seed data credentials and configuration
+setup-zitadel: ## Configure Zitadel platform infrastructure (project, SPA app, env files)
+	@./scripts/setup-zitadel.sh
+
+seed-info: ## Display credentials and configuration
 	@echo ""
-	@echo "$(CYAN)━━━ Flowplane Seed Info ━━━$(RESET)"
+	@echo "$(CYAN)━━━ Flowplane Auth Info ━━━$(RESET)"
 	@echo ""
-	@echo "  $(GREEN)Credentials:$(RESET)"
-	@echo "    Platform admin:  $(CYAN)admin@flowplane.local$(RESET) / $(CYAN)Admin123!$(RESET)"
-	@echo "    Org admin:       $(CYAN)orgadmin@acme-corp.local$(RESET) / $(CYAN)OrgAdmin123!$(RESET)"
+	@echo "  $(GREEN)Zitadel Console:$(RESET)"
+	@echo "    URL:           $(CYAN)http://localhost:8081$(RESET)"
+	@echo "    Admin login:   $(CYAN)zitadel-admin$(RESET) / $(CYAN)Password1!$(RESET)"
 	@echo ""
-	@echo "  $(GREEN)Resources:$(RESET)"
-	@echo "    Org:             $(CYAN)acme-corp$(RESET)"
-	@echo "    Team:            $(CYAN)engineering$(RESET)"
-	@echo "    Listener port:   $(CYAN)10016$(RESET)"
-	@echo "    API spec:        $(CYAN)httpbin.yaml$(RESET)"
+	@echo "  $(GREEN)Superadmin:$(RESET)"
+	@echo "    Email:         $(CYAN)admin@flowplane.local$(RESET)"
+	@echo "    Note:          Seeded automatically on first startup"
 	@echo ""
-	@echo "  $(YELLOW)Note: API tokens are generated during 'make seed' and shown only once.$(RESET)"
-	@echo "  $(YELLOW)To view/rotate tokens, login to the UI or use the API.$(RESET)"
+	@echo "  $(GREEN)Demo User (after 'make seed'):$(RESET)"
+	@echo "    URL:           $(CYAN)http://localhost:8080$(RESET)"
+	@echo "    Login:         $(CYAN)demo@acme-corp.com$(RESET) / $(CYAN)Flowplane1!$(RESET)"
+	@echo "    Org:           $(CYAN)acme-corp$(RESET)"
+	@echo "    Team:          $(CYAN)engineering$(RESET)"
+	@echo ""
+	@echo "  $(YELLOW)Machine user credentials are shown during 'make seed'.$(RESET)"
 	@echo ""
 
 # =============================================================================
@@ -269,6 +282,8 @@ clean: down ## Remove volumes and orphan containers
 	-$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v --remove-orphans 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml down -v --remove-orphans 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-secrets-tracing.yml down -v --remove-orphans 2>/dev/null || true
+	@echo "$(YELLOW)Removing stale Zitadel credentials...$(RESET)"
+	@rm -f zitadel/machinekey/admin-pat.txt zitadel/machinekey/admin-sa.json .env.zitadel ui/.env
 	@echo "$(GREEN)Cleanup complete.$(RESET)"
 
 # =============================================================================

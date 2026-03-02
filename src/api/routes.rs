@@ -207,26 +207,29 @@ pub fn build_router_with_registry(
         return docs::docs_router();
     }
 
-    let auth_layer = {
-        let zitadel_config = match crate::auth::zitadel::ZitadelConfig::from_env() {
-            Some(config) => config,
-            None => {
-                panic!("FLOWPLANE_ZITADEL_ISSUER is required — Zitadel is the sole auth provider")
-            }
-        };
-        tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
-        let pool = state
-            .pool
-            .clone()
-            .expect("DB pool required for Zitadel auth middleware — start with --database");
-        let permission_cache = std::sync::Arc::new(crate::auth::cache::PermissionCache::from_env());
-        let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
-            jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
-            config: std::sync::Arc::new(zitadel_config),
-            pool,
-            permission_cache,
-        };
-        middleware::from_fn_with_state(zitadel_state, authenticate)
+    let auth_layer = match crate::auth::zitadel::ZitadelConfig::from_env() {
+        Some(zitadel_config) => {
+            tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
+            let pool = state
+                .pool
+                .clone()
+                .expect("DB pool required for Zitadel auth middleware — start with --database");
+            let permission_cache =
+                std::sync::Arc::new(crate::auth::cache::PermissionCache::from_env());
+            let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
+                jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
+                config: std::sync::Arc::new(zitadel_config),
+                pool,
+                permission_cache,
+            };
+            tower::util::Either::Left(middleware::from_fn_with_state(zitadel_state, authenticate))
+        }
+        None => {
+            tracing::warn!(
+                "Zitadel not configured — starting in degraded mode (auth endpoints return 503)"
+            );
+            tower::util::Either::Right(middleware::from_fn(reject_all_auth))
+        }
     };
 
     let dynamic_scope_layer = middleware::from_fn(ensure_dynamic_scopes);
@@ -524,6 +527,21 @@ pub fn build_router_with_registry(
     } else {
         api_router
     }
+}
+
+/// Reject-all auth middleware for degraded mode (Zitadel not configured).
+/// Returns 503 Service Unavailable for all authenticated endpoints.
+async fn reject_all_auth(
+    _req: axum::extract::Request,
+    _next: middleware::Next,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({"error": "Auth not configured — run setup-zitadel"})),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
