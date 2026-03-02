@@ -3,6 +3,7 @@
 pub mod admin_summary;
 pub mod aggregated_schemas;
 pub mod audit_log;
+pub mod auth_session;
 pub mod bootstrap;
 pub mod clusters;
 pub mod custom_wasm_filters;
@@ -39,6 +40,7 @@ pub use aggregated_schemas::{
     list_aggregated_schemas_handler,
 };
 pub use audit_log::list_audit_logs;
+pub use auth_session::{auth_session_handler, AuthSessionResponse};
 pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
     create_cluster_handler, delete_cluster_handler, get_cluster_handler, list_clusters_handler,
@@ -85,10 +87,10 @@ pub use mcp_tools::{
 pub use openapi_import::{delete_import_handler, get_import_handler, list_imports_handler};
 pub use organizations::{
     add_team_member, admin_add_org_member, admin_create_organization, admin_delete_organization,
-    admin_get_organization, admin_list_org_members, admin_list_organizations,
-    admin_remove_org_member, admin_update_org_member_role, admin_update_organization,
-    create_org_team, delete_org_team, get_current_org, list_org_teams, list_team_members,
-    remove_team_member, update_org_team, update_team_member_scopes,
+    admin_get_organization, admin_invite_org_member, admin_list_org_members,
+    admin_list_organizations, admin_remove_org_member, admin_update_org_member_role,
+    admin_update_organization, create_org_team, delete_org_team, get_current_org, list_org_teams,
+    list_team_members, remove_team_member, update_org_team, update_team_member_scopes,
 };
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
@@ -155,9 +157,9 @@ pub use learning_sessions::{
 };
 pub use mcp_tools::{ListMcpToolsQuery, McpToolResponse, UpdateMcpToolBody};
 pub use organizations::{
-    AddOrgMemberRequest, AddTeamMemberRequest, CurrentOrgResponse, ListOrgMembersResponse,
-    ListOrgTeamsResponse, ListTeamMembersResponse, TeamMemberResponse, UpdateOrgMemberRoleRequest,
-    UpdateTeamMemberScopesRequest,
+    AddOrgMemberRequest, AddTeamMemberRequest, CurrentOrgResponse, InviteOrgMemberRequest,
+    InviteOrgMemberResponse, ListOrgMembersResponse, ListOrgTeamsResponse, ListTeamMembersResponse,
+    TeamMemberResponse, UpdateOrgMemberRoleRequest, UpdateTeamMemberScopesRequest,
 };
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,

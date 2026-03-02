@@ -9,7 +9,7 @@
 #   - UI:       http://localhost:8080/
 #   - Swagger:  http://localhost:8080/swagger-ui/
 #   - xDS:      localhost:50051
-#   - Zitadel:  http://localhost:8081 (admin: zitadel-admin / Password1!)
+#   - Zitadel:  http://localhost:8081 (admin: zitadel-admin@zitadel.localhost / Password1!)
 #
 # Zitadel:
 #   On first run, Zitadel auto-creates an admin user and a machine service

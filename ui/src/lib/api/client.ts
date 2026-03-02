@@ -125,11 +125,9 @@ import type {
 	CurrentOrgResponse,
 	ListOrgTeamsResponse,
 	OrgRole,
-	// Invitation types
-	InviteTokenInfo,
-	PaginatedInvitations,
-	CreateInvitationRequest,
-	CreateInvitationResponse,
+	// Invite types
+	InviteOrgMemberRequest,
+	InviteOrgMemberResponse,
 	PaginatedResponse,
 	// Admin Summary types
 	AdminResourceSummary
@@ -213,81 +211,35 @@ class ApiClient {
 			throw new Error('Not authenticated');
 		}
 
-		const profile = user.profile;
-
-		// Extract name from OIDC standard claims
-		const name = (profile.name as string) ?? (profile.preferred_username as string) ?? '';
-		const email = (profile.email as string) ?? '';
-
-		// Extract Zitadel role claims.
-		// Claim key: urn:zitadel:iam:org:project:{projectId}:roles
-		// Claim value: { [roleKey]: { [orgId]: { primaryDomain: string } } }
-		// orgId is the FIRST KEY of each role value object (not a named property).
-		const rawRoleEntry = Object.entries(profile).find(
-			([key]) => key.startsWith('urn:zitadel:iam:org:project:') && key.endsWith(':roles')
-		);
-
-		const roleKeys: string[] = [];
-		let orgId: string | undefined;
-
-		if (rawRoleEntry) {
-			const roleClaimValue = rawRoleEntry[1];
-			if (
-				roleClaimValue !== null &&
-				typeof roleClaimValue === 'object' &&
-				!Array.isArray(roleClaimValue)
-			) {
-				const roleMap = roleClaimValue as Record<string, unknown>;
-				for (const [roleKey, roleValue] of Object.entries(roleMap)) {
-					roleKeys.push(roleKey);
-					// The first key of the role value object is the org ID
-					if (
-						orgId === undefined &&
-						roleValue !== null &&
-						typeof roleValue === 'object' &&
-						!Array.isArray(roleValue)
-					) {
-						const firstKey = Object.keys(roleValue as Record<string, unknown>)[0];
-						if (firstKey) {
-							orgId = firstKey;
-						}
-					}
-				}
-			}
-		}
-
-		const isPlatformAdmin = roleKeys.includes('admin:all');
-
-		// Extract unique team names from role keys.
-		// Patterns: "team:resource:action" | "team:admin" | "admin:all"
-		// Take the segment before the first ":" and skip the platform-admin marker.
-		const teamSet = new Set<string>();
-		for (const roleKey of roleKeys) {
-			if (roleKey === 'admin:all') continue;
-			const firstColon = roleKey.indexOf(':');
-			if (firstColon > 0) {
-				teamSet.add(roleKey.slice(0, firstColon));
-			}
-		}
-		const teams = Array.from(teamSet);
-
-		// Org name may be present as a Zitadel resource-owner claim.
-		const rawOrgName = profile['urn:zitadel:iam:user:resourceowner:name'];
-		const orgName = typeof rawOrgName === 'string' ? rawOrgName : undefined;
+		// Fetch DB-sourced permissions from backend (Auth v3: JWT is identity-only,
+		// all permissions come from Flowplane DB, not Zitadel role claims).
+		const backendSession = await this.get<{
+			userId: string;
+			email: string;
+			name: string;
+			isAdmin: boolean;
+			isPlatformAdmin: boolean;
+			scopes: string[];
+			teams: string[];
+			orgId?: string;
+			orgName?: string;
+			orgRole?: string;
+		}>('/api/v1/auth/session');
 
 		return {
 			sessionId: user.session_state ?? '',
-			userId: profile.sub,
-			name,
-			email,
-			isAdmin: isPlatformAdmin,
-			isPlatformAdmin,
-			teams,
-			scopes: roleKeys,
+			userId: backendSession.userId,
+			name: backendSession.name || (user.profile.name as string) || '',
+			email: backendSession.email || (user.profile.email as string) || '',
+			isAdmin: backendSession.isPlatformAdmin,
+			isPlatformAdmin: backendSession.isPlatformAdmin,
+			teams: backendSession.teams,
+			scopes: backendSession.scopes,
 			expiresAt: user.expires_at ? new Date(user.expires_at * 1000).toISOString() : null,
 			version: '',
-			orgId,
-			orgName,
+			orgId: backendSession.orgId,
+			orgName: backendSession.orgName,
+			orgRole: backendSession.orgRole,
 		};
 	}
 
@@ -1648,62 +1600,16 @@ class ApiClient {
 	}
 
 	// ============================================================================
-	// Invitation API (Invite-Only Registration)
+	// Invite API (Instant Provisioning via Admin)
 	// ============================================================================
 
-	async validateInviteToken(token: string): Promise<InviteTokenInfo> {
-		const params = new URLSearchParams({ token });
-		const response = await fetch(
-			`${API_BASE}/api/v1/invitations/validate?${params.toString()}`,
-			{
-				method: 'GET',
-				headers: { 'Content-Type': 'application/json' },
-				credentials: 'include'
-			}
-		);
-
-		if (!response.ok) {
-			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-			try {
-				const errorData = await response.json();
-				errorMessage = errorData.message || errorMessage;
-			} catch {
-				// Use status text
-			}
-			throw new Error(errorMessage);
-		}
-
-		return response.json();
-	}
-
-	async listOrgInvitations(
-		orgName: string,
-		limit?: number,
-		offset?: number
-	): Promise<PaginatedInvitations> {
-		const params = new URLSearchParams();
-		if (limit !== undefined) params.append('limit', limit.toString());
-		if (offset !== undefined) params.append('offset', offset.toString());
-
-		const query = params.toString();
-		return this.get<PaginatedInvitations>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations${query ? `?${query}` : ''}`
-		);
-	}
-
-	async createOrgInvitation(
-		orgName: string,
-		req: CreateInvitationRequest
-	): Promise<CreateInvitationResponse> {
-		return this.post<CreateInvitationResponse>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations`,
+	async inviteOrgMember(
+		orgId: string,
+		req: InviteOrgMemberRequest
+	): Promise<InviteOrgMemberResponse> {
+		return this.post<InviteOrgMemberResponse>(
+			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/invite`,
 			req
-		);
-	}
-
-	async revokeOrgInvitation(orgName: string, invId: string): Promise<void> {
-		return this.delete<void>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations/${encodeURIComponent(invId)}`
 		);
 	}
 }

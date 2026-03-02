@@ -148,7 +148,7 @@ up: _ensure-network ## Start backend + UI (auto-configures Zitadel on first run)
 	@echo "  UI:         http://localhost:8080/"
 	@echo "  Swagger:    http://localhost:8080/swagger-ui/"
 	@echo "  xDS gRPC:   localhost:50051"
-	@echo "  Zitadel:    http://localhost:8081 (admin: zitadel-admin / Password1!)"
+	@echo "  Zitadel:    http://localhost:8081 (admin: zitadel-admin@zitadel.localhost / Password1!)"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
 endif
@@ -238,7 +238,7 @@ seed-info: ## Display credentials and configuration
 	@echo ""
 	@echo "  $(GREEN)Zitadel Console:$(RESET)"
 	@echo "    URL:           $(CYAN)http://localhost:8081$(RESET)"
-	@echo "    Admin login:   $(CYAN)zitadel-admin$(RESET) / $(CYAN)Password1!$(RESET)"
+	@echo "    Admin login:   $(CYAN)zitadel-admin@zitadel.localhost$(RESET) / $(CYAN)Password1!$(RESET)"
 	@echo ""
 	@echo "  $(GREEN)Superadmin:$(RESET)"
 	@echo "    Email:         $(CYAN)admin@flowplane.local$(RESET)"

@@ -121,6 +121,40 @@ read_pat() {
   done
 }
 
+# ── Grant IAM_LOGIN_CLIENT role ──────────────────────────────────
+# Required for the seed script to programmatically obtain OIDC tokens
+# for human users via the Session API + OIDC finalize flow.
+grant_login_client_role() {
+  log "Granting IAM_LOGIN_CLIENT role to admin service account..."
+
+  # Get the PAT owner's user ID
+  local user_id
+  user_id=$(curl -s -H "Authorization: Bearer ${ZITADEL_PAT}" \
+    "${ZITADEL_HOST}/oidc/v1/userinfo" | jq -r '.sub')
+  if [ -z "$user_id" ] || [ "$user_id" = "null" ]; then
+    fail "Could not determine PAT owner user ID"
+    exit 1
+  fi
+
+  # Update IAM membership to include IAM_LOGIN_CLIENT alongside IAM_OWNER
+  local raw http_code
+  raw=$(curl -s -w '\n%{http_code}' -X PUT \
+    -H "Authorization: Bearer ${ZITADEL_PAT}" \
+    -H "Content-Type: application/json" \
+    -d '{"roles":["IAM_OWNER","IAM_LOGIN_CLIENT"]}' \
+    "${ZITADEL_HOST}/admin/v1/members/${user_id}")
+  http_code=$(echo "$raw" | tail -1)
+
+  if [ "$http_code" = "200" ]; then
+    ok "IAM_LOGIN_CLIENT role granted (userId: ${user_id})"
+  else
+    local body
+    body=$(echo "$raw" | sed '$d')
+    fail "Failed to grant IAM_LOGIN_CLIENT (HTTP ${http_code}): ${body}"
+    exit 1
+  fi
+}
+
 # ── Create project ────────────────────────────────────────────────
 create_project() {
   log "Creating project '${PROJECT_NAME}'..."
@@ -235,6 +269,7 @@ main() {
   wait_for_zitadel
   read_pat
 
+  grant_login_client_role
   create_project
   create_spa_app
 
@@ -246,7 +281,11 @@ main() {
   echo ""
   echo -e "  ${BOLD}Zitadel Console:${RESET}"
   echo -e "    URL:         ${CYAN}${ZITADEL_HOST}${RESET}"
-  echo -e "    Admin login: ${CYAN}zitadel-admin${RESET} / ${CYAN}Password1!${RESET}"
+  echo -e "    Admin login: ${CYAN}zitadel-admin@zitadel.localhost${RESET} / ${CYAN}Password1!${RESET}"
+  echo ""
+  echo -e "  ${BOLD}Flowplane Platform Admin:${RESET}"
+  echo -e "    Email:       ${CYAN}${FLOWPLANE_SUPERADMIN_EMAIL:-admin@flowplane.local}${RESET} / ${CYAN}${FLOWPLANE_SUPERADMIN_INITIAL_PASSWORD:-Flowplane1!}${RESET}"
+  echo -e "    Note:        Seeded automatically on first startup"
   echo ""
   echo -e "  ${BOLD}Project:${RESET}"
   echo -e "    Project ID:  ${CYAN}${PROJECT_ID}${RESET}"

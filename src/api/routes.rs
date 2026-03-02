@@ -35,18 +35,18 @@ use super::{
     handlers::{
         add_team_member, admin_add_org_member, admin_create_organization, admin_create_team,
         admin_delete_organization, admin_delete_team, admin_get_organization, admin_get_team,
-        admin_list_org_members, admin_list_organizations, admin_list_teams,
-        admin_remove_org_member, admin_resource_summary_handler, admin_update_org_member_role,
-        admin_update_organization, admin_update_team, apply_learned_schema_handler,
-        attach_filter_handler, attach_filter_to_listener_handler,
+        admin_invite_org_member, admin_list_org_members, admin_list_organizations,
+        admin_list_teams, admin_remove_org_member, admin_resource_summary_handler,
+        admin_update_org_member_role, admin_update_organization, admin_update_team,
+        apply_learned_schema_handler, attach_filter_handler, attach_filter_to_listener_handler,
         attach_filter_to_route_rule_handler, attach_filter_to_virtual_host_handler,
-        bootstrap_initialize_handler, bootstrap_status_handler, bulk_disable_mcp_handler,
-        bulk_enable_mcp_handler, check_learned_schema_handler, compare_aggregated_schemas_handler,
-        configure_filter_handler, create_cluster_handler, create_filter_handler,
-        create_learning_session_handler, create_listener_handler, create_org_team,
-        create_route_config_handler, delete_cluster_handler, delete_filter_handler,
-        delete_learning_session_handler, delete_listener_handler, delete_org_team,
-        delete_route_config_handler, detach_filter_from_listener_handler,
+        auth_session_handler, bootstrap_initialize_handler, bootstrap_status_handler,
+        bulk_disable_mcp_handler, bulk_enable_mcp_handler, check_learned_schema_handler,
+        compare_aggregated_schemas_handler, configure_filter_handler, create_cluster_handler,
+        create_filter_handler, create_learning_session_handler, create_listener_handler,
+        create_org_team, create_route_config_handler, delete_cluster_handler,
+        delete_filter_handler, delete_learning_session_handler, delete_listener_handler,
+        delete_org_team, delete_route_config_handler, detach_filter_from_listener_handler,
         detach_filter_from_route_rule_handler, detach_filter_from_virtual_host_handler,
         detach_filter_handler, disable_mcp_handler, enable_mcp_handler,
         export_aggregated_schema_handler, export_multiple_schemas_handler,
@@ -404,6 +404,8 @@ pub fn build_router_with_registry(
         .route("/api/v1/aggregated-schemas/export", post(export_multiple_schemas_handler))
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
+        // Auth session endpoint (any authenticated user — returns DB-sourced permissions)
+        .route("/api/v1/auth/session", get(auth_session_handler))
         // Admin team management endpoints (admin only)
         .route("/api/v1/admin/teams", get(admin_list_teams))
         .route("/api/v1/admin/teams", post(admin_create_team))
@@ -430,6 +432,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/admin/organizations/{id}/members", post(admin_add_org_member))
         .route("/api/v1/admin/organizations/{id}/members/{user_id}", put(admin_update_org_member_role))
         .route("/api/v1/admin/organizations/{id}/members/{user_id}", delete(admin_remove_org_member))
+        .route("/api/v1/admin/organizations/{id}/invite", post(admin_invite_org_member))
         // Admin resource summary (platform admin dashboard)
         .route("/api/v1/admin/resources/summary", get(admin_resource_summary_handler))
         // Audit log endpoints (admin only)
