@@ -2518,4 +2518,152 @@ mod tests {
         };
         assert!(req.validate().is_ok());
     }
+
+    // ===== validate_agent_name tests =====
+
+    #[test]
+    fn validate_agent_name_accepts_valid_name() {
+        assert!(validate_agent_name("my-agent").is_ok());
+        assert!(validate_agent_name("agent123").is_ok());
+        assert!(validate_agent_name("abc").is_ok()); // minimum length
+        assert!(validate_agent_name("a-b-c-1-2-3").is_ok());
+    }
+
+    #[test]
+    fn validate_agent_name_rejects_too_short() {
+        assert!(validate_agent_name("ab").is_err());
+        assert!(validate_agent_name("a").is_err());
+        assert!(validate_agent_name("").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_rejects_too_long() {
+        let long = "a".repeat(64);
+        assert!(validate_agent_name(&long).is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_rejects_uppercase() {
+        assert!(validate_agent_name("MyAgent").is_err());
+        assert!(validate_agent_name("AGENT").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_rejects_spaces() {
+        assert!(validate_agent_name("my agent").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_rejects_leading_hyphen() {
+        assert!(validate_agent_name("-agent").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_rejects_trailing_hyphen() {
+        assert!(validate_agent_name("agent-").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_accepts_max_length() {
+        let name = "a".repeat(63);
+        assert!(validate_agent_name(&name).is_ok());
+    }
+
+    // ===== validate_scope tests =====
+
+    #[test]
+    fn validate_scope_accepts_valid_resource_action() {
+        assert!(validate_scope("clusters:read").is_ok());
+        assert!(validate_scope("clusters:write").is_ok());
+        assert!(validate_scope("routes:read").is_ok());
+        assert!(validate_scope("routes:write").is_ok());
+        assert!(validate_scope("listeners:read").is_ok());
+        assert!(validate_scope("listeners:write").is_ok());
+        assert!(validate_scope("filters:read").is_ok());
+        assert!(validate_scope("filters:write").is_ok());
+        assert!(validate_scope("learning:read").is_ok());
+        assert!(validate_scope("learning:write").is_ok());
+        assert!(validate_scope("secrets:read").is_ok());
+        assert!(validate_scope("secrets:write").is_ok());
+        assert!(validate_scope("stats:read").is_ok());
+    }
+
+    #[test]
+    fn validate_scope_rejects_invalid_resource() {
+        assert!(validate_scope("users:read").is_err());
+        assert!(validate_scope("admin:all").is_err());
+        assert!(validate_scope("invalid:read").is_err());
+    }
+
+    #[test]
+    fn validate_scope_rejects_invalid_action() {
+        assert!(validate_scope("clusters:delete").is_err());
+        assert!(validate_scope("clusters:admin").is_err());
+        assert!(validate_scope("clusters:*").is_err());
+    }
+
+    #[test]
+    fn validate_scope_rejects_malformed() {
+        assert!(validate_scope("clusters").is_err());
+        assert!(validate_scope("clusters:read:extra").is_err());
+        assert!(validate_scope(":read").is_err());
+        assert!(validate_scope("").is_err());
+    }
+
+    // ===== Agent authorization tests =====
+
+    #[test]
+    fn create_agent_requires_org_admin_not_platform_admin() {
+        // Platform admin (admin:all) must NOT pass org admin check for agent provisioning
+        let ctx = admin_context();
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            "Platform admin must not be allowed to provision agents"
+        );
+    }
+
+    #[test]
+    fn create_agent_allows_matching_org_admin() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_ok(),
+            "Org admin should be able to provision agents in their org"
+        );
+    }
+
+    #[test]
+    fn create_agent_rejects_wrong_org_admin() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "globex-corp").is_err(),
+            "Org admin of different org must not provision agents"
+        );
+    }
+
+    #[test]
+    fn create_agent_rejects_org_member() {
+        let ctx = org_member_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            "Org member must not be able to provision agents"
+        );
+    }
+
+    #[test]
+    fn list_agents_requires_org_admin_not_platform_admin() {
+        let ctx = admin_context();
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            "Platform admin must not be allowed to list agents"
+        );
+    }
+
+    #[test]
+    fn delete_agent_requires_org_admin_not_platform_admin() {
+        let ctx = admin_context();
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            "Platform admin must not be allowed to delete agents"
+        );
+    }
 }
