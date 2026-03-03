@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Seed demo data for local Flowplane development
 #
-# Creates: demo org (acme-corp), demo user, machine user, DB permissions
+# Creates: demo org (acme-corp), demo user, machine user (via agent API)
 # Prerequisites: curl, jq, running Zitadel + Flowplane (run 'make up' first)
 # Usage: ./scripts/seed-demo.sh
 set -euo pipefail
@@ -28,7 +28,7 @@ ORG_NAME="acme-corp"
 ORG_DISPLAY="Acme Corp"
 TEAM_NAME="engineering"
 
-# Demo human user
+# Demo human user (org admin)
 HUMAN_USERNAME="demo@acme-corp.com"
 HUMAN_FIRST="Demo"
 HUMAN_LAST="User"
@@ -38,9 +38,10 @@ HUMAN_PASSWORD="Flowplane1!"
 SUPERADMIN_EMAIL="${FLOWPLANE_SUPERADMIN_EMAIL:-admin@flowplane.local}"
 ADMIN_TOKEN=""
 
-# Machine user
-MACHINE_USERNAME="flowplane-agent"
-MACHINE_NAME="Flowplane Agent"
+# Machine user / agent
+AGENT_NAME="flowplane-agent"
+AGENT_CLIENT_ID=""
+AGENT_CLIENT_SECRET=""
 
 # Colors
 CYAN='\033[36m'
@@ -95,12 +96,6 @@ else
   fail "Neither docker nor podman found"
   exit 1
 fi
-
-# ── psql helper ─────────────────────────────────────────────────
-# Runs a SQL command against the flowplane-postgres container.
-psql_exec() {
-  $CONTAINER_RT exec flowplane-postgres psql -U flowplane -d flowplane -tAc "$1"
-}
 
 # ── Wait for Zitadel ─────────────────────────────────────────────
 wait_for_zitadel() {
@@ -230,53 +225,6 @@ read_pat() {
   done
 }
 
-# ── Create machine user ──────────────────────────────────────────
-MACHINE_USER_ID=""
-
-create_machine_user() {
-  log "Creating machine user '${MACHINE_USERNAME}'..."
-  api POST /management/v1/users/machine "{
-    \"userName\": \"${MACHINE_USERNAME}\",
-    \"name\": \"${MACHINE_NAME}\",
-    \"description\": \"Flowplane agent service account\",
-    \"accessTokenType\": \"ACCESS_TOKEN_TYPE_JWT\"
-  }"
-
-  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-    MACHINE_USER_ID=$(echo "$BODY" | jq -r '.userId')
-    ok "Machine user created (id: ${MACHINE_USER_ID})"
-  elif [ "$HTTP_CODE" = "409" ] || echo "$BODY" | grep -qi "already exists"; then
-    api POST /v2/users '{"queries":[{"userNameQuery":{"userName":"'"${MACHINE_USERNAME}"'"}}]}'
-    MACHINE_USER_ID=$(echo "$BODY" | jq -r '.result[0].userId // .result[0].id' 2>/dev/null | head -1)
-    if [ -z "$MACHINE_USER_ID" ] || [ "$MACHINE_USER_ID" = "null" ]; then
-      fail "Machine user exists but could not find its ID"
-      exit 1
-    fi
-    skip "Machine user '${MACHINE_USERNAME}' (id: ${MACHINE_USER_ID})"
-  else
-    fail "Create machine user failed (HTTP ${HTTP_CODE}): ${BODY}"
-    exit 1
-  fi
-}
-
-# ── Generate machine secret ──────────────────────────────────────
-MACHINE_CLIENT_ID=""
-MACHINE_CLIENT_SECRET=""
-
-generate_machine_secret() {
-  log "Generating client credentials for machine user..."
-  api PUT "/management/v1/users/${MACHINE_USER_ID}/secret" '{}'
-
-  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-    MACHINE_CLIENT_ID=$(echo "$BODY" | jq -r '.clientId')
-    MACHINE_CLIENT_SECRET=$(echo "$BODY" | jq -r '.clientSecret')
-    ok "Client credentials generated (clientId: ${MACHINE_CLIENT_ID})"
-  else
-    fail "Generate machine secret failed (HTTP ${HTTP_CODE}): ${BODY}"
-    exit 1
-  fi
-}
-
 # ── Bootstrap demo org ───────────────────────────────────────────
 bootstrap_demo_org() {
   log "Bootstrapping org '${ORG_NAME}' with team '${TEAM_NAME}'..."
@@ -299,54 +247,37 @@ bootstrap_demo_org() {
   fi
 }
 
-# ── Seed machine user permissions ────────────────────────────────
-# TODO: Replace with POST /api/v1/orgs/{org}/agents once Phase C lands
-seed_machine_permissions() {
-  log "Seeding DB permissions for machine user '${MACHINE_USERNAME}'..."
+# ── Create agent via Flowplane API ───────────────────────────────
+# Requires org admin Bearer token in ADMIN_TOKEN.
+create_agent() {
+  local org_name="$1" agent_name="$2" description="$3" teams_json="$4" scopes_json="$5"
 
-  # Machine user sub = the Zitadel userId
-  local sub="${MACHINE_USER_ID}"
+  log "Provisioning agent '${agent_name}' in org '${org_name}'..."
+  local raw http_code body
+  raw=$(curl -s -w '\n%{http_code}' \
+    -X POST \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n \
+      --arg name "$agent_name" \
+      --arg desc "$description" \
+      --argjson teams "$teams_json" \
+      --argjson scopes "$scopes_json" \
+      '{name: $name, description: $desc, teams: $teams, scopes: $scopes}')" \
+    "${FLOWPLANE_URL}/api/v1/orgs/${org_name}/agents")
+  http_code=$(echo "$raw" | tail -1)
+  body=$(echo "$raw" | sed '$d')
 
-  # Upsert user row
-  psql_exec "INSERT INTO users (id, email, password_hash, name, status, is_admin, zitadel_sub)
-    VALUES (gen_random_uuid()::TEXT, 'flowplane-agent@machine.local', '', '${MACHINE_NAME}', 'active', false, '${sub}')
-    ON CONFLICT (zitadel_sub) DO NOTHING;"
-  ok "User row upserted"
-
-  # Get org_id
-  local org_id
-  org_id=$(psql_exec "SELECT id FROM organizations WHERE name = '${ORG_NAME}';")
-  if [ -z "$org_id" ]; then
-    fail "Organization '${ORG_NAME}' not found in DB"
+  if [ "$http_code" = "201" ]; then
+    ok "Agent '${agent_name}' created in org '${org_name}'"
+    AGENT_CLIENT_ID=$(echo "$body" | jq -r '.clientId // empty')
+    AGENT_CLIENT_SECRET=$(echo "$body" | jq -r '.clientSecret // empty')
+  elif [ "$http_code" = "200" ]; then
+    skip "Agent '${agent_name}' already exists in '${org_name}'"
+  else
+    fail "Agent creation failed (HTTP ${http_code}): ${body}"
     exit 1
   fi
-
-  # Get user_id
-  local user_id
-  user_id=$(psql_exec "SELECT id FROM users WHERE zitadel_sub = '${sub}';")
-
-  # Get team_id (FK requires UUID, not name)
-  local team_id
-  team_id=$(psql_exec "SELECT id FROM teams WHERE name = '${TEAM_NAME}' AND org_id = '${org_id}';")
-  if [ -z "$team_id" ]; then
-    fail "Team '${TEAM_NAME}' not found in org '${ORG_NAME}'"
-    exit 1
-  fi
-
-  # Org membership (admin)
-  psql_exec "INSERT INTO organization_memberships (id, user_id, org_id, role)
-    VALUES (gen_random_uuid()::TEXT, '${user_id}', '${org_id}', 'admin')
-    ON CONFLICT (user_id, org_id) DO NOTHING;"
-  ok "Org membership created (admin)"
-
-  # Team membership with full scopes
-  local scopes='["clusters:read","clusters:write","routes:read","routes:write","listeners:read","listeners:write","filters:read","filters:write","learning:read","learning:write","secrets:read","secrets:write"]'
-  psql_exec "INSERT INTO user_team_memberships (id, user_id, team, scopes)
-    VALUES (gen_random_uuid()::TEXT, '${user_id}', '${team_id}', '${scopes}')
-    ON CONFLICT (user_id, team) DO NOTHING;"
-  ok "Team membership created (${TEAM_NAME})"
-
-  # TODO: Replace with POST /api/v1/orgs/{org}/agents once Phase C lands
 }
 
 # ── Main ───────────────────────────────────────────────────────
@@ -358,10 +289,6 @@ main() {
   wait_for_zitadel
   wait_for_flowplane
   read_pat
-
-  # Machine user is created in Zitadel directly (no invite API yet)
-  create_machine_user
-  generate_machine_secret
 
   # Wait for superadmin to be seeded (async on first startup)
   wait_for_superadmin
@@ -403,8 +330,23 @@ main() {
     fail "Could not find demo user in Zitadel to set password"
   fi
 
-  # Machine user DB permissions still via psql_exec (until Phase C)
-  seed_machine_permissions
+  # Authenticate as org admin to provision agent
+  log "Obtaining OIDC token for org admin '${HUMAN_USERNAME}'..."
+  local org_admin_token
+  org_admin_token=$(get_oidc_token "$HUMAN_USERNAME" "$HUMAN_PASSWORD")
+  if [ -z "$org_admin_token" ]; then
+    fail "Failed to obtain OIDC token for org admin"
+    exit 1
+  fi
+  ok "Org admin token obtained"
+
+  # Provision agent via the Flowplane API (org admin required)
+  ADMIN_TOKEN="$org_admin_token" create_agent \
+    "${ORG_NAME}" \
+    "${AGENT_NAME}" \
+    "Flowplane agent service account" \
+    '["'"${TEAM_NAME}"'"]' \
+    '["clusters:read","clusters:write","routes:read","routes:write","listeners:read","listeners:write","filters:read","filters:write","learning:read","learning:write","secrets:read","secrets:write"]'
 
   echo ""
   echo -e "${GREEN}━━━ Seed complete ━━━${RESET}"
@@ -415,11 +357,13 @@ main() {
   echo -e "    Org:       ${CYAN}${ORG_NAME}${RESET}"
   echo -e "    Team:      ${CYAN}${TEAM_NAME}${RESET}"
   echo ""
-  echo -e "  ${BOLD}Machine User:${RESET}"
-  echo -e "    Client ID:     ${CYAN}${MACHINE_CLIENT_ID}${RESET}"
-  echo -e "    Client Secret: ${CYAN}${MACHINE_CLIENT_SECRET}${RESET}"
-  echo -e "    Token URL:     ${CYAN}${ZITADEL_HOST}/oauth/v2/token${RESET}"
-  echo ""
+  if [ -n "${AGENT_CLIENT_ID}" ]; then
+    echo -e "  ${BOLD}Agent (${AGENT_NAME}):${RESET}"
+    echo -e "    Client ID:     ${CYAN}${AGENT_CLIENT_ID}${RESET}"
+    echo -e "    Client Secret: ${CYAN}${AGENT_CLIENT_SECRET}${RESET}"
+    echo -e "    Token URL:     ${CYAN}${ZITADEL_HOST}/oauth/v2/token${RESET}"
+    echo ""
+  fi
   echo -e "  ${BOLD}Superadmin:${RESET}"
   echo -e "    Login:     ${CYAN}admin@flowplane.local${RESET} (seeded automatically on startup)"
   echo ""
