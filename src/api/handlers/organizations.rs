@@ -1591,6 +1591,429 @@ pub async fn remove_team_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ===== Agent Provisioning =====
+
+/// Request to create an agent (machine user) in an organization.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAgentRequest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub teams: Vec<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+/// Response from creating or re-provisioning an agent.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAgentResponse {
+    pub agent_id: String,
+    pub name: String,
+    pub username: String,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub token_endpoint: String,
+    pub org_id: String,
+    pub teams: Vec<String>,
+    pub scopes: Vec<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+fn validate_agent_name(name: &str) -> Result<(), ApiError> {
+    if name.len() < 3 || name.len() > 63 {
+        return Err(ApiError::BadRequest(
+            "Agent name must be between 3 and 63 characters".to_string(),
+        ));
+    }
+    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        return Err(ApiError::BadRequest(
+            "Agent name must contain only lowercase letters, digits, and hyphens".to_string(),
+        ));
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        return Err(ApiError::BadRequest(
+            "Agent name must start and end with a letter or digit".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_scope(scope: &str) -> Result<(), ApiError> {
+    const VALID_RESOURCES: &[&str] =
+        &["clusters", "routes", "listeners", "filters", "learning", "secrets", "stats"];
+    const VALID_ACTIONS: &[&str] = &["read", "write"];
+    let parts: Vec<&str> = scope.split(':').collect();
+    if parts.len() != 2
+        || !VALID_RESOURCES.contains(&parts[0])
+        || !VALID_ACTIONS.contains(&parts[1])
+    {
+        return Err(ApiError::BadRequest(format!(
+            "Invalid scope '{}': must be resource:action (e.g. clusters:read)",
+            scope
+        )));
+    }
+    Ok(())
+}
+
+fn get_token_endpoint() -> String {
+    std::env::var("FLOWPLANE_ZITADEL_ISSUER")
+        .map(|issuer| format!("{}/oauth/v2/token", issuer.trim_end_matches('/')))
+        .unwrap_or_else(|_| "/oauth/v2/token".to_string())
+}
+
+/// Core machine user provisioning.
+///
+/// Creates a Zitadel machine user, generates client credentials, and creates
+/// local DB rows (user, org_membership, team_memberships). Shared by both the
+/// agent provisioning endpoint (C.2) and the DCR proxy rework (C.4).
+///
+/// `teams` is a list of `(team_id, fully-qualified scopes)` pairs.
+/// Returns `(local_user_id, client_id, client_secret)`.
+pub async fn provision_machine_user(
+    admin_client: &crate::auth::zitadel_admin::ZitadelAdminClient,
+    pool: &DbPool,
+    cache: Option<&crate::auth::cache::PermissionCache>,
+    org_id: &str,
+    username: &str,
+    display_name: &str,
+    teams: &[(String, Vec<String>)],
+) -> Result<(String, String, String), ApiError> {
+    let zitadel_sub = admin_client.create_machine_user(username, display_name).await?;
+    let (client_id, client_secret) = admin_client.create_client_secret(&zitadel_sub).await?;
+    let local_user_id =
+        provision_machine_user_db(pool, &zitadel_sub, display_name, org_id, teams).await?;
+    if let Some(cache) = cache {
+        cache.evict(&zitadel_sub).await;
+    }
+    Ok((local_user_id, client_id, client_secret))
+}
+
+/// Create local DB rows for a machine user (users, org_membership, team_memberships).
+/// Uses ON CONFLICT DO NOTHING to be idempotent.
+async fn provision_machine_user_db(
+    pool: &DbPool,
+    zitadel_sub: &str,
+    display_name: &str,
+    org_id: &str,
+    teams: &[(String, Vec<String>)],
+) -> Result<String, ApiError> {
+    let user_id = UserId::new().to_string();
+    let now = chrono::Utc::now();
+    let placeholder_email = format!("{}@machine.local", zitadel_sub);
+
+    sqlx::query(
+        "INSERT INTO users \
+         (id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, \
+          created_at, updated_at) \
+         VALUES ($1, $2, '', $3, 'active', false, $4, 'machine', $5, $6) \
+         ON CONFLICT (zitadel_sub) DO NOTHING",
+    )
+    .bind(&user_id)
+    .bind(&placeholder_email)
+    .bind(display_name)
+    .bind(zitadel_sub)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to create local user row: {e}")))?;
+
+    // Fetch actual user_id — handles the case where ON CONFLICT triggered
+    let actual_user_id =
+        sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE zitadel_sub = $1")
+            .bind(zitadel_sub)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to fetch user after insert: {e}")))?;
+
+    let membership_id = format!("om_{}", uuid::Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO organization_memberships (id, user_id, org_id, role, created_at) \
+         VALUES ($1, $2, $3, 'member', $4) \
+         ON CONFLICT (user_id, org_id) DO NOTHING",
+    )
+    .bind(&membership_id)
+    .bind(&actual_user_id)
+    .bind(org_id)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to create org membership: {e}")))?;
+
+    for (team_id, scopes) in teams {
+        let utm_id = format!("utm_{}", uuid::Uuid::new_v4());
+        let scopes_json = serde_json::to_string(scopes)
+            .map_err(|e| ApiError::Internal(format!("Failed to serialize scopes: {e}")))?;
+        sqlx::query(
+            "INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (user_id, team) DO NOTHING",
+        )
+        .bind(&utm_id)
+        .bind(&actual_user_id)
+        .bind(team_id)
+        .bind(&scopes_json)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create team membership: {e}")))?;
+    }
+
+    Ok(actual_user_id)
+}
+
+/// Ensure local DB rows exist for a machine user that already exists in Zitadel.
+///
+/// Called on the idempotent path when `search_user_by_username` finds an existing
+/// user. Reconciles any missing DB rows (handles DB-wipe + re-provision scenarios).
+async fn reconcile_machine_user_db(
+    pool: &DbPool,
+    zitadel_sub: &str,
+    username: &str,
+    org_id: &str,
+    teams: &[(String, Vec<String>)],
+) -> Result<String, ApiError> {
+    let now = chrono::Utc::now();
+
+    let existing_id =
+        sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE zitadel_sub = $1")
+            .bind(zitadel_sub)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to check existing user: {e}")))?;
+
+    let user_id = match existing_id {
+        Some(id) => id,
+        None => {
+            // DB was wiped — reconcile by re-creating the user row
+            let new_id = UserId::new().to_string();
+            let placeholder_email = format!("{}@machine.local", zitadel_sub);
+            sqlx::query(
+                "INSERT INTO users \
+                 (id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, \
+                  created_at, updated_at) \
+                 VALUES ($1, $2, '', $3, 'active', false, $4, 'machine', $5, $6) \
+                 ON CONFLICT (zitadel_sub) DO NOTHING",
+            )
+            .bind(&new_id)
+            .bind(&placeholder_email)
+            .bind(username)
+            .bind(zitadel_sub)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to reconcile user row: {e}")))?;
+            sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE zitadel_sub = $1")
+                .bind(zitadel_sub)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to fetch reconciled user: {e}")))?
+        }
+    };
+
+    let membership_id = format!("om_{}", uuid::Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO organization_memberships (id, user_id, org_id, role, created_at) \
+         VALUES ($1, $2, $3, 'member', $4) \
+         ON CONFLICT (user_id, org_id) DO NOTHING",
+    )
+    .bind(&membership_id)
+    .bind(&user_id)
+    .bind(org_id)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to ensure org membership: {e}")))?;
+
+    for (team_id, scopes) in teams {
+        let utm_id = format!("utm_{}", uuid::Uuid::new_v4());
+        let scopes_json = serde_json::to_string(scopes)
+            .map_err(|e| ApiError::Internal(format!("Failed to serialize scopes: {e}")))?;
+        sqlx::query(
+            "INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (user_id, team) DO NOTHING",
+        )
+        .bind(&utm_id)
+        .bind(&user_id)
+        .bind(team_id)
+        .bind(&scopes_json)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to ensure team membership: {e}")))?;
+    }
+
+    Ok(user_id)
+}
+
+/// Create an agent (machine user) for an organization.
+///
+/// Provisions a Zitadel machine user and returns client credentials for MCP
+/// tool access. Org admin only — platform admin cannot provision agents.
+/// Idempotent: re-provisioning the same agent name returns 200 without credentials.
+#[utoipa::path(
+    post,
+    path = "/api/v1/orgs/{org_name}/agents",
+    params(("org_name" = String, Path, description = "Organization name")),
+    request_body = CreateAgentRequest,
+    responses(
+        (status = 201, description = "Agent created", body = CreateAgentResponse),
+        (status = 200, description = "Agent already exists (idempotent)", body = CreateAgentResponse),
+        (status = 400, description = "Validation error"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Organization or team not found"),
+        (status = 503, description = "Zitadel admin client not configured")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state, payload), fields(org_name = %org_name, agent_name = %payload.name, user_id = ?context.user_id))]
+pub async fn create_org_agent(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(org_name): Path<String>,
+    Json(payload): Json<CreateAgentRequest>,
+) -> Result<(StatusCode, Json<CreateAgentResponse>), ApiError> {
+    // Step 1: Org admin only — platform admin gets 403
+    require_org_admin_only(&context, &org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    // Step 2: Validate request
+    validate_agent_name(&payload.name)?;
+    if payload.teams.is_empty() {
+        return Err(ApiError::BadRequest("At least one team must be specified".to_string()));
+    }
+    for scope in &payload.scopes {
+        validate_scope(scope)?;
+    }
+    if let Some(ref desc) = payload.description {
+        if desc.len() > 256 {
+            return Err(ApiError::BadRequest(
+                "Description must be 256 characters or fewer".to_string(),
+            ));
+        }
+    }
+
+    // Step 3: Resolve org by name
+    let pool = pool_for_state(&state)?;
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+    let org_id_str = org.id.to_string();
+
+    // Step 4: Validate each team exists in org and build (team_id, scopes) pairs
+    let team_repo = Arc::new(SqlxTeamRepository::new(pool.clone()));
+    let mut team_entries: Vec<(String, Vec<String>)> = Vec::new();
+    for team_name_str in &payload.teams {
+        let team = team_repo
+            .get_team_by_org_and_name(&org.id, team_name_str)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Team '{}' not found in org '{}'",
+                    team_name_str, org_name
+                ))
+            })?;
+        let team_scopes = if payload.scopes.is_empty() {
+            scopes_for_org_role(OrgRole::Member, &team.name)
+        } else {
+            payload.scopes.iter().map(|s| format!("team:{}:{}", team.name, s)).collect()
+        };
+        team_entries.push((team.id.to_string(), team_scopes));
+    }
+
+    // Step 5: Check ZitadelAdminClient available
+    let zitadel_client = state
+        .zitadel_admin
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Zitadel admin client not configured"))?;
+
+    // Step 6: Build Zitadel username
+    let username = format!("{}--{}", org_name, payload.name);
+
+    // Step 7: Check if user already exists in Zitadel
+    if let Some(zitadel_sub) = zitadel_client.search_user_by_username(&username).await? {
+        let user_id =
+            reconcile_machine_user_db(&pool, &zitadel_sub, &username, &org_id_str, &team_entries)
+                .await?;
+        if let Some(ref cache) = state.permission_cache {
+            cache.evict(&zitadel_sub).await;
+        }
+        tracing::info!(
+            username = %username,
+            user_id = %user_id,
+            org_name = %org_name,
+            "agent already exists — returning idempotent response"
+        );
+        return Ok((
+            StatusCode::OK,
+            Json(CreateAgentResponse {
+                agent_id: user_id,
+                name: payload.name,
+                username,
+                client_id: None,
+                client_secret: None,
+                token_endpoint: get_token_endpoint(),
+                org_id: org_id_str,
+                teams: payload.teams,
+                scopes: payload.scopes,
+                created_at: chrono::Utc::now(),
+                message: Some(
+                    "Agent already exists. Credentials were returned at creation time only."
+                        .to_string(),
+                ),
+            }),
+        ));
+    }
+
+    // Steps 8–13: Create new machine user
+    let (local_user_id, client_id, client_secret) = provision_machine_user(
+        zitadel_client,
+        &pool,
+        state.permission_cache.as_deref(),
+        &org_id_str,
+        &username,
+        &payload.name,
+        &team_entries,
+    )
+    .await?;
+
+    tracing::info!(
+        username = %username,
+        user_id = %local_user_id,
+        org_name = %org_name,
+        teams = ?payload.teams,
+        "provisioned new agent"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateAgentResponse {
+            agent_id: local_user_id,
+            name: payload.name,
+            username,
+            client_id: Some(client_id),
+            client_secret: Some(client_secret),
+            token_endpoint: get_token_endpoint(),
+            org_id: org_id_str,
+            teams: payload.teams,
+            scopes: payload.scopes,
+            created_at: chrono::Utc::now(),
+            message: None,
+        }),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

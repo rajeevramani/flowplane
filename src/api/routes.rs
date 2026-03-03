@@ -44,7 +44,7 @@ use super::{
         bulk_disable_mcp_handler, bulk_enable_mcp_handler, check_learned_schema_handler,
         compare_aggregated_schemas_handler, configure_filter_handler, create_cluster_handler,
         create_filter_handler, create_learning_session_handler, create_listener_handler,
-        create_org_team, create_route_config_handler, delete_cluster_handler,
+        create_org_agent, create_org_team, create_route_config_handler, delete_cluster_handler,
         delete_filter_handler, delete_learning_session_handler, delete_listener_handler,
         delete_org_team, delete_route_config_handler, detach_filter_from_listener_handler,
         detach_filter_from_route_rule_handler, detach_filter_from_virtual_host_handler,
@@ -422,6 +422,7 @@ pub fn build_router_with_registry(
             "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
             put(update_team_member_scopes).delete(remove_team_member),
         )
+        .route("/api/v1/orgs/{org_name}/agents", post(create_org_agent))
         // Admin organization management endpoints
         .route("/api/v1/admin/organizations", get(admin_list_organizations))
         .route("/api/v1/admin/organizations", post(admin_create_organization))
