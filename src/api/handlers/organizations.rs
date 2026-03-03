@@ -2014,6 +2014,177 @@ pub async fn create_org_agent(
     ))
 }
 
+/// Agent entry in list response (no credentials).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInfo {
+    pub agent_id: String,
+    pub name: String,
+    pub username: String,
+    pub teams: Vec<String>,
+    pub scopes: Vec<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Response for listing agents in an org.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListAgentsResponse {
+    pub agents: Vec<AgentInfo>,
+}
+
+/// Row type for the agents-with-memberships join query.
+#[derive(sqlx::FromRow)]
+struct AgentMembershipRow {
+    id: String,
+    name: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    team: Option<String>,
+    scopes_json: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/orgs/{org_name}/agents",
+    params(("org_name" = String, Path, description = "Organization name")),
+    responses(
+        (status = 200, description = "List of agents", body = ListAgentsResponse),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Organization not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(org_name = %org_name, user_id = ?context.user_id))]
+pub async fn list_org_agents(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(org_name): Path<String>,
+) -> Result<Json<ListAgentsResponse>, ApiError> {
+    require_org_admin_only(&context, &org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    let pool = pool_for_state(&state)?;
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    // Single join query: machine users + their team memberships (avoids N+1)
+    let rows = sqlx::query_as::<_, AgentMembershipRow>(
+        r#"
+        SELECT
+            u.id, u.name, u.created_at,
+            utm.team, utm.scopes::text AS scopes_json
+        FROM users u
+        JOIN organization_memberships om ON u.id = om.user_id AND om.org_id = $1
+        LEFT JOIN user_team_memberships utm ON u.id = utm.user_id
+        WHERE u.user_type = 'machine'
+        ORDER BY u.created_at DESC, utm.team
+        "#,
+    )
+    .bind(org.id.to_string())
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to list agents: {e}")))?;
+
+    // Group rows by user id preserving insertion order
+    let mut seen: Vec<String> = Vec::new();
+    let mut by_user: std::collections::HashMap<String, AgentInfo> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let entry = by_user.entry(row.id.clone()).or_insert_with(|| {
+            let username = format!("{}--{}", org_name, row.name);
+            seen.push(row.id.clone());
+            AgentInfo {
+                agent_id: row.id.clone(),
+                name: row.name,
+                username,
+                teams: Vec::new(),
+                scopes: Vec::new(),
+                created_at: row.created_at,
+            }
+        });
+        if let Some(team) = row.team {
+            entry.teams.push(team);
+        }
+        if let Some(scopes_json) = row.scopes_json {
+            if let Ok(scopes) = serde_json::from_str::<Vec<String>>(&scopes_json) {
+                entry.scopes.extend(scopes);
+            }
+        }
+    }
+
+    let agents = seen.into_iter().filter_map(|id| by_user.remove(&id)).collect();
+    Ok(Json(ListAgentsResponse { agents }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/orgs/{org_name}/agents/{agent_name}",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("agent_name" = String, Path, description = "Agent name")
+    ),
+    responses(
+        (status = 204, description = "Agent deleted"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Agent not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(org_name = %org_name, agent_name = %agent_name, user_id = ?context.user_id))]
+pub async fn delete_org_agent(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((org_name, agent_name)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_org_admin_only(&context, &org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    let pool = pool_for_state(&state)?;
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
+    let machine_users = user_repo
+        .find_machine_users_by_org(org.id.as_ref())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
+
+    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
+        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
+    })?;
+
+    // Evict from permission cache before deletion (while user_id is still known)
+    if let Some(ref cache) = state.permission_cache {
+        if let Some(ref zitadel_sub) = agent.zitadel_sub {
+            cache.evict(zitadel_sub).await;
+        }
+    }
+
+    // Delete user row — cascades to org_memberships and user_team_memberships via FK
+    user_repo
+        .delete_user(&agent.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to delete agent: {e}")))?;
+
+    tracing::info!(
+        agent_name = %agent_name,
+        agent_id = %agent.id,
+        org_name = %org_name,
+        "deleted agent"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

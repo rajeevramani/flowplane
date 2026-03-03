@@ -89,9 +89,9 @@ pub use organizations::{
     add_team_member, admin_add_org_member, admin_create_organization, admin_delete_organization,
     admin_get_organization, admin_invite_org_member, admin_list_org_members,
     admin_list_organizations, admin_remove_org_member, admin_update_org_member_role,
-    admin_update_organization, create_org_agent, create_org_team, delete_org_team, get_current_org,
-    list_org_teams, list_team_members, provision_machine_user, remove_team_member, update_org_team,
-    update_team_member_scopes,
+    admin_update_organization, create_org_agent, create_org_team, delete_org_agent,
+    delete_org_team, get_current_org, list_org_agents, list_org_teams, list_team_members,
+    provision_machine_user, remove_team_member, update_org_team, update_team_member_scopes,
 };
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
@@ -158,10 +158,10 @@ pub use learning_sessions::{
 };
 pub use mcp_tools::{ListMcpToolsQuery, McpToolResponse, UpdateMcpToolBody};
 pub use organizations::{
-    AddOrgMemberRequest, AddTeamMemberRequest, CreateAgentRequest, CreateAgentResponse,
-    CurrentOrgResponse, InviteOrgMemberRequest, InviteOrgMemberResponse, ListOrgMembersResponse,
-    ListOrgTeamsResponse, ListTeamMembersResponse, TeamMemberResponse, UpdateOrgMemberRoleRequest,
-    UpdateTeamMemberScopesRequest,
+    AddOrgMemberRequest, AddTeamMemberRequest, AgentInfo, CreateAgentRequest, CreateAgentResponse,
+    CurrentOrgResponse, InviteOrgMemberRequest, InviteOrgMemberResponse, ListAgentsResponse,
+    ListOrgMembersResponse, ListOrgTeamsResponse, ListTeamMembersResponse, TeamMemberResponse,
+    UpdateOrgMemberRoleRequest, UpdateTeamMemberScopesRequest,
 };
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,

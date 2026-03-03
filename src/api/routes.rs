@@ -46,10 +46,10 @@ use super::{
         create_filter_handler, create_learning_session_handler, create_listener_handler,
         create_org_agent, create_org_team, create_route_config_handler, delete_cluster_handler,
         delete_filter_handler, delete_learning_session_handler, delete_listener_handler,
-        delete_org_team, delete_route_config_handler, detach_filter_from_listener_handler,
-        detach_filter_from_route_rule_handler, detach_filter_from_virtual_host_handler,
-        detach_filter_handler, disable_mcp_handler, enable_mcp_handler,
-        export_aggregated_schema_handler, export_multiple_schemas_handler,
+        delete_org_agent, delete_org_team, delete_route_config_handler,
+        detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
+        detach_filter_from_virtual_host_handler, detach_filter_handler, disable_mcp_handler,
+        enable_mcp_handler, export_aggregated_schema_handler, export_multiple_schemas_handler,
         generate_certificate_handler, get_aggregated_schema_handler, get_app_handler,
         get_certificate_handler, get_cluster_handler, get_current_org, get_filter_handler,
         get_filter_status_handler, get_filter_type_handler, get_learning_session_handler,
@@ -62,7 +62,7 @@ use super::{
         list_filter_configurations_handler, list_filter_installations_handler,
         list_filter_types_handler, list_filters_handler, list_learning_sessions_handler,
         list_listener_filters_handler, list_listeners_handler, list_mcp_tools_handler,
-        list_org_teams, list_route_configs_handler, list_route_filters_handler,
+        list_org_agents, list_org_teams, list_route_configs_handler, list_route_filters_handler,
         list_route_flows_handler, list_route_rule_filters_handler, list_route_rules_handler,
         list_route_views_handler, list_scopes_handler, list_secrets_handler, list_team_members,
         list_teams_handler, list_virtual_host_filters_handler, list_virtual_hosts_handler,
@@ -422,7 +422,14 @@ pub fn build_router_with_registry(
             "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
             put(update_team_member_scopes).delete(remove_team_member),
         )
-        .route("/api/v1/orgs/{org_name}/agents", post(create_org_agent))
+        .route(
+            "/api/v1/orgs/{org_name}/agents",
+            get(list_org_agents).post(create_org_agent),
+        )
+        .route(
+            "/api/v1/orgs/{org_name}/agents/{agent_name}",
+            delete(delete_org_agent),
+        )
         // Admin organization management endpoints
         .route("/api/v1/admin/organizations", get(admin_list_organizations))
         .route("/api/v1/admin/organizations", post(admin_create_organization))
