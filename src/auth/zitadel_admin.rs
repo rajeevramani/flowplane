@@ -381,46 +381,6 @@ impl ZitadelAdminClient {
 
         Ok(())
     }
-
-    /// Add a role grant for a user on a given project.
-    ///
-    /// `role_keys` are the Zitadel role keys (e.g., `["team-01:clusters:read"]`).
-    pub async fn add_user_grant(
-        &self,
-        user_id: &str,
-        project_id: &str,
-        role_keys: Vec<String>,
-    ) -> Result<(), ApiError> {
-        if role_keys.is_empty() {
-            return Ok(());
-        }
-
-        let url = format!("{}/management/v1/users/{}/grants", self.base_url, user_id);
-
-        let body = serde_json::json!({
-            "projectId": project_id,
-            "roleKeys": role_keys,
-        });
-
-        let req = self.http.post(&url).bearer_auth(&self.pat).json(&body);
-
-        let resp = self
-            .with_host_header(req)
-            .send()
-            .await
-            .map_err(|e| ApiError::internal(format!("Zitadel add user grant failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            tracing::error!(status = %status, body = %body, "Zitadel add user grant error");
-            return Err(ApiError::internal(format!(
-                "Zitadel Management API error ({status}): {body}"
-            )));
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]

@@ -44,9 +44,9 @@ use super::{
         bulk_disable_mcp_handler, bulk_enable_mcp_handler, check_learned_schema_handler,
         compare_aggregated_schemas_handler, configure_filter_handler, create_cluster_handler,
         create_filter_handler, create_learning_session_handler, create_listener_handler,
-        create_org_agent, create_org_team, create_route_config_handler, delete_cluster_handler,
-        delete_filter_handler, delete_learning_session_handler, delete_listener_handler,
-        delete_org_agent, delete_org_team, delete_route_config_handler,
+        create_org_agent, create_org_team, create_route_config_handler, dcr_register_handler,
+        delete_cluster_handler, delete_filter_handler, delete_learning_session_handler,
+        delete_listener_handler, delete_org_agent, delete_org_team, delete_route_config_handler,
         detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
         detach_filter_from_virtual_host_handler, detach_filter_handler, disable_mcp_handler,
         enable_mcp_handler, export_aggregated_schema_handler, export_multiple_schemas_handler,
@@ -481,6 +481,8 @@ pub fn build_router_with_registry(
         // MCP learned schema operations
         .route("/api/v1/teams/{team}/mcp/routes/{route_id}/learned-schema", get(check_learned_schema_handler))
         .route("/api/v1/teams/{team}/mcp/routes/{route_id}/apply-learned", post(apply_learned_schema_handler))
+        // DCR endpoint (authenticated — org admin required, merged into secured router)
+        .route("/api/v1/oauth/register", post(dcr_register_handler))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)
@@ -494,17 +496,6 @@ pub fn build_router_with_registry(
         // Scopes endpoint (public - needed for token creation UI)
         .route("/api/v1/scopes", get(list_scopes_handler))
         .with_state(api_state.clone());
-
-    // DCR endpoint (public, rate-limited, separate state)
-    let dcr_router = if let Some(dcr_state) = super::handlers::oauth::DcrState::from_env() {
-        tracing::info!("DCR proxy enabled at POST /api/v1/oauth/register");
-        Router::new()
-            .route("/api/v1/oauth/register", post(super::handlers::oauth::dcr_register_handler))
-            .with_state(dcr_state)
-    } else {
-        tracing::info!("DCR proxy disabled (FLOWPLANE_ZITADEL_ADMIN_PAT not set)");
-        Router::new()
-    };
 
     // OAuth metadata endpoint (public, points to Zitadel)
     let metadata_router =
@@ -538,7 +529,6 @@ pub fn build_router_with_registry(
     // Build the API router with CORS
     let api_router = secured_api
         .merge(public_api)
-        .merge(dcr_router)
         .merge(metadata_router)
         .merge(auth_config_router)
         .merge(docs::docs_router())

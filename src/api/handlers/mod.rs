@@ -120,7 +120,7 @@ pub use teams::{
 };
 
 // Re-export DCR handler and types
-pub use oauth::{dcr_register_handler, DcrRequest, DcrResponse, DcrState};
+pub use oauth::{dcr_register_handler, DcrRequest, DcrResponse};
 
 // Re-export team access utilities for use across handlers
 pub use team_access::{

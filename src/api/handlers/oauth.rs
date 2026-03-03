@@ -7,35 +7,41 @@
 //!
 //! `POST /api/v1/oauth/register`
 //!
-//! # Flow
+//! # Breaking change (auth-v3 Phase C)
 //!
-//! 1. Agent sends RFC 7591 registration request
-//! 2. Flowplane validates the request
-//! 3. Flowplane creates a machine user in Zitadel via Management API
-//! 4. Flowplane generates client credentials for that user
-//! 5. Flowplane assigns role grants based on requested scopes
-//! 6. Flowplane returns RFC 7591 response with credentials
+//! This endpoint now requires authentication. The caller must be an org admin.
+//! The previous unauthenticated flow with Zitadel role grants has been replaced
+//! with DB permission creation (org + team memberships) via the shared
+//! `provision_machine_user()` helper, consistent with C.2.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Extension, Json};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
-use crate::api::rate_limit::RateLimiter;
-use crate::auth::zitadel_admin::ZitadelAdminClient;
+use crate::{
+    api::{error::ApiError, routes::ApiState},
+    auth::{authorization::require_org_admin_only, models::AuthContext},
+    storage::{
+        repositories::{
+            OrganizationRepository, SqlxOrganizationRepository, SqlxTeamRepository, TeamRepository,
+        },
+        DbPool,
+    },
+};
 
-/// Shared state for the DCR handler.
-#[derive(Clone)]
-pub struct DcrState {
-    /// Zitadel Management API client (None if DCR is disabled).
-    pub admin_client: Option<ZitadelAdminClient>,
-    /// Rate limiter for DCR registrations.
-    pub rate_limiter: Arc<RateLimiter>,
-    /// Zitadel project ID for role grants.
-    pub project_id: String,
-    /// Token endpoint URL returned in DCR responses.
-    pub token_endpoint: String,
+use super::organizations::provision_machine_user;
+
+/// Extract the database pool from ApiState.
+fn dcr_pool(state: &ApiState) -> Result<DbPool, (&'static str, String)> {
+    state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .map(|r| r.pool().clone())
+        .ok_or_else(|| ("server_error", "Database unavailable".to_string()))
 }
 
 /// RFC 7591 Dynamic Client Registration request.
@@ -69,21 +75,6 @@ pub struct DcrResponse {
 pub struct DcrErrorResponse {
     pub error: &'static str,
     pub error_description: String,
-}
-
-/// Parse RFC 7591 scope string into Zitadel role keys.
-///
-/// Scope format: `"team:t1:clusters:read team:t1:routes:read"`
-/// Role key format: `"t1:clusters:read"` (strip the leading `team:` prefix)
-///
-/// Scopes that don't start with `team:` are silently skipped since they
-/// don't map to Zitadel project roles.
-pub fn parse_scopes_to_role_keys(scope: &str) -> Vec<String> {
-    scope
-        .split_whitespace()
-        .filter_map(|s| s.strip_prefix("team:"))
-        .map(|s| s.to_string())
-        .collect()
 }
 
 /// Validate a DCR request.
@@ -126,80 +117,68 @@ fn validate_dcr_request(req: &DcrRequest) -> Result<(), (&'static str, String)> 
     Ok(())
 }
 
-/// Sanitize client_name into a valid Zitadel username.
+/// Parse RFC 7591 scope string into per-team scope groups.
 ///
-/// Zitadel usernames must be alphanumeric with hyphens/underscores.
-/// Prefixes with `dcr-` to avoid collisions with human users.
-fn sanitize_username(client_name: &str) -> String {
-    let sanitized: String = client_name
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect();
-    format!("dcr-{sanitized}")
-}
-
-/// Extract client IP from request headers for rate limiting.
+/// Input: `"team:eng:clusters:read team:eng:routes:write team:frontend:clusters:read"`
+/// Output: `{ "eng": ["team:eng:clusters:read", "team:eng:routes:write"], "frontend": [...] }`
 ///
-/// Prefers X-Forwarded-For (for proxied requests), falls back to X-Real-IP.
-fn extract_client_ip(headers: &axum::http::HeaderMap) -> String {
-    // Try X-Forwarded-For header first (for proxied requests)
-    if let Some(forwarded) = headers.get("x-forwarded-for") {
-        if let Ok(value) = forwarded.to_str() {
-            if let Some(ip) = value.split(',').next().map(|s| s.trim().to_string()) {
-                if !ip.is_empty() {
-                    return ip;
+/// Scopes that don't match `team:{name}:{resource}:{action}` are silently skipped.
+fn parse_scopes_by_team(scope: &str) -> HashMap<String, Vec<String>> {
+    let mut by_team: HashMap<String, Vec<String>> = HashMap::new();
+    for s in scope.split_whitespace() {
+        if let Some(rest) = s.strip_prefix("team:") {
+            if let Some(team_name) = rest.split(':').next() {
+                if !team_name.is_empty() {
+                    by_team.entry(team_name.to_string()).or_default().push(s.to_string());
                 }
             }
         }
     }
+    by_team
+}
 
-    // Try X-Real-IP header
-    if let Some(real_ip) = headers.get("x-real-ip") {
-        if let Ok(ip) = real_ip.to_str() {
-            let ip = ip.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
-        }
-    }
-
-    "unknown".to_string()
+/// Convert an ApiError to an RFC 7591 error response.
+fn api_err_to_dcr(e: ApiError) -> axum::response::Response {
+    let body = DcrErrorResponse { error: "server_error", error_description: format!("{e:?}") };
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
 
 /// Handle Dynamic Client Registration (RFC 7591).
 ///
 /// `POST /api/v1/oauth/register`
-#[instrument(skip(state, headers, payload), fields(client_name = %payload.client_name))]
+///
+/// Requires authentication: caller must be an org admin. Creates a machine user
+/// in Zitadel and provisions DB permissions (user, org membership, team memberships).
+/// No Zitadel role grants are issued — DB is the single source of truth for permissions.
+#[instrument(skip(state, payload), fields(client_name = %payload.client_name, user_id = ?context.user_id))]
 pub async fn dcr_register_handler(
-    State(state): State<DcrState>,
-    headers: axum::http::HeaderMap,
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
     Json(payload): Json<DcrRequest>,
 ) -> Result<(StatusCode, Json<DcrResponse>), axum::response::Response> {
-    // Rate limit by IP address
-    let ip = extract_client_ip(&headers);
-    if let Err(retry_after) = state.rate_limiter.check_rate_limit(&ip).await {
-        let body = DcrErrorResponse {
-            error: "too_many_requests",
-            error_description: format!(
-                "Registration rate limit exceeded. Retry after {retry_after} seconds."
-            ),
-        };
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            [(axum::http::header::RETRY_AFTER, retry_after.to_string())],
-            Json(body),
-        )
-            .into_response());
-    }
-
-    // Validate request
+    // Validate request format first
     if let Err((error, error_description)) = validate_dcr_request(&payload) {
         let body = DcrErrorResponse { error, error_description };
         return Err((StatusCode::BAD_REQUEST, Json(body)).into_response());
     }
 
-    // Ensure DCR is enabled (admin client configured)
-    let admin_client = state.admin_client.as_ref().ok_or_else(|| {
+    // Org admin authentication: require org admin role, determine org from context
+    let org_name = context.org_name.clone().ok_or_else(|| {
+        let body = DcrErrorResponse {
+            error: "access_denied",
+            error_description: "Must be authenticated as an org admin to register clients"
+                .to_string(),
+        };
+        (StatusCode::FORBIDDEN, Json(body)).into_response()
+    })?;
+
+    if let Err(e) = require_org_admin_only(&context, &org_name) {
+        let body = DcrErrorResponse { error: "access_denied", error_description: format!("{e:?}") };
+        return Err((StatusCode::FORBIDDEN, Json(body)).into_response());
+    }
+
+    // Ensure Zitadel admin client is configured
+    let zitadel_client = state.zitadel_admin.as_deref().ok_or_else(|| {
         let body = DcrErrorResponse {
             error: "server_error",
             error_description: "Dynamic Client Registration is not configured".to_string(),
@@ -207,45 +186,110 @@ pub async fn dcr_register_handler(
         (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
     })?;
 
-    // Step 1: Create machine user
-    let username = sanitize_username(&payload.client_name);
-    let user_id =
-        admin_client.create_machine_user(&username, &payload.client_name).await.map_err(|e| {
-            tracing::error!(error = ?e, "DCR: failed to create machine user");
-            let body = DcrErrorResponse {
-                error: "server_error",
-                error_description: "Failed to create client".to_string(),
-            };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
-        })?;
+    // Get database pool
+    let pool = dcr_pool(&state).map_err(|(error, error_description)| {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(DcrErrorResponse { error, error_description }))
+            .into_response()
+    })?;
 
-    // Step 2: Generate client secret
-    let (client_id, client_secret) =
-        admin_client.create_client_secret(&user_id).await.map_err(|e| {
-            tracing::error!(error = ?e, "DCR: failed to create client secret");
+    // Resolve org by name
+    let org_repo = SqlxOrganizationRepository::new(pool.clone());
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(|e| api_err_to_dcr(ApiError::from(e)))?
+        .ok_or_else(|| {
             let body = DcrErrorResponse {
-                error: "server_error",
-                error_description: "Failed to generate client credentials".to_string(),
+                error: "invalid_request",
+                error_description: format!("Organization '{}' not found", org_name),
             };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+            (StatusCode::BAD_REQUEST, Json(body)).into_response()
         })?;
+    let org_id_str = org.id.to_string();
 
-    // Step 3: Assign role grants from requested scopes
-    if let Some(scope) = &payload.scope {
-        let role_keys = parse_scopes_to_role_keys(scope);
-        if !role_keys.is_empty() {
-            admin_client.add_user_grant(&user_id, &state.project_id, role_keys).await.map_err(
-                |e| {
-                    tracing::error!(error = ?e, "DCR: failed to assign role grants");
-                    let body = DcrErrorResponse {
-                        error: "server_error",
-                        error_description: "Failed to assign requested scopes".to_string(),
-                    };
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
-                },
-            )?;
-        }
+    // Parse scopes and validate teams
+    let scope_by_team = match &payload.scope {
+        Some(s) if !s.trim().is_empty() => parse_scopes_by_team(s),
+        _ => HashMap::new(),
+    };
+
+    let team_repo = Arc::new(SqlxTeamRepository::new(pool.clone()));
+    let mut team_entries: Vec<(String, Vec<String>)> = Vec::new();
+    for (team_name_str, scopes) in &scope_by_team {
+        let team = team_repo
+            .get_team_by_org_and_name(&org.id, team_name_str)
+            .await
+            .map_err(|e| api_err_to_dcr(ApiError::from(e)))?
+            .ok_or_else(|| {
+                let body = DcrErrorResponse {
+                    error: "invalid_scope",
+                    error_description: format!(
+                        "Team '{}' not found in org '{}'",
+                        team_name_str, org_name
+                    ),
+                };
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            })?;
+        team_entries.push((team.id.to_string(), scopes.clone()));
     }
+
+    // Build username in the same format as the agent provisioning endpoint (C.2)
+    let username = format!("{}--{}", org_name, payload.client_name);
+
+    // Build token endpoint URL
+    let token_endpoint = std::env::var("FLOWPLANE_ZITADEL_ISSUER")
+        .map_err(|_| {
+            let body = DcrErrorResponse {
+                error: "server_error",
+                error_description: "Token endpoint not configured".to_string(),
+            };
+            (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
+        })
+        .map(|issuer| format!("{}/oauth/v2/token", issuer.trim_end_matches('/')))?;
+
+    // Idempotency: check if machine user already exists in Zitadel
+    if let Some(zitadel_sub) =
+        zitadel_client.search_user_by_username(&username).await.map_err(api_err_to_dcr)?
+    {
+        // Machine user already exists — evict cache and return without credentials
+        if let Some(ref cache) = state.permission_cache {
+            cache.evict(&zitadel_sub).await;
+        }
+        tracing::info!(
+            username = %username,
+            org_name = %org_name,
+            "DCR: client already exists — returning idempotent 200"
+        );
+        let auth_method = payload
+            .token_endpoint_auth_method
+            .as_deref()
+            .unwrap_or("client_secret_basic")
+            .to_string();
+        return Ok((
+            StatusCode::OK,
+            Json(DcrResponse {
+                client_id: String::new(),
+                client_secret: String::new(),
+                client_name: payload.client_name,
+                grant_types: payload.grant_types,
+                token_endpoint_auth_method: auth_method,
+                token_endpoint,
+            }),
+        ));
+    }
+
+    // Provision new machine user via shared helper (Zitadel + DB)
+    let (_local_user_id, client_id, client_secret) = provision_machine_user(
+        zitadel_client,
+        &pool,
+        state.permission_cache.as_deref(),
+        &org_id_str,
+        &username,
+        &payload.client_name,
+        &team_entries,
+    )
+    .await
+    .map_err(api_err_to_dcr)?;
 
     let auth_method =
         payload.token_endpoint_auth_method.as_deref().unwrap_or("client_secret_basic").to_string();
@@ -253,50 +297,21 @@ pub async fn dcr_register_handler(
     tracing::info!(
         client_name = %payload.client_name,
         client_id = %client_id,
+        org_name = %org_name,
         "DCR: client registered successfully"
     );
 
-    let response = DcrResponse {
-        client_id,
-        client_secret,
-        client_name: payload.client_name,
-        grant_types: payload.grant_types,
-        token_endpoint_auth_method: auth_method,
-        token_endpoint: state.token_endpoint.clone(),
-    };
-
-    Ok((StatusCode::CREATED, Json(response)))
-}
-
-impl DcrState {
-    /// Create DCR state from environment variables.
-    ///
-    /// Returns `None` if Zitadel admin client is not configured.
-    pub fn from_env() -> Option<Self> {
-        let project_id = std::env::var("FLOWPLANE_ZITADEL_PROJECT_ID").ok()?;
-        if project_id.is_empty() {
-            return None;
-        }
-
-        let issuer = std::env::var("FLOWPLANE_ZITADEL_ISSUER").ok()?;
-        let token_endpoint = format!("{}/oauth/v2/token", issuer.trim_end_matches('/'));
-
-        // DCR rate limit: defaults to 10 registrations per hour per IP
-        let max_registrations = std::env::var("FLOWPLANE_RATE_LIMIT_DCR_PER_HOUR")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(10);
-
-        let rate_limiter =
-            Arc::new(RateLimiter::new(max_registrations, std::time::Duration::from_secs(3600)));
-
-        Some(Self {
-            admin_client: ZitadelAdminClient::from_env(),
-            rate_limiter,
-            project_id,
+    Ok((
+        StatusCode::CREATED,
+        Json(DcrResponse {
+            client_id,
+            client_secret,
+            client_name: payload.client_name,
+            grant_types: payload.grant_types,
+            token_endpoint_auth_method: auth_method,
             token_endpoint,
-        })
-    }
+        }),
+    ))
 }
 
 // ===== OAuth Metadata Endpoints =====
@@ -527,55 +542,40 @@ mod tests {
     // --- Scope parsing tests ---
 
     #[test]
-    fn parse_scopes_single() {
-        let roles = parse_scopes_to_role_keys("team:t1:clusters:read");
-        assert_eq!(roles, vec!["t1:clusters:read"]);
+    fn parse_scopes_single_team() {
+        let by_team = parse_scopes_by_team("team:t1:clusters:read");
+        assert_eq!(by_team.len(), 1);
+        assert_eq!(by_team["t1"], vec!["team:t1:clusters:read"]);
     }
 
     #[test]
-    fn parse_scopes_multiple() {
-        let roles = parse_scopes_to_role_keys("team:t1:clusters:read team:t2:routes:write");
-        assert_eq!(roles, vec!["t1:clusters:read", "t2:routes:write"]);
+    fn parse_scopes_multiple_teams() {
+        let by_team = parse_scopes_by_team("team:t1:clusters:read team:t2:routes:write");
+        assert_eq!(by_team.len(), 2);
+        assert_eq!(by_team["t1"], vec!["team:t1:clusters:read"]);
+        assert_eq!(by_team["t2"], vec!["team:t2:routes:write"]);
+    }
+
+    #[test]
+    fn parse_scopes_same_team_multiple_scopes() {
+        let by_team = parse_scopes_by_team("team:eng:clusters:read team:eng:routes:write");
+        assert_eq!(by_team.len(), 1);
+        let mut scopes = by_team["eng"].clone();
+        scopes.sort();
+        assert_eq!(scopes, vec!["team:eng:clusters:read", "team:eng:routes:write"]);
     }
 
     #[test]
     fn parse_scopes_empty() {
-        let roles = parse_scopes_to_role_keys("");
-        assert!(roles.is_empty());
+        let by_team = parse_scopes_by_team("");
+        assert!(by_team.is_empty());
     }
 
     #[test]
     fn parse_scopes_skips_non_team() {
-        let roles = parse_scopes_to_role_keys("openid profile team:t1:clusters:read");
-        assert_eq!(roles, vec!["t1:clusters:read"]);
-    }
-
-    #[test]
-    fn parse_scopes_admin() {
-        let roles = parse_scopes_to_role_keys("team:t1:admin");
-        assert_eq!(roles, vec!["t1:admin"]);
-    }
-
-    // --- Username sanitization tests ---
-
-    #[test]
-    fn sanitize_simple_name() {
-        assert_eq!(sanitize_username("my-agent"), "dcr-my-agent");
-    }
-
-    #[test]
-    fn sanitize_name_with_spaces() {
-        assert_eq!(sanitize_username("my agent"), "dcr-my-agent");
-    }
-
-    #[test]
-    fn sanitize_name_with_special_chars() {
-        assert_eq!(sanitize_username("agent@v2!"), "dcr-agent-v2-");
-    }
-
-    #[test]
-    fn sanitize_name_with_underscores() {
-        assert_eq!(sanitize_username("my_agent_v2"), "dcr-my_agent_v2");
+        let by_team = parse_scopes_by_team("openid profile team:t1:clusters:read");
+        assert_eq!(by_team.len(), 1);
+        assert!(by_team.contains_key("t1"));
     }
 
     // --- DcrResponse serialization tests ---
