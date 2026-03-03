@@ -172,7 +172,7 @@ invite_user() {
     -X POST \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "{\"email\": \"${email}\", \"role\": \"${role}\", \"firstName\": \"${first}\", \"lastName\": \"${last}\"}" \
+    -d "{\"email\": \"${email}\", \"role\": \"${role}\", \"firstName\": \"${first}\", \"lastName\": \"${last}\", \"initialPassword\": \"${HUMAN_PASSWORD}\"}" \
     "${FLOWPLANE_URL}/api/v1/admin/organizations/${org_id}/invite")
   http_code=$(echo "$raw" | tail -1)
   body=$(echo "$raw" | sed '$d')
@@ -311,24 +311,6 @@ main() {
   # Invite human user via the API (creates Zitadel user + local DB records)
   log "Inviting human user '${HUMAN_USERNAME}'..."
   invite_user "$ORG_ID" "$HUMAN_USERNAME" "admin" "$HUMAN_FIRST" "$HUMAN_LAST"
-
-  # Set the demo user's password in Zitadel (invite creates user without password)
-  log "Setting password for demo user..."
-  api POST /v2/users '{"queries":[{"emailQuery":{"emailAddress":"'"${HUMAN_USERNAME}"'"}}]}'
-  local demo_user_id
-  demo_user_id=$(echo "$BODY" | jq -r '.result[0].userId // .result[0].id // empty' 2>/dev/null | head -1)
-  if [ -n "$demo_user_id" ] && [ "$demo_user_id" != "null" ]; then
-    local pw_body
-    pw_body=$(jq -n --arg p "$HUMAN_PASSWORD" '{newPassword: {password: $p, changeRequired: false}}')
-    api POST "/v2/users/${demo_user_id}/password" "$pw_body"
-    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-      ok "Password set for ${HUMAN_USERNAME}"
-    else
-      fail "Failed to set password (HTTP ${HTTP_CODE}): ${BODY}"
-    fi
-  else
-    fail "Could not find demo user in Zitadel to set password"
-  fi
 
   # Authenticate as org admin to provision agent
   log "Obtaining OIDC token for org admin '${HUMAN_USERNAME}'..."
