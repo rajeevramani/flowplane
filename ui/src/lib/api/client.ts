@@ -124,6 +124,10 @@ import type {
 	AdminListOrgsResponse,
 	CurrentOrgResponse,
 	ListOrgTeamsResponse,
+	OrgTeamMemberResponse,
+	ListOrgTeamMembersResponse,
+	AddOrgTeamMemberRequest,
+	UpdateOrgTeamMemberScopesRequest,
 	OrgRole,
 	// Invite types
 	InviteOrgMemberRequest,
@@ -1596,6 +1600,70 @@ class ApiClient {
 		return this.post<TeamResponse>(
 			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams`,
 			data
+		);
+	}
+
+	async getOrgTeam(orgName: string, teamName: string): Promise<TeamResponse> {
+		const response = await this.listOrgTeams(orgName);
+		const team = response.teams.find((t) => t.name === teamName);
+		if (!team) {
+			throw new Error(`Team '${teamName}' not found`);
+		}
+		return team;
+	}
+
+	async updateOrgTeam(
+		orgName: string,
+		teamName: string,
+		data: UpdateTeamRequest
+	): Promise<TeamResponse> {
+		return this.put<TeamResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}`,
+			data
+		);
+	}
+
+	async deleteOrgTeam(orgName: string, teamName: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}`
+		);
+	}
+
+	async listTeamMembers(
+		orgName: string,
+		teamName: string
+	): Promise<ListOrgTeamMembersResponse> {
+		return this.get<ListOrgTeamMembersResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members`
+		);
+	}
+
+	async addTeamMember(
+		orgName: string,
+		teamName: string,
+		data: AddOrgTeamMemberRequest
+	): Promise<OrgTeamMemberResponse> {
+		return this.post<OrgTeamMemberResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members`,
+			data
+		);
+	}
+
+	async updateTeamMemberScopes(
+		orgName: string,
+		teamName: string,
+		userId: string,
+		data: UpdateOrgTeamMemberScopesRequest
+	): Promise<OrgTeamMemberResponse> {
+		return this.put<OrgTeamMemberResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(userId)}`,
+			data
+		);
+	}
+
+	async removeTeamMember(orgName: string, teamName: string, userId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(userId)}`
 		);
 	}
 

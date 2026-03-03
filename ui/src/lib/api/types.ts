@@ -1904,6 +1904,27 @@ export interface ListOrgTeamsResponse {
 	teams: TeamResponse[];
 }
 
+export interface OrgTeamMemberResponse {
+	id: string;
+	userId: string;
+	team: string;
+	scopes: string[];
+	createdAt: string;
+}
+
+export interface ListOrgTeamMembersResponse {
+	members: OrgTeamMemberResponse[];
+}
+
+export interface AddOrgTeamMemberRequest {
+	userId: string;
+	scopes: string[];
+}
+
+export interface UpdateOrgTeamMemberScopesRequest {
+	scopes: string[];
+}
+
 // ============================================================================
 // Invite Types (Instant Provisioning via Admin API)
 // ============================================================================

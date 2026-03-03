@@ -352,6 +352,18 @@
 							Org Settings
 						</a>
 					{/if}
+					{#if sessionInfo.orgName}
+						<a
+							href="/organizations/{sessionInfo.orgName}/teams"
+							class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+								{isActive('/organizations/')
+								? 'bg-blue-600 text-white'
+								: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+						>
+							<Building2 class="h-5 w-5" />
+							Teams
+						</a>
+					{/if}
 				</div>
 			</div>
 		{/if}
