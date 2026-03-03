@@ -55,6 +55,8 @@ pub struct User {
     /// Zitadel subject identifier (`sub` claim from JWT).
     /// Bridges Zitadel identity to Flowplane permissions.
     pub zitadel_sub: Option<String>,
+    /// User type: "human" (default) or "machine" (API agent).
+    pub user_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -217,6 +217,50 @@ impl ZitadelAdminClient {
         }
     }
 
+    /// Search for a user by username (loginName).
+    ///
+    /// Returns the Zitadel user ID (sub) if found, or `None` if no matching user exists.
+    /// Used for idempotent machine user creation — `search_user_by_email()` won't find
+    /// machine users because Zitadel's `emailQuery` only matches human user email fields.
+    pub async fn search_user_by_username(
+        &self,
+        username: &str,
+    ) -> Result<Option<String>, ApiError> {
+        let url = format!("{}/management/v1/users/_search", self.base_url);
+
+        let body = serde_json::json!({
+            "queries": [{
+                "userNameQuery": {
+                    "userName": username,
+                    "method": "TEXT_QUERY_METHOD_EQUALS"
+                }
+            }]
+        });
+
+        let req = self.http.post(&url).bearer_auth(&self.pat).json(&body);
+
+        let resp = self
+            .with_host_header(req)
+            .send()
+            .await
+            .map_err(|e| ApiError::internal(format!("Zitadel username search failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!(status = %status, body = %body, "Zitadel username search error");
+            return Err(ApiError::internal(format!(
+                "Zitadel Management API error ({status}): {body}"
+            )));
+        }
+
+        let result: SearchUsersResponse = resp.json().await.map_err(|e| {
+            ApiError::internal(format!("Zitadel search response parse failed: {e}"))
+        })?;
+
+        Ok(result.result.and_then(|users| users.into_iter().next()).map(|u| u.id))
+    }
+
     /// Search for a user by email address.
     ///
     /// Returns the Zitadel user ID (sub) if found, or `None` if no matching user exists.
