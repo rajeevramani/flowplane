@@ -149,6 +149,7 @@ up: _ensure-network ## Start backend + UI (auto-configures Zitadel on first run)
 	@echo "  Swagger:    http://localhost:8080/swagger-ui/"
 	@echo "  xDS gRPC:   localhost:50051"
 	@echo "  Zitadel:    http://localhost:8081 (admin: zitadel-admin@zitadel.localhost / Password1!)"
+	@echo "  Platform:   admin@flowplane.local / Flowplane1!"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
 endif
@@ -176,6 +177,7 @@ up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
 	@echo "  Swagger:    http://localhost:8080/swagger-ui/"
 	@echo "  xDS gRPC:   localhost:50051"
 	@echo "  Vault UI:   http://localhost:8200 (token: flowplane-dev-token)"
+	@echo "  Platform:   admin@flowplane.local / Flowplane1!"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
 endif
@@ -201,6 +203,7 @@ up-tracing: _ensure-network ## Start backend + UI + Jaeger
 	@echo "  Swagger:    http://localhost:8080/swagger-ui/"
 	@echo "  xDS gRPC:   localhost:50051"
 	@echo "  Jaeger UI:  http://localhost:16686"
+	@echo "  Platform:   admin@flowplane.local / Flowplane1!"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
 endif
@@ -225,6 +228,7 @@ up-full: _ensure-network ## Start backend + UI + Jaeger + Vault (full stack)
 	@echo "  Vault UI:   http://localhost:8200 (token: flowplane-dev-token)"
 	@echo "  Jaeger UI:  http://localhost:16686"
 	@echo "  httpbin:    http://localhost:8000"
+	@echo "  Platform:   admin@flowplane.local / Flowplane1!"
 
 seed: ## Seed demo data (org, users, teams with DB permissions)
 	@./scripts/seed-demo.sh

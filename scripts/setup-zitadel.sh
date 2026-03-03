@@ -246,9 +246,9 @@ create_email_action() {
     return
   fi
 
-  # Set action on Complement Token flow (type 2), Pre Access Token trigger (type 2)
+  # Set action on Complement Token flow (type 2), Pre Access Token trigger (type 5)
   log "Setting action on Complement Token flow..."
-  api POST /management/v1/flows/2/trigger/2 "{
+  api POST /management/v1/flows/2/trigger/5 "{
     \"actionIds\": [\"${action_id}\"]
   }"
 
