@@ -14,6 +14,7 @@ export const inviteMemberSchema = z.object({
 		.string()
 		.min(1, 'Last name is required')
 		.max(100, 'Last name must be 100 characters or less'),
+	initialPassword: z.string().min(8, 'Password must be at least 8 characters').optional(),
 });
 
 export type InviteMemberSchema = z.infer<typeof inviteMemberSchema>;

@@ -24,6 +24,7 @@
 	let inviteFirstName = $state('');
 	let inviteLastName = $state('');
 	let inviteRole = $state<InvitableRole>('member');
+	let invitePassword = $state('');
 	let isCreating = $state(false);
 	let createError = $state<string | null>(null);
 	let fieldErrors = $state<Record<string, string>>({});
@@ -85,14 +86,16 @@
 				email: inviteEmail,
 				role: inviteRole,
 				firstName: inviteFirstName,
-				lastName: inviteLastName
+				lastName: inviteLastName,
+				initialPassword: invitePassword || undefined
 			});
 
 			const response = await apiClient.inviteOrgMember(orgId, {
 				email: inviteEmail,
 				role: inviteRole,
 				firstName: inviteFirstName,
-				lastName: inviteLastName
+				lastName: inviteLastName,
+				initialPassword: invitePassword || undefined
 			});
 
 			const action = response.userCreated ? 'invited' : 'added';
@@ -102,6 +105,7 @@
 			inviteFirstName = '';
 			inviteLastName = '';
 			inviteRole = 'member';
+			invitePassword = '';
 
 			await loadMembers();
 		} catch (err: unknown) {
@@ -239,6 +243,28 @@
 					</select>
 					{#if fieldErrors.role}
 						<p class="mt-1 text-sm text-red-600">{fieldErrors.role}</p>
+					{/if}
+				</div>
+			</div>
+			<div class="grid grid-cols-1 md:grid-cols-6 gap-4 mt-4">
+				<div class="md:col-span-2">
+					<label for="invitePassword" class="block text-sm font-medium text-gray-700 mb-1">
+						Initial Password <span class="text-gray-400">(optional)</span>
+					</label>
+					<input
+						id="invitePassword"
+						type="password"
+						bind:value={invitePassword}
+						placeholder="Set password (local dev)"
+						class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+						class:border-red-500={fieldErrors.initialPassword}
+					/>
+					{#if fieldErrors.initialPassword}
+						<p class="mt-1 text-sm text-red-600">{fieldErrors.initialPassword}</p>
+					{:else}
+						<p class="mt-1 text-xs text-gray-400">
+							Skip if SMTP is configured — Zitadel will email a setup link.
+						</p>
 					{/if}
 				</div>
 				<div class="flex items-end">

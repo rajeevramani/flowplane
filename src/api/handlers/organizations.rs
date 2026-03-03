@@ -2,9 +2,10 @@
 //!
 //! This module provides HTTP handlers for organization lifecycle management and
 //! organization membership operations. Organization creation, listing, and deletion
-//! require platform admin (`admin:all` scope). Get accepts platform admin or org admin.
-//! Update, membership CRUD, and team management require org admin only (no platform
-//! admin bypass) to enforce the invariant that platform admin cannot see into orgs.
+//! require platform admin (`admin:all` scope). Get and member listing accept platform
+//! admin or org admin (platform admin needs governance visibility). Update, member
+//! mutation, and team management require org admin only (no platform admin bypass)
+//! to enforce the invariant that platform admin cannot modify org internals.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -146,6 +147,10 @@ pub struct ListOrgMembersResponse {
 /// Request to invite a member to an organization by email.
 /// Creates the user in Zitadel if they don't exist, then provisions
 /// local user row, org membership, and team memberships.
+///
+/// `initial_password` is optional — when provided, the user is created with
+/// this password pre-set (useful for local dev without SMTP). In production,
+/// omit this field so Zitadel sends the normal welcome/password-set email.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct InviteOrgMemberRequest {
@@ -154,6 +159,9 @@ pub struct InviteOrgMemberRequest {
     pub role: OrgRole,
     pub first_name: String,
     pub last_name: String,
+    /// Optional initial password for local dev (bypasses Zitadel email flow).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_password: Option<String>,
 }
 
 /// Response from inviting an org member.
@@ -409,9 +417,12 @@ pub async fn admin_delete_organization(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ===== Organization Membership Endpoints (Org Admin Only) =====
+// ===== Organization Membership Endpoints =====
 
-/// List members of an organization (org admin only).
+/// List members of an organization (platform admin or org admin).
+///
+/// Platform admin needs member visibility for governance — e.g. verifying
+/// that an org admin has been onboarded after invite.
 #[utoipa::path(
     get,
     path = "/api/v1/admin/organizations/{id}/members",
@@ -420,10 +431,10 @@ pub async fn admin_delete_organization(
     ),
     responses(
         (status = 200, description = "Organization members listed successfully", body = ListOrgMembersResponse),
-        (status = 403, description = "Organization admin privileges required"),
+        (status = 403, description = "Admin or organization admin privileges required"),
         (status = 404, description = "Organization not found")
     ),
-    security(("bearer_auth" = ["org:admin"])),
+    security(("bearer_auth" = ["admin:all", "org:admin"])),
     tag = "Organizations"
 )]
 #[instrument(skip(state), fields(org_id = %id, user_id = ?context.user_id))]
@@ -442,8 +453,7 @@ pub async fn admin_list_org_members(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
-    require_org_admin_only(&context, &org.name)
-        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+    require_admin_or_org_admin(&context, &org.name)?;
 
     let membership_repo = org_membership_repository_for_state(&state)?;
     let members = membership_repo.list_org_members(&org_id).await.map_err(ApiError::from)?;
@@ -651,18 +661,33 @@ pub async fn admin_invite_org_member(
         .ok_or_else(|| ApiError::service_unavailable("Zitadel admin client not configured"))?;
 
     // Step 1: Search Zitadel for existing user by email
-    let (zitadel_sub, user_created) = match zitadel_client
-        .search_user_by_email(&payload.email)
-        .await?
-    {
-        Some(sub) => (sub, false),
-        None => {
-            let sub = zitadel_client
-                .create_human_user(&payload.email, &payload.first_name, &payload.last_name, None)
-                .await?;
-            (sub, true)
-        }
-    };
+    let (zitadel_sub, user_created) =
+        match zitadel_client.search_user_by_email(&payload.email).await? {
+            Some(sub) => {
+                // If initial_password provided for existing user, set it via v2 API
+                if let Some(ref pw) = payload.initial_password {
+                    if let Err(e) = zitadel_client.set_user_password(&sub, pw).await {
+                        tracing::warn!(
+                            email = %payload.email,
+                            error = ?e,
+                            "Could not set password for existing user (may already be set)"
+                        );
+                    }
+                }
+                (sub, false)
+            }
+            None => {
+                let sub = zitadel_client
+                    .create_human_user(
+                        &payload.email,
+                        &payload.first_name,
+                        &payload.last_name,
+                        payload.initial_password.as_deref(),
+                    )
+                    .await?;
+                (sub, true)
+            }
+        };
 
     // Step 2: JIT provision local user row
     let pool = pool_for_state(&state)?;
@@ -1883,6 +1908,7 @@ mod tests {
             role: OrgRole::Admin,
             first_name: "Test".to_string(),
             last_name: "User".to_string(),
+            initial_password: None,
         };
         assert!(req.validate().is_err());
     }
@@ -1894,6 +1920,7 @@ mod tests {
             role: OrgRole::Admin,
             first_name: "Test".to_string(),
             last_name: "User".to_string(),
+            initial_password: None,
         };
         assert!(req.validate().is_ok());
     }

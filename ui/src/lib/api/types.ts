@@ -1915,6 +1915,8 @@ export interface InviteOrgMemberRequest {
 	role: InvitableRole;
 	firstName: string;
 	lastName: string;
+	/** Optional initial password for local dev (bypasses Zitadel email flow). */
+	initialPassword?: string;
 }
 
 export interface InviteOrgMemberResponse {
