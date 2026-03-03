@@ -10,6 +10,7 @@
 //! configured via `FLOWPLANE_ZITADEL_ADMIN_PAT`.
 
 use crate::api::error::ApiError;
+use reqwest::StatusCode;
 use serde::Deserialize;
 
 /// Client for the Zitadel Management API.
@@ -57,6 +58,30 @@ struct SearchUsersResponse {
 #[serde(rename_all = "camelCase")]
 struct SearchUserResult {
     id: String,
+}
+
+/// Zitadel error response body (gRPC-style JSON).
+#[derive(Deserialize)]
+struct ZitadelErrorResponse {
+    message: Option<String>,
+}
+
+/// Convert a Zitadel API error response into an appropriate `ApiError`.
+///
+/// Extracts the human-readable `message` field from Zitadel's JSON error body.
+/// Returns `BadRequest` for 400 responses (validation/policy errors like password
+/// requirements), `Internal` for everything else.
+fn zitadel_api_error(status: StatusCode, body: &str, context: &str) -> ApiError {
+    let message = serde_json::from_str::<ZitadelErrorResponse>(body)
+        .ok()
+        .and_then(|r| r.message)
+        .unwrap_or_else(|| format!("{context} ({status})"));
+
+    if status == StatusCode::BAD_REQUEST {
+        ApiError::BadRequest(message)
+    } else {
+        ApiError::Internal(format!("{context} ({status}): {message}"))
+    }
 }
 
 impl ZitadelAdminClient {
@@ -272,9 +297,7 @@ impl ZitadelAdminClient {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             tracing::error!(status = %status, body = %body, "Zitadel create human user error");
-            return Err(ApiError::internal(format!(
-                "Zitadel Management API error ({status}): {body}"
-            )));
+            return Err(zitadel_api_error(status, &body, "Failed to create user"));
         }
 
         let result: CreateHumanUserResponse = resp
@@ -309,9 +332,7 @@ impl ZitadelAdminClient {
             let status = resp.status();
             let resp_body = resp.text().await.unwrap_or_default();
             tracing::error!(status = %status, body = %resp_body, "Zitadel set password error");
-            return Err(ApiError::internal(format!(
-                "Zitadel set password error ({status}): {resp_body}"
-            )));
+            return Err(zitadel_api_error(status, &resp_body, "Failed to set password"));
         }
 
         Ok(())
@@ -457,5 +478,42 @@ mod tests {
         std::env::remove_var("FLOWPLANE_ZITADEL_ADMIN_PAT");
         std::env::remove_var("FLOWPLANE_ZITADEL_ADMIN_URL");
         std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER");
+    }
+
+    #[test]
+    fn zitadel_api_error_400_returns_bad_request_with_message() {
+        let body = r#"{"code":3,"message":"Password must contain upper case","details":[]}"#;
+        let err = zitadel_api_error(StatusCode::BAD_REQUEST, body, "Failed to create user");
+        match err {
+            ApiError::BadRequest(msg) => {
+                assert_eq!(msg, "Password must contain upper case");
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zitadel_api_error_400_falls_back_to_context_on_bad_json() {
+        let err = zitadel_api_error(StatusCode::BAD_REQUEST, "not json", "Failed to create user");
+        match err {
+            ApiError::BadRequest(msg) => {
+                assert_eq!(msg, "Failed to create user (400 Bad Request)");
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zitadel_api_error_500_returns_internal() {
+        let body = r#"{"code":13,"message":"Internal error"}"#;
+        let err =
+            zitadel_api_error(StatusCode::INTERNAL_SERVER_ERROR, body, "Failed to create user");
+        match err {
+            ApiError::Internal(msg) => {
+                assert!(msg.contains("Internal error"), "got: {msg}");
+                assert!(msg.contains("500"), "got: {msg}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
     }
 }

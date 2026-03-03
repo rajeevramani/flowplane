@@ -8,9 +8,22 @@ use std::collections::HashSet;
 use sqlx::FromRow;
 use tracing::instrument;
 
-use crate::domain::UserId;
+use crate::domain::{OrgId, UserId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
+
+// ---------------------------------------------------------------------------
+// Return type
+// ---------------------------------------------------------------------------
+
+/// Aggregated permission data for a user, including org context.
+#[derive(Debug, Clone)]
+pub struct UserPermissions {
+    pub scopes: HashSet<String>,
+    pub org_id: Option<OrgId>,
+    pub org_name: Option<String>,
+    pub org_role: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Row types
@@ -18,6 +31,7 @@ use crate::storage::DbPool;
 
 #[derive(Debug, FromRow)]
 struct OrgMembershipRow {
+    org_id: String,
     role: String,
     org_name: String,
 }
@@ -44,13 +58,17 @@ struct TeamScopesRow {
 ///
 /// Team memberships contribute their stored `scopes` JSON array directly.
 #[instrument(skip(pool), fields(user_id = %user_id), name = "load_user_permissions")]
-pub async fn load_user_permissions(pool: &DbPool, user_id: &UserId) -> Result<HashSet<String>> {
+pub async fn load_user_permissions(pool: &DbPool, user_id: &UserId) -> Result<UserPermissions> {
     let mut scopes = HashSet::new();
+    // TODO: multi-org support — currently returns first non-platform org
+    let mut org_id: Option<OrgId> = None;
+    let mut org_name: Option<String> = None;
+    let mut org_role: Option<String> = None;
 
     // 1. Organisation memberships
     let org_rows = sqlx::query_as::<_, OrgMembershipRow>(
         r#"
-        SELECT om.role, o.name AS org_name
+        SELECT om.org_id, om.role, o.name AS org_name
         FROM organization_memberships om
         JOIN organizations o ON om.org_id = o.id
         WHERE om.user_id = $1
@@ -64,8 +82,14 @@ pub async fn load_user_permissions(pool: &DbPool, user_id: &UserId) -> Result<Ha
         context: format!("load org memberships for user {user_id}"),
     })?;
 
-    for row in org_rows {
+    for row in &org_rows {
         map_org_role_to_scopes(&row.role, &row.org_name, &mut scopes);
+        // Capture the first non-platform org's context
+        if org_id.is_none() && row.org_name != "platform" {
+            org_id = Some(OrgId::from_string(row.org_id.clone()));
+            org_name = Some(row.org_name.clone());
+            org_role = Some(row.role.clone());
+        }
     }
 
     // 2. Team memberships
@@ -87,7 +111,7 @@ pub async fn load_user_permissions(pool: &DbPool, user_id: &UserId) -> Result<Ha
         scopes.extend(team_scopes);
     }
 
-    Ok(scopes)
+    Ok(UserPermissions { scopes, org_id, org_name, org_role })
 }
 
 /// Map a single org membership row into Flowplane scope strings.

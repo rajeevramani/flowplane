@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
-use crate::domain::UserId;
+use crate::domain::{OrgId, UserId};
 
 // ---------------------------------------------------------------------------
 // Cache entry
@@ -20,7 +20,21 @@ pub struct CachedPermissions {
     pub scopes: HashSet<String>,
     pub user_id: UserId,
     pub email: Option<String>,
+    pub org_id: Option<OrgId>,
+    pub org_name: Option<String>,
+    pub org_role: Option<String>,
     pub cached_at: Instant,
+}
+
+/// Snapshot returned by [`PermissionCache::get`] — avoids a large tuple.
+#[derive(Debug, Clone)]
+pub struct CachedPermissionSnapshot {
+    pub user_id: UserId,
+    pub email: Option<String>,
+    pub scopes: HashSet<String>,
+    pub org_id: Option<OrgId>,
+    pub org_name: Option<String>,
+    pub org_role: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -48,13 +62,20 @@ impl PermissionCache {
     }
 
     /// Return a snapshot of the cached entry if it has not expired.
-    pub async fn get(&self, sub: &str) -> Option<(UserId, Option<String>, HashSet<String>)> {
+    pub async fn get(&self, sub: &str) -> Option<CachedPermissionSnapshot> {
         let guard = self.entries.read().await;
         let entry = guard.get(sub)?;
         if entry.cached_at.elapsed() >= self.ttl {
             return None;
         }
-        Some((entry.user_id.clone(), entry.email.clone(), entry.scopes.clone()))
+        Some(CachedPermissionSnapshot {
+            user_id: entry.user_id.clone(),
+            email: entry.email.clone(),
+            scopes: entry.scopes.clone(),
+            org_id: entry.org_id.clone(),
+            org_name: entry.org_name.clone(),
+            org_role: entry.org_role.clone(),
+        })
     }
 
     /// Insert or replace the entry for `sub`.
@@ -86,6 +107,9 @@ mod tests {
             scopes: scopes.iter().map(|s| s.to_string()).collect(),
             user_id: UserId::from_string(user_id.to_string()),
             email: Some(format!("{user_id}@example.com")),
+            org_id: None,
+            org_name: None,
+            org_role: None,
             cached_at: Instant::now(),
         }
     }
@@ -97,10 +121,10 @@ mod tests {
 
         let result = cache.get("sub-1").await;
         assert!(result.is_some(), "expected cache hit");
-        let (uid, email, scopes) = result.unwrap();
-        assert_eq!(uid.as_str(), "user-1");
-        assert_eq!(email.as_deref(), Some("user-1@example.com"));
-        assert!(scopes.contains("admin:all"));
+        let snap = result.unwrap();
+        assert_eq!(snap.user_id.as_str(), "user-1");
+        assert_eq!(snap.email.as_deref(), Some("user-1@example.com"));
+        assert!(snap.scopes.contains("admin:all"));
     }
 
     #[tokio::test]
@@ -151,8 +175,8 @@ mod tests {
         cache.insert("sub-1".to_string(), make_permissions("user-1", &["old:scope"])).await;
         cache.insert("sub-1".to_string(), make_permissions("user-1", &["new:scope"])).await;
 
-        let (_, _, scopes) = cache.get("sub-1").await.unwrap();
-        assert!(scopes.contains("new:scope"));
-        assert!(!scopes.contains("old:scope"));
+        let snap = cache.get("sub-1").await.unwrap();
+        assert!(snap.scopes.contains("new:scope"));
+        assert!(!snap.scopes.contains("old:scope"));
     }
 }

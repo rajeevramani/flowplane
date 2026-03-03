@@ -39,6 +39,9 @@ pub struct ZitadelConfig {
     /// Override with `FLOWPLANE_ZITADEL_JWKS_URL` when Zitadel is reachable at a
     /// different address than the issuer (e.g. container-to-container networking).
     pub jwks_url: String,
+    /// Userinfo endpoint URL. Defaults to same base as `jwks_url` + `/oidc/v1/userinfo`.
+    /// Used as fallback when JWT access token doesn't include email claim.
+    pub userinfo_url: String,
 }
 
 impl ZitadelConfig {
@@ -61,7 +64,18 @@ impl ZitadelConfig {
             let base = issuer.trim_end_matches('/');
             format!("{base}/oauth/v2/keys")
         });
-        Some(Self { issuer, project_id, audience, jwks_url })
+        // Derive userinfo URL from the same base as JWKS (handles container networking)
+        let userinfo_url = std::env::var("FLOWPLANE_ZITADEL_USERINFO_URL").unwrap_or_else(|_| {
+            // Strip the path from jwks_url to get the base
+            if let Ok(url) = url::Url::parse(&jwks_url) {
+                let base = format!("{}://{}", url.scheme(), url.authority());
+                format!("{base}/oidc/v1/userinfo")
+            } else {
+                let base = issuer.trim_end_matches('/');
+                format!("{base}/oidc/v1/userinfo")
+            }
+        });
+        Some(Self { issuer, project_id, audience, jwks_url, userinfo_url })
     }
 }
 
@@ -86,6 +100,11 @@ pub struct JwksCache {
 }
 
 impl JwksCache {
+    /// The issuer's host (used for Host header in container networking).
+    pub fn issuer_host(&self) -> Option<&str> {
+        self.issuer_host.as_deref()
+    }
+
     pub fn new(config: &ZitadelConfig) -> Self {
         // Extract "host:port" from the issuer for the Host header
         let issuer_host = url::Url::parse(&config.issuer).ok().and_then(|u| {
@@ -191,6 +210,39 @@ pub async fn validate_jwt_extract_sub(
     let name = claims.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
 
     Ok(JwtClaims { sub, email, name })
+}
+
+// ---------------------------------------------------------------------------
+// Userinfo fallback
+// ---------------------------------------------------------------------------
+
+/// Fetch the user's email from Zitadel's userinfo endpoint.
+///
+/// Called when the JWT access token doesn't include an `email` claim (default
+/// Zitadel behaviour). Returns `None` on any failure — callers should fall
+/// back gracefully.
+pub async fn fetch_user_email(
+    token: &str,
+    config: &ZitadelConfig,
+    issuer_host: Option<&str>,
+) -> Option<(String, Option<String>)> {
+    let client = reqwest::Client::new();
+    let mut req = client.get(&config.userinfo_url).bearer_auth(token);
+    if let Some(host) = issuer_host {
+        req = req.header("Host", host);
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        tracing::debug!(
+            status = %resp.status(),
+            "userinfo request failed"
+        );
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    let email = body.get("email").and_then(|v| v.as_str()).map(|s| s.to_string())?;
+    let name = body.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+    Some((email, name))
 }
 
 // ---------------------------------------------------------------------------

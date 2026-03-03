@@ -67,20 +67,20 @@ pub async fn auth_session_handler(
         .collect();
     teams.sort();
 
-    // Derive org context from org-scoped permissions.
-    // Format: "org:{name}:admin" or "org:{name}:member" or "org:{name}:viewer"
-    let mut org_name: Option<String> = None;
-    let mut org_role: Option<String> = None;
-    for scope in &scopes {
-        if let Some(rest) = scope.strip_prefix("org:") {
+    // Org context is populated by the auth middleware from the DB.
+    // Derive org_role from scopes using org_name (the middleware sets org_id/org_name
+    // but not the role string, so we still parse it from scopes).
+    let org_role = context.org_name.as_ref().and_then(|name| {
+        scopes.iter().find_map(|s| {
+            let rest = s.strip_prefix("org:")?;
             let parts: Vec<&str> = rest.splitn(2, ':').collect();
-            if parts.len() == 2 && parts[0] != "platform" {
-                org_name = Some(parts[0].to_string());
-                org_role = Some(parts[1].to_string());
-                break;
+            if parts.len() == 2 && parts[0] == name {
+                Some(parts[1].to_string())
+            } else {
+                None
             }
-        }
-    }
+        })
+    });
 
     let email = context.user_email.clone().unwrap_or_default();
     // Use email prefix as display name (the OIDC profile name isn't available here,
@@ -97,7 +97,7 @@ pub async fn auth_session_handler(
         scopes,
         teams,
         org_id: context.org_id.as_ref().map(|id| id.to_string()),
-        org_name,
+        org_name: context.org_name.clone(),
         org_role,
     })
 }
@@ -105,7 +105,7 @@ pub async fn auth_session_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::TokenId;
+    use crate::domain::{OrgId, TokenId};
 
     fn make_context(scopes: Vec<&str>) -> AuthContext {
         AuthContext::with_user(
@@ -115,6 +115,10 @@ mod tests {
             "admin@flowplane.local".to_string(),
             scopes.into_iter().map(String::from).collect(),
         )
+    }
+
+    fn make_org_context(scopes: Vec<&str>, org_id: &str, org_name: &str) -> AuthContext {
+        make_context(scopes).with_org(OrgId::from_string(org_id.to_string()), org_name.to_string())
     }
 
     #[tokio::test]
@@ -127,17 +131,22 @@ mod tests {
         assert!(resp.scopes.contains(&"admin:all".to_string()));
         assert_eq!(resp.email, "admin@flowplane.local");
         assert!(resp.teams.is_empty());
-        // Platform org is excluded from org context
+        // Platform org is excluded from org context (no with_org call)
         assert!(resp.org_name.is_none());
+        assert!(resp.org_id.is_none());
     }
 
     #[tokio::test]
     async fn org_admin_session() {
-        let ctx =
-            make_context(vec!["org:acme-corp:admin", "team:engineering:*:*", "team:payments:*:*"]);
+        let ctx = make_org_context(
+            vec!["org:acme-corp:admin", "team:engineering:*:*", "team:payments:*:*"],
+            "org-acme-id",
+            "acme-corp",
+        );
         let Json(resp) = auth_session_handler(Extension(ctx)).await;
 
         assert!(!resp.is_platform_admin);
+        assert_eq!(resp.org_id.as_deref(), Some("org-acme-id"));
         assert_eq!(resp.org_name.as_deref(), Some("acme-corp"));
         assert_eq!(resp.org_role.as_deref(), Some("admin"));
         assert_eq!(resp.teams, vec!["engineering", "payments"]);
@@ -145,14 +154,19 @@ mod tests {
 
     #[tokio::test]
     async fn team_member_session() {
-        let ctx = make_context(vec![
-            "org:acme-corp:member",
-            "team:engineering:clusters:read",
-            "team:engineering:routes:write",
-        ]);
+        let ctx = make_org_context(
+            vec![
+                "org:acme-corp:member",
+                "team:engineering:clusters:read",
+                "team:engineering:routes:write",
+            ],
+            "org-acme-id",
+            "acme-corp",
+        );
         let Json(resp) = auth_session_handler(Extension(ctx)).await;
 
         assert!(!resp.is_platform_admin);
+        assert_eq!(resp.org_id.as_deref(), Some("org-acme-id"));
         assert_eq!(resp.org_name.as_deref(), Some("acme-corp"));
         assert_eq!(resp.org_role.as_deref(), Some("member"));
         assert_eq!(resp.teams, vec!["engineering"]);
@@ -167,5 +181,6 @@ mod tests {
         assert!(resp.scopes.is_empty());
         assert!(resp.teams.is_empty());
         assert!(resp.org_name.is_none());
+        assert!(resp.org_id.is_none());
     }
 }

@@ -212,6 +212,53 @@ create_spa_app() {
   fi
 }
 
+# ── Create Action: add email to access tokens ─────────────────────
+# Zitadel access tokens omit email by default. This Action adds it
+# for human users so audit trails have the real email address.
+# Machine users are unaffected (no human.email property).
+create_email_action() {
+  log "Creating Action to add email to access tokens..."
+
+  local action_script
+  action_script='function addEmailToAccessToken(ctx, api) { if (ctx.v1.user.human && ctx.v1.user.human.email) { api.v1.claims.setClaim("email", ctx.v1.user.human.email); if (ctx.v1.user.human.profile && ctx.v1.user.human.profile.displayName) { api.v1.claims.setClaim("name", ctx.v1.user.human.profile.displayName); } } }'
+
+  api POST /management/v1/actions "{
+    \"name\": \"addEmailToAccessToken\",
+    \"script\": \"$(echo "$action_script" | sed 's/"/\\"/g')\",
+    \"timeout\": \"10s\",
+    \"allowedToFail\": true
+  }"
+
+  local action_id=""
+  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+    action_id=$(echo "$BODY" | jq -r '.id')
+    ok "Action created (id: ${action_id})"
+  elif [ "$HTTP_CODE" = "409" ] || echo "$BODY" | grep -qi "already exists"; then
+    api POST /management/v1/actions/_search '{"queries":[]}'
+    action_id=$(echo "$BODY" | jq -r '.result[] | select(.name=="addEmailToAccessToken") | .id' 2>/dev/null | head -1)
+    if [ -z "$action_id" ] || [ "$action_id" = "null" ]; then
+      fail "Action exists but could not find its ID"
+      return
+    fi
+    skip "Action 'addEmailToAccessToken' (id: ${action_id})"
+  else
+    fail "Create action failed (HTTP ${HTTP_CODE}): ${BODY}"
+    return
+  fi
+
+  # Set action on Complement Token flow (type 2), Pre Access Token trigger (type 2)
+  log "Setting action on Complement Token flow..."
+  api POST /management/v1/flows/2/trigger/2 "{
+    \"actionIds\": [\"${action_id}\"]
+  }"
+
+  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+    ok "Action set on Pre Access Token Creation trigger"
+  else
+    fail "Set action on flow failed (HTTP ${HTTP_CODE}): ${BODY}"
+  fi
+}
+
 # ── Write env files ───────────────────────────────────────────────
 write_env_files() {
   log "Writing .env.zitadel..."
@@ -272,6 +319,7 @@ main() {
   grant_login_client_role
   create_project
   create_spa_app
+  create_email_action
 
   write_env_files
   restart_control_plane

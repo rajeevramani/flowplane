@@ -373,19 +373,30 @@ impl UserRepository for SqlxUserRepository {
     async fn upsert_from_jwt(&self, sub: &str, email: &str, name: &str) -> Result<User> {
         let id = UserId::new();
 
+        // When JWT doesn't include email (common for access tokens), use a
+        // unique placeholder so the NOT NULL UNIQUE constraint is satisfied.
+        // On conflict (existing user by zitadel_sub), preserve the real email
+        // that was set during invite rather than blanking it.
+        let effective_email =
+            if email.is_empty() { format!("zitadel-{}@jit.local", sub) } else { email.to_string() };
+
         let row = sqlx::query_as::<_, UserRow>(
             r#"
             INSERT INTO users (id, email, password_hash, name, status, is_admin, zitadel_sub, created_at, updated_at)
             VALUES ($1, $2, '', $3, 'active', false, $4, $5, $6)
             ON CONFLICT (zitadel_sub) DO UPDATE SET
-                email = EXCLUDED.email,
-                name = EXCLUDED.name,
+                email = CASE
+                    WHEN $2 NOT LIKE '%@jit.local' THEN $2
+                    WHEN users.email != '' THEN users.email
+                    ELSE $2
+                END,
+                name = CASE WHEN $3 != '' THEN $3 ELSE users.name END,
                 updated_at = EXCLUDED.updated_at
             RETURNING id, email, password_hash, name, status, is_admin, zitadel_sub, created_at, updated_at
             "#,
         )
         .bind(id.to_string())
-        .bind(email)
+        .bind(&effective_email)
         .bind(name)
         .bind(sub)
         .bind(Utc::now())
