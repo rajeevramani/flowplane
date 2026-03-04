@@ -70,9 +70,8 @@ use super::{
         refresh_mcp_schema_handler, reload_filter_schemas_handler,
         remove_filter_configuration_handler, remove_team_member, revoke_certificate_handler,
         set_app_status_handler, uninstall_filter_handler, update_cluster_handler,
-        update_filter_handler, update_listener_handler, update_mcp_tool_handler,
-        update_org_agent_scopes, update_org_team, update_route_config_handler,
-        update_secret_handler, update_team_member_scopes,
+        update_filter_handler, update_listener_handler, update_mcp_tool_handler, update_org_team,
+        update_route_config_handler, update_secret_handler, update_team_member_scopes,
     },
 };
 
@@ -431,10 +430,6 @@ pub fn build_router_with_registry(
         .route(
             "/api/v1/orgs/{org_name}/agents/{agent_name}",
             delete(delete_org_agent),
-        )
-        .route(
-            "/api/v1/orgs/{org_name}/agents/{agent_name}/scopes",
-            put(update_org_agent_scopes),
         )
         .route(
             "/api/v1/orgs/{org_name}/agents/{agent_name}/grants",

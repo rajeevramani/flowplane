@@ -2238,4 +2238,154 @@ mod tests {
         let error = response.error.unwrap();
         assert_eq!(error.code, error_codes::METHOD_NOT_FOUND);
     }
+
+    // ===== Cross-context isolation tests (tools/list filtering) =====
+
+    #[tokio::test]
+    async fn test_cp_tool_agent_with_no_grants_sees_no_cp_tools() {
+        let test_db = TestDatabase::new("handler_cp_no_grants").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // CP-tool agent with zero grants
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("cp-agent-token".to_string()),
+            "cp-agent".to_string(),
+            crate::domain::UserId::from_str_unchecked("cp-agent-1"),
+            "cp@test.com".to_string(),
+            vec![],
+        )
+        .with_agent_data(Some(crate::auth::models::AgentContext::CpTool), vec![]);
+
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none(), "tools/list must not error");
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // No grants → no CP tools visible
+        assert!(tools.is_empty(), "CP-tool agent with no grants should see zero tools");
+    }
+
+    #[tokio::test]
+    async fn test_cp_tool_agent_with_grant_sees_only_matching_tools() {
+        let test_db = TestDatabase::new("handler_cp_with_grant").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // CP-tool agent with clusters:read grant
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("cp-agent-token".to_string()),
+            "cp-agent".to_string(),
+            crate::domain::UserId::from_str_unchecked("cp-agent-2"),
+            "cp@test.com".to_string(),
+            vec![],
+        )
+        .with_agent_data(
+            Some(crate::auth::models::AgentContext::CpTool),
+            vec![crate::auth::models::CpGrant {
+                resource_type: "clusters".to_string(),
+                action: "read".to_string(),
+                team: "test-team".to_string(),
+            }],
+        );
+
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none(), "tools/list must not error");
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // Should have at least one tool matching clusters:read grant
+        assert!(!tools.is_empty(), "Should have at least one cluster read tool");
+        // No api_* tools should appear — CP-tool agents never see gateway tools
+        let has_api_tool = tools
+            .iter()
+            .any(|t| t["name"].as_str().map(|n| n.starts_with("api_")).unwrap_or(false));
+        assert!(!has_api_tool, "CP-tool agent must never see api_* gateway tools");
+    }
+
+    #[tokio::test]
+    async fn test_gateway_tool_agent_sees_no_cp_tools() {
+        let test_db = TestDatabase::new("handler_gw_no_cp").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // Gateway-tool agent (no grants, but context is gateway-tool)
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("gw-agent-token".to_string()),
+            "gw-agent".to_string(),
+            crate::domain::UserId::from_str_unchecked("gw-agent-1"),
+            "gw@test.com".to_string(),
+            vec![],
+        )
+        .with_agent_data(Some(crate::auth::models::AgentContext::GatewayTool), vec![]);
+
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none(), "tools/list must not error");
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // No cp_* tools should be visible to gateway-tool agent
+        let has_cp_tool =
+            tools.iter().any(|t| t["name"].as_str().map(|n| n.starts_with("cp_")).unwrap_or(false));
+        assert!(!has_cp_tool, "Gateway-tool agent must never see cp_* control-plane tools");
+        // With no grants and no gateway executor, the list is empty
+        assert!(tools.is_empty(), "Gateway-tool agent with no grants sees empty tools list");
+    }
+
+    #[tokio::test]
+    async fn test_api_consumer_agent_tools_list_is_empty() {
+        let test_db = TestDatabase::new("handler_consumer_empty").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // API-consumer agent
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("consumer-token".to_string()),
+            "consumer".to_string(),
+            crate::domain::UserId::from_str_unchecked("consumer-1"),
+            "consumer@test.com".to_string(),
+            vec![],
+        )
+        .with_agent_data(Some(crate::auth::models::AgentContext::ApiConsumer), vec![]);
+
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none(), "tools/list must not error for api-consumer agent");
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // API consumers access routes via Envoy, not MCP tools
+        assert!(tools.is_empty(), "API-consumer agent must always see empty tools list");
+    }
 }

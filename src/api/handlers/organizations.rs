@@ -1651,8 +1651,6 @@ pub struct CreateAgentRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub teams: Vec<String>,
-    #[serde(default)]
-    pub scopes: Vec<String>,
 }
 
 /// Response from creating or re-provisioning an agent.
@@ -1667,7 +1665,6 @@ pub struct CreateAgentResponse {
     pub token_endpoint: String,
     pub org_id: String,
     pub teams: Vec<String>,
-    pub scopes: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -1688,23 +1685,6 @@ fn validate_agent_name(name: &str) -> Result<(), ApiError> {
         return Err(ApiError::BadRequest(
             "Agent name must start and end with a letter or digit".to_string(),
         ));
-    }
-    Ok(())
-}
-
-fn validate_scope(scope: &str) -> Result<(), ApiError> {
-    const VALID_RESOURCES: &[&str] =
-        &["clusters", "routes", "listeners", "filters", "learning", "secrets", "stats", "agents"];
-    const VALID_ACTIONS: &[&str] = &["read", "write"];
-    let parts: Vec<&str> = scope.split(':').collect();
-    if parts.len() != 2
-        || !VALID_RESOURCES.contains(&parts[0])
-        || !VALID_ACTIONS.contains(&parts[1])
-    {
-        return Err(ApiError::BadRequest(format!(
-            "Invalid scope '{}': must be resource:action (e.g. clusters:read)",
-            scope
-        )));
     }
     Ok(())
 }
@@ -1964,9 +1944,6 @@ pub async fn create_org_agent(
     if payload.teams.is_empty() {
         return Err(ApiError::BadRequest("At least one team must be specified".to_string()));
     }
-    for scope in &payload.scopes {
-        validate_scope(scope)?;
-    }
     if let Some(ref desc) = payload.description {
         if desc.len() > 256 {
             return Err(ApiError::BadRequest(
@@ -1999,12 +1976,8 @@ pub async fn create_org_agent(
                     team_name_str, org_name
                 ))
             })?;
-        let team_scopes = if payload.scopes.is_empty() {
-            scopes_for_org_role(OrgRole::Member, &team.name)
-        } else {
-            payload.scopes.iter().map(|s| format!("team:{}:{}", team.name, s)).collect()
-        };
-        team_entries.push((team.id.to_string(), team_scopes));
+        // Agents get empty scopes at creation — access is managed via agent_grants.
+        team_entries.push((team.id.to_string(), Vec::new()));
     }
 
     // Step 5: Check ZitadelAdminClient available
@@ -2047,7 +2020,6 @@ pub async fn create_org_agent(
                 token_endpoint: get_token_endpoint(),
                 org_id: org_id_str,
                 teams: payload.teams,
-                scopes: payload.scopes,
                 created_at: chrono::Utc::now(),
                 message: Some(
                     "Agent already exists. Credentials were returned at creation time only."
@@ -2089,7 +2061,6 @@ pub async fn create_org_agent(
             token_endpoint: get_token_endpoint(),
             org_id: org_id_str,
             teams: payload.teams,
-            scopes: payload.scopes,
             created_at: chrono::Utc::now(),
             message: None,
         }),
@@ -2104,7 +2075,6 @@ pub struct AgentInfo {
     pub name: String,
     pub username: String,
     pub teams: Vec<String>,
-    pub scopes: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -2121,7 +2091,6 @@ struct AgentMembershipRow {
     name: String,
     created_at: chrono::DateTime<chrono::Utc>,
     team: Option<String>,
-    scopes_json: Option<String>,
 }
 
 #[utoipa::path(
@@ -2159,7 +2128,7 @@ pub async fn list_org_agents(
         r#"
         SELECT
             u.id, u.name, u.created_at,
-            utm.team, utm.scopes::text AS scopes_json
+            utm.team
         FROM users u
         JOIN organization_memberships om ON u.id = om.user_id AND om.org_id = $1
         LEFT JOIN user_team_memberships utm ON u.id = utm.user_id
@@ -2185,17 +2154,11 @@ pub async fn list_org_agents(
                 name: row.name,
                 username,
                 teams: Vec::new(),
-                scopes: Vec::new(),
                 created_at: row.created_at,
             }
         });
         if let Some(team) = row.team {
             entry.teams.push(team);
-        }
-        if let Some(scopes_json) = row.scopes_json {
-            if let Ok(scopes) = serde_json::from_str::<Vec<String>>(&scopes_json) {
-                entry.scopes.extend(scopes);
-            }
         }
     }
 
@@ -2267,123 +2230,6 @@ pub async fn delete_org_agent(
     );
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Request to update an agent's scopes across all team memberships.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateAgentScopesRequest {
-    /// Base scope pairs (e.g. "clusters:read") — replaces all existing scopes.
-    pub scopes: Vec<String>,
-}
-
-/// Row for querying agent team memberships (id + team name).
-#[derive(sqlx::FromRow)]
-struct AgentTeamMembershipRow {
-    id: String,
-    team: String,
-}
-
-/// Update scopes for an existing agent across all its team memberships (org admin only).
-#[utoipa::path(
-    put,
-    path = "/api/v1/orgs/{org_name}/agents/{agent_name}/scopes",
-    params(
-        ("org_name" = String, Path, description = "Organization name"),
-        ("agent_name" = String, Path, description = "Agent name")
-    ),
-    request_body = UpdateAgentScopesRequest,
-    responses(
-        (status = 200, description = "Agent scopes updated", body = AgentInfo),
-        (status = 400, description = "Invalid scope"),
-        (status = 403, description = "Organization admin privileges required"),
-        (status = 404, description = "Agent not found")
-    ),
-    security(("bearer_auth" = [])),
-    tag = "Organizations"
-)]
-#[instrument(skip(state, payload), fields(org_name = %org_name, agent_name = %agent_name, user_id = ?context.user_id))]
-pub async fn update_org_agent_scopes(
-    State(state): State<ApiState>,
-    Extension(context): Extension<AuthContext>,
-    Path((org_name, agent_name)): Path<(String, String)>,
-    Json(payload): Json<UpdateAgentScopesRequest>,
-) -> Result<Json<AgentInfo>, ApiError> {
-    require_org_admin_only(&context, &org_name)
-        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
-
-    for scope in &payload.scopes {
-        validate_scope(scope)?;
-    }
-
-    let pool = pool_for_state(&state)?;
-    let org_repo = org_repository_for_state(&state)?;
-    let org = org_repo
-        .get_organization_by_name(&org_name)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
-
-    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
-    let machine_users = user_repo
-        .find_machine_users_by_org(org.id.as_ref())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
-
-    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
-        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
-    })?;
-
-    // Fetch all team memberships for this agent
-    let memberships = sqlx::query_as::<_, AgentTeamMembershipRow>(
-        "SELECT id, team FROM user_team_memberships WHERE user_id = $1",
-    )
-    .bind(&agent.id)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| ApiError::Internal(format!("Failed to get agent memberships: {e}")))?;
-
-    let membership_repo =
-        crate::storage::repositories::SqlxTeamMembershipRepository::new(pool.clone());
-
-    let mut all_teams: Vec<String> = Vec::new();
-    let mut all_scopes: Vec<String> = Vec::new();
-
-    for row in &memberships {
-        let team_scopes: Vec<String> =
-            payload.scopes.iter().map(|s| format!("team:{}:{}", row.team, s)).collect();
-        all_scopes.extend(team_scopes.clone());
-        membership_repo
-            .update_membership_scopes(&row.id, team_scopes)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to update membership scopes: {e}")))?;
-        all_teams.push(row.team.clone());
-    }
-
-    // Evict permission cache so next request picks up new permissions
-    if let Some(ref cache) = state.permission_cache {
-        if let Some(ref zitadel_sub) = agent.zitadel_sub {
-            cache.evict(zitadel_sub).await;
-        }
-    }
-
-    let username = format!("{}--{}", org_name, agent_name);
-
-    tracing::info!(
-        agent_name = %agent_name,
-        agent_id = %agent.id,
-        org_name = %org_name,
-        "updated agent scopes"
-    );
-
-    Ok(Json(AgentInfo {
-        agent_id: agent.id.to_string(),
-        name: agent_name,
-        username,
-        teams: all_teams,
-        scopes: all_scopes,
-        created_at: agent.created_at,
-    }))
 }
 
 // ===== Agent Grant CRUD =====
@@ -3186,49 +3032,6 @@ mod tests {
         assert!(validate_agent_name(&name).is_ok());
     }
 
-    // ===== validate_scope tests =====
-
-    #[test]
-    fn validate_scope_accepts_valid_resource_action() {
-        assert!(validate_scope("clusters:read").is_ok());
-        assert!(validate_scope("clusters:write").is_ok());
-        assert!(validate_scope("routes:read").is_ok());
-        assert!(validate_scope("routes:write").is_ok());
-        assert!(validate_scope("listeners:read").is_ok());
-        assert!(validate_scope("listeners:write").is_ok());
-        assert!(validate_scope("filters:read").is_ok());
-        assert!(validate_scope("filters:write").is_ok());
-        assert!(validate_scope("learning:read").is_ok());
-        assert!(validate_scope("learning:write").is_ok());
-        assert!(validate_scope("secrets:read").is_ok());
-        assert!(validate_scope("secrets:write").is_ok());
-        assert!(validate_scope("stats:read").is_ok());
-        assert!(validate_scope("agents:read").is_ok());
-        assert!(validate_scope("agents:write").is_ok());
-    }
-
-    #[test]
-    fn validate_scope_rejects_invalid_resource() {
-        assert!(validate_scope("users:read").is_err());
-        assert!(validate_scope("admin:all").is_err());
-        assert!(validate_scope("invalid:read").is_err());
-    }
-
-    #[test]
-    fn validate_scope_rejects_invalid_action() {
-        assert!(validate_scope("clusters:delete").is_err());
-        assert!(validate_scope("clusters:admin").is_err());
-        assert!(validate_scope("clusters:*").is_err());
-    }
-
-    #[test]
-    fn validate_scope_rejects_malformed() {
-        assert!(validate_scope("clusters").is_err());
-        assert!(validate_scope("clusters:read:extra").is_err());
-        assert!(validate_scope(":read").is_err());
-        assert!(validate_scope("").is_err());
-    }
-
     // ===== Agent authorization tests (check_resource_access based) =====
 
     fn team_member_with_agents_write(team: &str) -> AuthContext {
@@ -3327,41 +3130,132 @@ mod tests {
         );
     }
 
-    // ===== update_org_agent_scopes authorization tests (remains org-admin-only) =====
+    // ===== Grant API authorization tests =====
 
     #[test]
-    fn update_agent_scopes_allows_matching_org_admin() {
+    fn create_grant_requires_org_admin_allows_org_admin() {
         let ctx = org_admin_context("acme-corp");
         assert!(
             crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_ok(),
-            "Org admin should be able to update agent scopes in their org"
+            "Org admin should be able to create grants"
         );
     }
 
     #[test]
-    fn update_agent_scopes_rejects_platform_admin() {
+    fn create_grant_requires_org_admin_rejects_platform_admin() {
         let ctx = admin_context();
         assert!(
             crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
-            "Platform admin must not be allowed to update agent scopes"
+            "Platform admin must not create grants (no visibility inside orgs)"
         );
     }
 
     #[test]
-    fn update_agent_scopes_rejects_wrong_org_admin() {
-        let ctx = org_admin_context("acme-corp");
-        assert!(
-            crate::auth::authorization::require_org_admin_only(&ctx, "globex-corp").is_err(),
-            "Org admin of different org must not update agent scopes"
-        );
-    }
-
-    #[test]
-    fn update_agent_scopes_rejects_org_member() {
-        let ctx = org_member_context("acme-corp");
+    fn create_grant_requires_org_admin_rejects_team_member() {
+        let ctx = team_member_with_agents_write("engineering");
         assert!(
             crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
-            "Org member must not be able to update agent scopes"
+            "Team member must not create grants even with agents:write"
         );
+    }
+
+    #[test]
+    fn create_grant_requires_org_admin_rejects_wrong_org_admin() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "other-org").is_err(),
+            "Org admin of different org must not create grants"
+        );
+    }
+
+    #[test]
+    fn grant_type_validation_accepts_valid_types() {
+        // Verify the set of accepted grant_type values
+        for valid in &["cp-tool", "gateway-tool", "route"] {
+            assert!(
+                matches!(*valid, "cp-tool" | "gateway-tool" | "route"),
+                "Grant type '{}' should be valid",
+                valid
+            );
+        }
+    }
+
+    #[test]
+    fn grant_type_validation_rejects_invalid_types() {
+        // These should NOT match any valid grant type
+        for invalid in &["admin", "read", "execute", "", "cp_tool", "GATEWAY-TOOL"] {
+            assert!(
+                !matches!(*invalid, "cp-tool" | "gateway-tool" | "route"),
+                "Grant type '{}' should be invalid",
+                invalid
+            );
+        }
+    }
+
+    // ===== Cross-context isolation authorization checks =====
+
+    #[test]
+    fn cp_tool_agent_cannot_access_governance_resources() {
+        let ctx = AuthContext::with_user(
+            TokenId::from_str_unchecked("cp-agent-token"),
+            "cp-agent".into(),
+            crate::domain::UserId::from_str_unchecked("cp-1"),
+            "cp@test.com".into(),
+            vec![],
+        )
+        .with_agent_data(
+            Some(crate::auth::models::AgentContext::CpTool),
+            vec![crate::auth::models::CpGrant {
+                resource_type: "clusters".to_string(),
+                action: "read".to_string(),
+                team: "engineering".to_string(),
+            }],
+        );
+
+        // CP tool with clusters:read can access clusters
+        assert!(
+            check_resource_access(&ctx, "clusters", "read", Some("engineering")),
+            "CP-tool agent with clusters:read grant should access clusters"
+        );
+        // But cannot access governance resources even with grants
+        assert!(
+            !check_resource_access(&ctx, "organizations", "read", None),
+            "CP-tool agent must not access governance resources"
+        );
+    }
+
+    #[test]
+    fn gateway_tool_agent_cannot_access_any_cp_resource() {
+        let ctx = AuthContext::with_user(
+            TokenId::from_str_unchecked("gw-agent-token"),
+            "gw-agent".into(),
+            crate::domain::UserId::from_str_unchecked("gw-1"),
+            "gw@test.com".into(),
+            vec![],
+        )
+        .with_agent_data(Some(crate::auth::models::AgentContext::GatewayTool), vec![]);
+
+        // Gateway-tool agent with no CP grants cannot access any CP resource
+        assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "routes", "write", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "listeners", "read", None));
+        assert!(!check_resource_access(&ctx, "agents", "read", None));
+    }
+
+    #[test]
+    fn api_consumer_agent_cannot_access_any_cp_resource() {
+        let ctx = AuthContext::with_user(
+            TokenId::from_str_unchecked("consumer-token"),
+            "consumer".into(),
+            crate::domain::UserId::from_str_unchecked("consumer-1"),
+            "consumer@test.com".into(),
+            vec![],
+        )
+        .with_agent_data(Some(crate::auth::models::AgentContext::ApiConsumer), vec![]);
+
+        // API-consumer agent cannot call CP endpoints
+        assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "routes", "read", None));
+        assert!(!check_resource_access(&ctx, "agents", "write", None));
     }
 }
