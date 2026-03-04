@@ -522,7 +522,7 @@
 
 			<!-- Invitations Section -->
 			{#if org}
-				<OrgInvitationsSection orgName={org.name} {orgId} {userScopes} />
+				<OrgInvitationsSection orgName={org.name} {orgId} {userScopes} onMemberInvited={loadMembers} />
 			{/if}
 		{/if}
 	</main>

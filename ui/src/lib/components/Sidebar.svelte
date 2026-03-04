@@ -7,9 +7,7 @@
 		Radio,
 		FileUp,
 		Filter,
-		Users,
 		Building2,
-		Key,
 		FileText,
 		ChevronDown,
 		List,
@@ -71,7 +69,6 @@
 
 	// Admin navigation items
 	const adminItems = [
-		{ id: 'users', label: 'Users', href: '/admin/users', icon: Users },
 		{ id: 'teams', label: 'Teams', href: '/admin/teams', icon: Building2 },
 		{ id: 'audit', label: 'Audit Log', href: '/admin/audit-log', icon: FileText }
 	];
@@ -356,31 +353,28 @@
 						<a
 							href="/organizations/{sessionInfo.orgName}/teams"
 							class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
-								{isActive('/organizations/')
+								{isActive(`/organizations/${sessionInfo.orgName}/teams`)
 								? 'bg-blue-600 text-white'
 								: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
 						>
 							<Building2 class="h-5 w-5" />
 							Teams
 						</a>
+						<a
+							href="/organizations/{sessionInfo.orgName}/agents"
+							class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+								{isActive(`/organizations/${sessionInfo.orgName}/agents`)
+								? 'bg-blue-600 text-white'
+								: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+						>
+							<Bot class="h-5 w-5" />
+							Agents
+						</a>
 					{/if}
 				</div>
 			</div>
 		{/if}
 
-		<!-- Tokens (accessible to all) -->
-		<div class="px-3">
-			<a
-				href="/tokens"
-				class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
-					{isActive('/tokens')
-					? 'bg-blue-600 text-white'
-					: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
-			>
-				<Key class="h-5 w-5" />
-				Access Tokens
-			</a>
-		</div>
 	</nav>
 
 	<!-- Version Footer -->

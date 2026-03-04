@@ -91,7 +91,8 @@ pub use organizations::{
     admin_list_organizations, admin_remove_org_member, admin_update_org_member_role,
     admin_update_organization, create_org_agent, create_org_team, delete_org_agent,
     delete_org_team, get_current_org, list_org_agents, list_org_teams, list_team_members,
-    provision_machine_user, remove_team_member, update_org_team, update_team_member_scopes,
+    provision_machine_user, remove_team_member, update_org_agent_scopes, update_org_team,
+    update_team_member_scopes,
 };
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
@@ -161,7 +162,7 @@ pub use organizations::{
     AddOrgMemberRequest, AddTeamMemberRequest, AgentInfo, CreateAgentRequest, CreateAgentResponse,
     CurrentOrgResponse, InviteOrgMemberRequest, InviteOrgMemberResponse, ListAgentsResponse,
     ListOrgMembersResponse, ListOrgTeamsResponse, ListTeamMembersResponse, TeamMemberResponse,
-    UpdateOrgMemberRoleRequest, UpdateTeamMemberScopesRequest,
+    UpdateAgentScopesRequest, UpdateOrgMemberRoleRequest, UpdateTeamMemberScopesRequest,
 };
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,

@@ -158,13 +158,6 @@
 					<p class="text-sm text-gray-600">Create tenant orgs and assign org admins</p>
 				</a>
 				<a
-					href="/admin/users"
-					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
-				>
-					<h4 class="text-lg font-semibold text-gray-900 mb-2">Manage Users</h4>
-					<p class="text-sm text-gray-600">View and manage user accounts across the platform</p>
-				</a>
-				<a
 					href="/admin/audit-log"
 					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
 				>
@@ -250,16 +243,6 @@
 				<!-- Governance admin actions -->
 				{#if isSystemAdmin(sessionInfo.scopes)}
 					<a
-						href="/admin/users"
-						class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
-					>
-						<h4 class="text-lg font-semibold text-gray-900 mb-2">Manage Users</h4>
-						<p class="text-sm text-gray-600">
-							Create, edit, and manage user accounts and permissions
-						</p>
-					</a>
-
-					<a
 						href="/admin/audit-log"
 						class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
 					>
@@ -288,16 +271,6 @@
 					<h4 class="text-lg font-semibold text-gray-900 mb-2">Import OpenAPI Spec</h4>
 					<p class="text-sm text-gray-600">
 						Upload and configure your API from an OpenAPI specification
-					</p>
-				</a>
-
-				<a
-					href="/tokens"
-					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
-				>
-					<h4 class="text-lg font-semibold text-gray-900 mb-2">Create Token</h4>
-					<p class="text-sm text-gray-600">
-						Generate personal access tokens for API authentication
 					</p>
 				</a>
 
@@ -355,8 +328,7 @@
 							>4</span
 						>
 						<div>
-							<strong>Monitor and manage:</strong> Use the dashboard to view metrics, manage
-							tokens, and review audit logs.
+							<strong>Monitor and manage:</strong> Use the dashboard to view metrics and review audit logs.
 						</div>
 					</li>
 				</ol>

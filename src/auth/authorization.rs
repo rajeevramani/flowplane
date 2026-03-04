@@ -60,7 +60,6 @@ pub fn is_governance_resource(resource: &str) -> bool {
             | "organizations"
             | "users"
             | "teams"
-            | "tokens"
             | "stats"
     )
 }
@@ -1599,7 +1598,6 @@ mod tests {
         assert_eq!(resource_from_path("/api/v1/clusters/my-cluster"), Some("clusters"));
         assert_eq!(resource_from_path("/api/v1/listeners"), Some("listeners"));
         assert_eq!(resource_from_path("/api/v1/api-definitions"), Some("api-definitions"));
-        assert_eq!(resource_from_path("/api/v1/tokens/revoke"), Some("tokens"));
         assert_eq!(resource_from_path("/health"), None);
         assert_eq!(resource_from_path("/api/v2/route-configs"), None); // Wrong version
 

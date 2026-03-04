@@ -2,7 +2,7 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import type { CreateTeamRequest, UserResponse, OrganizationResponse, SessionInfoResponse } from '$lib/api/types';
+	import type { CreateTeamRequest, OrganizationResponse, SessionInfoResponse } from '$lib/api/types';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
 	import { validateRequired, validateMaxLength, runValidators } from '$lib/utils/validators';
 	import { isSystemAdmin } from '$lib/stores/org';
@@ -15,13 +15,11 @@
 		orgId: ''
 	});
 
-	let users = $state<UserResponse[]>([]);
 	let organizations = $state<OrganizationResponse[]>([]);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let errors = $state<Record<string, string>>({});
 	let isSubmitting = $state(false);
 	let error = $state<string | null>(null);
-	let isLoadingUsers = $state(true);
 	let isLoadingOrgs = $state(true);
 	let isSysAdmin = $state(false);
 
@@ -40,24 +38,11 @@
 				formData.orgId = sessionInfo.orgId;
 			}
 
-			// Load users and organizations in parallel
-			await Promise.all([loadUsers(), loadOrganizations()]);
+			await loadOrganizations();
 		} catch {
 			goto('/login');
 		}
 	});
-
-	async function loadUsers() {
-		isLoadingUsers = true;
-		try {
-			const response = await apiClient.listUsers(100, 0);
-			users = response.items;
-		} catch (err: unknown) {
-			error = 'Failed to load users: ' + (err instanceof Error ? err.message : 'Unknown error');
-		} finally {
-			isLoadingUsers = false;
-		}
-	}
 
 	async function loadOrganizations() {
 		isLoadingOrgs = true;
@@ -252,22 +237,15 @@
 				<!-- Owner -->
 				<div>
 					<label for="owner" class="block text-sm font-medium text-gray-700 mb-2">
-						Team Owner
+						Team Owner (User ID)
 					</label>
-					{#if isLoadingUsers}
-						<div class="text-sm text-gray-500">Loading users...</div>
-					{:else}
-						<select
-							id="owner"
-							bind:value={formData.ownerUserId}
-							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-						>
-							<option value="">No owner (optional)</option>
-							{#each users as user}
-								<option value={user.id}>{user.name} ({user.email})</option>
-							{/each}
-						</select>
-					{/if}
+					<input
+						id="owner"
+						type="text"
+						bind:value={formData.ownerUserId}
+						placeholder="User ID or leave empty"
+						class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+					/>
 					<p class="mt-1 text-xs text-gray-500">
 						Optional: Assign a user as the owner of this team
 					</p>

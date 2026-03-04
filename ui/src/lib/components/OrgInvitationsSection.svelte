@@ -3,21 +3,16 @@
 	import { inviteMemberSchema } from '$lib/schemas/auth';
 	import { ZodError } from 'zod';
 	import { isSystemAdmin } from '$lib/stores/org';
-	import type { InvitableRole, OrgMembershipResponse } from '$lib/api/types';
-	import Badge from './Badge.svelte';
+	import type { InvitableRole } from '$lib/api/types';
 
 	interface Props {
 		orgName: string;
 		orgId: string;
 		userScopes: string[];
+		onMemberInvited?: () => void;
 	}
 
-	let { orgName, orgId, userScopes }: Props = $props();
-
-	// State
-	let members = $state<OrgMembershipResponse[]>([]);
-	let isLoading = $state(true);
-	let error = $state<string | null>(null);
+	let { orgName, orgId, userScopes, onMemberInvited }: Props = $props();
 
 	// Invite form state
 	let inviteEmail = $state('');
@@ -37,42 +32,6 @@
 	const availableRoles = $derived<InvitableRole[]>(
 		isAdmin ? ['admin', 'member', 'viewer'] : ['member', 'viewer']
 	);
-
-	function getRoleVariant(role: string): 'blue' | 'gray' | 'purple' {
-		switch (role) {
-			case 'admin':
-			case 'owner':
-				return 'blue';
-			case 'member':
-				return 'gray';
-			case 'viewer':
-				return 'purple';
-			default:
-				return 'gray';
-		}
-	}
-
-	function formatDate(dateString: string): string {
-		return new Date(dateString).toLocaleString('en-US', {
-			year: 'numeric',
-			month: 'short',
-			day: 'numeric',
-			hour: '2-digit',
-			minute: '2-digit'
-		});
-	}
-
-	async function loadMembers() {
-		isLoading = true;
-		error = null;
-		try {
-			members = await apiClient.listOrgMembers(orgId);
-		} catch (err: unknown) {
-			error = err instanceof Error ? err.message : 'Failed to load members';
-		} finally {
-			isLoading = false;
-		}
-	}
 
 	async function handleInvite(event: Event) {
 		event.preventDefault();
@@ -107,7 +66,7 @@
 			inviteRole = 'member';
 			invitePassword = '';
 
-			await loadMembers();
+			onMemberInvited?.();
 		} catch (err: unknown) {
 			if (err instanceof ZodError) {
 				const errors: Record<string, string> = {};
@@ -131,23 +90,12 @@
 	function dismissSuccess() {
 		successMessage = null;
 	}
-
-	// Initial load
-	$effect(() => {
-		loadMembers();
-	});
 </script>
 
 <div class="mt-8">
 	<div class="flex items-center justify-between mb-4">
 		<h2 class="text-lg font-semibold text-gray-900">Invite Member</h2>
 	</div>
-
-	{#if error}
-		<div class="mb-4 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
-			<p class="text-red-800 text-sm">{error}</p>
-		</div>
-	{/if}
 
 	<!-- Success banner -->
 	{#if successMessage}
@@ -283,64 +231,5 @@
 				</div>
 			{/if}
 		</form>
-	</div>
-
-	<!-- Members from invite list -->
-	<div class="bg-white rounded-lg shadow-md overflow-hidden">
-		{#if isLoading}
-			<div class="flex justify-center items-center py-8">
-				<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-			</div>
-		{:else if members.length === 0}
-			<div class="text-center py-8">
-				<p class="text-gray-500">No members yet. Invite someone above.</p>
-			</div>
-		{:else}
-			<div class="overflow-x-auto">
-				<table class="min-w-full divide-y divide-gray-200">
-					<thead class="bg-gray-50">
-						<tr>
-							<th
-								class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-							>
-								Member
-							</th>
-							<th
-								class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-							>
-								Role
-							</th>
-							<th
-								class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-							>
-								Added
-							</th>
-						</tr>
-					</thead>
-					<tbody class="bg-white divide-y divide-gray-200">
-						{#each members as member (member.id)}
-							<tr class="hover:bg-gray-50">
-								<td class="px-6 py-4 whitespace-nowrap">
-									<div class="text-sm font-medium text-gray-900">
-										{member.userName || 'Unknown'}
-									</div>
-									<div class="text-xs text-gray-500">
-										{member.userEmail || member.userId}
-									</div>
-								</td>
-								<td class="px-6 py-4 whitespace-nowrap">
-									<Badge variant={getRoleVariant(member.role)}>
-										{member.role.charAt(0).toUpperCase() + member.role.slice(1)}
-									</Badge>
-								</td>
-								<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-									{formatDate(member.createdAt)}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-		{/if}
 	</div>
 </div>

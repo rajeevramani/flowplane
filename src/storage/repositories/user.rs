@@ -38,6 +38,8 @@ struct UserTeamMembershipRow {
     pub team: String,
     pub scopes: String, // JSON array stored as string
     pub created_at: DateTime<Utc>,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
 }
 
 // Repository traits
@@ -462,6 +464,8 @@ impl SqlxTeamMembershipRepository {
             team: row.team,
             scopes,
             created_at: row.created_at,
+            user_name: row.user_name,
+            user_email: row.user_email,
         })
     }
 }
@@ -503,7 +507,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(user_id = %user_id), name = "db_list_user_memberships")]
     async fn list_user_memberships(&self, user_id: &UserId) -> Result<Vec<UserTeamMembership>> {
         let rows = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE user_id = $1 ORDER BY created_at",
+            "SELECT utm.id, utm.user_id, utm.team, utm.scopes, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.user_id = $1 ORDER BY utm.created_at",
         )
         .bind(user_id.to_string())
         .fetch_all(&self.pool)
@@ -519,7 +523,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(team = %team), name = "db_list_team_members")]
     async fn list_team_members(&self, team: &str) -> Result<Vec<UserTeamMembership>> {
         let rows = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE team = $1 ORDER BY created_at",
+            "SELECT utm.id, utm.user_id, utm.team, utm.scopes, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.team = $1 ORDER BY utm.created_at",
         )
         .bind(team)
         .fetch_all(&self.pool)
@@ -555,7 +559,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(membership_id = %id), name = "db_get_membership")]
     async fn get_membership(&self, id: &str) -> Result<Option<UserTeamMembership>> {
         let row = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE id = $1",
+            "SELECT utm.id, utm.user_id, utm.team, utm.scopes, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -575,7 +579,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         team: &str,
     ) -> Result<Option<UserTeamMembership>> {
         let row = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE user_id = $1 AND team = $2",
+            "SELECT utm.id, utm.user_id, utm.team, utm.scopes, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.user_id = $1 AND utm.team = $2",
         )
         .bind(user_id.to_string())
         .bind(team)

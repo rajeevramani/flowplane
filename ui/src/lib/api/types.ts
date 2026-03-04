@@ -121,38 +121,6 @@ export interface ApiError {
 	code?: string;
 }
 
-export type TokenStatus = 'Active' | 'Revoked' | 'Expired';
-
-export interface PersonalAccessToken {
-	id: string;
-	name: string;
-	description: string | null;
-	status: TokenStatus;
-	expiresAt: string | null;
-	lastUsedAt: string | null;
-	createdBy: string | null;
-	createdAt: string;
-	updatedAt: string;
-	scopes: string[];
-}
-
-export interface CreateTokenRequest {
-	name: string;
-	description?: string;
-	expiresAt?: string | null;
-	scopes: string[];
-}
-
-export interface TokenSecretResponse {
-	id: string;
-	token: string;
-}
-
-export interface UpdateTokenRequest {
-	name?: string;
-	description?: string;
-}
-
 export interface ImportOpenApiRequest {
 	spec: string; // YAML or JSON string
 	team?: string;
@@ -257,71 +225,6 @@ export interface ClusterResponse {
 export interface EnvoyConfigRequest {
 	team: string;
 	format?: 'yaml' | 'json';
-}
-
-// User Management types
-export type UserStatus = 'Active' | 'Inactive' | 'Suspended';
-
-export interface UserResponse {
-	id: string;
-	email: string;
-	name: string;
-	status: UserStatus;
-	isAdmin: boolean;
-	createdAt: string;
-	updatedAt: string;
-	orgId?: string;
-}
-
-export interface UserTeamMembership {
-	id: string;
-	userId: string;
-	team: string;
-	scopes: string[];
-	createdAt: string;
-}
-
-export interface UserWithTeamsResponse {
-	id: string;
-	email: string;
-	name: string;
-	status: UserStatus;
-	isAdmin: boolean;
-	createdAt: string;
-	updatedAt: string;
-	teams: UserTeamMembership[];
-}
-
-export interface CreateUserRequest {
-	email: string;
-	password: string;
-	name: string;
-	isAdmin?: boolean;
-	orgId?: string;
-}
-
-export interface UpdateUserRequest {
-	email?: string;
-	name?: string;
-	status?: UserStatus;
-	isAdmin?: boolean;
-}
-
-export interface CreateTeamMembershipRequest {
-	userId: string;
-	team: string;
-	scopes: string[];
-}
-
-export interface UpdateTeamMembershipRequest {
-	scopes: string[];
-}
-
-export interface ListUsersResponse {
-	items: UserResponse[];
-	total: number;
-	limit: number;
-	offset: number;
 }
 
 // Audit Log Types
@@ -1910,6 +1813,8 @@ export interface OrgTeamMemberResponse {
 	team: string;
 	scopes: string[];
 	createdAt: string;
+	userName?: string;
+	userEmail?: string;
 }
 
 export interface ListOrgTeamMembersResponse {
@@ -1984,4 +1889,44 @@ export interface SummaryTotals {
 export interface AdminResourceSummary {
 	totals: SummaryTotals;
 	orgs: OrgSummary[];
+}
+
+// ===== Agent types =====
+
+export interface AgentInfo {
+	agentId: string;
+	name: string;
+	username: string;
+	teams: string[];
+	scopes: string[];
+	createdAt: string;
+}
+
+export interface ListAgentsResponse {
+	agents: AgentInfo[];
+}
+
+export interface CreateAgentRequest {
+	name: string;
+	description?: string | null;
+	teams: string[];
+	scopes: string[];
+}
+
+export interface CreateAgentResponse {
+	agentId: string;
+	name: string;
+	username: string;
+	clientId: string | null;
+	clientSecret: string | null;
+	tokenEndpoint: string;
+	orgId: string;
+	teams: string[];
+	scopes: string[];
+	createdAt: string;
+	message: string | null;
+}
+
+export interface UpdateAgentScopesRequest {
+	scopes: string[];
 }

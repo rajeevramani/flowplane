@@ -73,7 +73,7 @@ struct OrgMembershipRow {
     pub created_at: DateTime<Utc>,
 }
 
-/// Row type for membership queries that JOIN with organizations to get org_name
+/// Row type for membership queries that JOIN with organizations and users
 #[derive(Debug, Clone, FromRow)]
 struct OrgMembershipWithNameRow {
     pub id: String,
@@ -82,27 +82,13 @@ struct OrgMembershipWithNameRow {
     pub role: String,
     pub created_at: DateTime<Utc>,
     pub org_name: String,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
 }
 
-fn membership_from_row(
-    id: String,
-    user_id: String,
-    org_id: String,
-    role_str: &str,
-    org_name: String,
-    created_at: DateTime<Utc>,
-) -> Result<OrganizationMembership> {
-    let role = OrgRole::from_str(role_str).map_err(|e| {
+fn parse_org_role(role_str: &str) -> Result<OrgRole> {
+    OrgRole::from_str(role_str).map_err(|e| {
         FlowplaneError::validation(format!("Invalid organization role '{}': {}", role_str, e))
-    })?;
-
-    Ok(OrganizationMembership {
-        id,
-        user_id: UserId::from_string(user_id),
-        org_id: OrgId::from_string(org_id),
-        org_name,
-        role,
-        created_at,
     })
 }
 
@@ -110,14 +96,16 @@ impl TryFrom<OrgMembershipRow> for OrganizationMembership {
     type Error = FlowplaneError;
 
     fn try_from(row: OrgMembershipRow) -> Result<Self> {
-        membership_from_row(
-            row.id,
-            row.user_id,
-            row.org_id,
-            &row.role,
-            String::new(), // org_name not available without JOIN
-            row.created_at,
-        )
+        Ok(OrganizationMembership {
+            id: row.id,
+            user_id: UserId::from_string(row.user_id),
+            org_id: OrgId::from_string(row.org_id),
+            org_name: String::new(),
+            role: parse_org_role(&row.role)?,
+            created_at: row.created_at,
+            user_name: None,
+            user_email: None,
+        })
     }
 }
 
@@ -125,14 +113,16 @@ impl TryFrom<OrgMembershipWithNameRow> for OrganizationMembership {
     type Error = FlowplaneError;
 
     fn try_from(row: OrgMembershipWithNameRow) -> Result<Self> {
-        membership_from_row(
-            row.id,
-            row.user_id,
-            row.org_id,
-            &row.role,
-            row.org_name,
-            row.created_at,
-        )
+        Ok(OrganizationMembership {
+            id: row.id,
+            user_id: UserId::from_string(row.user_id),
+            org_id: OrgId::from_string(row.org_id),
+            org_name: row.org_name,
+            role: parse_org_role(&row.role)?,
+            created_at: row.created_at,
+            user_name: row.user_name,
+            user_email: row.user_email,
+        })
     }
 }
 
@@ -440,9 +430,11 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING *
             )
-            SELECT i.id, i.user_id, i.org_id, i.role, i.created_at, o.name AS org_name
+            SELECT i.id, i.user_id, i.org_id, i.role, i.created_at, o.name AS org_name,
+                   u.name AS user_name, u.email AS user_email
             FROM inserted i
-            JOIN organizations o ON o.id = i.org_id",
+            JOIN organizations o ON o.id = i.org_id
+            LEFT JOIN users u ON u.id = i.user_id",
         )
         .bind(&id)
         .bind(user_id.as_str())
@@ -466,9 +458,11 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
         org_id: &OrgId,
     ) -> Result<Option<OrganizationMembership>> {
         let row = sqlx::query_as::<_, OrgMembershipWithNameRow>(
-            "SELECT om.id, om.user_id, om.org_id, om.role, om.created_at, o.name AS org_name
+            "SELECT om.id, om.user_id, om.org_id, om.role, om.created_at, o.name AS org_name,
+                    u.name AS user_name, u.email AS user_email
             FROM organization_memberships om
             JOIN organizations o ON o.id = om.org_id
+            LEFT JOIN users u ON u.id = om.user_id
             WHERE om.user_id = $1 AND om.org_id = $2",
         )
         .bind(user_id.as_str())
@@ -486,9 +480,11 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
     #[instrument(skip(self), fields(membership_id = %id), name = "db_get_org_membership_by_id")]
     async fn get_membership_by_id(&self, id: &str) -> Result<Option<OrganizationMembership>> {
         let row = sqlx::query_as::<_, OrgMembershipWithNameRow>(
-            "SELECT om.id, om.user_id, om.org_id, om.role, om.created_at, o.name AS org_name
+            "SELECT om.id, om.user_id, om.org_id, om.role, om.created_at, o.name AS org_name,
+                    u.name AS user_name, u.email AS user_email
             FROM organization_memberships om
             JOIN organizations o ON o.id = om.org_id
+            LEFT JOIN users u ON u.id = om.user_id
             WHERE om.id = $1",
         )
         .bind(id)
@@ -505,9 +501,11 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
     #[instrument(skip(self), fields(org_id = %org_id), name = "db_list_org_members")]
     async fn list_org_members(&self, org_id: &OrgId) -> Result<Vec<OrganizationMembership>> {
         let rows = sqlx::query_as::<_, OrgMembershipWithNameRow>(
-            "SELECT om.id, om.user_id, om.org_id, om.role, om.created_at, o.name AS org_name
+            "SELECT om.id, om.user_id, om.org_id, om.role, om.created_at, o.name AS org_name,
+                    u.name AS user_name, u.email AS user_email
             FROM organization_memberships om
             JOIN organizations o ON o.id = om.org_id
+            LEFT JOIN users u ON u.id = om.user_id
             WHERE om.org_id = $1
             ORDER BY om.created_at",
         )
@@ -525,9 +523,11 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
     #[instrument(skip(self), fields(user_id = %user_id), name = "db_list_user_org_memberships")]
     async fn list_user_memberships(&self, user_id: &UserId) -> Result<Vec<OrganizationMembership>> {
         let rows = sqlx::query_as::<_, OrgMembershipWithNameRow>(
-            "SELECT om.id, om.user_id, om.org_id, om.role, om.created_at, o.name AS org_name
+            "SELECT om.id, om.user_id, om.org_id, om.role, om.created_at, o.name AS org_name,
+                    u.name AS user_name, u.email AS user_email
             FROM organization_memberships om
             JOIN organizations o ON o.id = om.org_id
+            LEFT JOIN users u ON u.id = om.user_id
             WHERE om.user_id = $1
             ORDER BY om.created_at",
         )
@@ -602,9 +602,11 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
                 WHERE user_id = $1 AND org_id = $2
                 RETURNING *
             )
-            SELECT u.id, u.user_id, u.org_id, u.role, u.created_at, o.name AS org_name
-            FROM updated u
-            JOIN organizations o ON o.id = u.org_id",
+            SELECT upd.id, upd.user_id, upd.org_id, upd.role, upd.created_at, o.name AS org_name,
+                   usr.name AS user_name, usr.email AS user_email
+            FROM updated upd
+            JOIN organizations o ON o.id = upd.org_id
+            LEFT JOIN users usr ON usr.id = upd.user_id",
         )
         .bind(user_id.as_str())
         .bind(org_id.as_str())

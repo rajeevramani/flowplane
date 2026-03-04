@@ -14,7 +14,6 @@ pub mod permissions;
 pub mod scope_registry;
 pub mod team;
 pub mod user;
-pub mod validation;
 pub mod zitadel;
 pub mod zitadel_admin;
 

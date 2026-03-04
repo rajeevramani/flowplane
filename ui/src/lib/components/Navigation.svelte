@@ -63,12 +63,6 @@
 				<!-- Admin Links (only for governance admins) -->
 				{#if isSystemAdmin(sessionInfo.scopes)}
 					<a
-						href="/admin/users"
-						class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
-					>
-						Users
-					</a>
-					<a
 						href="/admin/teams"
 						class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
 					>
@@ -84,13 +78,6 @@
 					Resources
 				</a>
 
-				<!-- PAT Link -->
-				<a
-					href="/tokens"
-					class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
-				>
-					PAT
-				</a>
 			</div>
 
 			<!-- Right Side: Team Selector & Profile -->

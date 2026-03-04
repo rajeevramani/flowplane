@@ -89,6 +89,10 @@ pub struct UserTeamMembership {
     pub team: String,
     pub scopes: Vec<String>,
     pub created_at: DateTime<Utc>,
+    /// User's display name (populated via LEFT JOIN with users)
+    pub user_name: Option<String>,
+    /// User's email (populated via LEFT JOIN with users)
+    pub user_email: Option<String>,
 }
 
 /// New team membership creation request.

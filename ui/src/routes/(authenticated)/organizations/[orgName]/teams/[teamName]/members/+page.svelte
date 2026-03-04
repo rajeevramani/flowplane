@@ -96,17 +96,20 @@
 		return orgMembers.filter((m) => !memberIds.has(m.userId));
 	});
 
-	// Look up display info for a userId from orgMembers
-	function getMemberDisplay(userId: string): string {
-		const orgMember = orgMembers.find((m) => m.userId === userId);
+	// Display info for a team member, with org member fallback
+	function getMemberDisplay(member: OrgTeamMemberResponse): string {
+		if (member.userName) return member.userName;
+		if (member.userEmail) return member.userEmail;
+		const orgMember = orgMembers.find((m) => m.userId === member.userId);
 		if (orgMember) {
-			return orgMember.userName || orgMember.userEmail || userId;
+			return orgMember.userName || orgMember.userEmail || member.userId;
 		}
-		return userId;
+		return member.userId;
 	}
 
-	function getMemberEmail(userId: string): string | null {
-		const orgMember = orgMembers.find((m) => m.userId === userId);
+	function getMemberEmail(member: OrgTeamMemberResponse): string | null {
+		if (member.userEmail) return member.userEmail;
+		const orgMember = orgMembers.find((m) => m.userId === member.userId);
 		return orgMember?.userEmail ?? null;
 	}
 
@@ -314,10 +317,10 @@
 							<div class="flex items-start justify-between">
 								<div class="flex-1">
 									<div class="text-sm font-medium text-gray-900">
-										{getMemberDisplay(member.userId)}
+										{getMemberDisplay(member)}
 									</div>
-									{#if getMemberEmail(member.userId)}
-										<div class="text-xs text-gray-500">{getMemberEmail(member.userId)}</div>
+									{#if getMemberEmail(member)}
+										<div class="text-xs text-gray-500">{getMemberEmail(member)}</div>
 									{/if}
 									<div class="text-xs text-gray-400 mt-1">Added {formatDate(member.createdAt)}</div>
 								</div>
@@ -416,7 +419,7 @@
 				<div class="mt-2 px-7 py-3">
 					<p class="text-sm text-gray-500">
 						Are you sure you want to remove <strong
-							>{getMemberDisplay(showRemoveConfirm)}</strong
+							>{(() => { const m = members.find(m => m.userId === showRemoveConfirm); return m ? getMemberDisplay(m) : showRemoveConfirm; })()}</strong
 						> from this team?
 					</p>
 				</div>

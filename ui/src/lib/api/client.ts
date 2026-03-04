@@ -11,10 +11,6 @@ import type {
 	SessionInfoResponse,
 	DashboardStats,
 	ApiError,
-	PersonalAccessToken,
-	CreateTokenRequest,
-	TokenSecretResponse,
-	UpdateTokenRequest,
 	ImportOpenApiRequest,
 	ImportResponse,
 	ImportSummary,
@@ -29,14 +25,6 @@ import type {
 	CreateTeamRequest,
 	UpdateTeamRequest,
 	AdminListTeamsResponse,
-	UserResponse,
-	UserWithTeamsResponse,
-	CreateUserRequest,
-	UpdateUserRequest,
-	ListUsersResponse,
-	UserTeamMembership,
-	CreateTeamMembershipRequest,
-	UpdateTeamMembershipRequest,
 	AuditLogEntry,
 	ListAuditLogsQuery,
 	ListAuditLogsResponse,
@@ -129,6 +117,12 @@ import type {
 	AddOrgTeamMemberRequest,
 	UpdateOrgTeamMemberScopesRequest,
 	OrgRole,
+	// Agent types
+	AgentInfo,
+	ListAgentsResponse,
+	CreateAgentRequest,
+	CreateAgentResponse,
+	UpdateAgentScopesRequest,
 	// Invite types
 	InviteOrgMemberRequest,
 	InviteOrgMemberResponse,
@@ -329,38 +323,6 @@ class ApiClient {
 		return this.handleResponse<BootstrapInitializeResponse>(response);
 	}
 
-	// Token management methods
-	async listTokens(limit?: number, offset?: number): Promise<PersonalAccessToken[]> {
-		let path = '/api/v1/tokens';
-		const params = new URLSearchParams();
-		if (limit) params.append('limit', limit.toString());
-		if (offset) params.append('offset', offset.toString());
-		if (params.toString()) path += `?${params.toString()}`;
-
-		const response = await this.get<PaginatedResponse<PersonalAccessToken>>(path);
-		return response.items;
-	}
-
-	async getToken(id: string): Promise<PersonalAccessToken> {
-		return this.get<PersonalAccessToken>(`/api/v1/tokens/${id}`);
-	}
-
-	async createToken(request: CreateTokenRequest): Promise<TokenSecretResponse> {
-		return this.post<TokenSecretResponse>('/api/v1/tokens', request);
-	}
-
-	async updateToken(id: string, request: UpdateTokenRequest): Promise<PersonalAccessToken> {
-		return this.put<PersonalAccessToken>(`/api/v1/tokens/${id}`, request);
-	}
-
-	async revokeToken(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/tokens/${id}`);
-	}
-
-	async rotateToken(id: string): Promise<TokenSecretResponse> {
-		return this.post<TokenSecretResponse>(`/api/v1/tokens/${id}/rotate`, {});
-	}
-
 	// OpenAPI import
 	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<ImportResponse> {
 		const params = new URLSearchParams();
@@ -529,54 +491,6 @@ class ApiClient {
 
 	async adminDeleteTeam(id: string): Promise<void> {
 		return this.delete<void>(`/api/v1/admin/teams/${id}`);
-	}
-
-	// User Management methods (admin only)
-	async listUsers(limit: number = 50, offset: number = 0): Promise<ListUsersResponse> {
-		const params = new URLSearchParams();
-		params.append('limit', limit.toString());
-		params.append('offset', offset.toString());
-
-		return this.get<ListUsersResponse>(`/api/v1/users?${params.toString()}`);
-	}
-
-	async getUser(id: string): Promise<UserWithTeamsResponse> {
-		return this.get<UserWithTeamsResponse>(`/api/v1/users/${id}`);
-	}
-
-	async createUser(request: CreateUserRequest): Promise<UserResponse> {
-		return this.post<UserResponse>('/api/v1/users', request);
-	}
-
-	async updateUser(id: string, request: UpdateUserRequest): Promise<UserResponse> {
-		return this.put<UserResponse>(`/api/v1/users/${id}`, request);
-	}
-
-	async deleteUser(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/users/${id}`);
-	}
-
-	async listUserTeams(userId: string): Promise<UserTeamMembership[]> {
-		return this.get<UserTeamMembership[]>(`/api/v1/users/${userId}/teams`);
-	}
-
-	async addTeamMembership(userId: string, request: CreateTeamMembershipRequest): Promise<UserTeamMembership> {
-		return this.post<UserTeamMembership>(`/api/v1/users/${userId}/teams`, request);
-	}
-
-	async removeTeamMembership(userId: string, team: string): Promise<void> {
-		return this.delete<void>(`/api/v1/users/${userId}/teams/${team}`);
-	}
-
-	async updateTeamMembershipScopes(
-		userId: string,
-		team: string,
-		request: UpdateTeamMembershipRequest
-	): Promise<UserTeamMembership> {
-		return this.put<UserTeamMembership>(
-			`/api/v1/users/${userId}/teams/${encodeURIComponent(team)}`,
-			request
-		);
 	}
 
 	// Audit Log methods (admin only)
@@ -1557,9 +1471,10 @@ class ApiClient {
 	// ============================================================================
 
 	async listOrgMembers(orgId: string): Promise<OrgMembershipResponse[]> {
-		return this.get<OrgMembershipResponse[]>(
+		const response = await this.get<{ members: OrgMembershipResponse[] }>(
 			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/members`
 		);
+		return response.members;
 	}
 
 	async addOrgMember(orgId: string, data: AddOrgMemberRequest): Promise<OrgMembershipResponse> {
@@ -1678,6 +1593,40 @@ class ApiClient {
 		return this.post<InviteOrgMemberResponse>(
 			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/invite`,
 			req
+		);
+	}
+
+	// ============================================================================
+	// Agent API
+	// ============================================================================
+
+	async listOrgAgents(orgName: string): Promise<ListAgentsResponse> {
+		return this.get<ListAgentsResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents`
+		);
+	}
+
+	async createOrgAgent(orgName: string, data: CreateAgentRequest): Promise<CreateAgentResponse> {
+		return this.post<CreateAgentResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents`,
+			data
+		);
+	}
+
+	async deleteOrgAgent(orgName: string, agentName: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}`
+		);
+	}
+
+	async updateOrgAgentScopes(
+		orgName: string,
+		agentName: string,
+		data: UpdateAgentScopesRequest
+	): Promise<AgentInfo> {
+		return this.put<AgentInfo>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}/scopes`,
+			data
 		);
 	}
 }

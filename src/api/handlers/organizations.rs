@@ -566,16 +566,27 @@ pub async fn admin_add_org_member(
 
     let row = sqlx::query_as::<
         _,
-        (String, String, String, String, chrono::DateTime<chrono::Utc>, String),
+        (
+            String,
+            String,
+            String,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            String,
+            Option<String>,
+            Option<String>,
+        ),
     >(
         "WITH inserted AS (
             INSERT INTO organization_memberships (id, user_id, org_id, role, created_at)
             VALUES ($1, $2, $3, $4, $5)
             RETURNING *
         )
-        SELECT i.id, i.user_id, i.org_id, i.role, i.created_at, o.name AS org_name
+        SELECT i.id, i.user_id, i.org_id, i.role, i.created_at, o.name AS org_name,
+               u.name AS user_name, u.email AS user_email
         FROM inserted i
-        JOIN organizations o ON o.id = i.org_id",
+        JOIN organizations o ON o.id = i.org_id
+        LEFT JOIN users u ON u.id = i.user_id",
     )
     .bind(&membership_id)
     .bind(payload.user_id.as_str())
@@ -605,6 +616,8 @@ pub async fn admin_add_org_member(
         role,
         org_name: row.5,
         created_at: row.4,
+        user_name: row.6,
+        user_email: row.7,
     };
 
     Ok((StatusCode::CREATED, Json(membership.into())))
@@ -1324,16 +1337,39 @@ pub struct TeamMemberResponse {
     pub team: String,
     pub scopes: Vec<String>,
     pub created_at: String,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
 }
 
 impl From<crate::auth::user::UserTeamMembership> for TeamMemberResponse {
     fn from(m: crate::auth::user::UserTeamMembership) -> Self {
+        // Strip "team:{name}:" prefix from scopes for the API response.
+        // DB stores fully-qualified scopes like "team:engineering:clusters:read",
+        // but the API should return base scopes like "clusters:read".
+        let base_scopes: Vec<String> = m
+            .scopes
+            .into_iter()
+            .map(|s| {
+                if let Some(rest) = s.strip_prefix("team:") {
+                    // Skip the team name segment: "team:{name}:{resource}:{action}" → "{resource}:{action}"
+                    if let Some(pos) = rest.find(':') {
+                        rest[pos + 1..].to_string()
+                    } else {
+                        s
+                    }
+                } else {
+                    s
+                }
+            })
+            .collect();
         Self {
             id: m.id,
             user_id: m.user_id.to_string(),
             team: m.team,
-            scopes: m.scopes,
+            scopes: base_scopes,
             created_at: m.created_at.to_rfc3339(),
+            user_name: m.user_name,
+            user_email: m.user_email,
         }
     }
 }
@@ -1467,7 +1503,12 @@ pub async fn add_team_member(
     let scopes = if payload.scopes.is_empty() {
         scopes_for_org_role(org_membership.role, &team.name)
     } else {
-        payload.scopes
+        // Qualify base scopes with team name (e.g. "clusters:read" → "team:engineering:clusters:read")
+        payload
+            .scopes
+            .into_iter()
+            .map(|s| if s.starts_with("team:") { s } else { format!("team:{}:{}", team.name, s) })
+            .collect()
     };
 
     let membership = crate::auth::user::NewUserTeamMembership {
@@ -1527,8 +1568,15 @@ pub async fn update_team_member_scopes(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Team membership not found".to_string()))?;
 
+    // Qualify base scopes with team name (e.g. "clusters:read" → "team:engineering:clusters:read")
+    let qualified_scopes: Vec<String> = payload
+        .scopes
+        .into_iter()
+        .map(|s| if s.starts_with("team:") { s } else { format!("team:{}:{}", team.name, s) })
+        .collect();
+
     let updated = membership_repo
-        .update_membership_scopes(&membership.id, payload.scopes)
+        .update_membership_scopes(&membership.id, qualified_scopes)
         .await
         .map_err(ApiError::from)?;
 
@@ -2185,6 +2233,123 @@ pub async fn delete_org_agent(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Request to update an agent's scopes across all team memberships.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAgentScopesRequest {
+    /// Base scope pairs (e.g. "clusters:read") — replaces all existing scopes.
+    pub scopes: Vec<String>,
+}
+
+/// Row for querying agent team memberships (id + team name).
+#[derive(sqlx::FromRow)]
+struct AgentTeamMembershipRow {
+    id: String,
+    team: String,
+}
+
+/// Update scopes for an existing agent across all its team memberships (org admin only).
+#[utoipa::path(
+    put,
+    path = "/api/v1/orgs/{org_name}/agents/{agent_name}/scopes",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("agent_name" = String, Path, description = "Agent name")
+    ),
+    request_body = UpdateAgentScopesRequest,
+    responses(
+        (status = 200, description = "Agent scopes updated", body = AgentInfo),
+        (status = 400, description = "Invalid scope"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Agent not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state, payload), fields(org_name = %org_name, agent_name = %agent_name, user_id = ?context.user_id))]
+pub async fn update_org_agent_scopes(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((org_name, agent_name)): Path<(String, String)>,
+    Json(payload): Json<UpdateAgentScopesRequest>,
+) -> Result<Json<AgentInfo>, ApiError> {
+    require_org_admin_only(&context, &org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    for scope in &payload.scopes {
+        validate_scope(scope)?;
+    }
+
+    let pool = pool_for_state(&state)?;
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
+    let machine_users = user_repo
+        .find_machine_users_by_org(org.id.as_ref())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
+
+    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
+        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
+    })?;
+
+    // Fetch all team memberships for this agent
+    let memberships = sqlx::query_as::<_, AgentTeamMembershipRow>(
+        "SELECT id, team FROM user_team_memberships WHERE user_id = $1",
+    )
+    .bind(&agent.id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to get agent memberships: {e}")))?;
+
+    let membership_repo =
+        crate::storage::repositories::SqlxTeamMembershipRepository::new(pool.clone());
+
+    let mut all_teams: Vec<String> = Vec::new();
+    let mut all_scopes: Vec<String> = Vec::new();
+
+    for row in &memberships {
+        let team_scopes: Vec<String> =
+            payload.scopes.iter().map(|s| format!("team:{}:{}", row.team, s)).collect();
+        all_scopes.extend(team_scopes.clone());
+        membership_repo
+            .update_membership_scopes(&row.id, team_scopes)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to update membership scopes: {e}")))?;
+        all_teams.push(row.team.clone());
+    }
+
+    // Evict permission cache so next request picks up new permissions
+    if let Some(ref cache) = state.permission_cache {
+        if let Some(ref zitadel_sub) = agent.zitadel_sub {
+            cache.evict(zitadel_sub).await;
+        }
+    }
+
+    let username = format!("{}--{}", org_name, agent_name);
+
+    tracing::info!(
+        agent_name = %agent_name,
+        agent_id = %agent.id,
+        org_name = %org_name,
+        "updated agent scopes"
+    );
+
+    Ok(Json(AgentInfo {
+        agent_id: agent.id.to_string(),
+        name: agent_name,
+        username,
+        teams: all_teams,
+        scopes: all_scopes,
+        created_at: agent.created_at,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2664,6 +2829,44 @@ mod tests {
         assert!(
             crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
             "Platform admin must not be allowed to delete agents"
+        );
+    }
+
+    // ===== update_org_agent_scopes authorization tests =====
+
+    #[test]
+    fn update_agent_scopes_allows_matching_org_admin() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_ok(),
+            "Org admin should be able to update agent scopes in their org"
+        );
+    }
+
+    #[test]
+    fn update_agent_scopes_rejects_platform_admin() {
+        let ctx = admin_context();
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            "Platform admin must not be allowed to update agent scopes"
+        );
+    }
+
+    #[test]
+    fn update_agent_scopes_rejects_wrong_org_admin() {
+        let ctx = org_admin_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "globex-corp").is_err(),
+            "Org admin of different org must not update agent scopes"
+        );
+    }
+
+    #[test]
+    fn update_agent_scopes_rejects_org_member() {
+        let ctx = org_member_context("acme-corp");
+        assert!(
+            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            "Org member must not be able to update agent scopes"
         );
     }
 }
