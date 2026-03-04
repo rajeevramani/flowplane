@@ -131,6 +131,9 @@ pub async fn authenticate(
                 org_id: permissions.org_id.clone(),
                 org_name: permissions.org_name.clone(),
                 org_role: permissions.org_role.clone(),
+                cp_grants: Vec::new(),
+                gateway_grants: Vec::new(),
+                route_grants: Vec::new(),
             };
 
             state
@@ -145,6 +148,9 @@ pub async fn authenticate(
                         org_name: permissions.org_name,
                         org_role: permissions.org_role,
                         cached_at: std::time::Instant::now(),
+                        cp_grants: Vec::new(),
+                        gateway_grants: Vec::new(),
+                        route_grants: Vec::new(),
                     },
                 )
                 .await;

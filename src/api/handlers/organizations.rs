@@ -23,8 +23,10 @@ use validator::Validate;
 use crate::{
     api::{error::ApiError, handlers::team_access::require_admin, routes::ApiState},
     auth::{
-        authorization::{has_admin_bypass, has_org_admin, require_org_admin_only},
-        models::AuthContext,
+        authorization::{
+            check_resource_access, has_admin_bypass, has_org_admin, require_org_admin_only,
+        },
+        models::{AgentContext, AuthContext},
         organization::{
             CreateOrganizationRequest, OrgRole, OrganizationResponse, UpdateOrganizationRequest,
         },
@@ -1692,7 +1694,7 @@ fn validate_agent_name(name: &str) -> Result<(), ApiError> {
 
 fn validate_scope(scope: &str) -> Result<(), ApiError> {
     const VALID_RESOURCES: &[&str] =
-        &["clusters", "routes", "listeners", "filters", "learning", "secrets", "stats"];
+        &["clusters", "routes", "listeners", "filters", "learning", "secrets", "stats", "agents"];
     const VALID_ACTIONS: &[&str] = &["read", "write"];
     let parts: Vec<&str> = scope.split(':').collect();
     if parts.len() != 2
@@ -1721,6 +1723,7 @@ fn get_token_endpoint() -> String {
 ///
 /// `teams` is a list of `(team_id, fully-qualified scopes)` pairs.
 /// Returns `(local_user_id, client_id, client_secret)`.
+#[allow(clippy::too_many_arguments)]
 pub async fn provision_machine_user(
     admin_client: &crate::auth::zitadel_admin::ZitadelAdminClient,
     pool: &DbPool,
@@ -1729,11 +1732,13 @@ pub async fn provision_machine_user(
     username: &str,
     display_name: &str,
     teams: &[(String, Vec<String>)],
+    agent_context: AgentContext,
 ) -> Result<(String, String, String), ApiError> {
     let zitadel_sub = admin_client.create_machine_user(username, display_name).await?;
     let (client_id, client_secret) = admin_client.create_client_secret(&zitadel_sub).await?;
     let local_user_id =
-        provision_machine_user_db(pool, &zitadel_sub, display_name, org_id, teams).await?;
+        provision_machine_user_db(pool, &zitadel_sub, display_name, org_id, teams, agent_context)
+            .await?;
     if let Some(cache) = cache {
         cache.evict(&zitadel_sub).await;
     }
@@ -1748,6 +1753,7 @@ async fn provision_machine_user_db(
     display_name: &str,
     org_id: &str,
     teams: &[(String, Vec<String>)],
+    agent_context: AgentContext,
 ) -> Result<String, ApiError> {
     let user_id = UserId::new().to_string();
     let now = chrono::Utc::now();
@@ -1755,15 +1761,16 @@ async fn provision_machine_user_db(
 
     sqlx::query(
         "INSERT INTO users \
-         (id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, \
+         (id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, \
           created_at, updated_at) \
-         VALUES ($1, $2, '', $3, 'active', false, $4, 'machine', $5, $6) \
+         VALUES ($1, $2, '', $3, 'active', false, $4, 'machine', $5, $6, $7) \
          ON CONFLICT (zitadel_sub) DO NOTHING",
     )
     .bind(&user_id)
     .bind(&placeholder_email)
     .bind(display_name)
     .bind(zitadel_sub)
+    .bind(agent_context.as_str())
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -1824,6 +1831,7 @@ async fn reconcile_machine_user_db(
     username: &str,
     org_id: &str,
     teams: &[(String, Vec<String>)],
+    agent_context: AgentContext,
 ) -> Result<String, ApiError> {
     let now = chrono::Utc::now();
 
@@ -1835,22 +1843,36 @@ async fn reconcile_machine_user_db(
             .map_err(|e| ApiError::Internal(format!("Failed to check existing user: {e}")))?;
 
     let user_id = match existing_id {
-        Some(id) => id,
+        Some(id) => {
+            // Existing user — update agent_context if NULL (migrating legacy agents)
+            sqlx::query(
+                "UPDATE users SET agent_context = $1 WHERE zitadel_sub = $2 AND agent_context IS NULL",
+            )
+            .bind(agent_context.as_str())
+            .bind(zitadel_sub)
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                ApiError::Internal(format!("Failed to update legacy agent context: {e}"))
+            })?;
+            id
+        }
         None => {
             // DB was wiped — reconcile by re-creating the user row
             let new_id = UserId::new().to_string();
             let placeholder_email = format!("{}@machine.local", zitadel_sub);
             sqlx::query(
                 "INSERT INTO users \
-                 (id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, \
+                 (id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, \
                   created_at, updated_at) \
-                 VALUES ($1, $2, '', $3, 'active', false, $4, 'machine', $5, $6) \
+                 VALUES ($1, $2, '', $3, 'active', false, $4, 'machine', $5, $6, $7) \
                  ON CONFLICT (zitadel_sub) DO NOTHING",
             )
             .bind(&new_id)
             .bind(&placeholder_email)
             .bind(username)
             .bind(zitadel_sub)
+            .bind(agent_context.as_str())
             .bind(now)
             .bind(now)
             .execute(pool)
@@ -1928,9 +1950,14 @@ pub async fn create_org_agent(
     Path(org_name): Path<String>,
     Json(payload): Json<CreateAgentRequest>,
 ) -> Result<(StatusCode, Json<CreateAgentResponse>), ApiError> {
-    // Step 1: Org admin only — platform admin gets 403
-    require_org_admin_only(&context, &org_name)
-        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+    // Step 1: Check team-scoped agents:write permission
+    let team_for_auth = payload
+        .teams
+        .first()
+        .ok_or_else(|| ApiError::BadRequest("At least one team must be specified".to_string()))?;
+    if !check_resource_access(&context, "agents", "write", Some(team_for_auth)) {
+        return Err(ApiError::forbidden("agents:write permission required for the target team"));
+    }
 
     // Step 2: Validate request
     validate_agent_name(&payload.name)?;
@@ -1991,9 +2018,15 @@ pub async fn create_org_agent(
 
     // Step 7: Check if user already exists in Zitadel
     if let Some(zitadel_sub) = zitadel_client.search_user_by_username(&username).await? {
-        let user_id =
-            reconcile_machine_user_db(&pool, &zitadel_sub, &username, &org_id_str, &team_entries)
-                .await?;
+        let user_id = reconcile_machine_user_db(
+            &pool,
+            &zitadel_sub,
+            &username,
+            &org_id_str,
+            &team_entries,
+            AgentContext::CpTool, // TODO(E.3): make configurable from request body
+        )
+        .await?;
         if let Some(ref cache) = state.permission_cache {
             cache.evict(&zitadel_sub).await;
         }
@@ -2033,6 +2066,7 @@ pub async fn create_org_agent(
         &username,
         &payload.name,
         &team_entries,
+        AgentContext::CpTool, // TODO(E.3): make configurable from request body
     )
     .await?;
 
@@ -2108,8 +2142,9 @@ pub async fn list_org_agents(
     Extension(context): Extension<AuthContext>,
     Path(org_name): Path<String>,
 ) -> Result<Json<ListAgentsResponse>, ApiError> {
-    require_org_admin_only(&context, &org_name)
-        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+    if !check_resource_access(&context, "agents", "read", None) {
+        return Err(ApiError::forbidden("agents:read permission required"));
+    }
 
     let pool = pool_for_state(&state)?;
     let org_repo = org_repository_for_state(&state)?;
@@ -2189,8 +2224,9 @@ pub async fn delete_org_agent(
     Extension(context): Extension<AuthContext>,
     Path((org_name, agent_name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_org_admin_only(&context, &org_name)
-        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+    if !check_resource_access(&context, "agents", "write", None) {
+        return Err(ApiError::forbidden("agents:write permission required"));
+    }
 
     let pool = pool_for_state(&state)?;
     let org_repo = org_repository_for_state(&state)?;
@@ -2751,6 +2787,8 @@ mod tests {
         assert!(validate_scope("secrets:read").is_ok());
         assert!(validate_scope("secrets:write").is_ok());
         assert!(validate_scope("stats:read").is_ok());
+        assert!(validate_scope("agents:read").is_ok());
+        assert!(validate_scope("agents:write").is_ok());
     }
 
     #[test]
@@ -2775,64 +2813,105 @@ mod tests {
         assert!(validate_scope("").is_err());
     }
 
-    // ===== Agent authorization tests =====
+    // ===== Agent authorization tests (check_resource_access based) =====
+
+    fn team_member_with_agents_write(team: &str) -> AuthContext {
+        AuthContext::new(
+            TokenId::from_str_unchecked("member-token"),
+            "member".into(),
+            vec![format!("team:{}:agents:write", team)],
+        )
+    }
+
+    fn team_member_with_agents_read(team: &str) -> AuthContext {
+        AuthContext::new(
+            TokenId::from_str_unchecked("member-token"),
+            "member".into(),
+            vec![format!("team:{}:agents:read", team)],
+        )
+    }
 
     #[test]
-    fn create_agent_requires_org_admin_not_platform_admin() {
-        // Platform admin (admin:all) must NOT pass org admin check for agent provisioning
+    fn create_agent_team_member_with_agents_write_can_create() {
+        let ctx = team_member_with_agents_write("engineering");
+        assert!(
+            check_resource_access(&ctx, "agents", "write", Some("engineering")),
+            "Team member with agents:write should be able to create agents in their team"
+        );
+    }
+
+    #[test]
+    fn create_agent_team_member_without_agents_write_cannot_create() {
+        let ctx = org_member_context("acme-corp");
+        assert!(
+            !check_resource_access(&ctx, "agents", "write", Some("engineering")),
+            "Team member without agents:write must not create agents"
+        );
+    }
+
+    #[test]
+    fn create_agent_platform_admin_cannot_create() {
+        // Platform admin (admin:all) does NOT get access — agents is not a governance resource
         let ctx = admin_context();
         assert!(
-            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            !check_resource_access(&ctx, "agents", "write", Some("engineering")),
             "Platform admin must not be allowed to provision agents"
         );
     }
 
     #[test]
-    fn create_agent_allows_matching_org_admin() {
-        let ctx = org_admin_context("acme-corp");
+    fn list_agents_team_member_with_agents_read_can_list() {
+        let ctx = team_member_with_agents_read("engineering");
         assert!(
-            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_ok(),
-            "Org admin should be able to provision agents in their org"
+            check_resource_access(&ctx, "agents", "read", None),
+            "Team member with agents:read should be able to list agents"
         );
     }
 
     #[test]
-    fn create_agent_rejects_wrong_org_admin() {
-        let ctx = org_admin_context("acme-corp");
+    fn list_agents_without_agents_read_cannot_list() {
+        // A user with team scopes for other resources but not agents:read cannot list agents.
+        // (org_member_context has org-level scopes so it passes the broader org-member check —
+        //  this test uses a pure team-scoped user with no agents scope.)
+        let ctx = AuthContext::new(
+            TokenId::from_str_unchecked("member-token"),
+            "member".into(),
+            vec!["team:engineering:clusters:read".into()],
+        );
         assert!(
-            crate::auth::authorization::require_org_admin_only(&ctx, "globex-corp").is_err(),
-            "Org admin of different org must not provision agents"
+            !check_resource_access(&ctx, "agents", "read", None),
+            "Team member without agents:read must not list agents"
         );
     }
 
     #[test]
-    fn create_agent_rejects_org_member() {
-        let ctx = org_member_context("acme-corp");
-        assert!(
-            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
-            "Org member must not be able to provision agents"
-        );
-    }
-
-    #[test]
-    fn list_agents_requires_org_admin_not_platform_admin() {
+    fn list_agents_platform_admin_cannot_list() {
         let ctx = admin_context();
         assert!(
-            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            !check_resource_access(&ctx, "agents", "read", None),
             "Platform admin must not be allowed to list agents"
         );
     }
 
     #[test]
-    fn delete_agent_requires_org_admin_not_platform_admin() {
+    fn delete_agent_team_member_with_agents_write_can_delete() {
+        let ctx = team_member_with_agents_write("engineering");
+        assert!(
+            check_resource_access(&ctx, "agents", "write", None),
+            "Team member with agents:write should be able to delete agents"
+        );
+    }
+
+    #[test]
+    fn delete_agent_platform_admin_cannot_delete() {
         let ctx = admin_context();
         assert!(
-            crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
+            !check_resource_access(&ctx, "agents", "write", None),
             "Platform admin must not be allowed to delete agents"
         );
     }
 
-    // ===== update_org_agent_scopes authorization tests =====
+    // ===== update_org_agent_scopes authorization tests (remains org-admin-only) =====
 
     #[test]
     fn update_agent_scopes_allows_matching_org_admin() {

@@ -27,6 +27,7 @@ struct UserRow {
     pub is_admin: bool,
     pub zitadel_sub: Option<String>,
     pub user_type: String,
+    pub agent_context: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -156,6 +157,7 @@ impl SqlxUserRepository {
             is_admin: row.is_admin,
             zitadel_sub: row.zitadel_sub,
             user_type: row.user_type,
+            agent_context: row.agent_context,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -198,7 +200,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_id = %id), name = "db_get_user")]
     async fn get_user(&self, id: &UserId) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, created_at, updated_at FROM users WHERE id = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users WHERE id = $1",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -214,7 +216,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_by_email")]
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, created_at, updated_at FROM users WHERE email = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -230,7 +232,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_with_password")]
     async fn get_user_with_password(&self, email: &str) -> Result<Option<(User, String)>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, created_at, updated_at FROM users WHERE email = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -305,7 +307,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(limit = limit, offset = offset), name = "db_list_users")]
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>> {
         let rows = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
@@ -363,7 +365,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(zitadel_sub = %sub), name = "db_find_by_zitadel_sub")]
     async fn find_by_zitadel_sub(&self, sub: &str) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, created_at, updated_at FROM users WHERE zitadel_sub = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users WHERE zitadel_sub = $1",
         )
         .bind(sub)
         .fetch_optional(&self.pool)
@@ -381,7 +383,7 @@ impl UserRepository for SqlxUserRepository {
         let rows = sqlx::query_as::<_, UserRow>(
             r#"
             SELECT u.id, u.email, u.password_hash, u.name, u.status, u.is_admin,
-                   u.zitadel_sub, u.user_type, u.created_at, u.updated_at
+                   u.zitadel_sub, u.user_type, u.agent_context, u.created_at, u.updated_at
             FROM users u
             JOIN organization_memberships om ON u.id = om.user_id
             WHERE om.org_id = $1 AND u.user_type = 'machine'
@@ -422,7 +424,7 @@ impl UserRepository for SqlxUserRepository {
                 END,
                 name = CASE WHEN $3 != '' THEN $3 ELSE users.name END,
                 updated_at = EXCLUDED.updated_at
-            RETURNING id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, created_at, updated_at
+            RETURNING id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at
             "#,
         )
         .bind(id.to_string())

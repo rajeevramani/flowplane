@@ -3,6 +3,8 @@
 use std::collections::HashSet;
 use thiserror::Error;
 
+use serde::{Deserialize, Serialize};
+
 use crate::domain::{OrgId, TokenId, UserId};
 use crate::errors::Error;
 
@@ -138,6 +140,77 @@ impl AuthContext {
     }
 }
 
+/// Agent context — determines which category of tools/resources a machine user can access.
+/// NULL in the database for human users; non-null for agents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentContext {
+    /// Control-plane MCP tools (manage clusters, routes, listeners, etc.)
+    CpTool,
+    /// Gateway API MCP tools (proxy calls to upstream services)
+    GatewayTool,
+    /// Direct data plane access (route-level permissions via Envoy filters)
+    ApiConsumer,
+}
+
+impl AgentContext {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CpTool => "cp-tool",
+            Self::GatewayTool => "gateway-tool",
+            Self::ApiConsumer => "api-consumer",
+        }
+    }
+
+    pub fn from_db(s: Option<&str>) -> Option<Self> {
+        match s? {
+            "cp-tool" => Some(Self::CpTool),
+            "gateway-tool" => Some(Self::GatewayTool),
+            "api-consumer" => Some(Self::ApiConsumer),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AgentContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// A grant record loaded from the `agent_grants` table.
+#[derive(Debug, Clone)]
+pub struct AgentGrant {
+    pub id: String,
+    pub agent_id: String,
+    pub org_id: String,
+    pub team: String,
+    pub grant_type: String,            // "cp-tool" | "gateway-tool" | "route"
+    pub resource_type: Option<String>, // for cp-tool grants
+    pub action: Option<String>,        // for cp-tool grants
+    pub route_id: Option<String>,      // for gateway-tool/route grants
+    pub allowed_methods: Option<Vec<String>>, // for gateway-tool/route grants
+    pub created_by: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Typed cp-tool grant for cached permission checks.
+#[derive(Debug, Clone)]
+pub struct CpGrant {
+    pub resource_type: String,
+    pub action: String,
+    pub team: String,
+}
+
+/// Typed route/gateway grant for cached permission checks.
+#[derive(Debug, Clone)]
+pub struct RouteGrant {
+    pub route_id: String,
+    pub allowed_methods: Vec<String>,
+    pub team: String,
+}
+
 /// Errors returned by authentication middleware/services.
 #[derive(Debug, Error)]
 pub enum AuthError {
@@ -248,5 +321,29 @@ mod tests {
 
         assert!(ctx.has_scope("team:eng:clusters:read"));
         assert!(!ctx.has_scope("team:eng:clusters:write"));
+    }
+
+    #[test]
+    fn agent_context_serialization() {
+        assert_eq!(AgentContext::CpTool.as_str(), "cp-tool");
+        assert_eq!(AgentContext::GatewayTool.as_str(), "gateway-tool");
+        assert_eq!(AgentContext::ApiConsumer.as_str(), "api-consumer");
+    }
+
+    #[test]
+    fn agent_context_from_db() {
+        assert_eq!(AgentContext::from_db(Some("cp-tool")), Some(AgentContext::CpTool));
+        assert_eq!(AgentContext::from_db(Some("gateway-tool")), Some(AgentContext::GatewayTool));
+        assert_eq!(AgentContext::from_db(Some("api-consumer")), Some(AgentContext::ApiConsumer));
+        assert_eq!(AgentContext::from_db(None), None);
+        assert_eq!(AgentContext::from_db(Some("invalid")), None);
+    }
+
+    #[test]
+    fn agent_context_serde_roundtrip() {
+        let json = serde_json::to_string(&AgentContext::GatewayTool).unwrap();
+        assert_eq!(json, "\"gateway-tool\"");
+        let parsed: AgentContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, AgentContext::GatewayTool);
     }
 }

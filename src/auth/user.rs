@@ -57,6 +57,9 @@ pub struct User {
     pub zitadel_sub: Option<String>,
     /// User type: "human" (default) or "machine" (API agent).
     pub user_type: String,
+    /// Agent context: NULL for human users, non-null for machine users.
+    /// Determines which category of tools/resources the agent can access.
+    pub agent_context: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

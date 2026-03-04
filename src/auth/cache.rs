@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
+use crate::auth::models::{CpGrant, RouteGrant};
 use crate::domain::{OrgId, UserId};
 
 // ---------------------------------------------------------------------------
@@ -24,6 +25,10 @@ pub struct CachedPermissions {
     pub org_name: Option<String>,
     pub org_role: Option<String>,
     pub cached_at: Instant,
+    // Agent grants (empty for human users)
+    pub cp_grants: Vec<CpGrant>,
+    pub gateway_grants: Vec<RouteGrant>,
+    pub route_grants: Vec<RouteGrant>,
 }
 
 /// Snapshot returned by [`PermissionCache::get`] — avoids a large tuple.
@@ -35,6 +40,10 @@ pub struct CachedPermissionSnapshot {
     pub org_id: Option<OrgId>,
     pub org_name: Option<String>,
     pub org_role: Option<String>,
+    // Agent grants
+    pub cp_grants: Vec<CpGrant>,
+    pub gateway_grants: Vec<RouteGrant>,
+    pub route_grants: Vec<RouteGrant>,
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +84,9 @@ impl PermissionCache {
             org_id: entry.org_id.clone(),
             org_name: entry.org_name.clone(),
             org_role: entry.org_role.clone(),
+            cp_grants: entry.cp_grants.clone(),
+            gateway_grants: entry.gateway_grants.clone(),
+            route_grants: entry.route_grants.clone(),
         })
     }
 
@@ -111,6 +123,9 @@ mod tests {
             org_name: None,
             org_role: None,
             cached_at: Instant::now(),
+            cp_grants: Vec::new(),
+            gateway_grants: Vec::new(),
+            route_grants: Vec::new(),
         }
     }
 

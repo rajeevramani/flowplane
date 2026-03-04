@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use sqlx::FromRow;
 use tracing::instrument;
 
+use crate::auth::models::{CpGrant, RouteGrant};
 use crate::domain::{OrgId, UserId};
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
@@ -112,6 +113,80 @@ pub async fn load_user_permissions(pool: &DbPool, user_id: &UserId) -> Result<Us
     }
 
     Ok(UserPermissions { scopes, org_id, org_name, org_role })
+}
+
+// ---------------------------------------------------------------------------
+// Agent grant loading
+// ---------------------------------------------------------------------------
+
+/// DB row for agent_grants query — only the fields needed for permission checks.
+#[derive(Debug, FromRow)]
+struct AgentGrantRow {
+    team: String,
+    grant_type: String,
+    resource_type: Option<String>,
+    action: Option<String>,
+    route_id: Option<String>,
+    allowed_methods: Option<Vec<String>>,
+}
+
+/// Load all grants for an agent from the database.
+///
+/// Returns typed grant structs split by grant_type for use in permission checks.
+/// Does NOT filter by expiry — `expires_at` enforcement is future work.
+#[instrument(skip(pool), fields(agent_id = %agent_id), name = "load_agent_grants")]
+pub async fn load_agent_grants(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<(Vec<CpGrant>, Vec<RouteGrant>, Vec<RouteGrant>)> {
+    let rows = sqlx::query_as::<_, AgentGrantRow>(
+        "SELECT team, grant_type, resource_type, action, route_id, allowed_methods \
+         FROM agent_grants WHERE agent_id = $1",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| FlowplaneError::Database {
+        source: e,
+        context: format!("load agent grants for {agent_id}"),
+    })?;
+
+    let mut cp_grants = Vec::new();
+    let mut gateway_grants = Vec::new();
+    let mut route_grants = Vec::new();
+
+    for row in rows {
+        match row.grant_type.as_str() {
+            "cp-tool" => {
+                if let (Some(resource_type), Some(action)) = (row.resource_type, row.action) {
+                    cp_grants.push(CpGrant { resource_type, action, team: row.team });
+                }
+            }
+            "gateway-tool" => {
+                if let Some(route_id) = row.route_id {
+                    gateway_grants.push(RouteGrant {
+                        route_id,
+                        allowed_methods: row.allowed_methods.unwrap_or_default(),
+                        team: row.team,
+                    });
+                }
+            }
+            "route" => {
+                if let Some(route_id) = row.route_id {
+                    route_grants.push(RouteGrant {
+                        route_id,
+                        allowed_methods: row.allowed_methods.unwrap_or_default(),
+                        team: row.team,
+                    });
+                }
+            }
+            _ => {
+                tracing::warn!(grant_type = %row.grant_type, "unknown grant_type — skipping");
+            }
+        }
+    }
+
+    Ok((cp_grants, gateway_grants, route_grants))
 }
 
 /// Map a single org membership row into Flowplane scope strings.

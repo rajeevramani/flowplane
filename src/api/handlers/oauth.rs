@@ -287,6 +287,7 @@ pub async fn dcr_register_handler(
         &username,
         &payload.client_name,
         &team_entries,
+        crate::auth::models::AgentContext::CpTool, // TODO(E.3): make configurable from DCR metadata
     )
     .await
     .map_err(api_err_to_dcr)?;
