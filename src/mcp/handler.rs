@@ -381,46 +381,114 @@ impl McpHandler {
 
         // Gateway tools (dynamic, from DB) — only when gateway executor is configured
         if self.gateway_executor.is_some() {
-            let repo = crate::storage::repositories::mcp_tool::McpToolRepository::new(
-                (*self.db_pool).clone(),
-            );
-            for team in &self.teams {
-                // Skip teams without api:read access — prevent info leakage
-                if !check_resource_access(&self.context, "api", "read", Some(team)) {
-                    debug!(team = %team, "Skipping team: lacks api:read scope for gateway tools");
-                    continue;
-                }
-
-                let gateway_tools = match repo
-                    .list_by_category(team, McpToolCategory::GatewayApi)
-                    .await
-                {
-                    Ok(t) => t.into_iter().filter(|t| t.enabled).collect::<Vec<_>>(),
-                    Err(e) => {
-                        error!(error = %e, team = %team, "Failed to list gateway tools");
-                        return self.error_response(
-                            id,
-                            McpError::InternalError(format!("Failed to list gateway tools: {}", e)),
+            match self.context.agent_context {
+                Some(AgentContext::GatewayTool) => {
+                    // Gateway-tool agents: only show api_* tools for granted route_ids
+                    if let Some(ref user_id) = self.context.user_id {
+                        let granted_route_ids =
+                            load_gateway_grant_route_ids(user_id.as_str(), &self.db_pool).await;
+                        let repo = crate::storage::repositories::mcp_tool::McpToolRepository::new(
+                            (*self.db_pool).clone(),
                         );
+                        for team in &self.teams {
+                            let gateway_tools = match repo
+                                .list_by_category(team, McpToolCategory::GatewayApi)
+                                .await
+                            {
+                                Ok(t) => t.into_iter().filter(|t| t.enabled).collect::<Vec<_>>(),
+                                Err(e) => {
+                                    error!(error = %e, team = %team, "Failed to list gateway tools");
+                                    return self.error_response(
+                                        id,
+                                        McpError::InternalError(format!(
+                                            "Failed to list gateway tools: {}",
+                                            e
+                                        )),
+                                    );
+                                }
+                            };
+                            for t in gateway_tools {
+                                // Only include tools whose route_id is in the granted set
+                                let route_id_str =
+                                    t.route_id.as_ref().map(|r| r.as_str().to_string());
+                                if route_id_str
+                                    .as_deref()
+                                    .map(|r| granted_route_ids.contains(r))
+                                    .unwrap_or(false)
+                                {
+                                    let mut tool = Tool::new(
+                                        t.name.clone(),
+                                        t.description.clone().unwrap_or_default(),
+                                        if t.input_schema.is_null() || !t.input_schema.is_object() {
+                                            serde_json::json!({
+                                                "type": "object",
+                                                "properties": {},
+                                                "additionalProperties": false
+                                            })
+                                        } else {
+                                            t.input_schema.clone()
+                                        },
+                                    );
+                                    tool.output_schema = t.output_schema.clone();
+                                    all_tools.push(tool);
+                                }
+                            }
+                        }
                     }
-                };
-
-                for t in gateway_tools {
-                    let mut tool = Tool::new(
-                        t.name.clone(),
-                        t.description.clone().unwrap_or_default(),
-                        if t.input_schema.is_null() || !t.input_schema.is_object() {
-                            serde_json::json!({
-                                "type": "object",
-                                "properties": {},
-                                "additionalProperties": false
-                            })
-                        } else {
-                            t.input_schema.clone()
-                        },
+                }
+                Some(AgentContext::ApiConsumer) | Some(AgentContext::CpTool) => {
+                    // API consumer and CP-tool agents see no gateway tools
+                }
+                None => {
+                    // Human users: existing behavior — check api:read scope per team
+                    let repo = crate::storage::repositories::mcp_tool::McpToolRepository::new(
+                        (*self.db_pool).clone(),
                     );
-                    tool.output_schema = t.output_schema.clone();
-                    all_tools.push(tool);
+                    for team in &self.teams {
+                        // Skip teams without api:read access — prevent info leakage
+                        if !check_resource_access(&self.context, "api", "read", Some(team)) {
+                            debug!(
+                                team = %team,
+                                "Skipping team: lacks api:read scope for gateway tools"
+                            );
+                            continue;
+                        }
+
+                        let gateway_tools = match repo
+                            .list_by_category(team, McpToolCategory::GatewayApi)
+                            .await
+                        {
+                            Ok(t) => t.into_iter().filter(|t| t.enabled).collect::<Vec<_>>(),
+                            Err(e) => {
+                                error!(error = %e, team = %team, "Failed to list gateway tools");
+                                return self.error_response(
+                                    id,
+                                    McpError::InternalError(format!(
+                                        "Failed to list gateway tools: {}",
+                                        e
+                                    )),
+                                );
+                            }
+                        };
+
+                        for t in gateway_tools {
+                            let mut tool = Tool::new(
+                                t.name.clone(),
+                                t.description.clone().unwrap_or_default(),
+                                if t.input_schema.is_null() || !t.input_schema.is_object() {
+                                    serde_json::json!({
+                                        "type": "object",
+                                        "properties": {},
+                                        "additionalProperties": false
+                                    })
+                                } else {
+                                    t.input_schema.clone()
+                                },
+                            );
+                            tool.output_schema = t.output_schema.clone();
+                            all_tools.push(tool);
+                        }
+                    }
                 }
             }
         }
@@ -1418,6 +1486,38 @@ impl McpHandler {
             None => return self.error_response(id, McpError::ToolNotFound(tool_name)),
         };
 
+        // For gateway-tool agents, verify a grant exists for this tool's route before execution
+        if matches!(self.context.agent_context, Some(AgentContext::GatewayTool)) {
+            if let Some(ref user_id) = self.context.user_id {
+                match &tool.route_id {
+                    Some(route_id) => {
+                        if !agent_has_gateway_grant(
+                            user_id.as_str(),
+                            route_id.as_str(),
+                            &self.db_pool,
+                        )
+                        .await
+                        {
+                            return self.error_response(
+                                id,
+                                McpError::Forbidden(
+                                    "Agent not granted access to this tool".to_string(),
+                                ),
+                            );
+                        }
+                    }
+                    None => {
+                        return self.error_response(
+                            id,
+                            McpError::Forbidden(
+                                "Tool has no associated route for grant check".to_string(),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
         // Verify it's a gateway API tool
         if tool.category != crate::domain::McpToolCategory::GatewayApi {
             error!(
@@ -1528,6 +1628,43 @@ impl McpHandler {
             error: Some(error.to_json_rpc_error()),
         }
     }
+}
+
+/// Load the set of route_ids that a gateway-tool agent has grants for.
+async fn load_gateway_grant_route_ids(
+    agent_id: &str,
+    pool: &crate::storage::DbPool,
+) -> std::collections::HashSet<String> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT route_id FROM agent_grants \
+         WHERE agent_id = $1 AND grant_type = 'gateway-tool' AND route_id IS NOT NULL",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter().map(|(r,)| r).collect()
+}
+
+/// Check whether an agent has a gateway-tool grant for the given route.
+async fn agent_has_gateway_grant(
+    agent_id: &str,
+    route_id: &str,
+    pool: &crate::storage::DbPool,
+) -> bool {
+    let result: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM agent_grants \
+         WHERE agent_id = $1 AND route_id = $2 AND grant_type = 'gateway-tool'",
+    )
+    .bind(agent_id)
+    .bind(route_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    result.is_some()
 }
 
 #[cfg(test)]

@@ -2519,6 +2519,56 @@ pub async fn create_agent_grant(
         }
     }
 
+    // Validate gateway-tool grant requirements
+    if payload.grant_type == "gateway-tool" {
+        let agent_ctx = AgentContext::from_db(agent.agent_context.as_deref());
+        if !matches!(agent_ctx, Some(AgentContext::GatewayTool)) {
+            return Err(ApiError::BadRequest(
+                "agent context mismatch: gateway-tool grants require a gateway-tool agent"
+                    .to_string(),
+            ));
+        }
+        let route_id = payload.route_id.as_deref().ok_or_else(|| {
+            ApiError::BadRequest("gateway-tool grants require routeId".to_string())
+        })?;
+        let route_repo = crate::storage::repositories::route::RouteRepository::new(pool.clone());
+        let route = route_repo
+            .get_by_id(&crate::domain::RouteId::from_string(route_id.to_string()))
+            .await
+            .map_err(|_| ApiError::NotFound(format!("Route '{}' not found", route_id)))?;
+        if route.exposure != "external" {
+            return Err(ApiError::BadRequest(
+                "Cannot grant access to internal route. Set route exposure to 'external' first."
+                    .to_string(),
+            ));
+        }
+    }
+
+    // Validate route grant requirements
+    if payload.grant_type == "route" {
+        let agent_ctx = AgentContext::from_db(agent.agent_context.as_deref());
+        if !matches!(agent_ctx, Some(AgentContext::ApiConsumer)) {
+            return Err(ApiError::BadRequest(
+                "agent context mismatch: route grants require an api-consumer agent".to_string(),
+            ));
+        }
+        let route_id = payload
+            .route_id
+            .as_deref()
+            .ok_or_else(|| ApiError::BadRequest("route grants require routeId".to_string()))?;
+        let route_repo = crate::storage::repositories::route::RouteRepository::new(pool.clone());
+        let route = route_repo
+            .get_by_id(&crate::domain::RouteId::from_string(route_id.to_string()))
+            .await
+            .map_err(|_| ApiError::NotFound(format!("Route '{}' not found", route_id)))?;
+        if route.exposure != "external" {
+            return Err(ApiError::BadRequest(
+                "Cannot grant access to internal route. Set route exposure to 'external' first."
+                    .to_string(),
+            ));
+        }
+    }
+
     // Validate agent is a member of the specified team
     let team_member_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM user_team_memberships utm \
@@ -2574,6 +2624,13 @@ pub async fn create_agent_grant(
     if let Some(ref cache) = state.permission_cache {
         if let Some(ref sub) = agent.zitadel_sub {
             cache.evict(sub).await;
+        }
+    }
+
+    // For route grants, trigger xDS snapshot update so RBAC filter is refreshed
+    if payload.grant_type == "route" {
+        if let Err(e) = state.xds_state.refresh_listeners_from_repository().await {
+            tracing::error!(error = %e, "Failed to refresh xDS after route grant creation");
         }
     }
 
@@ -2686,25 +2743,37 @@ pub async fn delete_agent_grant(
         ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
     })?;
 
-    // Verify grant belongs to this agent then delete
-    let deleted = sqlx::query("DELETE FROM agent_grants WHERE id = $1 AND agent_id = $2")
+    // Fetch grant type before deletion so we know whether to trigger xDS
+    let grant_type_row: Option<(String,)> =
+        sqlx::query_as("SELECT grant_type FROM agent_grants WHERE id = $1 AND agent_id = $2")
+            .bind(&grant_id)
+            .bind(&agent.id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to fetch grant: {e}")))?;
+    let grant_type = grant_type_row.map(|(t,)| t).ok_or_else(|| {
+        ApiError::NotFound(format!("Grant '{}' not found for agent '{}'", grant_id, agent_name))
+    })?;
+
+    // Delete the grant
+    sqlx::query("DELETE FROM agent_grants WHERE id = $1 AND agent_id = $2")
         .bind(&grant_id)
         .bind(&agent.id)
         .execute(&pool)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete grant: {e}")))?;
 
-    if deleted.rows_affected() == 0 {
-        return Err(ApiError::NotFound(format!(
-            "Grant '{}' not found for agent '{}'",
-            grant_id, agent_name
-        )));
-    }
-
     // Evict permission cache so agent loses access on next request
     if let Some(ref cache) = state.permission_cache {
         if let Some(ref sub) = agent.zitadel_sub {
             cache.evict(sub).await;
+        }
+    }
+
+    // For route grants, trigger xDS snapshot update so RBAC filter is refreshed
+    if grant_type == "route" {
+        if let Err(e) = state.xds_state.refresh_listeners_from_repository().await {
+            tracing::error!(error = %e, "Failed to refresh xDS after route grant deletion");
         }
     }
 

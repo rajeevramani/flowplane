@@ -20,6 +20,7 @@ struct RouteRow {
     pub path_pattern: String,
     pub match_type: String,
     pub rule_order: i32,
+    pub exposure: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -33,6 +34,8 @@ pub struct RouteData {
     pub path_pattern: String,
     pub match_type: RouteMatchType,
     pub rule_order: i32,
+    /// Whether this route is accessible to external agents ("internal" | "external").
+    pub exposure: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -52,6 +55,7 @@ impl TryFrom<RouteRow> for RouteData {
             path_pattern: row.path_pattern,
             match_type,
             rule_order: row.rule_order,
+            exposure: row.exposure,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -74,6 +78,8 @@ pub struct UpdateRouteRequest {
     pub path_pattern: Option<String>,
     pub match_type: Option<RouteMatchType>,
     pub rule_order: Option<i32>,
+    /// Set to "internal" or "external". Changing external→internal is blocked if grants exist.
+    pub exposure: Option<String>,
 }
 
 /// Internal database row structure for routes with related data (joined query).
@@ -168,6 +174,14 @@ impl TryFrom<RouteWithRelatedDataRow> for RouteWithRelatedData {
     }
 }
 
+/// Validate that an exposure value is one of the accepted values.
+pub fn validate_exposure(exposure: &str) -> Result<()> {
+    match exposure {
+        "internal" | "external" => Ok(()),
+        _ => Err(FlowplaneError::validation("exposure must be 'internal' or 'external'")),
+    }
+}
+
 /// Repository for route operations.
 #[derive(Debug, Clone)]
 pub struct RouteRepository {
@@ -187,8 +201,8 @@ impl RouteRepository {
         let now = Utc::now();
 
         sqlx::query(
-            "INSERT INTO routes (id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            "INSERT INTO routes (id, virtual_host_id, name, path_pattern, match_type, rule_order, exposure, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
         )
         .bind(id.as_str())
         .bind(request.virtual_host_id.as_str())
@@ -196,6 +210,7 @@ impl RouteRepository {
         .bind(&request.path_pattern)
         .bind(request.match_type.as_str())
         .bind(request.rule_order)
+        .bind("internal")
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -222,6 +237,7 @@ impl RouteRepository {
             path_pattern: request.path_pattern,
             match_type: request.match_type,
             rule_order: request.rule_order,
+            exposure: "internal".to_string(),
             created_at: now,
             updated_at: now,
         })
@@ -231,7 +247,7 @@ impl RouteRepository {
     #[instrument(skip(self), fields(id = %id), name = "db_get_route_by_id")]
     pub async fn get_by_id(&self, id: &RouteId) -> Result<RouteData> {
         let row = sqlx::query_as::<sqlx::Postgres, RouteRow>(
-            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
+            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, exposure, created_at, updated_at \
              FROM routes WHERE id = $1"
         )
         .bind(id.as_str())
@@ -259,7 +275,7 @@ impl RouteRepository {
         name: &str,
     ) -> Result<RouteData> {
         let row = sqlx::query_as::<sqlx::Postgres, RouteRow>(
-            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
+            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, exposure, created_at, updated_at \
              FROM routes WHERE virtual_host_id = $1 AND name = $2"
         )
         .bind(virtual_host_id.as_str())
@@ -289,7 +305,7 @@ impl RouteRepository {
         virtual_host_id: &VirtualHostId,
     ) -> Result<Vec<RouteData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, RouteRow>(
-            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, created_at, updated_at \
+            "SELECT id, virtual_host_id, name, path_pattern, match_type, rule_order, exposure, created_at, updated_at \
              FROM routes WHERE virtual_host_id = $1 ORDER BY rule_order ASC"
         )
         .bind(virtual_host_id.as_str())
@@ -331,7 +347,7 @@ impl RouteRepository {
     #[instrument(skip(self), fields(team = %team), name = "db_list_routes_by_team")]
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<RouteData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, RouteRow>(
-            "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.created_at, r.updated_at \
+            "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.exposure, r.created_at, r.updated_at \
              FROM routes r \
              INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id \
              INNER JOIN route_configs rc ON vh.route_config_id = rc.id \
@@ -398,7 +414,7 @@ impl RouteRepository {
         let rows = if let Some(search_term) = search {
             let search_pattern = format!("%{}%", search_term);
             sqlx::query_as::<sqlx::Postgres, RouteRow>(
-                "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.created_at, r.updated_at \
+                "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.exposure, r.created_at, r.updated_at \
                  FROM routes r \
                  INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id \
                  INNER JOIN route_configs rc ON vh.route_config_id = rc.id \
@@ -415,7 +431,7 @@ impl RouteRepository {
             .await
         } else {
             sqlx::query_as::<sqlx::Postgres, RouteRow>(
-                "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.created_at, r.updated_at \
+                "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, r.exposure, r.created_at, r.updated_at \
                  FROM routes r \
                  INNER JOIN virtual_hosts vh ON r.virtual_host_id = vh.id \
                  INNER JOIN route_configs rc ON vh.route_config_id = rc.id \
@@ -486,16 +502,43 @@ impl RouteRepository {
         let current = self.get_by_id(id).await?;
         let now = Utc::now();
 
+        // Block exposure downgrade (external → internal) if active grants exist.
+        if let Some(ref new_exposure) = request.exposure {
+            validate_exposure(new_exposure)?;
+            if new_exposure == "internal" && current.exposure == "external" {
+                let grant_count: (i64,) = sqlx::query_as(
+                    "SELECT COUNT(*) FROM agent_grants \
+                     WHERE route_id = $1 AND grant_type IN ('gateway-tool', 'route')",
+                )
+                .bind(id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| FlowplaneError::Database {
+                    source: e,
+                    context: format!("Failed to check grants for route '{}'", id),
+                })?;
+                if grant_count.0 > 0 {
+                    return Err(FlowplaneError::conflict(
+                        "Route has active agent grants. Revoke all grants before changing exposure to internal.",
+                        "route",
+                    ));
+                }
+            }
+        }
+
         let new_path_pattern = request.path_pattern.unwrap_or(current.path_pattern);
         let new_match_type = request.match_type.unwrap_or(current.match_type);
         let new_rule_order = request.rule_order.unwrap_or(current.rule_order);
+        let new_exposure = request.exposure.unwrap_or(current.exposure);
 
         let result = sqlx::query(
-            "UPDATE routes SET path_pattern = $1, match_type = $2, rule_order = $3, updated_at = $4 WHERE id = $5"
+            "UPDATE routes SET path_pattern = $1, match_type = $2, rule_order = $3, \
+             exposure = $4, updated_at = $5 WHERE id = $6",
         )
         .bind(&new_path_pattern)
         .bind(new_match_type.as_str())
         .bind(new_rule_order)
+        .bind(&new_exposure)
         .bind(now)
         .bind(id.as_str())
         .execute(&self.pool)

@@ -21,7 +21,7 @@ pub const RBAC_PER_ROUTE_TYPE_URL: &str =
     "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBACPerRoute";
 
 /// RBAC action type
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RbacAction {
     /// Allow requests that match the policy

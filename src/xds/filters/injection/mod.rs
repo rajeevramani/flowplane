@@ -34,11 +34,13 @@
 //!     .await?;
 //! ```
 
+pub mod agent_rbac;
 mod learning_session;
 mod listener;
 mod merger;
 mod route;
 
+pub use agent_rbac::inject_agent_rbac_filters;
 pub use learning_session::{inject_access_logs, inject_ext_proc};
 pub use listener::inject_listener_filters;
 pub use merger::JwtConfigMerger;

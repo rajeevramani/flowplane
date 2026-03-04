@@ -636,6 +636,18 @@ impl XdsState {
             );
         }
 
+        // Inject agent RBAC filters for listeners that have active route grants
+        if let Some(ref pool) = self.pool {
+            if let Err(e) =
+                crate::xds::filters::injection::inject_agent_rbac_filters(&mut built, pool).await
+            {
+                warn!(
+                    error = %e,
+                    "Failed to inject agent RBAC filters"
+                );
+            }
+        }
+
         let total_resources = built.len();
         match self.apply_built_resources(LISTENER_TYPE_URL, built) {
             Some(update) => {
