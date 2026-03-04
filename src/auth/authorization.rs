@@ -6,7 +6,7 @@
 //! - `team:{name}:{resource}:{action}` - Team-scoped permissions (e.g., `team:platform:routes:read`)
 
 use crate::api::error::ApiError;
-use crate::auth::models::{AuthContext, AuthError};
+use crate::auth::models::{AgentContext, AuthContext, AuthError};
 use crate::domain::OrgId;
 
 /// Admin scope that grants access to governance resources only (orgs, users, audit, summary).
@@ -107,6 +107,22 @@ pub fn check_resource_access(
     action: &str,
     team: Option<&str>,
 ) -> bool {
+    // Machine users (agents) check DB grants, not JWT scopes.
+    if let Some(ref agent_ctx) = context.agent_context {
+        return match agent_ctx {
+            AgentContext::CpTool => {
+                // Check if agent has a cp-tool grant matching resource:action in the given team
+                context.cp_grants.iter().any(|g| {
+                    g.resource_type == resource
+                        && g.action == action
+                        && team.is_none_or(|t| g.team == t)
+                })
+            }
+            // Gateway-tool and api-consumer agents cannot call CP resources
+            AgentContext::GatewayTool | AgentContext::ApiConsumer => false,
+        };
+    }
+
     // Admin bypass for governance resources only.
     // admin:all grants access to org/user/team management, audit, summary
     // but does NOT grant access to tenant resources (clusters, routes, etc.).
@@ -2021,5 +2037,110 @@ mod tests {
         assert!(!is_governance_resource("custom-wasm-filters"));
         assert!(!is_governance_resource("generate-envoy-config"));
         assert!(!is_governance_resource("dataplanes"));
+    }
+
+    // =========================================================
+    // Machine-user (agent) branch tests — E.3
+    // =========================================================
+
+    fn cp_tool_context_with_grants(grants: Vec<crate::auth::models::CpGrant>) -> AuthContext {
+        AuthContext::with_user(
+            crate::domain::TokenId::from_str_unchecked("agent-token"),
+            "agent".into(),
+            crate::domain::UserId::from_str_unchecked("agent-1"),
+            "agent@test.com".into(),
+            vec![],
+        )
+        .with_agent_data(Some(AgentContext::CpTool), grants)
+    }
+
+    #[test]
+    fn cp_tool_agent_with_matching_grant_passes() {
+        let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
+            resource_type: "clusters".to_string(),
+            action: "read".to_string(),
+            team: "eng".to_string(),
+        }]);
+        assert!(check_resource_access(&ctx, "clusters", "read", Some("eng")));
+    }
+
+    #[test]
+    fn cp_tool_agent_without_matching_grant_is_denied() {
+        let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
+            resource_type: "clusters".to_string(),
+            action: "read".to_string(),
+            team: "eng".to_string(),
+        }]);
+        assert!(!check_resource_access(&ctx, "routes", "read", Some("eng")));
+    }
+
+    #[test]
+    fn cp_tool_agent_write_grant_does_not_cover_delete() {
+        let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
+            resource_type: "clusters".to_string(),
+            action: "write".to_string(),
+            team: "eng".to_string(),
+        }]);
+        assert!(!check_resource_access(&ctx, "clusters", "delete", Some("eng")));
+        assert!(check_resource_access(&ctx, "clusters", "write", Some("eng")));
+    }
+
+    #[test]
+    fn cp_tool_agent_grant_for_wrong_team_is_denied() {
+        let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
+            resource_type: "clusters".to_string(),
+            action: "read".to_string(),
+            team: "eng".to_string(),
+        }]);
+        assert!(!check_resource_access(&ctx, "clusters", "read", Some("sales")));
+    }
+
+    #[test]
+    fn gateway_tool_agent_cannot_access_cp_resources() {
+        let ctx = AuthContext::with_user(
+            crate::domain::TokenId::from_str_unchecked("gw-agent-token"),
+            "gw-agent".into(),
+            crate::domain::UserId::from_str_unchecked("gw-1"),
+            "gw@test.com".into(),
+            vec![],
+        )
+        .with_agent_data(Some(AgentContext::GatewayTool), vec![]);
+
+        assert!(!check_resource_access(&ctx, "clusters", "read", Some("eng")));
+        assert!(!check_resource_access(&ctx, "routes", "write", Some("eng")));
+        assert!(!check_resource_access(&ctx, "listeners", "read", None));
+    }
+
+    #[test]
+    fn api_consumer_agent_cannot_access_cp_resources() {
+        let ctx = AuthContext::with_user(
+            crate::domain::TokenId::from_str_unchecked("consumer-token"),
+            "consumer".into(),
+            crate::domain::UserId::from_str_unchecked("consumer-1"),
+            "consumer@test.com".into(),
+            vec![],
+        )
+        .with_agent_data(Some(AgentContext::ApiConsumer), vec![]);
+
+        assert!(!check_resource_access(&ctx, "clusters", "read", Some("eng")));
+        assert!(!check_resource_access(&ctx, "routes", "read", None));
+    }
+
+    #[test]
+    fn cp_tool_agent_no_grants_sees_nothing() {
+        let ctx = cp_tool_context_with_grants(vec![]);
+        assert!(!check_resource_access(&ctx, "clusters", "read", Some("eng")));
+        assert!(!check_resource_access(&ctx, "routes", "write", None));
+    }
+
+    #[test]
+    fn human_user_scope_path_unchanged_by_agent_branch() {
+        let ctx = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("human-token"),
+            "human".into(),
+            vec!["team:engineering:clusters:read".into()],
+        );
+        assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "clusters", "write", Some("engineering")));
     }
 }

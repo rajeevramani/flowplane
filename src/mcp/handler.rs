@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tracing::{debug, error, warn};
 
 use crate::auth::authorization::check_resource_access;
-use crate::auth::models::AuthContext;
+use crate::auth::models::{AgentContext, AuthContext};
 use crate::domain::McpToolCategory;
 use crate::mcp::error::McpError;
 use crate::mcp::gateway::GatewayExecutor;
@@ -339,8 +339,36 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        // CP tools (static registry)
-        let mut all_tools = tools::get_all_tools();
+        // CP tools: filter based on agent context
+        let cp_tools: Vec<crate::mcp::protocol::Tool> =
+            if let Some(ref agent_ctx) = self.context.agent_context {
+                match agent_ctx {
+                    AgentContext::CpTool => {
+                        // Build allowed (resource, action) set from grants
+                        let allowed: std::collections::HashSet<(&str, &str)> = self
+                            .context
+                            .cp_grants
+                            .iter()
+                            .map(|g| (g.resource_type.as_str(), g.action.as_str()))
+                            .collect();
+                        tools::get_all_tools()
+                            .into_iter()
+                            .filter(|tool| {
+                                get_tool_authorization(&tool.name)
+                                    .map(|auth| allowed.contains(&(auth.resource, auth.action)))
+                                    .unwrap_or(false)
+                            })
+                            .collect()
+                    }
+                    // Gateway-tool and api-consumer agents see NO CP tools
+                    AgentContext::GatewayTool | AgentContext::ApiConsumer => Vec::new(),
+                }
+            } else {
+                // Human users: all CP tools (existing behavior)
+                tools::get_all_tools()
+            };
+
+        let mut all_tools = cp_tools;
 
         // Enrich tool descriptions with risk level hints from the registry
         for tool in &mut all_tools {
@@ -420,6 +448,18 @@ impl McpHandler {
         };
 
         let args = params.arguments.unwrap_or(serde_json::json!({}));
+
+        // Route gateway API tools to the gateway executor before the is_none() check,
+        // because get_tool_authorization("api_*") returns Some(&GATEWAY_AUTH) — meaning
+        // is_none() would be false and the tool would fall through to the CP dispatch match,
+        // where it hits the default arm and returns ToolNotFound.
+        if params.name.starts_with("api_") {
+            return if self.gateway_executor.is_some() {
+                self.execute_gateway_tool(id, params.name, args).await
+            } else {
+                self.error_response(id, McpError::ToolNotFound(params.name))
+            };
+        }
 
         // Route: CP tools go through static authorization and dispatch.
         // Gateway tools (not in TOOL_AUTHORIZATIONS) go through the DB-backed executor.
@@ -2037,5 +2077,28 @@ mod tests {
         assert!(response.error.is_none(), "Expected no error, got: {:?}", response.error);
         let result = response.result.expect("Expected result");
         assert!(result["tools"].is_array(), "Expected tools array in result");
+    }
+
+    #[tokio::test]
+    async fn test_api_prefix_tool_without_executor_returns_tool_not_found() {
+        let test_db = TestDatabase::new("handler_api_no_executor").await;
+        let pool = Arc::new(test_db.pool.clone());
+        let ctx = context_with_scopes(vec!["team:test-team:api:execute"]);
+        // McpHandler::new() has no gateway_executor (None)
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/call".to_string(),
+                params: serde_json::json!({ "name": "api_getUsers", "arguments": {} }),
+            })
+            .await;
+
+        // api_* tool with no gateway executor → ToolNotFound (not panic, not Forbidden)
+        assert!(response.error.is_some());
+        let error = response.error.unwrap();
+        assert_eq!(error.code, error_codes::METHOD_NOT_FOUND);
     }
 }

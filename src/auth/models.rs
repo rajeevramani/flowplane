@@ -22,6 +22,10 @@ pub struct AuthContext {
     /// Organization name for this user (if org-scoped)
     pub org_name: Option<String>,
     scopes: HashSet<String>,
+    /// Agent context for machine users (None for human users).
+    pub agent_context: Option<AgentContext>,
+    /// CP-tool grants loaded from DB for cp-tool agents (empty for human users).
+    pub cp_grants: Vec<CpGrant>,
 }
 
 impl AuthContext {
@@ -36,6 +40,8 @@ impl AuthContext {
             org_id: None,
             org_name: None,
             scopes: scopes.into_iter().collect(),
+            agent_context: None,
+            cp_grants: Vec::new(),
         }
     }
 
@@ -56,7 +62,20 @@ impl AuthContext {
             org_id: None,
             org_name: None,
             scopes: scopes.into_iter().collect(),
+            agent_context: None,
+            cp_grants: Vec::new(),
         }
+    }
+
+    /// Attach agent context and grants for machine users.
+    pub fn with_agent_data(
+        mut self,
+        agent_context: Option<AgentContext>,
+        cp_grants: Vec<CpGrant>,
+    ) -> Self {
+        self.agent_context = agent_context;
+        self.cp_grants = cp_grants;
+        self
     }
 
     /// Set the organization context for this auth context.

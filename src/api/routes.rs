@@ -42,21 +42,22 @@ use super::{
         attach_filter_to_route_rule_handler, attach_filter_to_virtual_host_handler,
         auth_session_handler, bootstrap_initialize_handler, bootstrap_status_handler,
         bulk_disable_mcp_handler, bulk_enable_mcp_handler, check_learned_schema_handler,
-        compare_aggregated_schemas_handler, configure_filter_handler, create_cluster_handler,
-        create_filter_handler, create_learning_session_handler, create_listener_handler,
-        create_org_agent, create_org_team, create_route_config_handler, dcr_register_handler,
-        delete_cluster_handler, delete_filter_handler, delete_learning_session_handler,
-        delete_listener_handler, delete_org_agent, delete_org_team, delete_route_config_handler,
-        detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
-        detach_filter_from_virtual_host_handler, detach_filter_handler, disable_mcp_handler,
-        enable_mcp_handler, export_aggregated_schema_handler, export_multiple_schemas_handler,
+        compare_aggregated_schemas_handler, configure_filter_handler, create_agent_grant,
+        create_cluster_handler, create_filter_handler, create_learning_session_handler,
+        create_listener_handler, create_org_agent, create_org_team, create_route_config_handler,
+        dcr_register_handler, delete_agent_grant, delete_cluster_handler, delete_filter_handler,
+        delete_learning_session_handler, delete_listener_handler, delete_org_agent,
+        delete_org_team, delete_route_config_handler, detach_filter_from_listener_handler,
+        detach_filter_from_route_rule_handler, detach_filter_from_virtual_host_handler,
+        detach_filter_handler, disable_mcp_handler, enable_mcp_handler,
+        export_aggregated_schema_handler, export_multiple_schemas_handler,
         generate_certificate_handler, get_aggregated_schema_handler, get_app_handler,
         get_certificate_handler, get_cluster_handler, get_current_org, get_filter_handler,
         get_filter_status_handler, get_filter_type_handler, get_learning_session_handler,
         get_listener_handler, get_mcp_status_handler, get_mcp_tool_handler,
         get_mtls_status_handler, get_route_config_handler, get_route_stats_handler,
         get_stats_cluster_handler, get_stats_clusters_handler, get_stats_enabled_handler,
-        get_stats_overview_handler, health_handler, install_filter_handler,
+        get_stats_overview_handler, health_handler, install_filter_handler, list_agent_grants,
         list_aggregated_schemas_handler, list_all_scopes_handler, list_apps_handler,
         list_audit_logs, list_certificates_handler, list_clusters_handler,
         list_filter_configurations_handler, list_filter_installations_handler,
@@ -434,6 +435,14 @@ pub fn build_router_with_registry(
         .route(
             "/api/v1/orgs/{org_name}/agents/{agent_name}/scopes",
             put(update_org_agent_scopes),
+        )
+        .route(
+            "/api/v1/orgs/{org_name}/agents/{agent_name}/grants",
+            get(list_agent_grants).post(create_agent_grant),
+        )
+        .route(
+            "/api/v1/orgs/{org_name}/agents/{agent_name}/grants/{grant_id}",
+            delete(delete_agent_grant),
         )
         // Admin organization management endpoints
         .route("/api/v1/admin/organizations", get(admin_list_organizations))

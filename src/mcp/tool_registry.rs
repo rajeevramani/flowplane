@@ -957,6 +957,14 @@ static GATEWAY_AUTH: ToolAuthorization = ToolAuthorization {
     risk_level: RiskLevel::Medium,
 };
 
+/// Check whether a (resource_type, action) pair is valid for cp-tool grants.
+///
+/// Returns `true` if any CP tool in `TOOL_AUTHORIZATIONS` has this exact
+/// (resource, action) pair. Gateway tools are excluded (resource != "api").
+pub fn is_valid_cp_grant_pair(resource_type: &str, action: &str) -> bool {
+    TOOL_AUTHORIZATIONS.values().any(|auth| auth.resource == resource_type && auth.action == action)
+}
+
 /// Get authorization requirements for a tool
 ///
 /// Returns the resource and action required to execute the tool.

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
-use crate::auth::models::{CpGrant, RouteGrant};
+use crate::auth::models::{AgentContext, CpGrant, RouteGrant};
 use crate::domain::{OrgId, UserId};
 
 // ---------------------------------------------------------------------------
@@ -29,6 +29,8 @@ pub struct CachedPermissions {
     pub cp_grants: Vec<CpGrant>,
     pub gateway_grants: Vec<RouteGrant>,
     pub route_grants: Vec<RouteGrant>,
+    // Agent context (None for human users)
+    pub agent_context: Option<AgentContext>,
 }
 
 /// Snapshot returned by [`PermissionCache::get`] — avoids a large tuple.
@@ -44,6 +46,8 @@ pub struct CachedPermissionSnapshot {
     pub cp_grants: Vec<CpGrant>,
     pub gateway_grants: Vec<RouteGrant>,
     pub route_grants: Vec<RouteGrant>,
+    // Agent context (None for human users)
+    pub agent_context: Option<AgentContext>,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +91,7 @@ impl PermissionCache {
             cp_grants: entry.cp_grants.clone(),
             gateway_grants: entry.gateway_grants.clone(),
             route_grants: entry.route_grants.clone(),
+            agent_context: entry.agent_context,
         })
     }
 
@@ -126,6 +131,7 @@ mod tests {
             cp_grants: Vec::new(),
             gateway_grants: Vec::new(),
             route_grants: Vec::new(),
+            agent_context: None,
         }
     }
 

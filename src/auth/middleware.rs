@@ -16,8 +16,8 @@ use crate::auth::authorization::{
     action_from_request, require_resource_access, resource_from_path,
 };
 use crate::auth::cache::{CachedPermissionSnapshot, CachedPermissions};
-use crate::auth::models::{AuthContext, AuthError};
-use crate::auth::permissions::load_user_permissions;
+use crate::auth::models::{AgentContext, AuthContext, AuthError};
+use crate::auth::permissions::{load_agent_grants, load_user_permissions};
 use crate::auth::zitadel::{fetch_user_email, validate_jwt_extract_sub, ZitadelAuthState};
 use crate::domain::TokenId;
 use crate::storage::repositories::user::SqlxUserRepository;
@@ -124,6 +124,21 @@ pub async fn authenticate(
                 ApiError::Internal(format!("permission loading failed: {e}"))
             })?;
 
+            // For machine users, load agent grants and parse agent_context
+            let agent_ctx = if user.user_type == "machine" {
+                AgentContext::from_db(user.agent_context.as_deref())
+            } else {
+                None
+            };
+            let (cp_grants, gateway_grants, route_grants) = if agent_ctx.is_some() {
+                load_agent_grants(&state.pool, user.id.as_str()).await.map_err(|e| {
+                    warn!(%correlation_id, error = ?e, "Failed to load agent grants");
+                    ApiError::Internal(format!("agent grant loading failed: {e}"))
+                })?
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+
             let snap = CachedPermissionSnapshot {
                 user_id: user.id.clone(),
                 email: Some(user.email.clone()),
@@ -131,9 +146,10 @@ pub async fn authenticate(
                 org_id: permissions.org_id.clone(),
                 org_name: permissions.org_name.clone(),
                 org_role: permissions.org_role.clone(),
-                cp_grants: Vec::new(),
-                gateway_grants: Vec::new(),
-                route_grants: Vec::new(),
+                cp_grants: cp_grants.clone(),
+                gateway_grants: gateway_grants.clone(),
+                route_grants: route_grants.clone(),
+                agent_context: agent_ctx,
             };
 
             state
@@ -148,9 +164,10 @@ pub async fn authenticate(
                         org_name: permissions.org_name,
                         org_role: permissions.org_role,
                         cached_at: std::time::Instant::now(),
-                        cp_grants: Vec::new(),
-                        gateway_grants: Vec::new(),
-                        route_grants: Vec::new(),
+                        cp_grants,
+                        gateway_grants,
+                        route_grants,
+                        agent_context: agent_ctx,
                     },
                 )
                 .await;
@@ -167,7 +184,8 @@ pub async fn authenticate(
         snapshot.user_id,
         snapshot.email.unwrap_or_default(),
         snapshot.scopes.into_iter().collect(),
-    );
+    )
+    .with_agent_data(snapshot.agent_context, snapshot.cp_grants);
 
     // Populate org context if the user belongs to a non-platform org
     if let (Some(oid), Some(oname)) = (snapshot.org_id, snapshot.org_name) {

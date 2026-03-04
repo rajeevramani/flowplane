@@ -2386,6 +2386,353 @@ pub async fn update_org_agent_scopes(
     }))
 }
 
+// ===== Agent Grant CRUD =====
+
+/// Request body for creating an agent grant.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGrantRequest {
+    pub grant_type: String,
+    pub resource_type: Option<String>,
+    pub action: Option<String>,
+    pub team: String,
+    pub route_id: Option<String>,
+    pub allowed_methods: Option<Vec<String>>,
+    pub expires_at: Option<String>,
+}
+
+/// A single grant returned from the API.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantResponse {
+    pub id: String,
+    pub grant_type: String,
+    pub resource_type: Option<String>,
+    pub action: Option<String>,
+    pub team: String,
+    pub route_id: Option<String>,
+    pub allowed_methods: Option<Vec<String>>,
+    pub created_by: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+}
+
+/// Response for listing grants.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GrantListResponse {
+    pub grants: Vec<GrantResponse>,
+}
+
+#[derive(sqlx::FromRow)]
+struct GrantRow {
+    id: String,
+    grant_type: String,
+    resource_type: Option<String>,
+    action: Option<String>,
+    team: String,
+    route_id: Option<String>,
+    allowed_methods: Option<Vec<String>>,
+    created_by: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Create a grant for an agent (org-admin only).
+#[utoipa::path(
+    post,
+    path = "/api/v1/orgs/{org_name}/agents/{agent_name}/grants",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("agent_name" = String, Path, description = "Agent name")
+    ),
+    request_body = CreateGrantRequest,
+    responses(
+        (status = 201, description = "Grant created", body = GrantResponse),
+        (status = 400, description = "Validation error"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Agent or org not found"),
+        (status = 409, description = "Duplicate grant")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state, payload), fields(org_name = %org_name, agent_name = %agent_name, user_id = ?context.user_id))]
+pub async fn create_agent_grant(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((org_name, agent_name)): Path<(String, String)>,
+    Json(payload): Json<CreateGrantRequest>,
+) -> Result<(StatusCode, Json<GrantResponse>), ApiError> {
+    require_org_admin_only(&context, &org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    // Validate grant_type
+    if !matches!(payload.grant_type.as_str(), "cp-tool" | "gateway-tool" | "route") {
+        return Err(ApiError::BadRequest(format!(
+            "invalid grant type '{}': must be cp-tool, gateway-tool, or route",
+            payload.grant_type
+        )));
+    }
+
+    let pool = pool_for_state(&state)?;
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    // Resolve agent by name within this org
+    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
+    let machine_users = user_repo
+        .find_machine_users_by_org(org.id.as_ref())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
+    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
+        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
+    })?;
+
+    // Validate cp-tool grant requirements
+    if payload.grant_type == "cp-tool" {
+        let resource_type = payload.resource_type.as_deref().ok_or_else(|| {
+            ApiError::BadRequest("cp-tool grants require resourceType".to_string())
+        })?;
+        let action = payload
+            .action
+            .as_deref()
+            .ok_or_else(|| ApiError::BadRequest("cp-tool grants require action".to_string()))?;
+
+        // Agent context must be cp-tool
+        let agent_ctx = AgentContext::from_db(agent.agent_context.as_deref());
+        if !matches!(agent_ctx, Some(AgentContext::CpTool)) {
+            return Err(ApiError::BadRequest(
+                "agent context mismatch: agent is not a cp-tool agent".to_string(),
+            ));
+        }
+
+        // Validate (resource_type, action) pair exists in TOOL_AUTHORIZATIONS
+        if !crate::mcp::tool_registry::is_valid_cp_grant_pair(resource_type, action) {
+            return Err(ApiError::BadRequest(format!(
+                "unknown resource type '{}' or action '{}' for cp-tool grant",
+                resource_type, action
+            )));
+        }
+    }
+
+    // Validate agent is a member of the specified team
+    let team_member_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_team_memberships utm \
+         JOIN teams t ON utm.team = t.name AND t.org_id = $1 \
+         WHERE utm.user_id = $2 AND utm.team = $3",
+    )
+    .bind(org.id.as_ref())
+    .bind(&agent.id)
+    .bind(&payload.team)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to check team membership: {e}")))?;
+
+    if team_member_count == 0 {
+        return Err(ApiError::BadRequest(format!(
+            "agent is not a member of team '{}'",
+            payload.team
+        )));
+    }
+
+    let creator_id =
+        context.user_id.as_ref().ok_or_else(|| ApiError::forbidden("user context required"))?;
+
+    // Insert the grant; unique index will reject duplicates
+    let row = sqlx::query_as::<_, GrantRow>(
+        "INSERT INTO agent_grants \
+         (agent_id, org_id, team, grant_type, resource_type, action, route_id, allowed_methods, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         RETURNING id, grant_type, resource_type, action, team, route_id, allowed_methods, \
+                   created_by, created_at, expires_at",
+    )
+    .bind(&agent.id)
+    .bind(org.id.as_ref())
+    .bind(&payload.team)
+    .bind(&payload.grant_type)
+    .bind(payload.resource_type.as_deref())
+    .bind(payload.action.as_deref())
+    .bind(payload.route_id.as_deref())
+    .bind(payload.allowed_methods.as_deref())
+    .bind(creator_id.as_str())
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.code().as_deref() == Some("23505") {
+                return ApiError::Conflict("grant already exists".to_string());
+            }
+        }
+        ApiError::Internal(format!("Failed to create grant: {e}"))
+    })?;
+
+    // Evict permission cache so agent picks up new grant on next request
+    if let Some(ref cache) = state.permission_cache {
+        if let Some(ref sub) = agent.zitadel_sub {
+            cache.evict(sub).await;
+        }
+    }
+
+    tracing::info!(
+        agent_name = %agent_name,
+        grant_type = %payload.grant_type,
+        org_name = %org_name,
+        "created agent grant"
+    );
+
+    Ok((StatusCode::CREATED, Json(grant_row_to_response(row))))
+}
+
+/// List all grants for an agent (org-admin only).
+#[utoipa::path(
+    get,
+    path = "/api/v1/orgs/{org_name}/agents/{agent_name}/grants",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("agent_name" = String, Path, description = "Agent name")
+    ),
+    responses(
+        (status = 200, description = "Grants listed", body = GrantListResponse),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Agent or org not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(org_name = %org_name, agent_name = %agent_name, user_id = ?context.user_id))]
+pub async fn list_agent_grants(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((org_name, agent_name)): Path<(String, String)>,
+) -> Result<Json<GrantListResponse>, ApiError> {
+    require_org_admin_only(&context, &org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    let pool = pool_for_state(&state)?;
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
+    let machine_users = user_repo
+        .find_machine_users_by_org(org.id.as_ref())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
+    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
+        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
+    })?;
+
+    let rows = sqlx::query_as::<_, GrantRow>(
+        "SELECT id, grant_type, resource_type, action, team, route_id, allowed_methods, \
+                created_by, created_at, expires_at \
+         FROM agent_grants WHERE agent_id = $1 ORDER BY created_at",
+    )
+    .bind(&agent.id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to list grants: {e}")))?;
+
+    let grants = rows.into_iter().map(grant_row_to_response).collect();
+    Ok(Json(GrantListResponse { grants }))
+}
+
+/// Delete a grant for an agent (org-admin only).
+#[utoipa::path(
+    delete,
+    path = "/api/v1/orgs/{org_name}/agents/{agent_name}/grants/{grant_id}",
+    params(
+        ("org_name" = String, Path, description = "Organization name"),
+        ("agent_name" = String, Path, description = "Agent name"),
+        ("grant_id" = String, Path, description = "Grant ID")
+    ),
+    responses(
+        (status = 204, description = "Grant deleted"),
+        (status = 403, description = "Organization admin privileges required"),
+        (status = 404, description = "Agent, org, or grant not found")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "Organizations"
+)]
+#[instrument(skip(state), fields(org_name = %org_name, agent_name = %agent_name, grant_id = %grant_id, user_id = ?context.user_id))]
+pub async fn delete_agent_grant(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((org_name, agent_name, grant_id)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_org_admin_only(&context, &org_name)
+        .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
+
+    let pool = pool_for_state(&state)?;
+    let org_repo = org_repository_for_state(&state)?;
+    let org = org_repo
+        .get_organization_by_name(&org_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
+
+    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
+    let machine_users = user_repo
+        .find_machine_users_by_org(org.id.as_ref())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
+    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
+        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
+    })?;
+
+    // Verify grant belongs to this agent then delete
+    let deleted = sqlx::query("DELETE FROM agent_grants WHERE id = $1 AND agent_id = $2")
+        .bind(&grant_id)
+        .bind(&agent.id)
+        .execute(&pool)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to delete grant: {e}")))?;
+
+    if deleted.rows_affected() == 0 {
+        return Err(ApiError::NotFound(format!(
+            "Grant '{}' not found for agent '{}'",
+            grant_id, agent_name
+        )));
+    }
+
+    // Evict permission cache so agent loses access on next request
+    if let Some(ref cache) = state.permission_cache {
+        if let Some(ref sub) = agent.zitadel_sub {
+            cache.evict(sub).await;
+        }
+    }
+
+    tracing::info!(
+        agent_name = %agent_name,
+        grant_id = %grant_id,
+        org_name = %org_name,
+        "deleted agent grant"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn grant_row_to_response(row: GrantRow) -> GrantResponse {
+    GrantResponse {
+        id: row.id,
+        grant_type: row.grant_type,
+        resource_type: row.resource_type,
+        action: row.action,
+        team: row.team,
+        route_id: row.route_id,
+        allowed_methods: row.allowed_methods,
+        created_by: row.created_by,
+        created_at: row.created_at.to_rfc3339(),
+        expires_at: row.expires_at.map(|t| t.to_rfc3339()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
