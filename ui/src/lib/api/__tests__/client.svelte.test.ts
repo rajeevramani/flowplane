@@ -79,6 +79,52 @@ describe('ApiClient', () => {
 		);
 	});
 
+	it('listAgentGrants calls correct endpoint', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			mockResponse({ grants: [{ id: 'g1', grantType: 'cp-tool', createdBy: 'admin', createdAt: '2026-03-01T00:00:00Z' }] })
+		);
+
+		const result = await apiClient.listAgentGrants('acme-corp', 'my-agent');
+		expect(result.grants).toHaveLength(1);
+		expect(result.grants[0].grantType).toBe('cp-tool');
+	});
+
+	it('createAgentGrant sends correct payload', async () => {
+		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			mockResponse({ id: 'g2', grantType: 'cp-tool', resourceType: 'clusters', action: 'read', team: 'engineering', createdBy: 'admin', createdAt: '2026-03-01T00:00:00Z' })
+		);
+
+		await apiClient.createAgentGrant('acme-corp', 'my-agent', {
+			grantType: 'cp-tool',
+			resourceType: 'clusters',
+			action: 'read',
+			team: 'engineering'
+		});
+
+		const call = fetchSpy.mock.calls[0];
+		expect(call[0]).toContain('/api/v1/orgs/acme-corp/agents/my-agent/grants');
+		expect(call[1]).toEqual(
+			expect.objectContaining({ method: 'POST' })
+		);
+		const body = JSON.parse(call[1]?.body as string);
+		expect(body.team).toBe('engineering');
+		expect(body.grantType).toBe('cp-tool');
+	});
+
+	it('deleteAgentGrant calls correct endpoint', async () => {
+		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			mockResponse(null, { status: 204 })
+		);
+
+		await apiClient.deleteAgentGrant('acme-corp', 'my-agent', 'grant-123');
+
+		const call = fetchSpy.mock.calls[0];
+		expect(call[0]).toContain('/api/v1/orgs/acme-corp/agents/my-agent/grants/grant-123');
+		expect(call[1]).toEqual(
+			expect.objectContaining({ method: 'DELETE' })
+		);
+	});
+
 	it('post includes CSRF token and body', async () => {
 		// First, set CSRF token via a response header
 		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
