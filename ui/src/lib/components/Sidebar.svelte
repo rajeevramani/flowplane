@@ -22,7 +22,8 @@
 		Globe
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
-	import { isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
+	import { isOrgAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -74,7 +75,7 @@
 	];
 
 	// Derived admin flags from session scopes
-	let showOrganizations = $derived(isSystemAdmin(sessionInfo.scopes));
+	let showOrganizations = $derived(isGovernanceAdmin(sessionInfo));
 	let showOrgSettings = $derived(isOrgAdmin(sessionInfo.scopes));
 
 	// Check if a path is active
@@ -296,7 +297,7 @@
 		</div>
 
 		<!-- Admin Section (only for governance admins) -->
-		{#if isSystemAdmin(sessionInfo.scopes)}
+		{#if isGovernanceAdmin(sessionInfo)}
 			<div class="px-3 mb-4">
 				<h3 class="px-3 mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
 					Admin
@@ -377,8 +378,8 @@
 
 	</nav>
 
-	<!-- Version Footer -->
+	<!-- Footer -->
 	<div class="px-4 py-3 border-t border-gray-800">
-		<span class="text-xs text-gray-500">v{sessionInfo.version}</span>
+		<span class="text-xs text-gray-500">Flowplane</span>
 	</div>
 </aside>

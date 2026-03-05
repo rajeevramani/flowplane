@@ -64,7 +64,7 @@
 				return;
 			}
 			agent = found;
-			selectedScopes = parseBaseScopes(found.scopes);
+			selectedScopes = [];
 		} catch {
 			goto('/login');
 		} finally {
@@ -86,8 +86,8 @@
 		successMessage = null;
 
 		try {
-			await apiClient.updateOrgAgentScopes(orgName, agentName, { scopes: selectedScopes });
-			successMessage = 'Scopes updated';
+			// Scopes management removed — grants UI coming in F.2
+			submitError = 'Scopes management has been replaced by grants. This page will be updated.';
 			setTimeout(() => {
 				goto(`/organizations/${orgName}/agents`);
 			}, 1000);

@@ -7,28 +7,6 @@ export interface PaginatedResponse<T> {
 	offset: number;
 }
 
-export interface LoginRequest {
-	email: string;
-	password: string;
-}
-
-export interface LoginResponse {
-	sessionId: string;
-	csrfToken: string;
-	expiresAt: string;
-	userId: string;
-	userEmail: string;
-	isPlatformAdmin: boolean;
-	teams: string[];
-	scopes: string[];
-	orgId?: string;
-	orgName?: string;
-}
-
-export interface ChangePasswordRequest {
-	currentPassword: string;
-	newPassword: string;
-}
 
 export interface BootstrapStatusResponse {
 	needsInitialization: boolean;
@@ -50,16 +28,13 @@ export interface BootstrapInitializeResponse {
 }
 
 export interface SessionInfoResponse {
-	sessionId: string;
 	userId: string;
 	name: string;
 	email: string;
-	isAdmin: boolean;
 	isPlatformAdmin: boolean;
 	teams: string[];
 	scopes: string[];
 	expiresAt: string | null;
-	version: string;
 	orgId?: string;
 	orgName?: string;
 	orgRole?: string;
@@ -202,6 +177,7 @@ export interface RouteResponse {
 	team: string;
 	pathPrefix: string;
 	clusterTargets: string;
+	exposure: string;
 	importId?: string;
 	routeOrder?: number;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1898,7 +1874,7 @@ export interface AgentInfo {
 	name: string;
 	username: string;
 	teams: string[];
-	scopes: string[];
+	agentContext?: string;
 	createdAt: string;
 }
 
@@ -1910,7 +1886,6 @@ export interface CreateAgentRequest {
 	name: string;
 	description?: string | null;
 	teams: string[];
-	scopes: string[];
 }
 
 export interface CreateAgentResponse {
@@ -1927,6 +1902,31 @@ export interface CreateAgentResponse {
 	message: string | null;
 }
 
-export interface UpdateAgentScopesRequest {
-	scopes: string[];
+// ===== Grant types =====
+
+export interface CreateGrantRequest {
+	grantType: string;
+	resourceType?: string;
+	action?: string;
+	team: string;
+	routeId?: string;
+	allowedMethods?: string[];
+	expiresAt?: string;
+}
+
+export interface GrantResponse {
+	id: string;
+	grantType: string;
+	resourceType?: string;
+	action?: string;
+	team?: string;
+	routeId?: string;
+	allowedMethods?: string[];
+	createdBy: string;
+	createdAt: string;
+	expiresAt?: string;
+}
+
+export interface GrantListResponse {
+	grants: GrantResponse[];
 }

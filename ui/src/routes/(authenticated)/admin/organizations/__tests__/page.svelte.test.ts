@@ -16,16 +16,13 @@ import { apiClient } from '$lib/api/client';
 import OrganizationsPage from '../+page.svelte';
 
 const mockSessionInfo: SessionInfoResponse = {
-	sessionId: 'sess-1',
 	userId: 'user-1',
 	name: 'Admin User',
 	email: 'admin@test.com',
-	isAdmin: true,
 	isPlatformAdmin: false,
 	teams: ['test-team'],
 	scopes: ['admin:all'],
-	expiresAt: null,
-	version: '1.0.0'
+	expiresAt: null
 };
 
 const mockOrgsResponse: AdminListOrgsResponse = {

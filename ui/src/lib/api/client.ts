@@ -122,7 +122,9 @@ import type {
 	ListAgentsResponse,
 	CreateAgentRequest,
 	CreateAgentResponse,
-	UpdateAgentScopesRequest,
+	CreateGrantRequest,
+	GrantResponse,
+	GrantListResponse,
 	// Invite types
 	InviteOrgMemberRequest,
 	InviteOrgMemberResponse,
@@ -225,16 +227,13 @@ class ApiClient {
 		}>('/api/v1/auth/session');
 
 		return {
-			sessionId: user.session_state ?? '',
 			userId: backendSession.userId,
 			name: backendSession.name || (user.profile.name as string) || '',
 			email: backendSession.email || (user.profile.email as string) || '',
-			isAdmin: backendSession.isPlatformAdmin,
 			isPlatformAdmin: backendSession.isPlatformAdmin,
 			teams: backendSession.teams,
 			scopes: backendSession.scopes,
 			expiresAt: user.expires_at ? new Date(user.expires_at * 1000).toISOString() : null,
-			version: '',
 			orgId: backendSession.orgId,
 			orgName: backendSession.orgName,
 			orgRole: backendSession.orgRole,
@@ -1619,14 +1618,26 @@ class ApiClient {
 		);
 	}
 
-	async updateOrgAgentScopes(
+	async listAgentGrants(orgName: string, agentName: string): Promise<GrantListResponse> {
+		return this.get<GrantListResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}/grants`
+		);
+	}
+
+	async createAgentGrant(
 		orgName: string,
 		agentName: string,
-		data: UpdateAgentScopesRequest
-	): Promise<AgentInfo> {
-		return this.put<AgentInfo>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}/scopes`,
-			data
+		request: CreateGrantRequest
+	): Promise<GrantResponse> {
+		return this.post<GrantResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}/grants`,
+			request
+		);
+	}
+
+	async deleteAgentGrant(orgName: string, agentName: string, grantId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}/grants/${encodeURIComponent(grantId)}`
 		);
 	}
 }

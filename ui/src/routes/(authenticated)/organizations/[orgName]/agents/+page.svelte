@@ -82,19 +82,7 @@
 		});
 	}
 
-	function parseBaseScopes(scopes: string[]): string[] {
-		const base = new Set<string>();
-		for (const scope of scopes) {
-			// Fully-qualified: "team:engineering:clusters:read" → "clusters:read"
-			const parts = scope.split(':');
-			if (parts.length === 4 && parts[0] === 'team') {
-				base.add(`${parts[2]}:${parts[3]}`);
-			} else if (parts.length === 2) {
-				base.add(scope);
-			}
-		}
-		return Array.from(base).sort();
-	}
+
 </script>
 
 <div class="min-h-screen bg-gray-50">
@@ -198,16 +186,9 @@
 										</div>
 									</td>
 									<td class="px-6 py-4">
-										<div class="flex flex-wrap gap-1">
-											{#each parseBaseScopes(agent.scopes) as scope}
-												<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-gray-100 text-gray-700">
-													{scope}
-												</span>
-											{/each}
-											{#if agent.scopes.length === 0}
-												<span class="text-xs text-gray-400">No scopes</span>
-											{/if}
-										</div>
+										<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-gray-100 text-gray-700">
+											{agent.agentContext ?? 'none'}
+										</span>
 									</td>
 									<td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
 										{formatDate(agent.createdAt)}

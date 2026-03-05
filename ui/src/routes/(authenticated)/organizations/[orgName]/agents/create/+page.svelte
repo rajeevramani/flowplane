@@ -116,8 +116,7 @@
 			const response = await apiClient.createOrgAgent(orgName, {
 				name: name.trim(),
 				description: description.trim() || null,
-				teams: selectedTeams,
-				scopes: selectedScopes
+				teams: selectedTeams
 			});
 
 			// HTTP 200 = already exists (idempotent)
