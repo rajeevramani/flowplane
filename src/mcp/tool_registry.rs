@@ -61,7 +61,7 @@ impl std::fmt::Display for RiskLevel {
 pub struct ToolAuthorization {
     /// Resource name (e.g., "clusters", "listeners", "secrets")
     pub resource: &'static str,
-    /// Required action (e.g., "read", "write", "delete", "create")
+    /// Required action (e.g., "read", "create", "update", "delete", "execute")
     pub action: &'static str,
     /// Human-readable description of scope requirements
     pub description: &'static str,
@@ -121,7 +121,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "delete",
-                description: "Delete cluster requires clusters:delete or cp:write",
+                description: "Delete cluster requires clusters:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -179,7 +179,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "listeners",
                 action: "delete",
-                description: "Delete listener requires listeners:delete or cp:write",
+                description: "Delete listener requires listeners:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -246,7 +246,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "delete",
-                description: "Delete route requires routes:delete or cp:write",
+                description: "Delete route requires routes:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -291,7 +291,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "delete",
-                description: "Delete route config requires routes:delete or cp:write",
+                description: "Delete route config requires routes:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -349,7 +349,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "filters",
                 action: "delete",
-                description: "Delete filter requires filters:delete or cp:write",
+                description: "Delete filter requires filters:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -429,7 +429,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "delete",
-                description: "Delete virtual host requires routes:delete or cp:write",
+                description: "Delete virtual host requires routes:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -759,7 +759,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "dataplanes",
                 action: "delete",
-                description: "Delete dataplane requires dataplanes:delete or dataplanes:write",
+                description: "Delete dataplane requires dataplanes:delete",
                 risk_level: RiskLevel::Medium,
             },
         );
