@@ -5,7 +5,7 @@
 	import type { CreateTeamRequest, OrganizationResponse, SessionInfoResponse } from '$lib/api/types';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
 	import { validateRequired, validateMaxLength, runValidators } from '$lib/utils/validators';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	let formData = $state({
 		name: '',
@@ -26,12 +26,12 @@
 	onMount(async () => {
 		try {
 			sessionInfo = await apiClient.getSessionInfo();
-			if (!isSystemAdmin(sessionInfo.scopes)) {
+			if (!isGovernanceAdmin(sessionInfo)) {
 				goto('/dashboard');
 				return;
 			}
 
-			isSysAdmin = isSystemAdmin(sessionInfo.scopes);
+			isSysAdmin = isGovernanceAdmin(sessionInfo);
 
 			// Auto-populate orgId for non-system-admin org members
 			if (!isSysAdmin && sessionInfo.orgId) {
@@ -82,6 +82,11 @@
 		// Description validation
 		if (formData.description && formData.description.length > 1000) {
 			newErrors.description = 'Description must be 1000 characters or less';
+		}
+
+		// Org association is required
+		if (!formData.orgId) {
+			newErrors.orgId = 'Organization is required';
 		}
 
 		errors = newErrors;
@@ -203,7 +208,7 @@
 				<!-- Organization -->
 				<div>
 					<label for="orgId" class="block text-sm font-medium text-gray-700 mb-2">
-						Organization
+						Organization <span class="text-red-500">*</span>
 					</label>
 					{#if isLoadingOrgs}
 						<div class="text-sm text-gray-500">Loading organizations...</div>
@@ -211,16 +216,20 @@
 						<select
 							id="orgId"
 							bind:value={formData.orgId}
-							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 {errors.orgId
+								? 'border-red-500'
+								: ''}"
 						>
-							<option value="">No organization (global)</option>
+							<option value="">Select an organization</option>
 							{#each organizations as org}
 								<option value={org.id}>{org.displayName} ({org.name})</option>
 							{/each}
 						</select>
-						<p class="mt-1 text-xs text-gray-500">
-							Assign this team to an organization
-						</p>
+						{#if errors.orgId}
+							<p class="mt-1 text-sm text-red-600">{errors.orgId}</p>
+						{:else}
+							<p class="mt-1 text-xs text-gray-500">Assign this team to an organization</p>
+						{/if}
 					{:else if formData.orgId}
 						<input
 							type="text"
@@ -228,9 +237,7 @@
 							disabled
 							class="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-500 cursor-not-allowed"
 						/>
-						<p class="mt-1 text-xs text-gray-500">
-							Auto-assigned to your organization
-						</p>
+						<p class="mt-1 text-xs text-gray-500">Auto-assigned to your organization</p>
 					{/if}
 				</div>
 

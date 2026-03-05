@@ -10,7 +10,8 @@
 		OrgStatus,
 		OrgRole
 	} from '$lib/api/types';
-	import { isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
+	import { isOrgAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 	import OrgInvitationsSection from '$lib/components/OrgInvitationsSection.svelte';
 
 	let orgId = $derived($page.params.id ?? '');
@@ -42,8 +43,8 @@
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
 			userScopes = sessionInfo.scopes;
-			isPlatformAdmin = isSystemAdmin(sessionInfo.scopes);
-			if (!isSystemAdmin(sessionInfo.scopes) && !isOrgAdmin(sessionInfo.scopes)) {
+			isPlatformAdmin = isGovernanceAdmin(sessionInfo);
+			if (!isGovernanceAdmin(sessionInfo) && !isOrgAdmin(sessionInfo.scopes)) {
 				goto('/dashboard');
 				return;
 			}
@@ -251,12 +252,14 @@
 						>
 							Edit
 						</button>
-						<button
-							onclick={() => (showDeleteConfirm = true)}
-							class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700"
-						>
-							Delete
-						</button>
+						{#if isPlatformAdmin}
+							<button
+								onclick={() => (showDeleteConfirm = true)}
+								class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700"
+							>
+								Delete
+							</button>
+						{/if}
 					</div>
 				{/if}
 			</div>
@@ -382,24 +385,26 @@
 								{/if}
 							</div>
 
-							<!-- Status -->
-							<div>
-								<label for="status" class="block text-sm font-medium text-gray-700 mb-2">
-									Status
-								</label>
-								<select
-									id="status"
-									bind:value={formData.status}
-									class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-								>
-									<option value="active">Active</option>
-									<option value="suspended">Suspended</option>
-									<option value="archived">Archived</option>
-								</select>
-								<p class="mt-1 text-xs text-gray-500">
-									Suspended organizations cannot modify resources. Archived organizations are read-only.
-								</p>
-							</div>
+							<!-- Status (platform admin only) -->
+							{#if isPlatformAdmin}
+								<div>
+									<label for="status" class="block text-sm font-medium text-gray-700 mb-2">
+										Status
+									</label>
+									<select
+										id="status"
+										bind:value={formData.status}
+										class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+									>
+										<option value="active">Active</option>
+										<option value="suspended">Suspended</option>
+										<option value="archived">Archived</option>
+									</select>
+									<p class="mt-1 text-xs text-gray-500">
+										Suspended organizations cannot modify resources. Archived organizations are read-only.
+									</p>
+								</div>
+							{/if}
 						</div>
 
 						<!-- Form Actions -->
