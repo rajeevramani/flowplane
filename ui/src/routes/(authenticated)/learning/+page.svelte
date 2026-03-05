@@ -17,7 +17,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import SessionStatusBadge from '$lib/components/learning/SessionStatusBadge.svelte';
 	import SessionProgressBar from '$lib/components/learning/SessionProgressBar.svelte';
-	import { canWriteLearningSessions, canDeleteLearningSessions } from '$lib/utils/permissions';
+	import { canCreateLearningSessions, canDeleteLearningSessions } from '$lib/utils/permissions';
 	import { handleApiError } from '$lib/utils/errorHandling';
 
 	let isLoading = $state(true);
@@ -224,7 +224,7 @@
 
 	<!-- Action Buttons -->
 	<div class="mb-6 flex items-center gap-4">
-		{#if sessionInfo && canWriteLearningSessions(sessionInfo)}
+		{#if sessionInfo && canCreateLearningSessions(sessionInfo)}
 			<Button onclick={handleCreate} variant="primary">
 				<Plus class="h-4 w-4 mr-2" />
 				Create Session
@@ -345,7 +345,7 @@
 					? 'No sessions match your filters.'
 					: 'Create a learning session to start capturing API traffic.'}
 			</p>
-			{#if !searchQuery && !statusFilter && sessionInfo && canWriteLearningSessions(sessionInfo)}
+			{#if !searchQuery && !statusFilter && sessionInfo && canCreateLearningSessions(sessionInfo)}
 				<Button onclick={handleCreate} variant="primary">
 					<Plus class="h-4 w-4 mr-2" />
 					Create Session

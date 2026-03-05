@@ -61,10 +61,10 @@ export function canReadSchemas(user: SessionInfoResponse): boolean {
 }
 
 /**
- * Check if user can write (create/update) learning sessions.
+ * Check if user can create learning sessions.
  */
-export function canWriteLearningSessions(user: SessionInfoResponse): boolean {
-	return hasScope(user, 'learning-sessions:write');
+export function canCreateLearningSessions(user: SessionInfoResponse): boolean {
+	return hasScope(user, 'learning-sessions:create');
 }
 
 /**

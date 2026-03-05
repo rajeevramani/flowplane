@@ -5,7 +5,7 @@
 	import { get } from 'svelte/store';
 	import type { CreateLearningSessionRequest, SessionInfoResponse } from '$lib/api/types';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
-	import { canWriteLearningSessions } from '$lib/utils/permissions';
+	import { canCreateLearningSessions } from '$lib/utils/permissions';
 	import { handleApiError } from '$lib/utils/errorHandling';
 	import { selectedTeam } from '$lib/stores/team';
 
@@ -32,7 +32,7 @@
 			sessionInfo = await apiClient.getSessionInfo();
 
 			// Check if user has permission
-			if (!canWriteLearningSessions(sessionInfo)) {
+			if (!canCreateLearningSessions(sessionInfo)) {
 				error = "You don't have permission to create learning sessions. Contact your administrator.";
 			}
 		} catch (e) {
@@ -73,7 +73,7 @@
 		error = null;
 
 		// Permission check
-		if (sessionInfo && !canWriteLearningSessions(sessionInfo)) {
+		if (sessionInfo && !canCreateLearningSessions(sessionInfo)) {
 			error = "You don't have permission to create learning sessions. Contact your administrator.";
 			return;
 		}
@@ -326,7 +326,7 @@
 			submittingLabel="Creating..."
 			onSubmit={handleSubmit}
 			onCancel={handleCancel}
-			disabled={sessionInfo ? !canWriteLearningSessions(sessionInfo) : true}
+			disabled={sessionInfo ? !canCreateLearningSessions(sessionInfo) : true}
 		/>
 	</div>
 	{/if}

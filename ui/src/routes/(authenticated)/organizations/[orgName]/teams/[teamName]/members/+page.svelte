@@ -35,18 +35,12 @@
 	let isRemoving = $state(false);
 
 	const ALL_SCOPES = [
-		'clusters:read',
-		'clusters:write',
-		'routes:read',
-		'routes:write',
-		'listeners:read',
-		'listeners:write',
-		'filters:read',
-		'filters:write',
-		'learning:read',
-		'learning:write',
-		'secrets:read',
-		'secrets:write',
+		'clusters:read', 'clusters:create', 'clusters:update', 'clusters:delete',
+		'routes:read', 'routes:create', 'routes:update', 'routes:delete',
+		'listeners:read', 'listeners:create', 'listeners:update', 'listeners:delete',
+		'filters:read', 'filters:create', 'filters:update', 'filters:delete',
+		'learning-sessions:read', 'learning-sessions:create', 'learning-sessions:execute', 'learning-sessions:delete',
+		'secrets:read', 'secrets:create', 'secrets:update', 'secrets:delete',
 		'stats:read'
 	];
 
