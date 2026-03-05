@@ -328,7 +328,7 @@ main() {
     "${AGENT_NAME}" \
     "Flowplane agent service account" \
     '["'"${TEAM_NAME}"'"]' \
-    '["clusters:read","clusters:write","routes:read","routes:write","listeners:read","listeners:write","filters:read","filters:write","learning:read","learning:write","secrets:read","secrets:write"]'
+    '["clusters:read","clusters:create","clusters:update","routes:read","routes:create","routes:update","listeners:read","listeners:create","listeners:update","filters:read","filters:create","filters:update","learning-sessions:read","learning-sessions:create","learning-sessions:execute","secrets:read","secrets:create","secrets:update"]'
 
   echo ""
   echo -e "${GREEN}━━━ Seed complete ━━━${RESET}"

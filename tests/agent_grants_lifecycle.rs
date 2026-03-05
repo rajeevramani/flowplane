@@ -11,12 +11,16 @@ mod common;
 use common::test_db::{TestDatabase, TEST_ORG_ID, TEST_TEAM_ID};
 use flowplane::auth::authorization::{check_resource_access, require_org_admin_only};
 use flowplane::auth::models::{AgentContext, AuthContext, CpGrant};
+use flowplane::config::SimpleXdsConfig;
 use flowplane::domain::RouteMatchType;
 use flowplane::domain::{RouteId, TokenId, UserId, VirtualHostId};
+use flowplane::internal_api::{auth::InternalAuthContext, RouteOperations};
 use flowplane::storage::repositories::route::{
     CreateRouteRequest, RouteRepository, UpdateRouteRequest,
 };
+use flowplane::xds::XdsState;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -272,10 +276,10 @@ async fn test_cp_agent_grant_permits_correct_resource() {
         "cp-tool agent with clusters:read grant must have access"
     );
 
-    // Does NOT have clusters:write
+    // Does NOT have clusters:create
     assert!(
-        !check_resource_access(&ctx, "clusters", "write", Some("test-team")),
-        "cp-tool agent without clusters:write grant must be denied"
+        !check_resource_access(&ctx, "clusters", "create", Some("test-team")),
+        "cp-tool agent without clusters:create grant must be denied"
     );
 
     // Does NOT have routes:read (different resource)
@@ -323,7 +327,7 @@ async fn test_cp_agent_zero_grants_has_no_access() {
         "cp-tool agent with zero grants must have no route access"
     );
     assert!(
-        !check_resource_access(&ctx, "listeners", "write", None),
+        !check_resource_access(&ctx, "listeners", "create", None),
         "cp-tool agent with zero grants must have no listener access"
     );
 }
@@ -340,8 +344,8 @@ async fn test_gateway_agent_cannot_access_cp_resources() {
         "gateway-tool agent must not have cluster access"
     );
     assert!(
-        !check_resource_access(&ctx, "routes", "write", Some("test-team")),
-        "gateway-tool agent must not have route write access"
+        !check_resource_access(&ctx, "routes", "create", Some("test-team")),
+        "gateway-tool agent must not have route create access"
     );
     assert!(
         !check_resource_access(&ctx, "listeners", "read", None),
@@ -384,7 +388,7 @@ async fn test_cp_agent_multiple_grants() {
         },
         CpGrant {
             resource_type: "routes".to_string(),
-            action: "write".to_string(),
+            action: "create".to_string(),
             team: "test-team".to_string(),
         },
     ];
@@ -393,10 +397,10 @@ async fn test_cp_agent_multiple_grants() {
     // Granted resources
     assert!(check_resource_access(&ctx, "clusters", "read", Some("test-team")));
     assert!(check_resource_access(&ctx, "routes", "read", Some("test-team")));
-    assert!(check_resource_access(&ctx, "routes", "write", Some("test-team")));
+    assert!(check_resource_access(&ctx, "routes", "create", Some("test-team")));
 
     // NOT granted resources
-    assert!(!check_resource_access(&ctx, "clusters", "write", Some("test-team")));
+    assert!(!check_resource_access(&ctx, "clusters", "create", Some("test-team")));
     assert!(!check_resource_access(&ctx, "listeners", "read", Some("test-team")));
     assert!(!check_resource_access(&ctx, "filters", "read", Some("test-team")));
 }
@@ -1111,13 +1115,13 @@ async fn test_cp_grants_produce_correct_tool_access_set() {
     // Build expected access set by checking each resource:action pair
     let resources = [
         ("clusters", "read"),
-        ("clusters", "write"),
+        ("clusters", "create"),
         ("routes", "read"),
-        ("routes", "write"),
+        ("routes", "create"),
         ("listeners", "read"),
-        ("listeners", "write"),
+        ("listeners", "create"),
         ("filters", "read"),
-        ("filters", "write"),
+        ("filters", "create"),
     ];
 
     let mut granted_set: HashSet<(&str, &str)> = HashSet::new();
@@ -1130,8 +1134,8 @@ async fn test_cp_grants_produce_correct_tool_access_set() {
     assert!(granted_set.contains(&("clusters", "read")), "clusters:read must be in granted set");
     assert!(granted_set.contains(&("listeners", "read")), "listeners:read must be in granted set");
     assert!(
-        !granted_set.contains(&("clusters", "write")),
-        "clusters:write must NOT be in granted set"
+        !granted_set.contains(&("clusters", "create")),
+        "clusters:create must NOT be in granted set"
     );
     assert!(!granted_set.contains(&("routes", "read")), "routes:read must NOT be in granted set");
     assert_eq!(granted_set.len(), 2, "Exactly 2 resource:action pairs must be granted");
@@ -1146,11 +1150,11 @@ async fn test_zero_grants_empty_tool_access_set() {
 
     let resources = [
         ("clusters", "read"),
-        ("clusters", "write"),
+        ("clusters", "create"),
         ("routes", "read"),
-        ("routes", "write"),
+        ("routes", "create"),
         ("listeners", "read"),
-        ("listeners", "write"),
+        ("listeners", "create"),
     ];
 
     for (resource, action) in &resources {
@@ -1161,4 +1165,99 @@ async fn test_zero_grants_empty_tool_access_set() {
             action
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 1.7 — Internal API exposure toggle (regression test for E.4 bug fix)
+// ---------------------------------------------------------------------------
+
+/// The internal API layer (RouteOperations) passes exposure through to the storage layer.
+///
+/// This is a regression test: the internal API previously hardcoded `exposure: None`,
+/// which meant the MCP cp_update_route tool could never toggle route exposure.
+#[tokio::test]
+async fn test_internal_api_exposure_toggle() {
+    let db = TestDatabase::new("internal_api_exposure").await;
+    let pool = &db.pool;
+
+    let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone()));
+    let route_ops = RouteOperations::new(state.clone());
+    let auth = InternalAuthContext::for_team("test-team");
+
+    // Setup: cluster → route_config → virtual_host chain
+    let cluster_repo = state.cluster_repository.as_ref().expect("cluster repo");
+    let cluster_req = flowplane::storage::repositories::cluster::CreateClusterRequest {
+        name: "exposure-cluster".to_string(),
+        service_name: "exposure-svc".to_string(),
+        configuration: serde_json::json!({}),
+        team: None,
+        import_id: None,
+    };
+    let _ = cluster_repo.create(cluster_req).await;
+
+    let rc_repo = state.route_config_repository.as_ref().expect("route config repo");
+    let rc_req = flowplane::storage::repositories::route_config::CreateRouteConfigRequest {
+        name: "exposure-rc".to_string(),
+        path_prefix: "/".to_string(),
+        cluster_name: "exposure-cluster".to_string(),
+        configuration: serde_json::json!({}),
+        team: None,
+        import_id: None,
+        route_order: None,
+        headers: None,
+    };
+    let rc = rc_repo.create(rc_req).await.expect("create route config");
+
+    let vh_repo = state.virtual_host_repository.as_ref().expect("virtual host repo");
+    let vh_req = flowplane::storage::CreateVirtualHostRequest {
+        route_config_id: rc.id.clone(),
+        name: "exposure-vh".to_string(),
+        domains: vec!["*".to_string()],
+        rule_order: 0,
+    };
+    vh_repo.create(vh_req).await.expect("create virtual host");
+
+    // Create route via internal API — defaults to internal
+    let create_req = flowplane::internal_api::CreateRouteRequest {
+        route_config: "exposure-rc".to_string(),
+        virtual_host: "exposure-vh".to_string(),
+        name: "toggle-route".to_string(),
+        path_pattern: "/api/toggle".to_string(),
+        match_type: "prefix".to_string(),
+        rule_order: Some(0),
+        action: serde_json::json!({"Cluster": {"name": "exposure-cluster"}}),
+    };
+    let created = route_ops.create(create_req, &auth).await.expect("create route");
+    assert_eq!(created.data.exposure, "internal", "New route must default to internal");
+
+    // Toggle to external via internal API (this was the bug — exposure was hardcoded to None)
+    let update_req = flowplane::internal_api::UpdateRouteRequest {
+        path_pattern: None,
+        match_type: None,
+        rule_order: None,
+        action: None,
+        exposure: Some("external".to_string()),
+    };
+    let updated = route_ops
+        .update("exposure-rc", "exposure-vh", "toggle-route", update_req, &auth)
+        .await
+        .expect("update route exposure to external");
+    assert_eq!(
+        updated.data.exposure, "external",
+        "Internal API must pass exposure through to storage layer"
+    );
+
+    // Toggle back to internal
+    let update_req = flowplane::internal_api::UpdateRouteRequest {
+        path_pattern: None,
+        match_type: None,
+        rule_order: None,
+        action: None,
+        exposure: Some("internal".to_string()),
+    };
+    let updated = route_ops
+        .update("exposure-rc", "exposure-vh", "toggle-route", update_req, &auth)
+        .await
+        .expect("update route exposure back to internal");
+    assert_eq!(updated.data.exposure, "internal", "Route must be back to internal");
 }
