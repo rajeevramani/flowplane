@@ -359,6 +359,7 @@ pub async fn execute_list_routes(
     // Build query with optional route_config filter
     let query = if route_config_filter.is_some() {
         "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, \
+                r.exposure, \
                 rm.operation_id, rm.summary, rm.description, rm.tags, \
                 vh.name as virtual_host_name, rc.name as route_config_name, \
                 r.created_at, r.updated_at \
@@ -371,6 +372,7 @@ pub async fn execute_list_routes(
          LIMIT $3 OFFSET $4"
     } else {
         "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, \
+                r.exposure, \
                 rm.operation_id, rm.summary, rm.description, rm.tags, \
                 vh.name as virtual_host_name, rc.name as route_config_name, \
                 r.created_at, r.updated_at \
@@ -393,6 +395,7 @@ pub async fn execute_list_routes(
         path_pattern: String,
         match_type: String,
         rule_order: i32,
+        exposure: String,
         operation_id: Option<String>,
         summary: Option<String>,
         description: Option<String>,
@@ -438,6 +441,7 @@ pub async fn execute_list_routes(
                 "path_pattern": r.path_pattern,
                 "match_type": r.match_type,
                 "rule_order": r.rule_order,
+                "exposure": r.exposure,
                 "metadata": {
                     "operation_id": r.operation_id,
                     "summary": r.summary,
@@ -1267,6 +1271,7 @@ Optional Parameters (provide only what you want to change):
 - match_type: New match type (prefix, exact, regex, template)
 - rule_order: New priority order
 - action: New route action
+- exposure: Set route visibility ("internal" or "external") for agent access
 
 IMPORTANT: After updating routes, you must update the route config to sync changes to xDS.
 
@@ -1298,6 +1303,11 @@ Authorization: Requires cp:write scope."#,
                 "rule_order": {
                     "type": "integer",
                     "description": "New priority order (optional)"
+                },
+                "exposure": {
+                    "type": "string",
+                    "enum": ["internal", "external"],
+                    "description": "Route visibility for agent access. 'external' routes can be granted to agents. Changing external→internal is blocked if active grants exist. (optional)"
                 },
                 "action": {
                     "type": "object",
@@ -1549,6 +1559,7 @@ pub async fn execute_update_route(
     let match_type = args.get("match_type").and_then(|v| v.as_str()).map(|s| s.to_string());
     let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
     let action = args.get("action").cloned();
+    let exposure = args.get("exposure").and_then(|v| v.as_str()).map(|s| s.to_string());
 
     tracing::debug!(
         team = %team,
@@ -1568,7 +1579,7 @@ pub async fn execute_update_route(
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
 
-    let req = UpdateRouteRequest { path_pattern, match_type, rule_order, action };
+    let req = UpdateRouteRequest { path_pattern, match_type, rule_order, action, exposure };
 
     let result = ops.update(route_config, virtual_host, name, req, &auth).await?;
 

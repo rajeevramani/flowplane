@@ -2075,6 +2075,7 @@ pub struct AgentInfo {
     pub name: String,
     pub username: String,
     pub teams: Vec<String>,
+    pub agent_context: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -2089,6 +2090,7 @@ pub struct ListAgentsResponse {
 struct AgentMembershipRow {
     id: String,
     name: String,
+    agent_context: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     team: Option<String>,
 }
@@ -2127,7 +2129,7 @@ pub async fn list_org_agents(
     let rows = sqlx::query_as::<_, AgentMembershipRow>(
         r#"
         SELECT
-            u.id, u.name, u.created_at,
+            u.id, u.name, u.agent_context, u.created_at,
             utm.team
         FROM users u
         JOIN organization_memberships om ON u.id = om.user_id AND om.org_id = $1
@@ -2154,6 +2156,7 @@ pub async fn list_org_agents(
                 name: row.name,
                 username,
                 teams: Vec::new(),
+                agent_context: row.agent_context,
                 created_at: row.created_at,
             }
         });

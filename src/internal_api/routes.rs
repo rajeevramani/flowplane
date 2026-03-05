@@ -869,7 +869,7 @@ impl RouteOperations {
                 path_pattern: r.path_pattern,
                 match_type: r.match_type,
                 rule_order: r.rule_order,
-                exposure: "internal".to_string(),
+                exposure: r.exposure,
                 created_at: r.route_created_at,
                 updated_at: r.route_updated_at,
             })
@@ -1099,7 +1099,7 @@ impl RouteOperations {
             path_pattern: req.path_pattern,
             match_type,
             rule_order: req.rule_order,
-            exposure: None, // internal API does not expose the exposure toggle
+            exposure: req.exposure,
         };
 
         let updated = route_repo.update(&existing.id, update_req).await.map_err(|e| {
@@ -1369,6 +1369,7 @@ mod route_operations_tests {
             match_type: Some("exact".to_string()),
             rule_order: Some(20),
             action: None,
+            exposure: None,
         };
 
         let result = ops.update("test-rc", "default", "update-test", update_req, &auth).await;
