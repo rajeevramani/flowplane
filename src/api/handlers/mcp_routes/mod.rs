@@ -108,7 +108,7 @@ pub async fn enable_mcp_handler(
         &state,
         &context,
         "mcp",
-        "write",
+        "create",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -161,7 +161,7 @@ pub async fn disable_mcp_handler(
         &state,
         &context,
         "mcp",
-        "write",
+        "delete",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -206,7 +206,7 @@ pub async fn refresh_mcp_schema_handler(
         &state,
         &context,
         "mcp",
-        "write",
+        "update",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -251,7 +251,7 @@ pub async fn bulk_enable_mcp_handler(
         &state,
         &context,
         "mcp",
-        "write",
+        "create",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -329,7 +329,7 @@ pub async fn bulk_disable_mcp_handler(
         &state,
         &context,
         "mcp",
-        "write",
+        "delete",
         Some(&team),
         context.org_id.as_ref(),
     )

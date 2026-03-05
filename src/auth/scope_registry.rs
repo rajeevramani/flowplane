@@ -39,7 +39,7 @@ struct ScopeCache {
     valid_scopes: HashSet<String>,
     /// Set of valid resources (e.g., "tokens", "clusters")
     valid_resources: HashSet<String>,
-    /// Map of resource -> valid actions (e.g., "tokens" -> ["read", "write", "delete"])
+    /// Map of resource -> valid actions (e.g., "tokens" -> ["read", "create", "update", "delete"])
     resource_actions: HashMap<String, HashSet<String>>,
     /// Full scope definitions for API responses
     definitions: Vec<ScopeDefinition>,
@@ -391,12 +391,12 @@ mod tests {
     fn test_scope_format_validation() {
         // Valid formats
         assert!(is_valid_scope_format("tokens:read"));
-        assert!(is_valid_scope_format("clusters:write"));
+        assert!(is_valid_scope_format("clusters:create"));
         assert!(is_valid_scope_format("admin:all"));
         assert!(is_valid_scope_format("api-definitions:read"));
         assert!(is_valid_scope_format("custom-wasm-filters:read"));
         assert!(is_valid_scope_format("team:platform:routes:read"));
-        assert!(is_valid_scope_format("team:eng-team:api-definitions:write"));
+        assert!(is_valid_scope_format("team:eng-team:api-definitions:create"));
         assert!(is_valid_scope_format("team:team-test-1:clusters:read"));
         assert!(is_valid_scope_format("team:engineering:custom-wasm-filters:read"));
         assert!(is_valid_scope_format("team:platform:*:*"));

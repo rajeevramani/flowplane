@@ -58,13 +58,21 @@ fn scopes_for_org_role(role: OrgRole, team_name: &str) -> Vec<String> {
         OrgRole::Member => {
             vec![
                 format!("team:{team_name}:routes:read"),
-                format!("team:{team_name}:routes:write"),
+                format!("team:{team_name}:routes:create"),
+                format!("team:{team_name}:routes:update"),
+                format!("team:{team_name}:routes:delete"),
                 format!("team:{team_name}:clusters:read"),
-                format!("team:{team_name}:clusters:write"),
+                format!("team:{team_name}:clusters:create"),
+                format!("team:{team_name}:clusters:update"),
+                format!("team:{team_name}:clusters:delete"),
                 format!("team:{team_name}:listeners:read"),
-                format!("team:{team_name}:listeners:write"),
+                format!("team:{team_name}:listeners:create"),
+                format!("team:{team_name}:listeners:update"),
+                format!("team:{team_name}:listeners:delete"),
                 format!("team:{team_name}:filters:read"),
-                format!("team:{team_name}:filters:write"),
+                format!("team:{team_name}:filters:create"),
+                format!("team:{team_name}:filters:update"),
+                format!("team:{team_name}:filters:delete"),
                 format!("team:{team_name}:stats:read"),
             ]
         }
@@ -1930,13 +1938,13 @@ pub async fn create_org_agent(
     Path(org_name): Path<String>,
     Json(payload): Json<CreateAgentRequest>,
 ) -> Result<(StatusCode, Json<CreateAgentResponse>), ApiError> {
-    // Step 1: Check team-scoped agents:write permission
+    // Step 1: Check team-scoped agents:create permission
     let team_for_auth = payload
         .teams
         .first()
         .ok_or_else(|| ApiError::BadRequest("At least one team must be specified".to_string()))?;
-    if !check_resource_access(&context, "agents", "write", Some(team_for_auth)) {
-        return Err(ApiError::forbidden("agents:write permission required for the target team"));
+    if !check_resource_access(&context, "agents", "create", Some(team_for_auth)) {
+        return Err(ApiError::forbidden("agents:create permission required for the target team"));
     }
 
     // Step 2: Validate request
@@ -2191,8 +2199,8 @@ pub async fn delete_org_agent(
     Extension(context): Extension<AuthContext>,
     Path((org_name, agent_name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    if !check_resource_access(&context, "agents", "write", None) {
-        return Err(ApiError::forbidden("agents:write permission required"));
+    if !check_resource_access(&context, "agents", "delete", None) {
+        return Err(ApiError::forbidden("agents:delete permission required"));
     }
 
     let pool = pool_for_state(&state)?;
@@ -2937,13 +2945,21 @@ mod tests {
     fn scopes_for_org_role_member_returns_specific() {
         let scopes = scopes_for_org_role(OrgRole::Member, "eng");
         assert!(scopes.contains(&"team:eng:routes:read".to_string()));
-        assert!(scopes.contains(&"team:eng:routes:write".to_string()));
+        assert!(scopes.contains(&"team:eng:routes:create".to_string()));
+        assert!(scopes.contains(&"team:eng:routes:update".to_string()));
+        assert!(scopes.contains(&"team:eng:routes:delete".to_string()));
         assert!(scopes.contains(&"team:eng:clusters:read".to_string()));
-        assert!(scopes.contains(&"team:eng:clusters:write".to_string()));
+        assert!(scopes.contains(&"team:eng:clusters:create".to_string()));
+        assert!(scopes.contains(&"team:eng:clusters:update".to_string()));
+        assert!(scopes.contains(&"team:eng:clusters:delete".to_string()));
         assert!(scopes.contains(&"team:eng:listeners:read".to_string()));
-        assert!(scopes.contains(&"team:eng:listeners:write".to_string()));
+        assert!(scopes.contains(&"team:eng:listeners:create".to_string()));
+        assert!(scopes.contains(&"team:eng:listeners:update".to_string()));
+        assert!(scopes.contains(&"team:eng:listeners:delete".to_string()));
         assert!(scopes.contains(&"team:eng:filters:read".to_string()));
-        assert!(scopes.contains(&"team:eng:filters:write".to_string()));
+        assert!(scopes.contains(&"team:eng:filters:create".to_string()));
+        assert!(scopes.contains(&"team:eng:filters:update".to_string()));
+        assert!(scopes.contains(&"team:eng:filters:delete".to_string()));
         assert!(scopes.contains(&"team:eng:stats:read".to_string()));
         // Member should NOT have wildcard
         assert!(!scopes.contains(&"team:eng:*:*".to_string()));
@@ -3044,7 +3060,7 @@ mod tests {
         AuthContext::new(
             TokenId::from_str_unchecked("member-token"),
             "member".into(),
-            vec![format!("team:{}:agents:write", team)],
+            vec![format!("team:{}:agents:create", team), format!("team:{}:agents:delete", team)],
         )
     }
 
@@ -3060,8 +3076,8 @@ mod tests {
     fn create_agent_team_member_with_agents_write_can_create() {
         let ctx = team_member_with_agents_write("engineering");
         assert!(
-            check_resource_access(&ctx, "agents", "write", Some("engineering")),
-            "Team member with agents:write should be able to create agents in their team"
+            check_resource_access(&ctx, "agents", "create", Some("engineering")),
+            "Team member with agents:create should be able to create agents in their team"
         );
     }
 
@@ -3069,8 +3085,8 @@ mod tests {
     fn create_agent_team_member_without_agents_write_cannot_create() {
         let ctx = org_member_context("acme-corp");
         assert!(
-            !check_resource_access(&ctx, "agents", "write", Some("engineering")),
-            "Team member without agents:write must not create agents"
+            !check_resource_access(&ctx, "agents", "create", Some("engineering")),
+            "Team member without agents:create must not create agents"
         );
     }
 
@@ -3079,7 +3095,7 @@ mod tests {
         // Platform admin (admin:all) does NOT get access — agents is not a governance resource
         let ctx = admin_context();
         assert!(
-            !check_resource_access(&ctx, "agents", "write", Some("engineering")),
+            !check_resource_access(&ctx, "agents", "create", Some("engineering")),
             "Platform admin must not be allowed to provision agents"
         );
     }
@@ -3122,8 +3138,8 @@ mod tests {
     fn delete_agent_team_member_with_agents_write_can_delete() {
         let ctx = team_member_with_agents_write("engineering");
         assert!(
-            check_resource_access(&ctx, "agents", "write", None),
-            "Team member with agents:write should be able to delete agents"
+            check_resource_access(&ctx, "agents", "delete", None),
+            "Team member with agents:delete should be able to delete agents"
         );
     }
 
@@ -3131,7 +3147,7 @@ mod tests {
     fn delete_agent_platform_admin_cannot_delete() {
         let ctx = admin_context();
         assert!(
-            !check_resource_access(&ctx, "agents", "write", None),
+            !check_resource_access(&ctx, "agents", "delete", None),
             "Platform admin must not be allowed to delete agents"
         );
     }
@@ -3161,7 +3177,7 @@ mod tests {
         let ctx = team_member_with_agents_write("engineering");
         assert!(
             crate::auth::authorization::require_org_admin_only(&ctx, "acme-corp").is_err(),
-            "Team member must not create grants even with agents:write"
+            "Team member must not create grants even with agents:create"
         );
     }
 
@@ -3243,7 +3259,7 @@ mod tests {
 
         // Gateway-tool agent with no CP grants cannot access any CP resource
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
-        assert!(!check_resource_access(&ctx, "routes", "write", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "routes", "create", Some("engineering")));
         assert!(!check_resource_access(&ctx, "listeners", "read", None));
         assert!(!check_resource_access(&ctx, "agents", "read", None));
     }
@@ -3262,6 +3278,6 @@ mod tests {
         // API-consumer agent cannot call CP endpoints
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
         assert!(!check_resource_access(&ctx, "routes", "read", None));
-        assert!(!check_resource_access(&ctx, "agents", "write", None));
+        assert!(!check_resource_access(&ctx, "agents", "create", None));
     }
 }

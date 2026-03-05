@@ -497,14 +497,14 @@ fn check_resource_access_global_scope_non_admin_denied() {
     let ctx = AuthContext::new(
         TokenId::from_str_unchecked("global-user"),
         "global-user".into(),
-        vec!["clusters:read".into(), "routes:write".into()],
+        vec!["clusters:read".into(), "routes:create".into()],
     );
 
     // Non-admin with global scopes should be DENIED (security fix)
     assert!(!check_resource_access(&ctx, "clusters", "read", None));
-    assert!(!check_resource_access(&ctx, "routes", "write", None));
+    assert!(!check_resource_access(&ctx, "routes", "create", None));
     assert!(!check_resource_access(&ctx, "clusters", "read", Some("any-team")));
-    assert!(!check_resource_access(&ctx, "routes", "write", Some("any-team")));
+    assert!(!check_resource_access(&ctx, "routes", "create", Some("any-team")));
 }
 
 // ---------------------------------------------------------------------------
@@ -523,12 +523,12 @@ fn check_resource_access_global_scope_admin_denied_for_tenant() {
 
     // admin:all is governance-only — denied for tenant resources
     assert!(!check_resource_access(&ctx, "clusters", "read", None));
-    assert!(!check_resource_access(&ctx, "routes", "write", Some("any-team")));
+    assert!(!check_resource_access(&ctx, "routes", "create", Some("any-team")));
     assert!(!check_resource_access(&ctx, "listeners", "delete", Some("engineering")));
 
     // admin:all grants governance resource access
     assert!(check_resource_access(&ctx, "admin-orgs", "read", None));
-    assert!(check_resource_access(&ctx, "admin-users", "write", None));
+    assert!(check_resource_access(&ctx, "admin-users", "create", None));
 }
 
 // ---------------------------------------------------------------------------
@@ -542,11 +542,11 @@ fn check_resource_access_correct_team_scope_allowed() {
     let ctx = AuthContext::new(
         TokenId::from_str_unchecked("team-user"),
         "team-user".into(),
-        vec!["team:engineering:clusters:read".into(), "team:engineering:routes:write".into()],
+        vec!["team:engineering:clusters:read".into(), "team:engineering:routes:create".into()],
     );
 
     assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
-    assert!(check_resource_access(&ctx, "routes", "write", Some("engineering")));
+    assert!(check_resource_access(&ctx, "routes", "create", Some("engineering")));
 }
 
 // ---------------------------------------------------------------------------
@@ -566,7 +566,7 @@ fn check_resource_access_wrong_team_scope_denied() {
     // Wrong team
     assert!(!check_resource_access(&ctx, "clusters", "read", Some("platform")));
     // Wrong action
-    assert!(!check_resource_access(&ctx, "clusters", "write", Some("engineering")));
+    assert!(!check_resource_access(&ctx, "clusters", "create", Some("engineering")));
     // Wrong resource
     assert!(!check_resource_access(&ctx, "routes", "read", Some("engineering")));
 }
@@ -657,7 +657,7 @@ fn global_resource_scopes_identified_for_restriction() {
     use flowplane::auth::authorization::is_global_resource_scope;
 
     // Scopes that SHOULD be flagged as global (restricted to platform admins)
-    for scope in &["clusters:read", "routes:write", "listeners:read", "secrets:write"] {
+    for scope in &["clusters:read", "routes:create", "listeners:read", "secrets:create"] {
         assert!(
             is_global_resource_scope(scope),
             "Scope '{}' should be classified as global resource scope",
@@ -686,12 +686,12 @@ fn non_admin_global_scopes_denied_resource_access() {
     let ctx = AuthContext::new(
         TokenId::from_str_unchecked("escalation-attempt"),
         "attacker".into(),
-        vec!["clusters:read".into(), "routes:write".into()],
+        vec!["clusters:read".into(), "routes:create".into()],
     );
 
     // Security: non-admin with global scopes denied for all teams
     assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
-    assert!(!check_resource_access(&ctx, "routes", "write", Some("platform")));
+    assert!(!check_resource_access(&ctx, "routes", "create", Some("platform")));
     assert!(!check_resource_access(&ctx, "clusters", "read", None));
 
     // require_resource_access returns Forbidden
@@ -781,7 +781,7 @@ fn get_effective_team_scopes_returns_teams_for_user() {
         "team-user".into(),
         vec![
             "team:engineering:routes:read".into(),
-            "team:engineering:clusters:write".into(),
+            "team:engineering:clusters:create".into(),
             "team:platform:routes:read".into(),
         ],
     );
@@ -802,9 +802,9 @@ fn is_global_resource_scope_classification() {
 
     // These ARE global resource scopes (dangerous for non-admins)
     assert!(is_global_resource_scope("clusters:read"));
-    assert!(is_global_resource_scope("routes:write"));
+    assert!(is_global_resource_scope("routes:create"));
     assert!(is_global_resource_scope("listeners:read"));
-    assert!(is_global_resource_scope("openapi-import:write"));
+    assert!(is_global_resource_scope("openapi-import:create"));
     assert!(is_global_resource_scope("secrets:read"));
 
     // These are NOT global resource scopes

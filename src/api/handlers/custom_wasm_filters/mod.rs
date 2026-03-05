@@ -127,7 +127,7 @@ pub async fn create_custom_wasm_filter_handler(
     payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
-    verify_team_access_for_filters(&state, &context, &team, "write").await?;
+    verify_team_access_for_filters(&state, &context, &team, "create").await?;
 
     // Decode base64 WASM binary
     let wasm_binary = BASE64.decode(&payload.wasm_binary_base64).map_err(|e| {
@@ -266,7 +266,7 @@ pub async fn update_custom_wasm_filter_handler(
     payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access
-    verify_team_access_for_filters(&state, &context, &team, "write").await?;
+    verify_team_access_for_filters(&state, &context, &team, "update").await?;
 
     let service = get_service(&state)?;
 
@@ -319,7 +319,7 @@ pub async fn delete_custom_wasm_filter_handler(
     Path(CustomFilterPath { team, id }): Path<CustomFilterPath>,
 ) -> Result<StatusCode, ApiError> {
     // Verify user has write access
-    verify_team_access_for_filters(&state, &context, &team, "write").await?;
+    verify_team_access_for_filters(&state, &context, &team, "delete").await?;
 
     let service = get_service(&state)?;
 

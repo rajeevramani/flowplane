@@ -70,7 +70,7 @@ pub async fn create_dataplane_handler(
         &state,
         &context,
         "dataplanes",
-        "write",
+        "create",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -323,7 +323,7 @@ pub async fn update_dataplane_handler(
         &state,
         &context,
         "dataplanes",
-        "write",
+        "update",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -396,7 +396,7 @@ pub async fn delete_dataplane_handler(
         &state,
         &context,
         "dataplanes",
-        "write",
+        "delete",
         Some(&team),
         context.org_id.as_ref(),
     )
