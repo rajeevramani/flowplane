@@ -157,7 +157,7 @@
 									Teams
 								</th>
 								<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-									Scopes
+									Context
 								</th>
 								<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 									Created
@@ -199,7 +199,7 @@
 												href="/organizations/{orgName}/agents/{agent.name}"
 												class="text-blue-600 hover:text-blue-900"
 											>
-												Edit Scopes
+												Manage
 											</a>
 											<button
 												onclick={() => openDeleteModal(agent)}

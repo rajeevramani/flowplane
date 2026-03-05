@@ -19,8 +19,6 @@
 	let name = $state('');
 	let description = $state('');
 	let selectedTeams = $state<string[]>([]);
-	let selectedScopes = $state<string[]>([]);
-
 	let errors = $state<Record<string, string>>({});
 
 	// Credential modal state
@@ -32,23 +30,6 @@
 	// Already-exists state
 	let showAlreadyExists = $state(false);
 	let alreadyExistsMessage = $state('');
-
-	const ALL_SCOPES = [
-		'clusters:read',
-		'clusters:write',
-		'routes:read',
-		'routes:write',
-		'listeners:read',
-		'listeners:write',
-		'filters:read',
-		'filters:write',
-		'learning:read',
-		'learning:write',
-		'secrets:read',
-		'secrets:write',
-		'stats:read',
-		'stats:write'
-	];
 
 	onMount(async () => {
 		try {
@@ -71,14 +52,6 @@
 			selectedTeams = selectedTeams.filter((t) => t !== teamName);
 		} else {
 			selectedTeams = [...selectedTeams, teamName];
-		}
-	}
-
-	function toggleScope(scope: string) {
-		if (selectedScopes.includes(scope)) {
-			selectedScopes = selectedScopes.filter((s) => s !== scope);
-		} else {
-			selectedScopes = [...selectedScopes, scope];
 		}
 	}
 
@@ -276,26 +249,10 @@
 						{/if}
 					</div>
 
-					<!-- Scopes -->
-					<div>
-						<p class="block text-sm font-medium text-gray-700 mb-2">
-							Scopes
-						</p>
-						<div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-							{#each ALL_SCOPES as scope}
-								<label class="flex items-center gap-2 text-sm cursor-pointer">
-									<input
-										type="checkbox"
-										checked={selectedScopes.includes(scope)}
-										onchange={() => toggleScope(scope)}
-										class="rounded border-gray-300 text-blue-600"
-									/>
-									<span class="font-mono text-gray-700">{scope}</span>
-								</label>
-							{/each}
-						</div>
-						<p class="mt-2 text-xs text-gray-500">
-							Leave empty to use default member scopes.
+					<!-- Permissions note -->
+					<div class="bg-blue-50 border border-blue-200 rounded-md p-3">
+						<p class="text-sm text-blue-800">
+							Permissions are managed via grants after the agent is created.
 						</p>
 					</div>
 				</div>
