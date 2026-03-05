@@ -15,14 +15,11 @@
 	let isLoading = $state(true);
 	let loadError = $state<string | null>(null);
 
-	// Grant creation
+	// Grant creation (gateway/route modal)
 	let showCreateForm = $state(false);
 	let isCreating = $state(false);
 	let createError = $state<string | null>(null);
 
-	// cp-tool grant form
-	let grantResourceType = $state('');
-	let grantAction = $state('');
 	let grantTeam = $state('');
 
 	// gateway/route grant form
@@ -41,18 +38,153 @@
 	let showDeleteAgentModal = $state(false);
 	let isDeletingAgent = $state(false);
 
-	const CP_RESOURCES = [
-		'aggregated-schemas', 'api', 'audit', 'clusters', 'custom-wasm-filters',
-		'dataplanes', 'filters', 'learning-sessions', 'listeners',
-		'proxy-certificates', 'reports', 'routes', 'secrets'
-	];
+	// Permission matrix state (cp-tool agents)
+	let matrixTeam = $state('');
+	let matrixSelections = $state<Record<string, boolean>>({});
+	let isSavingMatrix = $state(false);
+	let matrixErrors = $state<string[]>([]);
+	let matrixSuccess = $state<string | null>(null);
 
-	const CP_ACTIONS = ['read', 'write', 'delete', 'create', 'execute'];
+	// Valid resource+action pairs from backend TOOL_AUTHORIZATIONS.
+	// "api" resource excluded — that's for gateway tools, not cp-tool grants.
+	const VALID_CP_PAIRS: Record<string, string[]> = {
+		'clusters': ['read', 'create', 'update', 'delete'],
+		'listeners': ['read', 'create', 'update', 'delete'],
+		'routes': ['read', 'create', 'update', 'delete'],
+		'filters': ['read', 'create', 'update', 'delete'],
+		'secrets': ['read', 'create', 'update', 'delete'],
+		'dataplanes': ['read', 'create', 'update', 'delete'],
+		'custom-wasm-filters': ['read', 'create', 'update', 'delete'],
+		'learning-sessions': ['read', 'create', 'execute', 'delete'],
+		'aggregated-schemas': ['read', 'execute'],
+		'proxy-certificates': ['read', 'create', 'delete'],
+		'reports': ['read'],
+		'audit': ['read'],
+	};
+	const CP_RESOURCES = Object.keys(VALID_CP_PAIRS);
+	const CP_ACTIONS = ['read', 'create', 'update', 'delete', 'execute'] as const;
 	const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 
 	let agentContext = $derived(agent?.agentContext ?? null);
 	let isCpTool = $derived(agentContext === 'cp-tool');
 	let isGatewayOrConsumer = $derived(agentContext === 'gateway-tool' || agentContext === 'api-consumer');
+
+	// Matrix key uses backend action (resource:action), not display column
+	function matrixKey(resource: string, action: string): string {
+		return `${resource}:${action}`;
+	}
+
+	function isValidPair(resource: string, action: string): boolean {
+		return VALID_CP_PAIRS[resource]?.includes(action) ?? false;
+	}
+
+	// Build set of existing grant keys for the selected team
+	let existingGrantKeys = $derived.by(() => {
+		const keys = new Set<string>();
+		for (const g of grants) {
+			if (g.grantType === 'cp-tool' && g.resourceType && g.action && g.team === matrixTeam) {
+				keys.add(matrixKey(g.resourceType, g.action));
+			}
+		}
+		return keys;
+	});
+
+	// Count of new selections (not already granted)
+	let newSelectionCount = $derived.by(() => {
+		let count = 0;
+		for (const [key, selected] of Object.entries(matrixSelections)) {
+			if (selected && !existingGrantKeys.has(key)) {
+				count++;
+			}
+		}
+		return count;
+	});
+
+	function toggleMatrixCell(resource: string, action: string) {
+		if (!isValidPair(resource, action)) return;
+		const key = matrixKey(resource, action);
+		if (existingGrantKeys.has(key)) return;
+		matrixSelections = { ...matrixSelections, [key]: !matrixSelections[key] };
+	}
+
+	function selectAllForResource(resource: string) {
+		const updates: Record<string, boolean> = { ...matrixSelections };
+		const validActions = CP_ACTIONS.filter((a) => isValidPair(resource, a));
+		const allSelected = validActions.every(
+			(a) => existingGrantKeys.has(matrixKey(resource, a)) || matrixSelections[matrixKey(resource, a)]
+		);
+		for (const action of validActions) {
+			const key = matrixKey(resource, action);
+			if (!existingGrantKeys.has(key)) {
+				updates[key] = !allSelected;
+			}
+		}
+		matrixSelections = updates;
+	}
+
+	function selectAllForAction(action: string) {
+		const updates: Record<string, boolean> = { ...matrixSelections };
+		const validResources = CP_RESOURCES.filter((r) => isValidPair(r, action));
+		const allSelected = validResources.every(
+			(r) => existingGrantKeys.has(matrixKey(r, action)) || matrixSelections[matrixKey(r, action)]
+		);
+		for (const resource of validResources) {
+			const key = matrixKey(resource, action);
+			if (!existingGrantKeys.has(key)) {
+				updates[key] = !allSelected;
+			}
+		}
+		matrixSelections = updates;
+	}
+
+	async function handleSaveMatrix() {
+		if (!matrixTeam) return;
+
+		const toCreate: Array<{ resource: string; action: string }> = [];
+		for (const [key, selected] of Object.entries(matrixSelections)) {
+			if (selected && !existingGrantKeys.has(key)) {
+				const [resource, action] = key.split(':');
+				toCreate.push({ resource, action });
+			}
+		}
+
+		if (toCreate.length === 0) return;
+
+		isSavingMatrix = true;
+		matrixErrors = [];
+		matrixSuccess = null;
+
+		let created = 0;
+		const errors: string[] = [];
+
+		for (const { resource, action } of toCreate) {
+			try {
+				const request: CreateGrantRequest = {
+					team: matrixTeam,
+					grantType: 'cp-tool',
+					resourceType: resource,
+					action: action
+				};
+				await apiClient.createAgentGrant(orgName, agentName, request);
+				created++;
+			} catch (err: unknown) {
+				const msg = err instanceof Error ? err.message : 'Unknown error';
+				if (msg.includes('409') || msg.includes('already exists')) {
+					created++;
+				} else {
+					errors.push(`${resource}:${action} — ${msg}`);
+				}
+			}
+		}
+
+		if (created > 0) {
+			matrixSuccess = `Created ${created} grant${created > 1 ? 's' : ''}`;
+		}
+		matrixErrors = errors;
+		matrixSelections = {};
+		await loadGrants();
+		isSavingMatrix = false;
+	}
 
 	onMount(async () => {
 		try {
@@ -74,8 +206,9 @@
 			// Load teams
 			const teamsResp = await apiClient.listOrgTeams(orgName);
 			availableTeams = teamsResp.teams.map((t) => t.name);
-			if (availableTeams.length > 0 && !grantTeam) {
+			if (availableTeams.length > 0) {
 				grantTeam = availableTeams[0];
+				matrixTeam = availableTeams[0];
 			}
 
 			// Load grants
@@ -97,8 +230,6 @@
 	}
 
 	function resetCreateForm() {
-		grantResourceType = '';
-		grantAction = '';
 		grantTeam = availableTeams.length > 0 ? availableTeams[0] : '';
 		grantRouteId = '';
 		grantMethods = [];
@@ -128,33 +259,25 @@
 		createError = null;
 
 		try {
-			const request: CreateGrantRequest = { team: grantTeam, grantType: '' };
-
-			if (isCpTool) {
-				if (!grantResourceType || !grantAction) {
-					createError = 'Resource type and action are required';
-					isCreating = false;
-					return;
-				}
-				request.grantType = 'cp-tool';
-				request.resourceType = grantResourceType;
-				request.action = grantAction;
-			} else if (isGatewayOrConsumer) {
-				if (!grantRouteId) {
-					createError = 'Route ID is required';
-					isCreating = false;
-					return;
-				}
-				// api-consumer sends "route", gateway-tool sends "gateway-tool"
-				request.grantType = agentContext === 'api-consumer' ? 'route' : 'gateway-tool';
-				request.routeId = grantRouteId;
-				if (grantMethods.length > 0) {
-					request.allowedMethods = grantMethods;
-				}
-			} else {
-				createError = 'Agent has no context set — cannot create grants';
+			if (!isGatewayOrConsumer) {
+				createError = 'Use the permission matrix for cp-tool grants';
 				isCreating = false;
 				return;
+			}
+
+			if (!grantRouteId) {
+				createError = 'Route ID is required';
+				isCreating = false;
+				return;
+			}
+
+			const request: CreateGrantRequest = {
+				team: grantTeam,
+				grantType: agentContext === 'api-consumer' ? 'route' : 'gateway-tool',
+				routeId: grantRouteId
+			};
+			if (grantMethods.length > 0) {
+				request.allowedMethods = grantMethods;
 			}
 
 			await apiClient.createAgentGrant(orgName, agentName, request);
@@ -320,11 +443,122 @@
 				</dl>
 			</div>
 
-			<!-- Grants Section -->
+			<!-- Permission Matrix (cp-tool agents) -->
+			{#if isCpTool}
+				<div class="bg-white rounded-lg shadow-md overflow-hidden mb-6">
+					<div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+						<h2 class="text-lg font-semibold text-gray-900">Permissions</h2>
+						<div class="flex items-center gap-3">
+							<label for="matrix-team" class="text-sm text-gray-600">Team:</label>
+							<select
+								id="matrix-team"
+								bind:value={matrixTeam}
+								class="px-3 py-1.5 border border-gray-300 rounded-md text-sm"
+							>
+								{#each availableTeams as team}
+									<option value={team}>{team}</option>
+								{/each}
+							</select>
+						</div>
+					</div>
+
+					{#if matrixSuccess}
+						<div class="mx-6 mt-4 bg-green-50 border-l-4 border-green-500 p-3">
+							<p class="text-green-800 text-sm">{matrixSuccess}</p>
+						</div>
+					{/if}
+					{#if matrixErrors.length > 0}
+						<div class="mx-6 mt-4 bg-red-50 border-l-4 border-red-500 p-3">
+							<p class="text-red-800 text-sm font-medium">Some grants failed:</p>
+							{#each matrixErrors as error}
+								<p class="text-red-700 text-sm">{error}</p>
+							{/each}
+						</div>
+					{/if}
+
+					<div class="overflow-x-auto">
+						<table class="min-w-full">
+							<thead>
+								<tr class="bg-gray-50 border-b border-gray-200">
+									<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-48">
+										Resource
+									</th>
+									{#each CP_ACTIONS as action}
+										<th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20">
+											<button
+												onclick={() => selectAllForAction(action)}
+												class="hover:text-blue-600 cursor-pointer"
+												title="Toggle all {action}"
+											>
+												{action}
+											</button>
+										</th>
+									{/each}
+								</tr>
+							</thead>
+							<tbody class="divide-y divide-gray-100">
+								{#each CP_RESOURCES as resource}
+									<tr class="hover:bg-gray-50/50">
+										<td class="px-4 py-2.5">
+											<button
+												onclick={() => selectAllForResource(resource)}
+												class="text-sm font-mono text-gray-900 hover:text-blue-600 cursor-pointer"
+												title="Toggle all for {resource}"
+											>
+												{resource}
+											</button>
+										</td>
+										{#each CP_ACTIONS as action}
+											<td class="px-3 py-2.5 text-center">
+												{#if isValidPair(resource, action)}
+													{@const key = matrixKey(resource, action)}
+													{@const isExisting = existingGrantKeys.has(key)}
+													{@const isSelected = matrixSelections[key] ?? false}
+													<input
+														type="checkbox"
+														checked={isExisting || isSelected}
+														disabled={isExisting || isSavingMatrix}
+														onchange={() => toggleMatrixCell(resource, action)}
+														class="h-4 w-4 rounded border-gray-300 {isExisting ? 'text-green-600 cursor-not-allowed' : 'text-blue-600 cursor-pointer'}"
+														title={isExisting ? 'Already granted' : `${resource}:${action}`}
+													/>
+												{:else}
+													<span class="text-gray-200">—</span>
+												{/if}
+											</td>
+										{/each}
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+
+					<div class="px-6 py-4 border-t border-gray-200 flex justify-between items-center bg-gray-50">
+						<p class="text-sm text-gray-500">
+							{#if newSelectionCount > 0}
+								{newSelectionCount} new grant{newSelectionCount > 1 ? 's' : ''} selected
+							{:else}
+								Check boxes to add permissions. Green = already granted.
+							{/if}
+						</p>
+						<button
+							onclick={handleSaveMatrix}
+							disabled={isSavingMatrix || newSelectionCount === 0}
+							class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+						>
+							{isSavingMatrix ? 'Saving...' : `Save ${newSelectionCount > 0 ? `(${newSelectionCount})` : ''}`}
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			<!-- Grants Table -->
 			<div class="bg-white rounded-lg shadow-md overflow-hidden">
 				<div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-					<h2 class="text-lg font-semibold text-gray-900">Grants</h2>
-					{#if agentContext}
+					<h2 class="text-lg font-semibold text-gray-900">
+						{isCpTool ? 'Active Grants' : 'Grants'}
+					</h2>
+					{#if isGatewayOrConsumer}
 						<button
 							onclick={openCreateForm}
 							class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
@@ -435,7 +669,7 @@
 				{/if}
 			</div>
 
-			<!-- Create Grant Form -->
+			<!-- Create Grant Form (gateway/route agents only) -->
 			{#if showCreateForm}
 				<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
 					<div class="bg-white rounded-lg shadow-xl p-6 max-w-lg w-full mx-4">
@@ -464,81 +698,43 @@
 								</select>
 							</div>
 
-							{#if isCpTool}
-								<!-- cp-tool: resource type + action -->
-								<div>
-									<label for="grant-resource" class="block text-sm font-medium text-gray-700 mb-1">
-										Resource Type <span class="text-red-500">*</span>
-									</label>
-									<select
-										id="grant-resource"
-										bind:value={grantResourceType}
-										class="w-full px-3 py-2 border border-gray-300 rounded-md"
-									>
-										<option value="">Select resource...</option>
-										{#each CP_RESOURCES as res}
-											<option value={res}>{res}</option>
-										{/each}
-									</select>
-								</div>
-								<div>
-									<label for="grant-action" class="block text-sm font-medium text-gray-700 mb-1">
-										Action <span class="text-red-500">*</span>
-									</label>
-									<select
-										id="grant-action"
-										bind:value={grantAction}
-										class="w-full px-3 py-2 border border-gray-300 rounded-md"
-									>
-										<option value="">Select action...</option>
-										{#each CP_ACTIONS as act}
-											<option value={act}>{act}</option>
-										{/each}
-									</select>
-								</div>
-							{:else if isGatewayOrConsumer}
-								<!-- gateway/route: route ID + methods -->
-								<div>
-									<label for="grant-route" class="block text-sm font-medium text-gray-700 mb-1">
-										Route ID <span class="text-red-500">*</span>
-									</label>
-									<input
-										id="grant-route"
-										type="text"
-										bind:value={grantRouteId}
-										placeholder="Route ID (UUID)"
-										class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm"
-									/>
-									<p class="mt-1 text-xs text-gray-500">
-										Enter the route ID. Route must have exposure: external.
-									</p>
-								</div>
-								<div>
-									<p class="block text-sm font-medium text-gray-700 mb-1">
-										Allowed Methods
-									</p>
-									<div class="flex flex-wrap gap-2">
-										{#each HTTP_METHODS as method}
-											<label class="flex items-center gap-1.5 text-sm cursor-pointer">
-												<input
-													type="checkbox"
-													checked={grantMethods.includes(method)}
-													onchange={() => toggleMethod(method)}
-													class="rounded border-gray-300 text-blue-600"
-												/>
-												<span class="font-mono text-gray-700">{method}</span>
-											</label>
-										{/each}
-									</div>
-									<p class="mt-1 text-xs text-gray-500">
-										Leave empty to allow all methods.
-									</p>
-								</div>
-							{:else}
-								<p class="text-sm text-gray-500">
-									This agent has no context set. Set agent_context to create grants.
+							<!-- gateway/route: route ID + methods -->
+							<div>
+								<label for="grant-route" class="block text-sm font-medium text-gray-700 mb-1">
+									Route ID <span class="text-red-500">*</span>
+								</label>
+								<input
+									id="grant-route"
+									type="text"
+									bind:value={grantRouteId}
+									placeholder="Route ID (UUID)"
+									class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm"
+								/>
+								<p class="mt-1 text-xs text-gray-500">
+									Enter the route ID. Route must have exposure: external.
 								</p>
-							{/if}
+							</div>
+							<div>
+								<p class="block text-sm font-medium text-gray-700 mb-1">
+									Allowed Methods
+								</p>
+								<div class="flex flex-wrap gap-2">
+									{#each HTTP_METHODS as method}
+										<label class="flex items-center gap-1.5 text-sm cursor-pointer">
+											<input
+												type="checkbox"
+												checked={grantMethods.includes(method)}
+												onchange={() => toggleMethod(method)}
+												class="rounded border-gray-300 text-blue-600"
+											/>
+											<span class="font-mono text-gray-700">{method}</span>
+										</label>
+									{/each}
+								</div>
+								<p class="mt-1 text-xs text-gray-500">
+									Leave empty to allow all methods.
+								</p>
+							</div>
 						</div>
 
 						<div class="mt-6 flex justify-end gap-3">
