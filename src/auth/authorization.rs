@@ -75,7 +75,7 @@ pub fn is_governance_resource(resource: &str) -> bool {
 ///
 /// * `context` - The authentication context from the request
 /// * `resource` - The resource type (e.g., "routes", "clusters")
-/// * `action` - The action being performed (e.g., "read", "write", "delete")
+/// * `action` - The action being performed (e.g., "read", "create", "update", "delete")
 /// * `team` - Optional team name for team-scoped resources
 ///
 /// # Examples
@@ -88,12 +88,12 @@ pub fn is_governance_resource(resource: &str) -> bool {
 /// let ctx = AuthContext::new(
 ///     TokenId::from_str_unchecked("token-1"),
 ///     "platform-token".into(),
-///     vec!["team:platform:routes:read".into(), "team:platform:routes:write".into()]
+///     vec!["team:platform:routes:read".into(), "team:platform:routes:create".into()]
 /// );
 ///
 /// // Has access to platform team routes
 /// assert!(check_resource_access(&ctx, "routes", "read", Some("platform")));
-/// assert!(check_resource_access(&ctx, "routes", "write", Some("platform")));
+/// assert!(check_resource_access(&ctx, "routes", "create", Some("platform")));
 ///
 /// // No access to engineering team routes
 /// assert!(!check_resource_access(&ctx, "routes", "read", Some("engineering")));
@@ -243,7 +243,7 @@ pub fn parse_team_wildcard_scope(scope: &str) -> Option<String> {
 ///
 /// * `context` - The authentication context from the request
 /// * `resource` - The resource type (e.g., "routes", "clusters")
-/// * `action` - The action being performed (e.g., "read", "write", "delete")
+/// * `action` - The action being performed (e.g., "read", "create", "update", "delete")
 /// * `team` - Optional team name for team-scoped resources
 ///
 /// # Errors
@@ -502,7 +502,7 @@ pub fn has_org_membership(context: &AuthContext, org_name: &str) -> bool {
 /// - `org:X:role` (org scope, handled separately)
 ///
 /// Returns `true` for:
-/// - `clusters:read`, `routes:write`, `listeners:read` etc.
+/// - `clusters:read`, `routes:create`, `listeners:read` etc.
 pub fn is_global_resource_scope(scope: &str) -> bool {
     let parts: Vec<&str> = scope.split(':').collect();
 
@@ -546,14 +546,11 @@ pub fn has_team_scopes(context: &AuthContext) -> bool {
 
 /// Derive the required action from an HTTP method.
 ///
-/// Maps HTTP methods to RBAC actions:
-/// - GET → "read"
-/// - POST → "write"
-/// - PUT, PATCH, DELETE → "write"
-///
-/// Note: DELETE requires "write" permission to maintain backward compatibility
-/// with existing scope configurations. A separate "delete" action may be
-/// introduced in a future version for finer-grained control.
+/// Maps HTTP methods to fine-grained RBAC actions:
+/// - GET, HEAD, OPTIONS → "read"
+/// - POST → "create"
+/// - PUT, PATCH → "update"
+/// - DELETE → "delete"
 ///
 /// # Arguments
 ///
@@ -569,16 +566,18 @@ pub fn has_team_scopes(context: &AuthContext) -> bool {
 /// use flowplane::auth::authorization::action_from_http_method;
 ///
 /// assert_eq!(action_from_http_method("GET"), "read");
-/// assert_eq!(action_from_http_method("POST"), "write");
-/// assert_eq!(action_from_http_method("PUT"), "write");
-/// assert_eq!(action_from_http_method("PATCH"), "write");
-/// assert_eq!(action_from_http_method("DELETE"), "write");
+/// assert_eq!(action_from_http_method("POST"), "create");
+/// assert_eq!(action_from_http_method("PUT"), "update");
+/// assert_eq!(action_from_http_method("PATCH"), "update");
+/// assert_eq!(action_from_http_method("DELETE"), "delete");
 /// assert_eq!(action_from_http_method("OPTIONS"), "read");
 /// ```
 pub fn action_from_http_method(method: &str) -> &'static str {
     match method.to_uppercase().as_str() {
         "GET" | "HEAD" | "OPTIONS" => "read",
-        "POST" | "PUT" | "PATCH" | "DELETE" => "write",
+        "POST" => "create",
+        "PUT" | "PATCH" => "update",
+        "DELETE" => "delete",
         _ => "read", // Default to read for unknown methods
     }
 }
@@ -604,7 +603,7 @@ pub fn action_from_http_method(method: &str) -> &'static str {
 ///
 /// # Returns
 ///
-/// The semantic action string ("read" or "write").
+/// The semantic action string ("read", "create", "update", or "delete").
 ///
 /// # Examples
 ///
@@ -614,8 +613,8 @@ pub fn action_from_http_method(method: &str) -> &'static str {
 /// // Regular GET → read
 /// assert_eq!(action_from_request("GET", "/api/v1/routes"), "read");
 ///
-/// // Regular POST → write
-/// assert_eq!(action_from_request("POST", "/api/v1/routes"), "write");
+/// // Regular POST → create
+/// assert_eq!(action_from_request("POST", "/api/v1/routes"), "create");
 ///
 /// // Export endpoint uses POST but is semantically read
 /// assert_eq!(action_from_request("POST", "/api/v1/aggregated-schemas/export"), "read");
@@ -730,7 +729,7 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
         }
 
         // Special case: /api/v1/openapi/* routes use "openapi-import" resource
-        // The scope naming convention uses "openapi-import" (e.g., team:X:openapi-import:write)
+        // The scope naming convention uses "openapi-import" (e.g., team:X:openapi-import:create)
         // but the URL structure is /api/v1/openapi/import, /api/v1/openapi/imports, etc.
         if parts[2] == "openapi" {
             return Some("openapi-import");
@@ -812,7 +811,7 @@ mod tests {
             "platform".into(),
             vec![
                 "team:platform:routes:read".into(),
-                "team:platform:routes:write".into(),
+                "team:platform:routes:create".into(),
                 "team:platform:clusters:read".into(),
             ],
         )
@@ -833,14 +832,14 @@ mod tests {
 
         // Governance resources → allowed
         assert!(check_resource_access(&ctx, "organizations", "read", None));
-        assert!(check_resource_access(&ctx, "users", "write", None));
+        assert!(check_resource_access(&ctx, "users", "create", None));
         assert!(check_resource_access(&ctx, "admin-audit", "read", None));
         assert!(check_resource_access(&ctx, "admin-summary", "read", None));
         assert!(check_resource_access(&ctx, "teams", "read", None));
 
         // Tenant resources → denied (admin:all is governance-only)
         assert!(!check_resource_access(&ctx, "routes", "read", None));
-        assert!(!check_resource_access(&ctx, "routes", "write", Some("platform")));
+        assert!(!check_resource_access(&ctx, "routes", "create", Some("platform")));
         assert!(!check_resource_access(&ctx, "clusters", "delete", Some("engineering")));
     }
 
@@ -852,7 +851,7 @@ mod tests {
         assert!(!has_admin_bypass(&ctx));
         assert!(!check_resource_access(&ctx, "routes", "read", None));
         assert!(!check_resource_access(&ctx, "clusters", "read", None));
-        assert!(!check_resource_access(&ctx, "routes", "write", None));
+        assert!(!check_resource_access(&ctx, "routes", "create", None));
         assert!(!check_resource_access(&ctx, "listeners", "read", None));
     }
 
@@ -863,7 +862,7 @@ mod tests {
 
         // Has access to platform team
         assert!(check_resource_access(&ctx, "routes", "read", Some("platform")));
-        assert!(check_resource_access(&ctx, "routes", "write", Some("platform")));
+        assert!(check_resource_access(&ctx, "routes", "create", Some("platform")));
         assert!(check_resource_access(&ctx, "clusters", "read", Some("platform")));
 
         // No access to engineering team
@@ -897,7 +896,7 @@ mod tests {
     fn parse_team_from_scope_extracts_team_name() {
         assert_eq!(parse_team_from_scope("team:platform:routes:read"), Some("platform".into()));
         assert_eq!(
-            parse_team_from_scope("team:engineering:clusters:write"),
+            parse_team_from_scope("team:engineering:clusters:create"),
             Some("engineering".into())
         );
         assert_eq!(parse_team_from_scope("routes:read"), None);
@@ -958,10 +957,10 @@ mod tests {
     #[test]
     fn action_from_http_method_maps_correctly() {
         assert_eq!(action_from_http_method("GET"), "read");
-        assert_eq!(action_from_http_method("POST"), "write");
-        assert_eq!(action_from_http_method("PUT"), "write");
-        assert_eq!(action_from_http_method("PATCH"), "write");
-        assert_eq!(action_from_http_method("DELETE"), "write");
+        assert_eq!(action_from_http_method("POST"), "create");
+        assert_eq!(action_from_http_method("PUT"), "update");
+        assert_eq!(action_from_http_method("PATCH"), "update");
+        assert_eq!(action_from_http_method("DELETE"), "delete");
         assert_eq!(action_from_http_method("HEAD"), "read");
         assert_eq!(action_from_http_method("OPTIONS"), "read");
         assert_eq!(action_from_http_method("UNKNOWN"), "read");
@@ -973,14 +972,14 @@ mod tests {
         assert_eq!(action_from_request("GET", "/api/v1/routes"), "read");
         assert_eq!(action_from_request("GET", "/api/v1/clusters/123"), "read");
 
-        // Regular POST request → write
-        assert_eq!(action_from_request("POST", "/api/v1/routes"), "write");
-        assert_eq!(action_from_request("POST", "/api/v1/clusters"), "write");
+        // Regular POST request → create
+        assert_eq!(action_from_request("POST", "/api/v1/routes"), "create");
+        assert_eq!(action_from_request("POST", "/api/v1/clusters"), "create");
 
-        // Regular PUT/PATCH/DELETE → write
-        assert_eq!(action_from_request("PUT", "/api/v1/routes/123"), "write");
-        assert_eq!(action_from_request("PATCH", "/api/v1/routes/123"), "write");
-        assert_eq!(action_from_request("DELETE", "/api/v1/routes/123"), "write");
+        // Regular PUT/PATCH → update, DELETE → delete
+        assert_eq!(action_from_request("PUT", "/api/v1/routes/123"), "update");
+        assert_eq!(action_from_request("PATCH", "/api/v1/routes/123"), "update");
+        assert_eq!(action_from_request("DELETE", "/api/v1/routes/123"), "delete");
     }
 
     #[test]
@@ -1030,19 +1029,19 @@ mod tests {
         // Paths containing "search" or "query" as part of resource names should still work
         // but paths with these as actual operations should be read
 
-        // These are normal write operations (resource creation/modification)
-        assert_eq!(action_from_request("POST", "/api/v1/search-configs"), "write");
-        assert_eq!(action_from_request("POST", "/api/v1/query-builder"), "write");
+        // These are normal create operations (resource creation/modification)
+        assert_eq!(action_from_request("POST", "/api/v1/search-configs"), "create");
+        assert_eq!(action_from_request("POST", "/api/v1/query-builder"), "create");
 
         // Export/compare must be at the END of the path
-        assert_eq!(action_from_request("POST", "/api/v1/export-configs"), "write");
-        assert_eq!(action_from_request("POST", "/api/v1/compare-tool"), "write");
+        assert_eq!(action_from_request("POST", "/api/v1/export-configs"), "create");
+        assert_eq!(action_from_request("POST", "/api/v1/compare-tool"), "create");
     }
 
     #[test]
     fn action_from_request_case_insensitive_methods() {
         // HTTP methods should be case-insensitive
-        assert_eq!(action_from_request("post", "/api/v1/routes"), "write");
+        assert_eq!(action_from_request("post", "/api/v1/routes"), "create");
         assert_eq!(action_from_request("get", "/api/v1/routes"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/schemas/export"), "read");
         assert_eq!(action_from_request("post", "/api/v1/schemas/export"), "read");
@@ -1076,16 +1075,16 @@ mod tests {
             "api-definitions search should be read operation"
         );
 
-        // Regular write operations should remain unchanged
+        // Regular mutation operations map to CRUD actions
         assert_eq!(
             action_from_request("POST", "/api/v1/aggregated-schemas"),
-            "write",
-            "creating aggregated-schema should be write operation"
+            "create",
+            "creating aggregated-schema should be create operation"
         );
         assert_eq!(
             action_from_request("PUT", "/api/v1/aggregated-schemas/123"),
-            "write",
-            "updating aggregated-schema should be write operation"
+            "update",
+            "updating aggregated-schema should be update operation"
         );
     }
 
@@ -1113,7 +1112,7 @@ mod tests {
             "t1".into(),
             vec![
                 "team:platform:clusters:read".into(),
-                "team:platform:routes:write".into(),
+                "team:platform:routes:create".into(),
                 "team:sre:listeners:read".into(),
             ],
         );
@@ -1141,7 +1140,7 @@ mod tests {
             "t3".into(),
             vec![
                 "team:backend:clusters:read".into(),
-                "team:backend:clusters:write".into(),
+                "team:backend:clusters:create".into(),
                 "team:backend:routes:read".into(),
             ],
         );
@@ -1304,7 +1303,7 @@ mod tests {
         // (handlers will do fine-grained team filtering)
         assert!(check_resource_access(&ctx, "routes", "read", None));
         assert!(check_resource_access(&ctx, "clusters", "read", None));
-        assert!(check_resource_access(&ctx, "listeners", "write", None));
+        assert!(check_resource_access(&ctx, "listeners", "create", None));
     }
 
     #[test]
@@ -1317,7 +1316,7 @@ mod tests {
 
         // User with org:acme:admin should pass when team=None
         assert!(check_resource_access(&ctx, "routes", "read", None));
-        assert!(check_resource_access(&ctx, "clusters", "write", None));
+        assert!(check_resource_access(&ctx, "clusters", "create", None));
     }
 
     #[test]
@@ -1331,7 +1330,7 @@ mod tests {
 
         // Org admin should pass for any team (implicit access to all org teams)
         assert!(check_resource_access(&ctx, "routes", "read", Some("engineering")));
-        assert!(check_resource_access(&ctx, "clusters", "write", Some("engineering")));
+        assert!(check_resource_access(&ctx, "clusters", "create", Some("engineering")));
         assert!(check_resource_access(&ctx, "listeners", "read", Some("frontend")));
     }
 
@@ -1363,7 +1362,7 @@ mod tests {
 
         // Scope org matches context org_name → granted
         assert!(check_resource_access(&ctx, "routes", "read", Some("engineering")));
-        assert!(check_resource_access(&ctx, "clusters", "write", Some("platform")));
+        assert!(check_resource_access(&ctx, "clusters", "create", Some("platform")));
     }
 
     #[test]
@@ -1378,7 +1377,7 @@ mod tests {
 
         // Scope says "acme" but user's org is "globex" → denied (scope corruption defense)
         assert!(!check_resource_access(&ctx, "routes", "read", Some("engineering")));
-        assert!(!check_resource_access(&ctx, "clusters", "write", Some("platform")));
+        assert!(!check_resource_access(&ctx, "clusters", "create", Some("platform")));
     }
 
     #[test]
@@ -1406,7 +1405,7 @@ mod tests {
         // User with NO scopes should fail
         assert!(!check_resource_access(&ctx, "routes", "read", None));
         assert!(!check_resource_access(&ctx, "routes", "read", Some("platform")));
-        assert!(!check_resource_access(&ctx, "clusters", "write", None));
+        assert!(!check_resource_access(&ctx, "clusters", "create", None));
     }
 
     // === Governance-only admin access tests ===
@@ -1419,13 +1418,13 @@ mod tests {
         let ctx = admin_context(); // Only has admin:all
 
         // Tenant resources → denied
-        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
         assert!(!check_resource_access(&ctx, "openapi-import", "read", Some("platform")));
         assert!(!check_resource_access(&ctx, "openapi-import", "delete", Some("random-team")));
 
         // require_resource_access also denied
         assert!(
-            require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_err()
+            require_resource_access(&ctx, "openapi-import", "create", Some("engineering")).is_err()
         );
     }
 
@@ -1439,7 +1438,7 @@ mod tests {
             vec![
                 "admin:all".into(),
                 "team:platform-admin:routes:read".into(),
-                "team:platform-admin:clusters:write".into(),
+                "team:platform-admin:clusters:create".into(),
             ],
         );
 
@@ -1448,12 +1447,12 @@ mod tests {
 
         // Can access own team's resources via team scopes
         assert!(check_resource_access(&ctx, "routes", "read", Some("platform-admin")));
-        assert!(check_resource_access(&ctx, "clusters", "write", Some("platform-admin")));
+        assert!(check_resource_access(&ctx, "clusters", "create", Some("platform-admin")));
 
         // CANNOT access other teams' tenant resources (admin:all is governance-only)
-        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
         assert!(!check_resource_access(&ctx, "openapi-import", "read", Some("payments")));
-        assert!(!check_resource_access(&ctx, "routes", "write", Some("random-team")));
+        assert!(!check_resource_access(&ctx, "routes", "create", Some("random-team")));
 
         // Governance resources still allowed via admin:all
         assert!(check_resource_access(&ctx, "organizations", "read", None));
@@ -1469,7 +1468,7 @@ mod tests {
             vec![
                 "admin:all".into(),
                 "team:engineering:routes:read".into(),
-                "team:platform:clusters:write".into(),
+                "team:platform:clusters:create".into(),
             ],
         );
 
@@ -1490,12 +1489,12 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("eng-user"),
             "eng-user".into(),
-            vec!["team:engineering:openapi-import:write".into()],
+            vec!["team:engineering:openapi-import:create".into()],
         );
 
-        assert!(check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
+        assert!(check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
         assert!(
-            require_resource_access(&ctx, "openapi-import", "write", Some("engineering")).is_ok()
+            require_resource_access(&ctx, "openapi-import", "create", Some("engineering")).is_ok()
         );
     }
 
@@ -1505,12 +1504,14 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("eng-user"),
             "eng-user".into(),
-            vec!["team:engineering:openapi-import:write".into()],
+            vec!["team:engineering:openapi-import:create".into()],
         );
 
         // Cannot access platform team
-        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("platform")));
-        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("platform")).is_err());
+        assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("platform")));
+        assert!(
+            require_resource_access(&ctx, "openapi-import", "create", Some("platform")).is_err()
+        );
     }
 
     /// SECURITY FIX: Non-admin user with global resource scope CANNOT access any team's resources.
@@ -1520,13 +1521,13 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("global-user"),
             "global".into(),
-            vec!["openapi-import:write".into()],
+            vec!["openapi-import:create".into()],
         );
 
         // Non-admin with global scope should be denied access to all teams
-        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
-        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("platform")));
-        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("random")).is_err());
+        assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("platform")));
+        assert!(require_resource_access(&ctx, "openapi-import", "create", Some("random")).is_err());
     }
 
     /// Platform admin with global resource scope CANNOT access tenant team resources.
@@ -1536,16 +1537,16 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("admin-global"),
             "admin-global".into(),
-            vec!["admin:all".into(), "openapi-import:write".into()],
+            vec!["admin:all".into(), "openapi-import:create".into()],
         );
 
         // Tenant resources with team → denied (admin:all is governance-only, global scopes don't apply)
-        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("engineering")));
-        assert!(!check_resource_access(&ctx, "openapi-import", "write", Some("platform")));
-        assert!(require_resource_access(&ctx, "openapi-import", "write", Some("random")).is_err());
+        assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("platform")));
+        assert!(require_resource_access(&ctx, "openapi-import", "create", Some("random")).is_err());
 
         // Governance resources → still allowed
-        assert!(check_resource_access(&ctx, "organizations", "write", None));
+        assert!(check_resource_access(&ctx, "organizations", "create", None));
         assert!(check_resource_access(&ctx, "admin-summary", "read", None));
     }
 
@@ -1554,9 +1555,9 @@ mod tests {
     fn is_global_resource_scope_classification() {
         // Global resource scopes (should be true)
         assert!(is_global_resource_scope("clusters:read"));
-        assert!(is_global_resource_scope("routes:write"));
+        assert!(is_global_resource_scope("routes:create"));
         assert!(is_global_resource_scope("listeners:read"));
-        assert!(is_global_resource_scope("openapi-import:write"));
+        assert!(is_global_resource_scope("openapi-import:create"));
 
         // NOT global resource scopes (should be false)
         assert!(!is_global_resource_scope("admin:all"));
@@ -1726,7 +1727,7 @@ mod tests {
 
         // OpenAPI import routes should map to "openapi-import" resource
         // URL structure: /api/v1/openapi/import, /api/v1/openapi/imports
-        // Scope naming: team:X:openapi-import:write, openapi-import:read
+        // Scope naming: team:X:openapi-import:create, openapi-import:read
         assert_eq!(
             resource_from_path("/api/v1/openapi/import"),
             Some("openapi-import"),
@@ -1757,13 +1758,13 @@ mod tests {
 
         // Should have access to any resource with any action for this team
         assert!(check_resource_access(&ctx, "api-definitions", "read", Some("platform-admin")));
-        assert!(check_resource_access(&ctx, "routes", "write", Some("platform-admin")));
+        assert!(check_resource_access(&ctx, "routes", "create", Some("platform-admin")));
         assert!(check_resource_access(&ctx, "clusters", "delete", Some("platform-admin")));
         assert!(check_resource_access(&ctx, "listeners", "read", Some("platform-admin")));
 
         // But NOT for other teams
         assert!(!check_resource_access(&ctx, "api-definitions", "read", Some("engineering")));
-        assert!(!check_resource_access(&ctx, "routes", "write", Some("other-team")));
+        assert!(!check_resource_access(&ctx, "routes", "create", Some("other-team")));
     }
 
     /// Test that team:X:{resource}:* wildcard grants access to all actions on that resource
@@ -1777,7 +1778,7 @@ mod tests {
 
         // Should have access to all actions on routes for engineering team
         assert!(check_resource_access(&ctx, "routes", "read", Some("engineering")));
-        assert!(check_resource_access(&ctx, "routes", "write", Some("engineering")));
+        assert!(check_resource_access(&ctx, "routes", "create", Some("engineering")));
         assert!(check_resource_access(&ctx, "routes", "delete", Some("engineering")));
 
         // But NOT for other resources
@@ -1824,7 +1825,7 @@ mod tests {
 
         // When no team is specified, should allow access if user has any team wildcard
         assert!(check_resource_access(&ctx, "api-definitions", "read", None));
-        assert!(check_resource_access(&ctx, "routes", "write", None));
+        assert!(check_resource_access(&ctx, "routes", "create", None));
     }
 
     /// Test bootstrap endpoint access with wildcard scope
@@ -1955,8 +1956,8 @@ mod tests {
                 resource
             );
             assert!(
-                !check_resource_access(&ctx, resource, "write", None),
-                "admin:all should NOT grant write access to tenant resource '{}'",
+                !check_resource_access(&ctx, resource, "create", None),
+                "admin:all should NOT grant create access to tenant resource '{}'",
                 resource
             );
             assert!(
@@ -1965,8 +1966,8 @@ mod tests {
                 resource
             );
             assert!(
-                !check_resource_access(&ctx, resource, "write", Some("any-team")),
-                "admin:all should NOT grant team-scoped write access to tenant resource '{}'",
+                !check_resource_access(&ctx, resource, "create", Some("any-team")),
+                "admin:all should NOT grant team-scoped create access to tenant resource '{}'",
                 resource
             );
         }
@@ -2000,8 +2001,8 @@ mod tests {
                 resource
             );
             assert!(
-                check_resource_access(&ctx, resource, "write", None),
-                "admin:all should grant write access to governance resource '{}'",
+                check_resource_access(&ctx, resource, "create", None),
+                "admin:all should grant create access to governance resource '{}'",
                 resource
             );
         }
@@ -2075,14 +2076,14 @@ mod tests {
     }
 
     #[test]
-    fn cp_tool_agent_write_grant_does_not_cover_delete() {
+    fn cp_tool_agent_create_grant_does_not_cover_delete() {
         let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
             resource_type: "clusters".to_string(),
-            action: "write".to_string(),
+            action: "create".to_string(),
             team: "eng".to_string(),
         }]);
         assert!(!check_resource_access(&ctx, "clusters", "delete", Some("eng")));
-        assert!(check_resource_access(&ctx, "clusters", "write", Some("eng")));
+        assert!(check_resource_access(&ctx, "clusters", "create", Some("eng")));
     }
 
     #[test]
@@ -2107,7 +2108,7 @@ mod tests {
         .with_agent_data(Some(AgentContext::GatewayTool), vec![]);
 
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("eng")));
-        assert!(!check_resource_access(&ctx, "routes", "write", Some("eng")));
+        assert!(!check_resource_access(&ctx, "routes", "create", Some("eng")));
         assert!(!check_resource_access(&ctx, "listeners", "read", None));
     }
 
@@ -2130,7 +2131,7 @@ mod tests {
     fn cp_tool_agent_no_grants_sees_nothing() {
         let ctx = cp_tool_context_with_grants(vec![]);
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("eng")));
-        assert!(!check_resource_access(&ctx, "routes", "write", None));
+        assert!(!check_resource_access(&ctx, "routes", "create", None));
     }
 
     #[test]
@@ -2141,6 +2142,6 @@ mod tests {
             vec!["team:engineering:clusters:read".into()],
         );
         assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
-        assert!(!check_resource_access(&ctx, "clusters", "write", Some("engineering")));
+        assert!(!check_resource_access(&ctx, "clusters", "create", Some("engineering")));
     }
 }
