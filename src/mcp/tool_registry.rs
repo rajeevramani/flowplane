@@ -102,8 +102,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_cluster",
             ToolAuthorization {
                 resource: "clusters",
-                action: "write",
-                description: "Create cluster requires clusters:write or cp:write",
+                action: "create",
+                description: "Create cluster requires clusters:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -111,8 +111,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_cluster",
             ToolAuthorization {
                 resource: "clusters",
-                action: "write",
-                description: "Update cluster requires clusters:write or cp:write",
+                action: "update",
+                description: "Update cluster requires clusters:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -160,8 +160,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_listener",
             ToolAuthorization {
                 resource: "listeners",
-                action: "write",
-                description: "Create listener requires listeners:write or cp:write",
+                action: "create",
+                description: "Create listener requires listeners:create",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -169,8 +169,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_listener",
             ToolAuthorization {
                 resource: "listeners",
-                action: "write",
-                description: "Update listener requires listeners:write or cp:write",
+                action: "update",
+                description: "Update listener requires listeners:update",
                 risk_level: RiskLevel::High,
             },
         );
@@ -227,8 +227,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_route",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Create route requires routes:write or cp:write",
+                action: "create",
+                description: "Create route requires routes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -236,8 +236,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_route",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Update route requires routes:write or cp:write",
+                action: "update",
+                description: "Update route requires routes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -272,8 +272,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_route_config",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Create route config requires routes:write or cp:write",
+                action: "create",
+                description: "Create route config requires routes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -281,8 +281,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_route_config",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Update route config requires routes:write or cp:write",
+                action: "update",
+                description: "Update route config requires routes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -330,8 +330,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_filter",
             ToolAuthorization {
                 resource: "filters",
-                action: "write",
-                description: "Create filter requires filters:write or cp:write",
+                action: "create",
+                description: "Create filter requires filters:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -339,8 +339,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_filter",
             ToolAuthorization {
                 resource: "filters",
-                action: "write",
-                description: "Update filter requires filters:write or cp:write",
+                action: "update",
+                description: "Update filter requires filters:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -361,8 +361,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_attach_filter",
             ToolAuthorization {
                 resource: "filters",
-                action: "write",
-                description: "Attach filter requires filters:write or cp:write",
+                action: "update",
+                description: "Attach filter requires filters:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -370,8 +370,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_detach_filter",
             ToolAuthorization {
                 resource: "filters",
-                action: "write",
-                description: "Detach filter requires filters:write or cp:write",
+                action: "update",
+                description: "Detach filter requires filters:update",
                 risk_level: RiskLevel::High,
             },
         );
@@ -410,8 +410,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_virtual_host",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Create virtual host requires routes:write or cp:write",
+                action: "create",
+                description: "Create virtual host requires routes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -419,8 +419,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_virtual_host",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Update virtual host requires routes:write or cp:write",
+                action: "update",
+                description: "Update virtual host requires routes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -459,8 +459,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_secret",
             ToolAuthorization {
                 resource: "secrets",
-                action: "write",
-                description: "Create secret requires secrets:write",
+                action: "create",
+                description: "Create secret requires secrets:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -468,8 +468,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_secret",
             ToolAuthorization {
                 resource: "secrets",
-                action: "write",
-                description: "Update secret requires secrets:write",
+                action: "update",
+                description: "Update secret requires secrets:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -548,8 +548,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_upload_wasm_filter",
             ToolAuthorization {
                 resource: "custom-wasm-filters",
-                action: "write",
-                description: "Upload WASM filter requires custom-wasm-filters:write",
+                action: "create",
+                description: "Upload WASM filter requires custom-wasm-filters:create",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -557,8 +557,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_wasm_filter",
             ToolAuthorization {
                 resource: "custom-wasm-filters",
-                action: "write",
-                description: "Update WASM filter requires custom-wasm-filters:write",
+                action: "update",
+                description: "Update WASM filter requires custom-wasm-filters:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -597,8 +597,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_start_learning",
             ToolAuthorization {
                 resource: "learning-sessions",
-                action: "write",
-                description: "Start learning session requires learning-sessions:write",
+                action: "execute",
+                description: "Start learning session requires learning-sessions:execute",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -606,8 +606,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_learning_session",
             ToolAuthorization {
                 resource: "learning-sessions",
-                action: "write",
-                description: "Create learning session requires learning-sessions:write",
+                action: "create",
+                description: "Create learning session requires learning-sessions:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -615,8 +615,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_stop_learning",
             ToolAuthorization {
                 resource: "learning-sessions",
-                action: "write",
-                description: "Stop learning session requires learning-sessions:write",
+                action: "execute",
+                description: "Stop learning session requires learning-sessions:execute",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -633,8 +633,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_activate_learning_session",
             ToolAuthorization {
                 resource: "learning-sessions",
-                action: "write",
-                description: "Activate learning session requires learning-sessions:write",
+                action: "execute",
+                description: "Activate learning session requires learning-sessions:execute",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -691,8 +691,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_export_schema",
             ToolAuthorization {
                 resource: "aggregated-schemas",
-                action: "write",
-                description: "Export schema requires aggregated-schemas:write",
+                action: "execute",
+                description: "Export schema requires aggregated-schemas:execute",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -722,8 +722,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_register_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
-                action: "write",
-                description: "Register dataplane requires dataplanes:write",
+                action: "create",
+                description: "Register dataplane requires dataplanes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -731,8 +731,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
-                action: "write",
-                description: "Create dataplane requires dataplanes:write",
+                action: "create",
+                description: "Create dataplane requires dataplanes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -740,8 +740,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
-                action: "write",
-                description: "Update dataplane requires dataplanes:write",
+                action: "update",
+                description: "Update dataplane requires dataplanes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -749,8 +749,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_deregister_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
-                action: "write",
-                description: "Deregister dataplane requires dataplanes:write",
+                action: "update",
+                description: "Deregister dataplane requires dataplanes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -793,8 +793,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_import_openapi",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Import OpenAPI spec requires routes:write or cp:write",
+                action: "create",
+                description: "Import OpenAPI spec requires routes:create",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -1003,7 +1003,7 @@ mod tests {
 
         let auth = get_tool_authorization("cp_create_cluster").unwrap();
         assert_eq!(auth.resource, "clusters");
-        assert_eq!(auth.action, "write");
+        assert_eq!(auth.action, "create");
 
         let auth = get_tool_authorization("cp_delete_cluster").unwrap();
         assert_eq!(auth.resource, "clusters");
@@ -1018,7 +1018,7 @@ mod tests {
 
         let auth = get_tool_authorization("cp_create_listener").unwrap();
         assert_eq!(auth.resource, "listeners");
-        assert_eq!(auth.action, "write");
+        assert_eq!(auth.action, "create");
     }
 
     #[test]
@@ -1029,7 +1029,7 @@ mod tests {
 
         let auth = get_tool_authorization("cp_create_route_config").unwrap();
         assert_eq!(auth.resource, "routes");
-        assert_eq!(auth.action, "write");
+        assert_eq!(auth.action, "create");
     }
 
     #[test]
@@ -1040,7 +1040,7 @@ mod tests {
 
         let auth = get_tool_authorization("cp_create_filter").unwrap();
         assert_eq!(auth.resource, "filters");
-        assert_eq!(auth.action, "write");
+        assert_eq!(auth.action, "create");
     }
 
     #[test]
