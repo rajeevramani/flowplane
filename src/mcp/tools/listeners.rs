@@ -174,7 +174,7 @@ EXAMPLE WITH ALL OPTIONS:
 
 ADVANCED: For custom filter chains (TLS, tracing, etc.), use filterChains parameter instead of routeConfigName.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires listeners:create scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -271,7 +271,7 @@ route binding. Use filterChains for advanced configurations (TLS, tracing, etc.)
 
 TIP: Use cp_get_listener first to see current configuration.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires listeners:update scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -344,7 +344,7 @@ WORKFLOW TO FULLY REMOVE AN API:
 Required Parameters:
 - name: Name of the listener to delete
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires listeners:delete scope."#,
         json!({
             "type": "object",
             "properties": {

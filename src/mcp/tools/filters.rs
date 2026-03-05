@@ -318,7 +318,7 @@ ext_authz - External Authorization:
   }
 }
 
-Authorization: Requires cp:write scope.
+Authorization: Requires filters:create scope.
 "#,
         json!({
             "type": "object",
@@ -375,7 +375,7 @@ Optional Parameters:
 
 TIP: Use cp_get_filter first to see current configuration and installations.
 
-Authorization: Requires cp:write scope.
+Authorization: Requires filters:update scope.
 "#,
         json!({
             "type": "object",
@@ -426,7 +426,7 @@ WORKFLOW TO DELETE AN ATTACHED FILTER:
 Required Parameters:
 - name: Name of the filter to delete
 
-Authorization: Requires cp:write scope.
+Authorization: Requires filters:delete scope.
 "#,
         json!({
             "type": "object",
@@ -776,7 +776,7 @@ EXAMPLE (attach to route config with settings override):
   "settings": {"max_requests": 1000}
 }
 
-Authorization: Requires filters:write or cp:write scope.
+Authorization: Requires filters:update scope.
 "#,
         json!({
             "type": "object",
@@ -840,7 +840,7 @@ EXAMPLE:
   "listener": "main-listener"
 }
 
-Authorization: Requires filters:write or cp:write scope.
+Authorization: Requires filters:update scope.
 "#,
         json!({
             "type": "object",

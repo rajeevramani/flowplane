@@ -150,7 +150,7 @@ EXAMPLE DATAPLANES:
 - "staging-envoy" - Staging environment gateway
 - "canary-proxy" - Canary deployment testing
 
-Authorization: Requires cp:write scope and team access.
+Authorization: Requires dataplanes:create scope.
 "#,
         json!({
             "type": "object",
@@ -211,7 +211,7 @@ EXAMPLE USE CASES:
 - Add description to undocumented dataplane
 - Update gateway_host after infrastructure changes
 
-Authorization: Requires cp:write scope and team access.
+Authorization: Requires dataplanes:update scope.
 "#,
         json!({
             "type": "object",
@@ -275,7 +275,7 @@ CANNOT DELETE:
 - Dataplanes that are actively routing traffic (check listeners first)
 - Dataplanes with dependent resources (remove dependencies first)
 
-Authorization: Requires cp:write scope and team access.
+Authorization: Requires dataplanes:delete scope.
 "#,
         json!({
             "type": "object",

@@ -670,7 +670,7 @@ EXAMPLE WITH WEIGHTED ROUTING (canary/A-B testing):
   }]
 }
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:create scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -801,7 +801,7 @@ WORKFLOW:
 
 TIP: Copy current config, modify it, then submit the complete updated version.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:update scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -859,7 +859,7 @@ This is safe if no listeners reference the config.
 Required Parameters:
 - name: Name of the route config to delete
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:delete scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -1195,7 +1195,7 @@ Optional Parameters:
 
 IMPORTANT: After creating routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:create scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -1275,7 +1275,7 @@ Optional Parameters (provide only what you want to change):
 
 IMPORTANT: After updating routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:update scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -1347,7 +1347,7 @@ Required Parameters:
 
 IMPORTANT: After deleting routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:delete scope."#,
         json!({
             "type": "object",
             "properties": {
