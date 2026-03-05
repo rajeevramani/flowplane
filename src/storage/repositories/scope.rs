@@ -434,12 +434,12 @@ mod tests {
         let pool = _db.pool.clone();
         let repo = SqlxScopeRepository::new(pool);
 
-        let scope = repo.find_by_value("clusters:write").await.expect("find_by_value");
+        let scope = repo.find_by_value("clusters:create").await.expect("find_by_value");
 
         assert!(scope.is_some());
         let s = scope.unwrap();
         assert_eq!(s.resource, "clusters");
-        assert_eq!(s.action, "write");
+        assert_eq!(s.action, "create");
         assert_eq!(s.category, "Clusters");
     }
 
@@ -462,7 +462,7 @@ mod tests {
 
         // Valid scopes
         assert!(repo.is_valid_scope("tokens:read").await.expect("valid"));
-        assert!(repo.is_valid_scope("clusters:write").await.expect("valid"));
+        assert!(repo.is_valid_scope("clusters:create").await.expect("valid"));
         assert!(repo.is_valid_scope("admin:all").await.expect("valid"));
 
         // Invalid scope
@@ -492,7 +492,7 @@ mod tests {
 
         let scopes = repo.find_by_resource("tokens").await.expect("find_by_resource");
 
-        assert_eq!(scopes.len(), 3); // read, write, delete
+        assert_eq!(scopes.len(), 4); // read, create, update, delete
         assert!(scopes.iter().all(|s| s.resource == "tokens"));
     }
 
