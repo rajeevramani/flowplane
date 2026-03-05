@@ -110,23 +110,6 @@
 		}).filter(ep => ep.host !== '');
 	}
 
-	// Calculate stats
-	let stats = $derived({
-		totalClusters: clusters.length,
-		totalEndpoints: clusters.reduce((sum, cluster) => {
-			const config = cluster.config || {};
-			return sum + extractEndpoints(config).length;
-		}, 0),
-		activeHealthChecks: clusters.filter(c => {
-			const config = c.config || {};
-			return Boolean(config.healthChecks?.length);
-		}).length,
-		activeCircuitBreakers: clusters.filter(c => {
-			const config = c.config || {};
-			return Boolean(config.circuitBreakers);
-		}).length
-	});
-
 	// Filter clusters
 	let filteredClusters = $derived(
 		clusters
@@ -137,6 +120,23 @@
 				cluster.serviceName.toLowerCase().includes(searchQuery.toLowerCase())
 			)
 	);
+
+	// Calculate stats from filtered (current team) clusters
+	let stats = $derived({
+		totalClusters: filteredClusters.length,
+		totalEndpoints: filteredClusters.reduce((sum, cluster) => {
+			const config = cluster.config || {};
+			return sum + extractEndpoints(config).length;
+		}, 0),
+		activeHealthChecks: filteredClusters.filter(c => {
+			const config = c.config || {};
+			return Boolean(config.healthChecks?.length);
+		}).length,
+		activeCircuitBreakers: filteredClusters.filter(c => {
+			const config = c.config || {};
+			return Boolean(config.circuitBreakers);
+		}).length
+	});
 
 	// Get cluster features
 	function getClusterFeatures(cluster: ClusterResponse) {

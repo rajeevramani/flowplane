@@ -3,7 +3,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import type { Unsubscriber } from 'svelte/store';
-	import type { TeamResponse, MtlsStatusResponse, GenerateCertificateResponse } from '$lib/api/types';
+	import type { TeamResponse, MtlsStatusResponse, GenerateCertificateResponse, SessionInfoResponse } from '$lib/api/types';
 	import hljs from 'highlight.js/lib/core';
 	import yaml from 'highlight.js/lib/languages/yaml';
 	import json from 'highlight.js/lib/languages/json';
@@ -14,6 +14,7 @@
 	hljs.registerLanguage('json', json);
 
 	// State
+	let sessionInfo = $state<SessionInfoResponse | null>(null);
 	let currentTeam = $state('');
 	let teamDetails = $state<TeamResponse | null>(null);
 	let format = $state<'yaml' | 'json'>('yaml');
@@ -46,6 +47,9 @@
 	const PROXY_ID_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
 	onMount(async () => {
+		// Load session info first so isPlatformAdmin is available for subsequent calls
+		sessionInfo = await apiClient.getSessionInfo();
+
 		// Load mTLS status
 		await loadMtlsStatus();
 
@@ -75,7 +79,7 @@
 	}
 
 	async function loadTeamDetails() {
-		if (!currentTeam) {
+		if (!currentTeam || !sessionInfo?.isPlatformAdmin) {
 			teamDetails = null;
 			return;
 		}
