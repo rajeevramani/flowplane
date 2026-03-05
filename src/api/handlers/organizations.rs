@@ -2130,12 +2130,13 @@ pub async fn list_org_agents(
         r#"
         SELECT
             u.id, u.name, u.agent_context, u.created_at,
-            utm.team
+            t.name AS team
         FROM users u
         JOIN organization_memberships om ON u.id = om.user_id AND om.org_id = $1
         LEFT JOIN user_team_memberships utm ON u.id = utm.user_id
+        LEFT JOIN teams t ON utm.team = t.id
         WHERE u.user_type = 'machine'
-        ORDER BY u.created_at DESC, utm.team
+        ORDER BY u.created_at DESC, t.name
         "#,
     )
     .bind(org.id.to_string())
@@ -2421,8 +2422,8 @@ pub async fn create_agent_grant(
     // Validate agent is a member of the specified team
     let team_member_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM user_team_memberships utm \
-         JOIN teams t ON utm.team = t.name AND t.org_id = $1 \
-         WHERE utm.user_id = $2 AND utm.team = $3",
+         JOIN teams t ON utm.team = t.id AND t.org_id = $1 \
+         WHERE utm.user_id = $2 AND t.name = $3",
     )
     .bind(org.id.as_ref())
     .bind(&agent.id)
@@ -2442,13 +2443,15 @@ pub async fn create_agent_grant(
         context.user_id.as_ref().ok_or_else(|| ApiError::forbidden("user context required"))?;
 
     // Insert the grant; unique index will reject duplicates
+    let grant_id = uuid::Uuid::new_v4().to_string();
     let row = sqlx::query_as::<_, GrantRow>(
         "INSERT INTO agent_grants \
-         (agent_id, org_id, team, grant_type, resource_type, action, route_id, allowed_methods, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         (id, agent_id, org_id, team, grant_type, resource_type, action, route_id, allowed_methods, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
          RETURNING id, grant_type, resource_type, action, team, route_id, allowed_methods, \
                    created_by, created_at, expires_at",
     )
+    .bind(&grant_id)
     .bind(&agent.id)
     .bind(org.id.as_ref())
     .bind(&payload.team)
