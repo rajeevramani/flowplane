@@ -67,6 +67,7 @@
 				const orgTeamsResponse = await apiClient.listOrgTeams(sessionInfo.orgName);
 				availableTeams = orgTeamsResponse.teams.map((t) => t.name);
 			} else {
+				console.warn('listTeams fallback: user has no orgName, using unscoped team list');
 				const teamsResponse = await apiClient.listTeams();
 				availableTeams = teamsResponse.teams;
 			}

@@ -2,7 +2,6 @@
 	import { apiClient } from '$lib/api/client';
 	import { inviteMemberSchema } from '$lib/schemas/auth';
 	import { ZodError } from 'zod';
-	import { isSystemAdmin } from '$lib/stores/org';
 	import type { InvitableRole } from '$lib/api/types';
 
 	interface Props {
@@ -28,7 +27,7 @@
 	let successMessage = $state<string | null>(null);
 
 	// Determine available roles based on user permissions
-	const isAdmin = $derived(isSystemAdmin(userScopes));
+	const isAdmin = $derived(userScopes.includes('admin:all'));
 	const availableRoles = $derived<InvitableRole[]>(
 		isAdmin ? ['admin', 'member', 'viewer'] : ['member', 'viewer']
 	);

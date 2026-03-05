@@ -6,7 +6,7 @@
 	import AdminResourceSummary from '$lib/components/AdminResourceSummary.svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import { adminSummary, adminSummaryLoading, adminSummaryError, getAdminSummary } from '$lib/stores/adminSummary';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 	import type { Unsubscriber } from 'svelte/store';
 
 	let isFirstAdmin = $state(false);
@@ -241,7 +241,7 @@
 			<h3 class="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
 			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
 				<!-- Governance admin actions -->
-				{#if isSystemAdmin(sessionInfo.scopes)}
+				{#if isGovernanceAdmin(sessionInfo)}
 					<a
 						href="/admin/audit-log"
 						class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"

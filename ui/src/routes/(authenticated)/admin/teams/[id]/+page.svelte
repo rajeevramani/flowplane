@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import type { TeamResponse, UpdateTeamRequest, TeamStatus } from '$lib/api/types';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	let teamId = $derived($page.params.id ?? '');
 
@@ -30,7 +30,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!isSystemAdmin(sessionInfo.scopes)) {
+			if (!isGovernanceAdmin(sessionInfo)) {
 				goto('/dashboard');
 				return;
 			}
@@ -52,8 +52,8 @@
 			formData.description = team.description || '';
 			formData.ownerUserId = team.ownerUserId || '';
 			formData.status = team.status;
-		} catch (err: any) {
-			error = err.message || 'Failed to load team';
+		} catch (err: unknown) {
+			error = err instanceof Error ? err.message : 'Failed to load team';
 		} finally {
 			isLoading = false;
 		}
@@ -120,8 +120,8 @@
 			const updatedTeam = await apiClient.adminUpdateTeam(teamId, request);
 			team = updatedTeam;
 			isEditing = false;
-		} catch (err: any) {
-			submitError = err.message || 'Failed to update team';
+		} catch (err: unknown) {
+			submitError = err instanceof Error ? err.message : 'Failed to update team';
 		} finally {
 			isSubmitting = false;
 		}
@@ -134,8 +134,8 @@
 		try {
 			await apiClient.adminDeleteTeam(teamId);
 			goto('/admin/teams');
-		} catch (err: any) {
-			submitError = err.message || 'Failed to delete team';
+		} catch (err: unknown) {
+			submitError = err instanceof Error ? err.message : 'Failed to delete team';
 			showDeleteConfirm = false;
 		} finally {
 			isDeleting = false;

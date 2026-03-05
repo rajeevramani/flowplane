@@ -49,7 +49,7 @@ export async function getUserManager(): Promise<UserManager> {
 		redirect_uri: `${config.app_url}/auth/callback`,
 		post_logout_redirect_uri: `${config.app_url}/login`,
 		response_type: 'code',
-		scope: 'openid profile email urn:zitadel:iam:org:projects:roles',
+		scope: 'openid profile email',
 		userStore: new WebStorageStateStore({ store: sessionStorage }),
 		automaticSilentRenew: true,
 	});

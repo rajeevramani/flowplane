@@ -8,10 +8,6 @@ interface OrgContext {
 
 export const currentOrg = writable<OrgContext>({ organization: null, role: null });
 
-export function isSystemAdmin(scopes: string[]): boolean {
-	return scopes.includes('admin:all');
-}
-
 export function isOrgAdmin(scopes: string[]): boolean {
 	return scopes.some((s) => /^org:[^:]+:admin$/.test(s));
 }

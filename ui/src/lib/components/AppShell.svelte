@@ -4,7 +4,8 @@
 	import Sidebar from './Sidebar.svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { apiClient } from '$lib/api/client';
-	import { currentOrg, isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
+	import { currentOrg, isOrgAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -104,7 +105,7 @@
 					{/if}
 
 					<!-- Role badge -->
-					{#if isSystemAdmin(sessionInfo.scopes)}
+					{#if isGovernanceAdmin(sessionInfo)}
 						<span
 							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
 						>
