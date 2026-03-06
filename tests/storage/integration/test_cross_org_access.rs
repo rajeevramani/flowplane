@@ -649,47 +649,21 @@ fn verify_org_boundary_admin_no_bypass() {
 }
 
 // ---------------------------------------------------------------------------
-// Test: Global resource scopes classified correctly for security enforcement
+// Test: Non-admin with no grants is denied resource access
 // ---------------------------------------------------------------------------
 
 #[test]
-fn global_resource_scopes_identified_for_restriction() {
-    use flowplane::auth::authorization::is_global_resource_scope;
-
-    // Scopes that SHOULD be flagged as global (restricted to platform admins)
-    for scope in &["clusters:read", "routes:create", "listeners:read", "secrets:create"] {
-        assert!(
-            is_global_resource_scope(scope),
-            "Scope '{}' should be classified as global resource scope",
-            scope
-        );
-    }
-
-    // Scopes that should NOT be flagged as global
-    for scope in &["admin:all", "team:eng:routes:read", "org:acme:admin"] {
-        assert!(
-            !is_global_resource_scope(scope),
-            "Scope '{}' should NOT be classified as global resource scope",
-            scope
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test: Non-admin with global scopes is denied resource access
-// ---------------------------------------------------------------------------
-
-#[test]
-fn non_admin_global_scopes_denied_resource_access() {
+fn non_admin_no_grants_denied_resource_access() {
     use flowplane::auth::authorization::{check_resource_access, require_resource_access};
 
+    // User with org_scopes but no resource grants
     let ctx = AuthContext::new(
         TokenId::from_str_unchecked("escalation-attempt"),
         "attacker".into(),
-        vec!["clusters:read".into(), "routes:create".into()],
+        vec![],
     );
 
-    // Security: non-admin with global scopes denied for all teams
+    // No grants → denied for all teams
     assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
     assert!(!check_resource_access(&ctx, "routes", "create", Some("platform")));
     assert!(!check_resource_access(&ctx, "clusters", "read", None));
@@ -775,43 +749,44 @@ fn get_effective_team_scopes_empty_for_admin() {
 #[test]
 fn get_effective_team_scopes_returns_teams_for_user() {
     use flowplane::api::handlers::team_access::get_effective_team_scopes;
+    use flowplane::auth::models::{Grant, GrantType};
 
-    let ctx = AuthContext::new(
-        TokenId::from_str_unchecked("team-user"),
-        "team-user".into(),
-        vec![
-            "team:engineering:routes:read".into(),
-            "team:engineering:clusters:create".into(),
-            "team:platform:routes:read".into(),
-        ],
-    );
+    let mut ctx =
+        AuthContext::new(TokenId::from_str_unchecked("team-user"), "team-user".into(), vec![]);
+    ctx.grants = vec![
+        Grant {
+            grant_type: GrantType::Resource,
+            team_id: "t1".into(),
+            team_name: "engineering".into(),
+            resource_type: Some("routes".into()),
+            action: Some("read".into()),
+            route_id: None,
+            allowed_methods: vec![],
+        },
+        Grant {
+            grant_type: GrantType::Resource,
+            team_id: "t1".into(),
+            team_name: "engineering".into(),
+            resource_type: Some("clusters".into()),
+            action: Some("create".into()),
+            route_id: None,
+            allowed_methods: vec![],
+        },
+        Grant {
+            grant_type: GrantType::Resource,
+            team_id: "t2".into(),
+            team_name: "platform".into(),
+            resource_type: Some("routes".into()),
+            action: Some("read".into()),
+            route_id: None,
+            allowed_methods: vec![],
+        },
+    ];
 
     let scopes = get_effective_team_scopes(&ctx);
     assert_eq!(scopes.len(), 2, "Should have 2 unique teams");
     assert!(scopes.contains(&"engineering".to_string()));
     assert!(scopes.contains(&"platform".to_string()));
-}
-
-// ---------------------------------------------------------------------------
-// Test: is_global_resource_scope classification
-// ---------------------------------------------------------------------------
-
-#[test]
-fn is_global_resource_scope_classification() {
-    use flowplane::auth::authorization::is_global_resource_scope;
-
-    // These ARE global resource scopes (dangerous for non-admins)
-    assert!(is_global_resource_scope("clusters:read"));
-    assert!(is_global_resource_scope("routes:create"));
-    assert!(is_global_resource_scope("listeners:read"));
-    assert!(is_global_resource_scope("openapi-import:create"));
-    assert!(is_global_resource_scope("secrets:read"));
-
-    // These are NOT global resource scopes
-    assert!(!is_global_resource_scope("admin:all")); // admin bypass
-    assert!(!is_global_resource_scope("team:eng:routes:read")); // team-prefixed
-    assert!(!is_global_resource_scope("org:acme:admin")); // org scope
-    assert!(!is_global_resource_scope("team:platform:*:*")); // wildcard
 }
 
 // ---------------------------------------------------------------------------

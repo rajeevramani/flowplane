@@ -1,7 +1,6 @@
 //! Axum middleware for authentication and authorization.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use axum::{
     body::Body,
@@ -17,14 +16,12 @@ use crate::auth::authorization::{
 };
 use crate::auth::cache::{CachedPermissionSnapshot, CachedPermissions};
 use crate::auth::models::{AgentContext, AuthContext, AuthError};
-use crate::auth::permissions::{load_agent_grants, load_user_permissions};
+use crate::auth::permissions::load_permissions;
 use crate::auth::zitadel::{fetch_user_email, validate_jwt_extract_sub, ZitadelAuthState};
 use crate::domain::TokenId;
 use crate::storage::repositories::user::SqlxUserRepository;
 use crate::storage::repositories::UserRepository;
 use tracing::{field, info_span, warn};
-
-pub type ScopeState = Arc<Vec<String>>;
 
 /// Extract client IP from the request, preferring X-Forwarded-For header
 fn extract_client_ip(request: &Request<Body>) -> Option<String> {
@@ -89,7 +86,7 @@ pub async fn authenticate(
             e
         })?;
 
-    // Resolve user_id, scopes, and org context from cache or DB
+    // Resolve user_id, permissions, and org context from cache or DB
     let snapshot: CachedPermissionSnapshot =
         if let Some(cached) = state.permission_cache.get(&jwt_claims.sub).await {
             cached
@@ -119,36 +116,28 @@ pub async fn authenticate(
                     ApiError::Internal(format!("user provisioning failed: {e}"))
                 })?;
 
-            let permissions = load_user_permissions(&state.pool, &user.id).await.map_err(|e| {
-                warn!(%correlation_id, error = ?e, "Failed to load user permissions");
+            // Single load_permissions call for ALL user types (human + machine).
+            // Returns org_scopes + unified grants (resource, gateway-tool, route).
+            let permissions = load_permissions(&state.pool, &user.id).await.map_err(|e| {
+                warn!(%correlation_id, error = ?e, "Failed to load permissions");
                 ApiError::Internal(format!("permission loading failed: {e}"))
             })?;
 
-            // For machine users, load agent grants and parse agent_context
+            // Parse agent_context for machine users
             let agent_ctx = if user.user_type == "machine" {
                 AgentContext::from_db(user.agent_context.as_deref())
             } else {
                 None
             };
-            let (cp_grants, gateway_grants, route_grants) = if agent_ctx.is_some() {
-                load_agent_grants(&state.pool, user.id.as_str()).await.map_err(|e| {
-                    warn!(%correlation_id, error = ?e, "Failed to load agent grants");
-                    ApiError::Internal(format!("agent grant loading failed: {e}"))
-                })?
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
-            };
 
             let snap = CachedPermissionSnapshot {
                 user_id: user.id.clone(),
                 email: Some(user.email.clone()),
-                scopes: permissions.scopes.clone(),
+                org_scopes: permissions.org_scopes.clone(),
+                grants: permissions.grants.clone(),
                 org_id: permissions.org_id.clone(),
                 org_name: permissions.org_name.clone(),
                 org_role: permissions.org_role.clone(),
-                cp_grants: cp_grants.clone(),
-                gateway_grants: gateway_grants.clone(),
-                route_grants: route_grants.clone(),
                 agent_context: agent_ctx,
             };
 
@@ -157,16 +146,14 @@ pub async fn authenticate(
                 .insert(
                     jwt_claims.sub.clone(),
                     CachedPermissions {
-                        scopes: permissions.scopes,
+                        org_scopes: permissions.org_scopes,
+                        grants: permissions.grants,
                         user_id: user.id,
                         email: Some(user.email),
                         org_id: permissions.org_id,
                         org_name: permissions.org_name,
                         org_role: permissions.org_role,
                         cached_at: std::time::Instant::now(),
-                        cp_grants,
-                        gateway_grants,
-                        route_grants,
                         agent_context: agent_ctx,
                     },
                 )
@@ -183,9 +170,9 @@ pub async fn authenticate(
         token_name,
         snapshot.user_id,
         snapshot.email.unwrap_or_default(),
-        snapshot.scopes.into_iter().collect(),
+        snapshot.org_scopes.into_iter().collect(),
     )
-    .with_agent_data(snapshot.agent_context, snapshot.cp_grants);
+    .with_grants(snapshot.grants, snapshot.agent_context);
 
     // Populate org context if the user belongs to a non-platform org
     if let (Some(oid), Some(oname)) = (snapshot.org_id, snapshot.org_name) {
@@ -209,45 +196,6 @@ pub async fn authenticate(
 
     request.extensions_mut().insert(context);
     Ok(next.run(request).await)
-}
-
-/// Middleware entry point that verifies the caller has the required scopes.
-pub async fn ensure_scopes(
-    State(required_scopes): State<ScopeState>,
-    Extension(context): Extension<AuthContext>,
-    request: Request<Body>,
-    next: Next,
-) -> Result<Response, ApiError> {
-    let required_summary =
-        required_scopes.iter().map(|scope| scope.as_str()).collect::<Vec<_>>().join(" ");
-    let granted_summary =
-        context.scopes().map(|scope| scope.as_str()).collect::<Vec<_>>().join(" ");
-    let correlation_id = uuid::Uuid::new_v4();
-    let method = request.method();
-    let path = request.uri().path();
-    let span = info_span!(
-        "auth_middleware.ensure_scopes",
-        http.method = %method,
-        http.path = %path,
-        auth.token_id = %context.token_id,
-        auth.org_id = context.org_id.as_ref().map(|id| id.to_string()).unwrap_or_default().as_str(),
-        auth.org_name = context.org_name.as_deref().unwrap_or(""),
-        required_scopes = %required_summary,
-        correlation_id = %correlation_id
-    );
-    let _guard = span.enter();
-
-    if required_scopes.iter().all(|scope| context.has_scope(scope)) {
-        return Ok(next.run(request).await);
-    }
-
-    warn!(
-        %correlation_id,
-        required = %required_summary,
-        granted = %granted_summary,
-        "scope check failed"
-    );
-    Err(ApiError::forbidden("forbidden: missing required scope"))
 }
 
 /// Middleware that dynamically derives required scopes from the HTTP method and path.

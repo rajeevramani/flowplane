@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 
-use crate::auth::models::{AgentContext, CpGrant, RouteGrant};
+use crate::auth::models::{AgentContext, Grant};
 use crate::domain::{OrgId, UserId};
 
 // ---------------------------------------------------------------------------
@@ -18,18 +18,14 @@ use crate::domain::{OrgId, UserId};
 
 /// A single cached permission record for one user.
 pub struct CachedPermissions {
-    pub scopes: HashSet<String>,
+    pub org_scopes: HashSet<String>,
+    pub grants: Vec<Grant>,
     pub user_id: UserId,
     pub email: Option<String>,
     pub org_id: Option<OrgId>,
     pub org_name: Option<String>,
     pub org_role: Option<String>,
     pub cached_at: Instant,
-    // Agent grants (empty for human users)
-    pub cp_grants: Vec<CpGrant>,
-    pub gateway_grants: Vec<RouteGrant>,
-    pub route_grants: Vec<RouteGrant>,
-    // Agent context (None for human users)
     pub agent_context: Option<AgentContext>,
 }
 
@@ -38,15 +34,11 @@ pub struct CachedPermissions {
 pub struct CachedPermissionSnapshot {
     pub user_id: UserId,
     pub email: Option<String>,
-    pub scopes: HashSet<String>,
+    pub org_scopes: HashSet<String>,
+    pub grants: Vec<Grant>,
     pub org_id: Option<OrgId>,
     pub org_name: Option<String>,
     pub org_role: Option<String>,
-    // Agent grants
-    pub cp_grants: Vec<CpGrant>,
-    pub gateway_grants: Vec<RouteGrant>,
-    pub route_grants: Vec<RouteGrant>,
-    // Agent context (None for human users)
     pub agent_context: Option<AgentContext>,
 }
 
@@ -84,13 +76,11 @@ impl PermissionCache {
         Some(CachedPermissionSnapshot {
             user_id: entry.user_id.clone(),
             email: entry.email.clone(),
-            scopes: entry.scopes.clone(),
+            org_scopes: entry.org_scopes.clone(),
+            grants: entry.grants.clone(),
             org_id: entry.org_id.clone(),
             org_name: entry.org_name.clone(),
             org_role: entry.org_role.clone(),
-            cp_grants: entry.cp_grants.clone(),
-            gateway_grants: entry.gateway_grants.clone(),
-            route_grants: entry.route_grants.clone(),
             agent_context: entry.agent_context,
         })
     }
@@ -119,18 +109,16 @@ impl PermissionCache {
 mod tests {
     use super::*;
 
-    fn make_permissions(user_id: &str, scopes: &[&str]) -> CachedPermissions {
+    fn make_permissions(user_id: &str, org_scopes: &[&str]) -> CachedPermissions {
         CachedPermissions {
-            scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            org_scopes: org_scopes.iter().map(|s| s.to_string()).collect(),
+            grants: Vec::new(),
             user_id: UserId::from_string(user_id.to_string()),
             email: Some(format!("{user_id}@example.com")),
             org_id: None,
             org_name: None,
             org_role: None,
             cached_at: Instant::now(),
-            cp_grants: Vec::new(),
-            gateway_grants: Vec::new(),
-            route_grants: Vec::new(),
             agent_context: None,
         }
     }
@@ -145,7 +133,7 @@ mod tests {
         let snap = result.unwrap();
         assert_eq!(snap.user_id.as_str(), "user-1");
         assert_eq!(snap.email.as_deref(), Some("user-1@example.com"));
-        assert!(snap.scopes.contains("admin:all"));
+        assert!(snap.org_scopes.contains("admin:all"));
     }
 
     #[tokio::test]
@@ -197,7 +185,7 @@ mod tests {
         cache.insert("sub-1".to_string(), make_permissions("user-1", &["new:scope"])).await;
 
         let snap = cache.get("sub-1").await.unwrap();
-        assert!(snap.scopes.contains("new:scope"));
-        assert!(!snap.scopes.contains("old:scope"));
+        assert!(snap.org_scopes.contains("new:scope"));
+        assert!(!snap.org_scopes.contains("old:scope"));
     }
 }

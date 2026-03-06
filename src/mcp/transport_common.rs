@@ -61,29 +61,16 @@ pub enum ResponseMode {
 /// # Returns
 /// Vec of team names the caller has explicit access to (may be empty)
 pub fn extract_teams(context: &AuthContext) -> Vec<String> {
-    // admin:all without org/team scopes → governance only, no team context
+    // admin:all without org memberships or grants → governance only, no team context
     if context.has_scope("admin:all") {
-        let has_org_or_team_scopes =
-            context.scopes().any(|s| s.starts_with("org:") || s.starts_with("team:"));
-        if !has_org_or_team_scopes {
+        let has_org_or_team =
+            context.org_scopes().any(|s| s.starts_with("org:")) || !context.grants.is_empty();
+        if !has_org_or_team {
             return vec![];
         }
     }
 
-    let mut seen = std::collections::HashSet::new();
-    let mut teams = Vec::new();
-
-    for scope in context.scopes() {
-        if let Some(team_part) = scope.strip_prefix("team:") {
-            if let Some(team_name) = team_part.split(':').next() {
-                if !team_name.is_empty() && seen.insert(team_name.to_string()) {
-                    teams.push(team_name.to_string());
-                }
-            }
-        }
-    }
-
-    teams
+    context.grant_team_names()
 }
 
 /// Resolve a team name to its UUID.
@@ -256,15 +243,39 @@ pub fn error_response_json(code: i32, message: String, id: Option<JsonRpcId>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::models::{Grant, GrantType};
     use crate::domain::TokenId;
 
-    // Helper to create test context
-    fn test_context(scopes: Vec<&str>) -> AuthContext {
+    // Helper to create test context with org-level scopes only
+    fn test_context(org_scopes: Vec<&str>) -> AuthContext {
         AuthContext::new(
             TokenId::from_str_unchecked("test-token-1"),
             "test-token".to_string(),
-            scopes.into_iter().map(|s| s.to_string()).collect(),
+            org_scopes.into_iter().map(|s| s.to_string()).collect(),
         )
+    }
+
+    // Helper to create a context with resource grants for the given team names
+    fn test_context_with_teams(org_scopes: Vec<&str>, team_names: Vec<&str>) -> AuthContext {
+        let grants = team_names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| Grant {
+                grant_type: GrantType::Resource,
+                team_id: format!("team-{}", i),
+                team_name: name.to_string(),
+                resource_type: Some("*".to_string()),
+                action: Some("*".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            })
+            .collect();
+        AuthContext::new(
+            TokenId::from_str_unchecked("test-token-1"),
+            "test-token".to_string(),
+            org_scopes.into_iter().map(|s| s.to_string()).collect(),
+        )
+        .with_grants(grants, None)
     }
 
     // -------------------------------------------------------------------------
@@ -273,18 +284,14 @@ mod tests {
 
     #[test]
     fn test_extract_teams_single_team() {
-        let context = test_context(vec!["team:acme-corp:mcp:read"]);
+        let context = test_context_with_teams(vec![], vec!["acme-corp"]);
         let teams = extract_teams(&context);
         assert_eq!(teams, vec!["acme-corp".to_string()]);
     }
 
     #[test]
     fn test_extract_teams_multiple_teams() {
-        let context = test_context(vec![
-            "team:team-a:cp:read",
-            "team:team-a:cp:create",
-            "team:team-b:cp:read",
-        ]);
+        let context = test_context_with_teams(vec![], vec!["team-a", "team-b"]);
         let teams = extract_teams(&context);
         assert_eq!(teams.len(), 2);
         assert!(teams.contains(&"team-a".to_string()));
@@ -293,8 +300,34 @@ mod tests {
 
     #[test]
     fn test_extract_teams_deduplicates() {
-        let context =
-            test_context(vec!["team:acme:cp:read", "team:acme:cp:create", "team:acme:api:read"]);
+        // grant_team_names() already deduplicates; add multiple grants for same team
+        use crate::auth::models::{Grant, GrantType};
+        let grants = vec![
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: "t1".to_string(),
+                team_name: "acme".to_string(),
+                resource_type: Some("cp".to_string()),
+                action: Some("read".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: "t1".to_string(),
+                team_name: "acme".to_string(),
+                resource_type: Some("cp".to_string()),
+                action: Some("create".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+        ];
+        let context = AuthContext::new(
+            TokenId::from_str_unchecked("test-token-1"),
+            "test-token".to_string(),
+            vec![],
+        )
+        .with_grants(grants, None);
         let teams = extract_teams(&context);
         assert_eq!(teams, vec!["acme".to_string()]);
     }
@@ -308,8 +341,7 @@ mod tests {
 
     #[test]
     fn test_extract_teams_admin_with_team_scopes() {
-        let context =
-            test_context(vec!["admin:all", "team:eng:cp:read", "team:platform:cp:create"]);
+        let context = test_context_with_teams(vec!["admin:all"], vec!["eng", "platform"]);
         let teams = extract_teams(&context);
         assert_eq!(teams.len(), 2);
         assert!(teams.contains(&"eng".to_string()));

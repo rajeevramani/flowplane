@@ -513,15 +513,27 @@ mod tests {
 
     // === Team Isolation Tests ===
 
-    /// Create a team-scoped AuthContext for testing
+    /// Create a team-scoped AuthContext for testing (grant-based)
     fn team_context(team: &str, resource: &str, actions: &[&str]) -> AuthContext {
-        let scopes =
-            actions.iter().map(|action| format!("team:{}:{}:{}", team, resource, action)).collect();
-        AuthContext::new(
+        use crate::auth::models::{Grant, GrantType};
+        let mut ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("test-token"),
             format!("{}-user", team),
-            scopes,
-        )
+            vec![],
+        );
+        ctx.grants = actions
+            .iter()
+            .map(|action| Grant {
+                grant_type: GrantType::Resource,
+                team_id: format!("{}-uuid", team),
+                team_name: team.to_string(),
+                resource_type: Some(resource.to_string()),
+                action: Some(action.to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            })
+            .collect();
+        ctx
     }
 
     /// Directly insert a cluster into the database with a team assignment
@@ -598,11 +610,35 @@ mod tests {
         assert!(!names.contains(&"team-a-cluster"));
 
         // Multi-team user should see clusters from all their teams
-        let multi_team = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("multi-team-token"),
-            "multi-team-user".into(),
-            vec!["team:team-a:clusters:read".into(), "team:team-b:clusters:read".into()],
-        );
+        let multi_team = {
+            use crate::auth::models::{Grant, GrantType};
+            let mut ctx = AuthContext::new(
+                crate::domain::TokenId::from_str_unchecked("multi-team-token"),
+                "multi-team-user".into(),
+                vec![],
+            );
+            ctx.grants = vec![
+                Grant {
+                    grant_type: GrantType::Resource,
+                    team_id: "team-a-uuid".into(),
+                    team_name: "team-a".into(),
+                    resource_type: Some("clusters".into()),
+                    action: Some("read".into()),
+                    route_id: None,
+                    allowed_methods: vec![],
+                },
+                Grant {
+                    grant_type: GrantType::Resource,
+                    team_id: "team-b-uuid".into(),
+                    team_name: "team-b".into(),
+                    resource_type: Some("clusters".into()),
+                    action: Some("read".into()),
+                    route_id: None,
+                    allowed_methods: vec![],
+                },
+            ];
+            ctx
+        };
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(multi_team),

@@ -10,6 +10,15 @@ use utoipa::ToSchema;
 
 use crate::auth::models::AuthContext;
 
+/// A single grant summarized for the session response.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantSummary {
+    pub team_name: String,
+    pub resource_type: String,
+    pub action: String,
+}
+
 /// Response from `GET /api/v1/auth/session`.
 ///
 /// Returns the authenticated user's DB-sourced permissions and identity info.
@@ -22,7 +31,8 @@ pub struct AuthSessionResponse {
     pub name: String,
     pub is_admin: bool,
     pub is_platform_admin: bool,
-    pub scopes: Vec<String>,
+    pub org_scopes: Vec<String>,
+    pub grants: Vec<GrantSummary>,
     pub teams: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
@@ -50,28 +60,15 @@ pub struct AuthSessionResponse {
 pub async fn auth_session_handler(
     Extension(context): Extension<AuthContext>,
 ) -> Json<AuthSessionResponse> {
-    let scopes: Vec<String> = context.scopes().cloned().collect();
-    let is_platform_admin = scopes.iter().any(|s| s == "admin:all");
+    let org_scopes: Vec<String> = context.org_scopes().cloned().collect();
+    let is_platform_admin = context.has_scope("admin:all");
 
-    // Extract unique team names from team-scoped permissions.
-    // Format: "team:{name}:{resource}:{action}" or "team:{name}:*:*"
-    let mut teams: Vec<String> = scopes
-        .iter()
-        .filter_map(|s| {
-            let rest = s.strip_prefix("team:")?;
-            let team_name = rest.split(':').next()?;
-            Some(team_name.to_string())
-        })
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-    teams.sort();
+    // Teams come from resource grants.
+    let teams = context.grant_team_names();
 
-    // Org context is populated by the auth middleware from the DB.
-    // Derive org_role from scopes using org_name (the middleware sets org_id/org_name
-    // but not the role string, so we still parse it from scopes).
+    // Derive org_role from org_scopes using org_name.
     let org_role = context.org_name.as_ref().and_then(|name| {
-        scopes.iter().find_map(|s| {
+        org_scopes.iter().find_map(|s| {
             let rest = s.strip_prefix("org:")?;
             let parts: Vec<&str> = rest.splitn(2, ':').collect();
             if parts.len() == 2 && parts[0] == name {
@@ -81,6 +78,20 @@ pub async fn auth_session_handler(
             }
         })
     });
+
+    // Build grant summaries for resource grants.
+    let grants: Vec<GrantSummary> = context
+        .grants
+        .iter()
+        .filter(|g| g.grant_type == crate::auth::models::GrantType::Resource)
+        .filter_map(|g| {
+            Some(GrantSummary {
+                team_name: g.team_name.clone(),
+                resource_type: g.resource_type.clone()?,
+                action: g.action.clone()?,
+            })
+        })
+        .collect();
 
     let email = context.user_email.clone().unwrap_or_default();
     // Use email prefix as display name (the OIDC profile name isn't available here,
@@ -94,7 +105,8 @@ pub async fn auth_session_handler(
         name,
         is_admin: is_platform_admin,
         is_platform_admin,
-        scopes,
+        org_scopes,
+        grants,
         teams,
         org_id: context.org_id.as_ref().map(|id| id.to_string()),
         org_name: context.org_name.clone(),
@@ -105,20 +117,34 @@ pub async fn auth_session_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::models::{Grant, GrantType};
     use crate::domain::{OrgId, TokenId};
 
-    fn make_context(scopes: Vec<&str>) -> AuthContext {
+    fn make_context(org_scopes: Vec<&str>) -> AuthContext {
         AuthContext::with_user(
             TokenId::from_string("zitadel:test-sub".to_string()),
             "zitadel/test-sub".to_string(),
             crate::domain::UserId::from_string("user-1".to_string()),
             "admin@flowplane.local".to_string(),
-            scopes.into_iter().map(String::from).collect(),
+            org_scopes.into_iter().map(String::from).collect(),
         )
     }
 
-    fn make_org_context(scopes: Vec<&str>, org_id: &str, org_name: &str) -> AuthContext {
-        make_context(scopes).with_org(OrgId::from_string(org_id.to_string()), org_name.to_string())
+    fn make_org_context(org_scopes: Vec<&str>, org_id: &str, org_name: &str) -> AuthContext {
+        make_context(org_scopes)
+            .with_org(OrgId::from_string(org_id.to_string()), org_name.to_string())
+    }
+
+    fn team_grant(team_name: &str, resource: &str, action: &str) -> Grant {
+        Grant {
+            grant_type: GrantType::Resource,
+            team_id: format!("team-{}", team_name),
+            team_name: team_name.to_string(),
+            resource_type: Some(resource.to_string()),
+            action: Some(action.to_string()),
+            route_id: None,
+            allowed_methods: vec![],
+        }
     }
 
     #[tokio::test]
@@ -128,7 +154,7 @@ mod tests {
 
         assert!(resp.is_platform_admin);
         assert!(resp.is_admin);
-        assert!(resp.scopes.contains(&"admin:all".to_string()));
+        assert!(resp.org_scopes.contains(&"admin:all".to_string()));
         assert_eq!(resp.email, "admin@flowplane.local");
         assert!(resp.teams.is_empty());
         // Platform org is excluded from org context (no with_org call)
@@ -138,11 +164,11 @@ mod tests {
 
     #[tokio::test]
     async fn org_admin_session() {
-        let ctx = make_org_context(
-            vec!["org:acme-corp:admin", "team:engineering:*:*", "team:payments:*:*"],
-            "org-acme-id",
-            "acme-corp",
-        );
+        let ctx = make_org_context(vec!["org:acme-corp:admin"], "org-acme-id", "acme-corp")
+            .with_grants(
+                vec![team_grant("engineering", "*", "*"), team_grant("payments", "*", "*")],
+                None,
+            );
         let Json(resp) = auth_session_handler(Extension(ctx)).await;
 
         assert!(!resp.is_platform_admin);
@@ -154,15 +180,14 @@ mod tests {
 
     #[tokio::test]
     async fn team_member_session() {
-        let ctx = make_org_context(
-            vec![
-                "org:acme-corp:member",
-                "team:engineering:clusters:read",
-                "team:engineering:routes:create",
-            ],
-            "org-acme-id",
-            "acme-corp",
-        );
+        let ctx = make_org_context(vec!["org:acme-corp:member"], "org-acme-id", "acme-corp")
+            .with_grants(
+                vec![
+                    team_grant("engineering", "clusters", "read"),
+                    team_grant("engineering", "routes", "create"),
+                ],
+                None,
+            );
         let Json(resp) = auth_session_handler(Extension(ctx)).await;
 
         assert!(!resp.is_platform_admin);
@@ -178,7 +203,7 @@ mod tests {
         let Json(resp) = auth_session_handler(Extension(ctx)).await;
 
         assert!(!resp.is_platform_admin);
-        assert!(resp.scopes.is_empty());
+        assert!(resp.org_scopes.is_empty());
         assert!(resp.teams.is_empty());
         assert!(resp.org_name.is_none());
         assert!(resp.org_id.is_none());

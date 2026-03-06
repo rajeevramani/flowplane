@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tracing::{debug, error, warn};
 
 use crate::auth::authorization::check_resource_access;
-use crate::auth::models::{AgentContext, AuthContext};
+use crate::auth::models::{AgentContext, AuthContext, GrantType};
 use crate::domain::McpToolCategory;
 use crate::mcp::error::McpError;
 use crate::mcp::gateway::GatewayExecutor;
@@ -340,33 +340,35 @@ impl McpHandler {
         debug!("Listing available tools");
 
         // CP tools: filter based on agent context
-        let cp_tools: Vec<crate::mcp::protocol::Tool> =
-            if let Some(ref agent_ctx) = self.context.agent_context {
-                match agent_ctx {
-                    AgentContext::CpTool => {
-                        // Build allowed (resource, action) set from grants
-                        let allowed: std::collections::HashSet<(&str, &str)> = self
-                            .context
-                            .cp_grants
-                            .iter()
-                            .map(|g| (g.resource_type.as_str(), g.action.as_str()))
-                            .collect();
-                        tools::get_all_tools()
-                            .into_iter()
-                            .filter(|tool| {
-                                get_tool_authorization(&tool.name)
-                                    .map(|auth| allowed.contains(&(auth.resource, auth.action)))
-                                    .unwrap_or(false)
-                            })
-                            .collect()
-                    }
-                    // Gateway-tool and api-consumer agents see NO CP tools
-                    AgentContext::GatewayTool | AgentContext::ApiConsumer => Vec::new(),
+        let cp_tools: Vec<crate::mcp::protocol::Tool> = if let Some(ref agent_ctx) =
+            self.context.agent_context
+        {
+            match agent_ctx {
+                AgentContext::CpTool => {
+                    // Build allowed (resource, action) set from resource grants
+                    let allowed: std::collections::HashSet<(&str, &str)> = self
+                        .context
+                        .grants
+                        .iter()
+                        .filter(|g| g.grant_type == GrantType::Resource)
+                        .filter_map(|g| Some((g.resource_type.as_deref()?, g.action.as_deref()?)))
+                        .collect();
+                    tools::get_all_tools()
+                        .into_iter()
+                        .filter(|tool| {
+                            get_tool_authorization(&tool.name)
+                                .map(|auth| allowed.contains(&(auth.resource, auth.action)))
+                                .unwrap_or(false)
+                        })
+                        .collect()
                 }
-            } else {
-                // Human users: all CP tools (existing behavior)
-                tools::get_all_tools()
-            };
+                // Gateway-tool and api-consumer agents see NO CP tools
+                AgentContext::GatewayTool | AgentContext::ApiConsumer => Vec::new(),
+            }
+        } else {
+            // Human users: all CP tools (existing behavior)
+            tools::get_all_tools()
+        };
 
         let mut all_tools = cp_tools;
 
@@ -384,9 +386,14 @@ impl McpHandler {
             match self.context.agent_context {
                 Some(AgentContext::GatewayTool) => {
                     // Gateway-tool agents: only show api_* tools for granted route_ids
-                    if let Some(ref user_id) = self.context.user_id {
-                        let granted_route_ids =
-                            load_gateway_grant_route_ids(user_id.as_str(), &self.db_pool).await;
+                    {
+                        let granted_route_ids: std::collections::HashSet<String> = self
+                            .context
+                            .grants
+                            .iter()
+                            .filter(|g| g.grant_type == GrantType::GatewayTool)
+                            .filter_map(|g| g.route_id.clone())
+                            .collect();
                         let repo = crate::storage::repositories::mcp_tool::McpToolRepository::new(
                             (*self.db_pool).clone(),
                         );
@@ -1488,32 +1495,28 @@ impl McpHandler {
 
         // For gateway-tool agents, verify a grant exists for this tool's route before execution
         if matches!(self.context.agent_context, Some(AgentContext::GatewayTool)) {
-            if let Some(ref user_id) = self.context.user_id {
-                match &tool.route_id {
-                    Some(route_id) => {
-                        if !agent_has_gateway_grant(
-                            user_id.as_str(),
-                            route_id.as_str(),
-                            &self.db_pool,
-                        )
-                        .await
-                        {
-                            return self.error_response(
-                                id,
-                                McpError::Forbidden(
-                                    "Agent not granted access to this tool".to_string(),
-                                ),
-                            );
-                        }
-                    }
-                    None => {
+            match &tool.route_id {
+                Some(route_id) => {
+                    let has_grant = self.context.grants.iter().any(|g| {
+                        g.grant_type == GrantType::GatewayTool
+                            && g.route_id.as_deref() == Some(route_id.as_str())
+                    });
+                    if !has_grant {
                         return self.error_response(
                             id,
                             McpError::Forbidden(
-                                "Tool has no associated route for grant check".to_string(),
+                                "Agent not granted access to this tool".to_string(),
                             ),
                         );
                     }
+                }
+                None => {
+                    return self.error_response(
+                        id,
+                        McpError::Forbidden(
+                            "Tool has no associated route for grant check".to_string(),
+                        ),
+                    );
                 }
             }
         }
@@ -1628,43 +1631,6 @@ impl McpHandler {
             error: Some(error.to_json_rpc_error()),
         }
     }
-}
-
-/// Load the set of route_ids that a gateway-tool agent has grants for.
-async fn load_gateway_grant_route_ids(
-    agent_id: &str,
-    pool: &crate::storage::DbPool,
-) -> std::collections::HashSet<String> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT route_id FROM grants \
-         WHERE principal_id = $1 AND grant_type = 'gateway-tool' AND route_id IS NOT NULL",
-    )
-    .bind(agent_id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-
-    rows.into_iter().map(|(r,)| r).collect()
-}
-
-/// Check whether an agent has a gateway-tool grant for the given route.
-async fn agent_has_gateway_grant(
-    agent_id: &str,
-    route_id: &str,
-    pool: &crate::storage::DbPool,
-) -> bool {
-    let result: Option<(i32,)> = sqlx::query_as(
-        "SELECT 1 FROM grants \
-         WHERE principal_id = $1 AND route_id = $2 AND grant_type = 'gateway-tool'",
-    )
-    .bind(agent_id)
-    .bind(route_id)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
-
-    result.is_some()
 }
 
 #[cfg(test)]
@@ -2254,7 +2220,7 @@ mod tests {
             "cp@test.com".to_string(),
             vec![],
         )
-        .with_agent_data(Some(crate::auth::models::AgentContext::CpTool), vec![]);
+        .with_grants(vec![], Some(crate::auth::models::AgentContext::CpTool));
 
         let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
 
@@ -2287,13 +2253,17 @@ mod tests {
             "cp@test.com".to_string(),
             vec![],
         )
-        .with_agent_data(
-            Some(crate::auth::models::AgentContext::CpTool),
-            vec![crate::auth::models::CpGrant {
-                resource_type: "clusters".to_string(),
-                action: "read".to_string(),
-                team: "test-team".to_string(),
+        .with_grants(
+            vec![crate::auth::models::Grant {
+                grant_type: crate::auth::models::GrantType::Resource,
+                team_id: "test-team-id".to_string(),
+                team_name: "test-team".to_string(),
+                resource_type: Some("clusters".to_string()),
+                action: Some("read".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
             }],
+            Some(crate::auth::models::AgentContext::CpTool),
         );
 
         let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
@@ -2332,7 +2302,7 @@ mod tests {
             "gw@test.com".to_string(),
             vec![],
         )
-        .with_agent_data(Some(crate::auth::models::AgentContext::GatewayTool), vec![]);
+        .with_grants(vec![], Some(crate::auth::models::AgentContext::GatewayTool));
 
         let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
 
@@ -2369,7 +2339,7 @@ mod tests {
             "consumer@test.com".to_string(),
             vec![],
         )
-        .with_agent_data(Some(crate::auth::models::AgentContext::ApiConsumer), vec![]);
+        .with_grants(vec![], Some(crate::auth::models::AgentContext::ApiConsumer));
 
         let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
 

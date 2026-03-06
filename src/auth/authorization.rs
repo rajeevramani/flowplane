@@ -6,7 +6,7 @@
 //! - `team:{name}:{resource}:{action}` - Team-scoped permissions (e.g., `team:platform:routes:read`)
 
 use crate::api::error::ApiError;
-use crate::auth::models::{AgentContext, AuthContext, AuthError};
+use crate::auth::models::{AgentContext, AuthContext, AuthError, GrantType};
 use crate::domain::OrgId;
 
 /// Admin scope that grants access to governance resources only (orgs, users, audit, summary).
@@ -82,14 +82,34 @@ pub fn is_governance_resource(resource: &str) -> bool {
 ///
 /// ```rust
 /// use flowplane::auth::authorization::check_resource_access;
-/// use flowplane::auth::models::AuthContext;
+/// use flowplane::auth::models::{AuthContext, Grant, GrantType};
 /// use flowplane::domain::TokenId;
 ///
-/// let ctx = AuthContext::new(
+/// let mut ctx = AuthContext::new(
 ///     TokenId::from_str_unchecked("token-1"),
 ///     "platform-token".into(),
-///     vec!["team:platform:routes:read".into(), "team:platform:routes:create".into()]
+///     vec![]
 /// );
+/// ctx.grants = vec![
+///     Grant {
+///         grant_type: GrantType::Resource,
+///         team_id: "t1".into(),
+///         team_name: "platform".into(),
+///         resource_type: Some("routes".into()),
+///         action: Some("read".into()),
+///         route_id: None,
+///         allowed_methods: vec![],
+///     },
+///     Grant {
+///         grant_type: GrantType::Resource,
+///         team_id: "t1".into(),
+///         team_name: "platform".into(),
+///         resource_type: Some("routes".into()),
+///         action: Some("create".into()),
+///         route_id: None,
+///         allowed_methods: vec![],
+///     },
+/// ];
 ///
 /// // Has access to platform team routes
 /// assert!(check_resource_access(&ctx, "routes", "read", Some("platform")));
@@ -107,16 +127,19 @@ pub fn check_resource_access(
     action: &str,
     team: Option<&str>,
 ) -> bool {
-    // Machine users (agents) check DB grants, not JWT scopes.
+    // Agent context structural guard (DD-3).
+    // GatewayTool/ApiConsumer agents are structurally blocked from CP resources.
+    // CpTool agents use the same grant-based path as humans but are restricted
+    // to GrantType::Resource grants only.
     if let Some(ref agent_ctx) = context.agent_context {
         return match agent_ctx {
             AgentContext::CpTool => {
-                // Check if agent has a cp-tool grant matching resource:action in the given team
-                context.cp_grants.iter().any(|g| {
-                    g.resource_type == resource
-                        && g.action == action
-                        && team.is_none_or(|t| g.team == t)
-                })
+                // CpTool agents check resource grants (same table, same logic)
+                if let Some(team_name) = team {
+                    context.has_grant(resource, action, team_name)
+                } else {
+                    context.has_any_grant(resource, action)
+                }
             }
             // Gateway-tool and api-consumer agents cannot call CP resources
             AgentContext::GatewayTool | AgentContext::ApiConsumer => false,
@@ -130,26 +153,14 @@ pub fn check_resource_access(
         return true;
     }
 
-    // Check team-scoped permission if team is provided
+    // Check grants (unified for all human users)
     if let Some(team_name) = team {
-        // Check exact match first
-        let team_scope = format!("team:{}:{}:{}", team_name, resource, action);
-        if context.has_scope(&team_scope) {
+        // Check exact grant match
+        if context.has_grant(resource, action, team_name) {
             return true;
         }
 
-        // Check wildcard patterns: team:{team}:*:* or team:{team}:{resource}:*
-        let team_wildcard_all = format!("team:{}:*:*", team_name);
-        if context.has_scope(&team_wildcard_all) {
-            return true;
-        }
-
-        let team_wildcard_action = format!("team:{}:{}:*", team_name, resource);
-        if context.has_scope(&team_wildcard_action) {
-            return true;
-        }
-
-        // Org admins have implicit access to all teams in their org.
+        // Org admins have implicit access to all teams in their org (DD-2).
         // Defense-in-depth: resolve_team_name (team_access.rs) already validates
         // the team belongs to the caller's org via org-scoped SQL. This check
         // verifies the org admin scope matches the user's actual org_name,
@@ -177,23 +188,10 @@ pub fn check_resource_access(
             }
         }
     } else {
-        // If no team specified, check if user has ANY team-scoped permission for this resource/action
-        // This allows team-scoped users to call handlers that will filter by their teams
-        for scope in context.scopes() {
-            if let Some(team_name) = parse_team_from_scope(scope) {
-                // Check exact match
-                let expected_scope = format!("team:{}:{}:{}", team_name, resource, action);
-                if *scope == expected_scope {
-                    return true;
-                }
-            }
-
-            // Check wildcard patterns
-            if let Some(team_name) = parse_team_wildcard_scope(scope) {
-                // User has team:X:*:* - grant access for this team
-                let _ = team_name; // Unused but indicates wildcard access exists
-                return true;
-            }
+        // No team specified — check if user has ANY grant for this resource/action.
+        // This allows team-scoped users to call handlers that will filter by their teams.
+        if context.has_any_grant(resource, action) {
+            return true;
         }
 
         // Check if user has any org-level membership (org admin/member get access;
@@ -205,33 +203,6 @@ pub fn check_resource_access(
     }
 
     false
-}
-
-/// Parse team name from a wildcard scope string.
-///
-/// Expected pattern: `team:{name}:*:*` or `team:{name}:{resource}:*`
-///
-/// # Arguments
-///
-/// * `scope` - The scope string to parse
-///
-/// # Returns
-///
-/// `Some(team_name)` if the scope is a wildcard team scope, `None` otherwise.
-pub fn parse_team_wildcard_scope(scope: &str) -> Option<String> {
-    let parts: Vec<&str> = scope.split(':').collect();
-
-    // Pattern: team:{name}:*:* (full wildcard)
-    if parts.len() == 4 && parts[0] == "team" && parts[2] == "*" && parts[3] == "*" {
-        return Some(parts[1].to_string());
-    }
-
-    // Pattern: team:{name}:{resource}:* (action wildcard)
-    if parts.len() == 4 && parts[0] == "team" && parts[3] == "*" {
-        return Some(parts[1].to_string());
-    }
-
-    None
 }
 
 /// Require resource access or return a 403 Forbidden error.
@@ -254,15 +225,24 @@ pub fn parse_team_wildcard_scope(scope: &str) -> Option<String> {
 ///
 /// ```rust
 /// use flowplane::auth::authorization::require_resource_access;
-/// use flowplane::auth::models::{AuthContext, AuthError};
+/// use flowplane::auth::models::{AuthContext, AuthError, Grant, GrantType};
 /// use flowplane::domain::TokenId;
 ///
 /// // Team-scoped user can access their team
-/// let ctx = AuthContext::new(
+/// let mut ctx = AuthContext::new(
 ///     TokenId::from_str_unchecked("token-1"),
 ///     "demo".into(),
-///     vec!["team:platform:routes:read".into()]
+///     vec![]
 /// );
+/// ctx.grants = vec![Grant {
+///     grant_type: GrantType::Resource,
+///     team_id: "t1".into(),
+///     team_name: "platform".into(),
+///     resource_type: Some("routes".into()),
+///     action: Some("read".into()),
+///     route_id: None,
+///     allowed_methods: vec![],
+/// }];
 /// require_resource_access(&ctx, "routes", "read", Some("platform")).unwrap();
 ///
 /// // But not other teams
@@ -282,10 +262,9 @@ pub fn require_resource_access(
     }
 }
 
-/// Extract all team names from team-scoped permissions in the context.
+/// Extract all team names from resource grants in the context.
 ///
-/// Parses scopes matching the pattern `team:{name}:{resource}:{action}` and
-/// returns a list of unique team names.
+/// Returns a deduplicated, sorted list of team names from resource grants.
 ///
 /// # Arguments
 ///
@@ -293,83 +272,9 @@ pub fn require_resource_access(
 ///
 /// # Returns
 ///
-/// A vector of unique team names found in the scopes.
-///
-/// # Examples
-///
-/// ```rust
-/// use flowplane::auth::authorization::extract_team_scopes;
-/// use flowplane::auth::models::AuthContext;
-/// use flowplane::domain::TokenId;
-///
-/// let ctx = AuthContext::new(
-///     TokenId::from_str_unchecked("token-1"),
-///     "multi-team".into(),
-///     vec![
-///         "team:platform:routes:read".into(),
-///         "team:platform:clusters:read".into(),
-///         "team:engineering:routes:read".into(),
-///     ]
-/// );
-///
-/// let teams = extract_team_scopes(&ctx);
-/// assert_eq!(teams.len(), 2);
-/// assert!(teams.contains(&"platform".to_string()));
-/// assert!(teams.contains(&"engineering".to_string()));
-/// ```
+/// A vector of unique team names found in the grants.
 pub fn extract_team_scopes(context: &AuthContext) -> Vec<String> {
-    let mut teams = std::collections::HashSet::new();
-
-    for scope in context.scopes() {
-        if let Some(team_name) = parse_team_from_scope(scope) {
-            teams.insert(team_name);
-        }
-    }
-
-    teams.into_iter().collect()
-}
-
-/// Parse team name from a scope string if it matches the team pattern.
-///
-/// Expected pattern: `team:{name}:{resource}:{action}`
-///
-/// # Arguments
-///
-/// * `scope` - The scope string to parse
-///
-/// # Returns
-///
-/// `Some(team_name)` if the scope matches the team pattern, `None` otherwise.
-///
-/// # Examples
-///
-/// ```rust
-/// use flowplane::auth::authorization::parse_team_from_scope;
-///
-/// assert_eq!(
-///     parse_team_from_scope("team:platform:routes:read"),
-///     Some("platform".to_string())
-/// );
-///
-/// assert_eq!(
-///     parse_team_from_scope("routes:read"),
-///     None
-/// );
-///
-/// assert_eq!(
-///     parse_team_from_scope("team:incomplete"),
-///     None
-/// );
-/// ```
-pub fn parse_team_from_scope(scope: &str) -> Option<String> {
-    let parts: Vec<&str> = scope.split(':').collect();
-
-    // Pattern: team:{name}:{resource}:{action}
-    if parts.len() == 4 && parts[0] == "team" {
-        Some(parts[1].to_string())
-    } else {
-        None
-    }
+    context.grant_team_names()
 }
 
 /// Parse organization name from a scope string if it matches the org pattern.
@@ -397,38 +302,24 @@ pub fn parse_org_from_scope(scope: &str) -> Option<(String, String)> {
     }
 }
 
-/// Extract all team names from team-scoped permissions in the context.
+/// Extract all team names from resource grants in the context.
 ///
-/// Parses scopes matching `team:{name}:*` (any variant, e.g. `team:X:*:*` or
-/// `team:X:clusters:read`) and returns a deduplicated list of team names.
+/// Returns a deduplicated, sorted list of team names from resource grants.
 ///
 /// The admin path (`admin:all`) is NOT handled here — callers should check
 /// `has_admin_bypass()` separately before calling this.
 pub fn extract_team_names(context: &AuthContext) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut teams = Vec::new();
-
-    for scope in context.scopes() {
-        if let Some(team_part) = scope.strip_prefix("team:") {
-            if let Some(team_name) = team_part.split(':').next() {
-                if !team_name.is_empty() && seen.insert(team_name.to_string()) {
-                    teams.push(team_name.to_string());
-                }
-            }
-        }
-    }
-
-    teams
+    context.grant_team_names()
 }
 
 /// Extract all organization names and roles from org-scoped permissions in the context.
 ///
-/// Parses scopes matching the pattern `org:{name}:admin|member` and
+/// Parses org_scopes matching the pattern `org:{name}:admin|member|viewer` and
 /// returns a list of (org_name, role) pairs.
 pub fn extract_org_scopes(context: &AuthContext) -> Vec<(String, String)> {
     let mut orgs = Vec::new();
 
-    for scope in context.scopes() {
+    for scope in context.org_scopes() {
         if let Some(pair) = parse_org_from_scope(scope) {
             orgs.push(pair);
         }
@@ -490,58 +381,11 @@ pub fn has_org_membership(context: &AuthContext, org_name: &str) -> bool {
         || context.has_scope(&format!("org:{}:viewer", org_name))
 }
 
-/// Check if a scope is a global (non-team-prefixed) resource scope.
+/// Check if the context has any resource grants (i.e., team-scoped permissions).
 ///
-/// Global resource scopes have the pattern `{resource}:{action}` (e.g., `clusters:read`).
-/// These grant access across ALL teams and should only be held by platform admins.
-/// Non-admin users should use team-prefixed scopes like `team:X:clusters:read`.
-///
-/// Returns `false` for:
-/// - `admin:all` (admin bypass, not a resource scope)
-/// - `team:X:resource:action` (team-prefixed, safe)
-/// - `org:X:role` (org scope, handled separately)
-///
-/// Returns `true` for:
-/// - `clusters:read`, `routes:create`, `listeners:read` etc.
-pub fn is_global_resource_scope(scope: &str) -> bool {
-    let parts: Vec<&str> = scope.split(':').collect();
-
-    // Pattern: {resource}:{action} — exactly 2 parts
-    // Exclude admin:all (admin bypass), team:* (team-prefixed), org:* (org scope)
-    parts.len() == 2 && parts[0] != "admin" && parts[0] != "team" && parts[0] != "org"
-}
-
-/// Check if the context has any team-scoped permissions.
-///
-/// Returns `true` if at least one scope matches the `team:{name}:{resource}:{action}` pattern.
-///
-/// # Arguments
-///
-/// * `context` - The authentication context from the request
-///
-/// # Examples
-///
-/// ```rust
-/// use flowplane::auth::authorization::has_team_scopes;
-/// use flowplane::auth::models::AuthContext;
-/// use flowplane::domain::TokenId;
-///
-/// let team_ctx = AuthContext::new(
-///     TokenId::from_str_unchecked("token-1"),
-///     "team-token".into(),
-///     vec!["team:platform:routes:read".into()]
-/// );
-/// assert!(has_team_scopes(&team_ctx));
-///
-/// let global_ctx = AuthContext::new(
-///     TokenId::from_str_unchecked("token-2"),
-///     "global-token".into(),
-///     vec!["routes:read".into()]
-/// );
-/// assert!(!has_team_scopes(&global_ctx));
-/// ```
+/// Returns `true` if at least one resource grant exists on the context.
 pub fn has_team_scopes(context: &AuthContext) -> bool {
-    context.scopes().any(|scope| parse_team_from_scope(scope).is_some())
+    context.grants.iter().any(|g| g.grant_type == GrantType::Resource)
 }
 
 /// Derive the required action from an HTTP method.
@@ -796,6 +640,21 @@ pub fn verify_org_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::models::Grant;
+
+    // === Grant-based test helpers ===
+
+    fn make_grant(resource: &str, action: &str, team_name: &str) -> Grant {
+        Grant {
+            grant_type: GrantType::Resource,
+            team_id: format!("test-team-id-{}", team_name),
+            team_name: team_name.to_string(),
+            resource_type: Some(resource.to_string()),
+            action: Some(action.to_string()),
+            route_id: None,
+            allowed_methods: vec![],
+        }
+    }
 
     fn admin_context() -> AuthContext {
         AuthContext::new(
@@ -809,19 +668,24 @@ mod tests {
         AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("platform-token"),
             "platform".into(),
+            vec![],
+        )
+        .with_grants(
             vec![
-                "team:platform:routes:read".into(),
-                "team:platform:routes:create".into(),
-                "team:platform:clusters:read".into(),
+                make_grant("routes", "read", "platform"),
+                make_grant("routes", "create", "platform"),
+                make_grant("clusters", "read", "platform"),
             ],
+            None,
         )
     }
 
-    fn global_read_context() -> AuthContext {
+    fn no_grants_context() -> AuthContext {
+        // User with no org scopes and no grants — should be denied everything
         AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("read-token"),
-            "readonly".into(),
-            vec!["routes:read".into(), "clusters:read".into()],
+            crate::domain::TokenId::from_str_unchecked("no-grants-token"),
+            "no-grants".into(),
+            vec![],
         )
     }
 
@@ -844,10 +708,9 @@ mod tests {
     }
 
     #[test]
-    fn global_scope_without_admin_denied() {
-        // SECURITY FIX: Non-admin users with global resource scopes should be denied.
-        // Global scopes like "routes:read" are now restricted to platform admins only.
-        let ctx = global_read_context();
+    fn no_grants_user_denied() {
+        // User with no grants and no org scopes should be denied everything
+        let ctx = no_grants_context();
         assert!(!has_admin_bypass(&ctx));
         assert!(!check_resource_access(&ctx, "routes", "read", None));
         assert!(!check_resource_access(&ctx, "clusters", "read", None));
@@ -878,12 +741,15 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("multi-team"),
             "demo".into(),
+            vec![],
+        )
+        .with_grants(
             vec![
-                "team:platform:routes:read".into(),
-                "team:platform:clusters:read".into(),
-                "team:engineering:routes:read".into(),
-                "routes:read".into(), // Not a team scope
+                make_grant("routes", "read", "platform"),
+                make_grant("clusters", "read", "platform"),
+                make_grant("routes", "read", "engineering"),
             ],
+            None,
         );
 
         let teams = extract_team_scopes(&ctx);
@@ -893,45 +759,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_team_from_scope_extracts_team_name() {
-        assert_eq!(parse_team_from_scope("team:platform:routes:read"), Some("platform".into()));
-        assert_eq!(
-            parse_team_from_scope("team:engineering:clusters:create"),
-            Some("engineering".into())
-        );
-        assert_eq!(parse_team_from_scope("routes:read"), None);
-        assert_eq!(parse_team_from_scope("team:incomplete"), None);
-        assert_eq!(parse_team_from_scope("team:too:many:parts:here"), None);
-    }
-
-    #[test]
-    fn extract_team_scopes_returns_empty_for_global_scopes() {
-        // This test verifies Bug 12 fix: users with only global scopes
-        // (not team-scoped) should get empty team list, preventing them
-        // from seeing all resources via the admin bypass logic
+    fn extract_team_scopes_returns_empty_for_no_grants() {
+        // Users with no grants should get empty team list
         let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("global-scopes-only"),
-            "bug-12-user".into(),
-            vec!["listeners:read".into(), "routes:read".into(), "clusters:read".into()],
+            crate::domain::TokenId::from_str_unchecked("no-grants-only"),
+            "no-grants-user".into(),
+            vec![],
         );
 
         let teams = extract_team_scopes(&ctx);
-        assert_eq!(teams.len(), 0, "Users with global scopes should NOT bypass team isolation");
-        assert!(!has_admin_bypass(&ctx), "Global scopes should not grant admin bypass");
+        assert_eq!(teams.len(), 0, "Users with no grants should NOT bypass team isolation");
+        assert!(!has_admin_bypass(&ctx), "No org scopes should not grant admin bypass");
     }
 
     #[test]
-    fn extract_team_scopes_correctly_parses_team_scoped_permissions() {
-        // This test verifies correct behavior: users with team-scoped permissions
-        // get their team list extracted properly for resource filtering
+    fn extract_team_scopes_correctly_returns_grant_teams() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("team-scoped"),
             "correct-user".into(),
+            vec![],
+        )
+        .with_grants(
             vec![
-                "team:engineering:listeners:read".into(),
-                "team:engineering:routes:read".into(),
-                "team:engineering:clusters:read".into(),
+                make_grant("listeners", "read", "engineering"),
+                make_grant("routes", "read", "engineering"),
+                make_grant("clusters", "read", "engineering"),
             ],
+            None,
         );
 
         let teams = extract_team_scopes(&ctx);
@@ -948,8 +802,7 @@ mod tests {
 
     #[test]
     fn require_resource_access_returns_forbidden_when_denied() {
-        let ctx = global_read_context();
-        // Non-admin with global scopes should be forbidden
+        let ctx = no_grants_context();
         let err = require_resource_access(&ctx, "routes", "read", None).unwrap_err();
         assert!(matches!(err, AuthError::Forbidden));
     }
@@ -968,15 +821,10 @@ mod tests {
 
     #[test]
     fn action_from_request_handles_regular_methods() {
-        // Regular GET request → read
         assert_eq!(action_from_request("GET", "/api/v1/routes"), "read");
         assert_eq!(action_from_request("GET", "/api/v1/clusters/123"), "read");
-
-        // Regular POST request → create
         assert_eq!(action_from_request("POST", "/api/v1/routes"), "create");
         assert_eq!(action_from_request("POST", "/api/v1/clusters"), "create");
-
-        // Regular PUT/PATCH → update, DELETE → delete
         assert_eq!(action_from_request("PUT", "/api/v1/routes/123"), "update");
         assert_eq!(action_from_request("PATCH", "/api/v1/routes/123"), "update");
         assert_eq!(action_from_request("DELETE", "/api/v1/routes/123"), "delete");
@@ -984,19 +832,15 @@ mod tests {
 
     #[test]
     fn action_from_request_identifies_export_as_read() {
-        // Export endpoints are semantic reads regardless of method
         assert_eq!(action_from_request("POST", "/api/v1/aggregated-schemas/export"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/schemas/export"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/data/export"), "read");
-
-        // Even if someone uses PUT or other methods, still read
         assert_eq!(action_from_request("PUT", "/api/v1/data/export"), "read");
         assert_eq!(action_from_request("PATCH", "/api/v1/data/export"), "read");
     }
 
     #[test]
     fn action_from_request_identifies_compare_as_read() {
-        // Compare endpoints are semantic reads
         assert_eq!(action_from_request("POST", "/api/v1/schemas/compare"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/aggregated-schemas/compare"), "read");
         assert_eq!(action_from_request("PUT", "/api/v1/data/compare"), "read");
@@ -1004,43 +848,30 @@ mod tests {
 
     #[test]
     fn action_from_request_identifies_search_as_read() {
-        // Search endpoints are semantic reads
         assert_eq!(action_from_request("POST", "/api/v1/resources/search"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/routes/search"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/search"), "read");
-
-        // Search in the middle of path
         assert_eq!(action_from_request("POST", "/api/v1/search/filters"), "read");
     }
 
     #[test]
     fn action_from_request_identifies_query_as_read() {
-        // Query endpoints are semantic reads
         assert_eq!(action_from_request("POST", "/api/v1/data/query"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/query"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/query/advanced"), "read");
-
-        // Query in the middle of path
         assert_eq!(action_from_request("POST", "/api/v1/logs/query/recent"), "read");
     }
 
     #[test]
     fn action_from_request_does_not_false_positive() {
-        // Paths containing "search" or "query" as part of resource names should still work
-        // but paths with these as actual operations should be read
-
-        // These are normal create operations (resource creation/modification)
         assert_eq!(action_from_request("POST", "/api/v1/search-configs"), "create");
         assert_eq!(action_from_request("POST", "/api/v1/query-builder"), "create");
-
-        // Export/compare must be at the END of the path
         assert_eq!(action_from_request("POST", "/api/v1/export-configs"), "create");
         assert_eq!(action_from_request("POST", "/api/v1/compare-tool"), "create");
     }
 
     #[test]
     fn action_from_request_case_insensitive_methods() {
-        // HTTP methods should be case-insensitive
         assert_eq!(action_from_request("post", "/api/v1/routes"), "create");
         assert_eq!(action_from_request("get", "/api/v1/routes"), "read");
         assert_eq!(action_from_request("POST", "/api/v1/schemas/export"), "read");
@@ -1049,14 +880,11 @@ mod tests {
 
     #[test]
     fn action_from_request_real_world_examples() {
-        // Real-world bug fix: aggregated-schemas export
         assert_eq!(
             action_from_request("POST", "/api/v1/aggregated-schemas/export"),
             "read",
             "aggregated-schemas export should be read operation"
         );
-
-        // Other potential export endpoints
         assert_eq!(
             action_from_request("POST", "/api/v1/routes/export"),
             "read",
@@ -1067,15 +895,11 @@ mod tests {
             "read",
             "clusters export should be read operation"
         );
-
-        // Search endpoints
         assert_eq!(
             action_from_request("POST", "/api/v1/api-definitions/search"),
             "read",
             "api-definitions search should be read operation"
         );
-
-        // Regular mutation operations map to CRUD actions
         assert_eq!(
             action_from_request("POST", "/api/v1/aggregated-schemas"),
             "create",
@@ -1106,50 +930,39 @@ mod tests {
     // === Team name extraction tests ===
 
     #[test]
-    fn extract_team_names_fine_grained_scopes() {
-        let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("t1"),
-            "t1".into(),
-            vec![
-                "team:platform:clusters:read".into(),
-                "team:platform:routes:create".into(),
-                "team:sre:listeners:read".into(),
-            ],
-        );
-        let mut teams = extract_team_names(&ctx);
-        teams.sort();
+    fn extract_team_names_from_grants() {
+        let ctx =
+            AuthContext::new(crate::domain::TokenId::from_str_unchecked("t1"), "t1".into(), vec![])
+                .with_grants(
+                    vec![
+                        make_grant("clusters", "read", "platform"),
+                        make_grant("routes", "create", "platform"),
+                        make_grant("listeners", "read", "sre"),
+                    ],
+                    None,
+                );
+        let teams = extract_team_names(&ctx);
         assert_eq!(teams, vec!["platform", "sre"]);
     }
 
     #[test]
-    fn extract_team_names_wildcard_scopes() {
-        let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("t2"),
-            "t2".into(),
-            vec!["team:eng:*:*".into(), "team:ops:clusters:*".into()],
-        );
-        let mut teams = extract_team_names(&ctx);
-        teams.sort();
-        assert_eq!(teams, vec!["eng", "ops"]);
-    }
-
-    #[test]
     fn extract_team_names_deduplicates() {
-        let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("t3"),
-            "t3".into(),
-            vec![
-                "team:backend:clusters:read".into(),
-                "team:backend:clusters:create".into(),
-                "team:backend:routes:read".into(),
-            ],
-        );
+        let ctx =
+            AuthContext::new(crate::domain::TokenId::from_str_unchecked("t3"), "t3".into(), vec![])
+                .with_grants(
+                    vec![
+                        make_grant("clusters", "read", "backend"),
+                        make_grant("clusters", "create", "backend"),
+                        make_grant("routes", "read", "backend"),
+                    ],
+                    None,
+                );
         let teams = extract_team_names(&ctx);
         assert_eq!(teams, vec!["backend"]);
     }
 
     #[test]
-    fn extract_team_names_no_team_scopes() {
+    fn extract_team_names_no_grants() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("t4"),
             "t4".into(),
@@ -1164,12 +977,7 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("org-user"),
             "org-user".into(),
-            vec![
-                "org:acme:admin".into(),
-                "org:globex:member".into(),
-                "team:platform:routes:read".into(),
-                "routes:read".into(),
-            ],
+            vec!["org:acme:admin".into(), "org:globex:member".into()],
         );
 
         let orgs = extract_org_scopes(&ctx);
@@ -1193,7 +1001,6 @@ mod tests {
 
     #[test]
     fn has_org_admin_grants_platform_admin() {
-        // Platform admin (admin:all) IS org admin for any org — org management IS governance
         let ctx = admin_context();
         assert!(has_org_admin(&ctx, "any-org"));
         assert!(has_org_admin(&ctx, "acme"));
@@ -1226,7 +1033,6 @@ mod tests {
 
     #[test]
     fn has_org_membership_grants_platform_admin() {
-        // Platform admin (admin:all) IS org member for any org — org management IS governance
         let ctx = admin_context();
         assert!(has_org_membership(&ctx, "acme"));
         assert!(has_org_membership(&ctx, "any-org"));
@@ -1264,9 +1070,6 @@ mod tests {
 
     #[test]
     fn require_org_admin_only_rejects_platform_admin() {
-        // KEY INVARIANT: platform admin (admin:all) must NOT bypass org admin for
-        // member/team management. This enforces the rule that platform admin
-        // cannot see into orgs.
         let ctx = admin_context();
         assert!(require_org_admin_only(&ctx, "acme").is_err());
         assert!(require_org_admin_only(&ctx, "any-org").is_err());
@@ -1277,7 +1080,7 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("regular-token"),
             "regular".into(),
-            vec!["routes:read".into()],
+            vec![],
         );
         assert!(require_org_admin_only(&ctx, "acme").is_err());
     }
@@ -1285,7 +1088,6 @@ mod tests {
     #[test]
     fn require_org_admin_only_rejects_org_member() {
         let ctx = org_member_context_for("acme");
-        // Org member (non-admin) must not pass org admin check
         assert!(require_org_admin_only(&ctx, "acme").is_err());
     }
 
@@ -1314,7 +1116,6 @@ mod tests {
             vec!["org:acme:admin".into()],
         );
 
-        // User with org:acme:admin should pass when team=None
         assert!(check_resource_access(&ctx, "routes", "read", None));
         assert!(check_resource_access(&ctx, "clusters", "create", None));
     }
@@ -1324,7 +1125,7 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("org-admin"),
             "org-admin".into(),
-            vec!["org:acme:admin".into(), "team:acme-default:*:*".into()],
+            vec!["org:acme:admin".into()],
         )
         .with_org(crate::domain::OrgId::from_str_unchecked("acme-id"), "acme".into());
 
@@ -1339,12 +1140,13 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("org-member"),
             "org-member".into(),
-            vec!["org:acme:member".into(), "team:acme-default:routes:read".into()],
-        );
+            vec!["org:acme:member".into()],
+        )
+        .with_grants(vec![make_grant("routes", "read", "acme-default")], None);
 
         // Org member should NOT get implicit team access (only admins do)
         assert!(!check_resource_access(&ctx, "routes", "read", Some("engineering")));
-        // But should have access to their own team
+        // But should have access to their own team via grant
         assert!(check_resource_access(&ctx, "routes", "read", Some("acme-default")));
     }
 
@@ -1375,81 +1177,73 @@ mod tests {
         )
         .with_org(org_id, "globex".into());
 
-        // Scope says "acme" but user's org is "globex" → denied (scope corruption defense)
+        // Scope says "acme" but user's org is "globex" → denied
         assert!(!check_resource_access(&ctx, "routes", "read", Some("engineering")));
         assert!(!check_resource_access(&ctx, "clusters", "create", Some("platform")));
     }
 
     #[test]
     fn org_admin_without_org_context_denied() {
-        // SECURITY FIX: AuthContext without org_name (e.g. API token without org binding)
-        // must be denied — tokens must have org binding for team access.
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("org-admin-no-ctx"),
             "org-admin".into(),
             vec!["org:acme:admin".into()],
         );
 
-        // No org_name on context → deny (no backward compat)
+        // No org_name on context → deny
         assert!(!check_resource_access(&ctx, "routes", "read", Some("engineering")));
     }
 
     #[test]
-    fn no_scopes_fails_check_resource_access() {
+    fn no_scopes_no_grants_fails_check_resource_access() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("empty"),
             "no-scopes".into(),
             vec![],
         );
 
-        // User with NO scopes should fail
         assert!(!check_resource_access(&ctx, "routes", "read", None));
         assert!(!check_resource_access(&ctx, "routes", "read", Some("platform")));
         assert!(!check_resource_access(&ctx, "clusters", "create", None));
     }
 
     // === Governance-only admin access tests ===
-    // After security hardening, admin:all only grants access to governance resources.
-    // Admin users need explicit team/org scopes for tenant resource access.
 
-    /// Test that admin with ONLY admin:all scope CANNOT access tenant resources
     #[test]
     fn admin_only_denied_for_tenant_resources() {
-        let ctx = admin_context(); // Only has admin:all
+        let ctx = admin_context();
 
-        // Tenant resources → denied
         assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
         assert!(!check_resource_access(&ctx, "openapi-import", "read", Some("platform")));
         assert!(!check_resource_access(&ctx, "openapi-import", "delete", Some("random-team")));
 
-        // require_resource_access also denied
         assert!(
             require_resource_access(&ctx, "openapi-import", "create", Some("engineering")).is_err()
         );
     }
 
-    /// Test that admin with admin:all AND team memberships is restricted to their team scopes
-    /// for tenant resources. admin:all only grants governance access.
     #[test]
-    fn admin_with_team_membership_restricted_to_own_teams() {
+    fn admin_with_grants_restricted_to_own_teams() {
         let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("admin-with-membership"),
+            crate::domain::TokenId::from_str_unchecked("admin-with-grants"),
             "admin-with-teams".into(),
+            vec!["admin:all".into()],
+        )
+        .with_grants(
             vec![
-                "admin:all".into(),
-                "team:platform-admin:routes:read".into(),
-                "team:platform-admin:clusters:create".into(),
+                make_grant("routes", "read", "platform-admin"),
+                make_grant("clusters", "create", "platform-admin"),
             ],
+            None,
         );
 
-        // Admin bypass still detectable
         assert!(has_admin_bypass(&ctx));
 
-        // Can access own team's resources via team scopes
+        // Can access own team's resources via grants
         assert!(check_resource_access(&ctx, "routes", "read", Some("platform-admin")));
         assert!(check_resource_access(&ctx, "clusters", "create", Some("platform-admin")));
 
-        // CANNOT access other teams' tenant resources (admin:all is governance-only)
+        // CANNOT access other teams' tenant resources
         assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
         assert!(!check_resource_access(&ctx, "openapi-import", "read", Some("payments")));
         assert!(!check_resource_access(&ctx, "routes", "create", Some("random-team")));
@@ -1459,38 +1253,36 @@ mod tests {
         assert!(check_resource_access(&ctx, "admin-audit", "read", None));
     }
 
-    /// Test that extract_team_scopes correctly extracts teams but ignores admin:all
     #[test]
     fn extract_team_scopes_ignores_admin_all_scope() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("admin-mixed"),
             "admin".into(),
+            vec!["admin:all".into()],
+        )
+        .with_grants(
             vec![
-                "admin:all".into(),
-                "team:engineering:routes:read".into(),
-                "team:platform:clusters:create".into(),
+                make_grant("routes", "read", "engineering"),
+                make_grant("clusters", "create", "platform"),
             ],
+            None,
         );
 
         let teams = extract_team_scopes(&ctx);
-
-        // Should contain the team names from team-scoped permissions
         assert!(teams.contains(&"engineering".to_string()));
         assert!(teams.contains(&"platform".to_string()));
-
-        // Should NOT contain "admin" - admin:all is not a team scope
         assert!(!teams.contains(&"admin".to_string()));
         assert!(!teams.contains(&"all".to_string()));
     }
 
-    /// Test that user with team-scoped permission can access their team
     #[test]
-    fn user_with_team_scope_can_access_own_team() {
+    fn user_with_grant_can_access_own_team() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("eng-user"),
             "eng-user".into(),
-            vec!["team:engineering:openapi-import:create".into()],
-        );
+            vec![],
+        )
+        .with_grants(vec![make_grant("openapi-import", "create", "engineering")], None);
 
         assert!(check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
         assert!(
@@ -1498,49 +1290,42 @@ mod tests {
         );
     }
 
-    /// Test that user with team-scoped permission CANNOT access other teams
     #[test]
-    fn user_with_team_scope_cannot_access_other_team() {
+    fn user_with_grant_cannot_access_other_team() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("eng-user"),
             "eng-user".into(),
-            vec!["team:engineering:openapi-import:create".into()],
-        );
+            vec![],
+        )
+        .with_grants(vec![make_grant("openapi-import", "create", "engineering")], None);
 
-        // Cannot access platform team
         assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("platform")));
         assert!(
             require_resource_access(&ctx, "openapi-import", "create", Some("platform")).is_err()
         );
     }
 
-    /// SECURITY FIX: Non-admin user with global resource scope CANNOT access any team's resources.
-    /// Global scopes are now restricted to platform admins only.
     #[test]
-    fn non_admin_with_global_scope_cannot_access_any_team() {
+    fn user_without_grants_cannot_access_any_team() {
         let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("global-user"),
-            "global".into(),
-            vec!["openapi-import:create".into()],
+            crate::domain::TokenId::from_str_unchecked("no-grants-user"),
+            "no-grants".into(),
+            vec![],
         );
 
-        // Non-admin with global scope should be denied access to all teams
         assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
         assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("platform")));
         assert!(require_resource_access(&ctx, "openapi-import", "create", Some("random")).is_err());
     }
 
-    /// Platform admin with global resource scope CANNOT access tenant team resources.
-    /// Global scopes + admin:all do not grant team-scoped tenant access.
     #[test]
-    fn admin_with_global_scope_denied_for_tenant_team_resources() {
+    fn admin_without_grants_denied_for_tenant_team_resources() {
         let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("admin-global"),
-            "admin-global".into(),
-            vec!["admin:all".into(), "openapi-import:create".into()],
+            crate::domain::TokenId::from_str_unchecked("admin-no-grants"),
+            "admin-no-grants".into(),
+            vec!["admin:all".into()],
         );
 
-        // Tenant resources with team → denied (admin:all is governance-only, global scopes don't apply)
         assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("engineering")));
         assert!(!check_resource_access(&ctx, "openapi-import", "create", Some("platform")));
         assert!(require_resource_access(&ctx, "openapi-import", "create", Some("random")).is_err());
@@ -1550,38 +1335,17 @@ mod tests {
         assert!(check_resource_access(&ctx, "admin-summary", "read", None));
     }
 
-    /// Test is_global_resource_scope classification
-    #[test]
-    fn is_global_resource_scope_classification() {
-        // Global resource scopes (should be true)
-        assert!(is_global_resource_scope("clusters:read"));
-        assert!(is_global_resource_scope("routes:create"));
-        assert!(is_global_resource_scope("listeners:read"));
-        assert!(is_global_resource_scope("openapi-import:create"));
-
-        // NOT global resource scopes (should be false)
-        assert!(!is_global_resource_scope("admin:all"));
-        assert!(!is_global_resource_scope("team:eng:routes:read"));
-        assert!(!is_global_resource_scope("org:acme:admin"));
-        assert!(!is_global_resource_scope("team:platform:*:*"));
-    }
-
-    /// Test has_admin_bypass returns true only for admin:all scope
     #[test]
     fn has_admin_bypass_requires_exact_admin_all_scope() {
-        // Context with admin:all should bypass
         let admin_ctx = admin_context();
         assert!(has_admin_bypass(&admin_ctx));
 
-        // Context with only team scopes should NOT bypass
         let team_ctx = platform_team_context();
         assert!(!has_admin_bypass(&team_ctx));
 
-        // Context with global resource scopes should NOT bypass
-        let global_ctx = global_read_context();
-        assert!(!has_admin_bypass(&global_ctx));
+        let no_grants_ctx = no_grants_context();
+        assert!(!has_admin_bypass(&no_grants_ctx));
 
-        // Context with "admin:" prefix but not "admin:all" should NOT bypass
         let partial_admin_ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("partial"),
             "partial".into(),
@@ -1592,15 +1356,10 @@ mod tests {
 
     #[test]
     fn resource_from_path_extracts_resource_name() {
-        // route-configs API path maps to "routes" scope
         assert_eq!(resource_from_path("/api/v1/route-configs"), Some("routes"));
         assert_eq!(resource_from_path("/api/v1/route-configs/123"), Some("routes"));
-
-        // route-views API path also maps to "routes" scope
         assert_eq!(resource_from_path("/api/v1/route-views"), Some("routes"));
         assert_eq!(resource_from_path("/api/v1/route-views/stats"), Some("routes"));
-
-        // filter-types API path maps to "filters" scope
         assert_eq!(
             resource_from_path("/api/v1/filter-types"),
             Some("filters"),
@@ -1611,152 +1370,71 @@ mod tests {
             Some("filters"),
             "filter-types detail endpoint should map to filters resource"
         );
-
         assert_eq!(resource_from_path("/api/v1/clusters/my-cluster"), Some("clusters"));
         assert_eq!(resource_from_path("/api/v1/listeners"), Some("listeners"));
         assert_eq!(resource_from_path("/api/v1/api-definitions"), Some("api-definitions"));
         assert_eq!(resource_from_path("/health"), None);
-        assert_eq!(resource_from_path("/api/v2/route-configs"), None); // Wrong version
-
-        // Special case: team bootstrap endpoint uses generate-envoy-config resource
+        assert_eq!(resource_from_path("/api/v2/route-configs"), None);
         assert_eq!(
             resource_from_path("/api/v1/teams/payments/bootstrap"),
-            Some("generate-envoy-config"),
-            "team bootstrap should use generate-envoy-config resource"
+            Some("generate-envoy-config")
         );
         assert_eq!(
             resource_from_path("/api/v1/teams/engineering/bootstrap"),
-            Some("generate-envoy-config"),
-            "team bootstrap should use generate-envoy-config resource"
+            Some("generate-envoy-config")
         );
-
-        // List teams endpoint should not require specific scope (accessible to all authenticated users)
-        assert_eq!(
-            resource_from_path("/api/v1/teams"),
-            None,
-            "list teams endpoint should be accessible to all authenticated users"
-        );
-
-        // Single team detail endpoint should return "teams"
-        assert_eq!(
-            resource_from_path("/api/v1/teams/payments"),
-            Some("teams"),
-            "single team detail endpoint should return teams as resource"
-        );
-
-        // Team-scoped resources should extract the sub-resource (parts[4])
-        // Pattern: /api/v1/teams/{team}/{resource}
-        assert_eq!(
-            resource_from_path("/api/v1/teams/engineering/secrets"),
-            Some("secrets"),
-            "team-scoped secrets endpoint should return secrets"
-        );
+        assert_eq!(resource_from_path("/api/v1/teams"), None);
+        assert_eq!(resource_from_path("/api/v1/teams/payments"), Some("teams"));
+        assert_eq!(resource_from_path("/api/v1/teams/engineering/secrets"), Some("secrets"));
         assert_eq!(
             resource_from_path("/api/v1/teams/engineering/secrets/abc-123"),
-            Some("secrets"),
-            "team-scoped secrets detail endpoint should return secrets"
+            Some("secrets")
         );
         assert_eq!(
             resource_from_path("/api/v1/teams/platform/custom-filters"),
-            Some("custom-wasm-filters"),
-            "team-scoped custom-filters should map to custom-wasm-filters scope"
+            Some("custom-wasm-filters")
         );
         assert_eq!(
             resource_from_path("/api/v1/teams/platform/custom-filters/filter-id"),
-            Some("custom-wasm-filters"),
-            "team-scoped custom-filters detail should map to custom-wasm-filters scope"
+            Some("custom-wasm-filters")
         );
         assert_eq!(
             resource_from_path("/api/v1/teams/eng/proxy-certificates"),
-            Some("proxy-certificates"),
-            "team-scoped proxy-certificates endpoint should return proxy-certificates"
+            Some("proxy-certificates")
         );
-        assert_eq!(
-            resource_from_path("/api/v1/teams/eng/stats"),
-            Some("stats"),
-            "team-scoped stats endpoint should return stats"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/teams/eng/stats/overview"),
-            Some("stats"),
-            "team-scoped stats sub-path should return stats"
-        );
-
-        // MCP endpoints use method-level authorization (JSON-RPC style)
-        // The HTTP method is always POST but the actual operation is in the request body
-        // The handler implements its own authorization based on the JSON-RPC method field
-        assert_eq!(
-            resource_from_path("/api/v1/mcp"),
-            None,
-            "Unified MCP endpoint should bypass resource-level auth (method-level auth inside handler)"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/mcp/connections"),
-            None,
-            "MCP connections endpoint should bypass resource-level auth"
-        );
-
-        // Org-scoped endpoints use handler-level auth, not resource-level scopes
-        assert_eq!(
-            resource_from_path("/api/v1/orgs/current"),
-            None,
-            "orgs/current should bypass resource-level auth (handler auth via org scopes)"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/orgs/acme/teams"),
-            None,
-            "org teams endpoint should bypass resource-level auth"
-        );
-
-        // Admin organization management endpoints also bypass resource-level auth
-        assert_eq!(
-            resource_from_path("/api/v1/admin/organizations"),
-            None,
-            "admin organizations list should bypass resource-level auth"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/admin/organizations/org-123"),
-            None,
-            "admin organizations detail should bypass resource-level auth"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/admin/organizations/org-123/members"),
-            None,
-            "admin org members should bypass resource-level auth"
-        );
-
-        // OpenAPI import routes should map to "openapi-import" resource
-        // URL structure: /api/v1/openapi/import, /api/v1/openapi/imports
-        // Scope naming: team:X:openapi-import:create, openapi-import:read
-        assert_eq!(
-            resource_from_path("/api/v1/openapi/import"),
-            Some("openapi-import"),
-            "openapi import endpoint should use openapi-import resource"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/openapi/imports"),
-            Some("openapi-import"),
-            "openapi imports list endpoint should use openapi-import resource"
-        );
-        assert_eq!(
-            resource_from_path("/api/v1/openapi/imports/abc-123"),
-            Some("openapi-import"),
-            "openapi import detail endpoint should use openapi-import resource"
-        );
+        assert_eq!(resource_from_path("/api/v1/teams/eng/stats"), Some("stats"));
+        assert_eq!(resource_from_path("/api/v1/teams/eng/stats/overview"), Some("stats"));
+        assert_eq!(resource_from_path("/api/v1/mcp"), None);
+        assert_eq!(resource_from_path("/api/v1/mcp/connections"), None);
+        assert_eq!(resource_from_path("/api/v1/orgs/current"), None);
+        assert_eq!(resource_from_path("/api/v1/orgs/acme/teams"), None);
+        assert_eq!(resource_from_path("/api/v1/admin/organizations"), None);
+        assert_eq!(resource_from_path("/api/v1/admin/organizations/org-123"), None);
+        assert_eq!(resource_from_path("/api/v1/admin/organizations/org-123/members"), None);
+        assert_eq!(resource_from_path("/api/v1/openapi/import"), Some("openapi-import"));
+        assert_eq!(resource_from_path("/api/v1/openapi/imports"), Some("openapi-import"));
+        assert_eq!(resource_from_path("/api/v1/openapi/imports/abc-123"), Some("openapi-import"));
     }
 
-    // === Wildcard scope matching tests ===
+    // === Grant-based access tests (replacing wildcard scope tests) ===
 
-    /// Test that team:X:*:* wildcard grants access to all resources
     #[test]
-    fn wildcard_scope_grants_all_team_resources() {
+    fn grants_for_all_resources_on_team() {
         let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("wildcard-token"),
-            "wildcard".into(),
-            vec!["team:platform-admin:*:*".into()],
+            crate::domain::TokenId::from_str_unchecked("full-access-token"),
+            "full-access".into(),
+            vec![],
+        )
+        .with_grants(
+            vec![
+                make_grant("api-definitions", "read", "platform-admin"),
+                make_grant("routes", "create", "platform-admin"),
+                make_grant("clusters", "delete", "platform-admin"),
+                make_grant("listeners", "read", "platform-admin"),
+            ],
+            None,
         );
 
-        // Should have access to any resource with any action for this team
         assert!(check_resource_access(&ctx, "api-definitions", "read", Some("platform-admin")));
         assert!(check_resource_access(&ctx, "routes", "create", Some("platform-admin")));
         assert!(check_resource_access(&ctx, "clusters", "delete", Some("platform-admin")));
@@ -1767,81 +1445,36 @@ mod tests {
         assert!(!check_resource_access(&ctx, "routes", "create", Some("other-team")));
     }
 
-    /// Test that team:X:{resource}:* wildcard grants access to all actions on that resource
     #[test]
-    fn wildcard_action_scope_grants_all_actions() {
+    fn grants_allow_access_without_team() {
         let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("action-wildcard"),
-            "action-wildcard".into(),
-            vec!["team:engineering:routes:*".into()],
+            crate::domain::TokenId::from_str_unchecked("grants-no-team"),
+            "grants".into(),
+            vec![],
+        )
+        .with_grants(
+            vec![
+                make_grant("api-definitions", "read", "platform-admin"),
+                make_grant("routes", "create", "platform-admin"),
+            ],
+            None,
         );
 
-        // Should have access to all actions on routes for engineering team
-        assert!(check_resource_access(&ctx, "routes", "read", Some("engineering")));
-        assert!(check_resource_access(&ctx, "routes", "create", Some("engineering")));
-        assert!(check_resource_access(&ctx, "routes", "delete", Some("engineering")));
-
-        // But NOT for other resources
-        assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
-        assert!(!check_resource_access(&ctx, "api-definitions", "read", Some("engineering")));
-
-        // And NOT for other teams
-        assert!(!check_resource_access(&ctx, "routes", "read", Some("platform")));
-    }
-
-    /// Test parse_team_wildcard_scope correctly identifies wildcard scopes
-    #[test]
-    fn parse_team_wildcard_scope_extracts_team() {
-        // Full wildcard: team:X:*:*
-        assert_eq!(
-            parse_team_wildcard_scope("team:platform-admin:*:*"),
-            Some("platform-admin".to_string())
-        );
-        assert_eq!(
-            parse_team_wildcard_scope("team:engineering:*:*"),
-            Some("engineering".to_string())
-        );
-
-        // Action wildcard: team:X:resource:*
-        assert_eq!(
-            parse_team_wildcard_scope("team:platform:routes:*"),
-            Some("platform".to_string())
-        );
-
-        // Non-wildcard scopes should return None
-        assert_eq!(parse_team_wildcard_scope("team:platform:routes:read"), None);
-        assert_eq!(parse_team_wildcard_scope("routes:read"), None);
-        assert_eq!(parse_team_wildcard_scope("admin:all"), None);
-    }
-
-    /// Test that wildcard scope allows access without specifying team
-    #[test]
-    fn wildcard_scope_allows_access_without_team() {
-        let ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("wildcard-no-team"),
-            "wildcard".into(),
-            vec!["team:platform-admin:*:*".into()],
-        );
-
-        // When no team is specified, should allow access if user has any team wildcard
+        // When no team is specified, should allow access if user has any grant
         assert!(check_resource_access(&ctx, "api-definitions", "read", None));
         assert!(check_resource_access(&ctx, "routes", "create", None));
     }
 
-    /// Test bootstrap endpoint access with wildcard scope
     #[test]
-    fn bootstrap_access_with_wildcard_scope() {
+    fn bootstrap_access_with_grants() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("bootstrap-test"),
-            "user-with-wildcard".into(),
-            vec!["team:engineering:*:*".into()],
-        );
+            "user-with-grants".into(),
+            vec![],
+        )
+        .with_grants(vec![make_grant("generate-envoy-config", "read", "engineering")], None);
 
-        // User should be able to access bootstrap for their team
-        // The bootstrap endpoint uses resource="generate-envoy-config", action="read"
         assert!(check_resource_access(&ctx, "generate-envoy-config", "read", Some("engineering")));
-
-        // But not for other teams
         assert!(!check_resource_access(&ctx, "generate-envoy-config", "read", Some("platform")));
     }
 
@@ -1849,11 +1482,9 @@ mod tests {
 
     #[test]
     fn verify_org_boundary_admin_no_bypass() {
-        let ctx = admin_context(); // has admin:all but no org_id
+        let ctx = admin_context();
         let org = OrgId::new();
-        // Admin without org_id cannot cross org boundary (no bypass)
         assert!(verify_org_boundary(&ctx, &Some(org)).is_err());
-        // Admin without org_id accessing team with no org → allowed (both None)
         assert!(verify_org_boundary(&ctx, &None).is_ok());
     }
 
@@ -1863,8 +1494,9 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("org-user"),
             "org-user".into(),
-            vec!["team:eng:routes:read".into()],
+            vec![],
         )
+        .with_grants(vec![make_grant("routes", "read", "eng")], None)
         .with_org(org.clone(), "acme".into());
 
         assert!(verify_org_boundary(&ctx, &Some(org)).is_ok());
@@ -1877,8 +1509,9 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("org-user"),
             "org-user".into(),
-            vec!["team:eng:routes:read".into()],
+            vec![],
         )
+        .with_grants(vec![make_grant("routes", "read", "eng")], None)
         .with_org(user_org, "acme".into());
 
         let result = verify_org_boundary(&ctx, &Some(team_org));
@@ -1896,9 +1529,9 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("no-org-user"),
             "no-org".into(),
-            vec!["team:eng:routes:read".into()],
-        );
-        // User has no org, team has org -- deny
+            vec![],
+        )
+        .with_grants(vec![make_grant("routes", "read", "eng")], None);
         let result = verify_org_boundary(&ctx, &Some(team_org));
         assert!(result.is_err());
     }
@@ -1909,11 +1542,11 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("org-user"),
             "org-user".into(),
-            vec!["team:eng:routes:read".into()],
+            vec![],
         )
+        .with_grants(vec![make_grant("routes", "read", "eng")], None)
         .with_org(user_org, "acme".into());
 
-        // Team has no org (global) -- allow
         assert!(verify_org_boundary(&ctx, &None).is_ok());
     }
 
@@ -1922,15 +1555,13 @@ mod tests {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("no-org"),
             "no-org".into(),
-            vec!["routes:read".into()],
+            vec![],
         );
-        // Both have no org -- allow
         assert!(verify_org_boundary(&ctx, &None).is_ok());
     }
 
     // === Security hardening: governance-only admin access ===
 
-    /// Admin:all is denied for ALL tenant resources (clusters, routes, listeners, filters, etc.)
     #[test]
     fn test_admin_denied_for_tenant_resources() {
         let ctx = admin_context();
@@ -1973,7 +1604,6 @@ mod tests {
         }
     }
 
-    /// Admin:all is allowed for ALL governance resources (orgs, users, audit, summary, admin teams)
     #[test]
     fn test_admin_allowed_for_governance_resources() {
         let ctx = admin_context();
@@ -2008,10 +1638,8 @@ mod tests {
         }
     }
 
-    /// is_governance_resource correctly classifies resources
     #[test]
     fn test_is_governance_resource_classification() {
-        // Governance resources
         assert!(is_governance_resource("admin"));
         assert!(is_governance_resource("admin-orgs"));
         assert!(is_governance_resource("admin-users"));
@@ -2026,7 +1654,6 @@ mod tests {
         assert!(is_governance_resource("teams"));
         assert!(is_governance_resource("stats"));
 
-        // Tenant resources (NOT governance)
         assert!(!is_governance_resource("clusters"));
         assert!(!is_governance_resource("routes"));
         assert!(!is_governance_resource("listeners"));
@@ -2041,10 +1668,10 @@ mod tests {
     }
 
     // =========================================================
-    // Machine-user (agent) branch tests — E.3
+    // Machine-user (agent) branch tests
     // =========================================================
 
-    fn cp_tool_context_with_grants(grants: Vec<crate::auth::models::CpGrant>) -> AuthContext {
+    fn cp_tool_context_with_grants(grants: Vec<Grant>) -> AuthContext {
         AuthContext::with_user(
             crate::domain::TokenId::from_str_unchecked("agent-token"),
             "agent".into(),
@@ -2052,47 +1679,31 @@ mod tests {
             "agent@test.com".into(),
             vec![],
         )
-        .with_agent_data(Some(AgentContext::CpTool), grants)
+        .with_grants(grants, Some(AgentContext::CpTool))
     }
 
     #[test]
     fn cp_tool_agent_with_matching_grant_passes() {
-        let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
-            resource_type: "clusters".to_string(),
-            action: "read".to_string(),
-            team: "eng".to_string(),
-        }]);
+        let ctx = cp_tool_context_with_grants(vec![make_grant("clusters", "read", "eng")]);
         assert!(check_resource_access(&ctx, "clusters", "read", Some("eng")));
     }
 
     #[test]
     fn cp_tool_agent_without_matching_grant_is_denied() {
-        let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
-            resource_type: "clusters".to_string(),
-            action: "read".to_string(),
-            team: "eng".to_string(),
-        }]);
+        let ctx = cp_tool_context_with_grants(vec![make_grant("clusters", "read", "eng")]);
         assert!(!check_resource_access(&ctx, "routes", "read", Some("eng")));
     }
 
     #[test]
     fn cp_tool_agent_create_grant_does_not_cover_delete() {
-        let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
-            resource_type: "clusters".to_string(),
-            action: "create".to_string(),
-            team: "eng".to_string(),
-        }]);
+        let ctx = cp_tool_context_with_grants(vec![make_grant("clusters", "create", "eng")]);
         assert!(!check_resource_access(&ctx, "clusters", "delete", Some("eng")));
         assert!(check_resource_access(&ctx, "clusters", "create", Some("eng")));
     }
 
     #[test]
     fn cp_tool_agent_grant_for_wrong_team_is_denied() {
-        let ctx = cp_tool_context_with_grants(vec![crate::auth::models::CpGrant {
-            resource_type: "clusters".to_string(),
-            action: "read".to_string(),
-            team: "eng".to_string(),
-        }]);
+        let ctx = cp_tool_context_with_grants(vec![make_grant("clusters", "read", "eng")]);
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("sales")));
     }
 
@@ -2105,7 +1716,7 @@ mod tests {
             "gw@test.com".into(),
             vec![],
         )
-        .with_agent_data(Some(AgentContext::GatewayTool), vec![]);
+        .with_grants(vec![], Some(AgentContext::GatewayTool));
 
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("eng")));
         assert!(!check_resource_access(&ctx, "routes", "create", Some("eng")));
@@ -2121,7 +1732,7 @@ mod tests {
             "consumer@test.com".into(),
             vec![],
         )
-        .with_agent_data(Some(AgentContext::ApiConsumer), vec![]);
+        .with_grants(vec![], Some(AgentContext::ApiConsumer));
 
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("eng")));
         assert!(!check_resource_access(&ctx, "routes", "read", None));
@@ -2135,12 +1746,14 @@ mod tests {
     }
 
     #[test]
-    fn human_user_scope_path_unchanged_by_agent_branch() {
+    fn human_user_grant_path() {
         let ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("human-token"),
             "human".into(),
-            vec!["team:engineering:clusters:read".into()],
-        );
+            vec![],
+        )
+        .with_grants(vec![make_grant("clusters", "read", "engineering")], None);
+
         assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
         assert!(!check_resource_access(&ctx, "clusters", "create", Some("engineering")));
     }

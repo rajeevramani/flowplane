@@ -21,15 +21,17 @@ pub struct AuthContext {
     pub org_id: Option<OrgId>,
     /// Organization name for this user (if org-scoped)
     pub org_name: Option<String>,
-    scopes: HashSet<String>,
+    /// Org-level scopes derived from org_memberships (e.g., "admin:all", "org:acme:admin").
+    /// These are NOT resource grants — they encode org role membership.
+    org_scopes: HashSet<String>,
+    /// Unified grants loaded from the `grants` table (resource + gateway-tool + route).
+    pub grants: Vec<Grant>,
     /// Agent context for machine users (None for human users).
     pub agent_context: Option<AgentContext>,
-    /// CP-tool grants loaded from DB for cp-tool agents (empty for human users).
-    pub cp_grants: Vec<CpGrant>,
 }
 
 impl AuthContext {
-    pub fn new(token_id: TokenId, token_name: String, scopes: Vec<String>) -> Self {
+    pub fn new(token_id: TokenId, token_name: String, org_scopes: Vec<String>) -> Self {
         Self {
             token_id,
             token_name,
@@ -39,9 +41,9 @@ impl AuthContext {
             user_agent: None,
             org_id: None,
             org_name: None,
-            scopes: scopes.into_iter().collect(),
+            org_scopes: org_scopes.into_iter().collect(),
+            grants: Vec::new(),
             agent_context: None,
-            cp_grants: Vec::new(),
         }
     }
 
@@ -50,7 +52,7 @@ impl AuthContext {
         token_name: String,
         user_id: UserId,
         user_email: String,
-        scopes: Vec<String>,
+        org_scopes: Vec<String>,
     ) -> Self {
         Self {
             token_id,
@@ -61,20 +63,16 @@ impl AuthContext {
             user_agent: None,
             org_id: None,
             org_name: None,
-            scopes: scopes.into_iter().collect(),
+            org_scopes: org_scopes.into_iter().collect(),
+            grants: Vec::new(),
             agent_context: None,
-            cp_grants: Vec::new(),
         }
     }
 
-    /// Attach agent context and grants for machine users.
-    pub fn with_agent_data(
-        mut self,
-        agent_context: Option<AgentContext>,
-        cp_grants: Vec<CpGrant>,
-    ) -> Self {
+    /// Attach agent context and grants for all users (human + machine).
+    pub fn with_grants(mut self, grants: Vec<Grant>, agent_context: Option<AgentContext>) -> Self {
+        self.grants = grants;
         self.agent_context = agent_context;
-        self.cp_grants = cp_grants;
         self
     }
 
@@ -118,44 +116,62 @@ impl AuthContext {
         (self.org_id.as_ref().map(|id| id.to_string()), None)
     }
 
+    /// Check if the user has an org-level scope (e.g., "admin:all", "org:acme:admin").
+    ///
+    /// This checks org_scopes only — NOT resource grants.
     pub fn has_scope(&self, scope: &str) -> bool {
-        if self.scopes.contains(scope) {
-            return true;
-        }
+        self.org_scopes.contains(scope)
+    }
 
-        // Support wildcard matching for team scopes.
-        // If the user has "team:X:*:*", it matches "team:X:resource:action".
-        // If the user has "team:X:resource:*", it matches "team:X:resource:action".
-        if let Some(rest) = scope.strip_prefix("team:") {
-            let parts: Vec<&str> = rest.splitn(3, ':').collect();
-            if parts.len() == 3 {
-                let team = parts[0];
-                let resource = parts[1];
-                let wildcard_all = format!("team:{}:*:*", team);
-                if self.scopes.contains(&wildcard_all) {
-                    return true;
-                }
-                let wildcard_action = format!("team:{}:{}:*", team, resource);
-                if self.scopes.contains(&wildcard_action) {
-                    return true;
-                }
+    /// Iterate over org-level scopes.
+    pub fn org_scopes(&self) -> impl Iterator<Item = &String> {
+        self.org_scopes.iter()
+    }
+
+    /// Check if the user has a resource grant matching (resource, action) for a specific team.
+    ///
+    /// `team_name` is the team name (not UUID) — grants store both team_id and team_name.
+    pub fn has_grant(&self, resource: &str, action: &str, team_name: &str) -> bool {
+        self.grants.iter().any(|g| {
+            g.grant_type == GrantType::Resource
+                && g.resource_type.as_deref() == Some(resource)
+                && g.action.as_deref() == Some(action)
+                && g.team_name == team_name
+        })
+    }
+
+    /// Check if the user has a resource grant matching (resource, action) for ANY team.
+    pub fn has_any_grant(&self, resource: &str, action: &str) -> bool {
+        self.grants.iter().any(|g| {
+            g.grant_type == GrantType::Resource
+                && g.resource_type.as_deref() == Some(resource)
+                && g.action.as_deref() == Some(action)
+        })
+    }
+
+    /// Get unique team names from resource grants.
+    pub fn grant_team_names(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut teams = Vec::new();
+        for g in &self.grants {
+            if g.grant_type == GrantType::Resource && seen.insert(g.team_name.clone()) {
+                teams.push(g.team_name.clone());
             }
         }
-
-        false
+        teams.sort();
+        teams
     }
 
-    pub fn scopes(&self) -> impl Iterator<Item = &String> {
-        self.scopes.iter()
-    }
-
-    /// Remove all org-scoped permissions from this context.
-    ///
-    /// Used when an org scope is present but the org cannot be resolved from the database.
-    /// This prevents granting org-level permissions for non-existent or unresolvable orgs.
-    pub fn strip_org_scopes(mut self) -> Self {
-        self.scopes.retain(|s| !s.starts_with("org:"));
-        self
+    /// Get unique team IDs from resource grants.
+    pub fn grant_team_ids(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut ids = Vec::new();
+        for g in &self.grants {
+            if g.grant_type == GrantType::Resource && seen.insert(g.team_id.clone()) {
+                ids.push(g.team_id.clone());
+            }
+        }
+        ids
     }
 }
 
@@ -197,7 +213,54 @@ impl std::fmt::Display for AgentContext {
     }
 }
 
-/// A grant record loaded from the `grants` table.
+/// Unified grant loaded from the `grants` table.
+///
+/// Covers all grant types: resource (CP tools + human permissions),
+/// gateway-tool, and route (API consumer).
+#[derive(Debug, Clone)]
+pub struct Grant {
+    pub grant_type: GrantType,
+    pub team_id: String,   // UUID FK to teams.id
+    pub team_name: String, // team name (for comparison in check_resource_access)
+    // Resource grants
+    pub resource_type: Option<String>,
+    pub action: Option<String>,
+    // Route/gateway grants
+    pub route_id: Option<String>,
+    pub allowed_methods: Vec<String>,
+}
+
+/// Grant type discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantType {
+    /// CP resource grants (clusters, routes, etc.) — for both humans and agents
+    Resource,
+    /// Gateway-tool grants — agent-only (MCP gateway tool access)
+    GatewayTool,
+    /// Route grants — agent-only (direct data plane access via Envoy RBAC)
+    Route,
+}
+
+impl GrantType {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "resource" => Some(Self::Resource),
+            "gateway-tool" => Some(Self::GatewayTool),
+            "route" => Some(Self::Route),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Resource => "resource",
+            Self::GatewayTool => "gateway-tool",
+            Self::Route => "route",
+        }
+    }
+}
+
+/// A grant record loaded from the `grants` table (full row, for API responses).
 #[derive(Debug, Clone)]
 pub struct AgentGrant {
     pub id: String,
@@ -212,22 +275,6 @@ pub struct AgentGrant {
     pub created_by: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-/// Typed cp-tool grant for cached permission checks.
-#[derive(Debug, Clone)]
-pub struct CpGrant {
-    pub resource_type: String,
-    pub action: String,
-    pub team: String,
-}
-
-/// Typed route/gateway grant for cached permission checks.
-#[derive(Debug, Clone)]
-pub struct RouteGrant {
-    pub route_id: String,
-    pub allowed_methods: Vec<String>,
-    pub team: String,
 }
 
 /// Errors returned by authentication middleware/services.
@@ -254,93 +301,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn auth_context_scope_checks() {
+    fn auth_context_org_scope_checks() {
         let ctx = AuthContext::new(
             TokenId::from_string("token-1".to_string()),
             "demo".into(),
-            vec!["clusters:read".into(), "clusters:create".into()],
+            vec!["admin:all".into(), "org:acme:admin".into()],
         );
 
-        assert!(ctx.has_scope("clusters:read"));
-        assert!(ctx.has_scope("clusters:create"));
-        assert!(!ctx.has_scope("routes:read"));
-        assert_eq!(ctx.scopes().count(), 2);
+        assert!(ctx.has_scope("admin:all"));
+        assert!(ctx.has_scope("org:acme:admin"));
+        assert!(!ctx.has_scope("clusters:read")); // resource scopes are grants now
+        assert_eq!(ctx.org_scopes().count(), 2);
     }
 
     #[test]
-    fn strip_org_scopes_removes_only_org_scopes() {
-        let ctx = AuthContext::new(
+    fn has_grant_checks() {
+        let mut ctx = AuthContext::new(
             TokenId::from_string("token-1".to_string()),
             "demo".into(),
-            vec![
-                "org:default:admin".into(),
-                "org:acme:member".into(),
-                "clusters:read".into(),
-                "team:platform-admin:*:*".into(),
-            ],
+            vec!["org:acme:member".into()],
         );
+        ctx.grants = vec![
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: "team-uuid-1".into(),
+                team_name: "engineering".into(),
+                resource_type: Some("clusters".into()),
+                action: Some("read".into()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: "team-uuid-1".into(),
+                team_name: "engineering".into(),
+                resource_type: Some("routes".into()),
+                action: Some("create".into()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+        ];
 
-        let stripped = ctx.strip_org_scopes();
-        assert!(!stripped.has_scope("org:default:admin"));
-        assert!(!stripped.has_scope("org:acme:member"));
-        assert!(stripped.has_scope("clusters:read"));
-        assert!(stripped.has_scope("team:platform-admin:*:*"));
-        assert_eq!(stripped.scopes().count(), 2);
+        assert!(ctx.has_grant("clusters", "read", "engineering"));
+        assert!(ctx.has_grant("routes", "create", "engineering"));
+        assert!(!ctx.has_grant("clusters", "create", "engineering"));
+        assert!(!ctx.has_grant("clusters", "read", "other-team"));
+        assert!(ctx.has_any_grant("clusters", "read"));
+        assert!(!ctx.has_any_grant("clusters", "delete"));
     }
 
     #[test]
-    fn strip_org_scopes_noop_when_no_org_scopes() {
-        let ctx = AuthContext::new(
-            TokenId::from_string("token-1".to_string()),
-            "demo".into(),
-            vec!["clusters:read".into(), "admin:all".into()],
-        );
+    fn grant_team_names_deduplicates() {
+        let mut ctx =
+            AuthContext::new(TokenId::from_string("token-1".to_string()), "demo".into(), vec![]);
+        ctx.grants = vec![
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: "t1".into(),
+                team_name: "engineering".into(),
+                resource_type: Some("clusters".into()),
+                action: Some("read".into()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: "t1".into(),
+                team_name: "engineering".into(),
+                resource_type: Some("routes".into()),
+                action: Some("read".into()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: "t2".into(),
+                team_name: "payments".into(),
+                resource_type: Some("clusters".into()),
+                action: Some("read".into()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+        ];
 
-        let stripped = ctx.strip_org_scopes();
-        assert!(stripped.has_scope("clusters:read"));
-        assert!(stripped.has_scope("admin:all"));
-        assert_eq!(stripped.scopes().count(), 2);
-    }
-
-    #[test]
-    fn has_scope_wildcard_team_all() {
-        let ctx = AuthContext::new(
-            TokenId::from_string("token-1".to_string()),
-            "demo".into(),
-            vec!["team:engineering:*:*".into()],
-        );
-
-        assert!(ctx.has_scope("team:engineering:clusters:read"));
-        assert!(ctx.has_scope("team:engineering:routes:create"));
-        assert!(ctx.has_scope("team:engineering:dataplanes:read"));
-        assert!(!ctx.has_scope("team:other:clusters:read"));
-        assert!(ctx.has_scope("team:engineering:*:*"));
-    }
-
-    #[test]
-    fn has_scope_wildcard_team_resource() {
-        let ctx = AuthContext::new(
-            TokenId::from_string("token-1".to_string()),
-            "demo".into(),
-            vec!["team:eng:clusters:*".into()],
-        );
-
-        assert!(ctx.has_scope("team:eng:clusters:read"));
-        assert!(ctx.has_scope("team:eng:clusters:create"));
-        assert!(ctx.has_scope("team:eng:clusters:delete"));
-        assert!(!ctx.has_scope("team:eng:routes:read"));
-    }
-
-    #[test]
-    fn has_scope_no_wildcard_fallback() {
-        let ctx = AuthContext::new(
-            TokenId::from_string("token-1".to_string()),
-            "demo".into(),
-            vec!["team:eng:clusters:read".into()],
-        );
-
-        assert!(ctx.has_scope("team:eng:clusters:read"));
-        assert!(!ctx.has_scope("team:eng:clusters:create"));
+        assert_eq!(ctx.grant_team_names(), vec!["engineering", "payments"]);
     }
 
     #[test]
@@ -365,5 +409,14 @@ mod tests {
         assert_eq!(json, "\"gateway-tool\"");
         let parsed: AgentContext = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, AgentContext::GatewayTool);
+    }
+
+    #[test]
+    fn grant_type_roundtrip() {
+        assert_eq!(GrantType::parse("resource"), Some(GrantType::Resource));
+        assert_eq!(GrantType::parse("gateway-tool"), Some(GrantType::GatewayTool));
+        assert_eq!(GrantType::parse("route"), Some(GrantType::Route));
+        assert_eq!(GrantType::parse("invalid"), None);
+        assert_eq!(GrantType::Resource.as_str(), "resource");
     }
 }

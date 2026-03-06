@@ -3069,19 +3069,46 @@ mod tests {
     // ===== Agent authorization tests (check_resource_access based) =====
 
     fn team_member_with_agents_write(team: &str) -> AuthContext {
-        AuthContext::new(
-            TokenId::from_str_unchecked("member-token"),
-            "member".into(),
-            vec![format!("team:{}:agents:create", team), format!("team:{}:agents:delete", team)],
-        )
+        use crate::auth::models::{Grant, GrantType};
+        let mut ctx =
+            AuthContext::new(TokenId::from_str_unchecked("member-token"), "member".into(), vec![]);
+        ctx.grants = vec![
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: format!("{}-uuid", team),
+                team_name: team.to_string(),
+                resource_type: Some("agents".into()),
+                action: Some("create".into()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+            Grant {
+                grant_type: GrantType::Resource,
+                team_id: format!("{}-uuid", team),
+                team_name: team.to_string(),
+                resource_type: Some("agents".into()),
+                action: Some("delete".into()),
+                route_id: None,
+                allowed_methods: vec![],
+            },
+        ];
+        ctx
     }
 
     fn team_member_with_agents_read(team: &str) -> AuthContext {
-        AuthContext::new(
-            TokenId::from_str_unchecked("member-token"),
-            "member".into(),
-            vec![format!("team:{}:agents:read", team)],
-        )
+        use crate::auth::models::{Grant, GrantType};
+        let mut ctx =
+            AuthContext::new(TokenId::from_str_unchecked("member-token"), "member".into(), vec![]);
+        ctx.grants = vec![Grant {
+            grant_type: GrantType::Resource,
+            team_id: format!("{}-uuid", team),
+            team_name: team.to_string(),
+            resource_type: Some("agents".into()),
+            action: Some("read".into()),
+            route_id: None,
+            allowed_methods: vec![],
+        }];
+        ctx
     }
 
     #[test]
@@ -3237,13 +3264,17 @@ mod tests {
             "cp@test.com".into(),
             vec![],
         )
-        .with_agent_data(
-            Some(crate::auth::models::AgentContext::CpTool),
-            vec![crate::auth::models::CpGrant {
-                resource_type: "clusters".to_string(),
-                action: "read".to_string(),
-                team: "engineering".to_string(),
+        .with_grants(
+            vec![crate::auth::models::Grant {
+                grant_type: crate::auth::models::GrantType::Resource,
+                team_id: "test-team-id".to_string(),
+                team_name: "engineering".to_string(),
+                resource_type: Some("clusters".to_string()),
+                action: Some("read".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
             }],
+            Some(crate::auth::models::AgentContext::CpTool),
         );
 
         // CP tool with clusters:read can access clusters
@@ -3267,9 +3298,8 @@ mod tests {
             "gw@test.com".into(),
             vec![],
         )
-        .with_agent_data(Some(crate::auth::models::AgentContext::GatewayTool), vec![]);
+        .with_grants(vec![], Some(crate::auth::models::AgentContext::GatewayTool));
 
-        // Gateway-tool agent with no CP grants cannot access any CP resource
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
         assert!(!check_resource_access(&ctx, "routes", "create", Some("engineering")));
         assert!(!check_resource_access(&ctx, "listeners", "read", None));
@@ -3285,9 +3315,8 @@ mod tests {
             "consumer@test.com".into(),
             vec![],
         )
-        .with_agent_data(Some(crate::auth::models::AgentContext::ApiConsumer), vec![]);
+        .with_grants(vec![], Some(crate::auth::models::AgentContext::ApiConsumer));
 
-        // API-consumer agent cannot call CP endpoints
         assert!(!check_resource_access(&ctx, "clusters", "read", Some("engineering")));
         assert!(!check_resource_access(&ctx, "routes", "read", None));
         assert!(!check_resource_access(&ctx, "agents", "create", None));

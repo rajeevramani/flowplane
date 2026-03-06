@@ -10,7 +10,7 @@ mod common;
 
 use common::test_db::{TestDatabase, TEST_ORG_ID, TEST_TEAM_ID};
 use flowplane::auth::authorization::{check_resource_access, require_org_admin_only};
-use flowplane::auth::models::{AgentContext, AuthContext, CpGrant};
+use flowplane::auth::models::{AgentContext, AuthContext, Grant, GrantType};
 use flowplane::config::SimpleXdsConfig;
 use flowplane::domain::RouteMatchType;
 use flowplane::domain::{RouteId, TokenId, UserId, VirtualHostId};
@@ -133,8 +133,21 @@ fn org_admin_context(org_name: &str) -> AuthContext {
     ctx
 }
 
+/// Create a resource Grant for testing.
+fn make_grant(resource: &str, action: &str, team_name: &str) -> Grant {
+    Grant {
+        grant_type: GrantType::Resource,
+        team_id: format!("test-team-id-{}", team_name),
+        team_name: team_name.to_string(),
+        resource_type: Some(resource.to_string()),
+        action: Some(action.to_string()),
+        route_id: None,
+        allowed_methods: vec![],
+    }
+}
+
 /// Create a cp-tool agent AuthContext with the given grants.
-fn cp_agent_context(user_id: &str, grants: Vec<CpGrant>) -> AuthContext {
+fn cp_agent_context(user_id: &str, grants: Vec<Grant>) -> AuthContext {
     AuthContext::with_user(
         TokenId::from_str_unchecked("cp-agent-token"),
         "cp-agent".into(),
@@ -142,7 +155,7 @@ fn cp_agent_context(user_id: &str, grants: Vec<CpGrant>) -> AuthContext {
         format!("{}@machine.local", user_id),
         vec![],
     )
-    .with_agent_data(Some(AgentContext::CpTool), grants)
+    .with_grants(grants, Some(AgentContext::CpTool))
 }
 
 /// Create a gateway-tool agent AuthContext (no CP grants).
@@ -154,7 +167,7 @@ fn gateway_agent_context(user_id: &str) -> AuthContext {
         format!("{}@machine.local", user_id),
         vec![],
     )
-    .with_agent_data(Some(AgentContext::GatewayTool), vec![])
+    .with_grants(vec![], Some(AgentContext::GatewayTool))
 }
 
 /// Create an api-consumer agent AuthContext (no grants).
@@ -166,7 +179,7 @@ fn api_consumer_context(user_id: &str) -> AuthContext {
         format!("{}@machine.local", user_id),
         vec![],
     )
-    .with_agent_data(Some(AgentContext::ApiConsumer), vec![])
+    .with_grants(vec![], Some(AgentContext::ApiConsumer))
 }
 
 /// Create an external route via the RouteRepository (requires virtual_host).
@@ -265,11 +278,7 @@ async fn create_external_route(
 async fn test_cp_agent_grant_permits_correct_resource() {
     let _db = TestDatabase::new("cp_grant_correct_resource").await;
 
-    let grants = vec![CpGrant {
-        resource_type: "clusters".to_string(),
-        action: "read".to_string(),
-        team: "test-team".to_string(),
-    }];
+    let grants = vec![make_grant("clusters", "read", "test-team")];
     let ctx = cp_agent_context("cp-agent-1", grants);
 
     // Has clusters:read
@@ -296,11 +305,7 @@ async fn test_cp_agent_grant_permits_correct_resource() {
 async fn test_cp_agent_grant_is_team_scoped() {
     let _db = TestDatabase::new("cp_grant_team_scoped").await;
 
-    let grants = vec![CpGrant {
-        resource_type: "clusters".to_string(),
-        action: "read".to_string(),
-        team: "test-team".to_string(),
-    }];
+    let grants = vec![make_grant("clusters", "read", "test-team")];
     let ctx = cp_agent_context("cp-agent-2", grants);
 
     assert!(
@@ -378,21 +383,9 @@ async fn test_cp_agent_multiple_grants() {
     let _db = TestDatabase::new("cp_multiple_grants").await;
 
     let grants = vec![
-        CpGrant {
-            resource_type: "clusters".to_string(),
-            action: "read".to_string(),
-            team: "test-team".to_string(),
-        },
-        CpGrant {
-            resource_type: "routes".to_string(),
-            action: "read".to_string(),
-            team: "test-team".to_string(),
-        },
-        CpGrant {
-            resource_type: "routes".to_string(),
-            action: "create".to_string(),
-            team: "test-team".to_string(),
-        },
+        make_grant("clusters", "read", "test-team"),
+        make_grant("routes", "read", "test-team"),
+        make_grant("routes", "create", "test-team"),
     ];
     let ctx = cp_agent_context("cp-agent-multi", grants);
 
@@ -1104,16 +1097,8 @@ async fn test_cp_grants_produce_correct_tool_access_set() {
     let _db = TestDatabase::new("tool_access_set").await;
 
     let grants = vec![
-        CpGrant {
-            resource_type: "clusters".to_string(),
-            action: "read".to_string(),
-            team: "test-team".to_string(),
-        },
-        CpGrant {
-            resource_type: "listeners".to_string(),
-            action: "read".to_string(),
-            team: "test-team".to_string(),
-        },
+        make_grant("clusters", "read", "test-team"),
+        make_grant("listeners", "read", "test-team"),
     ];
     let ctx = cp_agent_context("cp-set-agent", grants);
 
