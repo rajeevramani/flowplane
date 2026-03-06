@@ -89,10 +89,10 @@ pub use organizations::{
     add_team_member, admin_add_org_member, admin_create_organization, admin_delete_organization,
     admin_get_organization, admin_invite_org_member, admin_list_org_members,
     admin_list_organizations, admin_remove_org_member, admin_update_org_member_role,
-    admin_update_organization, create_agent_grant, create_org_agent, create_org_team,
-    delete_agent_grant, delete_org_agent, delete_org_team, get_current_org, list_agent_grants,
-    list_org_agents, list_org_teams, list_team_members, provision_machine_user, remove_team_member,
-    update_org_team, update_team_member_scopes,
+    admin_update_organization, create_org_agent, create_org_team, create_principal_grant,
+    delete_org_agent, delete_org_team, delete_principal_grant, get_current_org, list_org_agents,
+    list_org_teams, list_principal_grants, list_team_members, provision_machine_user,
+    remove_team_member, update_org_team,
 };
 pub use proxy_certificates::{
     generate_certificate_handler, get_certificate_handler, list_certificates_handler,
@@ -162,7 +162,7 @@ pub use organizations::{
     AddOrgMemberRequest, AddTeamMemberRequest, AgentInfo, CreateAgentRequest, CreateAgentResponse,
     CurrentOrgResponse, InviteOrgMemberRequest, InviteOrgMemberResponse, ListAgentsResponse,
     ListOrgMembersResponse, ListOrgTeamsResponse, ListTeamMembersResponse, TeamMemberResponse,
-    UpdateOrgMemberRoleRequest, UpdateTeamMemberScopesRequest,
+    UpdateOrgMemberRoleRequest,
 };
 pub use proxy_certificates::{
     CertificateMetadata, GenerateCertificateRequest, GenerateCertificateResponse,

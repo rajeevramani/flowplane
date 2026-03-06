@@ -37,7 +37,6 @@ struct UserTeamMembershipRow {
     pub id: String,
     pub user_id: String,
     pub team: String,
-    pub scopes: String, // JSON array stored as string
     pub created_at: DateTime<Utc>,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
@@ -117,13 +116,6 @@ pub trait TeamMembershipRepository: Send + Sync {
         user_id: &UserId,
         team: &str,
     ) -> Result<Option<UserTeamMembership>>;
-
-    /// Update scopes for a membership
-    async fn update_membership_scopes(
-        &self,
-        id: &str,
-        scopes: Vec<String>,
-    ) -> Result<UserTeamMembership>;
 
     /// Delete a team membership
     async fn delete_membership(&self, id: &str) -> Result<()>;
@@ -455,16 +447,10 @@ impl SqlxTeamMembershipRepository {
     }
 
     fn row_to_membership(&self, row: UserTeamMembershipRow) -> Result<UserTeamMembership> {
-        // Parse scopes JSON array
-        let scopes: Vec<String> = serde_json::from_str(&row.scopes).map_err(|err| {
-            FlowplaneError::internal(format!("Failed to parse scopes JSON: {}", err))
-        })?;
-
         Ok(UserTeamMembership {
             id: row.id,
             user_id: UserId::from_string(row.user_id),
             team: row.team,
-            scopes,
             created_at: row.created_at,
             user_name: row.user_name,
             user_email: row.user_email,
@@ -479,20 +465,15 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         &self,
         membership: NewUserTeamMembership,
     ) -> Result<UserTeamMembership> {
-        let scopes_json = serde_json::to_string(&membership.scopes).map_err(|err| {
-            FlowplaneError::internal(format!("Failed to serialize scopes: {}", err))
-        })?;
-
         sqlx::query(
             r#"
-            INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO user_team_memberships (id, user_id, team, created_at)
+            VALUES ($1, $2, $3, $4)
             "#,
         )
         .bind(&membership.id)
         .bind(membership.user_id.to_string())
         .bind(&membership.team)
-        .bind(&scopes_json)
         .bind(Utc::now())
         .execute(&self.pool)
         .await
@@ -509,7 +490,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(user_id = %user_id), name = "db_list_user_memberships")]
     async fn list_user_memberships(&self, user_id: &UserId) -> Result<Vec<UserTeamMembership>> {
         let rows = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT utm.id, utm.user_id, utm.team, utm.scopes, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.user_id = $1 ORDER BY utm.created_at",
+            "SELECT utm.id, utm.user_id, utm.team, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.user_id = $1 ORDER BY utm.created_at",
         )
         .bind(user_id.to_string())
         .fetch_all(&self.pool)
@@ -525,7 +506,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(team = %team), name = "db_list_team_members")]
     async fn list_team_members(&self, team: &str) -> Result<Vec<UserTeamMembership>> {
         let rows = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT utm.id, utm.user_id, utm.team, utm.scopes, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.team = $1 ORDER BY utm.created_at",
+            "SELECT utm.id, utm.user_id, utm.team, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.team = $1 ORDER BY utm.created_at",
         )
         .bind(team)
         .fetch_all(&self.pool)
@@ -561,7 +542,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(membership_id = %id), name = "db_get_membership")]
     async fn get_membership(&self, id: &str) -> Result<Option<UserTeamMembership>> {
         let row = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT utm.id, utm.user_id, utm.team, utm.scopes, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.id = $1",
+            "SELECT utm.id, utm.user_id, utm.team, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -581,7 +562,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         team: &str,
     ) -> Result<Option<UserTeamMembership>> {
         let row = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT utm.id, utm.user_id, utm.team, utm.scopes, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.user_id = $1 AND utm.team = $2",
+            "SELECT utm.id, utm.user_id, utm.team, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.user_id = $1 AND utm.team = $2",
         )
         .bind(user_id.to_string())
         .bind(team)
@@ -593,31 +574,6 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         })?;
 
         row.map(|r| self.row_to_membership(r)).transpose()
-    }
-
-    #[instrument(skip(self, scopes), fields(membership_id = %id), name = "db_update_membership_scopes")]
-    async fn update_membership_scopes(
-        &self,
-        id: &str,
-        scopes: Vec<String>,
-    ) -> Result<UserTeamMembership> {
-        let scopes_json = serde_json::to_string(&scopes).map_err(|err| {
-            FlowplaneError::internal(format!("Failed to serialize scopes: {}", err))
-        })?;
-
-        sqlx::query("UPDATE user_team_memberships SET scopes = $1 WHERE id = $2")
-            .bind(&scopes_json)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| FlowplaneError::Database {
-                source: err,
-                context: "Failed to update membership scopes".to_string(),
-            })?;
-
-        self.get_membership(id)
-            .await?
-            .ok_or_else(|| FlowplaneError::internal("Membership not found after update"))
     }
 
     #[instrument(skip(self), fields(membership_id = %id), name = "db_delete_membership")]

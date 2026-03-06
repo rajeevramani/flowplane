@@ -46,44 +46,96 @@ use crate::{
 
 // ===== Helper Functions =====
 
-/// Derive default team scopes from an org role.
+/// Derive default grants for a new team member based on their org role.
 ///
-/// Previously lived in `auth::invitation_service`; inlined here after
-/// that module was deleted during the Zitadel migration.
-fn scopes_for_org_role(role: OrgRole, team_name: &str) -> Vec<String> {
+/// DD-2: Admin/Owner get NO grants — their access is implicit from org_memberships.
+/// Member gets read grants for all VALID_GRANTS resources.
+/// Viewer gets reduced read grants (routes/clusters/listeners only).
+///
+/// Returns (resource_type, action) pairs — caller is responsible for inserting
+/// with the correct team_id/org_id/principal_id.
+fn grants_for_org_role(role: OrgRole) -> Vec<(&'static str, &'static str)> {
+    use crate::auth::scope_registry::VALID_GRANTS;
+
     match role {
-        OrgRole::Admin | OrgRole::Owner => {
-            vec![format!("team:{team_name}:*:*")]
-        }
-        OrgRole::Member => {
-            vec![
-                format!("team:{team_name}:routes:read"),
-                format!("team:{team_name}:routes:create"),
-                format!("team:{team_name}:routes:update"),
-                format!("team:{team_name}:routes:delete"),
-                format!("team:{team_name}:clusters:read"),
-                format!("team:{team_name}:clusters:create"),
-                format!("team:{team_name}:clusters:update"),
-                format!("team:{team_name}:clusters:delete"),
-                format!("team:{team_name}:listeners:read"),
-                format!("team:{team_name}:listeners:create"),
-                format!("team:{team_name}:listeners:update"),
-                format!("team:{team_name}:listeners:delete"),
-                format!("team:{team_name}:filters:read"),
-                format!("team:{team_name}:filters:create"),
-                format!("team:{team_name}:filters:update"),
-                format!("team:{team_name}:filters:delete"),
-                format!("team:{team_name}:stats:read"),
-            ]
-        }
-        OrgRole::Viewer => {
-            vec![
-                format!("team:{team_name}:routes:read"),
-                format!("team:{team_name}:clusters:read"),
-                format!("team:{team_name}:listeners:read"),
-            ]
-        }
+        // DD-2: Admin/Owner access is implicit from org_memberships — no grants needed
+        OrgRole::Admin | OrgRole::Owner => vec![],
+        // Members get read grants for all resources
+        OrgRole::Member => VALID_GRANTS
+            .iter()
+            .filter(|(_, actions)| actions.contains(&"read"))
+            .map(|(resource, _)| (*resource, "read"))
+            .collect(),
+        // Viewers get reduced read grants
+        OrgRole::Viewer => vec![("routes", "read"), ("clusters", "read"), ("listeners", "read")],
     }
+}
+
+/// Insert default grants for a principal into the grants table.
+///
+/// Used by `admin_invite_org_member`, `create_org_team`, and `add_team_member`
+/// to create default permissions based on org role.
+async fn insert_default_grants(
+    pool: &DbPool,
+    principal_id: &str,
+    org_id: &str,
+    team_id: &str,
+    role: OrgRole,
+    created_by: &str,
+) -> Result<(), ApiError> {
+    let pairs = grants_for_org_role(role);
+    for (resource_type, action) in pairs {
+        let grant_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO grants \
+             (id, principal_id, org_id, team_id, grant_type, resource_type, action, created_by) \
+             VALUES ($1, $2, $3, $4, 'resource', $5, $6, $7) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&grant_id)
+        .bind(principal_id)
+        .bind(org_id)
+        .bind(team_id)
+        .bind(resource_type)
+        .bind(action)
+        .bind(created_by)
+        .execute(pool)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create default grant: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Insert default grants within a transaction (for `admin_invite_org_member`).
+async fn insert_default_grants_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    principal_id: &str,
+    org_id: &str,
+    team_id: &str,
+    role: OrgRole,
+    created_by: &str,
+) -> Result<(), ApiError> {
+    let pairs = grants_for_org_role(role);
+    for (resource_type, action) in pairs {
+        let grant_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO grants \
+             (id, principal_id, org_id, team_id, grant_type, resource_type, action, created_by) \
+             VALUES ($1, $2, $3, $4, 'resource', $5, $6, $7) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&grant_id)
+        .bind(principal_id)
+        .bind(org_id)
+        .bind(team_id)
+        .bind(resource_type)
+        .bind(action)
+        .bind(created_by)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create default grant: {e}")))?;
+    }
+    Ok(())
 }
 
 /// Helper to create OrganizationRepository from ApiState.
@@ -833,25 +885,35 @@ pub async fn admin_invite_org_member(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list org teams: {e}")))?;
 
+    let creator_id =
+        context.user_id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "system".to_string());
+
     for team in &teams {
-        let scopes = scopes_for_org_role(payload.role, &team.name);
-        let scopes_json = serde_json::to_string(&scopes)
-            .map_err(|e| ApiError::Internal(format!("Failed to serialize scopes: {e}")))?;
         let utm_id = format!("utm_{}", uuid::Uuid::new_v4());
 
         sqlx::query(
-            "INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at) \
-             VALUES ($1, $2, $3, $4, $5) \
+            "INSERT INTO user_team_memberships (id, user_id, team, created_at) \
+             VALUES ($1, $2, $3, $4) \
              ON CONFLICT (user_id, team) DO NOTHING",
         )
         .bind(&utm_id)
         .bind(local_user.id.as_str())
         .bind(team.id.as_str())
-        .bind(&scopes_json)
         .bind(chrono::Utc::now())
         .execute(&mut *tx)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create team membership: {e}")))?;
+
+        // Insert default grants based on org role (MED-7: participates in transaction)
+        insert_default_grants_tx(
+            &mut tx,
+            local_user.id.as_str(),
+            org_id.as_str(),
+            team.id.as_str(),
+            payload.role,
+            &creator_id,
+        )
+        .await?;
     }
 
     tx.commit()
@@ -1170,24 +1232,37 @@ pub async fn create_org_team(
         ApiError::from(e)
     })?;
 
-    // Auto-create team memberships for all existing org members
+    // Auto-create team memberships + default grants for all existing org members
     let org_membership_repo = org_membership_repository_for_state(&state)?;
     let team_membership_repo: Arc<dyn TeamMembershipRepository> =
-        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
+        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool.clone()));
     let org_members =
         org_membership_repo.list_org_members(&org.id).await.map_err(ApiError::from)?;
+
+    let creator_id =
+        context.user_id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "system".to_string());
+
     for member in &org_members {
-        let scopes = scopes_for_org_role(member.role, &team.name);
         let membership = crate::auth::user::NewUserTeamMembership {
             id: format!("utm_{}", uuid::Uuid::new_v4()),
             user_id: member.user_id.clone(),
             team: team.id.to_string(),
-            scopes,
         };
         team_membership_repo.create_membership(membership).await.map_err(ApiError::from)?;
+
+        // Insert default grants based on org role
+        insert_default_grants(
+            &pool,
+            member.user_id.as_ref(),
+            org.id.as_ref(),
+            team.id.as_ref(),
+            member.role,
+            &creator_id,
+        )
+        .await?;
     }
 
-    // Evict permission cache for all org members — new team means new team memberships
+    // Evict permission cache for all org members — new team means new grants
     if let Some(ref cache) = state.permission_cache {
         for member in &org_members {
             cache.evict_by_user_id(&member.user_id).await;
@@ -1327,15 +1402,6 @@ pub struct OrgTeamMemberPath {
 #[serde(rename_all = "camelCase")]
 pub struct AddTeamMemberRequest {
     pub user_id: UserId,
-    #[serde(default)]
-    pub scopes: Vec<String>,
-}
-
-/// Request to update a team member's scopes.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateTeamMemberScopesRequest {
-    pub scopes: Vec<String>,
 }
 
 /// Team member response.
@@ -1353,30 +1419,11 @@ pub struct TeamMemberResponse {
 
 impl From<crate::auth::user::UserTeamMembership> for TeamMemberResponse {
     fn from(m: crate::auth::user::UserTeamMembership) -> Self {
-        // Strip "team:{name}:" prefix from scopes for the API response.
-        // DB stores fully-qualified scopes like "team:engineering:clusters:read",
-        // but the API should return base scopes like "clusters:read".
-        let base_scopes: Vec<String> = m
-            .scopes
-            .into_iter()
-            .map(|s| {
-                if let Some(rest) = s.strip_prefix("team:") {
-                    // Skip the team name segment: "team:{name}:{resource}:{action}" → "{resource}:{action}"
-                    if let Some(pos) = rest.find(':') {
-                        rest[pos + 1..].to_string()
-                    } else {
-                        s
-                    }
-                } else {
-                    s
-                }
-            })
-            .collect();
         Self {
             id: m.id,
             user_id: m.user_id.to_string(),
             team: m.team,
-            scopes: base_scopes,
+            scopes: vec![], // Scopes are now managed via grants API — field kept for API compat
             created_at: m.created_at.to_rfc3339(),
             user_name: m.user_name,
             user_email: m.user_email,
@@ -1457,8 +1504,8 @@ pub async fn list_team_members(
 
 /// Add a member to a team (org admin only).
 ///
-/// The user must already be a member of the organization. If no scopes are
-/// specified, default scopes are assigned based on the user's org role.
+/// The user must already be a member of the organization. Default grants
+/// are assigned based on the user's org role.
 #[utoipa::path(
     post,
     path = "/api/v1/orgs/{org_name}/teams/{team_name}/members",
@@ -1498,7 +1545,7 @@ pub async fn add_team_member(
 
     let pool = pool_for_state(&state)?;
     let membership_repo: Arc<dyn TeamMembershipRepository> =
-        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
+        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool.clone()));
 
     // Check if user is already a member of this team
     let existing = membership_repo
@@ -1509,26 +1556,26 @@ pub async fn add_team_member(
         return Err(ApiError::Conflict("User is already a member of this team".to_string()));
     }
 
-    // Use provided scopes or derive defaults from org role
-    let scopes = if payload.scopes.is_empty() {
-        scopes_for_org_role(org_membership.role, &team.name)
-    } else {
-        // Qualify base scopes with team name (e.g. "clusters:read" → "team:engineering:clusters:read")
-        payload
-            .scopes
-            .into_iter()
-            .map(|s| if s.starts_with("team:") { s } else { format!("team:{}:{}", team.name, s) })
-            .collect()
-    };
-
     let membership = crate::auth::user::NewUserTeamMembership {
         id: format!("utm_{}", uuid::Uuid::new_v4()),
         user_id: payload.user_id,
         team: team.id.to_string(),
-        scopes,
     };
 
     let created = membership_repo.create_membership(membership).await.map_err(ApiError::from)?;
+
+    // Insert default grants based on org role
+    let creator_id =
+        context.user_id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "system".to_string());
+    insert_default_grants(
+        &pool,
+        created.user_id.as_ref(),
+        org.id.as_ref(),
+        team.id.as_ref(),
+        org_membership.role,
+        &creator_id,
+    )
+    .await?;
 
     // Evict permission cache so next request picks up new permissions
     if let Some(ref cache) = state.permission_cache {
@@ -1536,66 +1583,6 @@ pub async fn add_team_member(
     }
 
     Ok((StatusCode::CREATED, Json(TeamMemberResponse::from(created))))
-}
-
-/// Update a team member's scopes (org admin only).
-#[utoipa::path(
-    put,
-    path = "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
-    params(
-        ("org_name" = String, Path, description = "Organization name"),
-        ("team_name" = String, Path, description = "Team name"),
-        ("user_id" = String, Path, description = "User ID"),
-    ),
-    request_body = UpdateTeamMemberScopesRequest,
-    responses(
-        (status = 200, description = "Member scopes updated", body = TeamMemberResponse),
-        (status = 403, description = "Organization admin privileges required"),
-        (status = 404, description = "Membership not found")
-    ),
-    security(("bearer_auth" = [])),
-    tag = "Organizations"
-)]
-#[instrument(skip(state, payload), fields(org_name = %path.org_name, team_name = %path.team_name, target_user_id = %path.user_id, user_id = ?context.user_id))]
-pub async fn update_team_member_scopes(
-    State(state): State<ApiState>,
-    Extension(context): Extension<AuthContext>,
-    Path(path): Path<OrgTeamMemberPath>,
-    Json(payload): Json<UpdateTeamMemberScopesRequest>,
-) -> Result<Json<TeamMemberResponse>, ApiError> {
-    let (_org, team) = resolve_org_team(&state, &context, &path.org_name, &path.team_name).await?;
-
-    let target_user_id = UserId::from_str_unchecked(&path.user_id);
-
-    let pool = pool_for_state(&state)?;
-    let membership_repo: Arc<dyn TeamMembershipRepository> =
-        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
-
-    // Find the membership
-    let membership = membership_repo
-        .get_user_team_membership(&target_user_id, team.id.as_ref())
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Team membership not found".to_string()))?;
-
-    // Qualify base scopes with team name (e.g. "clusters:read" → "team:engineering:clusters:read")
-    let qualified_scopes: Vec<String> = payload
-        .scopes
-        .into_iter()
-        .map(|s| if s.starts_with("team:") { s } else { format!("team:{}:{}", team.name, s) })
-        .collect();
-
-    let updated = membership_repo
-        .update_membership_scopes(&membership.id, qualified_scopes)
-        .await
-        .map_err(ApiError::from)?;
-
-    // Evict permission cache so next request picks up new permissions
-    if let Some(ref cache) = state.permission_cache {
-        cache.evict_by_user_id(&target_user_id).await;
-    }
-
-    Ok(Json(TeamMemberResponse::from(updated)))
 }
 
 /// Remove a member from a team (org admin only).
@@ -2281,6 +2268,15 @@ pub struct GrantListResponse {
     pub grants: Vec<GrantResponse>,
 }
 
+/// Lightweight principal info for grant validation.
+#[derive(Debug, sqlx::FromRow)]
+struct PrincipalInfo {
+    id: String,
+    user_type: String,
+    agent_context: Option<String>,
+    zitadel_sub: Option<String>,
+}
+
 #[derive(sqlx::FromRow)]
 struct GrantRow {
     id: String,
@@ -2295,30 +2291,36 @@ struct GrantRow {
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Create a grant for an agent (org-admin only).
+/// Create a grant for a principal (human or agent) — org-admin only.
+///
+/// Context-sensitive validation:
+/// - Humans can only receive `resource` grants
+/// - CpTool agents can receive `resource` grants (validated against VALID_GRANTS)
+/// - GatewayTool agents can receive `gateway-tool` grants (route must be external)
+/// - ApiConsumer agents can receive `route` grants (route must be external)
 #[utoipa::path(
     post,
-    path = "/api/v1/orgs/{org_name}/agents/{agent_name}/grants",
+    path = "/api/v1/orgs/{org_name}/principals/{principal_id}/grants",
     params(
         ("org_name" = String, Path, description = "Organization name"),
-        ("agent_name" = String, Path, description = "Agent name")
+        ("principal_id" = String, Path, description = "Principal (user or agent) ID")
     ),
     request_body = CreateGrantRequest,
     responses(
         (status = 201, description = "Grant created", body = GrantResponse),
         (status = 400, description = "Validation error"),
         (status = 403, description = "Organization admin privileges required"),
-        (status = 404, description = "Agent or org not found"),
+        (status = 404, description = "Principal or org not found"),
         (status = 409, description = "Duplicate grant")
     ),
     security(("bearer_auth" = [])),
     tag = "Organizations"
 )]
-#[instrument(skip(state, payload), fields(org_name = %org_name, agent_name = %agent_name, user_id = ?context.user_id))]
-pub async fn create_agent_grant(
+#[instrument(skip(state, payload), fields(org_name = %org_name, principal_id = %principal_id, user_id = ?context.user_id))]
+pub async fn create_principal_grant(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((org_name, agent_name)): Path<(String, String)>,
+    Path((org_name, principal_id)): Path<(String, String)>,
     Json(payload): Json<CreateGrantRequest>,
 ) -> Result<(StatusCode, Json<GrantResponse>), ApiError> {
     require_org_admin_only(&context, &org_name)
@@ -2340,17 +2342,62 @@ pub async fn create_agent_grant(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
 
-    // Resolve agent by name within this org
-    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
-    let machine_users = user_repo
-        .find_machine_users_by_org(org.id.as_ref())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
-    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
-        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
+    // CRIT-1: Resolve principal by ID and verify org membership
+    let principal: PrincipalInfo = sqlx::query_as::<_, PrincipalInfo>(
+        "SELECT u.id, u.user_type, u.agent_context, u.zitadel_sub \
+         FROM users u \
+         JOIN organization_memberships om ON om.user_id = u.id \
+         WHERE u.id = $1 AND om.org_id = $2",
+    )
+    .bind(&principal_id)
+    .bind(org.id.as_ref())
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to resolve principal: {e}")))?
+    .ok_or_else(|| {
+        ApiError::NotFound(format!("Principal '{}' not found in org '{}'", principal_id, org_name))
     })?;
 
-    // Validate resource grant requirements
+    // Context-sensitive validation based on principal type and grant type
+    match (principal.user_type.as_str(), payload.grant_type.as_str()) {
+        // Humans can only get resource grants
+        ("human", "resource") => {}
+        ("human", _) => {
+            return Err(ApiError::BadRequest(
+                "humans can only receive resource grants".to_string(),
+            ));
+        }
+        // Machine users: validate agent_context matches grant_type
+        ("machine", "resource") => {
+            let agent_ctx = AgentContext::from_db(principal.agent_context.as_deref());
+            if !matches!(agent_ctx, Some(AgentContext::CpTool)) {
+                return Err(ApiError::BadRequest(
+                    "resource grants require a cp-tool agent".to_string(),
+                ));
+            }
+        }
+        ("machine", "gateway-tool") => {
+            let agent_ctx = AgentContext::from_db(principal.agent_context.as_deref());
+            if !matches!(agent_ctx, Some(AgentContext::GatewayTool)) {
+                return Err(ApiError::BadRequest(
+                    "gateway-tool grants require a gateway-tool agent".to_string(),
+                ));
+            }
+        }
+        ("machine", "route") => {
+            let agent_ctx = AgentContext::from_db(principal.agent_context.as_deref());
+            if !matches!(agent_ctx, Some(AgentContext::ApiConsumer)) {
+                return Err(ApiError::BadRequest(
+                    "route grants require an api-consumer agent".to_string(),
+                ));
+            }
+        }
+        _ => {
+            return Err(ApiError::BadRequest("invalid grant type for principal".to_string()));
+        }
+    }
+
+    // Validate resource:action pair for resource grants
     if payload.grant_type == "resource" {
         let resource_type = payload.resource_type.as_deref().ok_or_else(|| {
             ApiError::BadRequest("resource grants require resourceType".to_string())
@@ -2360,34 +2407,18 @@ pub async fn create_agent_grant(
             .as_deref()
             .ok_or_else(|| ApiError::BadRequest("resource grants require action".to_string()))?;
 
-        // Agent context must be cp-tool
-        let agent_ctx = AgentContext::from_db(agent.agent_context.as_deref());
-        if !matches!(agent_ctx, Some(AgentContext::CpTool)) {
-            return Err(ApiError::BadRequest(
-                "agent context mismatch: agent is not a cp-tool agent".to_string(),
-            ));
-        }
-
-        // Validate (resource_type, action) pair exists in TOOL_AUTHORIZATIONS
-        if !crate::mcp::tool_registry::is_valid_cp_grant_pair(resource_type, action) {
+        if !crate::auth::scope_registry::is_valid_resource_action_pair(resource_type, action) {
             return Err(ApiError::BadRequest(format!(
-                "unknown resource type '{}' or action '{}' for resource grant",
+                "invalid resource:action pair '{}:{}'",
                 resource_type, action
             )));
         }
     }
 
-    // Validate gateway-tool grant requirements
-    if payload.grant_type == "gateway-tool" {
-        let agent_ctx = AgentContext::from_db(agent.agent_context.as_deref());
-        if !matches!(agent_ctx, Some(AgentContext::GatewayTool)) {
-            return Err(ApiError::BadRequest(
-                "agent context mismatch: gateway-tool grants require a gateway-tool agent"
-                    .to_string(),
-            ));
-        }
+    // Validate route exposure for gateway-tool and route grants
+    if matches!(payload.grant_type.as_str(), "gateway-tool" | "route") {
         let route_id = payload.route_id.as_deref().ok_or_else(|| {
-            ApiError::BadRequest("gateway-tool grants require routeId".to_string())
+            ApiError::BadRequest(format!("{} grants require routeId", payload.grant_type))
         })?;
         let route_repo = crate::storage::repositories::route::RouteRepository::new(pool.clone());
         let route = route_repo
@@ -2401,54 +2432,6 @@ pub async fn create_agent_grant(
             ));
         }
     }
-
-    // Validate route grant requirements
-    if payload.grant_type == "route" {
-        let agent_ctx = AgentContext::from_db(agent.agent_context.as_deref());
-        if !matches!(agent_ctx, Some(AgentContext::ApiConsumer)) {
-            return Err(ApiError::BadRequest(
-                "agent context mismatch: route grants require an api-consumer agent".to_string(),
-            ));
-        }
-        let route_id = payload
-            .route_id
-            .as_deref()
-            .ok_or_else(|| ApiError::BadRequest("route grants require routeId".to_string()))?;
-        let route_repo = crate::storage::repositories::route::RouteRepository::new(pool.clone());
-        let route = route_repo
-            .get_by_id(&crate::domain::RouteId::from_string(route_id.to_string()))
-            .await
-            .map_err(|_| ApiError::NotFound(format!("Route '{}' not found", route_id)))?;
-        if route.exposure != "external" {
-            return Err(ApiError::BadRequest(
-                "Cannot grant access to internal route. Set route exposure to 'external' first."
-                    .to_string(),
-            ));
-        }
-    }
-
-    // Validate agent is a member of the specified team
-    let team_member_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM user_team_memberships utm \
-         JOIN teams t ON utm.team = t.id AND t.org_id = $1 \
-         WHERE utm.user_id = $2 AND t.name = $3",
-    )
-    .bind(org.id.as_ref())
-    .bind(&agent.id)
-    .bind(&payload.team)
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| ApiError::Internal(format!("Failed to check team membership: {e}")))?;
-
-    if team_member_count == 0 {
-        return Err(ApiError::BadRequest(format!(
-            "agent is not a member of team '{}'",
-            payload.team
-        )));
-    }
-
-    let creator_id =
-        context.user_id.as_ref().ok_or_else(|| ApiError::forbidden("user context required"))?;
 
     // Resolve team name to team UUID within this org
     let team_row: Option<(String,)> =
@@ -2462,6 +2445,27 @@ pub async fn create_agent_grant(
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found in org", payload.team)))?
         .0;
 
+    // Validate principal is a member of the specified team
+    let team_member_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_team_memberships \
+         WHERE user_id = $1 AND team = $2",
+    )
+    .bind(&principal_id)
+    .bind(&team_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to check team membership: {e}")))?;
+
+    if team_member_count == 0 {
+        return Err(ApiError::BadRequest(format!(
+            "principal is not a member of team '{}'",
+            payload.team
+        )));
+    }
+
+    let creator_id =
+        context.user_id.as_ref().ok_or_else(|| ApiError::forbidden("user context required"))?;
+
     // Insert the grant; unique index will reject duplicates
     let grant_id = uuid::Uuid::new_v4().to_string();
     let row = sqlx::query_as::<_, GrantRow>(
@@ -2472,7 +2476,7 @@ pub async fn create_agent_grant(
                    created_by, created_at, expires_at",
     )
     .bind(&grant_id)
-    .bind(&agent.id)
+    .bind(&principal_id)
     .bind(org.id.as_ref())
     .bind(&team_id)
     .bind(&payload.grant_type)
@@ -2492,10 +2496,12 @@ pub async fn create_agent_grant(
         ApiError::Internal(format!("Failed to create grant: {e}"))
     })?;
 
-    // Evict permission cache so agent picks up new grant on next request
+    // Evict permission cache (MED-4: use zitadel_sub when available)
     if let Some(ref cache) = state.permission_cache {
-        if let Some(ref sub) = agent.zitadel_sub {
+        if let Some(ref sub) = principal.zitadel_sub {
             cache.evict(sub).await;
+        } else {
+            cache.evict_by_user_id(&UserId::from_string(principal.id.clone())).await;
         }
     }
 
@@ -2507,36 +2513,36 @@ pub async fn create_agent_grant(
     }
 
     tracing::info!(
-        agent_name = %agent_name,
+        principal_id = %principal_id,
         grant_type = %payload.grant_type,
         org_name = %org_name,
-        "created agent grant"
+        "created principal grant"
     );
 
     Ok((StatusCode::CREATED, Json(grant_row_to_response(row))))
 }
 
-/// List all grants for an agent (org-admin only).
+/// List all grants for a principal (org-admin only).
 #[utoipa::path(
     get,
-    path = "/api/v1/orgs/{org_name}/agents/{agent_name}/grants",
+    path = "/api/v1/orgs/{org_name}/principals/{principal_id}/grants",
     params(
         ("org_name" = String, Path, description = "Organization name"),
-        ("agent_name" = String, Path, description = "Agent name")
+        ("principal_id" = String, Path, description = "Principal (user or agent) ID")
     ),
     responses(
         (status = 200, description = "Grants listed", body = GrantListResponse),
         (status = 403, description = "Organization admin privileges required"),
-        (status = 404, description = "Agent or org not found")
+        (status = 404, description = "Principal or org not found")
     ),
     security(("bearer_auth" = [])),
     tag = "Organizations"
 )]
-#[instrument(skip(state), fields(org_name = %org_name, agent_name = %agent_name, user_id = ?context.user_id))]
-pub async fn list_agent_grants(
+#[instrument(skip(state), fields(org_name = %org_name, principal_id = %principal_id, user_id = ?context.user_id))]
+pub async fn list_principal_grants(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((org_name, agent_name)): Path<(String, String)>,
+    Path((org_name, principal_id)): Path<(String, String)>,
 ) -> Result<Json<GrantListResponse>, ApiError> {
     require_org_admin_only(&context, &org_name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
@@ -2549,21 +2555,14 @@ pub async fn list_agent_grants(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
 
-    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
-    let machine_users = user_repo
-        .find_machine_users_by_org(org.id.as_ref())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
-    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
-        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
-    })?;
-
+    // Defense in depth: filter by org_id
     let rows = sqlx::query_as::<_, GrantRow>(
         "SELECT id, grant_type, resource_type, action, team_id, route_id, allowed_methods, \
                 created_by, created_at, expires_at \
-         FROM grants WHERE principal_id = $1 ORDER BY created_at",
+         FROM grants WHERE principal_id = $1 AND org_id = $2 ORDER BY created_at",
     )
-    .bind(&agent.id)
+    .bind(&principal_id)
+    .bind(org.id.as_ref())
     .fetch_all(&pool)
     .await
     .map_err(|e| ApiError::Internal(format!("Failed to list grants: {e}")))?;
@@ -2572,28 +2571,28 @@ pub async fn list_agent_grants(
     Ok(Json(GrantListResponse { grants }))
 }
 
-/// Delete a grant for an agent (org-admin only).
+/// Delete a grant for a principal (org-admin only).
 #[utoipa::path(
     delete,
-    path = "/api/v1/orgs/{org_name}/agents/{agent_name}/grants/{grant_id}",
+    path = "/api/v1/orgs/{org_name}/principals/{principal_id}/grants/{grant_id}",
     params(
         ("org_name" = String, Path, description = "Organization name"),
-        ("agent_name" = String, Path, description = "Agent name"),
+        ("principal_id" = String, Path, description = "Principal (user or agent) ID"),
         ("grant_id" = String, Path, description = "Grant ID")
     ),
     responses(
         (status = 204, description = "Grant deleted"),
         (status = 403, description = "Organization admin privileges required"),
-        (status = 404, description = "Agent, org, or grant not found")
+        (status = 404, description = "Principal, org, or grant not found")
     ),
     security(("bearer_auth" = [])),
     tag = "Organizations"
 )]
-#[instrument(skip(state), fields(org_name = %org_name, agent_name = %agent_name, grant_id = %grant_id, user_id = ?context.user_id))]
-pub async fn delete_agent_grant(
+#[instrument(skip(state), fields(org_name = %org_name, principal_id = %principal_id, grant_id = %grant_id, user_id = ?context.user_id))]
+pub async fn delete_principal_grant(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((org_name, agent_name, grant_id)): Path<(String, String, String)>,
+    Path((org_name, principal_id, grant_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
     require_org_admin_only(&context, &org_name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
@@ -2606,39 +2605,45 @@ pub async fn delete_agent_grant(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Organization '{}' not found", org_name)))?;
 
-    let user_repo = crate::storage::repositories::SqlxUserRepository::new(pool.clone());
-    let machine_users = user_repo
-        .find_machine_users_by_org(org.id.as_ref())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to find agent: {e}")))?;
-    let agent = machine_users.into_iter().find(|u| u.name == agent_name).ok_or_else(|| {
-        ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
-    })?;
-
     // Fetch grant type before deletion so we know whether to trigger xDS
-    let grant_type_row: Option<(String,)> =
-        sqlx::query_as("SELECT grant_type FROM grants WHERE id = $1 AND principal_id = $2")
-            .bind(&grant_id)
-            .bind(&agent.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to fetch grant: {e}")))?;
+    let grant_type_row: Option<(String,)> = sqlx::query_as(
+        "SELECT grant_type FROM grants WHERE id = $1 AND principal_id = $2 AND org_id = $3",
+    )
+    .bind(&grant_id)
+    .bind(&principal_id)
+    .bind(org.id.as_ref())
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to fetch grant: {e}")))?;
     let grant_type = grant_type_row.map(|(t,)| t).ok_or_else(|| {
-        ApiError::NotFound(format!("Grant '{}' not found for agent '{}'", grant_id, agent_name))
+        ApiError::NotFound(format!(
+            "Grant '{}' not found for principal '{}'",
+            grant_id, principal_id
+        ))
     })?;
 
-    // Delete the grant
-    sqlx::query("DELETE FROM grants WHERE id = $1 AND principal_id = $2")
+    // Delete the grant (scoped to org for defense in depth)
+    sqlx::query("DELETE FROM grants WHERE id = $1 AND principal_id = $2 AND org_id = $3")
         .bind(&grant_id)
-        .bind(&agent.id)
+        .bind(&principal_id)
+        .bind(org.id.as_ref())
         .execute(&pool)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete grant: {e}")))?;
 
-    // Evict permission cache so agent loses access on next request
+    // Evict permission cache (MED-4: use zitadel_sub when available)
     if let Some(ref cache) = state.permission_cache {
-        if let Some(ref sub) = agent.zitadel_sub {
-            cache.evict(sub).await;
+        // Look up the principal's zitadel_sub for cache eviction
+        let sub_row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT zitadel_sub FROM users WHERE id = $1")
+                .bind(&principal_id)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to look up principal: {e}")))?;
+        if let Some((Some(sub),)) = sub_row {
+            cache.evict(&sub).await;
+        } else {
+            cache.evict_by_user_id(&UserId::from_string(principal_id.clone())).await;
         }
     }
 
@@ -2650,10 +2655,10 @@ pub async fn delete_agent_grant(
     }
 
     tracing::info!(
-        agent_name = %agent_name,
+        principal_id = %principal_id,
         grant_id = %grant_id,
         org_name = %org_name,
-        "deleted agent grant"
+        "deleted principal grant"
     );
 
     Ok(StatusCode::NO_CONTENT)
@@ -2939,55 +2944,43 @@ mod tests {
         );
     }
 
-    // Tests for scopes_for_org_role
+    // Tests for grants_for_org_role
 
     #[test]
-    fn scopes_for_org_role_admin_returns_wildcard() {
-        let scopes = scopes_for_org_role(OrgRole::Admin, "engineering");
-        assert_eq!(scopes, vec!["team:engineering:*:*"]);
+    fn grants_for_org_role_admin_returns_empty() {
+        let grants = grants_for_org_role(OrgRole::Admin);
+        assert!(grants.is_empty(), "Admin should get no grants (DD-2: implicit access)");
     }
 
     #[test]
-    fn scopes_for_org_role_owner_returns_wildcard() {
-        let scopes = scopes_for_org_role(OrgRole::Owner, "engineering");
-        assert_eq!(scopes, vec!["team:engineering:*:*"]);
+    fn grants_for_org_role_owner_returns_empty() {
+        let grants = grants_for_org_role(OrgRole::Owner);
+        assert!(grants.is_empty(), "Owner should get no grants (DD-2: implicit access)");
     }
 
     #[test]
-    fn scopes_for_org_role_member_returns_specific() {
-        let scopes = scopes_for_org_role(OrgRole::Member, "eng");
-        assert!(scopes.contains(&"team:eng:routes:read".to_string()));
-        assert!(scopes.contains(&"team:eng:routes:create".to_string()));
-        assert!(scopes.contains(&"team:eng:routes:update".to_string()));
-        assert!(scopes.contains(&"team:eng:routes:delete".to_string()));
-        assert!(scopes.contains(&"team:eng:clusters:read".to_string()));
-        assert!(scopes.contains(&"team:eng:clusters:create".to_string()));
-        assert!(scopes.contains(&"team:eng:clusters:update".to_string()));
-        assert!(scopes.contains(&"team:eng:clusters:delete".to_string()));
-        assert!(scopes.contains(&"team:eng:listeners:read".to_string()));
-        assert!(scopes.contains(&"team:eng:listeners:create".to_string()));
-        assert!(scopes.contains(&"team:eng:listeners:update".to_string()));
-        assert!(scopes.contains(&"team:eng:listeners:delete".to_string()));
-        assert!(scopes.contains(&"team:eng:filters:read".to_string()));
-        assert!(scopes.contains(&"team:eng:filters:create".to_string()));
-        assert!(scopes.contains(&"team:eng:filters:update".to_string()));
-        assert!(scopes.contains(&"team:eng:filters:delete".to_string()));
-        assert!(scopes.contains(&"team:eng:stats:read".to_string()));
-        // Member should NOT have wildcard
-        assert!(!scopes.contains(&"team:eng:*:*".to_string()));
+    fn grants_for_org_role_member_returns_read_grants() {
+        let grants = grants_for_org_role(OrgRole::Member);
+        // Should have read grants for all resources with a "read" action in VALID_GRANTS
+        assert!(grants.contains(&("routes", "read")));
+        assert!(grants.contains(&("clusters", "read")));
+        assert!(grants.contains(&("listeners", "read")));
+        assert!(grants.contains(&("filters", "read")));
+        assert!(grants.contains(&("stats", "read")));
+        // Should NOT contain non-read actions
+        assert!(!grants.iter().any(|(_, a)| *a != "read"), "Member defaults should be read-only");
     }
 
     #[test]
-    fn scopes_for_org_role_viewer_returns_read_only() {
-        let scopes = scopes_for_org_role(OrgRole::Viewer, "frontend");
-        assert_eq!(scopes.len(), 3);
-        assert!(scopes.contains(&"team:frontend:routes:read".to_string()));
-        assert!(scopes.contains(&"team:frontend:clusters:read".to_string()));
-        assert!(scopes.contains(&"team:frontend:listeners:read".to_string()));
-        // Viewer should NOT have write scopes
-        for scope in &scopes {
-            assert!(!scope.contains("write"), "Viewer should not have write scopes");
-        }
+    fn grants_for_org_role_viewer_returns_reduced_read() {
+        let grants = grants_for_org_role(OrgRole::Viewer);
+        assert_eq!(grants.len(), 3);
+        assert!(grants.contains(&("routes", "read")));
+        assert!(grants.contains(&("clusters", "read")));
+        assert!(grants.contains(&("listeners", "read")));
+        // Viewer should NOT have other resources
+        assert!(!grants.contains(&("filters", "read")));
+        assert!(!grants.contains(&("stats", "read")));
     }
 
     // Tests for InviteOrgMemberRequest validation
