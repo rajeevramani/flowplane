@@ -359,38 +359,36 @@
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50">
-	<nav class="bg-white shadow-sm border-b border-gray-200">
-		<div class="w-full px-4 sm:px-6 lg:px-8">
-			<div class="flex justify-between h-16 items-center">
-				<div class="flex items-center gap-4">
-					<a
-						href="/organizations/{orgName}/agents"
-						class="text-blue-600 hover:text-blue-800"
-						aria-label="Back to agents"
-					>
-						<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M10 19l-7-7m0 0l7-7m-7 7h18"
-							/>
-						</svg>
-					</a>
-					<h1 class="text-xl font-bold text-gray-900">Agent: {agentName}</h1>
-				</div>
-				<button
-					onclick={() => (showDeleteAgentModal = true)}
-					class="px-4 py-2 text-sm font-medium text-red-600 border border-red-300 rounded-md hover:bg-red-50"
-				>
-					Delete Agent
-				</button>
+<div class="w-full px-4 sm:px-6 lg:px-8 py-8">
+	<!-- Header -->
+	<div class="mb-8 flex items-center justify-between">
+		<div class="flex items-center gap-4">
+			<a
+				href="/organizations/{orgName}/agents"
+				class="text-blue-600 hover:text-blue-800"
+				aria-label="Back to agents"
+			>
+				<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="2"
+						d="M10 19l-7-7m0 0l7-7m-7 7h18"
+					/>
+				</svg>
+			</a>
+			<div>
+				<h1 class="text-3xl font-bold text-gray-900">Agent: {agentName}</h1>
+				<p class="mt-1 text-sm text-gray-600">Manage permissions and grants for this agent</p>
 			</div>
 		</div>
-	</nav>
-
-	<main class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+		<button
+			onclick={() => (showDeleteAgentModal = true)}
+			class="px-4 py-2 text-sm font-medium text-red-600 border border-red-300 rounded-md hover:bg-red-50"
+		>
+			Delete Agent
+		</button>
+	</div>
 		{#if isLoading}
 			<div class="flex justify-center items-center py-12">
 				<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -756,7 +754,6 @@
 				</div>
 			{/if}
 		{/if}
-	</main>
 </div>
 
 <!-- Delete grant confirmation -->

@@ -446,14 +446,68 @@ requests MUST include the Zitadel project audience scope
 client_id only, which fails Flowplane's audience validation. Any agent provisioning or
 documentation must surface this scope requirement (see `scripts/test-agent-mcp.sh`).
 
-### Phase F (was E): Cleanup (~2 days)
-**Goal: Remove remaining dead code from Phase 2**
+### Phase F: UI Alignment (~5.5 days)
+**Goal: Align SvelteKit frontend with all backend changes from Phases A-E**
 
-1. Drop remaining unused tables if FK dependencies resolved
-2. Update setup script to not create Zitadel roles
-3. Repurpose `scope_registry.rs` to code-only constants, drop `scopes` table
+**Impact assessment:** `.local/features/plans/auth-v3-tasks/phase-f-ui/IMPACT-ASSESSMENT.md`
+**Full task breakdown:** `.local/features/plans/auth-v3-tasks/phase-f-ui/`
 
-**Total: ~25 days**
+The core auth flow (session endpoint, permission utilities, team store) is correctly aligned. But:
+- Agent management UI is **broken** (calls non-existent scopes endpoint, renders undefined fields)
+- Grant management UI is **entirely missing** (backend has full CRUD, no frontend)
+- Route exposure UI is **missing** (backend has the field, frontend doesn't show it)
+
+**Key deliverables:**
+
+- **F.0 — Backend response gaps:** Add `agent_context` to `AgentInfo` response, `exposure` to route responses (fields exist in DB but not in API responses)
+- **F.1 — Types + client cleanup:** Remove dead types (`LoginRequest`, `LoginResponse`, `UpdateAgentScopesRequest`), fix agent types, add grant types (`CreateGrantRequest`, `GrantResponse`), add grant client methods, add `exposure` to route types
+- **F.2 — Agent grants UI:** Rewrite agent detail page from broken scopes editor to grant management (list, create, delete). Context-sensitive grant creation form (cp-tool vs gateway-tool). Fix agent list page TypeError.
+- **F.3 — Route exposure UI:** Exposure badge in routes table, toggle in route editor, 409 handling for external→internal downgrade with active grants
+- **F.4 — Vestigial code removal:** Delete `.bak` file, remove unused OIDC role scope, remove duplicate `isSystemAdmin()`, fix `any` types, remove redirect-only pages
+- **F.5 — Resource page fixes:** Fix stats card inflation on clusters/listeners pages, fix custom-filters load race, gate admin API call on envoy-config page
+- **F.6 — Admin page guard fixes:** Split org admin vs platform admin controls on org detail page, require org association on admin teams create
+- **F.7 — Tests:** Coverage for all Phase F changes
+
+### Phase G: Normalize Grant Actions (~3 days)
+**Goal: Replace inconsistent action vocabulary with standard CRUD terminology across MCP tools and API consumers**
+
+The tool registry uses "write" for both create and update operations, with "create" only for proxy-certificates. This makes the permission matrix confusing — most resource×action cells are invalid. Phase G normalizes to standard CRUD (read, create, update, delete) plus execute for MCP-specific operations.
+
+**Key deliverables:**
+
+- **G.1 — Tool registry update:** Split `action: "write"` into `"create"` or `"update"` per tool in `TOOL_AUTHORIZATIONS`. Classify by tool semantics: `cp_create_*` → create, `cp_update_*` → update.
+- **G.2 — Authorization + validation:** Update `is_valid_cp_grant_pair()`, grant creation validation for new action vocabulary. `check_resource_access()` unchanged (compares strings).
+- **G.3 — Database migration:** Migrate existing "write" grants → "create" + "update" grant pairs. Each "write" grant becomes two rows covering both operations.
+- **G.4 — MCP handler updates:** Update tool list filtering so create-granted agents see `cp_create_*` tools, update-granted agents see `cp_update_*` tools.
+- **G.5 — Tests + seed scripts:** Update integration tests, seed-demo.sh, unit test fixtures for new action vocabulary.
+
+### Phase H: Normalize Human User Scope Vocabulary (~2 days)
+**Goal: Normalize human user scopes to match the agent grant CRUD vocabulary**
+
+Phase G normalized agent grant actions. Phase H extends this to human user scopes:
+
+- **H.1 — action_from_http_method() + authorization tests:** Change HTTP method → action mapping (POST → "create", PUT/PATCH → "update", DELETE → "delete"). Update ~50 test assertions.
+- **H.2 — Scope seed migration:** SQL migration to split `:write` scope rows into CRUD, expand `user_team_memberships.scopes` JSON arrays.
+- **H.3 — Frontend scope selector:** Update team members page `ALL_SCOPES` list and permission helpers to CRUD.
+- **H.4 — MCP tool docstrings:** Update ~30 docstrings referencing `:write`.
+- **H.5 — Remaining `:write` references:** Update production handler code, test utilities, E2E fixtures.
+
+### Phase I: Unified Permission Model (~8 days)
+**Goal: Single permission store, single enforcement path, single UI for all principals (human + agent)**
+
+**Full task breakdown:** `.local/features/plans/auth-v3-tasks/phase-i/`
+
+The system currently has two independent permission stores: `user_team_memberships.scopes` (JSON arrays for humans) and `agent_grants` (structured table for agents). This creates user-visible confusion — saving permissions on the agent page doesn't reflect on the team members page, and vice versa. It also violates Invariant #7 (single enforcement point) because gateway-tool auth uses direct SQL queries in `handler.rs`, bypassing `check_resource_access()`.
+
+**Key deliverables:**
+
+- **I.1 — Grants table + migration:** Create unified `grants` table. Migrate `agent_grants` data (rename `cp-tool` → `resource`). Migrate `user_team_memberships.scopes` JSON → individual grant rows. Drop `scopes` and `agent_grants` tables. Convert `scope_registry.rs` to code-only constants.
+- **I.2 — Backend enforcement:** Single `load_permissions()` for all users. Replace `AuthContext.scopes` + `AuthContext.cp_grants` with `AuthContext.grants`. Rewrite `check_resource_access()` — one grant-based path (no `agent_context` branch). Route gateway-tool auth through `check_resource_access()` (remove direct SQL in handler.rs).
+- **I.3 — Grant CRUD API:** Generalize grant management endpoints for both humans and agents. Add scope validation to all grant creation. Remove `update_team_member_scopes` (replaced by individual grant CRUD). Update `add_team_member` to create default grants.
+- **I.4 — Frontend unified UI:** Extract shared `PermissionMatrix` component from agent detail page. Replace team members flat checkbox list with the matrix. Both pages show the same 14 resources. Remove duplicated permission matrix code.
+- **I.5 — Cleanup + tests:** Remove dead code (`CpGrant`, `RouteGrant`, `TeamScopesRow`, direct SQL functions). Enforce `expires_at` in grant loading. Integration tests for unified model. Security invariant verification.
+
+**Total: ~41.5 days**
 
 ---
 

@@ -78,6 +78,8 @@
 	let headerMutationConfig = $state<HeaderMutationPerRouteConfig | null>(
 		null,
 	);
+	// Exposure state
+	let exposure = $state<"internal" | "external">("internal");
 	// UI state
 	let showAdvanced = $state(false);
 	let showFilters = $state(false);
@@ -148,12 +150,15 @@
 				headerMutationConfig =
 					(route as RouteRule & { headerMutationConfig?: HeaderMutationPerRouteConfig }).headerMutationConfig || null;
 				showFilters = headerMutationConfig !== null;
+				// Load exposure
+				exposure = (route as RouteRule & { exposure?: "internal" | "external" }).exposure ?? "internal";
 				forwardSubTab = "target";
 			} else {
 				// Creating new route
 				method = "GET";
 				path = "/";
 				pathType = "prefix";
+				exposure = "internal";
 				actionType = "forward";
 				headers = [];
 				queryParams = [];
@@ -219,6 +224,7 @@
 				method,
 				path,
 				pathType,
+				exposure,
 				actionType: "forward",
 				cluster: targetCluster,
 				prefixRewrite: prefixRewrite || undefined,
@@ -238,6 +244,7 @@
 				method,
 				path,
 				pathType,
+				exposure,
 				actionType: "weighted",
 				weightedClusters: validClusters,
 				totalWeight: validClusters.reduce(
@@ -254,6 +261,7 @@
 				method,
 				path,
 				pathType,
+				exposure,
 				actionType: "redirect",
 				hostRedirect: hostRedirect || undefined,
 				pathRedirect: pathRedirect || undefined,
@@ -381,6 +389,39 @@
 							{/each}
 						</select>
 					</div>
+				</div>
+
+				<!-- Exposure -->
+				<div>
+					<label class="block text-sm font-medium text-gray-700 mb-2">Exposure</label>
+					<div class="flex gap-4">
+						<label class="flex items-center gap-2 cursor-pointer">
+							<input
+								type="radio"
+								name="route-exposure"
+								value="internal"
+								bind:group={exposure}
+								class="text-blue-600 focus:ring-blue-500"
+							/>
+							<span class="text-sm text-gray-700">
+								Internal
+								<span class="text-xs text-gray-500">(default)</span>
+							</span>
+						</label>
+						<label class="flex items-center gap-2 cursor-pointer">
+							<input
+								type="radio"
+								name="route-exposure"
+								value="external"
+								bind:group={exposure}
+								class="text-blue-600 focus:ring-blue-500"
+							/>
+							<span class="text-sm text-gray-700">External</span>
+						</label>
+					</div>
+					<p class="mt-1 text-xs text-gray-500">
+						External routes can be granted to agents by org admins.
+					</p>
 				</div>
 
 				<!-- Action Type Tabs -->

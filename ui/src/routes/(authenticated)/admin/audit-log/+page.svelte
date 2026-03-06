@@ -205,7 +205,7 @@
 	<title>Audit Log - Flowplane</title>
 </svelte:head>
 
-<div class="container mx-auto px-4 py-8">
+<div class="w-full px-4 sm:px-6 lg:px-8 py-8">
 	<div class="mb-6">
 		<h1 class="text-3xl font-bold text-gray-900">Audit Log</h1>
 		<p class="mt-2 text-gray-600">
