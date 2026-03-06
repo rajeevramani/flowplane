@@ -76,7 +76,7 @@
 
 	// Derived admin flags from session scopes
 	let showOrganizations = $derived(isGovernanceAdmin(sessionInfo));
-	let showOrgSettings = $derived(isOrgAdmin(sessionInfo.scopes));
+	let showOrgSettings = $derived(isOrgAdmin(sessionInfo.orgScopes));
 
 	// Check if a path is active
 	function isActive(href: string): boolean {

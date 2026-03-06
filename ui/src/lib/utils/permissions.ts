@@ -1,82 +1,54 @@
-import type { SessionInfoResponse } from '$lib/api/types';
+import type { GrantSummary, SessionInfoResponse } from '$lib/api/types';
 
 /**
  * Check if user is a platform governance admin (can manage orgs, users, audit).
  * Does NOT grant resource access — governance only.
  */
 export function isGovernanceAdmin(user: SessionInfoResponse): boolean {
-	return user.scopes?.includes('admin:all') ?? false;
+	return user.orgScopes?.includes('admin:all') ?? false;
 }
 
 /**
- * Check if a user has a specific scope.
- * Checks actual scopes — no admin bypass.
- * Supports:
- * - Exact match: "aggregated-schemas:read"
- * - Team-scoped: "team:engineering:aggregated-schemas:read" matches "aggregated-schemas:read"
- * - Wildcard: "learning-sessions:*" matches "learning-sessions:read"
- * - Team wildcard: "team:engineering:*:*" matches any resource for that team
+ * Check if a user has a specific grant for a resource+action pair.
+ * Checks across all teams — no admin bypass.
+ */
+export function hasGrant(grants: GrantSummary[], resource: string, action: string): boolean {
+	return grants.some((g) => g.resourceType === resource && g.action === action);
+}
+
+/**
+ * Check if a user has a specific scope (resource:action format).
+ * Delegates to hasGrant using the user's grants array.
  */
 export function hasScope(user: SessionInfoResponse, requiredScope: string): boolean {
-	// Parse the required scope (format: "resource:action")
-	const [requiredResource, requiredAction] = requiredScope.split(':');
-
-	return user.scopes.some((scope) => {
-		// Exact match (global scope)
-		if (scope === requiredScope) return true;
-
-		// Team-scoped match: "team:{team}:{resource}:{action}"
-		const parts = scope.split(':');
-		if (parts.length === 4 && parts[0] === 'team') {
-			const [, , resource, action] = parts;
-			// Check if team scope matches required resource:action
-			if (resource === requiredResource && action === requiredAction) {
-				return true;
-			}
-			// Check team wildcard: team:{team}:*:*
-			if (resource === '*' && action === '*') {
-				return true;
-			}
-			// Check action wildcard: team:{team}:{resource}:*
-			if (resource === requiredResource && action === '*') {
-				return true;
-			}
-		}
-
-		// Global wildcard: "resource:*" matches "resource:action"
-		if (scope.endsWith(':*')) {
-			const prefix = scope.slice(0, -1);
-			return requiredScope.startsWith(prefix);
-		}
-
-		return false;
-	});
+	const [resource, action] = requiredScope.split(':');
+	return hasGrant(user.grants, resource, action);
 }
 
 /**
  * Check if user can read aggregated schemas.
  */
 export function canReadSchemas(user: SessionInfoResponse): boolean {
-	return hasScope(user, 'aggregated-schemas:read');
+	return hasGrant(user.grants, 'aggregated-schemas', 'read');
 }
 
 /**
  * Check if user can create learning sessions.
  */
 export function canCreateLearningSessions(user: SessionInfoResponse): boolean {
-	return hasScope(user, 'learning-sessions:create');
+	return hasGrant(user.grants, 'learning-sessions', 'create');
 }
 
 /**
  * Check if user can delete learning sessions.
  */
 export function canDeleteLearningSessions(user: SessionInfoResponse): boolean {
-	return hasScope(user, 'learning-sessions:delete');
+	return hasGrant(user.grants, 'learning-sessions', 'delete');
 }
 
 /**
  * Check if user can read learning sessions.
  */
 export function canReadLearningSessions(user: SessionInfoResponse): boolean {
-	return hasScope(user, 'learning-sessions:read');
+	return hasGrant(user.grants, 'learning-sessions', 'read');
 }

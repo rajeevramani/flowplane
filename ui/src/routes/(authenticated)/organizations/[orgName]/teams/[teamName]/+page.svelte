@@ -29,7 +29,7 @@
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			userIsOrgAdmin = isOrgAdmin(sessionInfo.scopes);
+			userIsOrgAdmin = isOrgAdmin(sessionInfo.orgScopes);
 			await loadTeam();
 		} catch {
 			goto('/login');

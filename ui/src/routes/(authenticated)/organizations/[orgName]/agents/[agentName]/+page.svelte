@@ -3,9 +3,10 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import type { AgentInfo, GrantResponse, CreateGrantRequest } from '$lib/api/types';
+	import type { AgentInfo, GrantResponse, CreateGrantRequest, TeamResponse } from '$lib/api/types';
 	import { isOrgAdmin } from '$lib/stores/org';
 	import DeleteConfirmModal from '$lib/components/DeleteConfirmModal.svelte';
+	import PermissionMatrix from '$lib/components/PermissionMatrix.svelte';
 
 	let orgName = $derived($page.params.orgName ?? '');
 	let agentName = $derived($page.params.agentName ?? '');
@@ -27,7 +28,10 @@
 	let grantMethods = $state<string[]>([]);
 
 	// Available teams for the org
-	let availableTeams = $state<string[]>([]);
+	let availableTeams = $state<TeamResponse[]>([]);
+
+	// Selected team for permission matrix
+	let selectedMatrixTeam = $state<TeamResponse | null>(null);
 
 	// Delete modal
 	let showDeleteModal = $state(false);
@@ -38,158 +42,23 @@
 	let showDeleteAgentModal = $state(false);
 	let isDeletingAgent = $state(false);
 
-	// Permission matrix state (cp-tool agents)
-	let matrixTeam = $state('');
-	let matrixSelections = $state<Record<string, boolean>>({});
-	let isSavingMatrix = $state(false);
-	let matrixErrors = $state<string[]>([]);
-	let matrixSuccess = $state<string | null>(null);
-
-	// Valid resource+action pairs from backend TOOL_AUTHORIZATIONS.
-	// "api" resource excluded — that's for gateway tools, not cp-tool grants.
-	const VALID_CP_PAIRS: Record<string, string[]> = {
-		'clusters': ['read', 'create', 'update', 'delete'],
-		'listeners': ['read', 'create', 'update', 'delete'],
-		'routes': ['read', 'create', 'update', 'delete'],
-		'filters': ['read', 'create', 'update', 'delete'],
-		'secrets': ['read', 'create', 'update', 'delete'],
-		'dataplanes': ['read', 'create', 'update', 'delete'],
-		'custom-wasm-filters': ['read', 'create', 'update', 'delete'],
-		'learning-sessions': ['read', 'create', 'execute', 'delete'],
-		'aggregated-schemas': ['read', 'execute'],
-		'proxy-certificates': ['read', 'create', 'delete'],
-		'reports': ['read'],
-		'audit': ['read'],
-	};
-	const CP_RESOURCES = Object.keys(VALID_CP_PAIRS);
-	const CP_ACTIONS = ['read', 'create', 'update', 'delete', 'execute'] as const;
 	const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 
 	let agentContext = $derived(agent?.agentContext ?? null);
 	let isCpTool = $derived(agentContext === 'cp-tool');
 	let isGatewayOrConsumer = $derived(agentContext === 'gateway-tool' || agentContext === 'api-consumer');
 
-	// Matrix key uses backend action (resource:action), not display column
-	function matrixKey(resource: string, action: string): string {
-		return `${resource}:${action}`;
-	}
-
-	function isValidPair(resource: string, action: string): boolean {
-		return VALID_CP_PAIRS[resource]?.includes(action) ?? false;
-	}
-
-	// Build set of existing grant keys for the selected team
-	let existingGrantKeys = $derived.by(() => {
-		const keys = new Set<string>();
-		for (const g of grants) {
-			if (g.grantType === 'cp-tool' && g.resourceType && g.action && g.team === matrixTeam) {
-				keys.add(matrixKey(g.resourceType, g.action));
-			}
-		}
-		return keys;
+	// Grants for the permission matrix: resource grants filtered to the selected team
+	let matrixGrants = $derived.by(() => {
+		const team = selectedMatrixTeam;
+		if (!team) return [];
+		return grants.filter((g) => g.grantType === 'resource' && g.team === team.id);
 	});
-
-	// Count of new selections (not already granted)
-	let newSelectionCount = $derived.by(() => {
-		let count = 0;
-		for (const [key, selected] of Object.entries(matrixSelections)) {
-			if (selected && !existingGrantKeys.has(key)) {
-				count++;
-			}
-		}
-		return count;
-	});
-
-	function toggleMatrixCell(resource: string, action: string) {
-		if (!isValidPair(resource, action)) return;
-		const key = matrixKey(resource, action);
-		if (existingGrantKeys.has(key)) return;
-		matrixSelections = { ...matrixSelections, [key]: !matrixSelections[key] };
-	}
-
-	function selectAllForResource(resource: string) {
-		const updates: Record<string, boolean> = { ...matrixSelections };
-		const validActions = CP_ACTIONS.filter((a) => isValidPair(resource, a));
-		const allSelected = validActions.every(
-			(a) => existingGrantKeys.has(matrixKey(resource, a)) || matrixSelections[matrixKey(resource, a)]
-		);
-		for (const action of validActions) {
-			const key = matrixKey(resource, action);
-			if (!existingGrantKeys.has(key)) {
-				updates[key] = !allSelected;
-			}
-		}
-		matrixSelections = updates;
-	}
-
-	function selectAllForAction(action: string) {
-		const updates: Record<string, boolean> = { ...matrixSelections };
-		const validResources = CP_RESOURCES.filter((r) => isValidPair(r, action));
-		const allSelected = validResources.every(
-			(r) => existingGrantKeys.has(matrixKey(r, action)) || matrixSelections[matrixKey(r, action)]
-		);
-		for (const resource of validResources) {
-			const key = matrixKey(resource, action);
-			if (!existingGrantKeys.has(key)) {
-				updates[key] = !allSelected;
-			}
-		}
-		matrixSelections = updates;
-	}
-
-	async function handleSaveMatrix() {
-		if (!matrixTeam) return;
-
-		const toCreate: Array<{ resource: string; action: string }> = [];
-		for (const [key, selected] of Object.entries(matrixSelections)) {
-			if (selected && !existingGrantKeys.has(key)) {
-				const [resource, action] = key.split(':');
-				toCreate.push({ resource, action });
-			}
-		}
-
-		if (toCreate.length === 0) return;
-
-		isSavingMatrix = true;
-		matrixErrors = [];
-		matrixSuccess = null;
-
-		let created = 0;
-		const errors: string[] = [];
-
-		for (const { resource, action } of toCreate) {
-			try {
-				const request: CreateGrantRequest = {
-					team: matrixTeam,
-					grantType: 'cp-tool',
-					resourceType: resource,
-					action: action
-				};
-				await apiClient.createAgentGrant(orgName, agentName, request);
-				created++;
-			} catch (err: unknown) {
-				const msg = err instanceof Error ? err.message : 'Unknown error';
-				if (msg.includes('409') || msg.includes('already exists')) {
-					created++;
-				} else {
-					errors.push(`${resource}:${action} — ${msg}`);
-				}
-			}
-		}
-
-		if (created > 0) {
-			matrixSuccess = `Created ${created} grant${created > 1 ? 's' : ''}`;
-		}
-		matrixErrors = errors;
-		matrixSelections = {};
-		await loadGrants();
-		isSavingMatrix = false;
-	}
 
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!isOrgAdmin(sessionInfo.scopes)) {
+			if (!isOrgAdmin(sessionInfo.orgScopes)) {
 				goto(`/organizations/${orgName}/agents`);
 				return;
 			}
@@ -205,10 +74,10 @@
 
 			// Load teams
 			const teamsResp = await apiClient.listOrgTeams(orgName);
-			availableTeams = teamsResp.teams.map((t) => t.name);
+			availableTeams = teamsResp.teams;
 			if (availableTeams.length > 0) {
-				grantTeam = availableTeams[0];
-				matrixTeam = availableTeams[0];
+				grantTeam = availableTeams[0].name;
+				selectedMatrixTeam = availableTeams[0];
 			}
 
 			// Load grants
@@ -221,8 +90,9 @@
 	});
 
 	async function loadGrants() {
+		if (!agent) return;
 		try {
-			const resp = await apiClient.listAgentGrants(orgName, agentName);
+			const resp = await apiClient.listPrincipalGrants(orgName, agent.agentId);
 			grants = resp.grants;
 		} catch (err: unknown) {
 			loadError = err instanceof Error ? err.message : 'Failed to load grants';
@@ -230,7 +100,7 @@
 	}
 
 	function resetCreateForm() {
-		grantTeam = availableTeams.length > 0 ? availableTeams[0] : '';
+		grantTeam = availableTeams.length > 0 ? availableTeams[0].name : '';
 		grantRouteId = '';
 		grantMethods = [];
 		createError = null;
@@ -254,6 +124,7 @@
 			createError = 'Team is required';
 			return;
 		}
+		if (!agent) return;
 
 		isCreating = true;
 		createError = null;
@@ -280,7 +151,7 @@
 				request.allowedMethods = grantMethods;
 			}
 
-			await apiClient.createAgentGrant(orgName, agentName, request);
+			await apiClient.createPrincipalGrant(orgName, agent.agentId, request);
 			showCreateForm = false;
 			await loadGrants();
 		} catch (err: unknown) {
@@ -306,10 +177,10 @@
 	}
 
 	async function handleDeleteGrant() {
-		if (!grantToDelete) return;
+		if (!grantToDelete || !agent) return;
 		isDeleting = true;
 		try {
-			await apiClient.deleteAgentGrant(orgName, agentName, grantToDelete.id);
+			await apiClient.deletePrincipalGrant(orgName, agent.agentId, grantToDelete.id);
 			showDeleteModal = false;
 			grantToDelete = null;
 			await loadGrants();
@@ -331,7 +202,7 @@
 	}
 
 	function formatGrantResource(grant: GrantResponse): string {
-		if (grant.grantType === 'cp-tool') {
+		if (grant.grantType === 'gateway-tool' || grant.grantType === 'resource') {
 			return `${grant.resourceType ?? ''}:${grant.action ?? ''}`;
 		}
 		return grant.routeId ?? '-';
@@ -450,103 +321,27 @@
 							<label for="matrix-team" class="text-sm text-gray-600">Team:</label>
 							<select
 								id="matrix-team"
-								bind:value={matrixTeam}
+								bind:value={selectedMatrixTeam}
 								class="px-3 py-1.5 border border-gray-300 rounded-md text-sm"
 							>
 								{#each availableTeams as team}
-									<option value={team}>{team}</option>
+									<option value={team}>{team.name}</option>
 								{/each}
 							</select>
 						</div>
 					</div>
 
-					{#if matrixSuccess}
-						<div class="mx-6 mt-4 bg-green-50 border-l-4 border-green-500 p-3">
-							<p class="text-green-800 text-sm">{matrixSuccess}</p>
-						</div>
+					{#if selectedMatrixTeam}
+						<PermissionMatrix
+							principalId={agent.agentId}
+							{orgName}
+							teamId={selectedMatrixTeam.id}
+							teamName={selectedMatrixTeam.name}
+							existingGrants={matrixGrants}
+							onGrantCreated={loadGrants}
+							onGrantDeleted={loadGrants}
+						/>
 					{/if}
-					{#if matrixErrors.length > 0}
-						<div class="mx-6 mt-4 bg-red-50 border-l-4 border-red-500 p-3">
-							<p class="text-red-800 text-sm font-medium">Some grants failed:</p>
-							{#each matrixErrors as error}
-								<p class="text-red-700 text-sm">{error}</p>
-							{/each}
-						</div>
-					{/if}
-
-					<div class="overflow-x-auto">
-						<table class="min-w-full">
-							<thead>
-								<tr class="bg-gray-50 border-b border-gray-200">
-									<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-48">
-										Resource
-									</th>
-									{#each CP_ACTIONS as action}
-										<th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20">
-											<button
-												onclick={() => selectAllForAction(action)}
-												class="hover:text-blue-600 cursor-pointer"
-												title="Toggle all {action}"
-											>
-												{action}
-											</button>
-										</th>
-									{/each}
-								</tr>
-							</thead>
-							<tbody class="divide-y divide-gray-100">
-								{#each CP_RESOURCES as resource}
-									<tr class="hover:bg-gray-50/50">
-										<td class="px-4 py-2.5">
-											<button
-												onclick={() => selectAllForResource(resource)}
-												class="text-sm font-mono text-gray-900 hover:text-blue-600 cursor-pointer"
-												title="Toggle all for {resource}"
-											>
-												{resource}
-											</button>
-										</td>
-										{#each CP_ACTIONS as action}
-											<td class="px-3 py-2.5 text-center">
-												{#if isValidPair(resource, action)}
-													{@const key = matrixKey(resource, action)}
-													{@const isExisting = existingGrantKeys.has(key)}
-													{@const isSelected = matrixSelections[key] ?? false}
-													<input
-														type="checkbox"
-														checked={isExisting || isSelected}
-														disabled={isExisting || isSavingMatrix}
-														onchange={() => toggleMatrixCell(resource, action)}
-														class="h-4 w-4 rounded border-gray-300 {isExisting ? 'text-green-600 cursor-not-allowed' : 'text-blue-600 cursor-pointer'}"
-														title={isExisting ? 'Already granted' : `${resource}:${action}`}
-													/>
-												{:else}
-													<span class="text-gray-200">—</span>
-												{/if}
-											</td>
-										{/each}
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-
-					<div class="px-6 py-4 border-t border-gray-200 flex justify-between items-center bg-gray-50">
-						<p class="text-sm text-gray-500">
-							{#if newSelectionCount > 0}
-								{newSelectionCount} new grant{newSelectionCount > 1 ? 's' : ''} selected
-							{:else}
-								Check boxes to add permissions. Green = already granted.
-							{/if}
-						</p>
-						<button
-							onclick={handleSaveMatrix}
-							disabled={isSavingMatrix || newSelectionCount === 0}
-							class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-						>
-							{isSavingMatrix ? 'Saving...' : `Save ${newSelectionCount > 0 ? `(${newSelectionCount})` : ''}`}
-						</button>
-					</div>
 				</div>
 			{/if}
 
@@ -617,9 +412,11 @@
 									<tr class="hover:bg-gray-50">
 										<td class="px-6 py-4 whitespace-nowrap">
 											<span
-												class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono {grant.grantType === 'cp-tool'
+												class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono {grant.grantType === 'gateway-tool'
 													? 'bg-purple-100 text-purple-800'
-													: 'bg-green-100 text-green-800'}"
+													: grant.grantType === 'resource'
+														? 'bg-blue-100 text-blue-800'
+														: 'bg-green-100 text-green-800'}"
 											>
 												{grant.grantType}
 											</span>
@@ -691,7 +488,7 @@
 									class="w-full px-3 py-2 border border-gray-300 rounded-md"
 								>
 									{#each availableTeams as team}
-										<option value={team}>{team}</option>
+										<option value={team.name}>{team.name}</option>
 									{/each}
 								</select>
 							</div>

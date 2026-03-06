@@ -115,7 +115,6 @@ import type {
 	OrgTeamMemberResponse,
 	ListOrgTeamMembersResponse,
 	AddOrgTeamMemberRequest,
-	UpdateOrgTeamMemberScopesRequest,
 	OrgRole,
 	// Agent types
 	AgentInfo,
@@ -125,6 +124,7 @@ import type {
 	CreateGrantRequest,
 	GrantResponse,
 	GrantListResponse,
+	GrantSummary,
 	// Invite types
 	InviteOrgMemberRequest,
 	InviteOrgMemberResponse,
@@ -219,7 +219,8 @@ class ApiClient {
 			name: string;
 			isAdmin: boolean;
 			isPlatformAdmin: boolean;
-			scopes: string[];
+			orgScopes: string[];
+			grants: GrantSummary[];
 			teams: string[];
 			orgId?: string;
 			orgName?: string;
@@ -232,7 +233,8 @@ class ApiClient {
 			email: backendSession.email || (user.profile.email as string) || '',
 			isPlatformAdmin: backendSession.isPlatformAdmin,
 			teams: backendSession.teams,
-			scopes: backendSession.scopes,
+			orgScopes: backendSession.orgScopes,
+			grants: backendSession.grants,
 			expiresAt: user.expires_at ? new Date(user.expires_at * 1000).toISOString() : null,
 			orgId: backendSession.orgId,
 			orgName: backendSession.orgName,
@@ -1563,18 +1565,6 @@ class ApiClient {
 		);
 	}
 
-	async updateTeamMemberScopes(
-		orgName: string,
-		teamName: string,
-		userId: string,
-		data: UpdateOrgTeamMemberScopesRequest
-	): Promise<OrgTeamMemberResponse> {
-		return this.put<OrgTeamMemberResponse>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(userId)}`,
-			data
-		);
-	}
-
 	async removeTeamMember(orgName: string, teamName: string, userId: string): Promise<void> {
 		return this.delete<void>(
 			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(userId)}`
@@ -1618,26 +1608,30 @@ class ApiClient {
 		);
 	}
 
-	async listAgentGrants(orgName: string, agentName: string): Promise<GrantListResponse> {
-		return this.get<GrantListResponse>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}/grants`
-		);
-	}
+	// ============================================================================
+	// Unified Grant API (principals — users and agents)
+	// ============================================================================
 
-	async createAgentGrant(
+	async createPrincipalGrant(
 		orgName: string,
-		agentName: string,
+		principalId: string,
 		request: CreateGrantRequest
 	): Promise<GrantResponse> {
 		return this.post<GrantResponse>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}/grants`,
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants`,
 			request
 		);
 	}
 
-	async deleteAgentGrant(orgName: string, agentName: string, grantId: string): Promise<void> {
+	async listPrincipalGrants(orgName: string, principalId: string): Promise<GrantListResponse> {
+		return this.get<GrantListResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants`
+		);
+	}
+
+	async deletePrincipalGrant(orgName: string, principalId: string, grantId: string): Promise<void> {
 		return this.delete<void>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}/grants/${encodeURIComponent(grantId)}`
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants/${encodeURIComponent(grantId)}`
 		);
 	}
 }

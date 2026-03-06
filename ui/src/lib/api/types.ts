@@ -27,13 +27,20 @@ export interface BootstrapInitializeResponse {
 	nextSteps: string[];
 }
 
+export interface GrantSummary {
+	teamName: string;
+	resourceType: string;
+	action: string;
+}
+
 export interface SessionInfoResponse {
 	userId: string;
 	name: string;
 	email: string;
 	isPlatformAdmin: boolean;
 	teams: string[];
-	scopes: string[];
+	orgScopes: string[];
+	grants: GrantSummary[];
 	expiresAt: string | null;
 	orgId?: string;
 	orgName?: string;
@@ -1802,10 +1809,6 @@ export interface AddOrgTeamMemberRequest {
 	scopes: string[];
 }
 
-export interface UpdateOrgTeamMemberScopesRequest {
-	scopes: string[];
-}
-
 // ============================================================================
 // Invite Types (Instant Provisioning via Admin API)
 // ============================================================================
@@ -1905,7 +1908,7 @@ export interface CreateAgentResponse {
 // ===== Grant types =====
 
 export interface CreateGrantRequest {
-	grantType: string;
+	grantType: 'resource' | 'gateway-tool' | 'route';
 	resourceType?: string;
 	action?: string;
 	team: string;
@@ -1916,7 +1919,8 @@ export interface CreateGrantRequest {
 
 export interface GrantResponse {
 	id: string;
-	grantType: string;
+	principalId: string;
+	grantType: 'resource' | 'gateway-tool' | 'route';
 	resourceType?: string;
 	action?: string;
 	team?: string;

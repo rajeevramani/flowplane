@@ -42,9 +42,9 @@
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			userScopes = sessionInfo.scopes;
+			userScopes = sessionInfo.orgScopes;
 			isPlatformAdmin = isGovernanceAdmin(sessionInfo);
-			if (!isGovernanceAdmin(sessionInfo) && !isOrgAdmin(sessionInfo.scopes)) {
+			if (!isGovernanceAdmin(sessionInfo) && !isOrgAdmin(sessionInfo.orgScopes)) {
 				goto('/dashboard');
 				return;
 			}

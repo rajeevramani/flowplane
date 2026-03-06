@@ -21,7 +21,8 @@ const mockSessionInfo: SessionInfoResponse = {
 	email: 'admin@test.com',
 	isPlatformAdmin: false,
 	teams: ['test-team'],
-	scopes: ['admin:all'],
+	orgScopes: ['admin:all'],
+	grants: [],
 	expiresAt: null
 };
 

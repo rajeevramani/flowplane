@@ -7,47 +7,38 @@
 		OrgTeamMemberResponse,
 		OrgMembershipResponse,
 		AddOrgTeamMemberRequest,
-		UpdateOrgTeamMemberScopesRequest
+		GrantResponse
 	} from '$lib/api/types';
 	import { isOrgAdmin } from '$lib/stores/org';
+	import PermissionMatrix from '$lib/components/PermissionMatrix.svelte';
 
 	let orgName = $derived($page.params.orgName ?? '');
 	let teamName = $derived($page.params.teamName ?? '');
 
 	let members = $state<OrgTeamMemberResponse[]>([]);
 	let orgMembers = $state<OrgMembershipResponse[]>([]);
+	let teamId = $state('');
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
 	let actionError = $state<string | null>(null);
 
 	// Add member state
 	let selectedUserId = $state('');
-	let selectedScopes = $state<string[]>([]);
 	let isAdding = $state(false);
 
-	// Edit scopes state
-	let editingMemberId = $state<string | null>(null);
-	let editingScopes = $state<string[]>([]);
-	let isSavingScopes = $state(false);
+	// Edit permissions state
+	let expandedMemberId = $state<string | null>(null);
+	let memberGrants = $state<Record<string, GrantResponse[]>>({});
+	let isLoadingGrants = $state<Record<string, boolean>>({});
 
 	// Remove member state
 	let showRemoveConfirm = $state<string | null>(null);
 	let isRemoving = $state(false);
 
-	const ALL_SCOPES = [
-		'clusters:read', 'clusters:create', 'clusters:update', 'clusters:delete',
-		'routes:read', 'routes:create', 'routes:update', 'routes:delete',
-		'listeners:read', 'listeners:create', 'listeners:update', 'listeners:delete',
-		'filters:read', 'filters:create', 'filters:update', 'filters:delete',
-		'learning-sessions:read', 'learning-sessions:create', 'learning-sessions:execute', 'learning-sessions:delete',
-		'secrets:read', 'secrets:create', 'secrets:update', 'secrets:delete',
-		'stats:read'
-	];
-
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!isOrgAdmin(sessionInfo.scopes)) {
+			if (!isOrgAdmin(sessionInfo.orgScopes)) {
 				goto(`/organizations/${orgName}/teams/${teamName}`);
 				return;
 			}
@@ -57,11 +48,20 @@
 				isLoading = false;
 				return;
 			}
-			await Promise.all([loadMembers(), loadOrgMembers(orgId)]);
+			await Promise.all([loadTeam(), loadMembers(), loadOrgMembers(orgId)]);
 		} catch {
 			goto('/login');
 		}
 	});
+
+	async function loadTeam() {
+		try {
+			const team = await apiClient.getOrgTeam(orgName, teamName);
+			teamId = team.id;
+		} catch {
+			// Non-fatal — PermissionMatrix will be unavailable
+		}
+	}
 
 	async function loadMembers() {
 		isLoading = true;
@@ -107,13 +107,6 @@
 		return orgMember?.userEmail ?? null;
 	}
 
-	function toggleScope(scope: string, scopeList: string[]): string[] {
-		if (scopeList.includes(scope)) {
-			return scopeList.filter((s) => s !== scope);
-		}
-		return [...scopeList, scope];
-	}
-
 	async function handleAddMember() {
 		if (!selectedUserId) return;
 
@@ -123,13 +116,12 @@
 		try {
 			const request: AddOrgTeamMemberRequest = {
 				userId: selectedUserId,
-				scopes: selectedScopes
+				scopes: []
 			};
 
 			const newMember = await apiClient.addTeamMember(orgName, teamName, request);
 			members = [...members, newMember];
 			selectedUserId = '';
-			selectedScopes = [];
 		} catch (err: unknown) {
 			actionError = err instanceof Error ? err.message : 'Failed to add member';
 		} finally {
@@ -137,33 +129,26 @@
 		}
 	}
 
-	function startEditScopes(member: OrgTeamMemberResponse) {
-		editingMemberId = member.userId;
-		editingScopes = [...member.scopes];
+	async function toggleMemberPermissions(member: OrgTeamMemberResponse) {
+		if (expandedMemberId === member.userId) {
+			expandedMemberId = null;
+			return;
+		}
+		expandedMemberId = member.userId;
+		if (!memberGrants[member.userId]) {
+			await loadMemberGrants(member.userId);
+		}
 	}
 
-	function cancelEditScopes() {
-		editingMemberId = null;
-		editingScopes = [];
-	}
-
-	async function handleSaveScopes(userId: string) {
-		isSavingScopes = true;
-		actionError = null;
-
+	async function loadMemberGrants(userId: string) {
+		isLoadingGrants = { ...isLoadingGrants, [userId]: true };
 		try {
-			const request: UpdateOrgTeamMemberScopesRequest = {
-				scopes: editingScopes
-			};
-
-			const updated = await apiClient.updateTeamMemberScopes(orgName, teamName, userId, request);
-			members = members.map((m) => (m.userId === userId ? updated : m));
-			editingMemberId = null;
-			editingScopes = [];
-		} catch (err: unknown) {
-			actionError = err instanceof Error ? err.message : 'Failed to update scopes';
+			const resp = await apiClient.listPrincipalGrants(orgName, userId);
+			memberGrants = { ...memberGrants, [userId]: resp.grants };
+		} catch {
+			memberGrants = { ...memberGrants, [userId]: [] };
 		} finally {
-			isSavingScopes = false;
+			isLoadingGrants = { ...isLoadingGrants, [userId]: false };
 		}
 	}
 
@@ -254,28 +239,6 @@
 					</div>
 
 					{#if selectedUserId}
-						<div>
-							<p class="text-sm font-medium text-gray-700 mb-2">Initial scopes (optional)</p>
-							<div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-								{#each ALL_SCOPES as scope}
-									<label class="flex items-center gap-2 text-sm cursor-pointer">
-										<input
-											type="checkbox"
-											checked={selectedScopes.includes(scope)}
-											onchange={() => {
-												selectedScopes = toggleScope(scope, selectedScopes);
-											}}
-											class="rounded border-gray-300 text-blue-600"
-										/>
-										<span class="font-mono text-gray-700">{scope}</span>
-									</label>
-								{/each}
-							</div>
-							<p class="mt-2 text-xs text-gray-500">
-								Leave empty to use default scopes based on org role.
-							</p>
-						</div>
-
 						<div class="flex justify-end">
 							<button
 								onclick={handleAddMember}
@@ -319,71 +282,41 @@
 									<div class="text-xs text-gray-400 mt-1">Added {formatDate(member.createdAt)}</div>
 								</div>
 								<div class="flex gap-2 ml-4">
-									{#if editingMemberId !== member.userId}
-										<button
-											onclick={() => startEditScopes(member)}
-											class="text-sm text-blue-600 hover:text-blue-900"
-										>
-											Edit Scopes
-										</button>
-										<button
-											onclick={() => (showRemoveConfirm = member.userId)}
-											class="text-sm text-red-600 hover:text-red-900"
-										>
-											Remove
-										</button>
-									{/if}
+									<button
+										onclick={() => toggleMemberPermissions(member)}
+										class="text-sm text-blue-600 hover:text-blue-900"
+									>
+										{expandedMemberId === member.userId ? 'Hide Permissions' : 'Edit Permissions'}
+									</button>
+									<button
+										onclick={() => (showRemoveConfirm = member.userId)}
+										class="text-sm text-red-600 hover:text-red-900"
+									>
+										Remove
+									</button>
 								</div>
 							</div>
 
-							{#if editingMemberId === member.userId}
-								<!-- Scope editor -->
-								<div class="mt-4">
-									<p class="text-sm font-medium text-gray-700 mb-2">Edit scopes</p>
-									<div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-										{#each ALL_SCOPES as scope}
-											<label class="flex items-center gap-2 text-sm cursor-pointer">
-												<input
-													type="checkbox"
-													checked={editingScopes.includes(scope)}
-													onchange={() => {
-														editingScopes = toggleScope(scope, editingScopes);
-													}}
-													class="rounded border-gray-300 text-blue-600"
-												/>
-												<span class="font-mono text-gray-700">{scope}</span>
-											</label>
-										{/each}
-									</div>
-									<div class="flex justify-end gap-2 mt-3">
-										<button
-											onclick={cancelEditScopes}
-											disabled={isSavingScopes}
-											class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
-										>
-											Cancel
-										</button>
-										<button
-											onclick={() => handleSaveScopes(member.userId)}
-											disabled={isSavingScopes}
-											class="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
-										>
-											{isSavingScopes ? 'Saving...' : 'Save Scopes'}
-										</button>
-									</div>
-								</div>
-							{:else}
-								<!-- Scopes display -->
-								<div class="mt-2 flex flex-wrap gap-1">
-									{#each member.scopes as scope}
-										<span
-											class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-gray-100 text-gray-700"
-										>
-											{scope}
-										</span>
-									{/each}
-									{#if member.scopes.length === 0}
-										<span class="text-xs text-gray-400">No scopes</span>
+							{#if expandedMemberId === member.userId}
+								<div class="mt-4 border border-gray-200 rounded-md overflow-hidden">
+									{#if isLoadingGrants[member.userId]}
+										<div class="flex justify-center items-center py-8">
+											<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+										</div>
+									{:else if teamId}
+										<PermissionMatrix
+											principalId={member.userId}
+											{orgName}
+											{teamId}
+											{teamName}
+											existingGrants={memberGrants[member.userId] ?? []}
+											onGrantCreated={() => loadMemberGrants(member.userId)}
+											onGrantDeleted={() => loadMemberGrants(member.userId)}
+										/>
+									{:else}
+										<p class="px-4 py-3 text-sm text-gray-500">
+											Team ID not available — cannot manage permissions.
+										</p>
 									{/if}
 								</div>
 							{/if}
@@ -413,7 +346,10 @@
 				<div class="mt-2 px-7 py-3">
 					<p class="text-sm text-gray-500">
 						Are you sure you want to remove <strong
-							>{(() => { const m = members.find(m => m.userId === showRemoveConfirm); return m ? getMemberDisplay(m) : showRemoveConfirm; })()}</strong
+							>{(() => {
+								const m = members.find((m) => m.userId === showRemoveConfirm);
+								return m ? getMemberDisplay(m) : showRemoveConfirm;
+							})()}</strong
 						> from this team?
 					</p>
 				</div>
