@@ -102,16 +102,18 @@ async fn insert_grant(
     action: Option<&str>,
     route_id: Option<&str>,
 ) {
+    // Map legacy grant_type values to new schema values
+    let mapped_grant_type = if grant_type == "cp-tool" { "resource" } else { grant_type };
     sqlx::query(
-        "INSERT INTO agent_grants \
-         (id, agent_id, org_id, team, grant_type, resource_type, action, route_id, created_by) \
+        "INSERT INTO grants \
+         (id, principal_id, org_id, team_id, grant_type, resource_type, action, route_id, created_by) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $2)",
     )
     .bind(grant_id)
     .bind(agent_id)
     .bind(org_id)
     .bind(team_id)
-    .bind(grant_type)
+    .bind(mapped_grant_type)
     .bind(resource_type)
     .bind(action)
     .bind(route_id)
@@ -428,7 +430,7 @@ async fn test_grant_crud_create_list_delete() {
         &grant_id,
         &agent_id,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "cp-tool",
         Some("clusters"),
         Some("read"),
@@ -440,8 +442,8 @@ async fn test_grant_crud_create_list_delete() {
     type GrantRow = (String, String, String, Option<String>, Option<String>);
     #[allow(clippy::type_complexity)]
     let grants: Vec<GrantRow> = sqlx::query_as(
-        "SELECT id, grant_type, team, resource_type, action \
-         FROM agent_grants WHERE agent_id = $1",
+        "SELECT id, grant_type, team_id, resource_type, action \
+         FROM grants WHERE principal_id = $1",
     )
     .bind(&agent_id)
     .fetch_all(pool)
@@ -450,20 +452,20 @@ async fn test_grant_crud_create_list_delete() {
 
     assert_eq!(grants.len(), 1, "Should have exactly 1 grant");
     assert_eq!(grants[0].0, grant_id);
-    assert_eq!(grants[0].1, "cp-tool");
-    assert_eq!(grants[0].2, "test-team");
+    assert_eq!(grants[0].1, "resource");
+    assert_eq!(grants[0].2, TEST_TEAM_ID);
     assert_eq!(grants[0].3.as_deref(), Some("clusters"));
     assert_eq!(grants[0].4.as_deref(), Some("read"));
 
     // Delete grant
-    sqlx::query("DELETE FROM agent_grants WHERE id = $1")
+    sqlx::query("DELETE FROM grants WHERE id = $1")
         .bind(&grant_id)
         .execute(pool)
         .await
         .expect("Failed to delete grant");
 
     // Verify gone
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_grants WHERE agent_id = $1")
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM grants WHERE principal_id = $1")
         .bind(&agent_id)
         .fetch_one(pool)
         .await
@@ -489,7 +491,7 @@ async fn test_duplicate_cp_tool_grant_rejected() {
         &grant_id1,
         &agent_id,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "cp-tool",
         Some("clusters"),
         Some("read"),
@@ -500,13 +502,14 @@ async fn test_duplicate_cp_tool_grant_rejected() {
     // Second identical grant — must fail with unique constraint violation
     let grant_id2 = format!("grant-{}", uuid::Uuid::new_v4().simple());
     let result = sqlx::query(
-        "INSERT INTO agent_grants \
-         (id, agent_id, org_id, team, grant_type, resource_type, action, created_by) \
-         VALUES ($1, $2, $3, 'test-team', 'cp-tool', 'clusters', 'read', $2)",
+        "INSERT INTO grants \
+         (id, principal_id, org_id, team_id, grant_type, resource_type, action, created_by) \
+         VALUES ($1, $2, $3, $4, 'resource', 'clusters', 'read', $2)",
     )
     .bind(&grant_id2)
     .bind(&agent_id)
     .bind(TEST_ORG_ID)
+    .bind(TEST_TEAM_ID)
     .execute(pool)
     .await;
 
@@ -540,7 +543,7 @@ async fn test_duplicate_gateway_tool_grant_rejected() {
         &format!("g1-{}", uuid::Uuid::new_v4().simple()),
         &agent_id,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "gateway-tool",
         None,
         None,
@@ -550,13 +553,14 @@ async fn test_duplicate_gateway_tool_grant_rejected() {
 
     // Second identical grant — must fail
     let result = sqlx::query(
-        "INSERT INTO agent_grants \
-         (id, agent_id, org_id, team, grant_type, route_id, created_by) \
-         VALUES ($1, $2, $3, 'test-team', 'gateway-tool', $4, $2)",
+        "INSERT INTO grants \
+         (id, principal_id, org_id, team_id, grant_type, route_id, created_by) \
+         VALUES ($1, $2, $3, $4, 'gateway-tool', $5, $2)",
     )
     .bind(format!("g2-{}", uuid::Uuid::new_v4().simple()))
     .bind(&agent_id)
     .bind(TEST_ORG_ID)
+    .bind(TEST_TEAM_ID)
     .bind(route_id.as_str())
     .execute(pool)
     .await;
@@ -564,7 +568,7 @@ async fn test_duplicate_gateway_tool_grant_rejected() {
     assert!(result.is_err(), "Duplicate gateway-tool grant must be rejected");
 }
 
-/// Agent deletion cascades to agent_grants rows.
+/// Agent deletion cascades to grants rows.
 #[tokio::test]
 async fn test_agent_deletion_cascades_to_grants() {
     let db = TestDatabase::new("grant_cascade_delete").await;
@@ -582,7 +586,7 @@ async fn test_agent_deletion_cascades_to_grants() {
         &grant_id,
         &agent_id,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "cp-tool",
         Some("routes"),
         Some("read"),
@@ -592,14 +596,14 @@ async fn test_agent_deletion_cascades_to_grants() {
 
     // Verify grant exists
     let count_before: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM agent_grants WHERE agent_id = $1")
+        sqlx::query_as("SELECT COUNT(*) FROM grants WHERE principal_id = $1")
             .bind(&agent_id)
             .fetch_one(pool)
             .await
             .expect("Count query failed");
     assert_eq!(count_before.0, 1);
 
-    // Delete user (ON DELETE CASCADE on agent_grants.agent_id FK)
+    // Delete user (ON DELETE CASCADE on grants.principal_id FK)
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(&agent_id)
         .execute(pool)
@@ -607,12 +611,11 @@ async fn test_agent_deletion_cascades_to_grants() {
         .expect("Failed to delete user");
 
     // Grants should be gone
-    let count_after: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM agent_grants WHERE agent_id = $1")
-            .bind(&agent_id)
-            .fetch_one(pool)
-            .await
-            .expect("Count query failed");
+    let count_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM grants WHERE principal_id = $1")
+        .bind(&agent_id)
+        .fetch_one(pool)
+        .await
+        .expect("Count query failed");
     assert_eq!(count_after.0, 0, "Grants must cascade-delete when agent is deleted");
 }
 
@@ -639,7 +642,7 @@ async fn test_multiple_agents_same_route_grant() {
         &format!("g1-{}", uuid::Uuid::new_v4().simple()),
         &agent_id1,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "gateway-tool",
         None,
         None,
@@ -652,7 +655,7 @@ async fn test_multiple_agents_same_route_grant() {
         &format!("g2-{}", uuid::Uuid::new_v4().simple()),
         &agent_id2,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "gateway-tool",
         None,
         None,
@@ -661,7 +664,7 @@ async fn test_multiple_agents_same_route_grant() {
     .await;
 
     let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM agent_grants WHERE route_id = $1 AND grant_type = 'gateway-tool'",
+        "SELECT COUNT(*) FROM grants WHERE route_id = $1 AND grant_type = 'gateway-tool'",
     )
     .bind(route_id.as_str())
     .fetch_one(pool)
@@ -839,7 +842,7 @@ async fn test_exposure_rollback_blocked_by_active_grants() {
         &format!("g-{}", uuid::Uuid::new_v4().simple()),
         &agent_id,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "gateway-tool",
         None,
         None,
@@ -890,7 +893,7 @@ async fn test_exposure_rollback_allowed_after_grant_revocation() {
         &grant_id,
         &agent_id,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "gateway-tool",
         None,
         None,
@@ -899,7 +902,7 @@ async fn test_exposure_rollback_allowed_after_grant_revocation() {
     .await;
 
     // Revoke grant
-    sqlx::query("DELETE FROM agent_grants WHERE id = $1")
+    sqlx::query("DELETE FROM grants WHERE id = $1")
         .bind(&grant_id)
         .execute(pool)
         .await
@@ -927,7 +930,7 @@ async fn test_exposure_rollback_allowed_after_grant_revocation() {
     assert_eq!(result.unwrap().exposure, "internal");
 }
 
-/// Route deletion cascades to agent_grants rows.
+/// Route deletion cascades to grants rows.
 #[tokio::test]
 async fn test_route_deletion_cascades_to_grants() {
     let db = TestDatabase::new("route_cascade_grants").await;
@@ -952,7 +955,7 @@ async fn test_route_deletion_cascades_to_grants() {
         &format!("g-{}", uuid::Uuid::new_v4().simple()),
         &agent_id,
         TEST_ORG_ID,
-        "test-team",
+        TEST_TEAM_ID,
         "gateway-tool",
         None,
         None,
@@ -967,7 +970,7 @@ async fn test_route_deletion_cascades_to_grants() {
         .await
         .expect("Failed to delete route");
 
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_grants WHERE route_id = $1")
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM grants WHERE route_id = $1")
         .bind(route_id.as_str())
         .fetch_one(pool)
         .await
@@ -1034,21 +1037,22 @@ async fn test_cp_tool_grant_requires_resource_type_and_action() {
     insert_org_membership(pool, &agent_id, TEST_ORG_ID).await;
     insert_team_membership(pool, &agent_id, TEST_TEAM_ID).await;
 
-    // cp-tool grant without resource_type — must fail DB constraint
+    // resource grant without resource_type — must fail DB constraint
     let result = sqlx::query(
-        "INSERT INTO agent_grants \
-         (id, agent_id, org_id, team, grant_type, created_by) \
-         VALUES ($1, $2, $3, 'test-team', 'cp-tool', $2)",
+        "INSERT INTO grants \
+         (id, principal_id, org_id, team_id, grant_type, created_by) \
+         VALUES ($1, $2, $3, $4, 'resource', $2)",
     )
     .bind(format!("g-{}", uuid::Uuid::new_v4().simple()))
     .bind(&agent_id)
     .bind(TEST_ORG_ID)
+    .bind(TEST_TEAM_ID)
     .execute(pool)
     .await;
 
     assert!(
         result.is_err(),
-        "cp-tool grant without resource_type must be rejected by DB constraint"
+        "resource grant without resource_type must be rejected by DB constraint"
     );
 }
 
@@ -1072,13 +1076,14 @@ async fn test_gateway_tool_grant_requires_route_id() {
 
     // gateway-tool grant without route_id — must fail DB constraint
     let result = sqlx::query(
-        "INSERT INTO agent_grants \
-         (id, agent_id, org_id, team, grant_type, created_by) \
-         VALUES ($1, $2, $3, 'test-team', 'gateway-tool', $2)",
+        "INSERT INTO grants \
+         (id, principal_id, org_id, team_id, grant_type, created_by) \
+         VALUES ($1, $2, $3, $4, 'gateway-tool', $2)",
     )
     .bind(format!("g-{}", uuid::Uuid::new_v4().simple()))
     .bind(&agent_id)
     .bind(TEST_ORG_ID)
+    .bind(TEST_TEAM_ID)
     .execute(pool)
     .await;
 

@@ -398,6 +398,8 @@ pub struct UpdateRouteRequest {
     pub rule_order: Option<i32>,
     /// New action (optional)
     pub action: Option<serde_json::Value>,
+    /// Route visibility: "internal" (default) or "external" for agent access
+    pub exposure: Option<String>,
 }
 
 // =============================================================================

@@ -510,7 +510,7 @@ impl RouteRepository {
             validate_exposure(new_exposure)?;
             if new_exposure == "internal" && current.exposure == "external" {
                 let grant_count: (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*) FROM agent_grants \
+                    "SELECT COUNT(*) FROM grants \
                      WHERE route_id = $1 AND grant_type IN ('gateway-tool', 'route')",
                 )
                 .bind(id.as_str())

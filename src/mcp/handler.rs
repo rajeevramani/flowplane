@@ -1636,8 +1636,8 @@ async fn load_gateway_grant_route_ids(
     pool: &crate::storage::DbPool,
 ) -> std::collections::HashSet<String> {
     let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT route_id FROM agent_grants \
-         WHERE agent_id = $1 AND grant_type = 'gateway-tool' AND route_id IS NOT NULL",
+        "SELECT route_id FROM grants \
+         WHERE principal_id = $1 AND grant_type = 'gateway-tool' AND route_id IS NOT NULL",
     )
     .bind(agent_id)
     .fetch_all(pool)
@@ -1654,8 +1654,8 @@ async fn agent_has_gateway_grant(
     pool: &crate::storage::DbPool,
 ) -> bool {
     let result: Option<(i32,)> = sqlx::query_as(
-        "SELECT 1 FROM agent_grants \
-         WHERE agent_id = $1 AND route_id = $2 AND grant_type = 'gateway-tool'",
+        "SELECT 1 FROM grants \
+         WHERE principal_id = $1 AND route_id = $2 AND grant_type = 'gateway-tool'",
     )
     .bind(agent_id)
     .bind(route_id)

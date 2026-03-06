@@ -119,10 +119,10 @@ pub async fn load_user_permissions(pool: &DbPool, user_id: &UserId) -> Result<Us
 // Agent grant loading
 // ---------------------------------------------------------------------------
 
-/// DB row for agent_grants query — only the fields needed for permission checks.
+/// DB row for grants query — only the fields needed for permission checks.
 #[derive(Debug, FromRow)]
 struct AgentGrantRow {
-    team: String,
+    team_id: String,
     grant_type: String,
     resource_type: Option<String>,
     action: Option<String>,
@@ -140,8 +140,8 @@ pub async fn load_agent_grants(
     agent_id: &str,
 ) -> Result<(Vec<CpGrant>, Vec<RouteGrant>, Vec<RouteGrant>)> {
     let rows = sqlx::query_as::<_, AgentGrantRow>(
-        "SELECT team, grant_type, resource_type, action, route_id, allowed_methods \
-         FROM agent_grants WHERE agent_id = $1",
+        "SELECT team_id, grant_type, resource_type, action, route_id, allowed_methods \
+         FROM grants WHERE principal_id = $1",
     )
     .bind(agent_id)
     .fetch_all(pool)
@@ -157,9 +157,9 @@ pub async fn load_agent_grants(
 
     for row in rows {
         match row.grant_type.as_str() {
-            "cp-tool" => {
+            "resource" => {
                 if let (Some(resource_type), Some(action)) = (row.resource_type, row.action) {
-                    cp_grants.push(CpGrant { resource_type, action, team: row.team });
+                    cp_grants.push(CpGrant { resource_type, action, team: row.team_id });
                 }
             }
             "gateway-tool" => {
@@ -167,7 +167,7 @@ pub async fn load_agent_grants(
                     gateway_grants.push(RouteGrant {
                         route_id,
                         allowed_methods: row.allowed_methods.unwrap_or_default(),
-                        team: row.team,
+                        team: row.team_id,
                     });
                 }
             }
@@ -176,7 +176,7 @@ pub async fn load_agent_grants(
                     route_grants.push(RouteGrant {
                         route_id,
                         allowed_methods: row.allowed_methods.unwrap_or_default(),
-                        team: row.team,
+                        team: row.team_id,
                     });
                 }
             }
@@ -285,11 +285,11 @@ mod tests {
 
     #[test]
     fn team_scopes_are_added_directly() {
-        let json = r#"["team:engineering:clusters:read","team:engineering:routes:write"]"#;
+        let json = r#"["team:engineering:clusters:read","team:engineering:routes:create"]"#;
         let mut s = HashSet::new();
         let team_scopes: Vec<String> = serde_json::from_str(json).unwrap();
         s.extend(team_scopes);
         assert!(s.contains("team:engineering:clusters:read"));
-        assert!(s.contains("team:engineering:routes:write"));
+        assert!(s.contains("team:engineering:routes:create"));
     }
 }

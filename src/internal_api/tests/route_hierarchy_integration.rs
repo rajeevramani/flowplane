@@ -418,6 +418,7 @@ async fn test_route_update_path_match_type_action() {
         match_type: Some("exact".to_string()),
         rule_order: Some(20),
         action: None,
+        exposure: None,
     };
 
     let result =

@@ -1,11 +1,11 @@
 //! Agent RBAC filter injection for listeners with external route grants.
 //!
-//! Builds Envoy RBAC filter configurations from `agent_grants` rows of type `route`,
+//! Builds Envoy RBAC filter configurations from `grants` rows of type `route`,
 //! enabling per-agent, per-route, per-method access control at the Envoy data plane.
 //!
 //! # Architecture
 //!
-//! 1. For each listener, query `agent_grants` joined with `routes`, `users`, and the
+//! 1. For each listener, query `grants` joined with `routes`, `users`, and the
 //!    route → vhost → route_config → listener_route_configs chain.
 //! 2. Build a `RbacConfig` with one policy per grant (principal = x-flowplane-sub header,
 //!    permission = path + optional method OR-rule).
@@ -141,30 +141,31 @@ pub fn build_jwt_provider_for_agent_auth(
     }
 }
 
-/// Load all `route`-type agent grants for a specific listener's routes from the database.
+/// Load all `route`-type grants for a specific listener's routes from the database.
 ///
-/// The join chain traces: agent_grants → users → routes → virtual_hosts →
+/// The join chain traces: grants → users → routes → virtual_hosts →
 /// route_configs → listener_route_configs → listeners (by name).
 pub async fn load_route_grants_for_listener(
     listener_name: &str,
     pool: &crate::storage::DbPool,
 ) -> Vec<AgentGrantWithRoute> {
     let rows: Vec<AgentGrantWithRoute> = sqlx::query_as(
-        "SELECT ag.agent_id, \
+        "SELECT g.principal_id AS agent_id, \
                 u.zitadel_sub   AS agent_zitadel_sub, \
-                ag.route_id, \
+                g.route_id, \
                 r.path_pattern  AS route_path, \
-                ag.allowed_methods \
-         FROM agent_grants ag \
-         JOIN users u   ON u.id  = ag.agent_id \
-         JOIN routes r  ON r.id  = ag.route_id \
+                g.allowed_methods \
+         FROM grants g \
+         JOIN users u   ON u.id  = g.principal_id \
+         JOIN routes r  ON r.id  = g.route_id \
          JOIN virtual_hosts vh  ON vh.id = r.virtual_host_id \
          JOIN route_configs rc  ON rc.id = vh.route_config_id \
          JOIN listener_route_configs lrc ON lrc.route_config_id = rc.id \
          JOIN listeners l ON l.id = lrc.listener_id \
-         WHERE ag.grant_type = 'route' \
+         WHERE g.grant_type = 'route' \
            AND r.exposure     = 'external' \
-           AND l.name         = $1",
+           AND l.name         = $1 \
+           AND (g.expires_at IS NULL OR g.expires_at > NOW())",
     )
     .bind(listener_name)
     .fetch_all(pool)

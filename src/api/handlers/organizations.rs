@@ -1984,7 +1984,7 @@ pub async fn create_org_agent(
                     team_name_str, org_name
                 ))
             })?;
-        // Agents get empty scopes at creation — access is managed via agent_grants.
+        // Agents get empty scopes at creation — access is managed via the grants table.
         team_entries.push((team.id.to_string(), Vec::new()));
     }
 
@@ -2287,7 +2287,7 @@ struct GrantRow {
     grant_type: String,
     resource_type: Option<String>,
     action: Option<String>,
-    team: String,
+    team_id: String,
     route_id: Option<String>,
     allowed_methods: Option<Vec<String>>,
     created_by: String,
@@ -2325,9 +2325,9 @@ pub async fn create_agent_grant(
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     // Validate grant_type
-    if !matches!(payload.grant_type.as_str(), "cp-tool" | "gateway-tool" | "route") {
+    if !matches!(payload.grant_type.as_str(), "resource" | "gateway-tool" | "route") {
         return Err(ApiError::BadRequest(format!(
-            "invalid grant type '{}': must be cp-tool, gateway-tool, or route",
+            "invalid grant type '{}': must be resource, gateway-tool, or route",
             payload.grant_type
         )));
     }
@@ -2350,15 +2350,15 @@ pub async fn create_agent_grant(
         ApiError::NotFound(format!("Agent '{}' not found in org '{}'", agent_name, org_name))
     })?;
 
-    // Validate cp-tool grant requirements
-    if payload.grant_type == "cp-tool" {
+    // Validate resource grant requirements
+    if payload.grant_type == "resource" {
         let resource_type = payload.resource_type.as_deref().ok_or_else(|| {
-            ApiError::BadRequest("cp-tool grants require resourceType".to_string())
+            ApiError::BadRequest("resource grants require resourceType".to_string())
         })?;
         let action = payload
             .action
             .as_deref()
-            .ok_or_else(|| ApiError::BadRequest("cp-tool grants require action".to_string()))?;
+            .ok_or_else(|| ApiError::BadRequest("resource grants require action".to_string()))?;
 
         // Agent context must be cp-tool
         let agent_ctx = AgentContext::from_db(agent.agent_context.as_deref());
@@ -2371,7 +2371,7 @@ pub async fn create_agent_grant(
         // Validate (resource_type, action) pair exists in TOOL_AUTHORIZATIONS
         if !crate::mcp::tool_registry::is_valid_cp_grant_pair(resource_type, action) {
             return Err(ApiError::BadRequest(format!(
-                "unknown resource type '{}' or action '{}' for cp-tool grant",
+                "unknown resource type '{}' or action '{}' for resource grant",
                 resource_type, action
             )));
         }
@@ -2450,19 +2450,31 @@ pub async fn create_agent_grant(
     let creator_id =
         context.user_id.as_ref().ok_or_else(|| ApiError::forbidden("user context required"))?;
 
+    // Resolve team name to team UUID within this org
+    let team_row: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM teams WHERE name = $1 AND org_id = $2")
+            .bind(&payload.team)
+            .bind(org.id.as_ref())
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to resolve team: {e}")))?;
+    let team_id = team_row
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found in org", payload.team)))?
+        .0;
+
     // Insert the grant; unique index will reject duplicates
     let grant_id = uuid::Uuid::new_v4().to_string();
     let row = sqlx::query_as::<_, GrantRow>(
-        "INSERT INTO agent_grants \
-         (id, agent_id, org_id, team, grant_type, resource_type, action, route_id, allowed_methods, created_by) \
+        "INSERT INTO grants \
+         (id, principal_id, org_id, team_id, grant_type, resource_type, action, route_id, allowed_methods, created_by) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-         RETURNING id, grant_type, resource_type, action, team, route_id, allowed_methods, \
+         RETURNING id, grant_type, resource_type, action, team_id, route_id, allowed_methods, \
                    created_by, created_at, expires_at",
     )
     .bind(&grant_id)
     .bind(&agent.id)
     .bind(org.id.as_ref())
-    .bind(&payload.team)
+    .bind(&team_id)
     .bind(&payload.grant_type)
     .bind(payload.resource_type.as_deref())
     .bind(payload.action.as_deref())
@@ -2547,9 +2559,9 @@ pub async fn list_agent_grants(
     })?;
 
     let rows = sqlx::query_as::<_, GrantRow>(
-        "SELECT id, grant_type, resource_type, action, team, route_id, allowed_methods, \
+        "SELECT id, grant_type, resource_type, action, team_id, route_id, allowed_methods, \
                 created_by, created_at, expires_at \
-         FROM agent_grants WHERE agent_id = $1 ORDER BY created_at",
+         FROM grants WHERE principal_id = $1 ORDER BY created_at",
     )
     .bind(&agent.id)
     .fetch_all(&pool)
@@ -2605,7 +2617,7 @@ pub async fn delete_agent_grant(
 
     // Fetch grant type before deletion so we know whether to trigger xDS
     let grant_type_row: Option<(String,)> =
-        sqlx::query_as("SELECT grant_type FROM agent_grants WHERE id = $1 AND agent_id = $2")
+        sqlx::query_as("SELECT grant_type FROM grants WHERE id = $1 AND principal_id = $2")
             .bind(&grant_id)
             .bind(&agent.id)
             .fetch_optional(&pool)
@@ -2616,7 +2628,7 @@ pub async fn delete_agent_grant(
     })?;
 
     // Delete the grant
-    sqlx::query("DELETE FROM agent_grants WHERE id = $1 AND agent_id = $2")
+    sqlx::query("DELETE FROM grants WHERE id = $1 AND principal_id = $2")
         .bind(&grant_id)
         .bind(&agent.id)
         .execute(&pool)
@@ -2653,7 +2665,7 @@ fn grant_row_to_response(row: GrantRow) -> GrantResponse {
         grant_type: row.grant_type,
         resource_type: row.resource_type,
         action: row.action,
-        team: row.team,
+        team: row.team_id,
         route_id: row.route_id,
         allowed_methods: row.allowed_methods,
         created_by: row.created_by,
@@ -3193,9 +3205,9 @@ mod tests {
     #[test]
     fn grant_type_validation_accepts_valid_types() {
         // Verify the set of accepted grant_type values
-        for valid in &["cp-tool", "gateway-tool", "route"] {
+        for valid in &["resource", "gateway-tool", "route"] {
             assert!(
-                matches!(*valid, "cp-tool" | "gateway-tool" | "route"),
+                matches!(*valid, "resource" | "gateway-tool" | "route"),
                 "Grant type '{}' should be valid",
                 valid
             );
@@ -3205,9 +3217,9 @@ mod tests {
     #[test]
     fn grant_type_validation_rejects_invalid_types() {
         // These should NOT match any valid grant type
-        for invalid in &["admin", "read", "execute", "", "cp_tool", "GATEWAY-TOOL"] {
+        for invalid in &["admin", "read", "execute", "", "cp-tool", "GATEWAY-TOOL"] {
             assert!(
-                !matches!(*invalid, "cp-tool" | "gateway-tool" | "route"),
+                !matches!(*invalid, "resource" | "gateway-tool" | "route"),
                 "Grant type '{}' should be invalid",
                 invalid
             );

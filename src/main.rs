@@ -90,8 +90,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Initialize scope registry for scope validation
-    init_scope_registry(pool.clone()).await?;
+    // Initialize scope registry for scope validation (code-only constants, no DB)
+    init_scope_registry();
     info!("Scope registry initialized");
 
     // Check mTLS configuration status

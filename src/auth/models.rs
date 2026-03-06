@@ -197,16 +197,16 @@ impl std::fmt::Display for AgentContext {
     }
 }
 
-/// A grant record loaded from the `agent_grants` table.
+/// A grant record loaded from the `grants` table.
 #[derive(Debug, Clone)]
 pub struct AgentGrant {
     pub id: String,
-    pub agent_id: String,
+    pub principal_id: String,
     pub org_id: String,
-    pub team: String,
-    pub grant_type: String,            // "cp-tool" | "gateway-tool" | "route"
-    pub resource_type: Option<String>, // for cp-tool grants
-    pub action: Option<String>,        // for cp-tool grants
+    pub team_id: String,
+    pub grant_type: String,            // "resource" | "gateway-tool" | "route"
+    pub resource_type: Option<String>, // for resource grants
+    pub action: Option<String>,        // for resource grants
     pub route_id: Option<String>,      // for gateway-tool/route grants
     pub allowed_methods: Option<Vec<String>>, // for gateway-tool/route grants
     pub created_by: String,
@@ -258,10 +258,11 @@ mod tests {
         let ctx = AuthContext::new(
             TokenId::from_string("token-1".to_string()),
             "demo".into(),
-            vec!["clusters:read".into(), "clusters:write".into()],
+            vec!["clusters:read".into(), "clusters:create".into()],
         );
 
         assert!(ctx.has_scope("clusters:read"));
+        assert!(ctx.has_scope("clusters:create"));
         assert!(!ctx.has_scope("routes:read"));
         assert_eq!(ctx.scopes().count(), 2);
     }
@@ -310,7 +311,7 @@ mod tests {
         );
 
         assert!(ctx.has_scope("team:engineering:clusters:read"));
-        assert!(ctx.has_scope("team:engineering:routes:write"));
+        assert!(ctx.has_scope("team:engineering:routes:create"));
         assert!(ctx.has_scope("team:engineering:dataplanes:read"));
         assert!(!ctx.has_scope("team:other:clusters:read"));
         assert!(ctx.has_scope("team:engineering:*:*"));
@@ -325,7 +326,7 @@ mod tests {
         );
 
         assert!(ctx.has_scope("team:eng:clusters:read"));
-        assert!(ctx.has_scope("team:eng:clusters:write"));
+        assert!(ctx.has_scope("team:eng:clusters:create"));
         assert!(ctx.has_scope("team:eng:clusters:delete"));
         assert!(!ctx.has_scope("team:eng:routes:read"));
     }
@@ -339,7 +340,7 @@ mod tests {
         );
 
         assert!(ctx.has_scope("team:eng:clusters:read"));
-        assert!(!ctx.has_scope("team:eng:clusters:write"));
+        assert!(!ctx.has_scope("team:eng:clusters:create"));
     }
 
     #[test]
