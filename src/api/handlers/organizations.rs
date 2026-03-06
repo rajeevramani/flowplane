@@ -2427,9 +2427,9 @@ pub async fn create_principal_grant(
         }
     }
 
-    // Resolve team name to team UUID within this org
+    // Validate that the team exists within this org (accepts both UUID and name)
     let team_row: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM teams WHERE name = $1 AND org_id = $2")
+        sqlx::query_as("SELECT id FROM teams WHERE (id = $1 OR name = $1) AND org_id = $2")
             .bind(&payload.team)
             .bind(org.id.as_ref())
             .fetch_optional(&pool)
