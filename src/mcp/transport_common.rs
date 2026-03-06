@@ -282,7 +282,7 @@ mod tests {
     fn test_extract_teams_multiple_teams() {
         let context = test_context(vec![
             "team:team-a:cp:read",
-            "team:team-a:cp:write",
+            "team:team-a:cp:create",
             "team:team-b:cp:read",
         ]);
         let teams = extract_teams(&context);
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn test_extract_teams_deduplicates() {
         let context =
-            test_context(vec!["team:acme:cp:read", "team:acme:cp:write", "team:acme:api:read"]);
+            test_context(vec!["team:acme:cp:read", "team:acme:cp:create", "team:acme:api:read"]);
         let teams = extract_teams(&context);
         assert_eq!(teams, vec!["acme".to_string()]);
     }
@@ -308,7 +308,8 @@ mod tests {
 
     #[test]
     fn test_extract_teams_admin_with_team_scopes() {
-        let context = test_context(vec!["admin:all", "team:eng:cp:read", "team:platform:cp:write"]);
+        let context =
+            test_context(vec!["admin:all", "team:eng:cp:read", "team:platform:cp:create"]);
         let teams = extract_teams(&context);
         assert_eq!(teams.len(), 2);
         assert!(teams.contains(&"eng".to_string()));

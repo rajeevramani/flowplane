@@ -186,12 +186,12 @@ pub async fn import_openapi_handler(
     Query(params): Query<ImportOpenApiQuery>,
     request: Request<Body>,
 ) -> std::result::Result<(StatusCode, Json<ImportResponse>), ApiError> {
-    // Authorization: require openapi-import:write scope for the target team
+    // Authorization: require openapi-import:create scope for the target team
     require_resource_access_resolved(
         &state,
         &context,
         "openapi-import",
-        "write",
+        "create",
         Some(&params.team),
         context.org_id.as_ref(),
     )

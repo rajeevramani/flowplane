@@ -119,8 +119,8 @@ fn validate_dcr_request(req: &DcrRequest) -> Result<(), (&'static str, String)> 
 
 /// Parse RFC 7591 scope string into per-team scope groups.
 ///
-/// Input: `"team:eng:clusters:read team:eng:routes:write team:frontend:clusters:read"`
-/// Output: `{ "eng": ["team:eng:clusters:read", "team:eng:routes:write"], "frontend": [...] }`
+/// Input: `"team:eng:clusters:read team:eng:routes:create team:frontend:clusters:read"`
+/// Output: `{ "eng": ["team:eng:clusters:read", "team:eng:routes:create"], "frontend": [...] }`
 ///
 /// Scopes that don't match `team:{name}:{resource}:{action}` are silently skipped.
 fn parse_scopes_by_team(scope: &str) -> HashMap<String, Vec<String>> {
@@ -551,19 +551,19 @@ mod tests {
 
     #[test]
     fn parse_scopes_multiple_teams() {
-        let by_team = parse_scopes_by_team("team:t1:clusters:read team:t2:routes:write");
+        let by_team = parse_scopes_by_team("team:t1:clusters:read team:t2:routes:create");
         assert_eq!(by_team.len(), 2);
         assert_eq!(by_team["t1"], vec!["team:t1:clusters:read"]);
-        assert_eq!(by_team["t2"], vec!["team:t2:routes:write"]);
+        assert_eq!(by_team["t2"], vec!["team:t2:routes:create"]);
     }
 
     #[test]
     fn parse_scopes_same_team_multiple_scopes() {
-        let by_team = parse_scopes_by_team("team:eng:clusters:read team:eng:routes:write");
+        let by_team = parse_scopes_by_team("team:eng:clusters:read team:eng:routes:update");
         assert_eq!(by_team.len(), 1);
         let mut scopes = by_team["eng"].clone();
         scopes.sort();
-        assert_eq!(scopes, vec!["team:eng:clusters:read", "team:eng:routes:write"]);
+        assert_eq!(scopes, vec!["team:eng:clusters:read", "team:eng:routes:update"]);
     }
 
     #[test]

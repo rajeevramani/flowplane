@@ -281,7 +281,7 @@ async fn test_400_team_isolation() {
                 "team-a-token",
                 vec![
                     format!("org:{}:member", org_name),
-                    format!("team:{}:clusters:write", ctx.team_a_name),
+                    format!("team:{}:clusters:create", ctx.team_a_name),
                     format!("team:{}:clusters:read", ctx.team_a_name),
                 ],
             )

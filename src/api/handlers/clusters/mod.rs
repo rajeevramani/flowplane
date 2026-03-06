@@ -63,12 +63,12 @@ pub async fn create_cluster_handler(
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
 
-    // Verify user has write access to the specified team
+    // Verify user has create access to the specified team
     require_resource_access_resolved(
         &state,
         &context,
         "clusters",
-        "write",
+        "create",
         Some(&payload.team),
         context.org_id.as_ref(),
     )
@@ -200,8 +200,8 @@ pub async fn update_cluster_handler(
     Path(name): Path<String>,
     Json(payload): Json<types::CreateClusterBody>,
 ) -> Result<Json<types::ClusterResponse>, ApiError> {
-    // Authorization: require clusters:write scope
-    require_resource_access(&context, "clusters", "write", None)?;
+    // Authorization: require clusters:update scope
+    require_resource_access(&context, "clusters", "update", None)?;
 
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
@@ -252,8 +252,8 @@ pub async fn delete_cluster_handler(
     Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require clusters:write scope (delete is a write operation)
-    require_resource_access(&context, "clusters", "write", None)?;
+    // Authorization: require clusters:delete scope
+    require_resource_access(&context, "clusters", "delete", None)?;
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
@@ -700,7 +700,7 @@ mod tests {
         update_body.service_name = Some("updated".to_string());
 
         // User from team-b tries to update team-a's cluster - should get 404
-        let team_b_context = team_context("team-b", "clusters", &["write"]);
+        let team_b_context = team_context("team-b", "clusters", &["update"]);
         let result = update_cluster_handler(
             State(state.clone()),
             Extension(team_b_context),
@@ -719,7 +719,7 @@ mod tests {
         }
 
         // User from team-a can update their own cluster
-        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let team_a_context = team_context("team-a", "clusters", &["update"]);
         let result = update_cluster_handler(
             State(state.clone()),
             Extension(team_a_context),
@@ -743,7 +743,7 @@ mod tests {
             .expect("insert team-b cluster");
 
         // User from team-a tries to delete team-b's cluster - should get 404
-        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let team_a_context = team_context("team-a", "clusters", &["delete"]);
         let result = delete_cluster_handler(
             State(state.clone()),
             Extension(team_a_context.clone()),
@@ -782,7 +782,7 @@ mod tests {
         body.team = "team-a".to_string(); // Explicitly set team to match user's scope
 
         // Team-scoped user creates a cluster
-        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let team_a_context = team_context("team-a", "clusters", &["create"]);
         let (_status, Json(created)) =
             create_cluster_handler(State(state.clone()), Extension(team_a_context), Json(body))
                 .await
@@ -813,7 +813,7 @@ mod tests {
         // Team user creates a cluster for their team
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(team_context("platform", "clusters", &["write"])),
+            Extension(team_context("platform", "clusters", &["create"])),
             Json(body),
         )
         .await

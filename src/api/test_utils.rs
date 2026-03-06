@@ -152,11 +152,17 @@ pub fn admin_auth_context() -> AuthContext {
         vec![
             "admin:all".to_string(),
             "admin:orgs:read".to_string(),
-            "admin:orgs:write".to_string(),
+            "admin:orgs:create".to_string(),
+            "admin:orgs:update".to_string(),
+            "admin:orgs:delete".to_string(),
             "admin:users:read".to_string(),
-            "admin:users:write".to_string(),
+            "admin:users:create".to_string(),
+            "admin:users:update".to_string(),
+            "admin:users:delete".to_string(),
             "admin:teams:read".to_string(),
-            "admin:teams:write".to_string(),
+            "admin:teams:create".to_string(),
+            "admin:teams:update".to_string(),
+            "admin:teams:delete".to_string(),
             "admin:audit:read".to_string(),
             "admin:summary:read".to_string(),
         ],
@@ -181,13 +187,21 @@ pub fn org_admin_auth_context(org_name: &str) -> AuthContext {
 pub fn team_auth_context(team: &str) -> AuthContext {
     let scopes = vec![
         format!("team:{}:clusters:read", team),
-        format!("team:{}:clusters:write", team),
+        format!("team:{}:clusters:create", team),
+        format!("team:{}:clusters:update", team),
+        format!("team:{}:clusters:delete", team),
         format!("team:{}:routes:read", team),
-        format!("team:{}:routes:write", team),
+        format!("team:{}:routes:create", team),
+        format!("team:{}:routes:update", team),
+        format!("team:{}:routes:delete", team),
         format!("team:{}:listeners:read", team),
-        format!("team:{}:listeners:write", team),
+        format!("team:{}:listeners:create", team),
+        format!("team:{}:listeners:update", team),
+        format!("team:{}:listeners:delete", team),
         format!("team:{}:filters:read", team),
-        format!("team:{}:filters:write", team),
+        format!("team:{}:filters:create", team),
+        format!("team:{}:filters:update", team),
+        format!("team:{}:filters:delete", team),
     ];
     AuthContext::new(TokenId::new(), format!("{}-test-token", team), scopes)
 }
@@ -213,10 +227,15 @@ pub fn minimal_auth_context() -> AuthContext {
 /// Uses admin:all to grant full access. Used for testing handler logic where
 /// the test verifies handler behavior, not authorization.
 ///
-/// Example: `resource_auth_context("tokens")` creates admin context with tokens:read and tokens:write
+/// Example: `resource_auth_context("tokens")` creates admin context with tokens:read, :create, :update, :delete
 pub fn resource_auth_context(resource: &str) -> AuthContext {
-    let scopes =
-        vec!["admin:all".to_string(), format!("{}:read", resource), format!("{}:write", resource)];
+    let scopes = vec![
+        "admin:all".to_string(),
+        format!("{}:read", resource),
+        format!("{}:create", resource),
+        format!("{}:update", resource),
+        format!("{}:delete", resource),
+    ];
     AuthContext::new(TokenId::new(), format!("{}-test-token", resource), scopes)
 }
 
@@ -396,16 +415,16 @@ mod tests {
     #[tokio::test]
     async fn test_team_auth_context() {
         let context = team_auth_context("my-team");
-        assert!(context.has_scope("team:my-team:clusters:write"));
+        assert!(context.has_scope("team:my-team:clusters:create"));
         assert!(context.has_scope("team:my-team:routes:read"));
-        assert!(!context.has_scope("clusters:write")); // No global scopes
+        assert!(!context.has_scope("clusters:create")); // No global scopes
     }
 
     #[tokio::test]
     async fn test_readonly_auth_context() {
         let context = readonly_auth_context("my-team");
         assert!(context.has_scope("team:my-team:clusters:read"));
-        assert!(!context.has_scope("team:my-team:clusters:write"));
+        assert!(!context.has_scope("team:my-team:clusters:create"));
         assert!(!context.has_scope("clusters:read")); // No global scopes
     }
 
@@ -439,7 +458,7 @@ mod tests {
     async fn test_resource_auth_context() {
         let context = resource_auth_context("tokens");
         assert!(context.has_scope("tokens:read"));
-        assert!(context.has_scope("tokens:write"));
+        assert!(context.has_scope("tokens:create"));
         assert!(context.has_scope("admin:all")); // admin:all added for handler testing
     }
 
@@ -447,7 +466,7 @@ mod tests {
     async fn test_readonly_resource_auth_context() {
         let context = readonly_resource_auth_context("tokens");
         assert!(context.has_scope("tokens:read"));
-        assert!(!context.has_scope("tokens:write"));
+        assert!(!context.has_scope("tokens:create"));
     }
 
     #[tokio::test]

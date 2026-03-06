@@ -158,7 +158,7 @@ mod tests {
             vec![
                 "org:acme-corp:member",
                 "team:engineering:clusters:read",
-                "team:engineering:routes:write",
+                "team:engineering:routes:create",
             ],
             "org-acme-id",
             "acme-corp",

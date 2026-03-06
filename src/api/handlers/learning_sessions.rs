@@ -218,12 +218,12 @@ pub async fn create_learning_session_handler(
     Extension(context): Extension<AuthContext>,
     Json(payload): Json<CreateLearningSessionBody>,
 ) -> Result<(StatusCode, Json<LearningSessionResponse>), ApiError> {
-    // Authorization: require learning-sessions:write scope for the SPECIFIED team
+    // Authorization: require learning-sessions:create scope for the SPECIFIED team
     require_resource_access_resolved(
         &state,
         &context,
         "learning-sessions",
-        "write",
+        "create",
         Some(&payload.team),
         context.org_id.as_ref(),
     )

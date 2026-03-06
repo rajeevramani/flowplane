@@ -383,7 +383,9 @@ pub async fn get_aggregated_schema_handler(
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
+        || context.has_scope("aggregated-schemas:create")
+        || context.has_scope("aggregated-schemas:update")
+        || context.has_scope("aggregated-schemas:delete");
 
     let authorized_schema = if is_admin || has_global_resource_scope {
         // Admin or global scope - allow access to all schemas
@@ -449,7 +451,9 @@ pub async fn compare_aggregated_schemas_handler(
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
+        || context.has_scope("aggregated-schemas:create")
+        || context.has_scope("aggregated-schemas:update")
+        || context.has_scope("aggregated-schemas:delete");
 
     let authorized_current = if is_admin || has_global_resource_scope {
         // Admin or global scope - allow access to all schemas
@@ -552,7 +556,9 @@ pub async fn export_aggregated_schema_handler(
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
+        || context.has_scope("aggregated-schemas:create")
+        || context.has_scope("aggregated-schemas:update")
+        || context.has_scope("aggregated-schemas:delete");
 
     let authorized_schema = if is_admin || has_global_resource_scope {
         // Admin or global scope - allow access to all schemas
@@ -632,7 +638,9 @@ pub async fn export_multiple_schemas_handler(
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
     let is_admin = crate::auth::authorization::has_admin_bypass(&context);
     let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
+        || context.has_scope("aggregated-schemas:create")
+        || context.has_scope("aggregated-schemas:update")
+        || context.has_scope("aggregated-schemas:delete");
 
     if !is_admin && !has_global_resource_scope {
         // Team-scoped user - verify access to each schema

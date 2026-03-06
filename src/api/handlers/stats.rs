@@ -585,8 +585,8 @@ pub async fn set_app_status_handler(
     Path(app_id): Path<String>,
     Json(body): Json<SetAppStatusRequest>,
 ) -> Result<Json<AppStatusResponse>, ApiError> {
-    // Require admin access
-    require_resource_access(&context, "admin", "write", None)?;
+    // Require admin-apps:update access
+    require_resource_access(&context, "admin-apps", "update", None)?;
 
     let pool = state
         .xds_state
