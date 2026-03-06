@@ -72,8 +72,8 @@ async fn insert_org_membership(pool: &flowplane::storage::DbPool, user_id: &str,
 async fn insert_team_membership(pool: &flowplane::storage::DbPool, user_id: &str, team_id: &str) {
     let id = format!("utm_{}", uuid::Uuid::new_v4());
     sqlx::query(
-        "INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at) \
-         VALUES ($1, $2, $3, '[]', NOW()) \
+        "INSERT INTO user_team_memberships (id, user_id, team, created_at) \
+         VALUES ($1, $2, $3, NOW()) \
          ON CONFLICT (user_id, team) DO NOTHING",
     )
     .bind(&id)

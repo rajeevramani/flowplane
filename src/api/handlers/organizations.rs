@@ -1774,19 +1774,16 @@ async fn provision_machine_user_db(
     .await
     .map_err(|e| ApiError::Internal(format!("Failed to create org membership: {e}")))?;
 
-    for (team_id, scopes) in teams {
+    for (team_id, _scopes) in teams {
         let utm_id = format!("utm_{}", uuid::Uuid::new_v4());
-        let scopes_json = serde_json::to_string(scopes)
-            .map_err(|e| ApiError::Internal(format!("Failed to serialize scopes: {e}")))?;
         sqlx::query(
-            "INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at) \
-             VALUES ($1, $2, $3, $4, $5) \
+            "INSERT INTO user_team_memberships (id, user_id, team, created_at) \
+             VALUES ($1, $2, $3, $4) \
              ON CONFLICT (user_id, team) DO NOTHING",
         )
         .bind(&utm_id)
         .bind(&actual_user_id)
         .bind(team_id)
-        .bind(&scopes_json)
         .bind(now)
         .execute(pool)
         .await
@@ -1875,19 +1872,16 @@ async fn reconcile_machine_user_db(
     .await
     .map_err(|e| ApiError::Internal(format!("Failed to ensure org membership: {e}")))?;
 
-    for (team_id, scopes) in teams {
+    for (team_id, _scopes) in teams {
         let utm_id = format!("utm_{}", uuid::Uuid::new_v4());
-        let scopes_json = serde_json::to_string(scopes)
-            .map_err(|e| ApiError::Internal(format!("Failed to serialize scopes: {e}")))?;
         sqlx::query(
-            "INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at) \
-             VALUES ($1, $2, $3, $4, $5) \
+            "INSERT INTO user_team_memberships (id, user_id, team, created_at) \
+             VALUES ($1, $2, $3, $4) \
              ON CONFLICT (user_id, team) DO NOTHING",
         )
         .bind(&utm_id)
         .bind(&user_id)
         .bind(team_id)
-        .bind(&scopes_json)
         .bind(now)
         .execute(pool)
         .await

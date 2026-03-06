@@ -3,10 +3,45 @@
 //! The `scopes` table has been dropped. All scope definitions live here as
 //! compile-time constants. No database queries are needed for scope validation.
 
-use crate::storage::repositories::ScopeDefinition;
+use crate::domain::ScopeId;
+use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+use utoipa::ToSchema;
+
+// ---------------------------------------------------------------------------
+// ScopeDefinition — API response type
+// ---------------------------------------------------------------------------
+
+/// Scope definition with metadata (returned by the scopes API)
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeDefinition {
+    /// Unique identifier
+    pub id: ScopeId,
+    /// The scope value (e.g., "clusters:read")
+    pub value: String,
+    /// Resource name (e.g., "clusters")
+    pub resource: String,
+    /// Action name (e.g., "read")
+    pub action: String,
+    /// Human-readable label for UI
+    pub label: String,
+    /// Detailed description for UI
+    pub description: Option<String>,
+    /// Category for UI grouping (e.g., "Clusters")
+    pub category: String,
+    /// Whether this scope should be shown in UI
+    pub visible_in_ui: bool,
+    /// Whether this scope is enabled
+    pub enabled: bool,
+    /// When the scope was created
+    pub created_at: DateTime<Utc>,
+    /// When the scope was last updated
+    pub updated_at: DateTime<Utc>,
+}
 
 // ---------------------------------------------------------------------------
 // Valid grants constant
@@ -229,9 +264,6 @@ pub fn is_valid_resource_action_pair(resource: &str, action: &str) -> bool {
 ///
 /// `ui_only` — if true, excludes governance-only scopes (admin:all etc.)
 fn build_scope_definitions(ui_only: bool) -> Vec<ScopeDefinition> {
-    use crate::domain::ScopeId;
-    use chrono::Utc;
-
     let mut defs = Vec::new();
 
     for (resource, actions) in VALID_GRANTS {
@@ -268,8 +300,8 @@ fn build_scope_definitions(ui_only: bool) -> Vec<ScopeDefinition> {
             category: "Admin".to_string(),
             visible_in_ui: false,
             enabled: true,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         });
     }
 

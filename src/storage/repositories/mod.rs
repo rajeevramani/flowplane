@@ -28,7 +28,6 @@ pub mod route;
 pub mod route_config;
 pub mod route_filter;
 pub mod route_metadata;
-pub mod scope;
 pub mod secret;
 pub mod team;
 pub mod user;
@@ -36,6 +35,7 @@ pub mod virtual_host;
 pub mod virtual_host_filter;
 
 // Re-export all repository types and their associated request/response types
+pub use crate::auth::scope_registry::ScopeDefinition;
 pub use admin_summary::{AdminSummaryRepository, TeamResourceCounts};
 pub use aggregated_schema::{
     AggregatedSchemaData, AggregatedSchemaRepository, CreateAggregatedSchemaRequest,
@@ -106,9 +106,6 @@ pub use route_filter::{RouteFilterData, RouteFilterRepository};
 pub use route_metadata::{
     CreateRouteMetadataRequest, RouteMetadataData, RouteMetadataRepository,
     UpdateRouteMetadataRequest,
-};
-pub use scope::{
-    CreateScopeRequest, ScopeDefinition, ScopeRepository, SqlxScopeRepository, UpdateScopeRequest,
 };
 pub use secret::{
     CreateSecretReferenceRequest, CreateSecretRequest, SecretData, SecretRepository,
