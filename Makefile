@@ -110,11 +110,11 @@ help: ## Show this help message
 	@echo "  $(CYAN)make test$(RESET)            - Run cargo tests"
 	@echo "  $(CYAN)make test-ui$(RESET)         - Run UI component tests (Vitest)"
 	@echo "  $(CYAN)make test-ui-watch$(RESET)   - Run UI tests in watch mode"
-	@echo "  $(CYAN)make test-ui-e2e$(RESET)     - Run UI E2E tests (Playwright)"
+	@echo "  $(CYAN)make test-ui-e2e$(RESET)     - Run UI E2E tests (Playwright, requires: make up && make seed)"
 	@echo "  $(CYAN)make test-e2e$(RESET)        - Run E2E smoke tests (cleanup containers after)"
 	@echo "  $(CYAN)make test-e2e-full$(RESET)   - Run full E2E suite with mTLS (cleanup after)"
 	@echo "  $(CYAN)make test-e2e-mtls$(RESET)   - Run mTLS E2E tests only (cleanup after)"
-	@echo "  $(CYAN)make test-cleanup$(RESET)    - Remove orphaned testcontainer containers"
+	@echo "  $(CYAN)make test-cleanup$(RESET)    - Remove orphaned testcontainers (PostgreSQL + Zitadel)"
 	@echo "  $(CYAN)make fmt$(RESET)             - Run cargo fmt"
 	@echo "  $(CYAN)make clippy$(RESET)          - Run cargo clippy"
 	@echo "  $(CYAN)make check$(RESET)           - Run fmt + clippy + test"
@@ -337,15 +337,18 @@ test-ui-watch: ## Run UI component tests in watch mode
 	@echo "$(CYAN)Running UI tests in watch mode...$(RESET)"
 	cd ui && npx vitest
 
-test-ui-e2e: _ensure-e2e-deps ## Run UI E2E tests (self-contained)
-	@echo "$(CYAN)Running UI E2E tests...$(RESET)"
+test-ui-e2e: ## Run UI E2E tests (boots stack if not running)
+	@if ! $(DOCKER) ps --format '{{.Names}}' 2>/dev/null | grep -q flowplane-control-plane; then \
+		echo "$(YELLOW)Stack not running — starting...$(RESET)"; \
+		$(MAKE) up; \
+		echo "$(YELLOW)Seeding demo data...$(RESET)"; \
+		$(MAKE) seed; \
+	fi
+	@echo "$(CYAN)Running UI E2E tests (Playwright + Zitadel OIDC)...$(RESET)"
 	cd ui && npx playwright test; \
 	TEST_EXIT=$$?; \
 	echo ""; \
 	echo "$(GREEN)HTML report: make test-ui-report$(RESET)"; \
-	echo "$(CYAN)Stopping PostgreSQL...$(RESET)"; \
-	$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v >/dev/null 2>&1 || true; \
-	echo "$(GREEN)Cleanup complete.$(RESET)"; \
 	exit $$TEST_EXIT
 
 test-ui-report: ## Open Playwright HTML test report
@@ -372,8 +375,8 @@ test-e2e-mtls: ## Run mTLS E2E tests and clean up containers
 	$(MAKE) test-cleanup; \
 	exit $$TEST_EXIT
 
-test-cleanup: ## Remove orphaned testcontainer PostgreSQL containers
-	@CONTAINERS=$$($(DOCKER) ps -q --filter "label=org.testcontainers.managed-by=testcontainers" --filter "ancestor=postgres" 2>/dev/null); \
+test-cleanup: ## Remove orphaned testcontainer containers (PostgreSQL + Zitadel)
+	@CONTAINERS=$$($(DOCKER) ps -q --filter "label=org.testcontainers.managed-by=testcontainers" 2>/dev/null); \
 	if [ -n "$$CONTAINERS" ]; then \
 		echo "$(YELLOW)Stopping $$(echo "$$CONTAINERS" | wc -l | tr -d ' ') testcontainer(s)...$(RESET)"; \
 		$(DOCKER) stop --time 5 $$CONTAINERS 2>/dev/null || true; \

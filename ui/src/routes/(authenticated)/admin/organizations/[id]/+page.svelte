@@ -44,7 +44,7 @@
 			const sessionInfo = await apiClient.getSessionInfo();
 			userScopes = sessionInfo.orgScopes;
 			isPlatformAdmin = isGovernanceAdmin(sessionInfo);
-			if (!isGovernanceAdmin(sessionInfo) && !isOrgAdmin(sessionInfo.orgScopes)) {
+			if (!isGovernanceAdmin(sessionInfo) && !isOrgAdmin(sessionInfo.orgRole)) {
 				goto('/dashboard');
 				return;
 			}

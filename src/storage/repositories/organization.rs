@@ -166,6 +166,8 @@ pub trait OrgMembershipRepository: Send + Sync {
         user_id: &UserId,
         org_id: &OrgId,
         role: OrgRole,
+        grant_pairs: &[(&str, &str)],
+        created_by: &str,
     ) -> Result<OrganizationMembership>;
     async fn delete_membership(&self, user_id: &UserId, org_id: &OrgId) -> Result<()>;
 }
@@ -542,12 +544,14 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
         rows.into_iter().map(|r| r.try_into()).collect()
     }
 
-    #[instrument(skip(self), fields(user_id = %user_id, org_id = %org_id, role = %role), name = "db_update_org_membership_role")]
+    #[instrument(skip(self, grant_pairs, created_by), fields(user_id = %user_id, org_id = %org_id, role = %role), name = "db_update_org_membership_role")]
     async fn update_membership_role(
         &self,
         user_id: &UserId,
         org_id: &OrgId,
         role: OrgRole,
+        grant_pairs: &[(&str, &str)],
+        created_by: &str,
     ) -> Result<OrganizationMembership> {
         let mut tx = self.pool.begin().await.map_err(|e| FlowplaneError::Database {
             source: e,
@@ -618,6 +622,61 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
             context: "Failed to update organization membership role".to_string(),
         })?;
 
+        // Grant sync: delete all existing grants for this user in this org, then
+        // re-insert based on new role. Admin/Owner roles get implicit access (no explicit
+        // grants needed), so grant_pairs will be empty for those roles.
+        sqlx::query("DELETE FROM grants WHERE principal_id = $1 AND org_id = $2")
+            .bind(user_id.as_str())
+            .bind(org_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to delete existing grants on role change".to_string(),
+            })?;
+
+        if !grant_pairs.is_empty() {
+            // Fetch all team_ids the user belongs to within this org
+            let team_ids: Vec<String> = sqlx::query_scalar(
+                "SELECT utm.team FROM user_team_memberships utm
+                 JOIN teams t ON t.id = utm.team
+                 WHERE utm.user_id = $1 AND t.org_id = $2",
+            )
+            .bind(user_id.as_str())
+            .bind(org_id.as_str())
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to fetch team memberships for grant sync".to_string(),
+            })?;
+
+            for team_id in &team_ids {
+                for (resource_type, action) in grant_pairs {
+                    let grant_id = uuid::Uuid::new_v4().to_string();
+                    sqlx::query(
+                        "INSERT INTO grants \
+                         (id, principal_id, org_id, team_id, grant_type, resource_type, action, created_by) \
+                         VALUES ($1, $2, $3, $4, 'resource', $5, $6, $7) \
+                         ON CONFLICT DO NOTHING",
+                    )
+                    .bind(&grant_id)
+                    .bind(user_id.as_str())
+                    .bind(org_id.as_str())
+                    .bind(team_id)
+                    .bind(resource_type)
+                    .bind(action)
+                    .bind(created_by)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| FlowplaneError::Database {
+                        source: e,
+                        context: "Failed to insert default grant on role change".to_string(),
+                    })?;
+                }
+            }
+        }
+
         tx.commit().await.map_err(|e| FlowplaneError::Database {
             source: e,
             context: "Failed to commit membership role update".to_string(),
@@ -675,6 +734,18 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
             }
         }
 
+        // Delete all grants for this user in the org before removing the membership.
+        // This prevents orphaned grants that would give removed users continued access.
+        sqlx::query("DELETE FROM grants WHERE principal_id = $1 AND org_id = $2")
+            .bind(user_id.as_str())
+            .bind(org_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: "Failed to delete grants on org membership removal".to_string(),
+            })?;
+
         sqlx::query("DELETE FROM organization_memberships WHERE user_id = $1 AND org_id = $2")
             .bind(user_id.as_str())
             .bind(org_id.as_str())
@@ -698,6 +769,7 @@ impl OrgMembershipRepository for SqlxOrgMembershipRepository {
 mod tests {
     use super::*;
     use crate::storage::test_helpers::TestDatabase;
+    use uuid::Uuid;
 
     #[tokio::test]
     async fn test_create_and_get_organization() {
@@ -901,9 +973,9 @@ mod tests {
             membership_repo.get_membership(&user.id, &org.id).await.expect("get membership");
         assert!(fetched.is_some());
 
-        // Update role
+        // Update role (Admin gets no explicit grants — implicit access)
         let updated = membership_repo
-            .update_membership_role(&user.id, &org.id, OrgRole::Admin)
+            .update_membership_role(&user.id, &org.id, OrgRole::Admin, &[], "system")
             .await
             .expect("update role");
         assert_eq!(updated.role, OrgRole::Admin);
@@ -920,5 +992,238 @@ mod tests {
             .await
             .expect("get deleted membership");
         assert!(deleted.is_none());
+    }
+
+    /// Helper: count grants for a principal in an org
+    #[allow(dead_code)]
+    async fn count_grants_for_user_in_org(pool: &DbPool, user_id: &str, org_id: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM grants WHERE principal_id = $1 AND org_id = $2",
+        )
+        .bind(user_id)
+        .bind(org_id)
+        .fetch_one(pool)
+        .await
+        .expect("count grants")
+    }
+
+    /// Helper: count grants for a principal in a team
+    #[allow(dead_code)]
+    async fn count_grants_for_user_in_team(pool: &DbPool, user_id: &str, team_id: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM grants WHERE principal_id = $1 AND team_id = $2",
+        )
+        .bind(user_id)
+        .bind(team_id)
+        .fetch_one(pool)
+        .await
+        .expect("count grants in team")
+    }
+
+    /// Set up a test org, user, team, org membership, team membership, and grants.
+    /// Returns (pool, org_id, user_id, team_id).
+    #[allow(dead_code)]
+    async fn setup_user_with_grants(
+        db_name: &str,
+    ) -> (crate::storage::DbPool, OrgId, UserId, String) {
+        let _db = TestDatabase::new(db_name).await;
+        let pool = _db.pool.clone();
+
+        use crate::auth::user::{NewUser, UserStatus};
+        use crate::storage::repositories::{SqlxUserRepository, UserRepository};
+
+        let org_repo = SqlxOrganizationRepository::new(pool.clone());
+        let org = org_repo
+            .create_organization(CreateOrganizationRequest {
+                name: format!("{}-org", db_name),
+                display_name: "Test Org".to_string(),
+                description: None,
+                owner_user_id: None,
+                settings: None,
+            })
+            .await
+            .expect("create org");
+
+        let user_repo = SqlxUserRepository::new(pool.clone());
+        let user_id = UserId::new();
+        let user = user_repo
+            .create_user(NewUser {
+                id: user_id,
+                email: format!("user@{}.test", db_name),
+                password_hash: "hash".to_string(),
+                name: "Test User".to_string(),
+                status: UserStatus::Active,
+                is_admin: false,
+            })
+            .await
+            .expect("create user");
+
+        // Create a team in the org
+        let team_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO teams (id, name, org_id, display_name) VALUES ($1, $2, $3, $4)")
+            .bind(&team_id)
+            .bind(format!("{}-team", db_name))
+            .bind(org.id.as_str())
+            .bind("Test Team")
+            .execute(&pool)
+            .await
+            .expect("create team");
+
+        // Add user to team via user_team_memberships
+        let utm_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO user_team_memberships (id, user_id, team) VALUES ($1, $2, $3)")
+            .bind(&utm_id)
+            .bind(user.id.as_str())
+            .bind(&team_id)
+            .execute(&pool)
+            .await
+            .expect("create team membership");
+
+        // Add org membership
+        let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+        membership_repo
+            .create_membership(&user.id, &org.id, OrgRole::Member)
+            .await
+            .expect("create org membership");
+
+        // Insert a grant for the user in this team+org
+        let grant_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO grants (id, principal_id, org_id, team_id, grant_type, resource_type, action, created_by) \
+             VALUES ($1, $2, $3, $4, 'resource', 'clusters', 'read', $5)",
+        )
+        .bind(&grant_id)
+        .bind(user.id.as_str())
+        .bind(org.id.as_str())
+        .bind(&team_id)
+        .bind(user.id.as_str())
+        .execute(&pool)
+        .await
+        .expect("insert grant");
+
+        // Leak _db so it lives as long as pool — caller must hold the returned pool
+        std::mem::forget(_db);
+
+        (pool, org.id, user.id, team_id)
+    }
+
+    #[cfg(feature = "postgres_tests")]
+    #[tokio::test]
+    async fn test_delete_membership_removes_grants() {
+        let (pool, org_id, user_id, _team_id) =
+            setup_user_with_grants("del_membership_grants").await;
+
+        let count_before =
+            count_grants_for_user_in_org(&pool, user_id.as_str(), org_id.as_str()).await;
+        assert_eq!(count_before, 1, "grant should exist before deletion");
+
+        let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+        membership_repo.delete_membership(&user_id, &org_id).await.expect("delete membership");
+
+        let count_after =
+            count_grants_for_user_in_org(&pool, user_id.as_str(), org_id.as_str()).await;
+        assert_eq!(count_after, 0, "grants should be deleted with membership");
+    }
+
+    #[cfg(feature = "postgres_tests")]
+    #[tokio::test]
+    async fn test_update_membership_role_to_admin_removes_grants() {
+        let (pool, org_id, user_id, _team_id) =
+            setup_user_with_grants("role_admin_removes_grants").await;
+
+        let count_before =
+            count_grants_for_user_in_org(&pool, user_id.as_str(), org_id.as_str()).await;
+        assert_eq!(count_before, 1, "grant should exist before role change");
+
+        let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+        // Promote to Admin: implicit access — all explicit grants should be removed
+        membership_repo
+            .update_membership_role(&user_id, &org_id, OrgRole::Admin, &[], "system")
+            .await
+            .expect("update role");
+
+        let count_after =
+            count_grants_for_user_in_org(&pool, user_id.as_str(), org_id.as_str()).await;
+        assert_eq!(count_after, 0, "explicit grants should be cleared for admin role");
+    }
+
+    #[cfg(feature = "postgres_tests")]
+    #[tokio::test]
+    async fn test_update_membership_role_to_member_inserts_default_grants() {
+        let (pool, org_id, user_id, team_id) =
+            setup_user_with_grants("role_member_inserts_grants").await;
+
+        // First promote to admin (clears grants)
+        let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+        membership_repo
+            .update_membership_role(&user_id, &org_id, OrgRole::Admin, &[], "system")
+            .await
+            .expect("promote to admin");
+
+        let count_after_admin =
+            count_grants_for_user_in_org(&pool, user_id.as_str(), org_id.as_str()).await;
+        assert_eq!(count_after_admin, 0, "no grants after admin promotion");
+
+        // Demote back to Member: should get default read grants per team
+        let member_pairs: Vec<(&str, &str)> = vec![("clusters", "read"), ("routes", "read")];
+        membership_repo
+            .update_membership_role(
+                &user_id,
+                &org_id,
+                OrgRole::Member,
+                &member_pairs,
+                user_id.as_str(),
+            )
+            .await
+            .expect("demote to member");
+
+        let count_after_member =
+            count_grants_for_user_in_team(&pool, user_id.as_str(), &team_id).await;
+        assert_eq!(
+            count_after_member,
+            member_pairs.len() as i64,
+            "default grants should be inserted per team"
+        );
+    }
+
+    #[cfg(feature = "postgres_tests")]
+    #[tokio::test]
+    async fn test_update_membership_role_demote_replaces_grants() {
+        let (pool, org_id, user_id, team_id) =
+            setup_user_with_grants("role_demote_replaces_grants").await;
+
+        // User starts with 1 grant (clusters:read from setup)
+        let count_before =
+            count_grants_for_user_in_org(&pool, user_id.as_str(), org_id.as_str()).await;
+        assert_eq!(count_before, 1);
+
+        // Demote to Viewer with different grants
+        let viewer_pairs: Vec<(&str, &str)> = vec![("routes", "read")];
+        let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
+        membership_repo
+            .update_membership_role(
+                &user_id,
+                &org_id,
+                OrgRole::Viewer,
+                &viewer_pairs,
+                user_id.as_str(),
+            )
+            .await
+            .expect("demote to viewer");
+
+        // Old grants (clusters:read) gone, new grants (routes:read) inserted
+        let count_after = count_grants_for_user_in_team(&pool, user_id.as_str(), &team_id).await;
+        assert_eq!(count_after, 1, "exactly viewer grants should exist");
+
+        // Verify it's the right grant
+        let grant_action: Option<String> = sqlx::query_scalar(
+            "SELECT action FROM grants WHERE principal_id = $1 AND team_id = $2 AND resource_type = 'routes'",
+        )
+        .bind(user_id.as_str())
+        .bind(&team_id)
+        .fetch_optional(&pool)
+        .await
+        .expect("fetch grant action");
+        assert_eq!(grant_action.as_deref(), Some("read"));
     }
 }

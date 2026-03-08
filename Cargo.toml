@@ -163,3 +163,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Testcontainers for PostgreSQL integration tests
 testcontainers = "0.26"
 testcontainers-modules = { version = "0.14", features = ["postgres"] }
+urlencoding = "2.1"
+getrandom = "0.3"

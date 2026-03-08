@@ -50,7 +50,7 @@ export async function getUserManager(): Promise<UserManager> {
 		post_logout_redirect_uri: `${config.app_url}/login`,
 		response_type: 'code',
 		scope: 'openid profile email',
-		userStore: new WebStorageStateStore({ store: sessionStorage }),
+		userStore: new WebStorageStateStore({ store: localStorage }),
 		automaticSilentRenew: true,
 	});
 	return cachedManager;

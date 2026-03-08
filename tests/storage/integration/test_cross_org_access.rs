@@ -450,21 +450,36 @@ async fn membership_role_upgrade_and_downgrade() {
     membership_repo.create_membership(&user2_id, &org.id, OrgRole::Owner).await.expect("owner2");
 
     // Downgrade user1 to member (allowed because user2 is still an owner)
+    let member_pairs: Vec<(&str, &str)> = vec![("clusters", "read"), ("routes", "read")];
     let downgraded = membership_repo
-        .update_membership_role(&user1_id, &org.id, OrgRole::Member)
+        .update_membership_role(
+            &user1_id,
+            &org.id,
+            OrgRole::Member,
+            &member_pairs,
+            user2_id.as_str(),
+        )
         .await
         .expect("downgrade user1");
     assert_eq!(downgraded.role, OrgRole::Member);
 
     // Upgrade user1 to admin
     let upgraded = membership_repo
-        .update_membership_role(&user1_id, &org.id, OrgRole::Admin)
+        .update_membership_role(&user1_id, &org.id, OrgRole::Admin, &[], user2_id.as_str())
         .await
         .expect("upgrade user1");
     assert_eq!(upgraded.role, OrgRole::Admin);
 
     // Now try to downgrade user2 (the last owner) - should fail
-    let result = membership_repo.update_membership_role(&user2_id, &org.id, OrgRole::Member).await;
+    let result = membership_repo
+        .update_membership_role(
+            &user2_id,
+            &org.id,
+            OrgRole::Member,
+            &member_pairs,
+            user1_id.as_str(),
+        )
+        .await;
     assert!(result.is_err(), "Downgrading the last owner should fail");
 }
 
@@ -538,12 +553,30 @@ fn check_resource_access_global_scope_admin_denied_for_tenant() {
 #[test]
 fn check_resource_access_correct_team_scope_allowed() {
     use flowplane::auth::authorization::check_resource_access;
+    use flowplane::auth::models::{Grant, GrantType};
 
-    let ctx = AuthContext::new(
-        TokenId::from_str_unchecked("team-user"),
-        "team-user".into(),
-        vec!["team:engineering:clusters:read".into(), "team:engineering:routes:create".into()],
-    );
+    let mut ctx =
+        AuthContext::new(TokenId::from_str_unchecked("team-user"), "team-user".into(), vec![]);
+    ctx.grants = vec![
+        Grant {
+            grant_type: GrantType::Resource,
+            team_id: "t1".into(),
+            team_name: "engineering".into(),
+            resource_type: Some("clusters".into()),
+            action: Some("read".into()),
+            route_id: None,
+            allowed_methods: vec![],
+        },
+        Grant {
+            grant_type: GrantType::Resource,
+            team_id: "t1".into(),
+            team_name: "engineering".into(),
+            resource_type: Some("routes".into()),
+            action: Some("create".into()),
+            route_id: None,
+            allowed_methods: vec![],
+        },
+    ];
 
     assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
     assert!(check_resource_access(&ctx, "routes", "create", Some("engineering")));
@@ -556,12 +589,19 @@ fn check_resource_access_correct_team_scope_allowed() {
 #[test]
 fn check_resource_access_wrong_team_scope_denied() {
     use flowplane::auth::authorization::check_resource_access;
+    use flowplane::auth::models::{Grant, GrantType};
 
-    let ctx = AuthContext::new(
-        TokenId::from_str_unchecked("team-user"),
-        "team-user".into(),
-        vec!["team:engineering:clusters:read".into()],
-    );
+    let mut ctx =
+        AuthContext::new(TokenId::from_str_unchecked("team-user"), "team-user".into(), vec![]);
+    ctx.grants = vec![Grant {
+        grant_type: GrantType::Resource,
+        team_id: "t1".into(),
+        team_name: "engineering".into(),
+        resource_type: Some("clusters".into()),
+        action: Some("read".into()),
+        route_id: None,
+        allowed_methods: vec![],
+    }];
 
     // Wrong team
     assert!(!check_resource_access(&ctx, "clusters", "read", Some("platform")));

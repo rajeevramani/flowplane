@@ -16,14 +16,17 @@ use std::sync::{Arc, OnceLock};
 
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
+use testcontainers::GenericImage;
+use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
 use tracing::info;
 
-use super::api_client::{ApiClient, TEST_EMAIL, TEST_NAME, TEST_PASSWORD};
+use super::api_client::ApiClient;
 use super::control_plane::{ControlPlaneConfig, ControlPlaneHandle};
 use super::envoy::{EnvoyConfig, EnvoyHandle, EnvoyXdsTlsConfig};
 use super::mocks::MockServices;
 use super::timeout::{with_timeout, TestTimeout};
+use super::zitadel::{self, ZitadelTestConfig};
 use crate::tls::support::TestCertificateAuthority;
 
 /// Fixed ports for shared infrastructure
@@ -140,6 +143,9 @@ static INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 /// PostgreSQL container for shared DB - must live for entire test run
 static SHARED_PG_CONTAINER: OnceLock<ContainerAsync<Postgres>> = OnceLock::new();
 
+/// Zitadel container for shared auth - must live for entire test run
+static SHARED_ZITADEL_CONTAINER: OnceLock<ContainerAsync<GenericImage>> = OnceLock::new();
+
 /// Dedicated runtime for shared infrastructure - persists across all tests
 static SHARED_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -156,6 +162,8 @@ pub struct SharedInfrastructure {
     pub mocks: MockServices,
     /// Database URL
     pub db_url: String,
+    /// Zitadel configuration for OIDC token acquisition
+    pub zitadel_config: ZitadelTestConfig,
     /// mTLS Certificate Authority (if FLOWPLANE_E2E_MTLS=1 was set)
     ///
     /// When present, the CP is configured with xDS TLS and tests can
@@ -244,13 +252,17 @@ impl SharedInfrastructure {
         }
 
         // Start PostgreSQL container for shared E2E database
+        // Use PG 17 to match docker-compose and satisfy Zitadel v4+ requirements
         info!("Starting PostgreSQL container for shared E2E database...");
         let container = Postgres::default()
+            .with_tag("17-alpine")
             .start()
             .await
             .expect("Failed to start PostgreSQL container for shared E2E");
 
-        let pg_host = container.get_host().await.expect("Failed to get PostgreSQL container host");
+        let pg_host_obj =
+            container.get_host().await.expect("Failed to get PostgreSQL container host");
+        let pg_host = pg_host_obj.to_string();
         let pg_port = container
             .get_host_port_ipv4(5432)
             .await
@@ -260,6 +272,29 @@ impl SharedInfrastructure {
 
         // Store container in static to keep it alive for entire test run
         let _ = SHARED_PG_CONTAINER.set(container);
+
+        // Start Zitadel container (shares the PostgreSQL instance via separate DB)
+        info!("Starting Zitadel container...");
+        let (zitadel_container, zitadel_port, machinekey_dir) =
+            zitadel::start_zitadel_container(&pg_host, pg_port).await?;
+        let zitadel_base_url = format!("http://localhost:{}", zitadel_port);
+
+        // Wait for Zitadel to be ready
+        zitadel::wait_for_zitadel_ready(&zitadel_base_url).await?;
+
+        // Read admin PAT from host-side machinekey directory
+        let admin_pat = zitadel::read_admin_pat(&machinekey_dir).await?;
+        zitadel::validate_pat(&zitadel_base_url, &admin_pat).await?;
+
+        // Bootstrap Zitadel (create project, SPA app, email action)
+        let zitadel_config =
+            zitadel::bootstrap_zitadel(&zitadel_base_url, &admin_pat, zitadel_port).await?;
+
+        // Set CP environment variables for Zitadel auth before starting CP
+        zitadel::set_cp_env_vars(&zitadel_config);
+
+        // Store Zitadel container in static to keep it alive
+        let _ = SHARED_ZITADEL_CONTAINER.set(zitadel_container);
 
         // Initialize mTLS CA if enabled
         let (mtls_ca, mtls_server_cert, xds_tls_config) = if enable_mtls {
@@ -318,30 +353,43 @@ impl SharedInfrastructure {
         .await?;
         info!(api = %cp.api_addr, xds = %cp.xds_addr, mtls = enable_mtls, "Shared control plane ready");
 
-        // Bootstrap the system with standard test credentials
-        // This ensures all tests can rely on a bootstrapped system
+        // Wait for superadmin to be seeded (CP seeds it on startup)
         let api_url = format!("http://{}", cp.api_addr);
         let api = ApiClient::new(&api_url);
 
-        let needs_bootstrap = api.needs_bootstrap().await.unwrap_or(true);
-        if needs_bootstrap {
-            info!("Bootstrapping shared infrastructure...");
-            api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME)
+        info!("Waiting for superadmin to be seeded by CP...");
+        let superadmin_token = {
+            let mut attempts = 0;
+            loop {
+                match zitadel::obtain_human_token(
+                    &zitadel_config,
+                    zitadel::SUPERADMIN_EMAIL,
+                    zitadel::SUPERADMIN_PASSWORD,
+                )
                 .await
-                .expect("Shared infrastructure bootstrap should succeed");
-            info!("Shared infrastructure bootstrap complete");
-        }
+                {
+                    Ok(token) => break token,
+                    Err(e) => {
+                        attempts += 1;
+                        if attempts >= 30 {
+                            anyhow::bail!(
+                                "Failed to obtain superadmin token after 30 attempts: {}",
+                                e
+                            );
+                        }
+                        if attempts % 5 == 0 {
+                            info!(attempt = attempts, "Superadmin not ready yet, retrying...");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        };
+        info!("Superadmin JWT token obtained");
 
         // Clean up stale dataplanes from previous test runs
-        // This ensures a clean slate for tests that create dataplanes
         info!("Cleaning up stale dataplanes from previous runs...");
-        let session =
-            api.login(TEST_EMAIL, TEST_PASSWORD).await.expect("Login should succeed for cleanup");
-        let token_resp = api
-            .create_token(&session, "cleanup-token", vec!["admin:all".to_string()])
-            .await
-            .expect("Token creation should succeed for cleanup");
-        let deleted = api.delete_all_dataplanes(&token_resp.token).await.unwrap_or(0);
+        let deleted = api.delete_all_dataplanes(&superadmin_token).await.unwrap_or(0);
         if deleted > 0 {
             info!(count = deleted, "Deleted stale dataplanes");
         }
@@ -406,6 +454,7 @@ impl SharedInfrastructure {
             envoy,
             mocks,
             db_url,
+            zitadel_config,
             mtls_ca,
             mtls_server_cert,
             mtls_envoy_client_cert,

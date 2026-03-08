@@ -23,7 +23,7 @@
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			userIsOrgAdmin = isOrgAdmin(sessionInfo.orgScopes);
+			userIsOrgAdmin = isOrgAdmin(sessionInfo.orgRole);
 			if (!userIsOrgAdmin) {
 				goto(`/organizations/${orgName}/teams`);
 				return;

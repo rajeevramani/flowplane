@@ -42,6 +42,7 @@ ADMIN_TOKEN=""
 AGENT_NAME="flowplane-agent"
 AGENT_CLIENT_ID=""
 AGENT_CLIENT_SECRET=""
+AGENT_ID=""
 
 # Colors
 CYAN='\033[36m'
@@ -153,6 +154,24 @@ wait_for_superadmin() {
     sleep 2
   done
 
+  # Reset superadmin password via admin PAT (idempotent — handles case where
+  # Playwright tests or a previous run changed the password)
+  log "Resetting superadmin password..."
+  local pw_body
+  pw_body=$(jq -n --arg p "$SUPERADMIN_PASSWORD" '{"newPassword":{"password":$p,"changeRequired":false}}')
+  local pw_raw pw_code
+  pw_raw=$(curl -s -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer ${ZITADEL_PAT}" \
+    -H "Content-Type: application/json" \
+    -d "$pw_body" \
+    "${ZITADEL_HOST}/v2/users/${superadmin_id}/password")
+  pw_code=$(echo "$pw_raw" | tail -1)
+  if [ "$pw_code" = "200" ] || [ "$pw_code" = "201" ]; then
+    ok "Superadmin password reset"
+  else
+    log "Password reset returned HTTP ${pw_code} (non-fatal)"
+  fi
+
   # Obtain OIDC token via Session API + authorize flow
   log "Obtaining OIDC token for superadmin..."
   ADMIN_TOKEN=$(get_oidc_token "$SUPERADMIN_EMAIL" "$SUPERADMIN_PASSWORD")
@@ -250,7 +269,7 @@ bootstrap_demo_org() {
 # ── Create agent via Flowplane API ───────────────────────────────
 # Requires org admin Bearer token in ADMIN_TOKEN.
 create_agent() {
-  local org_name="$1" agent_name="$2" description="$3" teams_json="$4" scopes_json="$5"
+  local org_name="$1" agent_name="$2" description="$3" teams_json="$4"
 
   log "Provisioning agent '${agent_name}' in org '${org_name}'..."
   local raw http_code body
@@ -262,8 +281,7 @@ create_agent() {
       --arg name "$agent_name" \
       --arg desc "$description" \
       --argjson teams "$teams_json" \
-      --argjson scopes "$scopes_json" \
-      '{name: $name, description: $desc, teams: $teams, scopes: $scopes}')" \
+      '{name: $name, description: $desc, teams: $teams}')" \
     "${FLOWPLANE_URL}/api/v1/orgs/${org_name}/agents")
   http_code=$(echo "$raw" | tail -1)
   body=$(echo "$raw" | sed '$d')
@@ -272,12 +290,91 @@ create_agent() {
     ok "Agent '${agent_name}' created in org '${org_name}'"
     AGENT_CLIENT_ID=$(echo "$body" | jq -r '.clientId // empty')
     AGENT_CLIENT_SECRET=$(echo "$body" | jq -r '.clientSecret // empty')
+    AGENT_ID=$(echo "$body" | jq -r '.agentId // empty')
   elif [ "$http_code" = "200" ]; then
     skip "Agent '${agent_name}' already exists in '${org_name}'"
   else
     fail "Agent creation failed (HTTP ${http_code}): ${body}"
     exit 1
   fi
+}
+
+# ── Resolve team name to UUID ─────────────────────────────────────
+get_team_id() {
+  local org_name="$1" team_name="$2"
+  local raw http_code body
+  raw=$(curl -s -w '\n%{http_code}' \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    "${FLOWPLANE_URL}/api/v1/orgs/${org_name}/teams/${team_name}")
+  http_code=$(echo "$raw" | tail -1)
+  body=$(echo "$raw" | sed '$d')
+
+  if [ "$http_code" = "200" ]; then
+    echo "$body" | jq -r '.id // empty'
+  else
+    fail "Failed to look up team '${team_name}' in org '${org_name}' (HTTP ${http_code}): ${body}"
+    exit 1
+  fi
+}
+
+# ── Create grants for agent ───────────────────────────────────────
+# Creates resource grants for each resource:action pair.
+# Idempotent: handles 409 (duplicate grant) gracefully.
+create_agent_grants() {
+  local org_name="$1" agent_id="$2" team_id="$3"
+
+  local grants=(
+    "clusters:read"
+    "clusters:create"
+    "clusters:update"
+    "routes:read"
+    "routes:create"
+    "routes:update"
+    "listeners:read"
+    "listeners:create"
+    "listeners:update"
+    "filters:read"
+    "filters:create"
+    "filters:update"
+    "learning-sessions:read"
+    "learning-sessions:create"
+    "learning-sessions:execute"
+    "secrets:read"
+    "secrets:create"
+    "secrets:update"
+  )
+
+  log "Creating grants for agent '${agent_id}' in org '${org_name}'..."
+  local created=0 skipped=0
+  for grant in "${grants[@]}"; do
+    local resource_type action
+    resource_type="${grant%%:*}"
+    action="${grant##*:}"
+
+    local raw http_code body
+    raw=$(curl -s -w '\n%{http_code}' \
+      -X POST \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n \
+        --arg teamId "$team_id" \
+        --arg resourceType "$resource_type" \
+        --arg action "$action" \
+        '{"grantType": "resource", "teamId": $teamId, "resourceType": $resourceType, "action": $action}')" \
+      "${FLOWPLANE_URL}/api/v1/orgs/${org_name}/principals/${agent_id}/grants")
+    http_code=$(echo "$raw" | tail -1)
+    body=$(echo "$raw" | sed '$d')
+
+    if [ "$http_code" = "201" ]; then
+      created=$((created + 1))
+    elif [ "$http_code" = "409" ]; then
+      skipped=$((skipped + 1))
+    else
+      fail "Grant creation failed for ${grant} (HTTP ${http_code}): ${body}"
+      exit 1
+    fi
+  done
+  ok "Grants: ${created} created, ${skipped} already existed"
 }
 
 # ── Main ───────────────────────────────────────────────────────
@@ -322,13 +419,27 @@ main() {
   fi
   ok "Org admin token obtained"
 
+  # Switch to org admin token for remaining operations
+  ADMIN_TOKEN="$org_admin_token"
+
   # Provision agent via the Flowplane API (org admin required)
-  ADMIN_TOKEN="$org_admin_token" create_agent \
+  create_agent \
     "${ORG_NAME}" \
     "${AGENT_NAME}" \
     "Flowplane agent service account" \
-    '["'"${TEAM_NAME}"'"]' \
-    '["clusters:read","clusters:create","clusters:update","routes:read","routes:create","routes:update","listeners:read","listeners:create","listeners:update","filters:read","filters:create","filters:update","learning-sessions:read","learning-sessions:create","learning-sessions:execute","secrets:read","secrets:create","secrets:update"]'
+    '["'"${TEAM_NAME}"'"]'
+
+  # Create grants for the agent if it was newly provisioned
+  if [ -n "${AGENT_ID}" ]; then
+    local team_id
+    team_id=$(get_team_id "${ORG_NAME}" "${TEAM_NAME}")
+    if [ -z "$team_id" ] || [ "$team_id" = "null" ]; then
+      fail "Could not resolve team '${TEAM_NAME}' to a UUID"
+      exit 1
+    fi
+    ok "Team '${TEAM_NAME}' id: ${team_id}"
+    create_agent_grants "${ORG_NAME}" "${AGENT_ID}" "${team_id}"
+  fi
 
   echo ""
   echo -e "${GREEN}━━━ Seed complete ━━━${RESET}"
@@ -344,6 +455,9 @@ main() {
     echo -e "    Client ID:     ${CYAN}${AGENT_CLIENT_ID}${RESET}"
     echo -e "    Client Secret: ${CYAN}${AGENT_CLIENT_SECRET}${RESET}"
     echo -e "    Token URL:     ${CYAN}${ZITADEL_HOST}/oauth/v2/token${RESET}"
+    if [ -n "${AGENT_ID}" ]; then
+      echo -e "    Grants:        clusters/routes/listeners/filters/learning-sessions/secrets (read,create,update)"
+    fi
     echo ""
   fi
   echo -e "  ${BOLD}Superadmin:${RESET}"

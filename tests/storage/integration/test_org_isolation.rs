@@ -258,15 +258,30 @@ async fn org_deletion_with_members_rejected() {
         .await
         .expect("create membership");
 
-    // Attempt to delete the org - should fail
+    // Create a team in this org — teams have ON DELETE RESTRICT, so this blocks deletion.
+    // (Memberships use ON DELETE CASCADE, which wouldn't block.)
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    team_repo
+        .create_team(CreateTeamRequest {
+            name: "blocking-team".to_string(),
+            display_name: "Blocking Team".to_string(),
+            description: None,
+            owner_user_id: None,
+            org_id: org_id.clone(),
+            settings: None,
+        })
+        .await
+        .expect("create team");
+
+    // Attempt to delete the org - should fail due to teams FK RESTRICT
     let org_repo = SqlxOrganizationRepository::new(pool.clone());
     let result = org_repo.delete_organization(&org_id).await;
 
-    assert!(result.is_err(), "Deleting org with active members should fail");
+    assert!(result.is_err(), "Deleting org with active teams/members should fail");
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("Cannot delete organization") || err_msg.contains("members"),
-        "Error should mention members constraint, got: {}",
+        "Error should mention constraint, got: {}",
         err_msg
     );
 }
@@ -631,7 +646,10 @@ async fn cannot_downgrade_last_owner() {
         .expect("create owner membership");
 
     // Attempt to downgrade the sole owner to member
-    let result = membership_repo.update_membership_role(&user_id, &org_id, OrgRole::Member).await;
+    let member_pairs: Vec<(&str, &str)> = vec![("clusters", "read"), ("routes", "read")];
+    let result = membership_repo
+        .update_membership_role(&user_id, &org_id, OrgRole::Member, &member_pairs, user_id.as_str())
+        .await;
     assert!(result.is_err(), "Should not be able to downgrade the last owner");
     let err_msg = result.unwrap_err().to_string();
     assert!(err_msg.contains("last owner"), "Error should mention last owner, got: {}", err_msg);
@@ -725,13 +743,21 @@ async fn cross_team_access_within_same_org_denied() {
     let x_names: Vec<&str> = x_results.iter().map(|c| c.name.as_str()).collect();
     assert!(!x_names.contains(&"y-cluster"), "Team-x should NOT see team-y cluster in same org");
 
-    // Authorization check: user with team-x scope cannot access team-y resources
-    let team_x_user = AuthContext::new(
-        TokenId::from_str_unchecked("team-x-user"),
-        "team-x-user".into(),
-        vec!["team:team-x:clusters:read".into()],
-    )
-    .with_org(org_id.clone(), "single-org".to_string());
+    // Authorization check: user with team-x grant cannot access team-y resources
+    use flowplane::auth::models::{Grant, GrantType};
+
+    let mut team_x_user =
+        AuthContext::new(TokenId::from_str_unchecked("team-x-user"), "team-x-user".into(), vec![])
+            .with_org(org_id.clone(), "single-org".to_string());
+    team_x_user.grants = vec![Grant {
+        grant_type: GrantType::Resource,
+        team_id: team_x_id.clone(),
+        team_name: "team-x".into(),
+        resource_type: Some("clusters".into()),
+        action: Some("read".into()),
+        route_id: None,
+        allowed_methods: vec![],
+    }];
 
     assert!(
         check_resource_access(&team_x_user, "clusters", "read", Some("team-x")),

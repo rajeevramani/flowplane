@@ -272,4 +272,82 @@ mod tests {
         std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER");
         assert!(ZitadelConfig::from_env().is_none());
     }
+
+    /// Helper: extract sub from a serde_json::Value using the same logic as
+    /// validate_jwt_extract_sub (lines 201-207). This lets us unit-test the
+    /// claim extraction without needing real JWTs or JWKS.
+    fn extract_sub(claims: &Value) -> Result<String, ApiError> {
+        let sub = claims
+            .get("sub")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ApiError::unauthorized("JWT missing sub claim"))?
+            .to_string();
+        Ok(sub)
+    }
+
+    fn extract_claims(claims: &Value) -> Result<JwtClaims, ApiError> {
+        let sub = extract_sub(claims)?;
+        let email = claims.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let name = claims.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+        Ok(JwtClaims { sub, email, name })
+    }
+
+    #[test]
+    fn test_valid_token_extracts_sub() {
+        let claims = serde_json::json!({
+            "sub": "user-12345",
+            "iss": "https://auth.example.com",
+            "aud": "project-id",
+            "email": "alice@example.com",
+            "name": "Alice"
+        });
+        let result = extract_claims(&claims).expect("should extract claims");
+        assert_eq!(result.sub, "user-12345");
+        assert_eq!(result.email.as_deref(), Some("alice@example.com"));
+        assert_eq!(result.name.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn test_extra_claims_ignored() {
+        // Role claims, scopes, and other Zitadel-specific fields must not
+        // affect identity extraction — permissions come from the DB.
+        let claims = serde_json::json!({
+            "sub": "user-99",
+            "iss": "https://auth.example.com",
+            "aud": "project-id",
+            "urn:zitadel:iam:org:project:id:12345:roles": {
+                "engineering:admin": { "org-abc": "org-abc" }
+            },
+            "scope": "openid profile email",
+            "custom_claim": "should-be-ignored"
+        });
+        let result = extract_claims(&claims).expect("should extract claims");
+        assert_eq!(result.sub, "user-99");
+        // No email in this token — should be None, not extracted from role claims
+        assert!(result.email.is_none());
+    }
+
+    #[test]
+    fn test_malformed_sub_fails_closed() {
+        // Missing sub entirely
+        let no_sub = serde_json::json!({
+            "iss": "https://auth.example.com",
+            "aud": "project-id"
+        });
+        assert!(extract_sub(&no_sub).is_err());
+
+        // Sub is null
+        let null_sub = serde_json::json!({
+            "sub": null,
+            "iss": "https://auth.example.com"
+        });
+        assert!(extract_sub(&null_sub).is_err());
+
+        // Sub is a number (not a string)
+        let numeric_sub = serde_json::json!({
+            "sub": 12345,
+            "iss": "https://auth.example.com"
+        });
+        assert!(extract_sub(&numeric_sub).is_err());
+    }
 }

@@ -592,15 +592,38 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
 
     #[instrument(skip(self), fields(user_id = %user_id, team = %team), name = "db_delete_user_team_membership")]
     async fn delete_user_team_membership(&self, user_id: &UserId, team: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to begin transaction for team membership deletion".to_string(),
+        })?;
+
+        // Defense-in-depth: delete grants for this user+team before removing
+        // the membership. The handler layer also cleans grants, but doing it
+        // here prevents orphaned grants if any code path bypasses the handler.
+        sqlx::query("DELETE FROM grants WHERE principal_id = $1 AND team_id = $2")
+            .bind(user_id.as_str())
+            .bind(team)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| FlowplaneError::Database {
+                source: err,
+                context: "Failed to delete grants on team membership removal".to_string(),
+            })?;
+
         sqlx::query("DELETE FROM user_team_memberships WHERE user_id = $1 AND team = $2")
             .bind(user_id.to_string())
             .bind(team)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|err| FlowplaneError::Database {
                 source: err,
                 context: "Failed to delete user team membership".to_string(),
             })?;
+
+        tx.commit().await.map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to commit team membership deletion".to_string(),
+        })?;
 
         Ok(())
     }

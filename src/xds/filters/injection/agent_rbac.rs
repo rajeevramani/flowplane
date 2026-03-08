@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use crate::xds::filters::any_from_message;
 use crate::xds::filters::http::jwt_auth::{
     JwtClaimToHeaderConfig, JwtJwksSourceConfig, JwtProviderConfig, RemoteJwksConfig,
     RemoteJwksHttpUriConfig,
@@ -25,6 +26,9 @@ use crate::xds::filters::http::rbac::{
 use crate::xds::helpers::ListenerModifier;
 use crate::xds::resources::BuiltResource;
 use crate::Result;
+use envoy_types::pb::envoy::config::core::v3::{data_source, DataSource};
+use envoy_types::pb::envoy::extensions::filters::http::lua::v3::Lua as LuaFilter;
+use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType as HttpFilterConfigType;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::HttpFilter;
 use tracing::{debug, warn};
 
@@ -182,6 +186,34 @@ pub async fn load_route_grants_for_listener(
     rows
 }
 
+/// Build an Envoy Lua HTTP filter that strips `x-flowplane-sub` from incoming requests.
+///
+/// This filter must be placed at the start of the HCM filter chain — before the JWT filter —
+/// so that a client-supplied `x-flowplane-sub` header cannot spoof the JWT-derived value.
+/// The JWT filter will re-set the header with the validated `sub` claim after this runs.
+pub fn build_lua_header_sanitizer_filter() -> HttpFilter {
+    let lua = LuaFilter {
+        default_source_code: Some(DataSource {
+            specifier: Some(data_source::Specifier::InlineString(
+                "function envoy_on_request(handle)\n  handle:headers():remove(\"x-flowplane-sub\")\nend\n"
+                    .to_string(),
+            )),
+            watched_directory: None,
+        }),
+        ..Default::default()
+    };
+
+    let lua_any =
+        any_from_message("type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua", &lua);
+
+    HttpFilter {
+        name: "envoy.filters.http.lua.sub-sanitizer".to_string(),
+        config_type: Some(HttpFilterConfigType::TypedConfig(lua_any)),
+        disabled: false,
+        is_optional: false,
+    }
+}
+
 /// Inject agent RBAC filters into built listener resources that have active route grants.
 ///
 /// For each listener, queries the database for route grants, builds an RBAC config,
@@ -243,6 +275,24 @@ pub async fn inject_agent_rbac_filters(
                     listener = %built.name,
                     error = %e,
                     "Failed to inject RBAC filter into listener"
+                );
+                continue;
+            }
+        }
+
+        // Inject Lua sanitizer at position 0 (before JWT filter) to strip any
+        // client-supplied x-flowplane-sub header before JWT validation sets it.
+        let lua_filter = build_lua_header_sanitizer_filter();
+        match modifier.for_each_hcm(|hcm, _| {
+            hcm.http_filters.insert(0, lua_filter.clone());
+            Ok(true)
+        }) {
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    listener = %built.name,
+                    error = %e,
+                    "Failed to inject Lua header sanitizer into listener"
                 );
                 continue;
             }
@@ -368,5 +418,149 @@ mod tests {
         assert!(validate_exposure("external").is_ok());
         assert!(validate_exposure("public").is_err());
         assert!(validate_exposure("").is_err());
+    }
+
+    #[test]
+    fn test_lua_sanitizer_filter_has_correct_name() {
+        let filter = build_lua_header_sanitizer_filter();
+        assert_eq!(filter.name, "envoy.filters.http.lua.sub-sanitizer");
+        assert!(!filter.disabled);
+        assert!(!filter.is_optional);
+    }
+
+    #[test]
+    fn test_lua_sanitizer_filter_has_typed_config_with_lua_type_url() {
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType;
+
+        let filter = build_lua_header_sanitizer_filter();
+        match &filter.config_type {
+            Some(ConfigType::TypedConfig(any)) => {
+                assert!(
+                    any.type_url.contains("lua"),
+                    "Expected Lua type URL, got: {}",
+                    any.type_url
+                );
+                assert!(!any.value.is_empty(), "Lua filter proto should be non-empty");
+            }
+            _ => panic!("Expected TypedConfig on Lua filter"),
+        }
+    }
+
+    #[test]
+    fn test_lua_sanitizer_filter_code_removes_x_flowplane_sub() {
+        use envoy_types::pb::envoy::extensions::filters::http::lua::v3::Lua;
+        use prost::Message;
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::http_filter::ConfigType;
+
+        let filter = build_lua_header_sanitizer_filter();
+        if let Some(ConfigType::TypedConfig(any)) = &filter.config_type {
+            let lua = Lua::decode(&any.value[..]).expect("should decode Lua proto");
+            let source = lua.default_source_code.expect("default_source_code must be set");
+            if let Some(data_source::Specifier::InlineString(code)) = source.specifier {
+                assert!(
+                    code.contains("x-flowplane-sub"),
+                    "Lua code must remove x-flowplane-sub header"
+                );
+                assert!(code.contains("remove"), "Lua code must call remove() on the header");
+            } else {
+                panic!("Expected InlineString specifier");
+            }
+        } else {
+            panic!("Expected TypedConfig");
+        }
+    }
+
+    #[test]
+    fn test_lua_sanitizer_injected_before_rbac_when_grants_present() {
+        use crate::xds::helpers::ListenerModifier;
+        use envoy_types::pb::envoy::config::core::v3::{
+            address::Address as AddressType, Address, SocketAddress,
+        };
+        use envoy_types::pb::envoy::config::listener::v3::{Filter, FilterChain, Listener};
+        use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3::{
+            HttpConnectionManager, HttpFilter as HcmFilter,
+        };
+        use envoy_types::pb::google::protobuf::Any as PbAny;
+        use prost::Message;
+
+        // Build a minimal listener with JWT + router (typical state before RBAC injection)
+        let jwt_filter = HcmFilter {
+            name: "envoy.filters.http.jwt_authn".to_string(),
+            config_type: None,
+            is_optional: false,
+            disabled: false,
+        };
+        let router_filter = HcmFilter {
+            name: "envoy.filters.http.router".to_string(),
+            config_type: None,
+            is_optional: false,
+            disabled: false,
+        };
+        let hcm = HttpConnectionManager {
+            stat_prefix: "test".to_string(),
+            http_filters: vec![jwt_filter, router_filter],
+            ..Default::default()
+        };
+        let hcm_any = PbAny {
+            type_url: "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager".to_string(),
+            value: hcm.encode_to_vec(),
+        };
+        let filter = Filter {
+            name: "envoy.filters.network.http_connection_manager".to_string(),
+            config_type: Some(
+                envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(
+                    hcm_any,
+                ),
+            ),
+        };
+        let listener = Listener {
+            name: "test-listener".to_string(),
+            filter_chains: vec![FilterChain { filters: vec![filter], ..Default::default() }],
+            address: Some(Address {
+                address: Some(AddressType::SocketAddress(SocketAddress {
+                    address: "0.0.0.0".to_string(),
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        };
+        let bytes = listener.encode_to_vec();
+
+        let mut modifier = ListenerModifier::decode(&bytes, "test-listener").unwrap();
+
+        // Simulate RBAC injection (before router)
+        let rbac_filter = HcmFilter {
+            name: "envoy.filters.http.rbac".to_string(),
+            config_type: None,
+            is_optional: false,
+            disabled: false,
+        };
+        modifier.add_filter_before_router(rbac_filter, false).unwrap();
+
+        // Simulate Lua injection at position 0
+        let lua_filter = build_lua_header_sanitizer_filter();
+        modifier
+            .for_each_hcm(|hcm, _| {
+                hcm.http_filters.insert(0, lua_filter.clone());
+                Ok(true)
+            })
+            .unwrap();
+
+        let encoded = modifier.finish_if_modified().unwrap();
+        let decoded = Listener::decode(&encoded[..]).unwrap();
+        if let Some(
+            envoy_types::pb::envoy::config::listener::v3::filter::ConfigType::TypedConfig(tc),
+        ) = &decoded.filter_chains[0].filters[0].config_type
+        {
+            let hcm = HttpConnectionManager::decode(&tc.value[..]).unwrap();
+            // Expected order: Lua, JWT, RBAC, router
+            assert_eq!(hcm.http_filters.len(), 4);
+            assert_eq!(hcm.http_filters[0].name, "envoy.filters.http.lua.sub-sanitizer");
+            assert_eq!(hcm.http_filters[1].name, "envoy.filters.http.jwt_authn");
+            assert_eq!(hcm.http_filters[2].name, "envoy.filters.http.rbac");
+            assert_eq!(hcm.http_filters[3].name, "envoy.filters.http.router");
+        } else {
+            panic!("Expected TypedConfig on HCM filter");
+        }
     }
 }

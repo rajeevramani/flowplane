@@ -552,6 +552,12 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
             return Some(sub_resource);
         }
 
+        // Special case: /api/v1/auth - Auth session endpoint is accessible to any
+        // authenticated user. The handler returns the caller's own session info.
+        if parts[2] == "auth" {
+            return None;
+        }
+
         // Special case: /api/v1/orgs - Org-scoped endpoints use handler-level authorization
         // via org membership scopes (org:{name}:admin|member), not resource-level scopes.
         // Returning None skips dynamic scope checks and lets the handler enforce access.
@@ -1414,6 +1420,7 @@ mod tests {
         assert_eq!(resource_from_path("/api/v1/openapi/import"), Some("openapi-import"));
         assert_eq!(resource_from_path("/api/v1/openapi/imports"), Some("openapi-import"));
         assert_eq!(resource_from_path("/api/v1/openapi/imports/abc-123"), Some("openapi-import"));
+        assert_eq!(resource_from_path("/api/v1/auth/session"), None);
     }
 
     // === Grant-based access tests (replacing wildcard scope tests) ===

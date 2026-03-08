@@ -366,8 +366,41 @@ impl McpHandler {
                 AgentContext::GatewayTool | AgentContext::ApiConsumer => Vec::new(),
             }
         } else {
-            // Human users: all CP tools (existing behavior)
-            tools::get_all_tools()
+            // Human users: filter CP tools by resource grants across all their teams.
+            // Org admins have implicit access (no explicit grants) and see all tools.
+            let allowed: std::collections::HashSet<(&str, &str)> = self
+                .context
+                .grants
+                .iter()
+                .filter(|g| g.grant_type == GrantType::Resource)
+                .filter_map(|g| Some((g.resource_type.as_deref()?, g.action.as_deref()?)))
+                .collect();
+
+            if allowed.is_empty() {
+                // No explicit resource grants — check for implicit org admin access
+                let is_org_admin = {
+                    use crate::auth::authorization::{has_admin_bypass, has_org_admin};
+                    if let Some(ref org_name) = self.context.org_name {
+                        has_org_admin(&self.context, org_name)
+                    } else {
+                        has_admin_bypass(&self.context)
+                    }
+                };
+                if is_org_admin {
+                    tools::get_all_tools()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                tools::get_all_tools()
+                    .into_iter()
+                    .filter(|tool| {
+                        get_tool_authorization(&tool.name)
+                            .map(|auth| allowed.contains(&(auth.resource, auth.action)))
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            }
         };
 
         let mut all_tools = cp_tools;
@@ -2099,7 +2132,8 @@ mod tests {
 
         assert!(response.error.is_some());
         let error = response.error.unwrap();
-        assert_eq!(error.code, error_codes::METHOD_NOT_FOUND);
+        // ToolNotFound uses INVALID_REQUEST (same as Forbidden) to prevent name probing
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
         assert!(!error.message.contains("Forbidden"));
     }
 
@@ -2156,8 +2190,8 @@ mod tests {
 
         assert!(response.error.is_some());
         let error = response.error.unwrap();
-        // Without gateway executor, unknown tool gives ToolNotFound
-        assert_eq!(error.code, error_codes::METHOD_NOT_FOUND);
+        // Without gateway executor, unknown tool gives ToolNotFound → INVALID_REQUEST (prevents name probing)
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
     }
 
     #[tokio::test]
@@ -2199,10 +2233,10 @@ mod tests {
             })
             .await;
 
-        // api_* tool with no gateway executor → ToolNotFound (not panic, not Forbidden)
+        // api_* tool with no gateway executor → ToolNotFound → INVALID_REQUEST (prevents name probing)
         assert!(response.error.is_some());
         let error = response.error.unwrap();
-        assert_eq!(error.code, error_codes::METHOD_NOT_FOUND);
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
     }
 
     // ===== Cross-context isolation tests (tools/list filtering) =====
@@ -2357,5 +2391,135 @@ mod tests {
         let tools = result["tools"].as_array().unwrap();
         // API consumers access routes via Envoy, not MCP tools
         assert!(tools.is_empty(), "API-consumer agent must always see empty tools list");
+    }
+
+    #[tokio::test]
+    async fn test_human_tools_list_no_grants_no_admin_sees_no_cp_tools() {
+        let test_db = TestDatabase::new("handler_human_no_grants").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // Human user with no grants and no org admin scope
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("human-token".to_string()),
+            "human".to_string(),
+            crate::domain::UserId::from_str_unchecked("user-1"),
+            "user@test.com".to_string(),
+            vec!["org:acme:member".to_string()],
+        )
+        .with_grants(vec![], None)
+        .with_org(crate::domain::OrgId::from_str_unchecked("org-1"), "acme".to_string());
+
+        let mut handler = McpHandler::new(pool, vec![], ctx);
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none());
+        let tools = response.result.unwrap()["tools"].as_array().unwrap().clone();
+        assert!(tools.is_empty(), "Human with no grants and no admin role must see zero CP tools");
+    }
+
+    #[tokio::test]
+    async fn test_human_tools_list_org_admin_sees_all_cp_tools() {
+        let test_db = TestDatabase::new("handler_human_org_admin").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // Human user with org:acme:admin scope (implicit access, no explicit grants)
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("admin-token".to_string()),
+            "admin".to_string(),
+            crate::domain::UserId::from_str_unchecked("admin-1"),
+            "admin@test.com".to_string(),
+            vec!["org:acme:admin".to_string()],
+        )
+        .with_grants(vec![], None)
+        .with_org(crate::domain::OrgId::from_str_unchecked("org-1"), "acme".to_string());
+
+        let mut handler = McpHandler::new(pool, vec![], ctx);
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none());
+        let tools = response.result.unwrap()["tools"].as_array().unwrap().clone();
+        let all_tool_count = tools::get_all_tools().len();
+        assert_eq!(
+            tools.len(),
+            all_tool_count,
+            "Org admin with no explicit grants must see all CP tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_human_tools_list_with_resource_grants_sees_matching_cp_tools() {
+        use crate::auth::models::{Grant, GrantType};
+
+        let test_db = TestDatabase::new("handler_human_with_grants").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // Human user with clusters:read grant only
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("user-token".to_string()),
+            "user".to_string(),
+            crate::domain::UserId::from_str_unchecked("user-2"),
+            "user2@test.com".to_string(),
+            vec!["org:acme:member".to_string()],
+        )
+        .with_grants(
+            vec![Grant {
+                grant_type: GrantType::Resource,
+                team_id: "team-uuid-1".to_string(),
+                team_name: "engineering".to_string(),
+                resource_type: Some("clusters".to_string()),
+                action: Some("read".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            }],
+            None,
+        )
+        .with_org(crate::domain::OrgId::from_str_unchecked("org-1"), "acme".to_string());
+
+        let mut handler = McpHandler::new(pool, vec![], ctx);
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none());
+        let tools = response.result.unwrap()["tools"].as_array().unwrap().clone();
+        // Must see at least some tools (clusters:read matches cp_list_clusters, cp_get_cluster etc.)
+        assert!(!tools.is_empty(), "User with clusters:read grant must see matching tools");
+        // All visible tools must require only clusters:read
+        for tool in &tools {
+            let name = tool["name"].as_str().unwrap();
+            let auth = get_tool_authorization(name);
+            assert!(
+                auth.map(|a| a.resource == "clusters" && a.action == "read").unwrap_or(false),
+                "Tool {name} should not be visible with only clusters:read grant"
+            );
+        }
+        // Must NOT see tools requiring write or other resources
+        let has_write_tool = tools.iter().any(|t| {
+            t["name"]
+                .as_str()
+                .and_then(get_tool_authorization)
+                .map(|a| a.action == "write")
+                .unwrap_or(false)
+        });
+        assert!(!has_write_tool, "User with only clusters:read must not see write tools");
     }
 }

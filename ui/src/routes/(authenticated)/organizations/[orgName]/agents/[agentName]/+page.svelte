@@ -58,7 +58,7 @@
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!isOrgAdmin(sessionInfo.orgScopes)) {
+			if (!isOrgAdmin(sessionInfo.orgRole)) {
 				goto(`/organizations/${orgName}/agents`);
 				return;
 			}

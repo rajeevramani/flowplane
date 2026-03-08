@@ -7,56 +7,47 @@
 //! - Bootstrap platform org verification
 //! - Organization deletion
 //! - Cross-org isolation
-
-use serde_json::json;
+//!
+//! All tests authenticate via Zitadel JWT (no PATs).
 
 use crate::common::{
-    api_client::{ApiClient, TEST_EMAIL, TEST_NAME, TEST_PASSWORD},
-    harness::{TestHarness, TestHarnessConfig},
+    api_client::ApiClient,
+    shared_infra::SharedInfrastructure,
     timeout::{with_timeout, TestTimeout},
+    zitadel,
 };
 
-/// Test that bootstrap creates a platform organization and login returns org context
+/// Helper: obtain superadmin JWT and return (api, token)
+async fn setup_org_test() -> (ApiClient, String) {
+    let infra = SharedInfrastructure::get_or_init()
+        .await
+        .expect("Failed to initialize shared infrastructure");
+
+    let api = ApiClient::new(infra.api_url());
+
+    let token = with_timeout(TestTimeout::default_with_label("Obtain superadmin JWT"), async {
+        zitadel::obtain_human_token(
+            &infra.zitadel_config,
+            zitadel::SUPERADMIN_EMAIL,
+            zitadel::SUPERADMIN_PASSWORD,
+        )
+        .await
+    })
+    .await
+    .expect("JWT acquisition should succeed");
+
+    (api, token)
+}
+
+/// Test that bootstrap creates a platform organization
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2500_default_org_from_bootstrap() {
-    let harness = TestHarness::start(
-        TestHarnessConfig::new("test_2500_default_org_from_bootstrap").isolated().without_envoy(),
-    )
-    .await
-    .expect("Failed to start harness");
-
-    let api = ApiClient::new(harness.api_url());
-
-    // Bootstrap
-    let bootstrap = with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-        api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-    })
-    .await
-    .expect("Bootstrap should succeed");
-    assert!(bootstrap.setup_token.starts_with("fp_setup_"));
-
-    // Login and verify org context
-    let (session, login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login_full(TEST_EMAIL, TEST_PASSWORD).await
-    })
-    .await
-    .expect("Login should succeed");
-
-    assert!(login_resp.org_id.is_some(), "Login should include org_id");
-    assert_eq!(login_resp.org_name.as_deref(), Some("platform"));
-    println!("ok Login includes org context: org={:?}", login_resp.org_name);
-
-    // Create admin token for API calls
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "org-test-token", vec!["admin:all".to_string()]).await
-    })
-    .await
-    .expect("Token creation should succeed");
+    let (api, admin_token) = setup_org_test().await;
 
     // List organizations - should see platform org
     let orgs = with_timeout(TestTimeout::default_with_label("List organizations"), async {
-        api.list_organizations(&token_resp.token).await
+        api.list_organizations(&admin_token).await
     })
     .await
     .expect("List organizations should succeed");
@@ -68,7 +59,7 @@ async fn test_2500_default_org_from_bootstrap() {
 
     // Get current org
     let current = with_timeout(TestTimeout::default_with_label("Get current org"), async {
-        api.get_current_org(&session).await
+        api.get_current_org(&admin_token).await
     })
     .await
     .expect("Get current org should succeed");
@@ -82,39 +73,12 @@ async fn test_2500_default_org_from_bootstrap() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2501_create_organization() {
-    let harness = TestHarness::start(
-        TestHarnessConfig::new("test_2501_create_organization").isolated().without_envoy(),
-    )
-    .await
-    .expect("Failed to start harness");
-
-    let api = ApiClient::new(harness.api_url());
-
-    // Bootstrap and login
-    with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-        api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-    })
-    .await
-    .expect("Bootstrap should succeed");
-
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
-    })
-    .await
-    .expect("Login should succeed");
-
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "org-create-token", vec!["admin:all".to_string()]).await
-    })
-    .await
-    .expect("Token creation should succeed");
-
-    let admin_token = &token_resp.token;
+    let (api, admin_token) = setup_org_test().await;
 
     // Create a new organization
     let new_org = with_timeout(TestTimeout::default_with_label("Create organization"), async {
         api.create_organization(
-            admin_token,
+            &admin_token,
             "test-org-alpha",
             "Test Org Alpha",
             Some("An organization for E2E testing"),
@@ -131,7 +95,7 @@ async fn test_2501_create_organization() {
 
     // List organizations - should see both platform and test-org-alpha
     let orgs = with_timeout(TestTimeout::default_with_label("List organizations"), async {
-        api.list_organizations(admin_token).await
+        api.list_organizations(&admin_token).await
     })
     .await
     .expect("List organizations should succeed");
@@ -147,39 +111,12 @@ async fn test_2501_create_organization() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2502_get_and_update_organization() {
-    let harness = TestHarness::start(
-        TestHarnessConfig::new("test_2502_get_and_update_organization").isolated().without_envoy(),
-    )
-    .await
-    .expect("Failed to start harness");
-
-    let api = ApiClient::new(harness.api_url());
-
-    // Bootstrap and login
-    with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-        api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-    })
-    .await
-    .expect("Bootstrap should succeed");
-
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
-    })
-    .await
-    .expect("Login should succeed");
-
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "org-update-token", vec!["admin:all".to_string()]).await
-    })
-    .await
-    .expect("Token creation should succeed");
-
-    let admin_token = &token_resp.token;
+    let (api, admin_token) = setup_org_test().await;
 
     // Create a test org
     let created_org = with_timeout(TestTimeout::default_with_label("Create organization"), async {
         api.create_organization(
-            admin_token,
+            &admin_token,
             "test-org-beta",
             "Test Org Beta",
             Some("Original description"),
@@ -193,7 +130,7 @@ async fn test_2502_get_and_update_organization() {
 
     // Get org by ID
     let fetched_org = with_timeout(TestTimeout::default_with_label("Get organization"), async {
-        api.get_organization(admin_token, &created_org.id).await
+        api.get_organization(&admin_token, &created_org.id).await
     })
     .await
     .expect("Get organization should succeed");
@@ -206,7 +143,7 @@ async fn test_2502_get_and_update_organization() {
     // Update org
     let updated_org = with_timeout(TestTimeout::default_with_label("Update organization"), async {
         api.update_organization(
-            admin_token,
+            &admin_token,
             &created_org.id,
             Some("Updated Beta Org"),
             Some("Updated description for E2E"),
@@ -221,7 +158,7 @@ async fn test_2502_get_and_update_organization() {
 
     // Verify update persisted
     let verified_org = with_timeout(TestTimeout::default_with_label("Verify update"), async {
-        api.get_organization(admin_token, &created_org.id).await
+        api.get_organization(&admin_token, &created_org.id).await
     })
     .await
     .expect("Get organization after update should succeed");
@@ -238,85 +175,62 @@ async fn test_2502_get_and_update_organization() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2503_org_membership_lifecycle() {
-    let harness = TestHarness::start(
-        TestHarnessConfig::new("test_2503_org_membership_lifecycle").isolated().without_envoy(),
-    )
-    .await
-    .expect("Failed to start harness");
-
-    let api = ApiClient::new(harness.api_url());
-
-    // Bootstrap and login
-    with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-        api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-    })
-    .await
-    .expect("Bootstrap should succeed");
-
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
-    })
-    .await
-    .expect("Login should succeed");
-
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "org-membership-token", vec!["admin:all".to_string()]).await
-    })
-    .await
-    .expect("Token creation should succeed");
-
-    let admin_token = &token_resp.token;
+    let (api, admin_token) = setup_org_test().await;
 
     // Create a test org
     let test_org = with_timeout(TestTimeout::default_with_label("Create organization"), async {
-        api.create_organization(admin_token, "test-org-members", "Test Org Members", None).await
+        api.create_organization(&admin_token, "test-org-members", "Test Org Members", None).await
     })
     .await
     .expect("Create organization should succeed");
 
     println!("ok Created org: {} (id={})", test_org.name, test_org.id);
 
-    // List initial members - may have the admin as owner
+    // List initial members
     let initial_members =
         with_timeout(TestTimeout::default_with_label("List initial members"), async {
-            api.list_org_members(admin_token, &test_org.id).await
+            api.list_org_members(&admin_token, &test_org.id).await
         })
         .await
         .expect("List org members should succeed");
 
     println!("ok Initial members count: {}", initial_members.members.len());
 
-    // Create a new user via POST /api/v1/users (requires orgId)
-    let (create_status, create_body) =
-        with_timeout(TestTimeout::default_with_label("Create test user"), async {
-            api.post(
-                admin_token,
-                "/api/v1/users",
-                json!({
-                    "email": "member-test@e2e.test",
-                    "password": "MemberTest123!",
-                    "name": "Member Test User",
-                    "isAdmin": false,
-                    "orgId": test_org.id
-                }),
-            )
-            .await
+    // Create user in Zitadel and JIT-provision via authentication
+    let infra = SharedInfrastructure::get_or_init().await.expect("Failed to get shared infra");
+
+    let member_email = "member-test@e2e.test";
+    let member_password = "MemberTest123!";
+    with_timeout(TestTimeout::default_with_label("Create Zitadel user"), async {
+        zitadel::create_human_user(
+            &infra.zitadel_config.base_url,
+            &infra.zitadel_config.admin_pat,
+            member_email,
+            "Member",
+            "Test User",
+            member_password,
+        )
+        .await
+    })
+    .await
+    .expect("Create Zitadel user should succeed");
+
+    // Authenticate to trigger JIT provisioning in CP
+    let member_token =
+        with_timeout(TestTimeout::default_with_label("Authenticate test user"), async {
+            zitadel::obtain_human_token(&infra.zitadel_config, member_email, member_password).await
         })
         .await
-        .expect("Create user should succeed");
+        .expect("User authentication should succeed");
 
-    assert!(
-        create_status.is_success(),
-        "Create user should return 2xx, got {} - {:?}",
-        create_status,
-        create_body
-    );
-    let new_user_id = create_body["id"].as_str().expect("User response should have id").to_string();
+    let member_session =
+        api.get_auth_session(&member_token).await.expect("User auth session should succeed");
+    let new_user_id = member_session.user_id;
     println!("ok Created user: id={}", new_user_id);
 
     // Add user to org as member
     let member = with_timeout(TestTimeout::default_with_label("Add org member"), async {
-        api.add_org_member(admin_token, &test_org.id, &new_user_id, "member").await
+        api.add_org_member(&admin_token, &test_org.id, &new_user_id, "member").await
     })
     .await
     .expect("Add org member should succeed");
@@ -328,7 +242,7 @@ async fn test_2503_org_membership_lifecycle() {
     // List members - should include the new member
     let members_after_add =
         with_timeout(TestTimeout::default_with_label("List members after add"), async {
-            api.list_org_members(admin_token, &test_org.id).await
+            api.list_org_members(&admin_token, &test_org.id).await
         })
         .await
         .expect("List org members should succeed");
@@ -341,7 +255,7 @@ async fn test_2503_org_membership_lifecycle() {
     // Update member role to admin
     let updated_member =
         with_timeout(TestTimeout::default_with_label("Update member role"), async {
-            api.update_org_member_role(admin_token, &test_org.id, &new_user_id, "admin").await
+            api.update_org_member_role(&admin_token, &test_org.id, &new_user_id, "admin").await
         })
         .await
         .expect("Update org member role should succeed");
@@ -351,7 +265,7 @@ async fn test_2503_org_membership_lifecycle() {
 
     // Remove member from org
     with_timeout(TestTimeout::default_with_label("Remove org member"), async {
-        api.remove_org_member(admin_token, &test_org.id, &new_user_id).await
+        api.remove_org_member(&admin_token, &test_org.id, &new_user_id).await
     })
     .await
     .expect("Remove org member should succeed");
@@ -359,7 +273,7 @@ async fn test_2503_org_membership_lifecycle() {
     // Verify member removed
     let members_after_remove =
         with_timeout(TestTimeout::default_with_label("List members after remove"), async {
-            api.list_org_members(admin_token, &test_org.id).await
+            api.list_org_members(&admin_token, &test_org.id).await
         })
         .await
         .expect("List org members should succeed");
@@ -373,39 +287,12 @@ async fn test_2503_org_membership_lifecycle() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2504_org_scoped_teams() {
-    let harness = TestHarness::start(
-        TestHarnessConfig::new("test_2504_org_scoped_teams").isolated().without_envoy(),
-    )
-    .await
-    .expect("Failed to start harness");
-
-    let api = ApiClient::new(harness.api_url());
-
-    // Bootstrap and login
-    with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-        api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-    })
-    .await
-    .expect("Bootstrap should succeed");
-
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
-    })
-    .await
-    .expect("Login should succeed");
-
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "org-teams-token", vec!["admin:all".to_string()]).await
-    })
-    .await
-    .expect("Token creation should succeed");
-
-    let admin_token = &token_resp.token;
+    let (api, admin_token) = setup_org_test().await;
 
     // Create a tenant org (platform org is governance-only, no teams allowed)
     let tenant_org = with_timeout(TestTimeout::default_with_label("Create tenant org"), async {
         api.create_organization(
-            admin_token,
+            &admin_token,
             "test-org-2504",
             "Test Org 2504",
             Some("Tenant org for org-scoped team tests"),
@@ -419,7 +306,7 @@ async fn test_2504_org_scoped_teams() {
 
     // Create a team within the tenant org
     let team = with_timeout(TestTimeout::default_with_label("Create team"), async {
-        api.create_team(admin_token, "org-scoped-team", Some("Org Scoped Team"), &tenant_org.id)
+        api.create_team(&admin_token, "org-scoped-team", Some("Org Scoped Team"), &tenant_org.id)
             .await
     })
     .await
@@ -429,7 +316,7 @@ async fn test_2504_org_scoped_teams() {
 
     // List org teams for the tenant org
     let org_teams = with_timeout(TestTimeout::default_with_label("List org teams"), async {
-        api.list_org_teams(admin_token, &tenant_org.name).await
+        api.list_org_teams(&admin_token, &tenant_org.name).await
     })
     .await
     .expect("List org teams should succeed");
@@ -456,40 +343,13 @@ async fn test_2504_org_scoped_teams() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2505_delete_organization() {
-    let harness = TestHarness::start(
-        TestHarnessConfig::new("test_2505_delete_organization").isolated().without_envoy(),
-    )
-    .await
-    .expect("Failed to start harness");
-
-    let api = ApiClient::new(harness.api_url());
-
-    // Bootstrap and login
-    with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-        api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-    })
-    .await
-    .expect("Bootstrap should succeed");
-
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
-    })
-    .await
-    .expect("Login should succeed");
-
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "org-delete-token", vec!["admin:all".to_string()]).await
-    })
-    .await
-    .expect("Token creation should succeed");
-
-    let admin_token = &token_resp.token;
+    let (api, admin_token) = setup_org_test().await;
 
     // Create a disposable org
     let disposable_org =
         with_timeout(TestTimeout::default_with_label("Create disposable org"), async {
             api.create_organization(
-                admin_token,
+                &admin_token,
                 "disposable-org",
                 "Disposable Org",
                 Some("This org will be deleted"),
@@ -504,7 +364,7 @@ async fn test_2505_delete_organization() {
     // Verify it exists in list
     let orgs_before =
         with_timeout(TestTimeout::default_with_label("List orgs before delete"), async {
-            api.list_organizations(admin_token).await
+            api.list_organizations(&admin_token).await
         })
         .await
         .expect("List organizations should succeed");
@@ -518,7 +378,7 @@ async fn test_2505_delete_organization() {
 
     // Clean up auto-created default team before deleting the org (FK constraint)
     let teams = with_timeout(TestTimeout::default_with_label("List teams"), async {
-        api.list_teams(admin_token).await
+        api.list_teams(&admin_token).await
     })
     .await
     .expect("List teams should succeed");
@@ -526,7 +386,7 @@ async fn test_2505_delete_organization() {
     for team in &teams {
         if team.org_id.as_deref() == Some(&disposable_org.id) {
             with_timeout(TestTimeout::default_with_label("Delete org team"), async {
-                api.delete_team(admin_token, &team.id).await
+                api.delete_team(&admin_token, &team.id).await
             })
             .await
             .expect("Delete org team should succeed");
@@ -536,7 +396,7 @@ async fn test_2505_delete_organization() {
 
     // Delete the org
     with_timeout(TestTimeout::default_with_label("Delete organization"), async {
-        api.delete_organization(admin_token, &disposable_org.id).await
+        api.delete_organization(&admin_token, &disposable_org.id).await
     })
     .await
     .expect("Delete organization should succeed");
@@ -546,7 +406,7 @@ async fn test_2505_delete_organization() {
     // Verify it no longer appears in list
     let orgs_after =
         with_timeout(TestTimeout::default_with_label("List orgs after delete"), async {
-            api.list_organizations(admin_token).await
+            api.list_organizations(&admin_token).await
         })
         .await
         .expect("List organizations should succeed");
@@ -560,85 +420,62 @@ async fn test_2505_delete_organization() {
     println!("ok Org no longer in list after delete: {:?}", org_names_after);
 }
 
-/// Test cross-org isolation: user in org A cannot access org B resources
+/// Test cross-org isolation: teams in org A don't appear in org B
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2506_cross_org_isolation() {
-    let harness = TestHarness::start(
-        TestHarnessConfig::new("test_2506_cross_org_isolation").isolated().without_envoy(),
-    )
-    .await
-    .expect("Failed to start harness");
-
-    let api = ApiClient::new(harness.api_url());
-
-    // Bootstrap and login as admin
-    with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-        api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-    })
-    .await
-    .expect("Bootstrap should succeed");
-
-    let session = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login(TEST_EMAIL, TEST_PASSWORD).await
-    })
-    .await
-    .expect("Login should succeed");
-
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(&session, "cross-org-token", vec!["admin:all".to_string()]).await
-    })
-    .await
-    .expect("Token creation should succeed");
-
-    let admin_token = &token_resp.token;
+    let (api, admin_token) = setup_org_test().await;
 
     // Create two separate organizations
     let org_a = with_timeout(TestTimeout::default_with_label("Create org A"), async {
-        api.create_organization(admin_token, "org-alpha", "Org Alpha", None).await
+        api.create_organization(&admin_token, "org-alpha", "Org Alpha", None).await
     })
     .await
     .expect("Create org A should succeed");
 
     let org_b = with_timeout(TestTimeout::default_with_label("Create org B"), async {
-        api.create_organization(admin_token, "org-beta", "Org Beta", None).await
+        api.create_organization(&admin_token, "org-beta", "Org Beta", None).await
     })
     .await
     .expect("Create org B should succeed");
 
     println!("ok Created orgs: {} (id={}), {} (id={})", org_a.name, org_a.id, org_b.name, org_b.id);
 
-    // Create a user in org A
-    let (create_status, create_body) =
-        with_timeout(TestTimeout::default_with_label("Create user for org A"), async {
-            api.post(
-                admin_token,
-                "/api/v1/users",
-                json!({
-                    "email": "user-alpha@e2e.test",
-                    "password": "AlphaUser123!",
-                    "name": "Alpha User",
-                    "isAdmin": false,
-                    "orgId": org_a.id
-                }),
-            )
-            .await
+    // Create a user and JIT-provision via authentication
+    let infra = SharedInfrastructure::get_or_init().await.expect("Failed to get shared infra");
+
+    let alpha_email = "user-alpha@e2e.test";
+    let alpha_password = "AlphaUser123!";
+    with_timeout(TestTimeout::default_with_label("Create Zitadel user"), async {
+        zitadel::create_human_user(
+            &infra.zitadel_config.base_url,
+            &infra.zitadel_config.admin_pat,
+            alpha_email,
+            "Alpha",
+            "User",
+            alpha_password,
+        )
+        .await
+    })
+    .await
+    .expect("Create Zitadel user should succeed");
+
+    // Authenticate to trigger JIT provisioning
+    let alpha_token =
+        with_timeout(TestTimeout::default_with_label("Authenticate alpha user"), async {
+            zitadel::obtain_human_token(&infra.zitadel_config, alpha_email, alpha_password).await
         })
         .await
-        .expect("Create user should succeed");
+        .expect("User authentication should succeed");
 
-    assert!(
-        create_status.is_success(),
-        "Create user should return 2xx, got {} - {:?}",
-        create_status,
-        create_body
-    );
-    let user_a_id = create_body["id"].as_str().expect("User response should have id").to_string();
+    let alpha_session =
+        api.get_auth_session(&alpha_token).await.expect("User auth session should succeed");
+    let user_a_id = alpha_session.user_id;
     println!("ok Created user for org A: id={}", user_a_id);
 
     // Add user to org A
     with_timeout(TestTimeout::default_with_label("Add user to org A"), async {
-        api.add_org_member(admin_token, &org_a.id, &user_a_id, "member").await
+        api.add_org_member(&admin_token, &org_a.id, &user_a_id, "member").await
     })
     .await
     .expect("Add member to org A should succeed");
@@ -648,7 +485,7 @@ async fn test_2506_cross_org_isolation() {
     // Verify user appears in org A members
     let org_a_members =
         with_timeout(TestTimeout::default_with_label("List org A members"), async {
-            api.list_org_members(admin_token, &org_a.id).await
+            api.list_org_members(&admin_token, &org_a.id).await
         })
         .await
         .expect("List org A members should succeed");
@@ -660,7 +497,7 @@ async fn test_2506_cross_org_isolation() {
     // Verify user does NOT appear in org B members
     let org_b_members =
         with_timeout(TestTimeout::default_with_label("List org B members"), async {
-            api.list_org_members(admin_token, &org_b.id).await
+            api.list_org_members(&admin_token, &org_b.id).await
         })
         .await
         .expect("List org B members should succeed");
@@ -672,7 +509,7 @@ async fn test_2506_cross_org_isolation() {
     // Create a team in org A, verify it does not appear under org B teams
     let team_in_a =
         with_timeout(TestTimeout::default_with_label("Create team in org A context"), async {
-            api.create_team(admin_token, "alpha-team", Some("Alpha Team"), &org_a.id).await
+            api.create_team(&admin_token, "alpha-team", Some("Alpha Team"), &org_a.id).await
         })
         .await
         .expect("Team creation should succeed");
@@ -681,7 +518,7 @@ async fn test_2506_cross_org_isolation() {
 
     // List teams under org B - the alpha-team should not appear
     let org_b_teams = with_timeout(TestTimeout::default_with_label("List org B teams"), async {
-        api.list_org_teams(admin_token, &org_b.name).await
+        api.list_org_teams(&admin_token, &org_b.name).await
     })
     .await
     .expect("List org B teams should succeed");

@@ -1,73 +1,55 @@
-//! Smoke test: Bootstrap and Authentication
+//! Smoke test: Zitadel OIDC Authentication
 //!
-//! Quick validation of the auth flow:
-//! - Bootstrap → login → PAT creation
+//! Quick validation of the Zitadel auth flow:
+//! - Superadmin JWT acquisition via Session API
+//! - API access with JWT Bearer token
 //!
-//! Expected time: ~10 seconds
+//! Expected time: ~10 seconds (after shared infra warm-up)
 
 use crate::common::{
-    api_client::{ApiClient, TEST_EMAIL, TEST_NAME, TEST_PASSWORD},
-    harness::{TestHarness, TestHarnessConfig},
+    api_client::ApiClient,
+    shared_infra::SharedInfrastructure,
     timeout::{with_timeout, TestTimeout},
+    zitadel,
 };
 
-/// Smoke test for auth flow: bootstrap → login → create PAT
+/// Smoke test for Zitadel auth flow: obtain JWT → call API
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn smoke_test_auth_flow() {
-    // Start minimal harness (no Envoy needed for auth tests)
-    let harness =
-        TestHarness::start(TestHarnessConfig::new("smoke_test_auth_flow").without_envoy())
-            .await
-            .expect("Failed to start test harness");
-
-    let api = ApiClient::new(harness.api_url());
-
-    // Check if bootstrap is needed (idempotent for shared infrastructure)
-    let needs_bootstrap = with_timeout(TestTimeout::quick("Check bootstrap status"), async {
-        api.needs_bootstrap().await
-    })
-    .await
-    .unwrap_or(true);
-
-    // 1. Bootstrap (only if needed - uses standard test credentials)
-    if needs_bootstrap {
-        let bootstrap = with_timeout(TestTimeout::quick("Bootstrap"), async {
-            api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-        })
+    // Get shared infrastructure (starts PG + Zitadel + CP if not already running)
+    let infra = SharedInfrastructure::get_or_init()
         .await
-        .expect("Bootstrap should succeed");
+        .expect("Failed to initialize shared infrastructure");
 
-        assert!(
-            bootstrap.setup_token.starts_with("fp_setup_"),
-            "Setup token should have correct prefix"
-        );
-    }
-    println!("✓ Bootstrap complete");
+    let api = ApiClient::new(infra.api_url());
 
-    // 2. Login (uses standard test credentials)
-    let (session, login_resp) = with_timeout(TestTimeout::quick("Login"), async {
-        api.login_full(TEST_EMAIL, TEST_PASSWORD).await
+    // 1. Obtain superadmin JWT from Zitadel
+    let token = with_timeout(TestTimeout::quick("Obtain superadmin JWT"), async {
+        zitadel::obtain_human_token(
+            &infra.zitadel_config,
+            zitadel::SUPERADMIN_EMAIL,
+            zitadel::SUPERADMIN_PASSWORD,
+        )
+        .await
     })
     .await
-    .expect("Login should succeed");
+    .expect("JWT token acquisition should succeed");
 
-    assert!(!session.csrf_token.is_empty(), "CSRF token should be present");
+    assert!(!token.is_empty(), "JWT token should not be empty");
+    // JWT tokens have 3 dot-separated parts
+    assert_eq!(token.split('.').count(), 3, "Token should be a valid JWT (3 parts)");
+    println!("ok JWT token obtained ({} chars)", token.len());
 
-    // Verify org context from login (bootstrap creates platform org)
-    assert!(login_resp.org_id.is_some(), "Login should include org_id after bootstrap");
-    assert!(login_resp.org_name.is_some(), "Login should include org_name after bootstrap");
-    println!("✓ Login complete");
-
-    // 3. Create PAT
-    let token = with_timeout(TestTimeout::quick("Create PAT"), async {
-        api.create_token(&session, "smoke-token", vec!["admin:all".to_string()]).await
+    // 2. Verify API access with JWT token - list organizations
+    let orgs = with_timeout(TestTimeout::quick("List organizations"), async {
+        api.list_organizations(&token).await
     })
     .await
-    .expect("Token creation should succeed");
+    .expect("API call with JWT should succeed");
 
-    assert!(token.token.starts_with("fp_pat_"), "PAT should have correct prefix");
-    println!("✓ PAT created");
+    assert!(orgs.total >= 1, "Should have at least 1 org (platform)");
+    println!("ok API access verified: {} organizations", orgs.total);
 
-    println!("🚀 Auth smoke test PASSED");
+    println!("Auth smoke test PASSED");
 }

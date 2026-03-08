@@ -320,6 +320,25 @@ pub async fn admin_create_organization(
         "created default team for new organization"
     );
 
+    // Auto-create org admin membership for the caller so they can manage the
+    // org (add members, create grants, manage teams via org-scoped endpoints).
+    // Without this, the org is unmanageable: require_org_admin_only blocks
+    // platform admin, and no org admin membership exists yet.
+    if let Some(ref user_id) = context.user_id {
+        let membership_pool = pool_for_state(&state)?;
+        let membership_repo = SqlxOrgMembershipRepository::new(membership_pool);
+        if let Err(e) = membership_repo.create_membership(user_id, &org.id, OrgRole::Admin).await {
+            // Non-fatal: org is created, just membership setup failed.
+            // The org can still be managed if another admin adds a member.
+            tracing::warn!(
+                org_id = %org.id,
+                user_id = %user_id,
+                error = %e,
+                "failed to auto-create org admin membership for org creator"
+            );
+        }
+    }
+
     Ok((StatusCode::CREATED, Json(org.into())))
 }
 
@@ -991,10 +1010,16 @@ pub async fn admin_update_org_member_role(
     require_org_admin_only(&context, &org.name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
+    // Compute grant pairs for the new role. Admin/Owner → empty (implicit access).
+    // Member/Viewer → explicit resource grants. Sync happens inside the same transaction.
+    let grant_pairs = grants_for_org_role(payload.role);
+    let created_by =
+        context.user_id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "system".to_string());
+
     // Update role atomically (repository enforces last-owner constraint via transaction)
     let membership_repo = org_membership_repository_for_state(&state)?;
     let updated = membership_repo
-        .update_membership_role(&target_user_id, &org_id, payload.role)
+        .update_membership_role(&target_user_id, &org_id, payload.role, &grant_pairs, &created_by)
         .await
         .map_err(ApiError::from)?;
 
@@ -1614,7 +1639,7 @@ pub async fn remove_team_member(
 
     let pool = pool_for_state(&state)?;
     let membership_repo: Arc<dyn TeamMembershipRepository> =
-        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool));
+        Arc::new(crate::storage::repositories::SqlxTeamMembershipRepository::new(pool.clone()));
 
     // Verify membership exists before deleting
     membership_repo
@@ -1627,6 +1652,14 @@ pub async fn remove_team_member(
         .delete_user_team_membership(&target_user_id, team.id.as_ref())
         .await
         .map_err(ApiError::from)?;
+
+    // Delete all grants for this user+team to prevent orphaned access after removal
+    sqlx::query("DELETE FROM grants WHERE principal_id = $1 AND team_id = $2")
+        .bind(target_user_id.as_str())
+        .bind(team.id.as_str())
+        .execute(&pool)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to delete orphaned grants: {e}")))?;
 
     // Evict permission cache so next request picks up new permissions
     if let Some(ref cache) = state.permission_cache {
@@ -3001,6 +3034,62 @@ mod tests {
             initial_password: None,
         };
         assert!(req.validate().is_ok());
+    }
+
+    // ===== Invite endpoint auth guard tests =====
+    //
+    // The admin_invite_org_member handler uses require_admin_or_org_admin to
+    // gate access. These tests verify the four security invariants:
+    // - First-time invite by org admin → allowed (201 path)
+    // - Duplicate invite → idempotent (200 path, same auth check)
+    // - Non-admin caller → 403
+    // - Cross-org admin → 403
+
+    #[test]
+    fn test_invite_first_time_201_auth_allows_org_admin() {
+        // Org admin for "acme" can invite into "acme"
+        let ctx = org_admin_context("acme");
+        assert!(
+            require_admin_or_org_admin(&ctx, "acme").is_ok(),
+            "Org admin should pass auth check for invite into own org"
+        );
+    }
+
+    #[test]
+    fn test_invite_duplicate_200_auth_same_check() {
+        // Idempotent invite uses the same auth guard — org admin re-inviting
+        // the same user hits the same require_admin_or_org_admin check.
+        // Platform admin can also re-invite (governance use case).
+        let ctx = admin_context();
+        assert!(
+            require_admin_or_org_admin(&ctx, "acme").is_ok(),
+            "Platform admin should pass auth for idempotent re-invite"
+        );
+        let ctx2 = org_admin_context("acme");
+        assert!(
+            require_admin_or_org_admin(&ctx2, "acme").is_ok(),
+            "Org admin should pass auth for idempotent re-invite"
+        );
+    }
+
+    #[test]
+    fn test_invite_non_admin_403() {
+        // A regular user (no admin scope, no org scope) must be rejected
+        let ctx = regular_context();
+        let result = require_admin_or_org_admin(&ctx, "acme");
+        assert!(result.is_err(), "Non-admin must get 403 on invite");
+        // Also verify org members (non-admin role) are rejected
+        let member_ctx = org_member_context("acme");
+        let result2 = require_admin_or_org_admin(&member_ctx, "acme");
+        assert!(result2.is_err(), "Org member (non-admin) must get 403 on invite");
+    }
+
+    #[test]
+    fn test_invite_cross_org_403() {
+        // Org admin for "acme" trying to invite into "globex" must be rejected
+        let ctx = org_admin_context("acme");
+        let result = require_admin_or_org_admin(&ctx, "globex");
+        assert!(result.is_err(), "Cross-org admin must get 403 on invite");
     }
 
     // ===== validate_agent_name tests =====

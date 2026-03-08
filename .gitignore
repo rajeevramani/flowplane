@@ -91,6 +91,7 @@ ui/build/
 
 # Playwright test artifacts
 ui/playwright-report/
+ui/playwright/.auth/
 ui/test-results/
 ui/.netlify/
 ui/.vercel/
@@ -149,6 +150,10 @@ zitadel/machinekey/*.txt
 poc/zitadel/machinekey/
 .env.zitadel
 ui/.env
+
+# Diagram artifacts
+*.excalidraw
+*.excalidraw.png
 
 # Remove later
 deploy
