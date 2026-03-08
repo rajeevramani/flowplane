@@ -2,7 +2,7 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import type { SessionInfoResponse } from '$lib/api/types';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	interface Props {
 		sessionInfo: SessionInfoResponse;
@@ -61,13 +61,7 @@
 				</a>
 
 				<!-- Admin Links (only for governance admins) -->
-				{#if isSystemAdmin(sessionInfo.scopes)}
-					<a
-						href="/admin/users"
-						class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
-					>
-						Users
-					</a>
+				{#if isGovernanceAdmin(sessionInfo)}
 					<a
 						href="/admin/teams"
 						class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
@@ -78,19 +72,12 @@
 
 				<!-- Resources Link -->
 				<a
-					href="/resources"
+					href="/route-configs"
 					class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
 				>
 					Resources
 				</a>
 
-				<!-- PAT Link -->
-				<a
-					href="/tokens"
-					class="px-3 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
-				>
-					PAT
-				</a>
 			</div>
 
 			<!-- Right Side: Team Selector & Profile -->
@@ -125,7 +112,7 @@
 							<div class="text-sm font-medium text-gray-900">{sessionInfo.name}</div>
 							<div class="text-xs text-gray-500">{sessionInfo.email}</div>
 						</div>
-						{#if isSystemAdmin(sessionInfo.scopes)}
+						{#if isGovernanceAdmin(sessionInfo)}
 							<span
 								class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
 								title="Platform Admin - Governance access"

@@ -4,7 +4,8 @@
 	import Sidebar from './Sidebar.svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { apiClient } from '$lib/api/client';
-	import { currentOrg, isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
+	import { currentOrg, isOrgAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -41,7 +42,7 @@
 	async function handleLogout() {
 		try {
 			await apiClient.logout();
-			goto('/login');
+			// signoutRedirect handles navigation to Zitadel's logout endpoint
 		} catch (error) {
 			console.error('Logout failed:', error);
 			goto('/login');
@@ -104,13 +105,13 @@
 					{/if}
 
 					<!-- Role badge -->
-					{#if isSystemAdmin(sessionInfo.scopes)}
+					{#if isGovernanceAdmin(sessionInfo)}
 						<span
 							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
 						>
 							Admin
 						</span>
-					{:else if isOrgAdmin(sessionInfo.scopes)}
+					{:else if isOrgAdmin(sessionInfo.orgRole)}
 						<span
 							class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"
 						>

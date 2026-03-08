@@ -148,6 +148,10 @@ pub struct OrganizationMembership {
     pub org_name: String,
     pub role: OrgRole,
     pub created_at: DateTime<Utc>,
+    /// User's display name (populated via LEFT JOIN with users)
+    pub user_name: Option<String>,
+    /// User's email (populated via LEFT JOIN with users)
+    pub user_email: Option<String>,
 }
 
 /// Request to create a new organization.
@@ -216,6 +220,8 @@ pub struct OrgMembershipResponse {
     pub org_name: String,
     pub role: OrgRole,
     pub created_at: DateTime<Utc>,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
 }
 
 impl From<OrganizationMembership> for OrgMembershipResponse {
@@ -227,6 +233,8 @@ impl From<OrganizationMembership> for OrgMembershipResponse {
             org_name: m.org_name,
             role: m.role,
             created_at: m.created_at,
+            user_name: m.user_name,
+            user_email: m.user_email,
         }
     }
 }

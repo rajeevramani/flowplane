@@ -66,12 +66,12 @@ pub async fn create_route_config_handler(
     // REST-specific validation
     validate_route_config_payload(&payload)?;
 
-    // Verify user has write access to the specified team
+    // Verify user has create access to the specified team
     require_resource_access_resolved(
         &state,
         &context,
         "routes",
-        "write",
+        "create",
         Some(&payload.team),
         context.org_id.as_ref(),
     )
@@ -210,8 +210,8 @@ pub async fn update_route_config_handler(
     Path(name): Path<String>,
     Json(payload): Json<RouteConfigDefinition>,
 ) -> Result<Json<RouteConfigResponse>, ApiError> {
-    // Authorization: require routes:write scope
-    require_resource_access(&context, "routes", "write", None)?;
+    // Authorization: require routes:update scope
+    require_resource_access(&context, "routes", "update", None)?;
 
     // REST-specific validation
     validate_route_config_payload(&payload)?;
@@ -271,8 +271,8 @@ pub async fn delete_route_config_handler(
     Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require routes:write scope (delete is a write operation)
-    require_resource_access(&context, "routes", "write", None)?;
+    // Authorization: require routes:delete scope
+    require_resource_access(&context, "routes", "delete", None)?;
 
     // Delegate to internal API layer (includes default route protection, team access, and XDS refresh)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
@@ -333,7 +333,8 @@ mod tests {
             mcp_session_manager,
             certificate_rate_limiter,
             auth_config: Arc::new(crate::config::AuthConfig::default()),
-            auth_rate_limiters: Arc::new(crate::api::routes::AuthRateLimiters::from_env()),
+            zitadel_admin: None,
+            permission_cache: None,
         };
 
         // Seed a cluster for route references

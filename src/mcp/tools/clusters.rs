@@ -439,7 +439,7 @@ Example:
   }
 }
 
-Authorization: Requires cp:write scope.
+Authorization: Requires clusters:create scope.
 "#
         .to_string(),
         json!({
@@ -594,7 +594,7 @@ Optional Parameters (provide at least one):
 
 TIP: Use cp_get_cluster first to see current configuration before updating.
 
-Authorization: Requires cp:write scope.
+Authorization: Requires clusters:update scope.
 "#
         .to_string(),
         json!({
@@ -687,7 +687,7 @@ WORKFLOW:
 Required Parameters:
 - name: Name of the cluster to delete
 
-Authorization: Requires cp:write scope.
+Authorization: Requires clusters:delete scope.
 "#
         .to_string(),
         json!({

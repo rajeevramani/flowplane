@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import type { OrganizationResponse, OrgStatus } from '$lib/api/types';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	let organizations = $state<OrganizationResponse[]>([]);
 	let total = $state(0);
@@ -21,7 +21,7 @@
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!isSystemAdmin(sessionInfo.scopes)) {
+			if (!isGovernanceAdmin(sessionInfo)) {
 				goto('/dashboard');
 				return;
 			}

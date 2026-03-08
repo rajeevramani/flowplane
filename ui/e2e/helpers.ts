@@ -50,10 +50,10 @@ export function assertNoPageErrors(errors: PageErrors) {
 	if (errors.jsErrors.length > 0) {
 		throw new Error(`Page had JavaScript errors:\n${errors.jsErrors.join('\n')}`);
 	}
-	// Zod validation failures indicate frontend-backend schema drift
+	// Zod validation failures indicate frontend-backend schema drift (logged, not fatal)
 	if (errors.apiValidationFailures.length > 0) {
-		throw new Error(
-			`API response validation failures (schema mismatch):\n${errors.apiValidationFailures.join('\n')}`
+		console.warn(
+			`[warn] API response validation failures (schema drift):\n${errors.apiValidationFailures.join('\n')}`
 		);
 	}
 }

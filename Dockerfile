@@ -41,7 +41,7 @@ WORKDIR /app
 # Plan dependencies - creates recipe.json
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
-COPY benches ./benches
+COPY src ./src
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Build dependencies (cached layer)
@@ -73,7 +73,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # Build application
 COPY Cargo.toml Cargo.lock ./
-COPY benches ./benches
 COPY src ./src
 COPY migrations ./migrations
 COPY filter-schemas ./filter-schemas

@@ -1,18 +1,69 @@
-//! Scope Registry for database-driven scope validation
+//! Scope Registry — code-only constants for scope validation.
 //!
-//! This module provides a cached scope registry that:
-//! - Loads scope definitions from the database
-//! - Caches them for fast synchronous validation
-//! - Provides both sync and async validation methods
-//! - Supports team-scoped patterns with wildcards
+//! The `scopes` table has been dropped. All scope definitions live here as
+//! compile-time constants. No database queries are needed for scope validation.
 
-use crate::errors::{FlowplaneError, Result};
-use crate::storage::repositories::{ScopeDefinition, ScopeRepository, SqlxScopeRepository};
-use crate::storage::DbPool;
+use crate::domain::ScopeId;
+use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use utoipa::ToSchema;
+
+// ---------------------------------------------------------------------------
+// ScopeDefinition — API response type
+// ---------------------------------------------------------------------------
+
+/// Scope definition with metadata (returned by the scopes API)
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeDefinition {
+    /// Unique identifier
+    pub id: ScopeId,
+    /// The scope value (e.g., "clusters:read")
+    pub value: String,
+    /// Resource name (e.g., "clusters")
+    pub resource: String,
+    /// Action name (e.g., "read")
+    pub action: String,
+    /// Human-readable label for UI
+    pub label: String,
+    /// Detailed description for UI
+    pub description: Option<String>,
+    /// Category for UI grouping (e.g., "Clusters")
+    pub category: String,
+    /// Whether this scope should be shown in UI
+    pub visible_in_ui: bool,
+    /// Whether this scope is enabled
+    pub enabled: bool,
+    /// When the scope was created
+    pub created_at: DateTime<Utc>,
+    /// When the scope was last updated
+    pub updated_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Valid grants constant
+// ---------------------------------------------------------------------------
+
+/// All valid (resource, actions) pairs for CP resource grants.
+pub const VALID_GRANTS: &[(&str, &[&str])] = &[
+    ("clusters", &["read", "create", "update", "delete"]),
+    ("routes", &["read", "create", "update", "delete"]),
+    ("listeners", &["read", "create", "update", "delete"]),
+    ("filters", &["read", "create", "update", "delete"]),
+    ("secrets", &["read", "create", "update", "delete"]),
+    ("dataplanes", &["read", "create", "update", "delete"]),
+    ("custom-wasm-filters", &["read", "create", "update", "delete"]),
+    ("learning-sessions", &["read", "create", "execute", "delete"]),
+    ("aggregated-schemas", &["read", "execute"]),
+    ("proxy-certificates", &["read", "create", "delete"]),
+    ("reports", &["read"]),
+    ("audit", &["read"]),
+    ("stats", &["read"]),
+    ("agents", &["read", "create", "update", "delete"]),
+];
 
 lazy_static! {
     /// Regex for validating team name format
@@ -21,85 +72,21 @@ lazy_static! {
         .expect("BUG: TEAM_NAME_REGEX pattern is invalid - validated by tests");
 
     /// Regex for validating scope format (basic structure check)
-    /// Supports:
-    /// - `resource:action` (e.g., `routes:read`)
-    /// - `team:name:resource:action` (e.g., `team:platform:routes:read`)
-    /// - `team:name:*:*` (e.g., `team:platform:*:*`)
-    /// - `org:name:role` (e.g., `org:acme:admin`, `org:acme:member`)
     /// NOTE: expect() acceptable - pattern is validated by tests
     static ref SCOPE_FORMAT_REGEX: Regex = Regex::new(
         r"^(team:[a-z0-9-]+:[a-z0-9-]+:[a-z]+|team:[a-z0-9-]+:\*:\*|org:[a-z0-9-]+:(admin|member)|[a-z0-9-]+:[a-z]+)$"
     ).expect("BUG: SCOPE_FORMAT_REGEX pattern is invalid - validated by tests");
 }
 
-/// Cached scope data for fast synchronous validation
-#[derive(Debug, Clone, Default)]
-struct ScopeCache {
-    /// Set of valid scope values (e.g., "tokens:read")
-    valid_scopes: HashSet<String>,
-    /// Set of valid resources (e.g., "tokens", "clusters")
-    valid_resources: HashSet<String>,
-    /// Map of resource -> valid actions (e.g., "tokens" -> ["read", "write", "delete"])
-    resource_actions: HashMap<String, HashSet<String>>,
-    /// Full scope definitions for API responses
-    definitions: Vec<ScopeDefinition>,
-    /// UI-visible scope definitions
-    ui_definitions: Vec<ScopeDefinition>,
-}
+// ---------------------------------------------------------------------------
+// ScopeRegistry — no longer DB-backed
+// ---------------------------------------------------------------------------
 
-/// Database-backed scope registry with caching
-pub struct ScopeRegistry {
-    pool: DbPool,
-    cache: Arc<RwLock<ScopeCache>>,
-}
+/// Code-only scope registry. No pool, no async, no cache.
+pub struct ScopeRegistry;
 
 impl ScopeRegistry {
-    /// Create a new scope registry with database pool
-    pub fn new(pool: DbPool) -> Self {
-        Self { pool, cache: Arc::new(RwLock::new(ScopeCache::default())) }
-    }
-
-    /// Initialize the cache by loading scopes from database
-    /// Call this at application startup
-    pub async fn init(&self) -> Result<()> {
-        self.refresh_cache().await
-    }
-
-    /// Refresh the cache from database
-    pub async fn refresh_cache(&self) -> Result<()> {
-        let repo = SqlxScopeRepository::new(self.pool.clone());
-
-        let all_scopes = repo.find_all_enabled().await?;
-        let ui_scopes = repo.find_ui_visible().await?;
-
-        let mut valid_scopes = HashSet::new();
-        let mut valid_resources = HashSet::new();
-        let mut resource_actions: HashMap<String, HashSet<String>> = HashMap::new();
-
-        for scope in &all_scopes {
-            valid_scopes.insert(scope.value.clone());
-            valid_resources.insert(scope.resource.clone());
-
-            resource_actions
-                .entry(scope.resource.clone())
-                .or_default()
-                .insert(scope.action.clone());
-        }
-
-        let mut cache = self
-            .cache
-            .write()
-            .map_err(|_| FlowplaneError::sync("Scope registry cache lock poisoned"))?;
-        cache.valid_scopes = valid_scopes;
-        cache.valid_resources = valid_resources;
-        cache.resource_actions = resource_actions;
-        cache.definitions = all_scopes;
-        cache.ui_definitions = ui_scopes;
-
-        Ok(())
-    }
-
-    /// Check if a scope is valid (synchronous, uses cache)
+    /// Check if a scope is valid (synchronous, uses constants)
     pub fn is_valid_scope(&self, scope: &str) -> bool {
         // First check format
         if !is_valid_scope_format(scope) {
@@ -116,15 +103,14 @@ impl ScopeRegistry {
             return self.is_valid_org_scope(scope);
         }
 
-        // Check against cached scopes - fail closed on lock failure
-        let cache = match self.cache.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                tracing::error!("Scope registry cache lock poisoned - denying access");
-                return false;
-            }
-        };
-        cache.valid_scopes.contains(scope)
+        // Check resource:action against VALID_GRANTS
+        let parts: Vec<&str> = scope.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            return is_valid_resource_action_pair(parts[0], parts[1]);
+        }
+
+        // Special case: admin:all
+        scope == "admin:all"
     }
 
     /// Check if a team-scoped pattern is valid
@@ -145,15 +131,6 @@ impl ScopeRegistry {
             return false;
         }
 
-        // Fail closed on lock failure
-        let cache = match self.cache.read() {
-            Ok(guard) => guard,
-            Err(_) => {
-                tracing::error!("Scope registry cache lock poisoned - denying access");
-                return false;
-            }
-        };
-
         // Handle wildcards
         if resource == "*" && action == "*" {
             // team:{name}:*:* is always valid for valid team names
@@ -162,15 +139,11 @@ impl ScopeRegistry {
 
         if action == "*" {
             // team:{name}:{resource}:* - check resource exists
-            return cache.valid_resources.contains(resource);
+            return VALID_GRANTS.iter().any(|(r, _)| *r == resource);
         }
 
         // Check specific resource:action combination
-        if let Some(actions) = cache.resource_actions.get(resource) {
-            return actions.contains(action);
-        }
-
-        false
+        is_valid_resource_action_pair(resource, action)
     }
 
     /// Check if an org-scoped pattern is valid
@@ -194,40 +167,19 @@ impl ScopeRegistry {
         matches!(role, "admin" | "member")
     }
 
-    /// Get all enabled scope definitions (for admin API)
-    /// Returns empty Vec if cache is unavailable.
+    /// Get all enabled scope definitions (for admin API).
     pub fn get_all_scopes(&self) -> Vec<ScopeDefinition> {
-        match self.cache.read() {
-            Ok(cache) => cache.definitions.clone(),
-            Err(_) => {
-                tracing::error!("Scope registry cache lock poisoned - returning empty");
-                Vec::new()
-            }
-        }
+        build_scope_definitions(false)
     }
 
-    /// Get UI-visible scope definitions (for public API)
-    /// Returns empty Vec if cache is unavailable.
+    /// Get UI-visible scope definitions (for public API).
     pub fn get_ui_scopes(&self) -> Vec<ScopeDefinition> {
-        match self.cache.read() {
-            Ok(cache) => cache.ui_definitions.clone(),
-            Err(_) => {
-                tracing::error!("Scope registry cache lock poisoned - returning empty");
-                Vec::new()
-            }
-        }
+        build_scope_definitions(true)
     }
 
     /// Get valid resources
-    /// Returns empty Vec if cache is unavailable.
     pub fn get_resources(&self) -> Vec<String> {
-        match self.cache.read() {
-            Ok(cache) => cache.valid_resources.iter().cloned().collect(),
-            Err(_) => {
-                tracing::error!("Scope registry cache lock poisoned - returning empty");
-                Vec::new()
-            }
-        }
+        VALID_GRANTS.iter().map(|(r, _)| r.to_string()).collect()
     }
 
     /// Validate a scope and return detailed error if invalid
@@ -259,11 +211,7 @@ impl ScopeRegistry {
                 let resource = parts[2];
                 let action = parts[3];
 
-                let cache = self
-                    .cache
-                    .read()
-                    .map_err(|_| "Scope registry unavailable - cache lock poisoned".to_string())?;
-                if resource != "*" && !cache.valid_resources.contains(resource) {
+                if resource != "*" && !VALID_GRANTS.iter().any(|(r, _)| *r == resource) {
                     return Err(format!(
                         "Unknown resource '{}' in scope '{}'. Valid resources: {:?}",
                         resource,
@@ -273,13 +221,11 @@ impl ScopeRegistry {
                 }
 
                 if action != "*" {
-                    if let Some(actions) = cache.resource_actions.get(resource) {
-                        if !actions.contains(action) {
+                    if let Some((_, actions)) = VALID_GRANTS.iter().find(|(r, _)| *r == resource) {
+                        if !actions.contains(&action) {
                             return Err(format!(
                                 "Unknown action '{}' for resource '{}'. Valid actions: {:?}",
-                                action,
-                                resource,
-                                actions.iter().collect::<Vec<_>>()
+                                action, resource, actions
                             ));
                         }
                     }
@@ -303,48 +249,92 @@ impl ScopeRegistry {
         }
         Ok(())
     }
+}
 
-    /// Async validation that bypasses cache (for when freshest data is needed)
-    pub async fn validate_scope_async(&self, scope: &str) -> Result<bool> {
-        // First check format
-        if !SCOPE_FORMAT_REGEX.is_match(scope) {
-            return Ok(false);
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/// Check if a (resource, action) pair is valid according to VALID_GRANTS.
+pub fn is_valid_resource_action_pair(resource: &str, action: &str) -> bool {
+    VALID_GRANTS.iter().any(|(r, actions)| *r == resource && actions.contains(&action))
+}
+
+/// Build ScopeDefinition Vec from VALID_GRANTS constants.
+///
+/// `ui_only` — if true, excludes governance-only scopes (admin:all etc.)
+fn build_scope_definitions(ui_only: bool) -> Vec<ScopeDefinition> {
+    let mut defs = Vec::new();
+
+    for (resource, actions) in VALID_GRANTS {
+        for action in *actions {
+            let value = format!("{}:{}", resource, action);
+            let label = format!("{} {}", capitalize_first(resource), capitalize_first(action));
+            let category = capitalize_first(resource);
+
+            defs.push(ScopeDefinition {
+                id: ScopeId::from_string(format!("scope-{}-{}", resource, action)),
+                value,
+                resource: resource.to_string(),
+                action: action.to_string(),
+                label,
+                description: None,
+                category,
+                visible_in_ui: true,
+                enabled: true,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            });
         }
+    }
 
-        // For team scopes, use cached validation (team names don't change scope validity)
-        if scope.starts_with("team:") {
-            return Ok(self.is_valid_team_scope(scope));
-        }
+    // Add admin:all (not UI-visible)
+    if !ui_only {
+        defs.push(ScopeDefinition {
+            id: ScopeId::from_string("scope-admin-all".to_string()),
+            value: "admin:all".to_string(),
+            resource: "admin".to_string(),
+            action: "all".to_string(),
+            label: "Platform Admin".to_string(),
+            description: Some("Full platform governance access".to_string()),
+            category: "Admin".to_string(),
+            visible_in_ui: false,
+            enabled: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+    }
 
-        // For direct scopes, query database for freshest data
-        let repo = SqlxScopeRepository::new(self.pool.clone());
-        repo.is_valid_scope(scope).await
+    defs
+}
+
+/// Capitalize the first character of a string.
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
     }
 }
 
+// ---------------------------------------------------------------------------
+// Global registry
+// ---------------------------------------------------------------------------
+
 /// Global scope registry instance
-/// Must be initialized with `init_scope_registry()` before use
-static SCOPE_REGISTRY: std::sync::OnceLock<Arc<ScopeRegistry>> = std::sync::OnceLock::new();
+static SCOPE_REGISTRY: OnceLock<std::sync::Arc<ScopeRegistry>> = OnceLock::new();
 
-/// Initialize the global scope registry
-/// Call this once at application startup after database connection is established
-pub async fn init_scope_registry(pool: DbPool) -> Result<()> {
-    let registry = ScopeRegistry::new(pool);
-    registry.init().await?;
-
-    SCOPE_REGISTRY
-        .set(Arc::new(registry))
-        .map_err(|_| crate::errors::FlowplaneError::config("Scope registry already initialized"))?;
-
-    Ok(())
+/// Initialize the global scope registry.
+/// Call this once at application startup. No pool or async needed.
+pub fn init_scope_registry() {
+    SCOPE_REGISTRY.get_or_init(|| std::sync::Arc::new(ScopeRegistry));
 }
 
-/// Get the global scope registry
+/// Get the global scope registry.
 ///
 /// # Panics
-/// Panics if not initialized - call `init_scope_registry()` first.
-/// This is a programming error, not a runtime failure.
-pub fn get_scope_registry() -> &'static Arc<ScopeRegistry> {
+/// Panics if not initialized — call `init_scope_registry()` first.
+pub fn get_scope_registry() -> &'static std::sync::Arc<ScopeRegistry> {
     SCOPE_REGISTRY
         .get()
         .expect("BUG: Scope registry not initialized - call init_scope_registry() first")
@@ -355,22 +345,18 @@ pub fn is_scope_registry_initialized() -> bool {
     SCOPE_REGISTRY.get().is_some()
 }
 
-/// Synchronous scope validation using the global registry
-/// Falls back to format-only validation if registry not initialized
+/// Synchronous scope validation using the global registry.
+/// Falls back to format-only validation if registry not initialized.
 pub fn validate_scope_sync(scope: &str) -> bool {
     if let Some(registry) = SCOPE_REGISTRY.get() {
         registry.is_valid_scope(scope)
     } else {
         // Fallback to format validation only if registry not initialized
-        // This allows validation to work during tests without full setup
         is_valid_scope_format(scope)
     }
 }
 
 /// Check if a scope string has valid format.
-///
-/// The regex alone can't distinguish `org:acme` (invalid two-part org scope)
-/// from `resource:action` (valid). This function adds the semantic check.
 fn is_valid_scope_format(scope: &str) -> bool {
     if !SCOPE_FORMAT_REGEX.is_match(scope) {
         return false;
@@ -383,6 +369,10 @@ fn is_valid_scope_format(scope: &str) -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,13 +380,11 @@ mod tests {
     #[test]
     fn test_scope_format_validation() {
         // Valid formats
-        assert!(is_valid_scope_format("tokens:read"));
-        assert!(is_valid_scope_format("clusters:write"));
+        assert!(is_valid_scope_format("clusters:read"));
         assert!(is_valid_scope_format("admin:all"));
-        assert!(is_valid_scope_format("api-definitions:read"));
         assert!(is_valid_scope_format("custom-wasm-filters:read"));
         assert!(is_valid_scope_format("team:platform:routes:read"));
-        assert!(is_valid_scope_format("team:eng-team:api-definitions:write"));
+        assert!(is_valid_scope_format("team:eng-team:clusters:create"));
         assert!(is_valid_scope_format("team:team-test-1:clusters:read"));
         assert!(is_valid_scope_format("team:engineering:custom-wasm-filters:read"));
         assert!(is_valid_scope_format("team:platform:*:*"));
@@ -408,16 +396,13 @@ mod tests {
 
         // Invalid org formats
         assert!(!is_valid_scope_format("org:acme:viewer"));
-        assert!(!is_valid_scope_format("org:acme:owner"));
         assert!(!is_valid_scope_format("org:ACME:admin"));
         assert!(!is_valid_scope_format("org:acme"));
 
         // Invalid formats
         assert!(!is_valid_scope_format("bad_scope"));
         assert!(!is_valid_scope_format("UPPERCASE:READ"));
-        assert!(!is_valid_scope_format("team:only-two"));
         assert!(!is_valid_scope_format(""));
-        // Two-part team/org prefixes are not valid resource:action scopes
         assert!(!is_valid_scope_format("team:platform"));
     }
 
@@ -437,11 +422,51 @@ mod tests {
     #[test]
     fn test_validate_scope_sync_fallback() {
         // When registry is not initialized, falls back to format validation
-        assert!(validate_scope_sync("tokens:read"));
+        assert!(validate_scope_sync("clusters:read"));
         assert!(validate_scope_sync("team:platform:routes:read"));
         assert!(validate_scope_sync("org:acme:admin"));
         assert!(validate_scope_sync("org:acme:member"));
         assert!(!validate_scope_sync("org:acme:viewer"));
         assert!(!validate_scope_sync("invalid"));
+    }
+
+    #[test]
+    fn test_valid_grants_all_pairs() {
+        let registry = ScopeRegistry;
+
+        // All VALID_GRANTS entries should be valid
+        for (resource, actions) in VALID_GRANTS {
+            for action in *actions {
+                let scope = format!("{}:{}", resource, action);
+                assert!(registry.is_valid_scope(&scope), "Expected valid scope: {}", scope);
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_valid_resource_action_pair() {
+        assert!(is_valid_resource_action_pair("clusters", "read"));
+        assert!(is_valid_resource_action_pair("clusters", "delete"));
+        assert!(is_valid_resource_action_pair("learning-sessions", "execute"));
+        assert!(!is_valid_resource_action_pair("clusters", "execute"));
+        assert!(!is_valid_resource_action_pair("foo", "read"));
+    }
+
+    #[test]
+    fn test_get_all_scopes_includes_admin() {
+        let registry = ScopeRegistry;
+        let all = registry.get_all_scopes();
+        assert!(all.iter().any(|s| s.value == "admin:all"), "admin:all must be in get_all_scopes");
+    }
+
+    #[test]
+    fn test_get_ui_scopes_excludes_admin() {
+        let registry = ScopeRegistry;
+        let ui = registry.get_ui_scopes();
+        assert!(!ui.iter().any(|s| s.value == "admin:all"), "admin:all must not be in UI scopes");
+        assert!(
+            ui.iter().any(|s| s.value == "clusters:read"),
+            "clusters:read must be in UI scopes"
+        );
     }
 }

@@ -20,6 +20,7 @@ pub mod resource_setup;
 pub mod shared_infra;
 pub mod stats;
 pub mod timeout;
+pub mod zitadel;
 
 pub use api_client::*;
 pub use control_plane::ControlPlaneHandle;

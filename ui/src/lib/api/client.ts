@@ -1,22 +1,16 @@
-// API client with CSRF token handling
+// API client with OIDC JWT authentication
 import { goto } from '$app/navigation';
 import { env } from '$env/dynamic/public';
 import { z } from 'zod';
 import { SecretResponseSchema, AdminListOrgsResponseSchema, AdminResourceSummarySchema, paginatedSchema } from './schemas';
+import { getUserManager } from '$lib/auth/oidc-config';
 import type {
-	LoginRequest,
-	LoginResponse,
-	ChangePasswordRequest,
 	BootstrapStatusResponse,
 	BootstrapInitializeRequest,
 	BootstrapInitializeResponse,
 	SessionInfoResponse,
 	DashboardStats,
 	ApiError,
-	PersonalAccessToken,
-	CreateTokenRequest,
-	TokenSecretResponse,
-	UpdateTokenRequest,
 	ImportOpenApiRequest,
 	ImportResponse,
 	ImportSummary,
@@ -31,14 +25,6 @@ import type {
 	CreateTeamRequest,
 	UpdateTeamRequest,
 	AdminListTeamsResponse,
-	UserResponse,
-	UserWithTeamsResponse,
-	CreateUserRequest,
-	UpdateUserRequest,
-	ListUsersResponse,
-	UserTeamMembership,
-	CreateTeamMembershipRequest,
-	UpdateTeamMembershipRequest,
 	AuditLogEntry,
 	ListAuditLogsQuery,
 	ListAuditLogsResponse,
@@ -126,14 +112,22 @@ import type {
 	AdminListOrgsResponse,
 	CurrentOrgResponse,
 	ListOrgTeamsResponse,
+	OrgTeamMemberResponse,
+	ListOrgTeamMembersResponse,
+	AddOrgTeamMemberRequest,
 	OrgRole,
-	// Invitation types
-	InviteTokenInfo,
-	AcceptInvitationRequest,
-	LoginResponse as InvitationLoginResponse,
-	PaginatedInvitations,
-	CreateInvitationRequest,
-	CreateInvitationResponse,
+	// Agent types
+	AgentInfo,
+	ListAgentsResponse,
+	CreateAgentRequest,
+	CreateAgentResponse,
+	CreateGrantRequest,
+	GrantResponse,
+	GrantListResponse,
+	GrantSummary,
+	// Invite types
+	InviteOrgMemberRequest,
+	InviteOrgMemberResponse,
 	PaginatedResponse,
 	// Admin Summary types
 	AdminResourceSummary
@@ -152,35 +146,21 @@ function parseResponse<T>(data: unknown, schema: z.ZodType<T>): T {
 }
 
 class ApiClient {
-	private csrfToken: string | null = null;
-
-	constructor() {
-		// Load CSRF token from sessionStorage on initialization
-		if (typeof window !== 'undefined') {
-			this.csrfToken = sessionStorage.getItem('csrf_token');
-		}
-	}
-
-	private getHeaders(includeCSRF: boolean = false): HeadersInit {
-		const headers: HeadersInit = {
+	private async getHeaders(): Promise<HeadersInit> {
+		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
 		};
 
-		if (includeCSRF && this.csrfToken) {
-			headers['X-CSRF-Token'] = this.csrfToken;
+		const userManager = await getUserManager();
+		const user = await userManager.getUser();
+		if (user?.access_token) {
+			headers['Authorization'] = `Bearer ${user.access_token}`;
 		}
 
 		return headers;
 	}
 
 	private async handleResponse<T>(response: Response): Promise<T> {
-		// Check for CSRF token in response headers
-		const csrfHeader = response.headers.get('X-CSRF-Token');
-		if (csrfHeader) {
-			this.csrfToken = csrfHeader;
-			sessionStorage.setItem('csrf_token', csrfHeader);
-		}
-
 		if (!response.ok) {
 			// Handle 401 Unauthorized - redirect to login
 			if (response.status === 401) {
@@ -210,66 +190,60 @@ class ApiClient {
 		return response.json();
 	}
 
-	async login(credentials: LoginRequest): Promise<LoginResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
-			method: 'POST',
-			headers: this.getHeaders(),
-			body: JSON.stringify(credentials),
-			credentials: 'include', // Include cookies
-		});
-
-		const data = await this.handleResponse<LoginResponse>(response);
-
-		// Store CSRF token
-		if (data.csrfToken) {
-			this.csrfToken = data.csrfToken;
-			sessionStorage.setItem('csrf_token', data.csrfToken);
-		}
-
-		return data;
+	async login(): Promise<void> {
+		const userManager = await getUserManager();
+		await userManager.signinRedirect();
 	}
 
 	async logout(): Promise<void> {
 		try {
-			const response = await fetch(`${API_BASE}/api/v1/auth/sessions/logout`, {
-				method: 'POST',
-				headers: this.getHeaders(true), // Include CSRF token
-				credentials: 'include',
-			});
-
-			await this.handleResponse(response);
+			const userManager = await getUserManager();
+			await userManager.signoutRedirect();
 		} finally {
-			// Always clear local auth state
 			this.clearAuth();
 		}
 	}
 
 	async getSessionInfo(): Promise<SessionInfoResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/sessions/me`, {
-			method: 'GET',
-			headers: this.getHeaders(),
-			credentials: 'include',
-		});
+		const userManager = await getUserManager();
+		const user = await userManager.getUser();
+		if (!user || user.expired) {
+			throw new Error('Not authenticated');
+		}
 
-		return this.handleResponse<SessionInfoResponse>(response);
-	}
+		// Fetch DB-sourced permissions from backend (Auth v3: JWT is identity-only,
+		// all permissions come from Flowplane DB, not Zitadel role claims).
+		const backendSession = await this.get<{
+			userId: string;
+			email: string;
+			name: string;
+			isAdmin: boolean;
+			isPlatformAdmin: boolean;
+			orgScopes: string[];
+			grants: GrantSummary[];
+			teams: string[];
+			orgId?: string;
+			orgName?: string;
+			orgRole?: string;
+		}>('/api/v1/auth/session');
 
-	async changePassword(request: ChangePasswordRequest): Promise<void> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/change-password`, {
-			method: 'POST',
-			headers: this.getHeaders(true), // Include CSRF token
-			body: JSON.stringify(request),
-			credentials: 'include',
-		});
-
-		await this.handleResponse<void>(response);
+		return {
+			userId: backendSession.userId,
+			name: backendSession.name || (user.profile.name as string) || '',
+			email: backendSession.email || (user.profile.email as string) || '',
+			isPlatformAdmin: backendSession.isPlatformAdmin,
+			teams: backendSession.teams,
+			orgScopes: backendSession.orgScopes,
+			grants: backendSession.grants,
+			expiresAt: user.expires_at ? new Date(user.expires_at * 1000).toISOString() : null,
+			orgId: backendSession.orgId,
+			orgName: backendSession.orgName,
+			orgRole: backendSession.orgRole,
+		};
 	}
 
 	clearAuth() {
-		this.csrfToken = null;
-		if (typeof window !== 'undefined') {
-			sessionStorage.removeItem('csrf_token');
-		}
+		getUserManager().then((um) => um.removeUser());
 		// Clear org context to prevent session leaking across logins
 		currentOrg.set({ organization: null, role: null });
 	}
@@ -278,7 +252,7 @@ class ApiClient {
 	async get<T>(path: string): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: await this.getHeaders(),
 			credentials: 'include',
 		});
 
@@ -288,7 +262,7 @@ class ApiClient {
 	async post<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'POST',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -299,7 +273,7 @@ class ApiClient {
 	async put<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'PUT',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -310,7 +284,7 @@ class ApiClient {
 	async delete<T>(path: string): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'DELETE',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			credentials: 'include',
 		});
 
@@ -320,7 +294,7 @@ class ApiClient {
 	async patch<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'PATCH',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -332,7 +306,7 @@ class ApiClient {
 	async getBootstrapStatus(): Promise<BootstrapStatusResponse> {
 		const response = await fetch(`${API_BASE}/api/v1/bootstrap/status`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: { 'Content-Type': 'application/json' },
 		});
 
 		return this.handleResponse<BootstrapStatusResponse>(response);
@@ -343,43 +317,11 @@ class ApiClient {
 	): Promise<BootstrapInitializeResponse> {
 		const response = await fetch(`${API_BASE}/api/v1/bootstrap/initialize`, {
 			method: 'POST',
-			headers: this.getHeaders(),
+			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(data),
 		});
 
 		return this.handleResponse<BootstrapInitializeResponse>(response);
-	}
-
-	// Token management methods
-	async listTokens(limit?: number, offset?: number): Promise<PersonalAccessToken[]> {
-		let path = '/api/v1/tokens';
-		const params = new URLSearchParams();
-		if (limit) params.append('limit', limit.toString());
-		if (offset) params.append('offset', offset.toString());
-		if (params.toString()) path += `?${params.toString()}`;
-
-		const response = await this.get<PaginatedResponse<PersonalAccessToken>>(path);
-		return response.items;
-	}
-
-	async getToken(id: string): Promise<PersonalAccessToken> {
-		return this.get<PersonalAccessToken>(`/api/v1/tokens/${id}`);
-	}
-
-	async createToken(request: CreateTokenRequest): Promise<TokenSecretResponse> {
-		return this.post<TokenSecretResponse>('/api/v1/tokens', request);
-	}
-
-	async updateToken(id: string, request: UpdateTokenRequest): Promise<PersonalAccessToken> {
-		return this.put<PersonalAccessToken>(`/api/v1/tokens/${id}`, request);
-	}
-
-	async revokeToken(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/tokens/${id}`);
-	}
-
-	async rotateToken(id: string): Promise<TokenSecretResponse> {
-		return this.post<TokenSecretResponse>(`/api/v1/tokens/${id}/rotate`, {});
 	}
 
 	// OpenAPI import
@@ -402,10 +344,11 @@ class ApiClient {
 		const isYaml = request.spec.trim().startsWith('openapi:') || request.spec.trim().startsWith('swagger:');
 		const contentType = isYaml ? 'application/yaml' : 'application/json';
 
+		const baseHeaders = await this.getHeaders();
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'POST',
 			headers: {
-				...this.getHeaders(true), // Include CSRF
+				...baseHeaders,
 				'Content-Type': contentType
 			},
 			body: request.spec,
@@ -549,54 +492,6 @@ class ApiClient {
 
 	async adminDeleteTeam(id: string): Promise<void> {
 		return this.delete<void>(`/api/v1/admin/teams/${id}`);
-	}
-
-	// User Management methods (admin only)
-	async listUsers(limit: number = 50, offset: number = 0): Promise<ListUsersResponse> {
-		const params = new URLSearchParams();
-		params.append('limit', limit.toString());
-		params.append('offset', offset.toString());
-
-		return this.get<ListUsersResponse>(`/api/v1/users?${params.toString()}`);
-	}
-
-	async getUser(id: string): Promise<UserWithTeamsResponse> {
-		return this.get<UserWithTeamsResponse>(`/api/v1/users/${id}`);
-	}
-
-	async createUser(request: CreateUserRequest): Promise<UserResponse> {
-		return this.post<UserResponse>('/api/v1/users', request);
-	}
-
-	async updateUser(id: string, request: UpdateUserRequest): Promise<UserResponse> {
-		return this.put<UserResponse>(`/api/v1/users/${id}`, request);
-	}
-
-	async deleteUser(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/users/${id}`);
-	}
-
-	async listUserTeams(userId: string): Promise<UserTeamMembership[]> {
-		return this.get<UserTeamMembership[]>(`/api/v1/users/${userId}/teams`);
-	}
-
-	async addTeamMembership(userId: string, request: CreateTeamMembershipRequest): Promise<UserTeamMembership> {
-		return this.post<UserTeamMembership>(`/api/v1/users/${userId}/teams`, request);
-	}
-
-	async removeTeamMembership(userId: string, team: string): Promise<void> {
-		return this.delete<void>(`/api/v1/users/${userId}/teams/${team}`);
-	}
-
-	async updateTeamMembershipScopes(
-		userId: string,
-		team: string,
-		request: UpdateTeamMembershipRequest
-	): Promise<UserTeamMembership> {
-		return this.put<UserTeamMembership>(
-			`/api/v1/users/${userId}/teams/${encodeURIComponent(team)}`,
-			request
-		);
 	}
 
 	// Audit Log methods (admin only)
@@ -1205,7 +1100,7 @@ class ApiClient {
 			`${API_BASE}/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}/download`,
 			{
 				method: 'GET',
-				headers: this.getHeaders(),
+				headers: await this.getHeaders(),
 				credentials: 'include'
 			}
 		);
@@ -1367,7 +1262,7 @@ class ApiClient {
 		try {
 			const response = await fetch(`${API_BASE}/api/v1/mcp/cp?team=${encodeURIComponent(team)}`, {
 				method: 'POST',
-				headers: this.getHeaders(true),
+				headers: await this.getHeaders(),
 				credentials: 'include',
 				body: JSON.stringify({
 					jsonrpc: '2.0',
@@ -1424,7 +1319,7 @@ class ApiClient {
 			`${API_BASE}/api/v1/mcp/cp/connections?team=${encodeURIComponent(team)}`,
 			{
 				method: 'GET',
-				headers: this.getHeaders(true),
+				headers: await this.getHeaders(),
 				credentials: 'include'
 			}
 		);
@@ -1528,7 +1423,7 @@ class ApiClient {
 
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: await this.getHeaders(),
 			credentials: 'include'
 		});
 
@@ -1577,9 +1472,10 @@ class ApiClient {
 	// ============================================================================
 
 	async listOrgMembers(orgId: string): Promise<OrgMembershipResponse[]> {
-		return this.get<OrgMembershipResponse[]>(
+		const response = await this.get<{ members: OrgMembershipResponse[] }>(
 			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/members`
 		);
+		return response.members;
 	}
 
 	async addOrgMember(orgId: string, data: AddOrgMemberRequest): Promise<OrgMembershipResponse> {
@@ -1623,97 +1519,119 @@ class ApiClient {
 		);
 	}
 
-	// ============================================================================
-	// Invitation API (Invite-Only Registration)
-	// ============================================================================
-
-	async validateInviteToken(token: string): Promise<InviteTokenInfo> {
-		const params = new URLSearchParams({ token });
-		const response = await fetch(
-			`${API_BASE}/api/v1/invitations/validate?${params.toString()}`,
-			{
-				method: 'GET',
-				headers: { 'Content-Type': 'application/json' },
-				credentials: 'include'
-			}
-		);
-
-		if (!response.ok) {
-			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-			try {
-				const errorData = await response.json();
-				errorMessage = errorData.message || errorMessage;
-			} catch {
-				// Use status text
-			}
-			throw new Error(errorMessage);
+	async getOrgTeam(orgName: string, teamName: string): Promise<TeamResponse> {
+		const response = await this.listOrgTeams(orgName);
+		const team = response.teams.find((t) => t.name === teamName);
+		if (!team) {
+			throw new Error(`Team '${teamName}' not found`);
 		}
-
-		return response.json();
+		return team;
 	}
 
-	async acceptInvitation(req: AcceptInvitationRequest): Promise<InvitationLoginResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/invitations/accept`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(req),
-			credentials: 'include'
-		});
-
-		if (!response.ok) {
-			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-			try {
-				const errorData = await response.json();
-				errorMessage = errorData.message || errorMessage;
-			} catch {
-				// Use status text
-			}
-			throw new Error(errorMessage);
-		}
-
-		const data: InvitationLoginResponse = await response.json();
-
-		// Replicate CSRF token storage from login()
-		if (data.csrfToken) {
-			this.csrfToken = data.csrfToken;
-			try {
-				sessionStorage.setItem('csrf_token', data.csrfToken);
-			} catch {
-				// Safari private browsing may throw on sessionStorage write
-			}
-		}
-
-		return data;
-	}
-
-	async listOrgInvitations(
+	async updateOrgTeam(
 		orgName: string,
-		limit?: number,
-		offset?: number
-	): Promise<PaginatedInvitations> {
-		const params = new URLSearchParams();
-		if (limit !== undefined) params.append('limit', limit.toString());
-		if (offset !== undefined) params.append('offset', offset.toString());
-
-		const query = params.toString();
-		return this.get<PaginatedInvitations>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations${query ? `?${query}` : ''}`
+		teamName: string,
+		data: UpdateTeamRequest
+	): Promise<TeamResponse> {
+		return this.put<TeamResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}`,
+			data
 		);
 	}
 
-	async createOrgInvitation(
+	async deleteOrgTeam(orgName: string, teamName: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}`
+		);
+	}
+
+	async listTeamMembers(
 		orgName: string,
-		req: CreateInvitationRequest
-	): Promise<CreateInvitationResponse> {
-		return this.post<CreateInvitationResponse>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations`,
+		teamName: string
+	): Promise<ListOrgTeamMembersResponse> {
+		return this.get<ListOrgTeamMembersResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members`
+		);
+	}
+
+	async addTeamMember(
+		orgName: string,
+		teamName: string,
+		data: AddOrgTeamMemberRequest
+	): Promise<OrgTeamMemberResponse> {
+		return this.post<OrgTeamMemberResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members`,
+			data
+		);
+	}
+
+	async removeTeamMember(orgName: string, teamName: string, userId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(userId)}`
+		);
+	}
+
+	// ============================================================================
+	// Invite API (Instant Provisioning via Admin)
+	// ============================================================================
+
+	async inviteOrgMember(
+		orgId: string,
+		req: InviteOrgMemberRequest
+	): Promise<InviteOrgMemberResponse> {
+		return this.post<InviteOrgMemberResponse>(
+			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/invite`,
 			req
 		);
 	}
 
-	async revokeOrgInvitation(orgName: string, invId: string): Promise<void> {
+	// ============================================================================
+	// Agent API
+	// ============================================================================
+
+	async listOrgAgents(orgName: string): Promise<ListAgentsResponse> {
+		return this.get<ListAgentsResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents`
+		);
+	}
+
+	async createOrgAgent(orgName: string, data: CreateAgentRequest): Promise<CreateAgentResponse> {
+		return this.post<CreateAgentResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents`,
+			data
+		);
+	}
+
+	async deleteOrgAgent(orgName: string, agentName: string): Promise<void> {
 		return this.delete<void>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations/${encodeURIComponent(invId)}`
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}`
+		);
+	}
+
+	// ============================================================================
+	// Unified Grant API (principals — users and agents)
+	// ============================================================================
+
+	async createPrincipalGrant(
+		orgName: string,
+		principalId: string,
+		request: CreateGrantRequest
+	): Promise<GrantResponse> {
+		return this.post<GrantResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants`,
+			request
+		);
+	}
+
+	async listPrincipalGrants(orgName: string, principalId: string): Promise<GrantListResponse> {
+		return this.get<GrantListResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants`
+		);
+	}
+
+	async deletePrincipalGrant(orgName: string, principalId: string, grantId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants/${encodeURIComponent(grantId)}`
 		);
 	}
 }

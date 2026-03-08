@@ -55,7 +55,7 @@
 use std::sync::Arc;
 
 use crate::api::routes::ApiState;
-use crate::auth::models::AuthContext;
+use crate::auth::models::{AuthContext, Grant, GrantType};
 use crate::domain::{OrgId, TeamId, TokenId, UserId};
 use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
 use crate::storage::test_helpers::TestDatabase;
@@ -115,7 +115,8 @@ impl TestApiStateBuilder {
                 mcp_session_manager,
                 certificate_rate_limiter,
                 auth_config: Arc::new(crate::config::AuthConfig::default()),
-                auth_rate_limiters: Arc::new(crate::api::routes::AuthRateLimiters::from_env()),
+                zitadel_admin: None,
+                permission_cache: None,
             },
         )
     }
@@ -139,27 +140,25 @@ pub async fn create_test_state() -> (TestDatabase, ApiState) {
 
 // === Auth Context Helpers ===
 
+/// Create a resource grant for testing.
+pub fn make_grant(resource: &str, action: &str, team_name: &str) -> Grant {
+    Grant {
+        grant_type: GrantType::Resource,
+        team_id: format!("test-team-id-{}", team_name),
+        team_name: team_name.to_string(),
+        resource_type: Some(resource.to_string()),
+        action: Some(action.to_string()),
+        route_id: None,
+        allowed_methods: vec![],
+    }
+}
+
 /// Create an admin auth context for testing (governance-only).
 ///
-/// Includes `admin:all` plus all governance scopes. Does NOT include
-/// resource scopes — admin:all is governance-only and cannot access
-/// tenant resources (clusters, routes, listeners, etc.).
+/// `admin:all` is an org-level scope for platform governance. It does NOT grant
+/// resource access (clusters, routes, etc.) — that requires resource grants.
 pub fn admin_auth_context() -> AuthContext {
-    AuthContext::new(
-        TokenId::new(),
-        "test-admin-token".to_string(),
-        vec![
-            "admin:all".to_string(),
-            "admin:orgs:read".to_string(),
-            "admin:orgs:write".to_string(),
-            "admin:users:read".to_string(),
-            "admin:users:write".to_string(),
-            "admin:teams:read".to_string(),
-            "admin:teams:write".to_string(),
-            "admin:audit:read".to_string(),
-            "admin:summary:read".to_string(),
-        ],
-    )
+    AuthContext::new(TokenId::new(), "test-admin-token".to_string(), vec!["admin:all".to_string()])
 }
 
 /// Create an org admin auth context for testing.
@@ -176,55 +175,61 @@ pub fn org_admin_auth_context(org_name: &str) -> AuthContext {
     .with_org(org_id, org_name.to_string())
 }
 
-/// Create a team member auth context for testing with common scopes
+/// Create a team member auth context for testing with full CRUD grants.
 pub fn team_auth_context(team: &str) -> AuthContext {
-    let scopes = vec![
-        format!("team:{}:clusters:read", team),
-        format!("team:{}:clusters:write", team),
-        format!("team:{}:routes:read", team),
-        format!("team:{}:routes:write", team),
-        format!("team:{}:listeners:read", team),
-        format!("team:{}:listeners:write", team),
-        format!("team:{}:filters:read", team),
-        format!("team:{}:filters:write", team),
-    ];
-    AuthContext::new(TokenId::new(), format!("{}-test-token", team), scopes)
+    let grants: Vec<Grant> = ["clusters", "routes", "listeners", "filters"]
+        .iter()
+        .flat_map(|resource| {
+            ["read", "create", "update", "delete"]
+                .iter()
+                .map(|action| make_grant(resource, action, team))
+        })
+        .collect();
+    AuthContext::new(TokenId::new(), format!("{}-test-token", team), vec![])
+        .with_grants(grants, None)
 }
 
-/// Create a read-only auth context for testing
+/// Create a read-only auth context for testing.
 pub fn readonly_auth_context(team: &str) -> AuthContext {
-    let scopes = vec![
-        format!("team:{}:clusters:read", team),
-        format!("team:{}:routes:read", team),
-        format!("team:{}:listeners:read", team),
-        format!("team:{}:filters:read", team),
-    ];
-    AuthContext::new(TokenId::new(), format!("{}-readonly-token", team), scopes)
+    let grants: Vec<Grant> = ["clusters", "routes", "listeners", "filters"]
+        .iter()
+        .map(|resource| make_grant(resource, "read", team))
+        .collect();
+    AuthContext::new(TokenId::new(), format!("{}-readonly-token", team), vec![])
+        .with_grants(grants, None)
 }
 
-/// Create a minimal auth context for testing (no scopes)
+/// Create a minimal auth context for testing (no scopes, no grants).
 pub fn minimal_auth_context() -> AuthContext {
     AuthContext::new(TokenId::new(), "minimal-token".to_string(), vec![])
 }
 
-/// Create an auth context with admin privileges and specific resource scopes (read + write)
+/// Create an auth context with `admin:all` org scope and full CRUD grants for a resource.
 ///
-/// Uses admin:all to grant full access. Used for testing handler logic where
-/// the test verifies handler behavior, not authorization.
+/// Used for testing handler logic where the test verifies behavior, not authorization.
 ///
-/// Example: `resource_auth_context("tokens")` creates admin context with tokens:read and tokens:write
+/// Example: `resource_auth_context("tokens")` grants read/create/update/delete on tokens.
 pub fn resource_auth_context(resource: &str) -> AuthContext {
-    let scopes =
-        vec!["admin:all".to_string(), format!("{}:read", resource), format!("{}:write", resource)];
-    AuthContext::new(TokenId::new(), format!("{}-test-token", resource), scopes)
+    let team = "test-team";
+    let grants: Vec<Grant> = ["read", "create", "update", "delete"]
+        .iter()
+        .map(|action| make_grant(resource, action, team))
+        .collect();
+    AuthContext::new(
+        TokenId::new(),
+        format!("{}-test-token", resource),
+        vec!["admin:all".to_string()],
+    )
+    .with_grants(grants, None)
 }
 
-/// Create an auth context with specific resource scopes (read only)
+/// Create an auth context with a read-only grant for a specific resource.
 ///
-/// Example: `readonly_resource_auth_context("tokens")` creates context with only tokens:read
+/// Example: `readonly_resource_auth_context("tokens")` grants only tokens:read.
 pub fn readonly_resource_auth_context(resource: &str) -> AuthContext {
-    let scopes = vec![format!("{}:read", resource)];
-    AuthContext::new(TokenId::new(), format!("{}-readonly-token", resource), scopes)
+    let grants = vec![make_grant(resource, "read", "test-team")];
+    AuthContext::new(TokenId::new(), format!("{}-readonly-token", resource), vec![])
+        .with_grants(grants, None)
 }
 
 // === Test Data Builders ===
@@ -320,7 +325,6 @@ impl TestUserBuilder {
 
     /// Insert the user into the database
     pub async fn insert(self, pool: &DbPool) -> UserId {
-        use crate::auth::hashing;
         use crate::auth::user::{NewUser, UserStatus};
         use crate::storage::repositories::SqlxUserRepository;
         use crate::storage::repositories::UserRepository;
@@ -328,9 +332,9 @@ impl TestUserBuilder {
         let repo = SqlxUserRepository::new(pool.clone());
         let user_id = UserId::new();
 
-        // Hash the password using the crate's hashing module
-        let password_hash =
-            hashing::hash_password(&self.password).expect("Failed to hash password");
+        // Dummy hash — Zitadel handles authentication, password_hash column
+        // kept until Task 2.5 drops the users table.
+        let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
 
         let new_user = NewUser {
             id: user_id.clone(),
@@ -339,7 +343,6 @@ impl TestUserBuilder {
             name: self.name,
             status: UserStatus::Active,
             is_admin: self.is_admin,
-            org_id: OrgId::from_str_unchecked(crate::storage::test_helpers::TEST_ORG_ID),
         };
 
         repo.create_user(new_user).await.expect("Failed to create test user");
@@ -397,17 +400,16 @@ mod tests {
     #[tokio::test]
     async fn test_team_auth_context() {
         let context = team_auth_context("my-team");
-        assert!(context.has_scope("team:my-team:clusters:write"));
-        assert!(context.has_scope("team:my-team:routes:read"));
-        assert!(!context.has_scope("clusters:write")); // No global scopes
+        assert!(context.has_grant("clusters", "create", "my-team"));
+        assert!(context.has_grant("routes", "read", "my-team"));
+        assert!(!context.has_scope("admin:all"));
     }
 
     #[tokio::test]
     async fn test_readonly_auth_context() {
         let context = readonly_auth_context("my-team");
-        assert!(context.has_scope("team:my-team:clusters:read"));
-        assert!(!context.has_scope("team:my-team:clusters:write"));
-        assert!(!context.has_scope("clusters:read")); // No global scopes
+        assert!(context.has_grant("clusters", "read", "my-team"));
+        assert!(!context.has_grant("clusters", "create", "my-team"));
     }
 
     #[tokio::test]
@@ -439,22 +441,22 @@ mod tests {
     #[tokio::test]
     async fn test_resource_auth_context() {
         let context = resource_auth_context("tokens");
-        assert!(context.has_scope("tokens:read"));
-        assert!(context.has_scope("tokens:write"));
-        assert!(context.has_scope("admin:all")); // admin:all added for handler testing
+        assert!(context.has_scope("admin:all"));
+        assert!(context.has_grant("tokens", "read", "test-team"));
+        assert!(context.has_grant("tokens", "create", "test-team"));
     }
 
     #[tokio::test]
     async fn test_readonly_resource_auth_context() {
         let context = readonly_resource_auth_context("tokens");
-        assert!(context.has_scope("tokens:read"));
-        assert!(!context.has_scope("tokens:write"));
+        assert!(context.has_grant("tokens", "read", "test-team"));
+        assert!(!context.has_grant("tokens", "create", "test-team"));
     }
 
     #[tokio::test]
     async fn test_minimal_auth_context() {
         let context = minimal_auth_context();
         assert!(!context.has_scope("admin:all"));
-        assert!(!context.has_scope("clusters:read"));
+        assert!(!context.has_any_grant("clusters", "read"));
     }
 }

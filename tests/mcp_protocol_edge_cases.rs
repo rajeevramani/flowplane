@@ -454,7 +454,7 @@ async fn test_tool_not_found_error() {
 
     assert!(response.error.is_some());
     let error = response.error.unwrap();
-    assert_eq!(error.code, error_codes::METHOD_NOT_FOUND);
+    assert_eq!(error.code, error_codes::INVALID_REQUEST);
     assert!(error.message.contains("nonexistent_tool"));
 }
 
@@ -505,7 +505,7 @@ async fn test_mcp_error_to_json_rpc_error_conversion() {
     let error = McpError::ToolNotFound("test_tool".to_string());
     let json_error = error.to_json_rpc_error();
 
-    assert_eq!(json_error.code, error_codes::METHOD_NOT_FOUND);
+    assert_eq!(json_error.code, error_codes::INVALID_REQUEST);
     assert!(json_error.message.contains("test_tool"));
 }
 

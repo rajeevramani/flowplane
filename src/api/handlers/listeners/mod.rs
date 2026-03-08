@@ -67,12 +67,12 @@ pub async fn create_listener_handler(
     // REST-specific validation
     validate_create_listener_body(&payload)?;
 
-    // Verify user has write access to the specified team
+    // Verify user has create access to the specified team
     require_resource_access_resolved(
         &state,
         &context,
         "listeners",
-        "write",
+        "create",
         Some(&payload.team),
         context.org_id.as_ref(),
     )
@@ -203,8 +203,8 @@ pub async fn update_listener_handler(
     Path(name): Path<String>,
     Json(payload): Json<types::UpdateListenerBody>,
 ) -> Result<Json<types::ListenerResponse>, ApiError> {
-    // Authorization: require listeners:write scope
-    require_resource_access(&context, "listeners", "write", None)?;
+    // Authorization: require listeners:update scope
+    require_resource_access(&context, "listeners", "update", None)?;
 
     // REST-specific validation
     validate_update_listener_body(&payload)?;
@@ -251,8 +251,8 @@ pub async fn delete_listener_handler(
     Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require listeners:write scope (delete is a write operation)
-    require_resource_access(&context, "listeners", "write", None)?;
+    // Authorization: require listeners:delete scope
+    require_resource_access(&context, "listeners", "delete", None)?;
 
     // Delegate to internal API layer (includes default listener protection, team access, and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());
@@ -326,7 +326,8 @@ mod tests {
             mcp_session_manager,
             certificate_rate_limiter,
             auth_config: Arc::new(crate::config::AuthConfig::default()),
-            auth_rate_limiters: Arc::new(crate::api::routes::AuthRateLimiters::from_env()),
+            zitadel_admin: None,
+            permission_cache: None,
         };
         (test_db, state, api_state)
     }

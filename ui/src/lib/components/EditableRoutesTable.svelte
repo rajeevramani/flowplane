@@ -32,6 +32,8 @@
 		path: string;
 		pathType: PathMatchType;
 		actionType: RouteActionType;
+		// Exposure
+		exposure?: 'internal' | 'external';
 		// Forward action fields
 		cluster?: string;
 		prefixRewrite?: string;
@@ -153,6 +155,10 @@
 					>
 					<th
 						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+						>Exposure</th
+					>
+					<th
+						class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
 						>Target</th
 					>
 					<th
@@ -197,6 +203,13 @@
 									</span>
 								{/if}
 							</div>
+						</td>
+						<td class="px-4 py-3 whitespace-nowrap">
+							{#if (route.exposure ?? 'internal') === 'external'}
+								<Badge variant="green">external</Badge>
+							{:else}
+								<Badge variant="gray">internal</Badge>
+							{/if}
 						</td>
 						<td class="px-4 py-3">
 							<span class="text-sm text-gray-900 truncate max-w-xs block" title={getTargetDisplay(route)}>{getTargetDisplay(route)}</span>

@@ -260,7 +260,7 @@ pub async fn attach_filter_to_virtual_host_handler(
     Path((route_config_name, vhost_name)): Path<(String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "write", None)?;
+    require_resource_access(&context, "routes", "update", None)?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -306,7 +306,7 @@ pub async fn detach_filter_from_virtual_host_handler(
     Extension(context): Extension<AuthContext>,
     Path((route_config_name, vhost_name, filter_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "write", None)?;
+    require_resource_access(&context, "routes", "update", None)?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -455,7 +455,7 @@ pub async fn attach_filter_to_route_rule_handler(
     Path((route_config_name, vhost_name, route_name)): Path<(String, String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "write", None)?;
+    require_resource_access(&context, "routes", "update", None)?;
 
     // Team access verification happens in resolve_route
     let route =
@@ -508,7 +508,7 @@ pub async fn detach_filter_from_route_rule_handler(
         String,
     )>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "write", None)?;
+    require_resource_access(&context, "routes", "update", None)?;
 
     // Team access verification happens in resolve_route
     let route =

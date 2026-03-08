@@ -64,7 +64,7 @@ pub async fn create_secret_handler(
         &state,
         &context,
         "secrets",
-        "write",
+        "create",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -154,7 +154,7 @@ pub async fn create_secret_reference_handler(
         &state,
         &context,
         "secrets",
-        "write",
+        "create",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -369,12 +369,12 @@ pub async fn update_secret_handler(
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
 
-    // Authorization: require secrets:write scope
+    // Authorization: require secrets:update scope
     require_resource_access_resolved(
         &state,
         &context,
         "secrets",
-        "write",
+        "update",
         Some(&path.team),
         context.org_id.as_ref(),
     )
@@ -465,12 +465,12 @@ pub async fn delete_secret_handler(
     Extension(context): Extension<AuthContext>,
     Path(path): Path<TeamSecretPath>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require secrets:write scope
+    // Authorization: require secrets:delete scope
     require_resource_access_resolved(
         &state,
         &context,
         "secrets",
-        "write",
+        "delete",
         Some(&path.team),
         context.org_id.as_ref(),
     )

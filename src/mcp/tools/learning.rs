@@ -177,7 +177,7 @@ AFTER CREATION:
 - Monitor progress with cp_get_learning_session
 - When complete, find generated schemas with cp_list_schemas
 
-Authorization: Requires cp:write scope.
+Authorization: Requires learning-sessions:create scope.
 "#,
         json!({
             "type": "object",
@@ -249,7 +249,7 @@ WORKFLOW TO DELETE:
 2. If active/pending, call this tool
 3. Session is cancelled and removed
 
-Authorization: Requires cp:write scope.
+Authorization: Requires learning-sessions:delete scope.
 "#,
         json!({
             "type": "object",
@@ -534,7 +534,7 @@ AFTER ACTIVATION:
 - Send traffic through the gateway matching the session's route_pattern
 - Monitor current_sample_count with cp_get_learning_session
 
-Authorization: Requires cp:write scope.
+Authorization: Requires learning-sessions:execute scope.
 "#,
         json!({
             "type": "object",

@@ -63,12 +63,12 @@ pub async fn create_cluster_handler(
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
 
-    // Verify user has write access to the specified team
+    // Verify user has create access to the specified team
     require_resource_access_resolved(
         &state,
         &context,
         "clusters",
-        "write",
+        "create",
         Some(&payload.team),
         context.org_id.as_ref(),
     )
@@ -200,8 +200,8 @@ pub async fn update_cluster_handler(
     Path(name): Path<String>,
     Json(payload): Json<types::CreateClusterBody>,
 ) -> Result<Json<types::ClusterResponse>, ApiError> {
-    // Authorization: require clusters:write scope
-    require_resource_access(&context, "clusters", "write", None)?;
+    // Authorization: require clusters:update scope
+    require_resource_access(&context, "clusters", "update", None)?;
 
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
@@ -252,8 +252,8 @@ pub async fn delete_cluster_handler(
     Extension(context): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require clusters:write scope (delete is a write operation)
-    require_resource_access(&context, "clusters", "write", None)?;
+    // Authorization: require clusters:delete scope
+    require_resource_access(&context, "clusters", "delete", None)?;
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
@@ -513,15 +513,27 @@ mod tests {
 
     // === Team Isolation Tests ===
 
-    /// Create a team-scoped AuthContext for testing
+    /// Create a team-scoped AuthContext for testing (grant-based)
     fn team_context(team: &str, resource: &str, actions: &[&str]) -> AuthContext {
-        let scopes =
-            actions.iter().map(|action| format!("team:{}:{}:{}", team, resource, action)).collect();
-        AuthContext::new(
+        use crate::auth::models::{Grant, GrantType};
+        let mut ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("test-token"),
             format!("{}-user", team),
-            scopes,
-        )
+            vec![],
+        );
+        ctx.grants = actions
+            .iter()
+            .map(|action| Grant {
+                grant_type: GrantType::Resource,
+                team_id: format!("{}-uuid", team),
+                team_name: team.to_string(),
+                resource_type: Some(resource.to_string()),
+                action: Some(action.to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            })
+            .collect();
+        ctx
     }
 
     /// Directly insert a cluster into the database with a team assignment
@@ -598,11 +610,35 @@ mod tests {
         assert!(!names.contains(&"team-a-cluster"));
 
         // Multi-team user should see clusters from all their teams
-        let multi_team = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("multi-team-token"),
-            "multi-team-user".into(),
-            vec!["team:team-a:clusters:read".into(), "team:team-b:clusters:read".into()],
-        );
+        let multi_team = {
+            use crate::auth::models::{Grant, GrantType};
+            let mut ctx = AuthContext::new(
+                crate::domain::TokenId::from_str_unchecked("multi-team-token"),
+                "multi-team-user".into(),
+                vec![],
+            );
+            ctx.grants = vec![
+                Grant {
+                    grant_type: GrantType::Resource,
+                    team_id: "team-a-uuid".into(),
+                    team_name: "team-a".into(),
+                    resource_type: Some("clusters".into()),
+                    action: Some("read".into()),
+                    route_id: None,
+                    allowed_methods: vec![],
+                },
+                Grant {
+                    grant_type: GrantType::Resource,
+                    team_id: "team-b-uuid".into(),
+                    team_name: "team-b".into(),
+                    resource_type: Some("clusters".into()),
+                    action: Some("read".into()),
+                    route_id: None,
+                    allowed_methods: vec![],
+                },
+            ];
+            ctx
+        };
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(multi_team),
@@ -700,7 +736,7 @@ mod tests {
         update_body.service_name = Some("updated".to_string());
 
         // User from team-b tries to update team-a's cluster - should get 404
-        let team_b_context = team_context("team-b", "clusters", &["write"]);
+        let team_b_context = team_context("team-b", "clusters", &["update"]);
         let result = update_cluster_handler(
             State(state.clone()),
             Extension(team_b_context),
@@ -719,7 +755,7 @@ mod tests {
         }
 
         // User from team-a can update their own cluster
-        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let team_a_context = team_context("team-a", "clusters", &["update"]);
         let result = update_cluster_handler(
             State(state.clone()),
             Extension(team_a_context),
@@ -743,7 +779,7 @@ mod tests {
             .expect("insert team-b cluster");
 
         // User from team-a tries to delete team-b's cluster - should get 404
-        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let team_a_context = team_context("team-a", "clusters", &["delete"]);
         let result = delete_cluster_handler(
             State(state.clone()),
             Extension(team_a_context.clone()),
@@ -782,7 +818,7 @@ mod tests {
         body.team = "team-a".to_string(); // Explicitly set team to match user's scope
 
         // Team-scoped user creates a cluster
-        let team_a_context = team_context("team-a", "clusters", &["write"]);
+        let team_a_context = team_context("team-a", "clusters", &["create"]);
         let (_status, Json(created)) =
             create_cluster_handler(State(state.clone()), Extension(team_a_context), Json(body))
                 .await
@@ -813,7 +849,7 @@ mod tests {
         // Team user creates a cluster for their team
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(team_context("platform", "clusters", &["write"])),
+            Extension(team_context("platform", "clusters", &["create"])),
             Json(body),
         )
         .await

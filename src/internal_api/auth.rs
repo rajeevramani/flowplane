@@ -376,15 +376,26 @@ mod tests {
 
     #[test]
     fn test_from_rest_admin_with_teams() {
-        let ctx = AuthContext::new(
+        use crate::auth::models::{Grant, GrantType};
+
+        let mut ctx = AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("admin-with-teams"),
             "admin".into(),
-            vec!["admin:all".into(), "team:platform-admin:*:*".into()],
+            vec!["admin:all".into()],
         );
+        ctx.grants = vec![Grant {
+            grant_type: GrantType::Resource,
+            team_id: "pa-uuid".into(),
+            team_name: "platform-admin".into(),
+            resource_type: Some("clusters".into()),
+            action: Some("read".into()),
+            route_id: None,
+            allowed_methods: vec![],
+        }];
 
         let internal = InternalAuthContext::from_rest(&ctx);
         assert!(internal.is_admin);
-        // Admin gets their team scopes extracted (not special-cased)
+        // Admin gets their team scopes extracted from grants
         assert_eq!(internal.allowed_teams, vec!["platform-admin".to_string()]);
         assert_eq!(internal.team, Some("platform-admin".to_string()));
         // Admin can access their explicit team membership

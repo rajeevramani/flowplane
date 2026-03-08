@@ -34,13 +34,9 @@ fn extract_team(query: &ConnectionsQuery, context: &AuthContext) -> Result<Strin
         return Err("Admin users must specify team via query parameter".to_string());
     }
 
-    // Extract from scopes (pattern: team:{name}:*)
-    for scope in context.scopes() {
-        if let Some(team_part) = scope.strip_prefix("team:") {
-            if let Some(team_name) = team_part.split(':').next() {
-                return Ok(team_name.to_string());
-            }
-        }
+    // Extract from grants (first team name)
+    if let Some(team_name) = context.grant_team_names().into_iter().next() {
+        return Ok(team_name);
     }
 
     Err("Unable to determine team. Please provide team via query parameter".to_string())
@@ -151,16 +147,34 @@ pub async fn list_connections_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::models::{Grant, GrantType};
     use crate::domain::TokenId;
 
-    fn create_test_context_with_scopes(scopes: Vec<String>) -> AuthContext {
-        AuthContext::new(TokenId::from_str_unchecked("token-1"), "test-token".to_string(), scopes)
+    fn create_test_context(org_scopes: Vec<&str>) -> AuthContext {
+        AuthContext::new(
+            TokenId::from_str_unchecked("token-1"),
+            "test-token".to_string(),
+            org_scopes.into_iter().map(String::from).collect(),
+        )
+    }
+
+    fn create_test_context_with_team(org_scopes: Vec<&str>, team_name: &str) -> AuthContext {
+        let grants = vec![Grant {
+            grant_type: GrantType::Resource,
+            team_id: format!("team-{}", team_name),
+            team_name: team_name.to_string(),
+            resource_type: Some("*".to_string()),
+            action: Some("*".to_string()),
+            route_id: None,
+            allowed_methods: vec![],
+        }];
+        create_test_context(org_scopes).with_grants(grants, None)
     }
 
     #[test]
     fn test_extract_team_from_query() {
         let query = ConnectionsQuery { team: Some("test-team".to_string()) };
-        let context = create_test_context_with_scopes(vec![]);
+        let context = create_test_context(vec![]);
 
         let result = extract_team(&query, &context);
         assert!(result.is_ok());
@@ -170,7 +184,7 @@ mod tests {
     #[test]
     fn test_extract_team_from_scope() {
         let query = ConnectionsQuery { team: None };
-        let context = create_test_context_with_scopes(vec!["team:my-team:mcp:read".to_string()]);
+        let context = create_test_context_with_team(vec![], "my-team");
 
         let result = extract_team(&query, &context);
         assert!(result.is_ok());
@@ -180,7 +194,7 @@ mod tests {
     #[test]
     fn test_extract_team_admin_requires_query() {
         let query = ConnectionsQuery { team: None };
-        let context = create_test_context_with_scopes(vec!["admin:all".to_string()]);
+        let context = create_test_context(vec!["admin:all"]);
 
         let result = extract_team(&query, &context);
         assert!(result.is_err());
@@ -190,7 +204,7 @@ mod tests {
     #[test]
     fn test_extract_team_query_overrides_scope() {
         let query = ConnectionsQuery { team: Some("override-team".to_string()) };
-        let context = create_test_context_with_scopes(vec!["team:scope-team:mcp:read".to_string()]);
+        let context = create_test_context_with_team(vec![], "scope-team");
 
         let result = extract_team(&query, &context);
         assert!(result.is_ok());
@@ -199,9 +213,9 @@ mod tests {
 
     #[test]
     fn test_extract_team_org_admin_without_query_falls_through() {
-        // Org admin without team query or team scopes should fail gracefully
+        // Org admin without team query or grants should fail gracefully
         let query = ConnectionsQuery { team: None };
-        let context = create_test_context_with_scopes(vec!["org:acme:admin".to_string()]);
+        let context = create_test_context(vec!["org:acme:admin"]);
 
         let result = extract_team(&query, &context);
         assert!(result.is_err());
@@ -211,7 +225,7 @@ mod tests {
     #[test]
     fn test_extract_team_org_admin_with_query() {
         let query = ConnectionsQuery { team: Some("acme-eng".to_string()) };
-        let context = create_test_context_with_scopes(vec!["org:acme:admin".to_string()]);
+        let context = create_test_context(vec!["org:acme:admin"]);
 
         let result = extract_team(&query, &context);
         assert!(result.is_ok());
@@ -221,7 +235,7 @@ mod tests {
     #[test]
     fn test_extract_team_no_team_no_scope() {
         let query = ConnectionsQuery { team: None };
-        let context = create_test_context_with_scopes(vec!["mcp:read".to_string()]);
+        let context = create_test_context(vec![]);
 
         let result = extract_team(&query, &context);
         assert!(result.is_err());

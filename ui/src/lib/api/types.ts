@@ -7,28 +7,6 @@ export interface PaginatedResponse<T> {
 	offset: number;
 }
 
-export interface LoginRequest {
-	email: string;
-	password: string;
-}
-
-export interface LoginResponse {
-	sessionId: string;
-	csrfToken: string;
-	expiresAt: string;
-	userId: string;
-	userEmail: string;
-	isPlatformAdmin: boolean;
-	teams: string[];
-	scopes: string[];
-	orgId?: string;
-	orgName?: string;
-}
-
-export interface ChangePasswordRequest {
-	currentPassword: string;
-	newPassword: string;
-}
 
 export interface BootstrapStatusResponse {
 	needsInitialization: boolean;
@@ -49,17 +27,21 @@ export interface BootstrapInitializeResponse {
 	nextSteps: string[];
 }
 
+export interface GrantSummary {
+	teamName: string;
+	resourceType: string;
+	action: string;
+}
+
 export interface SessionInfoResponse {
-	sessionId: string;
 	userId: string;
 	name: string;
 	email: string;
-	isAdmin: boolean;
 	isPlatformAdmin: boolean;
 	teams: string[];
-	scopes: string[];
+	orgScopes: string[];
+	grants: GrantSummary[];
 	expiresAt: string | null;
-	version: string;
 	orgId?: string;
 	orgName?: string;
 	orgRole?: string;
@@ -119,38 +101,6 @@ export interface DashboardStats {
 export interface ApiError {
 	message: string;
 	code?: string;
-}
-
-export type TokenStatus = 'Active' | 'Revoked' | 'Expired';
-
-export interface PersonalAccessToken {
-	id: string;
-	name: string;
-	description: string | null;
-	status: TokenStatus;
-	expiresAt: string | null;
-	lastUsedAt: string | null;
-	createdBy: string | null;
-	createdAt: string;
-	updatedAt: string;
-	scopes: string[];
-}
-
-export interface CreateTokenRequest {
-	name: string;
-	description?: string;
-	expiresAt?: string | null;
-	scopes: string[];
-}
-
-export interface TokenSecretResponse {
-	id: string;
-	token: string;
-}
-
-export interface UpdateTokenRequest {
-	name?: string;
-	description?: string;
 }
 
 export interface ImportOpenApiRequest {
@@ -234,6 +184,7 @@ export interface RouteResponse {
 	team: string;
 	pathPrefix: string;
 	clusterTargets: string;
+	exposure: string;
 	importId?: string;
 	routeOrder?: number;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -257,71 +208,6 @@ export interface ClusterResponse {
 export interface EnvoyConfigRequest {
 	team: string;
 	format?: 'yaml' | 'json';
-}
-
-// User Management types
-export type UserStatus = 'Active' | 'Inactive' | 'Suspended';
-
-export interface UserResponse {
-	id: string;
-	email: string;
-	name: string;
-	status: UserStatus;
-	isAdmin: boolean;
-	createdAt: string;
-	updatedAt: string;
-	orgId?: string;
-}
-
-export interface UserTeamMembership {
-	id: string;
-	userId: string;
-	team: string;
-	scopes: string[];
-	createdAt: string;
-}
-
-export interface UserWithTeamsResponse {
-	id: string;
-	email: string;
-	name: string;
-	status: UserStatus;
-	isAdmin: boolean;
-	createdAt: string;
-	updatedAt: string;
-	teams: UserTeamMembership[];
-}
-
-export interface CreateUserRequest {
-	email: string;
-	password: string;
-	name: string;
-	isAdmin?: boolean;
-	orgId?: string;
-}
-
-export interface UpdateUserRequest {
-	email?: string;
-	name?: string;
-	status?: UserStatus;
-	isAdmin?: boolean;
-}
-
-export interface CreateTeamMembershipRequest {
-	userId: string;
-	team: string;
-	scopes: string[];
-}
-
-export interface UpdateTeamMembershipRequest {
-	scopes: string[];
-}
-
-export interface ListUsersResponse {
-	items: UserResponse[];
-	total: number;
-	limit: number;
-	offset: number;
 }
 
 // Audit Log Types
@@ -1904,54 +1790,46 @@ export interface ListOrgTeamsResponse {
 	teams: TeamResponse[];
 }
 
+export interface OrgTeamMemberResponse {
+	id: string;
+	userId: string;
+	team: string;
+	scopes: string[];
+	createdAt: string;
+	userName?: string;
+	userEmail?: string;
+}
+
+export interface ListOrgTeamMembersResponse {
+	members: OrgTeamMemberResponse[];
+}
+
+export interface AddOrgTeamMemberRequest {
+	userId: string;
+	scopes: string[];
+}
+
 // ============================================================================
-// Invitation Types (Invite-Only Registration)
+// Invite Types (Instant Provisioning via Admin API)
 // ============================================================================
 
 export type InvitableRole = 'admin' | 'member' | 'viewer';
 
-export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
-
-export interface InviteTokenInfo {
-	orgName: string;
-	orgDisplayName: string;
+export interface InviteOrgMemberRequest {
 	email: string;
 	role: InvitableRole;
-	expiresAt: string;
+	firstName: string;
+	lastName: string;
+	/** Optional initial password for local dev (bypasses Zitadel email flow). */
+	initialPassword?: string;
 }
 
-export interface AcceptInvitationRequest {
-	token: string;
-	name: string;
-	password: string;
-}
-
-export interface InvitationResponse {
-	id: string;
+export interface InviteOrgMemberResponse {
+	userId: string;
 	email: string;
-	role: InvitableRole;
-	status: InvitationStatus;
-	invitedBy: string | null;
-	expiresAt: string;
-	createdAt: string;
-}
-
-export interface CreateInvitationRequest {
-	email: string;
-	role: InvitableRole;
-}
-
-export interface CreateInvitationResponse {
-	id: string;
-	email: string;
-	role: InvitableRole;
-	expiresAt: string;
-	inviteUrl: string;
-}
-
-export interface PaginatedInvitations {
-	invitations: InvitationResponse[];
-	total: number;
+	role: OrgRole;
+	orgId: string;
+	userCreated: boolean;
 }
 
 // ============================================================================
@@ -1990,4 +1868,69 @@ export interface SummaryTotals {
 export interface AdminResourceSummary {
 	totals: SummaryTotals;
 	orgs: OrgSummary[];
+}
+
+// ===== Agent types =====
+
+export interface AgentInfo {
+	agentId: string;
+	name: string;
+	username: string;
+	teams: string[];
+	agentContext?: string;
+	createdAt: string;
+}
+
+export interface ListAgentsResponse {
+	agents: AgentInfo[];
+}
+
+export interface CreateAgentRequest {
+	name: string;
+	description?: string | null;
+	teams: string[];
+}
+
+export interface CreateAgentResponse {
+	agentId: string;
+	name: string;
+	username: string;
+	clientId: string | null;
+	clientSecret: string | null;
+	tokenEndpoint: string;
+	orgId: string;
+	teams: string[];
+	scopes: string[];
+	createdAt: string;
+	message: string | null;
+}
+
+// ===== Grant types =====
+
+export interface CreateGrantRequest {
+	grantType: 'resource' | 'gateway-tool' | 'route';
+	resourceType?: string;
+	action?: string;
+	team: string;
+	routeId?: string;
+	allowedMethods?: string[];
+	expiresAt?: string;
+}
+
+export interface GrantResponse {
+	id: string;
+	principalId: string;
+	grantType: 'resource' | 'gateway-tool' | 'route';
+	resourceType?: string;
+	action?: string;
+	team?: string;
+	routeId?: string;
+	allowedMethods?: string[];
+	createdBy: string;
+	createdAt: string;
+	expiresAt?: string;
+}
+
+export interface GrantListResponse {
+	grants: GrantResponse[];
 }

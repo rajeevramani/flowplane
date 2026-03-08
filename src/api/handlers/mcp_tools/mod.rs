@@ -208,12 +208,12 @@ pub async fn update_mcp_tool_handler(
     Path((team, name)): Path<(String, String)>,
     Json(payload): Json<UpdateMcpToolBody>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
-    // Authorization: require mcp:write scope
+    // Authorization: require mcp:update scope
     require_resource_access_resolved(
         &state,
         &context,
         "mcp",
-        "write",
+        "update",
         Some(&team),
         context.org_id.as_ref(),
     )
@@ -365,12 +365,12 @@ pub async fn apply_learned_schema_handler(
     Path((team, route_id)): Path<(String, String)>,
     Json(payload): Json<ApplyLearnedSchemaRequest>,
 ) -> Result<Json<ApplyLearnedSchemaResponse>, ApiError> {
-    // Authorization: require mcp:write scope
+    // Authorization: require mcp:create scope
     require_resource_access_resolved(
         &state,
         &context,
         "mcp",
-        "write",
+        "create",
         Some(&team),
         context.org_id.as_ref(),
     )

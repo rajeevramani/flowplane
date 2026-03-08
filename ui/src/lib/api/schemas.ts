@@ -49,16 +49,13 @@ export const AdminListOrgsResponseSchema = paginatedSchema(OrganizationResponseS
 
 // SessionInfoResponse schema
 export const SessionInfoResponseSchema = z.object({
-	sessionId: z.string(),
 	userId: z.string(),
 	name: z.string(),
 	email: z.string(),
-	isAdmin: z.boolean(),
 	isPlatformAdmin: z.boolean(),
 	teams: z.array(z.string()),
 	scopes: z.array(z.string()),
 	expiresAt: z.string().nullable(),
-	version: z.string(),
 	orgId: z.string().optional(),
 	orgName: z.string().optional(),
 	orgRole: z.string().optional()

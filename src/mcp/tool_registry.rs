@@ -61,7 +61,7 @@ impl std::fmt::Display for RiskLevel {
 pub struct ToolAuthorization {
     /// Resource name (e.g., "clusters", "listeners", "secrets")
     pub resource: &'static str,
-    /// Required action (e.g., "read", "write", "delete", "create")
+    /// Required action (e.g., "read", "create", "update", "delete", "execute")
     pub action: &'static str,
     /// Human-readable description of scope requirements
     pub description: &'static str,
@@ -85,7 +85,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "read",
-                description: "List clusters requires clusters:read or cp:read",
+                description: "List clusters requires grant: clusters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -94,7 +94,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "read",
-                description: "Get cluster requires clusters:read or cp:read",
+                description: "Get cluster requires grant: clusters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -102,8 +102,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_cluster",
             ToolAuthorization {
                 resource: "clusters",
-                action: "write",
-                description: "Create cluster requires clusters:write or cp:write",
+                action: "create",
+                description: "Create cluster requires grant: clusters:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -111,8 +111,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_cluster",
             ToolAuthorization {
                 resource: "clusters",
-                action: "write",
-                description: "Update cluster requires clusters:write or cp:write",
+                action: "update",
+                description: "Update cluster requires grant: clusters:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -121,7 +121,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "delete",
-                description: "Delete cluster requires clusters:delete or cp:write",
+                description: "Delete cluster requires grant: clusters:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -130,7 +130,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "read",
-                description: "Get cluster health requires clusters:read or cp:read",
+                description: "Get cluster health requires grant: clusters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -143,7 +143,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "listeners",
                 action: "read",
-                description: "List listeners requires listeners:read or cp:read",
+                description: "List listeners requires grant: listeners:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -152,7 +152,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "listeners",
                 action: "read",
-                description: "Get listener requires listeners:read or cp:read",
+                description: "Get listener requires grant: listeners:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -160,8 +160,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_listener",
             ToolAuthorization {
                 resource: "listeners",
-                action: "write",
-                description: "Create listener requires listeners:write or cp:write",
+                action: "create",
+                description: "Create listener requires grant: listeners:create",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -169,8 +169,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_listener",
             ToolAuthorization {
                 resource: "listeners",
-                action: "write",
-                description: "Update listener requires listeners:write or cp:write",
+                action: "update",
+                description: "Update listener requires grant: listeners:update",
                 risk_level: RiskLevel::High,
             },
         );
@@ -179,7 +179,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "listeners",
                 action: "delete",
-                description: "Delete listener requires listeners:delete or cp:write",
+                description: "Delete listener requires grant: listeners:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -188,7 +188,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "listeners",
                 action: "read",
-                description: "Query port requires listeners:read or cp:read",
+                description: "Query port requires grant: listeners:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -197,7 +197,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "listeners",
                 action: "read",
-                description: "Get listener status requires listeners:read or cp:read",
+                description: "Get listener status requires grant: listeners:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -210,7 +210,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "List routes requires routes:read or cp:read",
+                description: "List routes requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -219,7 +219,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "Get route requires routes:read or cp:read",
+                description: "Get route requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -227,8 +227,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_route",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Create route requires routes:write or cp:write",
+                action: "create",
+                description: "Create route requires grant: routes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -236,8 +236,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_route",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Update route requires routes:write or cp:write",
+                action: "update",
+                description: "Update route requires grant: routes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -246,7 +246,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "delete",
-                description: "Delete route requires routes:delete or cp:write",
+                description: "Delete route requires grant: routes:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -255,7 +255,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "List route configs requires routes:read or cp:read",
+                description: "List route configs requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -264,7 +264,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "Get route config requires routes:read or cp:read",
+                description: "Get route config requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -272,8 +272,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_route_config",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Create route config requires routes:write or cp:write",
+                action: "create",
+                description: "Create route config requires grant: routes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -281,8 +281,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_route_config",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Update route config requires routes:write or cp:write",
+                action: "update",
+                description: "Update route config requires grant: routes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -291,7 +291,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "delete",
-                description: "Delete route config requires routes:delete or cp:write",
+                description: "Delete route config requires grant: routes:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -300,7 +300,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "Query path requires routes:read or cp:read",
+                description: "Query path requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -313,7 +313,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "filters",
                 action: "read",
-                description: "List filters requires filters:read or cp:read",
+                description: "List filters requires grant: filters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -322,7 +322,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "filters",
                 action: "read",
-                description: "Get filter requires filters:read or cp:read",
+                description: "Get filter requires grant: filters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -330,8 +330,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_filter",
             ToolAuthorization {
                 resource: "filters",
-                action: "write",
-                description: "Create filter requires filters:write or cp:write",
+                action: "create",
+                description: "Create filter requires grant: filters:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -339,8 +339,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_filter",
             ToolAuthorization {
                 resource: "filters",
-                action: "write",
-                description: "Update filter requires filters:write or cp:write",
+                action: "update",
+                description: "Update filter requires grant: filters:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -349,7 +349,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "filters",
                 action: "delete",
-                description: "Delete filter requires filters:delete or cp:write",
+                description: "Delete filter requires grant: filters:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -361,8 +361,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_attach_filter",
             ToolAuthorization {
                 resource: "filters",
-                action: "write",
-                description: "Attach filter requires filters:write or cp:write",
+                action: "update",
+                description: "Attach filter requires grant: filters:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -370,8 +370,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_detach_filter",
             ToolAuthorization {
                 resource: "filters",
-                action: "write",
-                description: "Detach filter requires filters:write or cp:write",
+                action: "update",
+                description: "Detach filter requires grant: filters:update",
                 risk_level: RiskLevel::High,
             },
         );
@@ -380,7 +380,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "filters",
                 action: "read",
-                description: "List filter attachments requires filters:read or cp:read",
+                description: "List filter attachments requires grant: filters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -393,7 +393,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "List virtual hosts requires routes:read or cp:read",
+                description: "List virtual hosts requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -402,7 +402,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "Get virtual host requires routes:read or cp:read",
+                description: "Get virtual host requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -410,8 +410,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_virtual_host",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Create virtual host requires routes:write or cp:write",
+                action: "create",
+                description: "Create virtual host requires grant: routes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -419,8 +419,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_virtual_host",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Update virtual host requires routes:write or cp:write",
+                action: "update",
+                description: "Update virtual host requires grant: routes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -429,7 +429,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "delete",
-                description: "Delete virtual host requires routes:delete or cp:write",
+                description: "Delete virtual host requires grant: routes:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -442,7 +442,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "secrets",
                 action: "read",
-                description: "List secrets requires secrets:read",
+                description: "List secrets requires grant: secrets:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -451,7 +451,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "secrets",
                 action: "read",
-                description: "Get secret metadata requires secrets:read",
+                description: "Get secret metadata requires grant: secrets:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -459,8 +459,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_secret",
             ToolAuthorization {
                 resource: "secrets",
-                action: "write",
-                description: "Create secret requires secrets:write",
+                action: "create",
+                description: "Create secret requires grant: secrets:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -468,8 +468,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_secret",
             ToolAuthorization {
                 resource: "secrets",
-                action: "write",
-                description: "Update secret requires secrets:write",
+                action: "update",
+                description: "Update secret requires grant: secrets:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -478,7 +478,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "secrets",
                 action: "delete",
-                description: "Delete secret requires secrets:delete",
+                description: "Delete secret requires grant: secrets:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -491,7 +491,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "proxy-certificates",
                 action: "read",
-                description: "List certificates requires proxy-certificates:read",
+                description: "List certificates requires grant: proxy-certificates:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -500,7 +500,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "proxy-certificates",
                 action: "read",
-                description: "Get certificate requires proxy-certificates:read",
+                description: "Get certificate requires grant: proxy-certificates:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -509,7 +509,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "proxy-certificates",
                 action: "create",
-                description: "Create certificate requires proxy-certificates:create",
+                description: "Create certificate requires grant: proxy-certificates:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -518,7 +518,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "proxy-certificates",
                 action: "delete",
-                description: "Delete certificate requires proxy-certificates:delete",
+                description: "Delete certificate requires grant: proxy-certificates:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -531,7 +531,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "custom-wasm-filters",
                 action: "read",
-                description: "List WASM filters requires custom-wasm-filters:read",
+                description: "List WASM filters requires grant: custom-wasm-filters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -540,7 +540,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "custom-wasm-filters",
                 action: "read",
-                description: "Get WASM filter requires custom-wasm-filters:read",
+                description: "Get WASM filter requires grant: custom-wasm-filters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -548,8 +548,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_upload_wasm_filter",
             ToolAuthorization {
                 resource: "custom-wasm-filters",
-                action: "write",
-                description: "Upload WASM filter requires custom-wasm-filters:write",
+                action: "create",
+                description: "Upload WASM filter requires grant: custom-wasm-filters:create",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -557,8 +557,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_wasm_filter",
             ToolAuthorization {
                 resource: "custom-wasm-filters",
-                action: "write",
-                description: "Update WASM filter requires custom-wasm-filters:write",
+                action: "update",
+                description: "Update WASM filter requires grant: custom-wasm-filters:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -567,7 +567,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "custom-wasm-filters",
                 action: "delete",
-                description: "Delete WASM filter requires custom-wasm-filters:delete",
+                description: "Delete WASM filter requires grant: custom-wasm-filters:delete",
                 risk_level: RiskLevel::High,
             },
         );
@@ -580,7 +580,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "learning-sessions",
                 action: "read",
-                description: "List learning sessions requires learning-sessions:read",
+                description: "List learning sessions requires grant: learning-sessions:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -589,7 +589,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "learning-sessions",
                 action: "read",
-                description: "Get learning session requires learning-sessions:read",
+                description: "Get learning session requires grant: learning-sessions:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -597,8 +597,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_start_learning",
             ToolAuthorization {
                 resource: "learning-sessions",
-                action: "write",
-                description: "Start learning session requires learning-sessions:write",
+                action: "execute",
+                description: "Start learning session requires grant: learning-sessions:execute",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -606,8 +606,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_learning_session",
             ToolAuthorization {
                 resource: "learning-sessions",
-                action: "write",
-                description: "Create learning session requires learning-sessions:write",
+                action: "create",
+                description: "Create learning session requires grant: learning-sessions:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -615,8 +615,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_stop_learning",
             ToolAuthorization {
                 resource: "learning-sessions",
-                action: "write",
-                description: "Stop learning session requires learning-sessions:write",
+                action: "execute",
+                description: "Stop learning session requires grant: learning-sessions:execute",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -625,7 +625,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "learning-sessions",
                 action: "delete",
-                description: "Delete learning session requires learning-sessions:delete",
+                description: "Delete learning session requires grant: learning-sessions:delete",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -633,8 +633,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_activate_learning_session",
             ToolAuthorization {
                 resource: "learning-sessions",
-                action: "write",
-                description: "Activate learning session requires learning-sessions:write",
+                action: "execute",
+                description: "Activate learning session requires grant: learning-sessions:execute",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -643,7 +643,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "learning-sessions",
                 action: "read",
-                description: "Learning session health check requires learning-sessions:read",
+                description: "Learning session health check requires grant: learning-sessions:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -656,7 +656,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "aggregated-schemas",
                 action: "read",
-                description: "List schemas requires aggregated-schemas:read",
+                description: "List schemas requires grant: aggregated-schemas:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -665,7 +665,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "aggregated-schemas",
                 action: "read",
-                description: "List aggregated schemas requires aggregated-schemas:read",
+                description: "List aggregated schemas requires grant: aggregated-schemas:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -674,7 +674,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "aggregated-schemas",
                 action: "read",
-                description: "Get schema requires aggregated-schemas:read",
+                description: "Get schema requires grant: aggregated-schemas:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -683,7 +683,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "aggregated-schemas",
                 action: "read",
-                description: "Get aggregated schema requires aggregated-schemas:read",
+                description: "Get aggregated schema requires grant: aggregated-schemas:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -691,8 +691,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_export_schema",
             ToolAuthorization {
                 resource: "aggregated-schemas",
-                action: "write",
-                description: "Export schema requires aggregated-schemas:write",
+                action: "execute",
+                description: "Export schema requires grant: aggregated-schemas:execute",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -705,7 +705,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "dataplanes",
                 action: "read",
-                description: "List dataplanes requires dataplanes:read",
+                description: "List dataplanes requires grant: dataplanes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -714,7 +714,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "dataplanes",
                 action: "read",
-                description: "Get dataplane requires dataplanes:read",
+                description: "Get dataplane requires grant: dataplanes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -722,8 +722,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_register_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
-                action: "write",
-                description: "Register dataplane requires dataplanes:write",
+                action: "create",
+                description: "Register dataplane requires grant: dataplanes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -731,8 +731,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_create_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
-                action: "write",
-                description: "Create dataplane requires dataplanes:write",
+                action: "create",
+                description: "Create dataplane requires grant: dataplanes:create",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -740,8 +740,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_update_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
-                action: "write",
-                description: "Update dataplane requires dataplanes:write",
+                action: "update",
+                description: "Update dataplane requires grant: dataplanes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -749,8 +749,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_deregister_dataplane",
             ToolAuthorization {
                 resource: "dataplanes",
-                action: "write",
-                description: "Deregister dataplane requires dataplanes:write",
+                action: "update",
+                description: "Deregister dataplane requires grant: dataplanes:update",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -759,7 +759,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "dataplanes",
                 action: "delete",
-                description: "Delete dataplane requires dataplanes:delete or dataplanes:write",
+                description: "Delete dataplane requires grant: dataplanes:delete",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -772,7 +772,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "reports",
                 action: "read",
-                description: "List reports requires reports:read",
+                description: "List reports requires grant: reports:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -781,7 +781,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "reports",
                 action: "read",
-                description: "Get report requires reports:read",
+                description: "Get report requires grant: reports:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -793,8 +793,8 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             "cp_import_openapi",
             ToolAuthorization {
                 resource: "routes",
-                action: "write",
-                description: "Import OpenAPI spec requires routes:write or cp:write",
+                action: "create",
+                description: "Import OpenAPI spec requires grant: routes:create",
                 risk_level: RiskLevel::Medium,
             },
         );
@@ -803,7 +803,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "List OpenAPI imports requires routes:read or cp:read",
+                description: "List OpenAPI imports requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -812,7 +812,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "Get OpenAPI import details requires routes:read or cp:read",
+                description: "Get OpenAPI import details requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -825,7 +825,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "filters",
                 action: "read",
-                description: "List filter types requires filters:read or cp:read",
+                description: "List filter types requires grant: filters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -834,7 +834,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "filters",
                 action: "read",
-                description: "Get filter type requires filters:read or cp:read",
+                description: "Get filter type requires grant: filters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -847,20 +847,20 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "read",
-                description: "Get deployment status requires clusters:read or cp:read",
+                description: "Get deployment status requires grant: clusters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
 
         // ============================================================================
-        // OPS AGENT DIAGNOSTIC TOOLS (cp:read, SAFE — read-only reporting queries)
+        // OPS AGENT DIAGNOSTIC TOOLS
         // ============================================================================
         m.insert(
             "ops_trace_request",
             ToolAuthorization {
                 resource: "routes",
                 action: "read",
-                description: "Trace request path requires routes:read or cp:read",
+                description: "Trace request path requires grant: routes:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -869,7 +869,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "read",
-                description: "View topology requires clusters:read or cp:read",
+                description: "View topology requires grant: clusters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -878,7 +878,26 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "read",
-                description: "Validate config requires clusters:read or cp:read",
+                description: "Validate config requires grant: clusters:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+
+        m.insert(
+            "ops_xds_delivery_status",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "xDS delivery status requires grant: clusters:read",
+                risk_level: RiskLevel::Safe,
+            },
+        );
+        m.insert(
+            "ops_nack_history",
+            ToolAuthorization {
+                resource: "clusters",
+                action: "read",
+                description: "NACK history requires grant: clusters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -903,14 +922,14 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
         );
 
         // ============================================================================
-        // AUDIT TOOLS (requires audit:* scope — NOT covered by cp:read)
+        // AUDIT TOOLS
         // ============================================================================
         m.insert(
             "ops_audit_query",
             ToolAuthorization {
                 resource: "audit",
                 action: "read",
-                description: "Query audit logs requires audit:read or admin:all",
+                description: "Query audit logs requires grant: audit:read",
                 risk_level: RiskLevel::Low,
             },
         );
@@ -923,7 +942,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "read",
-                description: "Pre-creation validation requires clusters:read or cp:read",
+                description: "Pre-creation validation requires grant: clusters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -932,7 +951,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "clusters",
                 action: "read",
-                description: "Query service summary requires clusters:read or cp:read",
+                description: "Query service summary requires grant: clusters:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -941,7 +960,7 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
             ToolAuthorization {
                 resource: "aggregated-schemas",
                 action: "read",
-                description: "Export schemas as OpenAPI requires aggregated-schemas:read",
+                description: "Export schemas as OpenAPI requires grant: aggregated-schemas:read",
                 risk_level: RiskLevel::Safe,
             },
         );
@@ -953,9 +972,17 @@ static TOOL_AUTHORIZATIONS: LazyLock<HashMap<&'static str, ToolAuthorization>> =
 static GATEWAY_AUTH: ToolAuthorization = ToolAuthorization {
     resource: "api",
     action: "execute",
-    description: "Execute gateway API tool requires api:execute",
+    description: "Execute gateway API tool requires grant: api:execute",
     risk_level: RiskLevel::Medium,
 };
+
+/// Check whether a (resource_type, action) pair is valid for cp-tool grants.
+///
+/// Returns `true` if any CP tool in `TOOL_AUTHORIZATIONS` has this exact
+/// (resource, action) pair. Gateway tools are excluded (resource != "api").
+pub fn is_valid_cp_grant_pair(resource_type: &str, action: &str) -> bool {
+    TOOL_AUTHORIZATIONS.values().any(|auth| auth.resource == resource_type && auth.action == action)
+}
 
 /// Get authorization requirements for a tool
 ///
@@ -995,7 +1022,7 @@ mod tests {
 
         let auth = get_tool_authorization("cp_create_cluster").unwrap();
         assert_eq!(auth.resource, "clusters");
-        assert_eq!(auth.action, "write");
+        assert_eq!(auth.action, "create");
 
         let auth = get_tool_authorization("cp_delete_cluster").unwrap();
         assert_eq!(auth.resource, "clusters");
@@ -1010,7 +1037,7 @@ mod tests {
 
         let auth = get_tool_authorization("cp_create_listener").unwrap();
         assert_eq!(auth.resource, "listeners");
-        assert_eq!(auth.action, "write");
+        assert_eq!(auth.action, "create");
     }
 
     #[test]
@@ -1021,7 +1048,7 @@ mod tests {
 
         let auth = get_tool_authorization("cp_create_route_config").unwrap();
         assert_eq!(auth.resource, "routes");
-        assert_eq!(auth.action, "write");
+        assert_eq!(auth.action, "create");
     }
 
     #[test]
@@ -1032,7 +1059,7 @@ mod tests {
 
         let auth = get_tool_authorization("cp_create_filter").unwrap();
         assert_eq!(auth.resource, "filters");
-        assert_eq!(auth.action, "write");
+        assert_eq!(auth.action, "create");
     }
 
     #[test]

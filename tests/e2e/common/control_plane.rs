@@ -118,6 +118,10 @@ impl ControlPlaneHandle {
         // This allows testing the certificate API without requiring Vault
         std::env::set_var("FLOWPLANE_USE_MOCK_CERT_BACKEND", "1");
 
+        // Disable permission cache for E2E tests so DB changes (e.g. new
+        // org memberships created during test setup) take effect immediately.
+        std::env::set_var("FLOWPLANE_PERMISSION_CACHE_TTL_SECS", "0");
+
         // Initialize secret backend registry with mock certificate backend
         // Note: encryption service may be None in test environment, but we can
         // still create the registry for certificate backend functionality
@@ -140,6 +144,20 @@ impl ControlPlaneHandle {
         let state = Arc::new(state_struct);
         ensure_default_gateway_resources(&state).await?;
         info!("Default gateway resources created");
+
+        // Ensure platform resources exist (platform org + team) and seed superadmin
+        // This mirrors what main.rs does on startup
+        use flowplane::api::handlers::bootstrap::{ensure_platform_resources, seed_superadmin};
+        use flowplane::auth::zitadel_admin::ZitadelAdminClient;
+        let has_owner = ensure_platform_resources(&pool).await?;
+        if !has_owner {
+            if let Some(admin_client) = ZitadelAdminClient::from_env() {
+                let pool_clone = pool.clone();
+                tokio::spawn(async move {
+                    seed_superadmin(pool_clone, admin_client).await;
+                });
+            }
+        }
 
         // Start xDS server with oneshot shutdown
         let (sd_tx, sd_rx) = oneshot::channel::<()>();

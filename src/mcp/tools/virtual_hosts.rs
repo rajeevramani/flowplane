@@ -168,7 +168,7 @@ NEXT STEPS:
 After creating a virtual host, create routes within it using cp_create_route
 (when that tool becomes available) or update the route config to include routes.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:create scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -228,7 +228,7 @@ Optional Parameters (provide at least one):
 
 TIP: Use cp_get_virtual_host first to see current configuration before updating.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:update scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -284,7 +284,7 @@ Required Parameters:
 - route_config: Name of the route configuration
 - name: Name of the virtual host to delete
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:delete scope."#,
         json!({
             "type": "object",
             "properties": {

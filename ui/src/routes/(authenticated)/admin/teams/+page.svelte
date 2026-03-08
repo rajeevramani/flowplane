@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import type { TeamResponse, TeamStatus } from '$lib/api/types';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	let teams = $state<TeamResponse[]>([]);
 	let total = $state(0);
@@ -22,7 +22,7 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!isSystemAdmin(sessionInfo.scopes)) {
+			if (!isGovernanceAdmin(sessionInfo)) {
 				goto('/dashboard');
 				return;
 			}

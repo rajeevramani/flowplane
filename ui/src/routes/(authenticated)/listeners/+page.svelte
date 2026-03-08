@@ -84,21 +84,6 @@
 		return routes.filter((r) => routeNames.has(r.name));
 	}
 
-	// Calculate stats
-	let stats = $derived({
-		totalListeners: listeners.length,
-		httpListeners: listeners.filter(l => (l.protocol || 'HTTP') === 'HTTP').length,
-		httpsListeners: listeners.filter(l => {
-			const config = l.config || {};
-			return config.filter_chains?.some(
-				(fc: { tls_context?: unknown }) => fc.tls_context
-			);
-		}).length,
-		totalRoutes: listeners.reduce((sum, listener) => {
-			return sum + getRoutesForListener(listener).length;
-		}, 0)
-	});
-
 	// Filter listeners
 	let filteredListeners = $derived(
 		listeners
@@ -109,6 +94,21 @@
 				listener.address.toLowerCase().includes(searchQuery.toLowerCase())
 			)
 	);
+
+	// Calculate stats from filtered (current team) listeners
+	let stats = $derived({
+		totalListeners: filteredListeners.length,
+		httpListeners: filteredListeners.filter(l => (l.protocol || 'HTTP') === 'HTTP').length,
+		httpsListeners: filteredListeners.filter(l => {
+			const config = l.config || {};
+			return config.filter_chains?.some(
+				(fc: { tls_context?: unknown }) => fc.tls_context
+			);
+		}).length,
+		totalRoutes: filteredListeners.reduce((sum, listener) => {
+			return sum + getRoutesForListener(listener).length;
+		}, 0)
+	});
 
 	// Get listener features
 	function getListenerFeatures(listener: ListenerResponse) {

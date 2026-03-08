@@ -9,7 +9,6 @@ pub mod handlers;
 pub mod rate_limit;
 pub mod routes;
 pub mod server;
-pub mod util;
 
 // Test utilities for handler testing - available in tests
 #[cfg(test)]

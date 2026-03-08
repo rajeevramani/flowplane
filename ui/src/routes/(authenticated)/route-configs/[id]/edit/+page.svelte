@@ -576,7 +576,13 @@
 			console.error('Update failed:', e);
 			// Extract detailed error message if available
 			if (e && typeof e === 'object' && 'message' in e) {
-				error = (e as any).message;
+				const msg = (e as { message: string }).message;
+				// 409: exposure downgrade blocked by active agent grants
+				if (msg.includes('agent grants') || msg.includes('active grants')) {
+					error = 'Cannot change to internal — active agent grants exist. Revoke all grants on this route first.';
+				} else {
+					error = msg;
+				}
 			} else {
 				error = 'Failed to update configuration';
 			}
