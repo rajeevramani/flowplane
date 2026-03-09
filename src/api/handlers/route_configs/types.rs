@@ -24,7 +24,6 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(example = json!({
-    "team": "payments",
     "name": "primary-routes",
     "virtualHosts": [
         {
@@ -41,9 +40,6 @@ use crate::{
     ]
 }))]
 pub struct RouteConfigDefinition {
-    #[validate(length(min = 1, max = 100))]
-    pub team: String,
-
     #[validate(length(min = 1, max = 100))]
     pub name: String,
 
@@ -253,9 +249,8 @@ impl RouteConfigDefinition {
         Ok(XdsRouteConfig { name: self.name.clone(), virtual_hosts })
     }
 
-    pub(super) fn from_xds_config(config: &XdsRouteConfig, team: String) -> Self {
+    pub(super) fn from_xds_config(config: &XdsRouteConfig) -> Self {
         RouteConfigDefinition {
-            team,
             name: config.name.clone(),
             virtual_hosts: config
                 .virtual_hosts

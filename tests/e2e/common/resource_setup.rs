@@ -320,7 +320,7 @@ impl<'a> ResourceSetup<'a> {
 
             let route = with_timeout(
                 TestTimeout::default_with_label(format!("Create route {}", route_req.name)),
-                async { self.api.create_route(self.token, &route_req).await },
+                async { self.api.create_route(self.token, self.team, &route_req).await },
             )
             .await?;
 
@@ -417,9 +417,8 @@ impl<'a> ResourceSetup<'a> {
 }
 
 /// Build a route request with optional retry policy and prefix rewrite
-fn build_route_request(team: &str, config: &RouteConfig) -> CreateRouteRequest {
+fn build_route_request(_team: &str, config: &RouteConfig) -> CreateRouteRequest {
     CreateRouteRequest {
-        team: team.to_string(),
         name: config.name.clone(),
         virtual_hosts: vec![VirtualHost {
             name: format!("{}-vh", config.name),

@@ -18,7 +18,6 @@
 
 	interface FormState {
 		name: string;
-		team: string;
 		virtualHosts: VirtualHostFormState[];
 	}
 
@@ -68,7 +67,6 @@
 	// Initialize empty form state
 	let formState = $state<FormState>({
 		name: '',
-		team: currentTeam,
 		virtualHosts: []
 	});
 
@@ -89,7 +87,7 @@
 
 		try {
 			const [config, clustersData] = await Promise.all([
-				apiClient.getRouteConfig(configId),
+				apiClient.getRouteConfig(currentTeam, configId),
 				currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([])
 			]);
 
@@ -121,7 +119,7 @@
 		try {
 			// Load config-level filters and all available filters in parallel
 			const [routeFiltersResponse, allFilters] = await Promise.all([
-				apiClient.listRouteConfigFilters(configId),
+				apiClient.listRouteConfigFilters(currentTeam, configId),
 				apiClient.listFilters()
 			]);
 
@@ -212,14 +210,14 @@
 		// Load filters for each virtual host
 		for (const vh of formState.virtualHosts) {
 			try {
-				const vhFiltersResponse = await apiClient.listVirtualHostFilters(configId, vh.name);
+				const vhFiltersResponse = await apiClient.listVirtualHostFilters(currentTeam, configId, vh.name);
 				newVhFiltersMap.set(vh.name, vhFiltersResponse.filters);
 
 				// Load filters for each route in this virtual host
 				const routeMap = new Map<string, FilterResponse[]>();
 				for (const route of vh.routes) {
 					try {
-						const routeFiltersResponse = await apiClient.listRouteHierarchyFilters(configId, vh.name, route.name);
+						const routeFiltersResponse = await apiClient.listRouteHierarchyFilters(currentTeam, configId, vh.name, route.name);
 						routeMap.set(route.name, routeFiltersResponse.filters);
 					} catch (e) {
 						console.debug(`No route filters for ${vh.name}/${route.name}:`, e);
@@ -408,7 +406,6 @@
 
 		return {
 			name: config.name || '',
-			team: config.team || currentTeam,
 			virtualHosts: virtualHosts.map((vh: any, vhIndex: number) => {
 				console.log(`Virtual Host ${vhIndex}:`, vh);
 
@@ -465,7 +462,6 @@
 
 	function buildRouteConfigJSON(form: FormState): string {
 		const payload: any = {
-			team: form.team || currentTeam,
 			name: form.name || '',
 			virtualHosts: form.virtualHosts.map((vh) => ({
 				name: vh.name,
@@ -570,7 +566,7 @@
 		try {
 			const payload = JSON.parse(jsonPayload);
 			console.log('Submitting payload:', payload);
-			await apiClient.updateRouteConfig(configId!, payload);
+			await apiClient.updateRouteConfig(currentTeam, configId!, payload);
 			goto('/route-configs');
 		} catch (e) {
 			console.error('Update failed:', e);

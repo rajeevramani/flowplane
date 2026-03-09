@@ -110,8 +110,8 @@ async fn test_610_verify_headers() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "header-route",
                 "header.e2e.local",
                 "/testing/header",
@@ -178,7 +178,7 @@ async fn test_610_verify_headers() {
 
     // Attach filter to route
     with_timeout(TestTimeout::default_with_label("Attach filter to route"), async {
-        api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1)).await
+        api.attach_filter_to_route(&ctx.admin_token, &ctx.team_a_name, &route.name, &filter.id, Some(1)).await
     })
     .await
     .expect("Filter attachment to route should succeed");
@@ -264,8 +264,8 @@ async fn test_611_route_override() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "override-route",
                 "override.e2e.local",
                 "/testing/header-override",
@@ -319,7 +319,7 @@ async fn test_611_route_override() {
         .expect("Filter installation should succeed");
 
     // Attach filter to route
-    api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1))
+    api.attach_filter_to_route(&ctx.admin_token, &ctx.team_a_name, &route.name, &filter.id, Some(1))
         .await
         .expect("Filter attachment to route should succeed");
 

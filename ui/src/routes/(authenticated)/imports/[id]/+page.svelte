@@ -46,7 +46,7 @@
 			const team = get(selectedTeam);
 			const [importData, routesData, clustersData, listenersData] = await Promise.all([
 				apiClient.getImport(importId),
-				apiClient.listRouteConfigs(),
+				team ? apiClient.listRouteConfigs(team) : Promise.resolve([]),
 				team ? apiClient.listClusters(team) : Promise.resolve([]),
 				apiClient.listListeners()
 			]);

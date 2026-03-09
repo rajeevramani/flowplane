@@ -379,15 +379,13 @@ export interface VirtualHostDefinition {
 }
 
 export interface CreateRouteBody {
-	team: string;
 	name: string;
 	virtualHosts: VirtualHostDefinition[];
 }
 
 // UpdateRouteBody - full payload required for route updates
-// Note: team and name must match existing route
+// Note: name must match existing route; team comes from URL path
 export interface UpdateRouteBody {
-	team: string;
 	name: string;
 	virtualHosts: VirtualHostDefinition[];
 }

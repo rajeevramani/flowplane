@@ -311,8 +311,8 @@ mod tests {
         // Ensure clusters endpoint is documented.
         assert!(openapi.paths.paths.contains_key("/api/v1/teams/{team}/clusters"));
         assert!(openapi.paths.paths.contains_key("/api/v1/teams/{team}/clusters/{name}"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/route-configs"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/route-configs/{name}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/teams/{team}/route-configs"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/teams/{team}/route-configs/{name}"));
     }
 
     #[test]
@@ -331,7 +331,10 @@ mod tests {
         );
 
         // Cluster endpoints (5)
-        assert!(paths.contains_key("/api/v1/teams/{team}/clusters"), "Missing GET/POST /api/v1/teams/{{team}}/clusters");
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/clusters"),
+            "Missing GET/POST /api/v1/teams/{{team}}/clusters"
+        );
         assert!(
             paths.contains_key("/api/v1/teams/{team}/clusters/{name}"),
             "Missing GET/PUT/DELETE /api/v1/teams/{{team}}/clusters/{{name}}"
@@ -339,12 +342,12 @@ mod tests {
 
         // Route config endpoints (5)
         assert!(
-            paths.contains_key("/api/v1/route-configs"),
-            "Missing GET/POST /api/v1/route-configs"
+            paths.contains_key("/api/v1/teams/{team}/route-configs"),
+            "Missing GET/POST /api/v1/teams/{{team}}/route-configs"
         );
         assert!(
-            paths.contains_key("/api/v1/route-configs/{name}"),
-            "Missing GET/PUT/DELETE /api/v1/route-configs/{{name}}"
+            paths.contains_key("/api/v1/teams/{team}/route-configs/{name}"),
+            "Missing GET/PUT/DELETE /api/v1/teams/{{team}}/route-configs/{{name}}"
         );
 
         // Listener endpoints (5)

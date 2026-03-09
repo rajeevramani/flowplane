@@ -326,8 +326,9 @@ pub async fn delete_filter_handler(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/route-configs/{route_config_id}/filters",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_id}/filters",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_id" = String, Path, description = "Route config name"),
     ),
     request_body = AttachFilterRequest,
@@ -339,11 +340,11 @@ pub async fn delete_filter_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %_team, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(route_name): Path<String>,
+    Path((_team, route_name)): Path<(String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
     require_resource_access(&context, "routes", "update", None)?;
@@ -371,8 +372,9 @@ pub async fn attach_filter_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/route-configs/{route_config_id}/filters/{filter_id}",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_id}/filters/{filter_id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_id" = String, Path, description = "Route config name"),
         ("filter_id" = String, Path, description = "Filter ID"),
     ),
@@ -383,11 +385,11 @@ pub async fn attach_filter_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %_team, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_name, filter_id)): Path<(String, String)>,
+    Path((_team, route_name, filter_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
     require_resource_access(&context, "routes", "update", None)?;
 
@@ -414,8 +416,9 @@ pub async fn detach_filter_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/route-configs/{route_config_id}/filters",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_id}/filters",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_id" = String, Path, description = "Route config name"),
     ),
     responses(
@@ -425,11 +428,11 @@ pub async fn detach_filter_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(route_name = %route_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %_team, route_name = %route_name, user_id = ?context.user_id))]
 pub async fn list_route_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(route_name): Path<String>,
+    Path((_team, route_name)): Path<(String, String)>,
 ) -> Result<Json<RouteFiltersResponse>, ApiError> {
     require_resource_access(&context, "routes", "read", None)?;
 

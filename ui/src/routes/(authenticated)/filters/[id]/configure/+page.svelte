@@ -2,7 +2,9 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
+	import { selectedTeam } from '$lib/stores/team';
 	import { ArrowLeft, Sliders, Check, Info, AlertTriangle, ChevronDown, ChevronRight, Settings } from 'lucide-svelte';
 	import type {
 		FilterResponse,
@@ -80,7 +82,8 @@
 			}
 
 			// Load all route configs
-			routeConfigs = await apiClient.listRouteConfigs();
+			const team = get(selectedTeam);
+			routeConfigs = team ? await apiClient.listRouteConfigs(team) : [];
 
 			// Load current configurations
 			const configsResponse = await apiClient.listFilterConfigurations(filterId);
@@ -117,7 +120,8 @@
 		if (virtualHostsMap.has(routeConfigName)) return;
 
 		try {
-			const vhosts = await apiClient.listVirtualHosts(routeConfigName);
+			const team = get(selectedTeam);
+			const vhosts = team ? await apiClient.listVirtualHosts(team, routeConfigName) : [];
 			const newMap = new Map(virtualHostsMap);
 			newMap.set(routeConfigName, vhosts);
 			virtualHostsMap = newMap;
@@ -131,7 +135,9 @@
 		if (routesMap.has(key)) return;
 
 		try {
-			const routes = await apiClient.listRoutesInVirtualHost(routeConfigName, vhostName);
+			const team = get(selectedTeam);
+			if (!team) return;
+			const routes = await apiClient.listRoutesInVirtualHost(team, routeConfigName, vhostName);
 			const newMap = new Map(routesMap);
 			newMap.set(key, routes);
 			routesMap = newMap;

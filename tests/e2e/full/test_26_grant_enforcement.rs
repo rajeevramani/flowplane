@@ -317,7 +317,9 @@ async fn test_2601_write_without_grant() {
         "User without clusters:create grant should get 403, got {}",
         status
     );
-    println!("ok Scenario 2: no clusters:create grant → POST /api/v1/teams/{{team}}/clusters → 403");
+    println!(
+        "ok Scenario 2: no clusters:create grant → POST /api/v1/teams/{{team}}/clusters → 403"
+    );
 }
 
 /// Scenario 3: Cross-team isolation — user with team-A grant cannot access team-B resources

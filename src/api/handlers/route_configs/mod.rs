@@ -29,7 +29,6 @@ use crate::{
         handlers::team_access::{require_resource_access_resolved, resolve_rest_auth},
         routes::ApiState,
     },
-    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     internal_api::routes::RouteConfigOperations,
     internal_api::types::{
@@ -47,19 +46,23 @@ use validation::{
 
 #[utoipa::path(
     post,
-    path = "/api/v1/route-configs",
+    path = "/api/v1/teams/{team}/route-configs",
     request_body = RouteConfigDefinition,
     responses(
         (status = 201, description = "Route config created", body = RouteConfigResponse),
         (status = 400, description = "Validation error"),
         (status = 503, description = "Route config repository unavailable"),
     ),
+    params(
+        ("team" = String, Path, description = "Team name")
+    ),
     tag = "Routes"
 )]
-#[instrument(skip(state, payload), fields(team = %payload.team, route_config_name = %payload.name, user_id = ?context.user_id))]
+#[instrument(skip(state, payload), fields(team = %team, route_config_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Json(payload): Json<RouteConfigDefinition>,
 ) -> Result<(StatusCode, Json<RouteConfigResponse>), ApiError> {
     // REST-specific validation
@@ -71,7 +74,7 @@ pub async fn create_route_config_handler(
         &context,
         "routes",
         "create",
-        Some(&payload.team),
+        Some(&team),
         context.org_id.as_ref(),
     )
     .await?;
@@ -85,7 +88,7 @@ pub async fn create_route_config_handler(
     // Create internal API request
     let internal_request = InternalCreateRouteConfigRequest {
         name: payload.name.clone(),
-        team: Some(payload.team.clone()),
+        team: Some(team.clone()),
         config: config_value,
     };
 
@@ -109,22 +112,34 @@ pub async fn create_route_config_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/route-configs",
-    params(PaginationQuery),
+    path = "/api/v1/teams/{team}/route-configs",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        PaginationQuery,
+    ),
     responses(
         (status = 200, description = "List of route configs", body = PaginatedResponse<RouteConfigResponse>),
         (status = 503, description = "Route config repository unavailable"),
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state, params), fields(user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
+#[instrument(skip(state, params), fields(team = %team, user_id = ?context.user_id, limit = %params.limit, offset = %params.offset))]
 pub async fn list_route_configs_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Query(params): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<RouteConfigResponse>>, ApiError> {
-    // Authorization: require routes:read scope
-    require_resource_access(&context, "routes", "read", None)?;
+    // Authorization: require routes:read scope with team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let (limit, offset) = params.clamp(1000);
 
@@ -151,8 +166,11 @@ pub async fn list_route_configs_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/route-configs/{name}",
-    params(("name" = String, Path, description = "Name of the route configuration")),
+    path = "/api/v1/teams/{team}/route-configs/{name}",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("name" = String, Path, description = "Name of the route configuration"),
+    ),
     responses(
         (status = 200, description = "Route config details", body = RouteConfigResponse),
         (status = 404, description = "Route config not found"),
@@ -160,14 +178,22 @@ pub async fn list_route_configs_handler(
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state), fields(route_config_name = %name, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(team = %team, route_config_name = %name, user_id = ?context.user_id))]
 pub async fn get_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(name): Path<String>,
+    Path((team, name)): Path<(String, String)>,
 ) -> Result<Json<RouteConfigResponse>, ApiError> {
-    // Authorization: require routes:read scope
-    require_resource_access(&context, "routes", "read", None)?;
+    // Authorization: require routes:read scope with team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Delegate to internal API layer (includes team access verification)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
@@ -179,8 +205,11 @@ pub async fn get_route_config_handler(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/route-configs/{name}",
-    params(("name" = String, Path, description = "Name of the route configuration")),
+    path = "/api/v1/teams/{team}/route-configs/{name}",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("name" = String, Path, description = "Name of the route configuration"),
+    ),
     request_body = RouteConfigDefinition,
     responses(
         (status = 200, description = "Route config updated", body = RouteConfigResponse),
@@ -190,15 +219,23 @@ pub async fn get_route_config_handler(
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state, payload), fields(route_config_name = %name, user_id = ?context.user_id))]
+#[instrument(skip(state, payload), fields(team = %team, route_config_name = %name, user_id = ?context.user_id))]
 pub async fn update_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(name): Path<String>,
+    Path((team, name)): Path<(String, String)>,
     Json(payload): Json<RouteConfigDefinition>,
 ) -> Result<Json<RouteConfigResponse>, ApiError> {
-    // Authorization: require routes:update scope
-    require_resource_access(&context, "routes", "update", None)?;
+    // Authorization: require routes:update scope with team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // REST-specific validation
     validate_route_config_payload(&payload)?;
@@ -239,8 +276,11 @@ pub async fn update_route_config_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/route-configs/{name}",
-    params(("name" = String, Path, description = "Name of the route configuration")),
+    path = "/api/v1/teams/{team}/route-configs/{name}",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("name" = String, Path, description = "Name of the route configuration"),
+    ),
     responses(
         (status = 204, description = "Route config deleted"),
         (status = 404, description = "Route config not found"),
@@ -248,14 +288,22 @@ pub async fn update_route_config_handler(
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state), fields(route_config_name = %name, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(team = %team, route_config_name = %name, user_id = ?context.user_id))]
 pub async fn delete_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(name): Path<String>,
+    Path((team, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require routes:delete scope
-    require_resource_access(&context, "routes", "delete", None)?;
+    // Authorization: require routes:delete scope with team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "delete",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Delegate to internal API layer (includes default route protection, team access, and XDS refresh)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
@@ -351,7 +399,6 @@ mod tests {
 
     fn sample_route_config_definition() -> RouteConfigDefinition {
         RouteConfigDefinition {
-            team: "test-team".into(),
             name: "primary-routes".into(),
             virtual_hosts: vec![VirtualHostDefinition {
                 name: "default".into(),
@@ -385,6 +432,7 @@ mod tests {
         let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload.clone()),
         )
         .await
@@ -409,6 +457,7 @@ mod tests {
         let (status, _) = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await
@@ -418,6 +467,7 @@ mod tests {
         let response = list_route_configs_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await
@@ -434,6 +484,7 @@ mod tests {
         let (status, _) = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await
@@ -443,7 +494,7 @@ mod tests {
         let response = get_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path("primary-routes".into()),
+            Path(("test-team".into(), "primary-routes".into())),
         )
         .await
         .expect("get route config");
@@ -459,6 +510,7 @@ mod tests {
         let (status, _) = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload.clone()),
         )
         .await
@@ -510,7 +562,7 @@ mod tests {
         let response = update_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
-            Path("primary-routes".into()),
+            Path(("test-team".into(), "primary-routes".into())),
             Json(payload.clone()),
         )
         .await
@@ -546,6 +598,7 @@ mod tests {
         let (status, _) = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await
@@ -555,7 +608,7 @@ mod tests {
         let status = delete_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
-            Path("primary-routes".into()),
+            Path(("test-team".into(), "primary-routes".into())),
         )
         .await
         .expect("delete route config");
@@ -586,6 +639,7 @@ mod tests {
         let (status, Json(created)) = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload.clone()),
         )
         .await
@@ -617,6 +671,7 @@ mod tests {
         let result = create_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await;
@@ -634,6 +689,7 @@ mod tests {
         let result = create_route_config_handler(
             State(state),
             Extension(readonly_resource_auth_context("routes")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await;
@@ -652,6 +708,7 @@ mod tests {
         let result = create_route_config_handler(
             State(state),
             Extension(minimal_auth_context()),
+            Path("test-team".into()),
             Json(payload),
         )
         .await;
@@ -669,6 +726,7 @@ mod tests {
         let result = list_route_configs_handler(
             State(state),
             Extension(minimal_auth_context()),
+            Path("test-team".into()),
             Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
@@ -686,7 +744,7 @@ mod tests {
         let result = get_route_config_handler(
             State(state),
             Extension(minimal_auth_context()),
-            Path("any-route".into()),
+            Path(("test-team".into(), "any-route".into())),
         )
         .await;
 
@@ -705,6 +763,7 @@ mod tests {
         let _ = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload.clone()),
         )
         .await
@@ -714,7 +773,7 @@ mod tests {
         let result = update_route_config_handler(
             State(state),
             Extension(readonly_resource_auth_context("routes")),
-            Path("primary-routes".into()),
+            Path(("test-team".into(), "primary-routes".into())),
             Json(payload),
         )
         .await;
@@ -734,6 +793,7 @@ mod tests {
         let _ = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await
@@ -743,7 +803,7 @@ mod tests {
         let result = delete_route_config_handler(
             State(state),
             Extension(readonly_resource_auth_context("routes")),
-            Path("primary-routes".into()),
+            Path(("test-team".into(), "primary-routes".into())),
         )
         .await;
 
@@ -762,7 +822,7 @@ mod tests {
         let result = get_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-route".into()),
+            Path(("test-team".into(), "non-existent-route".into())),
         )
         .await;
 
@@ -782,7 +842,7 @@ mod tests {
         let result = update_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-route".into()),
+            Path(("test-team".into(), "non-existent-route".into())),
             Json(payload),
         )
         .await;
@@ -800,7 +860,7 @@ mod tests {
         let result = delete_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-route".into()),
+            Path(("test-team".into(), "non-existent-route".into())),
         )
         .await;
 
@@ -819,6 +879,7 @@ mod tests {
         let _ = create_route_config_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload.clone()),
         )
         .await
@@ -828,6 +889,7 @@ mod tests {
         let result = create_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await;
@@ -849,6 +911,7 @@ mod tests {
         let result = create_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await;
@@ -869,6 +932,7 @@ mod tests {
         let result = create_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await;
@@ -889,6 +953,7 @@ mod tests {
         let result = create_route_config_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Json(payload),
         )
         .await;
@@ -912,6 +977,7 @@ mod tests {
             let _ = create_route_config_handler(
                 State(state.clone()),
                 Extension(team_auth_context("test-team")),
+                Path("test-team".into()),
                 Json(payload),
             )
             .await
@@ -922,6 +988,7 @@ mod tests {
         let result = list_route_configs_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
@@ -942,6 +1009,7 @@ mod tests {
             let _ = create_route_config_handler(
                 State(state.clone()),
                 Extension(team_auth_context("test-team")),
+                Path("test-team".into()),
                 Json(payload),
             )
             .await
@@ -952,6 +1020,7 @@ mod tests {
         let result = list_route_configs_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".into()),
             Query(PaginationQuery { limit: 10, offset: 2 }),
         )
         .await;

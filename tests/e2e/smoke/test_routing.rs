@@ -68,13 +68,8 @@ async fn smoke_test_basic_routing() {
     let route = with_timeout(TestTimeout::quick("Create route"), async {
         api.create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "smoke-route",
-                "smoke.e2e.local",
-                "/smoke",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("smoke-route", "smoke.e2e.local", "/smoke", &cluster.name),
         )
         .await
     })
@@ -164,8 +159,8 @@ async fn smoke_test_filter_attachment() {
     let route = with_timeout(TestTimeout::quick("Create route"), async {
         api.create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "smoke-filter-route",
                 "smoke-filter.e2e.local",
                 "/smoke/filter",
@@ -238,7 +233,7 @@ async fn smoke_test_filter_attachment() {
 
     // Attach filter to route
     with_timeout(TestTimeout::quick("Attach filter to route"), async {
-        api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1)).await
+        api.attach_filter_to_route(&ctx.admin_token, &ctx.team_a_name, &route.name, &filter.id, Some(1)).await
     })
     .await
     .expect("Filter attachment should succeed");
@@ -335,13 +330,8 @@ async fn smoke_test_xds_config() {
     let route = with_timeout(TestTimeout::quick("Create route"), async {
         api.create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "smoke-xds-route",
-                "smoke-xds.e2e.local",
-                "/smoke/xds",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("smoke-xds-route", "smoke-xds.e2e.local", "/smoke/xds", &cluster.name),
         )
         .await
     })

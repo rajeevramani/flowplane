@@ -217,6 +217,7 @@
 		try {
 			const updatedRoute = buildUpdatedRoute();
 			await updateSingleRoute(
+				routeData.config.team,
 				routeData.config.name,
 				routeData.virtualHostIndex,
 				routeData.routeIndex,
@@ -245,6 +246,7 @@
 
 		try {
 			await deleteSingleRoute(
+				routeData.config.team,
 				routeData.config.name,
 				routeData.virtualHostIndex,
 				routeData.routeIndex
@@ -319,6 +321,7 @@
 		try {
 			// Load hierarchy filters for this route
 			const hierarchyFilters = await apiClient.listRouteHierarchyFilters(
+				route.config.team,
 				route.config.name,
 				route.virtualHost.name,
 				route.route.name
@@ -331,6 +334,7 @@
 			// Load virtual host filters
 			try {
 				const vhFilters = await apiClient.listVirtualHostFilters(
+					route.config.team,
 					route.config.name,
 					route.virtualHost.name
 				);
@@ -341,7 +345,7 @@
 
 			// Load route config filters
 			try {
-				const configFilters = await apiClient.listRouteConfigFilters(route.config.name);
+				const configFilters = await apiClient.listRouteConfigFilters(route.config.team, route.config.name);
 				configFilters.filters || [];
 				routeConfigFilters = configFilters.filters || [];
 			} catch {

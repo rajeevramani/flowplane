@@ -148,8 +148,8 @@ async fn test_101_setup_oauth2() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "oauth2-route",
                 "oauth2.e2e.local",
                 "/testing",

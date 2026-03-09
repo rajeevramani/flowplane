@@ -401,8 +401,8 @@ class ApiClient {
 	}
 
 	// Route Config methods
-	async listRouteConfigs(params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
-		let path = '/api/v1/route-configs';
+	async listRouteConfigs(team: string, params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
+		let path = `/api/v1/teams/${encodeURIComponent(team)}/route-configs`;
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -412,16 +412,16 @@ class ApiClient {
 		return response.items;
 	}
 
-	async getRouteConfig(name: string): Promise<RouteResponse> {
-		return this.get<RouteResponse>(`/api/v1/route-configs/${name}`);
+	async getRouteConfig(team: string, name: string): Promise<RouteResponse> {
+		return this.get<RouteResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(name)}`);
 	}
 
-	async deleteRouteConfig(name: string): Promise<void> {
-		return this.delete<void>(`/api/v1/route-configs/${name}`);
+	async deleteRouteConfig(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(name)}`);
 	}
 
-	async updateRouteConfig(name: string, body: UpdateRouteBody): Promise<RouteResponse> {
-		return this.put<RouteResponse>(`/api/v1/route-configs/${name}`, body);
+	async updateRouteConfig(team: string, name: string, body: UpdateRouteBody): Promise<RouteResponse> {
+		return this.put<RouteResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(name)}`, body);
 	}
 
 	// Cluster methods
@@ -452,8 +452,8 @@ class ApiClient {
 		return this.put<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`, body);
 	}
 
-	async createRouteConfig(body: CreateRouteBody): Promise<RouteResponse> {
-		return this.post<RouteResponse>('/api/v1/route-configs', body);
+	async createRouteConfig(team: string, body: CreateRouteBody): Promise<RouteResponse> {
+		return this.post<RouteResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs`, body);
 	}
 
 	async createListener(body: CreateListenerBody): Promise<ListenerResponse> {
@@ -554,8 +554,8 @@ class ApiClient {
 	}
 
 	// Route Config Filter methods
-	async listRouteConfigFilters(routeConfigName: string): Promise<RouteFiltersResponse> {
-		return this.get<RouteFiltersResponse>(`/api/v1/route-configs/${routeConfigName}/filters`);
+	async listRouteConfigFilters(team: string, routeConfigName: string): Promise<RouteFiltersResponse> {
+		return this.get<RouteFiltersResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/filters`);
 	}
 
 	// Listener-Filter methods
@@ -568,15 +568,16 @@ class ApiClient {
 	// ============================================================================
 
 	// List virtual hosts within a route config
-	async listVirtualHosts(routeConfigName: string): Promise<VirtualHostSummary[]> {
+	async listVirtualHosts(team: string, routeConfigName: string): Promise<VirtualHostSummary[]> {
 		const response = await this.get<{ routeConfigName: string; virtualHosts: VirtualHostSummary[] }>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts`
+			`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts`
 		);
 		return response.virtualHosts;
 	}
 
 	// List routes within a virtual host
 	async listRoutesInVirtualHost(
+		team: string,
 		routeConfigName: string,
 		virtualHostName: string
 	): Promise<RouteSummary[]> {
@@ -584,28 +585,30 @@ class ApiClient {
 			routeConfigName: string;
 			virtualHostName: string;
 			routes: RouteSummary[];
-		}>(`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes`);
+		}>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts/${encodeURIComponent(virtualHostName)}/routes`);
 		return response.routes;
 	}
 
 	// Virtual Host Filter methods
 	async listVirtualHostFilters(
+		team: string,
 		routeConfigName: string,
 		virtualHostName: string
 	): Promise<VirtualHostFiltersResponse> {
 		return this.get<VirtualHostFiltersResponse>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters`
+			`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts/${encodeURIComponent(virtualHostName)}/filters`
 		);
 	}
 
 	// Route (within Virtual Host) Filter methods
 	async listRouteHierarchyFilters(
+		team: string,
 		routeConfigName: string,
 		virtualHostName: string,
 		routeName: string
 	): Promise<RouteHierarchyFiltersResponse> {
 		return this.get<RouteHierarchyFiltersResponse>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`
+			`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts/${encodeURIComponent(virtualHostName)}/routes/${encodeURIComponent(routeName)}/filters`
 		);
 	}
 

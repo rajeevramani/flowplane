@@ -166,8 +166,8 @@ async fn test_810_auth_success() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "jwt-route",
                 "jwt.e2e.local",
                 "/testing/jwt-api",
@@ -354,8 +354,8 @@ async fn test_811_auth_fail_invalid_jwt() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "fail-route",
                 "fail.e2e.local",
                 "/testing/jwt-fail",
@@ -515,8 +515,8 @@ async fn test_812_auth_fail_expired_jwt() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "expired-route",
                 "expired.e2e.local",
                 "/testing/jwt-expired",
@@ -657,8 +657,8 @@ async fn test_815_public_route_bypass() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "public-route",
                 "public.e2e.local",
                 "/testing/jwt-public",

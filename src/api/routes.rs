@@ -265,12 +265,12 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/clusters/{name}", get(get_cluster_handler))
         .route("/api/v1/teams/{team}/clusters/{name}", put(update_cluster_handler))
         .route("/api/v1/teams/{team}/clusters/{name}", delete(delete_cluster_handler))
-        // Route config endpoints
-        .route("/api/v1/route-configs", get(list_route_configs_handler))
-        .route("/api/v1/route-configs", post(create_route_config_handler))
-        .route("/api/v1/route-configs/{name}", get(get_route_config_handler))
-        .route("/api/v1/route-configs/{name}", put(update_route_config_handler))
-        .route("/api/v1/route-configs/{name}", delete(delete_route_config_handler))
+        // Route config endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/route-configs", get(list_route_configs_handler))
+        .route("/api/v1/teams/{team}/route-configs", post(create_route_config_handler))
+        .route("/api/v1/teams/{team}/route-configs/{name}", get(get_route_config_handler))
+        .route("/api/v1/teams/{team}/route-configs/{name}", put(update_route_config_handler))
+        .route("/api/v1/teams/{team}/route-configs/{name}", delete(delete_route_config_handler))
         // Route views endpoints (UI flattened view)
         .route("/api/v1/route-views", get(list_route_views_handler))
         .route("/api/v1/route-views/stats", get(get_route_stats_handler))
@@ -294,42 +294,42 @@ pub fn build_router_with_registry(
         // Filter types endpoints (dynamic filter framework)
         .route("/api/v1/filter-types", get(list_filter_types_handler))
         .route("/api/v1/filter-types/{filter_type}", get(get_filter_type_handler))
-        // Route config filter attachment endpoints
-        .route("/api/v1/route-configs/{route_config_id}/filters", get(list_route_filters_handler))
-        .route("/api/v1/route-configs/{route_config_id}/filters", post(attach_filter_handler))
-        .route("/api/v1/route-configs/{route_config_id}/filters/{filter_id}", delete(detach_filter_handler))
-        // Hierarchical filter attachment endpoints - Virtual Hosts
+        // Route config filter attachment endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/route-configs/{route_config_id}/filters", get(list_route_filters_handler))
+        .route("/api/v1/teams/{team}/route-configs/{route_config_id}/filters", post(attach_filter_handler))
+        .route("/api/v1/teams/{team}/route-configs/{route_config_id}/filters/{filter_id}", delete(detach_filter_handler))
+        // Hierarchical filter attachment endpoints - Virtual Hosts (team-scoped)
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts",
             get(list_virtual_hosts_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
             get(list_virtual_host_filters_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
             post(attach_filter_to_virtual_host_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
             delete(detach_filter_from_virtual_host_handler),
         )
-        // Hierarchical filter attachment endpoints - Routes
+        // Hierarchical filter attachment endpoints - Routes (team-scoped)
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
             get(list_route_rules_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
             get(list_route_rule_filters_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
             post(attach_filter_to_route_rule_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
             delete(detach_filter_from_route_rule_handler),
         )
         // Listener-Filter attachment endpoints

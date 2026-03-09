@@ -29,7 +29,9 @@
 					? apiClient.listImports(team)
 					: Promise.resolve([]),
 				apiClient.listListeners(),
-				apiClient.listRouteConfigs(),
+				team
+					? apiClient.listRouteConfigs(team)
+					: Promise.resolve([]),
 				team
 					? apiClient.listClusters(team)
 					: Promise.resolve([])

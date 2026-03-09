@@ -81,7 +81,13 @@
 			}
 
 			// Fetch the route config
-			const routeConfig = await apiClient.getRouteConfig(routeConfigName);
+			const routeConfig = config.selectedTeam
+				? await apiClient.getRouteConfig(config.selectedTeam, routeConfigName)
+				: null;
+			if (!routeConfig) {
+				onRouteConfigLoaded(null, []);
+				return;
+			}
 
 			// Also fetch clusters to populate the cluster selector
 			const teamClusters = config.selectedTeam

@@ -80,8 +80,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "debug-route",
                 "debug.e2e.local",
                 "/testing/debug",
@@ -495,8 +495,8 @@ async fn test_100_setup_ext_authz() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "authz-route",
                 "authz.e2e.local",
                 "/testing/authz-setup",
@@ -626,8 +626,8 @@ async fn test_101_authz_allow() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "allow-route",
                 "allow.e2e.local",
                 "/testing/authz-allow",
@@ -842,8 +842,8 @@ async fn test_102_authz_deny() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "deny-route",
                 "deny.e2e.local",
                 "/testing/authz-deny",

@@ -338,7 +338,6 @@ pub struct ClusterEndpoint {
 
 #[derive(Debug, Serialize)]
 pub struct CreateRouteRequest {
-    pub team: String,
     pub name: String,
     #[serde(rename = "virtualHosts")]
     pub virtual_hosts: Vec<VirtualHost>,
@@ -545,9 +544,10 @@ impl ApiClient {
     pub async fn create_route(
         &self,
         token: &str,
+        team: &str,
         req: &CreateRouteRequest,
     ) -> anyhow::Result<RouteConfigResponse> {
-        let url = format!("{}/api/v1/route-configs", self.base_url);
+        let url = format!("{}/api/v1/teams/{}/route-configs", self.base_url, team);
 
         let resp = self
             .client
@@ -850,16 +850,20 @@ impl ApiClient {
 
     /// Attach a filter to a route
     /// This makes the filter active on the specified route.
-    /// Endpoint: POST /api/v1/route-configs/{route}/filters
+    /// Endpoint: POST /api/v1/teams/{team}/route-configs/{route}/filters
     /// Returns 204 No Content on success.
     pub async fn attach_filter_to_route(
         &self,
         token: &str,
+        team: &str,
         route_name: &str,
         filter_id: &str,
         order: Option<i64>,
     ) -> anyhow::Result<()> {
-        let url = format!("{}/api/v1/route-configs/{}/filters", self.base_url, route_name);
+        let url = format!(
+            "{}/api/v1/teams/{}/route-configs/{}/filters",
+            self.base_url, team, route_name
+        );
         let body = json!({
             "filterId": filter_id,
             "order": order.unwrap_or(1),
@@ -1989,14 +1993,12 @@ pub fn simple_cluster(name: &str, host: &str, port: u16) -> CreateClusterRequest
 
 /// Helper to create a simple route with prefix match
 pub fn simple_route(
-    team: &str,
     name: &str,
     domain: &str,
     path_prefix: &str,
     cluster: &str,
 ) -> CreateRouteRequest {
     CreateRouteRequest {
-        team: team.to_string(),
         name: name.to_string(),
         virtual_hosts: vec![VirtualHost {
             name: format!("{}-vh", name),
@@ -2068,9 +2070,8 @@ mod tests {
 
     #[test]
     fn test_simple_route_creation() {
-        let route =
-            simple_route("engineering", "test-route", "api.test.local", "/api", "test-cluster");
-        assert_eq!(route.team, "engineering");
+        let route = simple_route("test-route", "api.test.local", "/api", "test-cluster");
+        assert_eq!(route.name, "test-route");
         assert_eq!(route.virtual_hosts.len(), 1);
         assert_eq!(route.virtual_hosts[0].domains[0], "api.test.local");
     }

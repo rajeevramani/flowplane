@@ -242,8 +242,8 @@ async fn test_500_full_routing_setup() {
     let route = with_timeout(TestTimeout::default_with_label("Create route"), async {
         api.create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "routing-echo-route",
                 "routing.e2e.local",
                 "/testing/routing/echo",
