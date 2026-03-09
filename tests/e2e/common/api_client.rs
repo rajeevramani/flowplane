@@ -305,7 +305,6 @@ pub struct ListOrgTeamsResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateClusterRequest {
-    pub team: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_name: Option<String>,
@@ -519,9 +518,10 @@ impl ApiClient {
     pub async fn create_cluster(
         &self,
         token: &str,
+        team: &str,
         req: &CreateClusterRequest,
     ) -> anyhow::Result<ClusterResponse> {
-        let url = format!("{}/api/v1/clusters", self.base_url);
+        let url = format!("{}/api/v1/teams/{}/clusters", self.base_url, team);
 
         let resp = self
             .client
@@ -991,12 +991,9 @@ impl ApiClient {
     pub async fn list_clusters(
         &self,
         token: &str,
-        team: Option<&str>,
+        team: &str,
     ) -> anyhow::Result<Vec<ClusterResponse>> {
-        let url = match team {
-            Some(t) => format!("{}/api/v1/clusters?team={}", self.base_url, t),
-            None => format!("{}/api/v1/clusters", self.base_url),
-        };
+        let url = format!("{}/api/v1/teams/{}/clusters", self.base_url, team);
 
         let resp = self
             .client
@@ -1973,9 +1970,8 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
 }
 
 /// Helper to create a simple cluster pointing to an endpoint
-pub fn simple_cluster(team: &str, name: &str, host: &str, port: u16) -> CreateClusterRequest {
+pub fn simple_cluster(name: &str, host: &str, port: u16) -> CreateClusterRequest {
     CreateClusterRequest {
-        team: team.to_string(),
         name: name.to_string(),
         service_name: None,
         endpoints: vec![ClusterEndpoint { host: host.to_string(), port }],
@@ -2063,8 +2059,7 @@ mod tests {
 
     #[test]
     fn test_simple_cluster_creation() {
-        let cluster = simple_cluster("engineering", "test-cluster", "127.0.0.1", 8080);
-        assert_eq!(cluster.team, "engineering");
+        let cluster = simple_cluster("test-cluster", "127.0.0.1", 8080);
         assert_eq!(cluster.name, "test-cluster");
         assert_eq!(cluster.endpoints.len(), 1);
         assert_eq!(cluster.endpoints[0].host, "127.0.0.1");

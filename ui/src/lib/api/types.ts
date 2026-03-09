@@ -283,7 +283,6 @@ export interface OutlierDetectionRequest {
 }
 
 export interface CreateClusterBody {
-	team: string;
 	name: string;
 	serviceName?: string;
 	endpoints: EndpointRequest[];

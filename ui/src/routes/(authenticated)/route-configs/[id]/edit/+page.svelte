@@ -90,7 +90,7 @@
 		try {
 			const [config, clustersData] = await Promise.all([
 				apiClient.getRouteConfig(configId),
-				apiClient.listClusters()
+				currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([])
 			]);
 
 			originalConfig = config;

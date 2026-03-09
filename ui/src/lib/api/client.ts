@@ -425,8 +425,8 @@ class ApiClient {
 	}
 
 	// Cluster methods
-	async listClusters(params?: { limit?: number; offset?: number }): Promise<ClusterResponse[]> {
-		let path = '/api/v1/clusters';
+	async listClusters(team: string, params?: { limit?: number; offset?: number }): Promise<ClusterResponse[]> {
+		let path = `/api/v1/teams/${encodeURIComponent(team)}/clusters`;
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -436,20 +436,20 @@ class ApiClient {
 		return response.items;
 	}
 
-	async getCluster(name: string): Promise<ClusterResponse> {
-		return this.get<ClusterResponse>(`/api/v1/clusters/${name}`);
+	async getCluster(team: string, name: string): Promise<ClusterResponse> {
+		return this.get<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`);
 	}
 
-	async deleteCluster(name: string): Promise<void> {
-		return this.delete<void>(`/api/v1/clusters/${name}`);
+	async deleteCluster(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`);
 	}
 
-	async createCluster(body: CreateClusterBody): Promise<ClusterResponse> {
-		return this.post<ClusterResponse>('/api/v1/clusters', body);
+	async createCluster(team: string, body: CreateClusterBody): Promise<ClusterResponse> {
+		return this.post<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters`, body);
 	}
 
-	async updateCluster(name: string, body: CreateClusterBody): Promise<ClusterResponse> {
-		return this.put<ClusterResponse>(`/api/v1/clusters/${name}`, body);
+	async updateCluster(team: string, name: string, body: CreateClusterBody): Promise<ClusterResponse> {
+		return this.put<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`, body);
 	}
 
 	async createRouteConfig(body: CreateRouteBody): Promise<RouteResponse> {

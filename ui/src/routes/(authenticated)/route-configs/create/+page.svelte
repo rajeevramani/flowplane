@@ -54,7 +54,7 @@
 	onMount(async () => {
 		try {
 			const [clustersData, routeConfigsData] = await Promise.all([
-				apiClient.listClusters(),
+				currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([]),
 				apiClient.listRouteConfigs()
 			]);
 			clusters = clustersData;

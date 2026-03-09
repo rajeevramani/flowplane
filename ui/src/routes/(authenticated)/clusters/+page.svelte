@@ -47,7 +47,7 @@
 
 		try {
 			const [clustersData, importsData] = await Promise.all([
-				apiClient.listClusters(),
+				currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([])
 			]);
 
@@ -182,7 +182,7 @@
 		}
 
 		try {
-			await apiClient.deleteCluster(cluster.name);
+			await apiClient.deleteCluster(currentTeam, cluster.name);
 			await loadData();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete cluster';

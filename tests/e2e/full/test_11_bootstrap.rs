@@ -187,7 +187,8 @@ async fn test_400_team_isolation() {
     let cluster_a = with_timeout(TestTimeout::default_with_label("Create Team A cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "team-a-cluster", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("team-a-cluster", host, port),
         )
         .await
     })
@@ -225,7 +226,8 @@ async fn test_500_full_routing_setup() {
     let cluster = with_timeout(TestTimeout::default_with_label("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "routing-echo-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("routing-echo-backend", host, port),
         )
         .await
     })

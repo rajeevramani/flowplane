@@ -100,7 +100,8 @@ async fn test_610_verify_headers() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "header-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("header-backend", host, port),
         )
         .await
         .expect("Cluster creation should succeed");
@@ -253,7 +254,8 @@ async fn test_611_route_override() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "override-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("override-backend", host, port),
         )
         .await
         .expect("Cluster creation should succeed");

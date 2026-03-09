@@ -281,7 +281,6 @@ impl<'a> ResourceSetup<'a> {
         // Create cluster first
         if let Some(cluster_config) = self.cluster {
             let cluster_req = CreateClusterRequest {
-                team: self.team.to_string(),
                 name: cluster_config.name.clone(),
                 service_name: None,
                 endpoints: vec![ClusterEndpoint {
@@ -301,7 +300,7 @@ impl<'a> ResourceSetup<'a> {
 
             let cluster = with_timeout(
                 TestTimeout::default_with_label(format!("Create cluster {}", cluster_req.name)),
-                async { self.api.create_cluster(self.token, &cluster_req).await },
+                async { self.api.create_cluster(self.token, self.team, &cluster_req).await },
             )
             .await?;
 

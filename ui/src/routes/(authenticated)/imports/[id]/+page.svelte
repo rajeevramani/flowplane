@@ -5,6 +5,8 @@
 	import { page } from '$app/stores';
 	import { ArrowLeft, Trash2, FileText, Database, Server, Route as RouteIcon } from 'lucide-svelte';
 	import type { ImportDetailsResponse, RouteResponse, ClusterResponse, ListenerResponse } from '$lib/api/types';
+	import { selectedTeam } from '$lib/stores/team';
+	import { get } from 'svelte/store';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
@@ -41,10 +43,11 @@
 		error = null;
 
 		try {
+			const team = get(selectedTeam);
 			const [importData, routesData, clustersData, listenersData] = await Promise.all([
 				apiClient.getImport(importId),
 				apiClient.listRouteConfigs(),
-				apiClient.listClusters(),
+				team ? apiClient.listClusters(team) : Promise.resolve([]),
 				apiClient.listListeners()
 			]);
 

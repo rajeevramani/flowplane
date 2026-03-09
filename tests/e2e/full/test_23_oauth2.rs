@@ -122,7 +122,8 @@ async fn test_101_setup_oauth2() {
         with_timeout(TestTimeout::default_with_label("Create OAuth2 auth cluster"), async {
             api.create_cluster(
                 &ctx.admin_token,
-                &simple_cluster(&ctx.team_a_name, "oauth2-auth-cluster", auth_host, auth_port),
+                &ctx.team_a_name,
+                &simple_cluster("oauth2-auth-cluster", auth_host, auth_port),
             )
             .await
         })
@@ -135,7 +136,8 @@ async fn test_101_setup_oauth2() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "oauth2-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("oauth2-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");

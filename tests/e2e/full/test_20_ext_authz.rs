@@ -67,7 +67,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "debug-backend", echo_host, echo_port),
+            &ctx.team_a_name,
+            &simple_cluster("debug-backend", echo_host, echo_port),
         )
         .await
         .expect("Cluster creation should succeed");
@@ -224,7 +225,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     let authz_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "debug-authz-cluster", authz_host, authz_port),
+            &ctx.team_a_name,
+            &simple_cluster("debug-authz-cluster", authz_host, authz_port),
         )
         .await
         .expect("Authz cluster creation should succeed");
@@ -462,7 +464,8 @@ async fn test_100_setup_ext_authz() {
         with_timeout(TestTimeout::default_with_label("Create authz cluster"), async {
             api.create_cluster(
                 &ctx.admin_token,
-                &simple_cluster(&ctx.team_a_name, "authz-cluster", authz_host, authz_port),
+                &ctx.team_a_name,
+                &simple_cluster("authz-cluster", authz_host, authz_port),
             )
             .await
         })
@@ -480,7 +483,8 @@ async fn test_100_setup_ext_authz() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "authz-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("authz-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -600,7 +604,8 @@ async fn test_101_authz_allow() {
     let authz_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "allow-authz-cluster", authz_host, authz_port),
+            &ctx.team_a_name,
+            &simple_cluster("allow-authz-cluster", authz_host, authz_port),
         )
         .await
         .expect("Authz cluster creation should succeed");
@@ -612,7 +617,8 @@ async fn test_101_authz_allow() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "allow-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("allow-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -814,7 +820,8 @@ async fn test_102_authz_deny() {
     let authz_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "deny-authz-cluster", authz_host, authz_port),
+            &ctx.team_a_name,
+            &simple_cluster("deny-authz-cluster", authz_host, authz_port),
         )
         .await
         .expect("Authz cluster creation should succeed");
@@ -826,7 +833,8 @@ async fn test_102_authz_deny() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "deny-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("deny-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");

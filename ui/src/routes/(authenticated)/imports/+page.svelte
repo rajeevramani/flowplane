@@ -51,7 +51,7 @@
 			const [importsData, routesData, clustersData, listenersData] = await Promise.all([
 				currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([]),
 				apiClient.listRouteConfigs(),
-				apiClient.listClusters(),
+				currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([]),
 				apiClient.listListeners()
 			]);
 

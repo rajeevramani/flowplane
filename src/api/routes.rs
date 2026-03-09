@@ -259,12 +259,12 @@ pub fn build_router_with_registry(
     let trace_layer = middleware::from_fn(trace_http_requests);
 
     let secured_api = Router::new()
-        // Cluster endpoints
-        .route("/api/v1/clusters", get(list_clusters_handler))
-        .route("/api/v1/clusters", post(create_cluster_handler))
-        .route("/api/v1/clusters/{name}", get(get_cluster_handler))
-        .route("/api/v1/clusters/{name}", put(update_cluster_handler))
-        .route("/api/v1/clusters/{name}", delete(delete_cluster_handler))
+        // Cluster endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/clusters", get(list_clusters_handler))
+        .route("/api/v1/teams/{team}/clusters", post(create_cluster_handler))
+        .route("/api/v1/teams/{team}/clusters/{name}", get(get_cluster_handler))
+        .route("/api/v1/teams/{team}/clusters/{name}", put(update_cluster_handler))
+        .route("/api/v1/teams/{team}/clusters/{name}", delete(delete_cluster_handler))
         // Route config endpoints
         .route("/api/v1/route-configs", get(list_route_configs_handler))
         .route("/api/v1/route-configs", post(create_route_config_handler))

@@ -111,7 +111,7 @@
 		try {
 			const [route, clustersData, filtersData] = await Promise.all([
 				getSingleRouteForEdit(routeId),
-				apiClient.listClusters(),
+				$selectedTeam ? apiClient.listClusters($selectedTeam) : Promise.resolve([]),
 				apiClient.listFilters()
 			]);
 

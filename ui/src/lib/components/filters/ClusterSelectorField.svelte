@@ -3,6 +3,8 @@
 	import ClusterSelector, { type ClusterConfig } from '../ClusterSelector.svelte';
 	import { apiClient } from '$lib/api/client';
 	import { onMount } from 'svelte';
+	import { selectedTeam } from '$lib/stores/team';
+	import { get } from 'svelte/store';
 
 	interface Props {
 		/** The cluster name value (for existing cluster or new cluster name) */
@@ -60,7 +62,8 @@
 	onMount(async () => {
 		try {
 			loading = true;
-			clusters = await apiClient.listClusters();
+			const team = get(selectedTeam);
+			clusters = team ? await apiClient.listClusters(team) : [];
 		} catch (e) {
 			loadError = e instanceof Error ? e.message : 'Failed to load clusters';
 		} finally {

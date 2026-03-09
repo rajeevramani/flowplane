@@ -52,7 +52,8 @@ async fn smoke_test_basic_routing() {
     let cluster = with_timeout(TestTimeout::quick("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-backend", host, port),
         )
         .await
     })
@@ -147,7 +148,8 @@ async fn smoke_test_filter_attachment() {
     let cluster = with_timeout(TestTimeout::quick("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-filter-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-filter-backend", host, port),
         )
         .await
     })
@@ -317,7 +319,8 @@ async fn smoke_test_xds_config() {
     let cluster = with_timeout(TestTimeout::quick("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-xds-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-xds-backend", host, port),
         )
         .await
     })
@@ -435,7 +438,8 @@ async fn smoke_test_team_isolation() {
     let cluster_a = with_timeout(TestTimeout::quick("Create Team A cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-iso-backend-a", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-iso-backend-a", host, port),
         )
         .await
     })
@@ -454,7 +458,8 @@ async fn smoke_test_team_isolation() {
     let cluster_b = with_timeout(TestTimeout::quick("Create Team B cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_b_name, "smoke-iso-backend-b", host, port),
+            &ctx.team_b_name,
+            &simple_cluster("smoke-iso-backend-b", host, port),
         )
         .await
     })
@@ -497,7 +502,8 @@ async fn smoke_test_crud_operations() {
     let cluster = with_timeout(TestTimeout::quick("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-crud-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-crud-backend", host, port),
         )
         .await
     })
@@ -510,7 +516,7 @@ async fn smoke_test_crud_operations() {
 
     // READ - List clusters and verify ours is there
     let clusters = with_timeout(TestTimeout::quick("List clusters"), async {
-        api.list_clusters(&ctx.admin_token, Some(&ctx.team_a_name)).await
+        api.list_clusters(&ctx.admin_token, &ctx.team_a_name).await
     })
     .await
     .expect("List clusters should succeed");

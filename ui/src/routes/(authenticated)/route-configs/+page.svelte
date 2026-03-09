@@ -148,7 +148,7 @@
 	async function loadGroupedView() {
 		const [routesData, clustersData, listenersData, importsData] = await Promise.all([
 			apiClient.listRouteConfigs(),
-			apiClient.listClusters(),
+			currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([]),
 			apiClient.listListeners(),
 			currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([])
 		]);

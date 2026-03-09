@@ -84,8 +84,9 @@
 			const routeConfig = await apiClient.getRouteConfig(routeConfigName);
 
 			// Also fetch clusters to populate the cluster selector
-			const allClusters = await apiClient.listClusters();
-			const teamClusters = allClusters.filter((c) => c.team === config.selectedTeam);
+			const teamClusters = config.selectedTeam
+				? await apiClient.listClusters(config.selectedTeam)
+				: [];
 
 			onRouteConfigLoaded(routeConfig, teamClusters);
 		} catch (e) {

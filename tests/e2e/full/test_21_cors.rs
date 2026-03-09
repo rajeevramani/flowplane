@@ -41,7 +41,8 @@ async fn test_100_setup_cors() {
     let cluster = with_timeout(TestTimeout::default_with_label("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "cors-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("cors-backend", host, port),
         )
         .await
     })
@@ -151,7 +152,8 @@ async fn test_101_preflight_allowed() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "preflight-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("preflight-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -316,7 +318,8 @@ async fn test_102_request_with_origin() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "request-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("request-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -458,7 +461,8 @@ async fn test_103_blocked_origin() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "blocked-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("blocked-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");

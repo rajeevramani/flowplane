@@ -17,7 +17,6 @@ pub(super) struct ClusterConfigParts {
 /// Convert create cluster request body to cluster config parts
 pub(super) fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConfigParts {
     let CreateClusterBody {
-        team: _,
         name,
         service_name,
         endpoints,

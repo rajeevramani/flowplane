@@ -264,8 +264,9 @@ async fn test_2600_read_with_matching_grant() {
 
     // Obtain user token and try listing clusters
     let user_token = get_user_token(&user_email, &password).await;
+    let clusters_path = format!("/api/v1/teams/{}/clusters", team_name);
     let (status, _body) = with_timeout(TestTimeout::default_with_label("GET clusters"), async {
-        api.get(&user_token, "/api/v1/clusters").await
+        api.get(&user_token, &clusters_path).await
     })
     .await
     .expect("GET clusters should succeed");
@@ -276,7 +277,7 @@ async fn test_2600_read_with_matching_grant() {
         "User with clusters:read grant should get 200, got {}",
         status
     );
-    println!("ok Scenario 1: clusters:read grant → GET /api/v1/clusters → 200");
+    println!("ok Scenario 1: clusters:read grant → GET /api/v1/teams/{{team}}/clusters → 200");
 }
 
 /// Scenario 2: Write without grant — same user (no clusters:create) gets 403
@@ -295,12 +296,12 @@ async fn test_2601_write_without_grant() {
     let user_token = get_user_token(&user_email, &password).await;
 
     // Try creating a cluster — should be denied
+    let clusters_path = format!("/api/v1/teams/{}/clusters", team_name);
     let (status, _body) = with_timeout(TestTimeout::default_with_label("POST clusters"), async {
         api.post(
             &user_token,
-            "/api/v1/clusters",
+            &clusters_path,
             json!({
-                "team": team_name,
                 "name": "unauthorized-cluster",
                 "endpoints": [{"host": "127.0.0.1", "port": 8080}]
             }),
@@ -316,7 +317,7 @@ async fn test_2601_write_without_grant() {
         "User without clusters:create grant should get 403, got {}",
         status
     );
-    println!("ok Scenario 2: no clusters:create grant → POST /api/v1/clusters → 403");
+    println!("ok Scenario 2: no clusters:create grant → POST /api/v1/teams/{{team}}/clusters → 403");
 }
 
 /// Scenario 3: Cross-team isolation — user with team-A grant cannot access team-B resources
@@ -422,13 +423,13 @@ async fn test_2602_cross_team_isolation() {
     let user_token = get_user_token(user_email, user_password).await;
 
     // Creating a cluster in team A should succeed
+    let team_a_clusters_path = format!("/api/v1/teams/{}/clusters", team_a.name);
     let (status_a, _) =
         with_timeout(TestTimeout::default_with_label("POST cluster in team A"), async {
             api.post(
                 &user_token,
-                "/api/v1/clusters",
+                &team_a_clusters_path,
                 json!({
-                    "team": team_a.name,
                     "name": "iso-cluster-a",
                     "endpoints": [{"host": "127.0.0.1", "port": 9090}]
                 }),
@@ -446,13 +447,13 @@ async fn test_2602_cross_team_isolation() {
     );
 
     // Creating a cluster in team B should fail — user is NOT a member of team B
+    let team_b_clusters_path = format!("/api/v1/teams/{}/clusters", team_b.name);
     let (status_b, _) =
         with_timeout(TestTimeout::default_with_label("POST cluster in team B"), async {
             api.post(
                 &user_token,
-                "/api/v1/clusters",
+                &team_b_clusters_path,
                 json!({
-                    "team": team_b.name,
                     "name": "iso-cluster-b",
                     "endpoints": [{"host": "127.0.0.1", "port": 9091}]
                 }),
@@ -482,9 +483,10 @@ async fn test_2603_grant_lifecycle() {
     // (the team=None path in check_resource_access allows org members to reach listing
     // handlers, which then filter by the user's teams — returning an empty list)
     let user_token = get_user_token(&user_email, &password).await;
+    let clusters_path = format!("/api/v1/teams/{}/clusters", team_name);
     let (status, body) =
         with_timeout(TestTimeout::default_with_label("GET clusters (no grant)"), async {
-            api.get(&user_token, "/api/v1/clusters").await
+            api.get(&user_token, &clusters_path).await
         })
         .await
         .expect("GET clusters should return a response");
@@ -514,7 +516,7 @@ async fn test_2603_grant_lifecycle() {
 
     let (status, _) =
         with_timeout(TestTimeout::default_with_label("GET clusters (with grant)"), async {
-            api.get(&user_token, "/api/v1/clusters").await
+            api.get(&user_token, &clusters_path).await
         })
         .await
         .expect("GET clusters should return a response");
@@ -538,7 +540,7 @@ async fn test_2603_grant_lifecycle() {
 
     let (status, _) =
         with_timeout(TestTimeout::default_with_label("GET clusters (revoked)"), async {
-            api.get(&user_token, "/api/v1/clusters").await
+            api.get(&user_token, &clusters_path).await
         })
         .await
         .expect("GET clusters should return a response");

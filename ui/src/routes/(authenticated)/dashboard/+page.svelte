@@ -30,7 +30,9 @@
 					: Promise.resolve([]),
 				apiClient.listListeners(),
 				apiClient.listRouteConfigs(),
-				apiClient.listClusters()
+				team
+					? apiClient.listClusters(team)
+					: Promise.resolve([])
 			]);
 
 			resourceCounts = {
