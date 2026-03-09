@@ -351,10 +351,13 @@ mod tests {
         );
 
         // Listener endpoints (5)
-        assert!(paths.contains_key("/api/v1/listeners"), "Missing GET/POST /api/v1/listeners");
         assert!(
-            paths.contains_key("/api/v1/listeners/{name}"),
-            "Missing GET/PUT/DELETE /api/v1/listeners/{{name}}"
+            paths.contains_key("/api/v1/teams/{team}/listeners"),
+            "Missing GET/POST /api/v1/teams/{{team}}/listeners"
+        );
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/listeners/{name}"),
+            "Missing GET/PUT/DELETE /api/v1/teams/{{team}}/listeners/{{name}}"
         );
 
         // Team endpoints (6)

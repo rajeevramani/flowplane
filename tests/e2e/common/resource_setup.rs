@@ -337,7 +337,6 @@ impl<'a> ResourceSetup<'a> {
             }
 
             let listener_req = CreateListenerRequest {
-                team: self.team.to_string(),
                 name: listener_config.name,
                 address: "0.0.0.0".to_string(),
                 port: listener_config.port,
@@ -361,7 +360,7 @@ impl<'a> ResourceSetup<'a> {
 
             let listener = with_timeout(
                 TestTimeout::default_with_label(format!("Create listener {}", listener_req.name)),
-                async { self.api.create_listener(self.token, &listener_req).await },
+                async { self.api.create_listener(self.token, self.team, &listener_req).await },
             )
             .await?;
 

@@ -84,8 +84,8 @@ async fn smoke_test_basic_routing() {
     let listener = with_timeout(TestTimeout::quick("Create listener"), async {
         api.create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "smoke-listener",
                 harness.ports.listener,
                 &route.name,
@@ -180,8 +180,8 @@ async fn smoke_test_filter_attachment() {
     let listener = with_timeout(TestTimeout::quick("Create listener"), async {
         api.create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "smoke-filter-listener",
                 harness.ports.listener,
                 &route.name,
@@ -354,8 +354,8 @@ async fn smoke_test_xds_config() {
     let _listener = with_timeout(TestTimeout::quick("Create listener"), async {
         api.create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "smoke-xds-listener",
                 harness.ports.listener,
                 &route.name,

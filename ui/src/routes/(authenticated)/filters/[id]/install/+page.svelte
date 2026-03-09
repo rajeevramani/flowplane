@@ -51,8 +51,8 @@
 			// Load filter details
 			filter = await apiClient.getFilter(currentTeam, filterId);
 
-			// Load all listeners
-			listeners = await apiClient.listListeners();
+			// Load all listeners for the current team
+			listeners = currentTeam ? await apiClient.listListeners(currentTeam) : [];
 
 			// Load current installations
 			const installationsResponse = await apiClient.listFilterInstallations(currentTeam, filterId);

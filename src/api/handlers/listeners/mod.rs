@@ -29,7 +29,6 @@ use crate::{
         handlers::team_access::{require_resource_access_resolved, resolve_rest_auth},
         routes::ApiState,
     },
-    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     internal_api::listeners::ListenerOperations,
     internal_api::types::{
@@ -48,7 +47,7 @@ use validation::{
 
 #[utoipa::path(
     post,
-    path = "/api/v1/listeners",
+    path = "/api/v1/teams/{team}/listeners",
     request_body = CreateListenerBody,
     responses(
         (status = 201, description = "Listener created", body = ListenerResponse),
@@ -57,10 +56,11 @@ use validation::{
     ),
     tag = "Listeners"
 )]
-#[instrument(skip(state, payload), fields(team = %payload.team, listener_name = %payload.name, user_id = ?context.user_id))]
+#[instrument(skip(state, payload), fields(team = %team, listener_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Json(payload): Json<types::CreateListenerBody>,
 ) -> Result<(StatusCode, Json<types::ListenerResponse>), ApiError> {
     // REST-specific validation
@@ -72,7 +72,7 @@ pub async fn create_listener_handler(
         &context,
         "listeners",
         "create",
-        Some(&payload.team),
+        Some(&team),
         context.org_id.as_ref(),
     )
     .await?;
@@ -86,7 +86,7 @@ pub async fn create_listener_handler(
         address: payload.address.clone(),
         port: payload.port,
         protocol: payload.protocol.clone(),
-        team: Some(payload.team.clone()),
+        team: Some(team.clone()),
         config,
         dataplane_id: payload.dataplane_id.clone(),
     };
@@ -102,7 +102,7 @@ pub async fn create_listener_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/listeners",
+    path = "/api/v1/teams/{team}/listeners",
     params(PaginationQuery),
     responses(
         (status = 200, description = "List of listeners", body = PaginatedResponse<ListenerResponse>),
@@ -113,10 +113,19 @@ pub async fn create_listener_handler(
 pub async fn list_listeners_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Query(params): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<types::ListenerResponse>>, ApiError> {
-    // Authorization: require listeners:read scope
-    require_resource_access(&context, "listeners", "read", None)?;
+    // Authorization: require listeners:read scope for the specified team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "listeners",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let (limit, offset) = params.clamp(1000);
 
@@ -143,8 +152,11 @@ pub async fn list_listeners_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/listeners/{name}",
-    params(("name" = String, Path, description = "Name of the listener")),
+    path = "/api/v1/teams/{team}/listeners/{name}",
+    params(
+        ("team" = String, Path, description = "Team name or ID"),
+        ("name" = String, Path, description = "Name of the listener"),
+    ),
     responses(
         (status = 200, description = "Listener details", body = ListenerResponse),
         (status = 404, description = "Listener not found"),
@@ -152,14 +164,22 @@ pub async fn list_listeners_handler(
     ),
     tag = "Listeners"
 )]
-#[instrument(skip(state), fields(listener_name = %name, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(team = %team, listener_name = %name, user_id = ?context.user_id))]
 pub async fn get_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(name): Path<String>,
+    Path((team, name)): Path<(String, String)>,
 ) -> Result<Json<types::ListenerResponse>, ApiError> {
-    // Authorization: require listeners:read scope
-    require_resource_access(&context, "listeners", "read", None)?;
+    // Authorization: require listeners:read scope for the specified team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "listeners",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Delegate to internal API layer (includes team access verification)
     let ops = ListenerOperations::new(state.xds_state.clone());
@@ -172,9 +192,12 @@ pub async fn get_listener_handler(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/listeners/{name}",
+    path = "/api/v1/teams/{team}/listeners/{name}",
     request_body = UpdateListenerBody,
-    params(("name" = String, Path, description = "Name of the listener")),
+    params(
+        ("team" = String, Path, description = "Team name or ID"),
+        ("name" = String, Path, description = "Name of the listener"),
+    ),
     responses(
         (status = 200, description = "Listener updated", body = ListenerResponse),
         (status = 400, description = "Invalid listener payload"),
@@ -183,15 +206,23 @@ pub async fn get_listener_handler(
     ),
     tag = "Listeners"
 )]
-#[instrument(skip(state, payload), fields(listener_name = %name, user_id = ?context.user_id))]
+#[instrument(skip(state, payload), fields(team = %team, listener_name = %name, user_id = ?context.user_id))]
 pub async fn update_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(name): Path<String>,
+    Path((team, name)): Path<(String, String)>,
     Json(payload): Json<types::UpdateListenerBody>,
 ) -> Result<Json<types::ListenerResponse>, ApiError> {
-    // Authorization: require listeners:update scope
-    require_resource_access(&context, "listeners", "update", None)?;
+    // Authorization: require listeners:update scope for the specified team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "listeners",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // REST-specific validation
     validate_update_listener_body(&payload)?;
@@ -219,8 +250,11 @@ pub async fn update_listener_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/listeners/{name}",
-    params(("name" = String, Path, description = "Name of the listener")),
+    path = "/api/v1/teams/{team}/listeners/{name}",
+    params(
+        ("team" = String, Path, description = "Team name or ID"),
+        ("name" = String, Path, description = "Name of the listener"),
+    ),
     responses(
         (status = 204, description = "Listener deleted"),
         (status = 404, description = "Listener not found"),
@@ -228,14 +262,22 @@ pub async fn update_listener_handler(
     ),
     tag = "Listeners"
 )]
-#[instrument(skip(state), fields(listener_name = %name, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(team = %team, listener_name = %name, user_id = ?context.user_id))]
 pub async fn delete_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(name): Path<String>,
+    Path((team, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require listeners:delete scope
-    require_resource_access(&context, "listeners", "delete", None)?;
+    // Authorization: require listeners:delete scope for the specified team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "listeners",
+        "delete",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Delegate to internal API layer (includes default listener protection, team access, and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());
@@ -375,7 +417,6 @@ mod tests {
         let (_db, state, api_state) = build_state().await;
 
         let payload = CreateListenerBody {
-            team: "test-team".to_string(),
             name: "edge-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 10000,
@@ -400,6 +441,7 @@ mod tests {
         let (status, Json(resp)) = create_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await
@@ -422,7 +464,6 @@ mod tests {
 
         // Seed a listener so we can update it.
         let initial = CreateListenerBody {
-            team: "test-team".to_string(),
             name: "edge-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 10000,
@@ -447,6 +488,7 @@ mod tests {
         let _ = create_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(initial),
         )
         .await
@@ -476,7 +518,7 @@ mod tests {
         let Json(updated) = update_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
-            Path("edge-listener".to_string()),
+            Path(("test-team".to_string(), "edge-listener".to_string())),
             Json(update_payload),
         )
         .await
@@ -498,7 +540,6 @@ mod tests {
 
     fn sample_create_listener() -> CreateListenerBody {
         CreateListenerBody {
-            team: "test-team".to_string(),
             name: "edge-listener".to_string(),
             address: "0.0.0.0".to_string(),
             port: 10000,
@@ -554,6 +595,7 @@ mod tests {
         let _ = create_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await
@@ -562,6 +604,7 @@ mod tests {
         let result = list_listeners_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
@@ -580,6 +623,7 @@ mod tests {
         let _ = create_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await
@@ -588,7 +632,7 @@ mod tests {
         let result = get_listener_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
-            Path("edge-listener".to_string()),
+            Path(("test-team".to_string(), "edge-listener".to_string())),
         )
         .await;
 
@@ -606,6 +650,7 @@ mod tests {
         let _ = create_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await
@@ -614,7 +659,7 @@ mod tests {
         let status = delete_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
-            Path("edge-listener".to_string()),
+            Path(("test-team".to_string(), "edge-listener".to_string())),
         )
         .await
         .expect("delete listener");
@@ -625,7 +670,7 @@ mod tests {
         let result = get_listener_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
-            Path("edge-listener".to_string()),
+            Path(("test-team".to_string(), "edge-listener".to_string())),
         )
         .await;
         assert!(result.is_err());
@@ -641,6 +686,7 @@ mod tests {
         let result = create_listener_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await;
@@ -658,6 +704,7 @@ mod tests {
         let result = create_listener_handler(
             State(api_state),
             Extension(readonly_resource_auth_context("listeners")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await;
@@ -676,6 +723,7 @@ mod tests {
         let result = create_listener_handler(
             State(api_state),
             Extension(minimal_auth_context()),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await;
@@ -693,6 +741,7 @@ mod tests {
         let result = list_listeners_handler(
             State(api_state),
             Extension(minimal_auth_context()),
+            Path("test-team".to_string()),
             Query(PaginationQuery { limit: 50, offset: 0 }),
         )
         .await;
@@ -710,7 +759,7 @@ mod tests {
         let result = get_listener_handler(
             State(api_state),
             Extension(minimal_auth_context()),
-            Path("any-listener".to_string()),
+            Path(("test-team".to_string(), "any-listener".to_string())),
         )
         .await;
 
@@ -729,6 +778,7 @@ mod tests {
         let _ = create_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await
@@ -739,7 +789,7 @@ mod tests {
         let result = update_listener_handler(
             State(api_state),
             Extension(readonly_resource_auth_context("listeners")),
-            Path("edge-listener".to_string()),
+            Path(("test-team".to_string(), "edge-listener".to_string())),
             Json(update),
         )
         .await;
@@ -759,6 +809,7 @@ mod tests {
         let _ = create_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await
@@ -768,7 +819,7 @@ mod tests {
         let result = delete_listener_handler(
             State(api_state),
             Extension(readonly_resource_auth_context("listeners")),
-            Path("edge-listener".to_string()),
+            Path(("test-team".to_string(), "edge-listener".to_string())),
         )
         .await;
 
@@ -787,7 +838,7 @@ mod tests {
         let result = get_listener_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-listener".to_string()),
+            Path(("test-team".to_string(), "non-existent-listener".to_string())),
         )
         .await;
 
@@ -805,7 +856,7 @@ mod tests {
         let result = update_listener_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-listener".to_string()),
+            Path(("test-team".to_string(), "non-existent-listener".to_string())),
             Json(update),
         )
         .await;
@@ -823,7 +874,7 @@ mod tests {
         let result = delete_listener_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-listener".to_string()),
+            Path(("test-team".to_string(), "non-existent-listener".to_string())),
         )
         .await;
 
@@ -842,6 +893,7 @@ mod tests {
         let _ = create_listener_handler(
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload.clone()),
         )
         .await
@@ -851,6 +903,7 @@ mod tests {
         let result = create_listener_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(payload),
         )
         .await;
@@ -873,6 +926,7 @@ mod tests {
             let _ = create_listener_handler(
                 State(api_state.clone()),
                 Extension(team_auth_context("test-team")),
+                Path("test-team".to_string()),
                 Json(payload),
             )
             .await
@@ -883,6 +937,7 @@ mod tests {
         let result = list_listeners_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
@@ -904,6 +959,7 @@ mod tests {
             let _ = create_listener_handler(
                 State(api_state.clone()),
                 Extension(team_auth_context("test-team")),
+                Path("test-team".to_string()),
                 Json(payload),
             )
             .await
@@ -914,6 +970,7 @@ mod tests {
         let result = list_listeners_handler(
             State(api_state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Query(PaginationQuery { limit: 10, offset: 2 }),
         )
         .await;

@@ -508,9 +508,10 @@ pub async fn list_route_filters_handler(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/listeners/{listener_id}/filters",
+    path = "/api/v1/teams/{team}/listeners/{listener_id}/filters",
     params(
-        ("listener_id" = String, Path, description = "Listener ID"),
+        ("team" = String, Path, description = "Team name or ID"),
+        ("listener_id" = String, Path, description = "Listener name"),
     ),
     request_body = AttachFilterRequest,
     responses(
@@ -521,14 +522,22 @@ pub async fn list_route_filters_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(listener_name = %listener_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %team, listener_name = %listener_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(listener_name): Path<String>,
+    Path((team, listener_name)): Path<(String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "listeners", "update", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "listeners",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve listener name to internal UUID for database foreign key
     let listener_id = resolve_listener_id(&state, &listener_name).await?;
@@ -542,6 +551,7 @@ pub async fn attach_filter_to_listener_handler(
         .map_err(ApiError::from)?;
 
     info!(
+        team = %team,
         listener_name = %listener_name,
         listener_id = %listener_id,
         filter_id = %filter_id,
@@ -553,9 +563,10 @@ pub async fn attach_filter_to_listener_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/listeners/{listener_id}/filters/{filter_id}",
+    path = "/api/v1/teams/{team}/listeners/{listener_id}/filters/{filter_id}",
     params(
-        ("listener_id" = String, Path, description = "Listener ID"),
+        ("team" = String, Path, description = "Team name or ID"),
+        ("listener_id" = String, Path, description = "Listener name"),
         ("filter_id" = String, Path, description = "Filter ID"),
     ),
     responses(
@@ -565,13 +576,21 @@ pub async fn attach_filter_to_listener_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(listener_name = %listener_name, filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, listener_name = %listener_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((listener_name, filter_id)): Path<(String, String)>,
+    Path((team, listener_name, filter_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "listeners", "update", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "listeners",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve listener name to internal UUID for database foreign key
     let listener_id = resolve_listener_id(&state, &listener_name).await?;
@@ -582,6 +601,7 @@ pub async fn detach_filter_from_listener_handler(
     service.detach_filter_from_listener(&listener_id, &filter_id).await.map_err(ApiError::from)?;
 
     info!(
+        team = %team,
         listener_name = %listener_name,
         listener_id = %listener_id,
         filter_id = %filter_id,
@@ -593,9 +613,10 @@ pub async fn detach_filter_from_listener_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/listeners/{listener_id}/filters",
+    path = "/api/v1/teams/{team}/listeners/{listener_id}/filters",
     params(
-        ("listener_id" = String, Path, description = "Listener ID"),
+        ("team" = String, Path, description = "Team name or ID"),
+        ("listener_id" = String, Path, description = "Listener name"),
     ),
     responses(
         (status = 200, description = "Filters attached to listener", body = ListenerFiltersResponse),
@@ -604,13 +625,21 @@ pub async fn detach_filter_from_listener_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(listener_name = %listener_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, listener_name = %listener_name, user_id = ?context.user_id))]
 pub async fn list_listener_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(listener_name): Path<String>,
+    Path((team, listener_name)): Path<(String, String)>,
 ) -> Result<Json<ListenerFiltersResponse>, ApiError> {
-    require_resource_access(&context, "listeners", "read", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "listeners",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve listener name to internal UUID for database query
     let listener_id = resolve_listener_id(&state, &listener_name).await?;

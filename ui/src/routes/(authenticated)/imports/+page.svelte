@@ -52,7 +52,7 @@
 				currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([]),
-				apiClient.listListeners()
+				currentTeam ? apiClient.listListeners(currentTeam) : Promise.resolve([])
 			]);
 
 			imports = importsData;

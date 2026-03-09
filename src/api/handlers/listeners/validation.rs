@@ -189,9 +189,6 @@ fn parse_route_config(value: &Value) -> Result<RouteConfig, ApiError> {
 
 /// Validate create listener request
 pub(super) fn validate_create_listener_body(body: &CreateListenerBody) -> Result<(), ApiError> {
-    if body.team.trim().is_empty() {
-        return Err(ApiError::from(Error::validation("Listener team cannot be empty")));
-    }
     if body.name.trim().is_empty() {
         return Err(ApiError::from(Error::validation("Listener name cannot be empty")));
     }

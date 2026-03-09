@@ -384,10 +384,10 @@ pub struct RouteAction {
 }
 
 /// Listener request - matches backend CreateListenerBody
+/// Team is derived from the URL path, not the body.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateListenerRequest {
-    pub team: String,
     pub name: String,
     pub address: String,
     pub port: u16,
@@ -571,9 +571,10 @@ impl ApiClient {
     pub async fn create_listener(
         &self,
         token: &str,
+        team: &str,
         req: &CreateListenerRequest,
     ) -> anyhow::Result<ListenerResponse> {
-        let url = format!("{}/api/v1/listeners", self.base_url);
+        let url = format!("{}/api/v1/teams/{}/listeners", self.base_url, team);
 
         let resp = self
             .client
@@ -2038,14 +2039,12 @@ pub fn simple_route(
 
 /// Helper to create a simple listener with HTTP connection manager
 pub fn simple_listener(
-    team: &str,
     name: &str,
     port: u16,
     route_config: &str,
     dataplane_id: &str,
 ) -> CreateListenerRequest {
     CreateListenerRequest {
-        team: team.to_string(),
         name: name.to_string(),
         address: "0.0.0.0".to_string(),
         port,
@@ -2091,9 +2090,7 @@ mod tests {
 
     #[test]
     fn test_simple_listener_creation() {
-        let listener_req =
-            simple_listener("engineering", "test-listener", 8080, "test-route", "dp-123");
-        assert_eq!(listener_req.team, "engineering");
+        let listener_req = simple_listener("test-listener", 8080, "test-route", "dp-123");
         assert_eq!(listener_req.name, "test-listener");
         assert_eq!(listener_req.port, 8080);
         assert_eq!(listener_req.address, "0.0.0.0");

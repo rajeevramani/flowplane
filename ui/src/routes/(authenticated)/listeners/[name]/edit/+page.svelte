@@ -15,7 +15,7 @@
 
 	interface FormState {
 		name: string;
-		team: string;
+		team: string; // kept for display purposes
 		address: string;
 		port: number;
 		protocol: string;
@@ -75,7 +75,7 @@
 		error = null;
 
 		try {
-			const listener = await apiClient.getListener(listenerName);
+			const listener = await apiClient.getListener(currentTeam, listenerName);
 			formState = parseListenerToForm(listener);
 
 			// Load dataplanes for the listener's team
@@ -104,7 +104,7 @@
 		try {
 			// Load attached filters and all available filters in parallel
 			const [listenerFiltersResponse, allFilters] = await Promise.all([
-				apiClient.listListenerFilters(listenerName),
+				apiClient.listListenerFilters(currentTeam, listenerName),
 				apiClient.listFilters(currentTeam)
 			]);
 
@@ -338,7 +338,7 @@
 		try {
 			const payload = JSON.parse(jsonPayload);
 			console.log('Updating listener:', payload);
-			await apiClient.updateListener(formState.name, payload);
+			await apiClient.updateListener(currentTeam, formState.name, payload);
 			goto('/listeners');
 		} catch (e) {
 			console.error('Update failed:', e);

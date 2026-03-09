@@ -263,8 +263,8 @@ async fn test_500_full_routing_setup() {
     let listener = with_timeout(TestTimeout::default_with_label("Create listener"), async {
         api.create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "routing-echo-listener",
                 harness.ports.listener,
                 &route.name,

@@ -381,8 +381,8 @@ class ApiClient {
 	}
 
 	// Listener methods
-	async listListeners(params?: { limit?: number; offset?: number }): Promise<ListenerResponse[]> {
-		let path = '/api/v1/listeners';
+	async listListeners(team: string, params?: { limit?: number; offset?: number }): Promise<ListenerResponse[]> {
+		let path = `/api/v1/teams/${encodeURIComponent(team)}/listeners`;
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -392,12 +392,12 @@ class ApiClient {
 		return response.items;
 	}
 
-	async getListener(name: string): Promise<ListenerResponse> {
-		return this.get<ListenerResponse>(`/api/v1/listeners/${name}`);
+	async getListener(team: string, name: string): Promise<ListenerResponse> {
+		return this.get<ListenerResponse>(`/api/v1/teams/${encodeURIComponent(team)}/listeners/${encodeURIComponent(name)}`);
 	}
 
-	async deleteListener(name: string): Promise<void> {
-		return this.delete<void>(`/api/v1/listeners/${name}`);
+	async deleteListener(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/listeners/${encodeURIComponent(name)}`);
 	}
 
 	// Route Config methods
@@ -456,12 +456,12 @@ class ApiClient {
 		return this.post<RouteResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs`, body);
 	}
 
-	async createListener(body: CreateListenerBody): Promise<ListenerResponse> {
-		return this.post<ListenerResponse>('/api/v1/listeners', body);
+	async createListener(team: string, body: CreateListenerBody): Promise<ListenerResponse> {
+		return this.post<ListenerResponse>(`/api/v1/teams/${encodeURIComponent(team)}/listeners`, body);
 	}
 
-	async updateListener(name: string, body: UpdateListenerBody): Promise<ListenerResponse> {
-		return this.put<ListenerResponse>(`/api/v1/listeners/${name}`, body);
+	async updateListener(team: string, name: string, body: UpdateListenerBody): Promise<ListenerResponse> {
+		return this.put<ListenerResponse>(`/api/v1/teams/${encodeURIComponent(team)}/listeners/${encodeURIComponent(name)}`, body);
 	}
 
 	// Team methods
@@ -559,8 +559,8 @@ class ApiClient {
 	}
 
 	// Listener-Filter methods
-	async listListenerFilters(listenerId: string): Promise<ListenerFiltersResponse> {
-		return this.get<ListenerFiltersResponse>(`/api/v1/listeners/${listenerId}/filters`);
+	async listListenerFilters(team: string, listenerName: string): Promise<ListenerFiltersResponse> {
+		return this.get<ListenerFiltersResponse>(`/api/v1/teams/${encodeURIComponent(team)}/listeners/${encodeURIComponent(listenerName)}/filters`);
 	}
 
 	// ============================================================================

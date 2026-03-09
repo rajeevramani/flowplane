@@ -332,11 +332,11 @@ pub fn build_router_with_registry(
             "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
             delete(detach_filter_from_route_rule_handler),
         )
-        // Listener-Filter attachment endpoints
-        .route("/api/v1/listeners/{listener_id}/filters", get(list_listener_filters_handler))
-        .route("/api/v1/listeners/{listener_id}/filters", post(attach_filter_to_listener_handler))
+        // Listener-Filter attachment endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/listeners/{listener_id}/filters", get(list_listener_filters_handler))
+        .route("/api/v1/teams/{team}/listeners/{listener_id}/filters", post(attach_filter_to_listener_handler))
         .route(
-            "/api/v1/listeners/{listener_id}/filters/{filter_id}",
+            "/api/v1/teams/{team}/listeners/{listener_id}/filters/{filter_id}",
             delete(detach_filter_from_listener_handler),
         )
         // OpenAPI import endpoints
@@ -379,12 +379,12 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/custom-filters/{id}", put(update_custom_wasm_filter_handler))
         .route("/api/v1/teams/{team}/custom-filters/{id}", delete(delete_custom_wasm_filter_handler))
         .route("/api/v1/teams/{team}/custom-filters/{id}/download", get(download_wasm_binary_handler))
-        // Listener endpoints
-        .route("/api/v1/listeners", get(list_listeners_handler))
-        .route("/api/v1/listeners", post(create_listener_handler))
-        .route("/api/v1/listeners/{name}", get(get_listener_handler))
-        .route("/api/v1/listeners/{name}", put(update_listener_handler))
-        .route("/api/v1/listeners/{name}", delete(delete_listener_handler))
+        // Listener endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/listeners", get(list_listeners_handler))
+        .route("/api/v1/teams/{team}/listeners", post(create_listener_handler))
+        .route("/api/v1/teams/{team}/listeners/{name}", get(get_listener_handler))
+        .route("/api/v1/teams/{team}/listeners/{name}", put(update_listener_handler))
+        .route("/api/v1/teams/{team}/listeners/{name}", delete(delete_listener_handler))
         // Learning session endpoints (team-scoped like other resources)
         .route("/api/v1/learning-sessions", get(list_learning_sessions_handler))
         .route("/api/v1/learning-sessions", post(create_learning_session_handler))

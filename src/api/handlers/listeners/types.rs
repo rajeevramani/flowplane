@@ -26,7 +26,6 @@ pub struct ListenerResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateListenerBody {
-    pub team: String,
     pub name: String,
     pub address: String,
     pub port: u16,

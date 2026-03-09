@@ -93,8 +93,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "debug-listener",
                 harness.ports.listener,
                 &route.name,
@@ -507,8 +507,8 @@ async fn test_100_setup_ext_authz() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "authz-listener",
                 harness.ports.listener,
                 &route.name,
@@ -642,8 +642,8 @@ async fn test_101_authz_allow() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "allow-listener",
                 harness.ports.listener,
                 &route.name,
@@ -858,8 +858,8 @@ async fn test_102_authz_deny() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "deny-listener",
                 harness.ports.listener,
                 &route.name,

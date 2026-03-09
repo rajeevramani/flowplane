@@ -14,7 +14,6 @@
 
 	interface FormState {
 		name: string;
-		team: string;
 		address: string;
 		port: number;
 		protocol: string;
@@ -52,7 +51,7 @@
 		try {
 			const [routesData, listenersData, dataplanesData] = await Promise.all([
 				currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([]),
-				apiClient.listListeners(),
+				currentTeam ? apiClient.listListeners(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listDataplanes(currentTeam) : Promise.resolve([])
 			]);
 			routeConfigs = routesData;
@@ -121,7 +120,6 @@
 	// Initialize form state with default filter chain
 	let formState = $state<FormState>({
 		name: '',
-		team: currentTeam,
 		address: '0.0.0.0',
 		port: 8080,
 		protocol: 'HTTP',
@@ -204,7 +202,6 @@
 		});
 
 		const payload: any = {
-			team: form.team || currentTeam,
 			name: form.name || '',
 			address: form.address || '0.0.0.0',
 			port: form.port || 8080,
@@ -267,7 +264,7 @@
 		try {
 			const payload = JSON.parse(jsonPayload);
 			console.log('Creating listener:', payload);
-			await apiClient.createListener(payload);
+			await apiClient.createListener(currentTeam, payload);
 			goto('/listeners');
 		} catch (e) {
 			console.error('Create failed:', e);

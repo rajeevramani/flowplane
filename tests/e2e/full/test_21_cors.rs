@@ -67,8 +67,8 @@ async fn test_100_setup_cors() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "cors-listener",
                 harness.ports.listener,
                 &route.name,
@@ -176,8 +176,8 @@ async fn test_101_preflight_allowed() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "preflight-listener",
                 harness.ports.listener,
                 &route.name,
@@ -348,8 +348,8 @@ async fn test_102_request_with_origin() {
     let _listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "request-listener",
                 harness.ports.listener,
                 &route.name,
@@ -497,8 +497,8 @@ async fn test_103_blocked_origin() {
     let _listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "blocked-listener",
                 harness.ports.listener,
                 &route.name,

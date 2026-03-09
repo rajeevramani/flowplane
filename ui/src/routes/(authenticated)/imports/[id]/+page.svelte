@@ -48,7 +48,7 @@
 				apiClient.getImport(importId),
 				team ? apiClient.listRouteConfigs(team) : Promise.resolve([]),
 				team ? apiClient.listClusters(team) : Promise.resolve([]),
-				apiClient.listListeners()
+				team ? apiClient.listListeners(team) : Promise.resolve([])
 			]);
 
 			importDetails = importData;

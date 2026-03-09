@@ -113,7 +113,7 @@
 		const [routes, clusters, listeners, filters, imports, secrets, dataplanes] = await Promise.all([
 			safeCall(() => currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([])),
 			safeCall(() => currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([])),
-			safeCall(() => apiClient.listListeners()),
+			safeCall(() => currentTeam ? apiClient.listListeners(currentTeam) : Promise.resolve([])),
 			safeCall(() => currentTeam ? apiClient.listFilters(currentTeam) : Promise.resolve([])),
 			safeCall(() =>
 				currentTeam

@@ -120,8 +120,8 @@ async fn test_610_verify_headers() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "header-listener",
                 harness.ports.listener,
                 &route.name,
@@ -288,8 +288,8 @@ async fn test_611_route_override() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "override-listener",
                 harness.ports.listener,
                 &route.name,

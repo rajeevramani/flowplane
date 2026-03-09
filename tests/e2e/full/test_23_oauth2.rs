@@ -160,8 +160,8 @@ async fn test_101_setup_oauth2() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "oauth2-listener",
                 harness.ports.listener,
                 &route.name,

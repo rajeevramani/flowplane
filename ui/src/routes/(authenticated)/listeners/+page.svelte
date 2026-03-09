@@ -49,7 +49,7 @@
 
 		try {
 			const [listenersData, routesData, importsData, dataplanesData] = await Promise.all([
-				apiClient.listListeners(),
+				currentTeam ? apiClient.listListeners(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listDataplanes(currentTeam) : Promise.resolve([])
@@ -84,10 +84,9 @@
 		return routes.filter((r) => routeNames.has(r.name));
 	}
 
-	// Filter listeners
+	// Filter listeners (already team-scoped from API)
 	let filteredListeners = $derived(
 		listeners
-			.filter(listener => listener.team === currentTeam)
 			.filter(listener =>
 				!searchQuery ||
 				listener.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -172,7 +171,7 @@
 		}
 
 		try {
-			await apiClient.deleteListener(listener.name);
+			await apiClient.deleteListener(currentTeam, listener.name);
 			await loadData();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete listener';

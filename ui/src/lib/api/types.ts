@@ -473,7 +473,6 @@ export interface ListenerFilterChainInput {
 }
 
 export interface CreateListenerBody {
-	team: string;
 	name: string;
 	address: string;
 	port: number;

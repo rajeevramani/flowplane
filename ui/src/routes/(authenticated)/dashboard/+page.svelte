@@ -28,7 +28,7 @@
 				team
 					? apiClient.listImports(team)
 					: Promise.resolve([]),
-				apiClient.listListeners(),
+				team ? apiClient.listListeners(team) : Promise.resolve([]),
 				team
 					? apiClient.listRouteConfigs(team)
 					: Promise.resolve([]),
