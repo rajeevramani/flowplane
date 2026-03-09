@@ -64,10 +64,9 @@
 
 		try {
 			const query: import('$lib/api/types').ListLearningSessionsQuery = {
-				team: currentTeam || undefined,
 				status: statusFilter || undefined,
 			};
-			sessions = await apiClient.listLearningSessions(query);
+			sessions = currentTeam ? await apiClient.listLearningSessions(currentTeam, query) : [];
 
 			// Auto-enable polling if there are active sessions
 			const hasActiveSessions = sessions.some(
@@ -92,10 +91,9 @@
 		pollingInterval = setInterval(async () => {
 			try {
 				const query: import('$lib/api/types').ListLearningSessionsQuery = {
-					team: currentTeam || undefined,
 					status: statusFilter || undefined,
 				};
-				sessions = await apiClient.listLearningSessions(query);
+				sessions = currentTeam ? await apiClient.listLearningSessions(currentTeam, query) : [];
 
 				// Stop polling if no more active sessions
 				const hasActiveSessions = sessions.some(
@@ -167,7 +165,7 @@
 
 		actionError = null;
 		try {
-			await apiClient.cancelLearningSession(session.id);
+			await apiClient.cancelLearningSession(session.team, session.id);
 			await loadData();
 		} catch (err) {
 			const apiError = handleApiError(err, 'cancel learning session');

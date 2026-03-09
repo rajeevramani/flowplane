@@ -1348,8 +1348,6 @@ export interface LearningSessionResponse {
 
 /** Request to create a learning session */
 export interface CreateLearningSessionRequest {
-	/** Team identifier for the learning session */
-	team: string;
 	routePattern: string;
 	clusterName?: string;
 	httpMethods?: string[];
@@ -1362,7 +1360,6 @@ export interface CreateLearningSessionRequest {
 
 /** Query parameters for listing learning sessions */
 export interface ListLearningSessionsQuery {
-	team?: string;
 	status?: LearningSessionStatus;
 	limit?: number;
 	offset?: number;

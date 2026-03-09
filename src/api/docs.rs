@@ -389,14 +389,14 @@ mod tests {
         // Audit log endpoints (1)
         assert!(paths.contains_key("/api/v1/audit-logs"), "Missing GET /api/v1/audit-logs");
 
-        // Learning session endpoints (4)
+        // Learning session endpoints (4, team-scoped)
         assert!(
-            paths.contains_key("/api/v1/learning-sessions"),
-            "Missing GET/POST /api/v1/learning-sessions"
+            paths.contains_key("/api/v1/teams/{team}/learning-sessions"),
+            "Missing GET/POST /api/v1/teams/{{team}}/learning-sessions"
         );
         assert!(
-            paths.contains_key("/api/v1/learning-sessions/{id}"),
-            "Missing GET/DELETE /api/v1/learning-sessions/{{id}}"
+            paths.contains_key("/api/v1/teams/{team}/learning-sessions/{id}"),
+            "Missing GET/DELETE /api/v1/teams/{{team}}/learning-sessions/{{id}}"
         );
 
         // Aggregated schema endpoints (4)

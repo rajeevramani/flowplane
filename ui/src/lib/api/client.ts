@@ -929,26 +929,26 @@ class ApiClient {
 	// ============================================================================
 
 	/**
-	 * List learning sessions for the specified team.
+	 * List learning sessions for a team.
 	 * Supports filtering by status and pagination.
 	 */
-	async listLearningSessions(query?: ListLearningSessionsQuery): Promise<LearningSessionResponse[]> {
+	async listLearningSessions(team: string, query?: ListLearningSessionsQuery): Promise<LearningSessionResponse[]> {
 		const params = new URLSearchParams();
-		if (query?.team) params.append('team', query.team);
 		if (query?.status) params.append('status', query.status);
 		if (query?.limit) params.append('limit', query.limit.toString());
 		if (query?.offset) params.append('offset', query.offset.toString());
 
-		const path = `/api/v1/learning-sessions${params.toString() ? `?${params.toString()}` : ''}`;
+		const base = `/api/v1/teams/${encodeURIComponent(team)}/learning-sessions`;
+		const path = `${base}${params.toString() ? `?${params.toString()}` : ''}`;
 		return this.get<LearningSessionResponse[]>(path);
 	}
 
 	/**
 	 * Get a specific learning session by ID.
 	 */
-	async getLearningSession(id: string): Promise<LearningSessionResponse> {
+	async getLearningSession(team: string, id: string): Promise<LearningSessionResponse> {
 		return this.get<LearningSessionResponse>(
-			`/api/v1/learning-sessions/${encodeURIComponent(id)}`
+			`/api/v1/teams/${encodeURIComponent(team)}/learning-sessions/${encodeURIComponent(id)}`
 		);
 	}
 
@@ -956,16 +956,21 @@ class ApiClient {
 	 * Create a new learning session.
 	 * The session will automatically start capturing traffic matching the route pattern.
 	 */
-	async createLearningSession(request: CreateLearningSessionRequest): Promise<LearningSessionResponse> {
-		return this.post<LearningSessionResponse>('/api/v1/learning-sessions', request);
+	async createLearningSession(team: string, request: CreateLearningSessionRequest): Promise<LearningSessionResponse> {
+		return this.post<LearningSessionResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/learning-sessions`,
+			request
+		);
 	}
 
 	/**
 	 * Cancel a learning session.
 	 * This will stop traffic capture and mark the session as cancelled.
 	 */
-	async cancelLearningSession(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/learning-sessions/${encodeURIComponent(id)}`);
+	async cancelLearningSession(team: string, id: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/teams/${encodeURIComponent(team)}/learning-sessions/${encodeURIComponent(id)}`
+		);
 	}
 
 	// ============================================================================

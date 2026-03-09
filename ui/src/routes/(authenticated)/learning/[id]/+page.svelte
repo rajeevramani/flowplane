@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { get } from 'svelte/store';
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
@@ -19,6 +20,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import SessionStatusBadge from '$lib/components/learning/SessionStatusBadge.svelte';
 	import SessionProgressBar from '$lib/components/learning/SessionProgressBar.svelte';
+	import { selectedTeam } from '$lib/stores/team';
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -48,7 +50,14 @@
 		error = null;
 
 		try {
-			session = await apiClient.getLearningSession(sessionId);
+			// Use the currently selected team for the initial load.
+			// After loading, session.team is used for subsequent requests.
+			const team = session?.team ?? get(selectedTeam);
+			if (!team) {
+				error = 'No team selected. Please select a team from the navigation.';
+				return;
+			}
+			session = await apiClient.getLearningSession(team, sessionId);
 
 			// Auto-refresh for active sessions
 			if (session.status === 'active' || session.status === 'completing') {
@@ -68,7 +77,8 @@
 		if (pollingInterval) return;
 		pollingInterval = setInterval(async () => {
 			try {
-				session = await apiClient.getLearningSession(sessionId);
+				if (!session) return;
+				session = await apiClient.getLearningSession(session.team, sessionId);
 				if (session.status !== 'active' && session.status !== 'completing') {
 					stopPolling();
 				}
@@ -97,7 +107,7 @@
 
 		actionError = null;
 		try {
-			await apiClient.cancelLearningSession(session.id);
+			await apiClient.cancelLearningSession(session.team, session.id);
 			await loadSession();
 		} catch (err) {
 			actionError = err instanceof Error ? err.message : 'Failed to cancel session';

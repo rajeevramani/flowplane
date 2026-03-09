@@ -98,7 +98,6 @@
 			}
 
 			const request: CreateLearningSessionRequest = {
-				team,
 				routePattern: routePattern.trim(),
 				targetSampleCount
 			};
@@ -123,7 +122,7 @@
 				request.deploymentVersion = deploymentVersion.trim();
 			}
 
-			const session = await apiClient.createLearningSession(request);
+			const session = await apiClient.createLearningSession(team, request);
 			goto(`/learning/${encodeURIComponent(session.id)}`);
 		} catch (err) {
 			const apiError = handleApiError(err, 'create learning session');
