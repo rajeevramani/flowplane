@@ -525,9 +525,9 @@ class ApiClient {
 		return this.get<ListScopesResponse>('/api/v1/admin/scopes');
 	}
 
-	// Filter methods
-	async listFilters(params?: { limit?: number; offset?: number }): Promise<FilterResponse[]> {
-		let path = '/api/v1/filters';
+	// Filter methods (team-scoped)
+	async listFilters(team: string, params?: { limit?: number; offset?: number }): Promise<FilterResponse[]> {
+		let path = `/api/v1/teams/${encodeURIComponent(team)}/filters`;
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -537,20 +537,20 @@ class ApiClient {
 		return response.items;
 	}
 
-	async getFilter(id: string): Promise<FilterResponse> {
-		return this.get<FilterResponse>(`/api/v1/filters/${id}`);
+	async getFilter(team: string, id: string): Promise<FilterResponse> {
+		return this.get<FilterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/filters/${id}`);
 	}
 
-	async createFilter(body: CreateFilterRequest): Promise<FilterResponse> {
-		return this.post<FilterResponse>('/api/v1/filters', body);
+	async createFilter(team: string, body: CreateFilterRequest): Promise<FilterResponse> {
+		return this.post<FilterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/filters`, body);
 	}
 
-	async updateFilter(id: string, body: UpdateFilterRequest): Promise<FilterResponse> {
-		return this.put<FilterResponse>(`/api/v1/filters/${id}`, body);
+	async updateFilter(team: string, id: string, body: UpdateFilterRequest): Promise<FilterResponse> {
+		return this.put<FilterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/filters/${id}`, body);
 	}
 
-	async deleteFilter(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/filters/${id}`);
+	async deleteFilter(team: string, id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/filters/${id}`);
 	}
 
 	// Route Config Filter methods
@@ -861,9 +861,9 @@ class ApiClient {
 	 * Install a filter on a listener.
 	 * This adds the filter to the listener's HCM filter chain.
 	 */
-	async installFilter(filterId: string, request: InstallFilterRequest): Promise<InstallFilterResponse> {
+	async installFilter(team: string, filterId: string, request: InstallFilterRequest): Promise<InstallFilterResponse> {
 		return this.post<InstallFilterResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/installations`,
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/installations`,
 			request
 		);
 	}
@@ -871,18 +871,18 @@ class ApiClient {
 	/**
 	 * Uninstall a filter from a listener.
 	 */
-	async uninstallFilter(filterId: string, listenerId: string): Promise<void> {
+	async uninstallFilter(team: string, filterId: string, listenerId: string): Promise<void> {
 		return this.delete<void>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/installations/${encodeURIComponent(listenerId)}`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/installations/${encodeURIComponent(listenerId)}`
 		);
 	}
 
 	/**
 	 * List all listener installations for a filter.
 	 */
-	async listFilterInstallations(filterId: string): Promise<FilterInstallationsResponse> {
+	async listFilterInstallations(team: string, filterId: string): Promise<FilterInstallationsResponse> {
 		return this.get<FilterInstallationsResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/installations`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/installations`
 		);
 	}
 
@@ -890,9 +890,9 @@ class ApiClient {
 	 * Configure a filter for a scope (route-config, virtual-host, or route).
 	 * This sets per-route behavior for the filter.
 	 */
-	async configureFilter(filterId: string, request: ConfigureFilterRequest): Promise<ConfigureFilterResponse> {
+	async configureFilter(team: string, filterId: string, request: ConfigureFilterRequest): Promise<ConfigureFilterResponse> {
 		return this.post<ConfigureFilterResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations`,
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/configurations`,
 			request
 		);
 	}
@@ -900,27 +900,27 @@ class ApiClient {
 	/**
 	 * Remove a filter configuration from a scope.
 	 */
-	async removeFilterConfiguration(filterId: string, scopeType: string, scopeId: string): Promise<void> {
+	async removeFilterConfiguration(team: string, filterId: string, scopeType: string, scopeId: string): Promise<void> {
 		return this.delete<void>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/configurations/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`
 		);
 	}
 
 	/**
 	 * List all configurations for a filter.
 	 */
-	async listFilterConfigurations(filterId: string): Promise<FilterConfigurationsResponse> {
+	async listFilterConfigurations(team: string, filterId: string): Promise<FilterConfigurationsResponse> {
 		return this.get<FilterConfigurationsResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/configurations`
 		);
 	}
 
 	/**
 	 * Get combined filter status with all installations and configurations.
 	 */
-	async getFilterStatus(filterId: string): Promise<FilterStatusResponse> {
+	async getFilterStatus(team: string, filterId: string): Promise<FilterStatusResponse> {
 		return this.get<FilterStatusResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/status`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/status`
 		);
 	}
 

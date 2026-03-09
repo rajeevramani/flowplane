@@ -260,6 +260,7 @@ async fn test_102_configure_route_override() {
         with_timeout(TestTimeout::default_with_label("Configure route override"), async {
             api.add_route_filter_override(
                 &ctx.admin_token,
+                &ctx.team_a_name,
                 &resources.filter().id,
                 &scope_id,
                 override_config,
@@ -357,6 +358,7 @@ async fn test_103_verify_override() {
 
     api.add_route_filter_override(
         &ctx.admin_token,
+        &ctx.team_a_name,
         &resources.filter().id,
         &scope_id,
         override_config,

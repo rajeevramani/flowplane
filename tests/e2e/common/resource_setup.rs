@@ -397,6 +397,7 @@ impl<'a> ResourceSetup<'a> {
                         self.api
                             .install_filter(
                                 self.token,
+                                self.team,
                                 &filter.id,
                                 &listener.name,
                                 filter_config.priority.map(|p| p as i64),

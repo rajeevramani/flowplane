@@ -62,11 +62,6 @@ pub async fn validate_create_filter_request(
         return Err(ApiError::validation("Filter name must be 255 characters or less"));
     }
 
-    // Validate team is not empty
-    if payload.team.trim().is_empty() {
-        return Err(ApiError::validation("Team name cannot be empty"));
-    }
-
     // Check if this is a known filter type (built-in or from schema registry)
     let is_valid = if let Some(registry) = schema_registry {
         let reg = registry.read().await;

@@ -167,12 +167,7 @@ async fn test_810_auth_success() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "jwt-route",
-                "jwt.e2e.local",
-                "/testing/jwt-api",
-                &cluster.name,
-            ),
+            &simple_route("jwt-route", "jwt.e2e.local", "/testing/jwt-api", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -247,7 +242,14 @@ async fn test_810_auth_success() {
 
     // Install filter on listener
     let installation = with_timeout(TestTimeout::default_with_label("Install filter"), async {
-        api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100)).await
+        api.install_filter(
+            &ctx.admin_token,
+            &ctx.team_a_name,
+            &filter.id,
+            &listener.name,
+            Some(100),
+        )
+        .await
     })
     .await
     .expect("Filter installation should succeed");
@@ -355,12 +357,7 @@ async fn test_811_auth_fail_invalid_jwt() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "fail-route",
-                "fail.e2e.local",
-                "/testing/jwt-fail",
-                &cluster.name,
-            ),
+            &simple_route("fail-route", "fail.e2e.local", "/testing/jwt-fail", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -413,7 +410,7 @@ async fn test_811_auth_fail_invalid_jwt() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
@@ -574,7 +571,7 @@ async fn test_812_auth_fail_expired_jwt() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
@@ -658,12 +655,7 @@ async fn test_815_public_route_bypass() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "public-route",
-                "public.e2e.local",
-                "/testing/jwt-public",
-                &cluster.name,
-            ),
+            &simple_route("public-route", "public.e2e.local", "/testing/jwt-public", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -722,7 +714,7 @@ async fn test_815_public_route_bypass() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 

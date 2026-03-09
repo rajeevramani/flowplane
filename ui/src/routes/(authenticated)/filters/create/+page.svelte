@@ -103,12 +103,11 @@
 		isSubmitting = true;
 
 		try {
-			await apiClient.createFilter({
+			await apiClient.createFilter(currentTeam, {
 				name: filterName.trim(),
 				filterType: filterType as FilterType,
 				description: filterDescription.trim() || undefined,
-				config: buildFilterConfig(),
-				team: currentTeam
+				config: buildFilterConfig()
 			});
 			goto('/filters');
 		} catch (e) {

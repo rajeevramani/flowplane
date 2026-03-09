@@ -120,7 +120,7 @@
 			// Load config-level filters and all available filters in parallel
 			const [routeFiltersResponse, allFilters] = await Promise.all([
 				apiClient.listRouteConfigFilters(currentTeam, configId),
-				apiClient.listFilters()
+				apiClient.listFilters(currentTeam)
 			]);
 
 			attachedFilters = routeFiltersResponse.filters;
@@ -241,7 +241,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.configureFilter(filterId, {
+			await apiClient.configureFilter(currentTeam, filterId, {
 				scopeType: 'route-config',
 				scopeId: configId
 			});
@@ -256,7 +256,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.removeFilterConfiguration(filterId, 'route-config', configId);
+			await apiClient.removeFilterConfiguration(currentTeam, filterId, 'route-config', configId);
 			await loadFilters();
 		} catch (e) {
 			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration';
@@ -283,7 +283,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.configureFilter(filterId, {
+			await apiClient.configureFilter(currentTeam, filterId, {
 				scopeType: 'virtual-host',
 				scopeId: `${configId}/${virtualHostName}`
 			});
@@ -298,7 +298,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.removeFilterConfiguration(filterId, 'virtual-host', `${configId}/${virtualHostName}`);
+			await apiClient.removeFilterConfiguration(currentTeam, filterId, 'virtual-host', `${configId}/${virtualHostName}`);
 			await loadHierarchicalFilters();
 		} catch (e) {
 			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration from virtual host';
@@ -326,7 +326,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.configureFilter(filterId, {
+			await apiClient.configureFilter(currentTeam, filterId, {
 				scopeType: 'route',
 				scopeId: `${configId}/${virtualHostName}/${routeName}`
 			});
@@ -341,7 +341,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.removeFilterConfiguration(filterId, 'route', `${configId}/${virtualHostName}/${routeName}`);
+			await apiClient.removeFilterConfiguration(currentTeam, filterId, 'route', `${configId}/${virtualHostName}/${routeName}`);
 			await loadHierarchicalFilters();
 		} catch (e) {
 			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration from route';

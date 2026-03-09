@@ -81,12 +81,7 @@ async fn test_098_debug_ext_authz_step_by_step() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "debug-route",
-                "debug.e2e.local",
-                "/testing/debug",
-                &cluster.name,
-            ),
+            &simple_route("debug-route", "debug.e2e.local", "/testing/debug", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -293,7 +288,7 @@ async fn test_098_debug_ext_authz_step_by_step() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Install filter on listener
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
     println!("✓ Filter installed on listener: {}", listener.name);
@@ -302,9 +297,14 @@ async fn test_098_debug_ext_authz_step_by_step() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Configure at route-config level
-    api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name)
-        .await
-        .expect("Filter route-config configuration should succeed");
+    api.configure_filter_at_route_config(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &filter.id,
+        &route.name,
+    )
+    .await
+    .expect("Filter route-config configuration should succeed");
     println!("✓ Filter configured at route-config level: {}", route.name);
 
     // Wait for xDS propagation
@@ -496,12 +496,7 @@ async fn test_100_setup_ext_authz() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "authz-route",
-                "authz.e2e.local",
-                "/testing/authz-setup",
-                &cluster.name,
-            ),
+            &simple_route("authz-route", "authz.e2e.local", "/testing/authz-setup", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -551,7 +546,14 @@ async fn test_100_setup_ext_authz() {
 
     // Install filter on listener
     let installation = with_timeout(TestTimeout::default_with_label("Install filter"), async {
-        api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100)).await
+        api.install_filter(
+            &ctx.admin_token,
+            &ctx.team_a_name,
+            &filter.id,
+            &listener.name,
+            Some(100),
+        )
+        .await
     })
     .await
     .expect("Filter installation should succeed");
@@ -562,9 +564,14 @@ async fn test_100_setup_ext_authz() {
     );
 
     // Configure filter at route-config level (required for ext_authz to be active)
-    api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name)
-        .await
-        .expect("Filter route-config configuration should succeed");
+    api.configure_filter_at_route_config(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &filter.id,
+        &route.name,
+    )
+    .await
+    .expect("Filter route-config configuration should succeed");
 
     println!("✓ Filter configured at route-config level: {}", route.name);
 
@@ -627,12 +634,7 @@ async fn test_101_authz_allow() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "allow-route",
-                "allow.e2e.local",
-                "/testing/authz-allow",
-                &cluster.name,
-            ),
+            &simple_route("allow-route", "allow.e2e.local", "/testing/authz-allow", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -672,16 +674,21 @@ async fn test_101_authz_allow() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
     println!("✓ Filter installed on listener: {}", listener.name);
 
     // Configure filter at route-config level (required for ext_authz to be active)
-    api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name)
-        .await
-        .expect("Filter route-config configuration should succeed");
+    api.configure_filter_at_route_config(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &filter.id,
+        &route.name,
+    )
+    .await
+    .expect("Filter route-config configuration should succeed");
 
     println!("✓ Filter configured at route-config level: {}", route.name);
 
@@ -843,12 +850,7 @@ async fn test_102_authz_deny() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "deny-route",
-                "deny.e2e.local",
-                "/testing/authz-deny",
-                &cluster.name,
-            ),
+            &simple_route("deny-route", "deny.e2e.local", "/testing/authz-deny", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -881,16 +883,21 @@ async fn test_102_authz_deny() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
     println!("✓ Filter installed on listener: {}", listener.name);
 
     // Configure filter at route-config level (required for ext_authz to be active)
-    api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name)
-        .await
-        .expect("Filter route-config configuration should succeed");
+    api.configure_filter_at_route_config(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &filter.id,
+        &route.name,
+    )
+    .await
+    .expect("Filter route-config configuration should succeed");
 
     println!("✓ Filter configured at route-config level: {}", route.name);
 

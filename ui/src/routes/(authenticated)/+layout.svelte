@@ -114,7 +114,7 @@
 			safeCall(() => currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([])),
 			safeCall(() => currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([])),
 			safeCall(() => apiClient.listListeners()),
-			safeCall(() => apiClient.listFilters()),
+			safeCall(() => currentTeam ? apiClient.listFilters(currentTeam) : Promise.resolve([])),
 			safeCall(() =>
 				currentTeam
 					? apiClient.listImports(currentTeam)

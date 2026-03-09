@@ -8,6 +8,12 @@
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import DynamicFilterForm from '$lib/components/filters/DynamicFilterForm.svelte';
+	import { selectedTeam } from '$lib/stores/team';
+
+	let currentTeam = $state<string>('');
+	selectedTeam.subscribe((value) => {
+		currentTeam = value;
+	});
 
 	// Page state
 	let isLoading = $state(true);
@@ -39,7 +45,7 @@
 		error = null;
 
 		try {
-			const data = await apiClient.getFilter(getFilterId());
+			const data = await apiClient.getFilter(currentTeam, getFilterId());
 			filter = data;
 
 			// Populate form fields
@@ -55,7 +61,7 @@
 
 			// Load filter status (installations + configurations)
 			try {
-				filterStatus = await apiClient.getFilterStatus(getFilterId());
+				filterStatus = await apiClient.getFilterStatus(currentTeam, getFilterId());
 			} catch (e) {
 				console.warn('Could not load filter status:', e);
 			}
@@ -114,7 +120,7 @@
 
 		isSubmitting = true;
 		try {
-			await apiClient.updateFilter(getFilterId(), {
+			await apiClient.updateFilter(currentTeam, getFilterId(), {
 				name: filterName.trim(),
 				description: filterDescription.trim() || undefined,
 				config: buildFilterConfig()
@@ -133,7 +139,7 @@
 			return;
 		}
 		try {
-			await apiClient.deleteFilter(getFilterId());
+			await apiClient.deleteFilter(currentTeam, getFilterId());
 			goto('/filters');
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to delete filter';

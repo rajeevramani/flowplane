@@ -47,7 +47,7 @@
 			customFilters = response.items;
 
 			// Load filter instances to count usage
-			const filters = await apiClient.listFilters();
+			const filters = await apiClient.listFilters(currentTeam);
 			filterInstances = filters;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load custom filters';

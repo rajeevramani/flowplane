@@ -7,6 +7,12 @@
 	import type { FilterResponse, ListenerResponse, FilterInstallationItem } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+	import { selectedTeam } from '$lib/stores/team';
+
+	let currentTeam = $state<string>('');
+	selectedTeam.subscribe((value) => {
+		currentTeam = value;
+	});
 
 	let isLoading = $state(true);
 	let isSaving = $state(false);
@@ -43,13 +49,13 @@
 
 		try {
 			// Load filter details
-			filter = await apiClient.getFilter(filterId);
+			filter = await apiClient.getFilter(currentTeam, filterId);
 
 			// Load all listeners
 			listeners = await apiClient.listListeners();
 
 			// Load current installations
-			const installationsResponse = await apiClient.listFilterInstallations(filterId);
+			const installationsResponse = await apiClient.listFilterInstallations(currentTeam, filterId);
 			currentInstallations = installationsResponse.installations;
 
 			// Initialize selection state from current installations
@@ -111,13 +117,13 @@
 
 			// Perform uninstalls
 			for (const listenerName of toUninstall) {
-				await apiClient.uninstallFilter(filterId, listenerName);
+				await apiClient.uninstallFilter(currentTeam, filterId, listenerName);
 			}
 
 			// Perform installs
 			for (const listenerName of toInstall) {
 				const order = listenerOrders.get(listenerName) || 1;
-				await apiClient.installFilter(filterId, {
+				await apiClient.installFilter(currentTeam, filterId, {
 					listenerName,
 					order
 				});

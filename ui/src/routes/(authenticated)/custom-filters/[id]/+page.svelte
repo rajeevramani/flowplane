@@ -62,7 +62,7 @@
 			customFilter = await apiClient.getCustomWasmFilter(currentTeam, filterId);
 
 			// Load filter instances to find usage
-			const filters = await apiClient.listFilters();
+			const filters = await apiClient.listFilters(currentTeam);
 			filterInstances = filters.filter((f) => f.filterType === customFilter?.filter_type);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load custom filter';

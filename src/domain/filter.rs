@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_frontend_payload_deserialization() {
-        // This is what the frontend sends after our fix
+        // Team comes from path param, not request body — unknown fields are ignored
         let json = r#"{
             "name": "test-filter",
             "filterType": "header_mutation",
@@ -748,8 +748,7 @@ mod tests {
                 "config": {
                     "request_headers_to_add": [{"key": "X-Test", "value": "val", "append": false}]
                 }
-            },
-            "team": "test-team"
+            }
         }"#;
 
         let result: Result<CreateFilterRequest, _> = serde_json::from_str(json);
@@ -758,7 +757,6 @@ mod tests {
         let req = result.unwrap();
         assert_eq!(req.name, "test-filter");
         assert_eq!(req.filter_type, "header_mutation");
-        assert_eq!(req.team, "test-team");
 
         match req.config {
             FilterConfig::HeaderMutation(cfg) => {

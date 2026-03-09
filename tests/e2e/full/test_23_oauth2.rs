@@ -149,12 +149,7 @@ async fn test_101_setup_oauth2() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "oauth2-route",
-                "oauth2.e2e.local",
-                "/testing",
-                &cluster.name,
-            ),
+            &simple_route("oauth2-route", "oauth2.e2e.local", "/testing", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -234,7 +229,14 @@ async fn test_101_setup_oauth2() {
             // Install filter on listener
             let installation =
                 with_timeout(TestTimeout::default_with_label("Install OAuth2 filter"), async {
-                    api.install_filter(&ctx.admin_token, &f.id, &listener.name, Some(100)).await
+                    api.install_filter(
+                        &ctx.admin_token,
+                        &ctx.team_a_name,
+                        &f.id,
+                        &listener.name,
+                        Some(100),
+                    )
+                    .await
                 })
                 .await
                 .expect("Filter installation should succeed");

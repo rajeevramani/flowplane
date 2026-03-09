@@ -75,7 +75,6 @@ pub struct CreateFilterRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub config: FilterConfig,
-    pub team: String,
     /// Optional cluster configuration for filters that require backend clusters
     /// (OAuth2, JWT Auth, ExtAuthz). When mode is "create", a new cluster will
     /// be created before the filter. When mode is "reuse", an existing cluster

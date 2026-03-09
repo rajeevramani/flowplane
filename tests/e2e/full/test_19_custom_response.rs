@@ -111,7 +111,13 @@ async fn test_101_verify_custom_response() {
     // Configure filter at route-config level (required for filter to be active)
     let _config_result =
         with_timeout(TestTimeout::default_with_label("Configure filter at route-config"), async {
-            api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name).await
+            api.configure_filter_at_route_config(
+                &ctx.admin_token,
+                &ctx.team_a_name,
+                &filter.id,
+                &route.name,
+            )
+            .await
         })
         .await
         .expect("Configure filter at route-config should succeed");
@@ -245,7 +251,13 @@ async fn test_102_route_override() {
     // Configure filter at route-config level first
     let _config_result =
         with_timeout(TestTimeout::default_with_label("Configure filter at route-config"), async {
-            api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name).await
+            api.configure_filter_at_route_config(
+                &ctx.admin_token,
+                &ctx.team_a_name,
+                &filter.id,
+                &route.name,
+            )
+            .await
         })
         .await
         .expect("Configure filter at route-config should succeed");
@@ -267,8 +279,14 @@ async fn test_102_route_override() {
 
     let override_result =
         with_timeout(TestTimeout::default_with_label("Add route override"), async {
-            api.add_route_filter_override(&ctx.admin_token, &filter.id, &scope_id, override_config)
-                .await
+            api.add_route_filter_override(
+                &ctx.admin_token,
+                &ctx.team_a_name,
+                &filter.id,
+                &scope_id,
+                override_config,
+            )
+            .await
         })
         .await
         .expect("Route override should succeed");
@@ -377,7 +395,13 @@ async fn test_103_status_override() {
     // Configure filter at route-config level
     let _config_result =
         with_timeout(TestTimeout::default_with_label("Configure filter at route-config"), async {
-            api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name).await
+            api.configure_filter_at_route_config(
+                &ctx.admin_token,
+                &ctx.team_a_name,
+                &filter.id,
+                &route.name,
+            )
+            .await
         })
         .await
         .expect("Configure filter at route-config should succeed");

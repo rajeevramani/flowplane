@@ -761,7 +761,6 @@ export interface CreateFilterRequest {
 	filterType: FilterType;
 	description?: string;
 	config: FilterConfig;
-	team: string;
 }
 
 export interface UpdateFilterRequest {

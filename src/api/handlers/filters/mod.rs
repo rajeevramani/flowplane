@@ -101,21 +101,34 @@ async fn resolve_listener_id(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/filters",
-    params(PaginationQuery),
+    path = "/api/v1/teams/{team}/filters",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        PaginationQuery
+    ),
     responses(
         (status = 200, description = "List of filters", body = PaginatedResponse<FilterResponse>),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 503, description = "Filter repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, user_id = ?context.user_id))]
 pub async fn list_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Query(params): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<FilterResponse>>, ApiError> {
-    require_resource_access(&context, "filters", "read", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let (limit, offset) = params.clamp(1000);
 
@@ -148,20 +161,25 @@ pub async fn list_filters_handler(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/filters",
+    path = "/api/v1/teams/{team}/filters",
     request_body = CreateFilterRequest,
     responses(
         (status = 201, description = "Filter created", body = FilterResponse),
         (status = 400, description = "Validation error"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 409, description = "Cluster already exists (when creating)"),
         (status = 503, description = "Filter repository unavailable"),
     ),
+    params(
+        ("team" = String, Path, description = "Team name")
+    ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(team = %payload.team, filter_name = %payload.name, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %team, filter_name = %payload.name, user_id = ?context.user_id))]
 pub async fn create_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Json(payload): Json<CreateFilterRequest>,
 ) -> Result<(StatusCode, Json<FilterResponse>), ApiError> {
     info!(
@@ -178,7 +196,7 @@ pub async fn create_filter_handler(
         &context,
         "filters",
         "create",
-        Some(&payload.team),
+        Some(&team),
         context.org_id.as_ref(),
     )
     .await?;
@@ -186,7 +204,7 @@ pub async fn create_filter_handler(
     // Resolve team name to UUID for database storage
     let team_id = crate::api::handlers::team_access::resolve_team_name(
         &state,
-        &payload.team,
+        &team,
         context.org_id.as_ref(),
     )
     .await?;
@@ -219,24 +237,35 @@ pub async fn create_filter_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/filters/{id}",
+    path = "/api/v1/teams/{team}/filters/{id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = String, Path, description = "Filter ID"),
     ),
     responses(
         (status = 200, description = "Filter details", body = FilterResponse),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Filter repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(filter_id = %id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %path.0, filter_id = %path.1, user_id = ?context.user_id))]
 pub async fn get_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<String>,
+    Path(path): Path<(String, String)>,
 ) -> Result<Json<FilterResponse>, ApiError> {
-    require_resource_access(&context, "filters", "read", None)?;
+    let (team, id) = path;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
@@ -250,31 +279,42 @@ pub async fn get_filter_handler(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/filters/{id}",
+    path = "/api/v1/teams/{team}/filters/{id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = String, Path, description = "Filter ID"),
     ),
     request_body = UpdateFilterRequest,
     responses(
         (status = 200, description = "Filter updated", body = FilterResponse),
         (status = 400, description = "Validation error"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Filter repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(filter_id = %id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %path.0, filter_id = %path.1, user_id = ?context.user_id))]
 pub async fn update_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<String>,
+    Path(path): Path<(String, String)>,
     Json(payload): Json<UpdateFilterRequest>,
 ) -> Result<Json<FilterResponse>, ApiError> {
+    let (team, id) = path;
     // REST-specific validation
     validate_update_filter_request(&payload)?;
 
-    // Verify user has update access (general scope check)
-    require_resource_access(&context, "filters", "update", None)?;
+    // Verify user has update access
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Create internal API request
     let internal_request = InternalUpdateFilterRequest {
@@ -295,26 +335,37 @@ pub async fn update_filter_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/filters/{id}",
+    path = "/api/v1/teams/{team}/filters/{id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = String, Path, description = "Filter ID"),
     ),
     responses(
         (status = 204, description = "Filter deleted"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter not found"),
         (status = 409, description = "Filter is attached to routes"),
         (status = 503, description = "Filter repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(filter_id = %id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %path.0, filter_id = %path.1, user_id = ?context.user_id))]
 pub async fn delete_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<String>,
+    Path(path): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    // Verify user has delete access (general scope check)
-    require_resource_access(&context, "filters", "delete", None)?;
+    let (team, id) = path;
+    // Verify user has delete access
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "delete",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
@@ -628,28 +679,39 @@ async fn resolve_route_id(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/filters/{filter_id}/installations",
+    path = "/api/v1/teams/{team}/filters/{filter_id}/installations",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("filter_id" = String, Path, description = "Filter ID or name"),
     ),
     request_body = InstallFilterRequest,
     responses(
         (status = 201, description = "Filter installed on listener", body = InstallFilterResponse),
         (status = 400, description = "Validation error - filter type incompatible with listener"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter or listener not found"),
         (status = 409, description = "Filter already installed on this listener"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(filter_id = %filter_id, listener_name = %payload.listener_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %path.0, filter_id = %path.1, listener_name = %payload.listener_name, user_id = ?context.user_id))]
 pub async fn install_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(filter_id): Path<String>,
+    Path(path): Path<(String, String)>,
     Json(payload): Json<InstallFilterRequest>,
 ) -> Result<(StatusCode, Json<InstallFilterResponse>), ApiError> {
-    require_resource_access(&context, "filters", "update", None)?;
+    let (team, filter_id) = path;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -703,25 +765,36 @@ pub async fn install_filter_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/filters/{filter_id}/installations/{listener_id}",
+    path = "/api/v1/teams/{team}/filters/{filter_id}/installations/{listener_id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("filter_id" = String, Path, description = "Filter ID or name"),
         ("listener_id" = String, Path, description = "Listener ID or name"),
     ),
     responses(
         (status = 204, description = "Filter uninstalled from listener"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter, listener, or installation not found"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(filter_id = %filter_id, listener_id = %listener_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %path.0, filter_id = %path.1, listener_id = %path.2, user_id = ?context.user_id))]
 pub async fn uninstall_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((filter_id, listener_id)): Path<(String, String)>,
+    Path(path): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "filters", "delete", None)?;
+    let (team, filter_id, listener_id) = path;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "delete",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -751,24 +824,35 @@ pub async fn uninstall_filter_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/filters/{filter_id}/installations",
+    path = "/api/v1/teams/{team}/filters/{filter_id}/installations",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("filter_id" = String, Path, description = "Filter ID or name"),
     ),
     responses(
         (status = 200, description = "List of listener installations", body = FilterInstallationsResponse),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %path.0, filter_id = %path.1, user_id = ?context.user_id))]
 pub async fn list_filter_installations_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(filter_id): Path<String>,
+    Path(path): Path<(String, String)>,
 ) -> Result<Json<FilterInstallationsResponse>, ApiError> {
-    require_resource_access(&context, "filters", "read", None)?;
+    let (team, filter_id) = path;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -800,28 +884,39 @@ pub async fn list_filter_installations_handler(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/filters/{filter_id}/configurations",
+    path = "/api/v1/teams/{team}/filters/{filter_id}/configurations",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("filter_id" = String, Path, description = "Filter ID or name"),
     ),
     request_body = ConfigureFilterRequest,
     responses(
         (status = 201, description = "Filter configured for scope", body = ConfigureFilterResponse),
         (status = 400, description = "Validation error - filter not installed on relevant listeners"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter or scope not found"),
         (status = 409, description = "Filter already configured for this scope"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(filter_id = %filter_id, scope_type = %payload.scope_type, scope_id = %payload.scope_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %path.0, filter_id = %path.1, scope_type = %payload.scope_type, scope_id = %payload.scope_id, user_id = ?context.user_id))]
 pub async fn configure_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(filter_id): Path<String>,
+    Path(path): Path<(String, String)>,
     Json(payload): Json<ConfigureFilterRequest>,
 ) -> Result<(StatusCode, Json<ConfigureFilterResponse>), ApiError> {
-    require_resource_access(&context, "filters", "create", None)?;
+    let (team, filter_id) = path;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "create",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -909,26 +1004,37 @@ pub async fn configure_filter_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/filters/{filter_id}/configurations/{scope_type}/{scope_id}",
+    path = "/api/v1/teams/{team}/filters/{filter_id}/configurations/{scope_type}/{scope_id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("filter_id" = String, Path, description = "Filter ID or name"),
         ("scope_type" = String, Path, description = "Scope type: route-config, virtual-host, or route"),
         ("scope_id" = String, Path, description = "Scope ID (URL-encoded if contains slashes)"),
     ),
     responses(
         (status = 204, description = "Filter configuration removed"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter, scope, or configuration not found"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(filter_id = %filter_id, scope_type = %scope_type, scope_id = %scope_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %path.0, filter_id = %path.1, scope_type = %path.2, scope_id = %path.3, user_id = ?context.user_id))]
 pub async fn remove_filter_configuration_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((filter_id, scope_type, scope_id)): Path<(String, String, String)>,
+    Path(path): Path<(String, String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "filters", "delete", None)?;
+    let (team, filter_id, scope_type, scope_id) = path;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "delete",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -995,24 +1101,35 @@ pub async fn remove_filter_configuration_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/filters/{filter_id}/configurations",
+    path = "/api/v1/teams/{team}/filters/{filter_id}/configurations",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("filter_id" = String, Path, description = "Filter ID or name"),
     ),
     responses(
         (status = 200, description = "List of filter configurations", body = FilterConfigurationsResponse),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %path.0, filter_id = %path.1, user_id = ?context.user_id))]
 pub async fn list_filter_configurations_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(filter_id): Path<String>,
+    Path(path): Path<(String, String)>,
 ) -> Result<Json<FilterConfigurationsResponse>, ApiError> {
-    require_resource_access(&context, "filters", "read", None)?;
+    let (team, filter_id) = path;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -1044,24 +1161,35 @@ pub async fn list_filter_configurations_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/filters/{filter_id}/status",
+    path = "/api/v1/teams/{team}/filters/{filter_id}/status",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("filter_id" = String, Path, description = "Filter ID or name"),
     ),
     responses(
         (status = 200, description = "Filter status with installations and configurations", body = FilterStatusResponse),
+        (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 404, description = "Filter not found"),
         (status = 503, description = "Repository unavailable"),
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %path.0, filter_id = %path.1, user_id = ?context.user_id))]
 pub async fn get_filter_status_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(filter_id): Path<String>,
+    Path(path): Path<(String, String)>,
 ) -> Result<Json<FilterStatusResponse>, ApiError> {
-    require_resource_access(&context, "filters", "read", None)?;
+    let (team, filter_id) = path;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "filters",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -1146,9 +1274,8 @@ mod tests {
         (_db, state)
     }
 
-    fn sample_create_filter_request(team: &str) -> CreateFilterRequest {
+    fn sample_create_filter_request() -> CreateFilterRequest {
         CreateFilterRequest {
-            team: team.to_string(),
             name: "test-filter".to_string(),
             filter_type: "header_mutation".to_string(),
             description: Some("A test header mutation filter".to_string()),
@@ -1179,6 +1306,7 @@ mod tests {
         let result = list_filters_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Query(empty_list_query()),
         )
         .await;
@@ -1195,6 +1323,7 @@ mod tests {
         let result = list_filters_handler(
             State(state),
             Extension(minimal_auth_context()),
+            Path("test-team".to_string()),
             Query(empty_list_query()),
         )
         .await;
@@ -1208,11 +1337,12 @@ mod tests {
     #[tokio::test]
     async fn test_create_filter_with_team_context() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         let result = create_filter_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await;
@@ -1227,11 +1357,12 @@ mod tests {
     #[tokio::test]
     async fn test_create_filter_with_team_scoped_auth() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         let result = create_filter_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await;
@@ -1244,11 +1375,12 @@ mod tests {
     #[tokio::test]
     async fn test_create_filter_fails_without_write_scope() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         let result = create_filter_handler(
             State(state),
             Extension(readonly_resource_auth_context("filters")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await;
@@ -1262,11 +1394,12 @@ mod tests {
     #[tokio::test]
     async fn test_create_filter_validates_team_exists() {
         let (_db, state) = create_test_state().await; // No team created
-        let body = sample_create_filter_request("non-existent-team");
+        let body = sample_create_filter_request();
 
         let result = create_filter_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("non-existent-team".to_string()),
             Json(body),
         )
         .await;
@@ -1278,12 +1411,13 @@ mod tests {
     #[tokio::test]
     async fn test_get_filter_returns_details() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await
@@ -1293,7 +1427,7 @@ mod tests {
         let result = get_filter_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path(created.id.clone()),
+            Path(("test-team".to_string(), created.id.clone())),
         )
         .await;
 
@@ -1310,7 +1444,7 @@ mod tests {
         let result = get_filter_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-filter-id".to_string()),
+            Path(("test-team".to_string(), "non-existent-filter-id".to_string())),
         )
         .await;
 
@@ -1323,12 +1457,13 @@ mod tests {
     #[tokio::test]
     async fn test_update_filter_changes_description() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await
@@ -1344,7 +1479,7 @@ mod tests {
         let result = update_filter_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path(created.id.clone()),
+            Path(("test-team".to_string(), created.id.clone())),
             Json(update_body),
         )
         .await;
@@ -1357,12 +1492,13 @@ mod tests {
     #[tokio::test]
     async fn test_update_filter_requires_write_scope() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await
@@ -1374,7 +1510,7 @@ mod tests {
         let result = update_filter_handler(
             State(state),
             Extension(readonly_resource_auth_context("filters")),
-            Path(created.id.clone()),
+            Path(("test-team".to_string(), created.id.clone())),
             Json(update_body),
         )
         .await;
@@ -1388,12 +1524,13 @@ mod tests {
     #[tokio::test]
     async fn test_delete_filter_removes_record() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await
@@ -1403,7 +1540,7 @@ mod tests {
         let result = delete_filter_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
-            Path(created.id.clone()),
+            Path(("test-team".to_string(), created.id.clone())),
         )
         .await;
 
@@ -1414,7 +1551,7 @@ mod tests {
         let get_result = get_filter_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path(created.id),
+            Path(("test-team".to_string(), created.id)),
         )
         .await;
 
@@ -1424,12 +1561,13 @@ mod tests {
     #[tokio::test]
     async fn test_delete_filter_requires_write_scope() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await
@@ -1439,7 +1577,7 @@ mod tests {
         let result = delete_filter_handler(
             State(state),
             Extension(readonly_resource_auth_context("filters")),
-            Path(created.id),
+            Path(("test-team".to_string(), created.id)),
         )
         .await;
 
@@ -1456,7 +1594,7 @@ mod tests {
         let result = delete_filter_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-filter-id".to_string()),
+            Path(("test-team".to_string(), "non-existent-filter-id".to_string())),
         )
         .await;
 
@@ -1469,12 +1607,13 @@ mod tests {
     #[tokio::test]
     async fn test_list_filters_returns_created_filters() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         // Create filter
         let _ = create_filter_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await
@@ -1484,6 +1623,7 @@ mod tests {
         let result = list_filters_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Query(empty_list_query()),
         )
         .await;
@@ -1500,11 +1640,12 @@ mod tests {
 
         // Create multiple filters
         for i in 0..5 {
-            let mut body = sample_create_filter_request("test-team");
+            let mut body = sample_create_filter_request();
             body.name = format!("test-filter-{}", i);
             let _ = create_filter_handler(
                 State(state.clone()),
                 Extension(team_auth_context("test-team")),
+                Path("test-team".to_string()),
                 Json(body),
             )
             .await
@@ -1515,6 +1656,7 @@ mod tests {
         let result = list_filters_handler(
             State(state),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Query(PaginationQuery { limit: 2, offset: 0 }),
         )
         .await;
@@ -1529,12 +1671,13 @@ mod tests {
     #[tokio::test]
     async fn test_get_filter_status_returns_installations_and_configurations() {
         let (_db, state) = setup_state_with_team("test-team").await;
-        let body = sample_create_filter_request("test-team");
+        let body = sample_create_filter_request();
 
         // Create filter
         let (_, Json(created)) = create_filter_handler(
             State(state.clone()),
             Extension(team_auth_context("test-team")),
+            Path("test-team".to_string()),
             Json(body),
         )
         .await
@@ -1544,7 +1687,7 @@ mod tests {
         let result = get_filter_status_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path(created.id.clone()),
+            Path(("test-team".to_string(), created.id.clone())),
         )
         .await;
 
@@ -1563,7 +1706,7 @@ mod tests {
         let result = get_filter_status_handler(
             State(state),
             Extension(team_auth_context("test-team")),
-            Path("non-existent-filter-id".to_string()),
+            Path(("test-team".to_string(), "non-existent-filter-id".to_string())),
         )
         .await;
 

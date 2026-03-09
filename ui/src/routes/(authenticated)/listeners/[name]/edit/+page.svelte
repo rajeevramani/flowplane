@@ -105,7 +105,7 @@
 			// Load attached filters and all available filters in parallel
 			const [listenerFiltersResponse, allFilters] = await Promise.all([
 				apiClient.listListenerFilters(listenerName),
-				apiClient.listFilters()
+				apiClient.listFilters(currentTeam)
 			]);
 
 			attachedFilters = listenerFiltersResponse.filters;
@@ -131,7 +131,7 @@
 		if (!listenerName) return;
 
 		try {
-			await apiClient.installFilter(filterId, { listenerName, order });
+			await apiClient.installFilter(currentTeam, filterId, { listenerName, order });
 			// Reload filters to show the newly installed filter
 			await loadFilters();
 		} catch (e) {
@@ -144,7 +144,7 @@
 		if (!listenerName) return;
 
 		try {
-			await apiClient.uninstallFilter(filterId, listenerName);
+			await apiClient.uninstallFilter(currentTeam, filterId, listenerName);
 			// Reload filters to update the list
 			await loadFilters();
 		} catch (e) {

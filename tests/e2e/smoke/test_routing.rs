@@ -222,7 +222,8 @@ async fn smoke_test_filter_attachment() {
 
     // Install filter on listener
     with_timeout(TestTimeout::quick("Install filter"), async {
-        api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(1)).await
+        api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(1))
+            .await
     })
     .await
     .expect("Filter installation should succeed");
@@ -233,7 +234,14 @@ async fn smoke_test_filter_attachment() {
 
     // Attach filter to route
     with_timeout(TestTimeout::quick("Attach filter to route"), async {
-        api.attach_filter_to_route(&ctx.admin_token, &ctx.team_a_name, &route.name, &filter.id, Some(1)).await
+        api.attach_filter_to_route(
+            &ctx.admin_token,
+            &ctx.team_a_name,
+            &route.name,
+            &filter.id,
+            Some(1),
+        )
+        .await
     })
     .await
     .expect("Filter attachment should succeed");
@@ -542,7 +550,7 @@ async fn smoke_test_crud_operations() {
 
     // READ - Get filter by ID
     let filter_read = with_timeout(TestTimeout::quick("Get filter"), async {
-        api.get_filter(&ctx.admin_token, &filter.id).await
+        api.get_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id).await
     })
     .await
     .expect("Get filter should succeed");
@@ -552,7 +560,7 @@ async fn smoke_test_crud_operations() {
 
     // DELETE - Delete the filter
     with_timeout(TestTimeout::quick("Delete filter"), async {
-        api.delete_filter(&ctx.admin_token, &filter.id).await
+        api.delete_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id).await
     })
     .await
     .expect("Delete filter should succeed");
@@ -563,7 +571,7 @@ async fn smoke_test_crud_operations() {
 
     // Verify filter is gone
     let filter_after_delete = with_timeout(TestTimeout::quick("Get deleted filter"), async {
-        api.get_filter(&ctx.admin_token, &filter.id).await
+        api.get_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id).await
     })
     .await;
 

@@ -786,10 +786,9 @@ impl ApiClient {
         filter_type: &str,
         config: Value,
     ) -> anyhow::Result<FilterResponse> {
-        let url = format!("{}/api/v1/filters", self.base_url);
+        let url = format!("{}/api/v1/teams/{}/filters", self.base_url, team);
         // API expects config in {"type": "...", "config": {...}} format
         let body = json!({
-            "team": team,
             "name": name,
             "filterType": filter_type,
             "config": {
@@ -820,11 +819,13 @@ impl ApiClient {
     pub async fn install_filter(
         &self,
         token: &str,
+        team: &str,
         filter_id: &str,
         listener_name: &str,
         order: Option<i64>,
     ) -> anyhow::Result<FilterInstallationResponse> {
-        let url = format!("{}/api/v1/filters/{}/installations", self.base_url, filter_id);
+        let url =
+            format!("{}/api/v1/teams/{}/filters/{}/installations", self.base_url, team, filter_id);
         let body = json!({
             "listenerName": listener_name,
             "order": order.unwrap_or(100),
@@ -860,10 +861,8 @@ impl ApiClient {
         filter_id: &str,
         order: Option<i64>,
     ) -> anyhow::Result<()> {
-        let url = format!(
-            "{}/api/v1/teams/{}/route-configs/{}/filters",
-            self.base_url, team, route_name
-        );
+        let url =
+            format!("{}/api/v1/teams/{}/route-configs/{}/filters", self.base_url, team, route_name);
         let body = json!({
             "filterId": filter_id,
             "order": order.unwrap_or(1),
@@ -889,14 +888,16 @@ impl ApiClient {
 
     /// Configure filter at route-config level.
     /// This enables the filter for all routes in the route config.
-    /// Endpoint: POST /api/v1/filters/{filter_id}/configurations
+    /// Endpoint: POST /api/v1/teams/{team}/filters/{filter_id}/configurations
     pub async fn configure_filter_at_route_config(
         &self,
         token: &str,
+        team: &str,
         filter_id: &str,
         route_config_name: &str,
     ) -> anyhow::Result<Value> {
-        let url = format!("{}/api/v1/filters/{}/configurations", self.base_url, filter_id);
+        let url =
+            format!("{}/api/v1/teams/{}/filters/{}/configurations", self.base_url, team, filter_id);
         let body = json!({
             "scopeType": "route-config",
             "scopeId": route_config_name
@@ -922,16 +923,18 @@ impl ApiClient {
 
     /// Add a route-specific filter configuration override
     /// This allows customizing filter config for a specific scope (route/vhost/listener).
-    /// Endpoint: POST /api/v1/filters/{filter_id}/configurations
+    /// Endpoint: POST /api/v1/teams/{team}/filters/{filter_id}/configurations
     /// scope_id format for routes: "{route-config-name}/{vhost-name}/{route-name}"
     pub async fn add_route_filter_override(
         &self,
         token: &str,
+        team: &str,
         filter_id: &str,
         scope_id: &str,
         config: Value,
     ) -> anyhow::Result<Value> {
-        let url = format!("{}/api/v1/filters/{}/configurations", self.base_url, filter_id);
+        let url =
+            format!("{}/api/v1/teams/{}/filters/{}/configurations", self.base_url, team, filter_id);
         let body = json!({
             "scopeType": "route",
             "scopeId": scope_id,
@@ -1017,8 +1020,13 @@ impl ApiClient {
     }
 
     /// Get a filter by ID
-    pub async fn get_filter(&self, token: &str, filter_id: &str) -> anyhow::Result<FilterResponse> {
-        let url = format!("{}/api/v1/filters/{}", self.base_url, filter_id);
+    pub async fn get_filter(
+        &self,
+        token: &str,
+        team: &str,
+        filter_id: &str,
+    ) -> anyhow::Result<FilterResponse> {
+        let url = format!("{}/api/v1/teams/{}/filters/{}", self.base_url, team, filter_id);
 
         let resp = self
             .client
@@ -1038,8 +1046,13 @@ impl ApiClient {
     }
 
     /// Delete a filter by ID
-    pub async fn delete_filter(&self, token: &str, filter_id: &str) -> anyhow::Result<()> {
-        let url = format!("{}/api/v1/filters/{}", self.base_url, filter_id);
+    pub async fn delete_filter(
+        &self,
+        token: &str,
+        team: &str,
+        filter_id: &str,
+    ) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/teams/{}/filters/{}", self.base_url, team, filter_id);
 
         let resp = self
             .client

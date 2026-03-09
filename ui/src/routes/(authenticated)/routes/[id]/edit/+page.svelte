@@ -112,7 +112,7 @@
 			const [route, clustersData, filtersData] = await Promise.all([
 				getSingleRouteForEdit(routeId),
 				$selectedTeam ? apiClient.listClusters($selectedTeam) : Promise.resolve([]),
-				apiClient.listFilters()
+				$selectedTeam ? apiClient.listFilters($selectedTeam) : Promise.resolve([])
 			]);
 
 			routeData = route;
@@ -364,7 +364,7 @@
 
 		try {
 			// Use configureFilter with route scope
-			await apiClient.configureFilter(filter.id, {
+			await apiClient.configureFilter($selectedTeam, filter.id, {
 				scopeType: 'route',
 				scopeId: `${routeData.config.name}/${routeData.virtualHost.name}/${routeData.route.name}`
 			});
@@ -383,6 +383,7 @@
 		try {
 			// Use removeFilterConfiguration with route scope
 			await apiClient.removeFilterConfiguration(
+				$selectedTeam,
 				filterId,
 				'route',
 				`${routeData.config.name}/${routeData.virtualHost.name}/${routeData.route.name}`

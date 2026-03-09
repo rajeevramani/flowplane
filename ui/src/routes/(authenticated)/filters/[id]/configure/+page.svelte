@@ -74,7 +74,8 @@
 
 		try {
 			// Load filter details
-			filter = await apiClient.getFilter(filterId);
+			const team = get(selectedTeam);
+			filter = await apiClient.getFilter(team, filterId);
 
 			// Load filter type info for per-route behavior and schema
 			if (filter) {
@@ -82,15 +83,14 @@
 			}
 
 			// Load all route configs
-			const team = get(selectedTeam);
 			routeConfigs = team ? await apiClient.listRouteConfigs(team) : [];
 
 			// Load current configurations
-			const configsResponse = await apiClient.listFilterConfigurations(filterId);
+			const configsResponse = await apiClient.listFilterConfigurations(team, filterId);
 			currentConfigurations = configsResponse.configurations;
 
 			// Load current installations (to show warning if not installed)
-			const installsResponse = await apiClient.listFilterInstallations(filterId);
+			const installsResponse = await apiClient.listFilterInstallations(team, filterId);
 			currentInstallations = installsResponse.installations;
 
 			// Initialize selection state and settings from current configurations
@@ -269,16 +269,17 @@
 			}
 
 			// Perform removals
+			const team = get(selectedTeam);
 			for (const key of toRemove) {
 				const [scopeType, scopeId] = key.split(':') as [ScopeType, string];
-				await apiClient.removeFilterConfiguration(filterId, scopeType, scopeId);
+				await apiClient.removeFilterConfiguration(team, filterId, scopeType, scopeId);
 			}
 
 			// Perform new configurations
 			for (const key of toConfigure) {
 				const [scopeType, scopeId] = key.split(':') as [ScopeType, string];
 				const settings = scopeSettings.get(key) ?? undefined;
-				await apiClient.configureFilter(filterId, {
+				await apiClient.configureFilter(team, filterId, {
 					scopeType,
 					scopeId,
 					settings
@@ -288,9 +289,9 @@
 			// Perform updates (remove and re-add with new settings)
 			for (const key of toUpdate) {
 				const [scopeType, scopeId] = key.split(':') as [ScopeType, string];
-				await apiClient.removeFilterConfiguration(filterId, scopeType, scopeId);
+				await apiClient.removeFilterConfiguration(team, filterId, scopeType, scopeId);
 				const settings = scopeSettings.get(key) ?? undefined;
-				await apiClient.configureFilter(filterId, {
+				await apiClient.configureFilter(team, filterId, {
 					scopeType,
 					scopeId,
 					settings

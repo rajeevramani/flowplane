@@ -56,12 +56,7 @@ async fn test_100_setup_cors() {
         .create_route(
             &ctx.admin_token,
             &ctx.team_a_name,
-            &simple_route(
-                "cors-route",
-                "cors.e2e.local",
-                "/testing/cors-setup",
-                &cluster.name,
-            ),
+            &simple_route("cors-route", "cors.e2e.local", "/testing/cors-setup", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -114,9 +109,15 @@ async fn test_100_setup_cors() {
     println!("✓ CORS filter created: {} (id={})", filter.name, filter.id);
 
     // Attach filter to route-config (as Bruno does, not to listener)
-    api.attach_filter_to_route(&ctx.admin_token, &ctx.team_a_name, &route.name, &filter.id, Some(1))
-        .await
-        .expect("Filter attachment should succeed");
+    api.attach_filter_to_route(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &route.name,
+        &filter.id,
+        Some(1),
+    )
+    .await
+    .expect("Filter attachment should succeed");
 
     println!("✓ Filter attached to route-config: {}", route.name);
 
@@ -210,9 +211,15 @@ async fn test_101_preflight_allowed() {
         .expect("Filter creation should succeed");
 
     // Attach filter to route-config (as Bruno does, not to listener)
-    api.attach_filter_to_route(&ctx.admin_token, &ctx.team_a_name, &route.name, &filter.id, Some(1))
-        .await
-        .expect("Filter attachment should succeed");
+    api.attach_filter_to_route(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &route.name,
+        &filter.id,
+        Some(1),
+    )
+    .await
+    .expect("Filter attachment should succeed");
 
     println!("✓ Filter attached to route-config: {}", route.name);
 
@@ -373,9 +380,15 @@ async fn test_102_request_with_origin() {
         .expect("Filter creation should succeed");
 
     // Attach filter to route-config (as Bruno does, not to listener)
-    api.attach_filter_to_route(&ctx.admin_token, &ctx.team_a_name, &route.name, &filter.id, Some(1))
-        .await
-        .expect("Filter attachment should succeed");
+    api.attach_filter_to_route(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &route.name,
+        &filter.id,
+        Some(1),
+    )
+    .await
+    .expect("Filter attachment should succeed");
 
     println!("✓ Filter attached to route-config: {}", route.name);
 
@@ -515,9 +528,15 @@ async fn test_103_blocked_origin() {
         .expect("Filter creation should succeed");
 
     // Attach filter to route-config (as Bruno does, not to listener)
-    api.attach_filter_to_route(&ctx.admin_token, &ctx.team_a_name, &route.name, &filter.id, Some(1))
-        .await
-        .expect("Filter attachment should succeed");
+    api.attach_filter_to_route(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &route.name,
+        &filter.id,
+        Some(1),
+    )
+    .await
+    .expect("Filter attachment should succeed");
 
     println!("✓ Filter attached to route-config: {}", route.name);
 
