@@ -401,20 +401,20 @@ mod tests {
 
         // Aggregated schema endpoints (4)
         assert!(
-            paths.contains_key("/api/v1/aggregated-schemas"),
-            "Missing GET /api/v1/aggregated-schemas"
+            paths.contains_key("/api/v1/teams/{team}/aggregated-schemas"),
+            "Missing GET /api/v1/teams/{{team}}/aggregated-schemas"
         );
         assert!(
-            paths.contains_key("/api/v1/aggregated-schemas/{id}"),
-            "Missing GET /api/v1/aggregated-schemas/{{id}}"
+            paths.contains_key("/api/v1/teams/{team}/aggregated-schemas/{id}"),
+            "Missing GET /api/v1/teams/{{team}}/aggregated-schemas/{{id}}"
         );
         assert!(
-            paths.contains_key("/api/v1/aggregated-schemas/{id}/compare"),
-            "Missing GET /api/v1/aggregated-schemas/{{id}}/compare"
+            paths.contains_key("/api/v1/teams/{team}/aggregated-schemas/{id}/compare"),
+            "Missing GET /api/v1/teams/{{team}}/aggregated-schemas/{{id}}/compare"
         );
         assert!(
-            paths.contains_key("/api/v1/aggregated-schemas/{id}/export"),
-            "Missing GET /api/v1/aggregated-schemas/{{id}}/export"
+            paths.contains_key("/api/v1/teams/{team}/aggregated-schemas/{id}/export"),
+            "Missing GET /api/v1/teams/{{team}}/aggregated-schemas/{{id}}/export"
         );
 
         // Reporting endpoints (1)

@@ -981,53 +981,53 @@ class ApiClient {
 	 * List aggregated schemas discovered through learning sessions.
 	 * Supports filtering by path, HTTP method, and minimum confidence.
 	 */
-	async listAggregatedSchemas(query?: ListAggregatedSchemasQuery): Promise<AggregatedSchemaResponse[]> {
+	async listAggregatedSchemas(team: string, query?: ListAggregatedSchemasQuery): Promise<AggregatedSchemaResponse[]> {
 		const params = new URLSearchParams();
-		if (query?.team) params.append('team', query.team);
 		if (query?.path) params.append('path', query.path);
 		if (query?.httpMethod) params.append('http_method', query.httpMethod);
 		if (query?.minConfidence) params.append('min_confidence', query.minConfidence.toString());
 		if (query?.limit) params.append('limit', query.limit.toString());
 		if (query?.offset) params.append('offset', query.offset.toString());
 
-		const path = `/api/v1/aggregated-schemas${params.toString() ? `?${params.toString()}` : ''}`;
+		const basePath = `/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas`;
+		const path = `${basePath}${params.toString() ? `?${params.toString()}` : ''}`;
 		return this.get<AggregatedSchemaResponse[]>(path);
 	}
 
 	/**
 	 * Get a specific aggregated schema by ID.
 	 */
-	async getAggregatedSchema(id: number): Promise<AggregatedSchemaResponse> {
-		return this.get<AggregatedSchemaResponse>(`/api/v1/aggregated-schemas/${id}`);
+	async getAggregatedSchema(team: string, id: number): Promise<AggregatedSchemaResponse> {
+		return this.get<AggregatedSchemaResponse>(`/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas/${id}`);
 	}
 
 	/**
 	 * Compare two versions of a schema.
 	 * Returns differences including breaking changes.
 	 */
-	async compareSchemaVersions(id: number, withVersion: number): Promise<SchemaComparisonResponse> {
+	async compareSchemaVersions(team: string, id: number, withVersion: number): Promise<SchemaComparisonResponse> {
 		return this.get<SchemaComparisonResponse>(
-			`/api/v1/aggregated-schemas/${id}/compare?with_version=${withVersion}`
+			`/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas/${id}/compare?with_version=${withVersion}`
 		);
 	}
 
 	/**
 	 * Export a schema as OpenAPI 3.1 specification.
 	 */
-	async exportSchemaAsOpenApi(id: number, includeMetadata: boolean = false): Promise<OpenApiExportResponse> {
+	async exportSchemaAsOpenApi(team: string, id: number, includeMetadata: boolean = false): Promise<OpenApiExportResponse> {
 		const params = new URLSearchParams();
 		params.append('include_metadata', includeMetadata.toString());
 
 		return this.get<OpenApiExportResponse>(
-			`/api/v1/aggregated-schemas/${id}/export?${params.toString()}`
+			`/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas/${id}/export?${params.toString()}`
 		);
 	}
 
 	/**
 	 * Export multiple schemas as a unified OpenAPI 3.1 specification.
 	 */
-	async exportMultipleSchemasAsOpenApi(request: ExportMultipleSchemasRequest): Promise<OpenApiExportResponse> {
-		return this.post<OpenApiExportResponse>('/api/v1/aggregated-schemas/export', request);
+	async exportMultipleSchemasAsOpenApi(team: string, request: ExportMultipleSchemasRequest): Promise<OpenApiExportResponse> {
+		return this.post<OpenApiExportResponse>(`/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas/export`, request);
 	}
 
 	// ============================================================================
