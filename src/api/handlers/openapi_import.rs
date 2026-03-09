@@ -56,9 +56,6 @@ use crate::{
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "snake_case")]
 pub struct ImportOpenApiQuery {
-    /// Team name for multi-tenancy isolation
-    #[param(required = true, example = "payments")]
-    pub team: String,
     /// Listener mode: "existing" to use an existing listener, "new" to create a new one
     #[param(required = true, example = "existing")]
     pub listener_mode: String,
@@ -162,8 +159,11 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
 /// Import OpenAPI spec and materialize routes directly to routes table
 #[utoipa::path(
     post,
-    path = "/api/v1/openapi/import",
-    params(ImportOpenApiQuery),
+    path = "/api/v1/teams/{team}/openapi/import",
+    params(
+        ("team" = String, Path, description = "Team name", example = "payments"),
+        ImportOpenApiQuery
+    ),
     request_body(
         description = "OpenAPI 3.0 document in JSON or YAML format",
         content(
@@ -179,10 +179,11 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state, request), fields(team = %params.team, listener_mode = %params.listener_mode, user_id = ?context.user_id))]
+#[instrument(skip(state, request), fields(team = %team, listener_mode = %params.listener_mode, user_id = ?context.user_id))]
 pub async fn import_openapi_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Query(params): Query<ImportOpenApiQuery>,
     request: Request<Body>,
 ) -> std::result::Result<(StatusCode, Json<ImportResponse>), ApiError> {
@@ -192,7 +193,7 @@ pub async fn import_openapi_handler(
         &context,
         "openapi-import",
         "create",
-        Some(&params.team),
+        Some(&team),
         context.org_id.as_ref(),
     )
     .await?;
@@ -255,7 +256,7 @@ pub async fn import_openapi_handler(
         protocol: "HTTP".to_string(),
         listener_mode,
         dataplane_id: params.dataplane_id.clone(),
-        team: Some(params.team.clone()),
+        team: Some(team.clone()),
     };
 
     let plan = build_gateway_plan(document, gateway_options)
@@ -272,7 +273,7 @@ pub async fn import_openapi_handler(
     // Resolve team name to UUID for FK-safe insert
     let team_id = crate::api::handlers::team_access::resolve_team_name(
         &state,
-        &params.team,
+        &team,
         context.org_id.as_ref(),
     )
     .await?;
@@ -359,9 +360,9 @@ pub async fn import_openapi_handler(
 /// List all imports for a team
 #[utoipa::path(
     get,
-    path = "/api/v1/openapi/imports",
+    path = "/api/v1/teams/{team}/openapi/imports",
     params(
-        ("team" = String, Query, description = "Team name to filter imports", example = "payments")
+        ("team" = String, Path, description = "Team name", example = "payments")
     ),
     responses(
         (status = 200, description = "Successfully retrieved imports", body = ListImportsResponse),
@@ -369,13 +370,22 @@ pub async fn import_openapi_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state, query), fields(user_id = ?context.user_id))]
+#[instrument(skip(state), fields(user_id = ?context.user_id, team = %team))]
 pub async fn list_imports_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(query): Query<serde_json::Value>,
+    Path(team): Path<String>,
 ) -> std::result::Result<Json<ListImportsResponse>, ApiError> {
-    let team = query.get("team").and_then(|v| v.as_str());
+    // Authorization: require openapi-import:read scope for the target team
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "openapi-import",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     let cluster_repo = state
         .xds_state
@@ -385,37 +395,7 @@ pub async fn list_imports_handler(
     let db_pool = cluster_repo.pool().clone();
     let import_repo = ImportMetadataRepository::new(db_pool);
 
-    // Admin users can list all imports when no team is specified
-    if has_admin_bypass(&context) {
-        let imports = if let Some(team) = team {
-            // Admin requesting specific team's imports
-            import_repo.list_by_team(team).await.map_err(ApiError::from)?
-        } else {
-            // Admin requesting all imports across all teams
-            import_repo.list_all().await.map_err(ApiError::from)?
-        };
-
-        return Ok(Json(ListImportsResponse {
-            imports: imports.into_iter().map(ImportSummary::from).collect(),
-        }));
-    }
-
-    // Non-admin users must specify a team
-    let team =
-        team.ok_or_else(|| ApiError::BadRequest("team parameter is required".to_string()))?;
-
-    // Authorization: require openapi-import:read scope for the target team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "openapi-import",
-        "read",
-        Some(team),
-        context.org_id.as_ref(),
-    )
-    .await?;
-
-    let imports = import_repo.list_by_team(team).await.map_err(ApiError::from)?;
+    let imports = import_repo.list_by_team(&team).await.map_err(ApiError::from)?;
 
     Ok(Json(ListImportsResponse {
         imports: imports.into_iter().map(ImportSummary::from).collect(),

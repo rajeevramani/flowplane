@@ -973,7 +973,7 @@ impl ApiClient {
         dataplane_id: &str,
     ) -> anyhow::Result<Value> {
         let url = format!(
-            "{}/api/v1/openapi/import?team={}&listener_mode=new&new_listener_name={}-listener&new_listener_port={}&dataplane_id={}",
+            "{}/api/v1/teams/{}/openapi/import?listener_mode=new&new_listener_name={}-listener&new_listener_port={}&dataplane_id={}",
             self.base_url, team, team, listener_port, dataplane_id
         );
 

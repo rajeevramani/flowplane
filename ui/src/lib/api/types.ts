@@ -105,7 +105,7 @@ export interface ApiError {
 
 export interface ImportOpenApiRequest {
 	spec: string; // YAML or JSON string
-	team?: string;
+	team: string;
 	listenerMode: 'existing' | 'new';
 	existingListenerName?: string; // when mode='existing'
 	newListenerName?: string; // when mode='new'

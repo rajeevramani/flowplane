@@ -372,14 +372,14 @@ mod tests {
         assert!(paths.contains_key("/api/v1/scopes"), "Missing GET /api/v1/scopes");
         assert!(paths.contains_key("/api/v1/admin/scopes"), "Missing GET /api/v1/admin/scopes");
 
-        // OpenAPI import endpoints (4)
+        // OpenAPI import endpoints (4, team-scoped import and list)
         assert!(
-            paths.contains_key("/api/v1/openapi/import"),
-            "Missing POST /api/v1/openapi/import"
+            paths.contains_key("/api/v1/teams/{team}/openapi/import"),
+            "Missing POST /api/v1/teams/{{team}}/openapi/import"
         );
         assert!(
-            paths.contains_key("/api/v1/openapi/imports"),
-            "Missing GET /api/v1/openapi/imports"
+            paths.contains_key("/api/v1/teams/{team}/openapi/imports"),
+            "Missing GET /api/v1/teams/{{team}}/openapi/imports"
         );
         assert!(
             paths.contains_key("/api/v1/openapi/imports/{id}"),

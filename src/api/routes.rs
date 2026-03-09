@@ -339,13 +339,13 @@ pub fn build_router_with_registry(
             "/api/v1/teams/{team}/listeners/{listener_id}/filters/{filter_id}",
             delete(detach_filter_from_listener_handler),
         )
-        // OpenAPI import endpoints
+        // OpenAPI import endpoints (team-scoped)
         .route(
-            "/api/v1/openapi/import",
+            "/api/v1/teams/{team}/openapi/import",
             post(super::handlers::openapi_import::import_openapi_handler),
         )
         .route(
-            "/api/v1/openapi/imports",
+            "/api/v1/teams/{team}/openapi/imports",
             get(super::handlers::openapi_import::list_imports_handler),
         )
         .route(

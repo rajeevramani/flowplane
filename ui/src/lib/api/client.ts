@@ -327,7 +327,6 @@ class ApiClient {
 	// OpenAPI import
 	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<ImportResponse> {
 		const params = new URLSearchParams();
-		if (request.team) params.append('team', request.team);
 		params.append('listener_mode', request.listenerMode);
 		if (request.listenerMode === 'existing' && request.existingListenerName) {
 			params.append('existing_listener_name', request.existingListenerName);
@@ -338,7 +337,7 @@ class ApiClient {
 			if (request.newListenerPort) params.append('new_listener_port', request.newListenerPort.toString());
 		}
 
-		const path = `/api/v1/openapi/import${params.toString() ? `?${params.toString()}` : ''}`;
+		const path = `/api/v1/teams/${encodeURIComponent(request.team)}/openapi/import${params.toString() ? `?${params.toString()}` : ''}`;
 
 		// Determine content type based on spec format
 		const isYaml = request.spec.trim().startsWith('openapi:') || request.spec.trim().startsWith('swagger:');
@@ -360,14 +359,15 @@ class ApiClient {
 
 	// Import methods (replacing API Definition methods)
 	async listImports(team: string): Promise<ImportSummary[]> {
-		const path = `/api/v1/openapi/imports?team=${encodeURIComponent(team)}`;
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/openapi/imports`;
 		const response = await this.get<{ imports: ImportSummary[] }>(path);
 		return response.imports;
 	}
 
 	// List all imports across all teams (admin only)
-	async listAllImports(): Promise<ImportSummary[]> {
-		const path = '/api/v1/openapi/imports';
+	// Note: use listImports(team) for team-scoped access
+	async listAllImports(team: string): Promise<ImportSummary[]> {
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/openapi/imports`;
 		const response = await this.get<{ imports: ImportSummary[] }>(path);
 		return response.imports;
 	}
