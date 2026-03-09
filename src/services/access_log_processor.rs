@@ -790,8 +790,20 @@ impl AccessLogProcessor {
                             schema_type = ?schema.schema_type,
                             "Inferred request schema"
                         );
-                        inferred_request_schema =
-                            Some(serde_json::to_string(&schema.to_json_schema())?);
+                        match schema.to_json_schema() {
+                            Ok(json_schema) => {
+                                inferred_request_schema =
+                                    Some(serde_json::to_string(&json_schema)?);
+                            }
+                            Err(e) => {
+                                debug!(
+                                    worker_id,
+                                    session_id = %entry.session_id,
+                                    error = %e,
+                                    "Failed to convert request schema to JSON Schema"
+                                );
+                            }
+                        }
                         metrics::record_schema_inferred("request", true).await;
                     }
                     Err(e) => {
@@ -828,8 +840,20 @@ impl AccessLogProcessor {
                             schema_type = ?schema.schema_type,
                             "Inferred response schema"
                         );
-                        inferred_response_schema =
-                            Some(serde_json::to_string(&schema.to_json_schema())?);
+                        match schema.to_json_schema() {
+                            Ok(json_schema) => {
+                                inferred_response_schema =
+                                    Some(serde_json::to_string(&json_schema)?);
+                            }
+                            Err(e) => {
+                                debug!(
+                                    worker_id,
+                                    session_id = %entry.session_id,
+                                    error = %e,
+                                    "Failed to convert response schema to JSON Schema"
+                                );
+                            }
+                        }
                         metrics::record_schema_inferred("response", true).await;
                     }
                     Err(e) => {
