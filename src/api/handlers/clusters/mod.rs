@@ -27,14 +27,13 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
+        handlers::team_access::{require_resource_access_resolved, resolve_rest_auth},
         routes::ApiState,
     },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     internal_api::{
-        ClusterOperations, CreateClusterRequest, InternalAuthContext, ListClustersRequest,
-        UpdateClusterRequest,
+        ClusterOperations, CreateClusterRequest, ListClustersRequest, UpdateClusterRequest,
     },
     services::ClusterService,
 };
@@ -83,11 +82,7 @@ pub async fn create_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let result = ops.create(internal_req, &auth).await?;
 
     // Convert to response
@@ -120,11 +115,7 @@ pub async fn list_clusters_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let list_req = ListClustersRequest {
         limit: Some(limit as i32),
         offset: Some(offset as i32),
@@ -166,11 +157,7 @@ pub async fn get_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let cluster = ops.get(&name, &auth).await?;
 
     // Convert to response DTO
@@ -221,11 +208,7 @@ pub async fn update_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let result = ops.update(&name, internal_req, &auth).await?;
 
     // Convert to response DTO
@@ -257,11 +240,7 @@ pub async fn delete_cluster_handler(
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)

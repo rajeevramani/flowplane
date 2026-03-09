@@ -9,6 +9,7 @@ use crate::api::routes::ApiState;
 use crate::auth::authorization::{extract_org_scopes, extract_team_scopes, has_admin_bypass};
 use crate::auth::models::AuthContext;
 use crate::domain::OrgId;
+use crate::internal_api::auth::InternalAuthContext;
 use crate::storage::repositories::TeamRepository;
 use serde::Deserialize;
 
@@ -216,6 +217,26 @@ pub fn team_repo_from_state(
         .team_repository
         .as_ref()
         .ok_or_else(|| ApiError::service_unavailable("Team repository unavailable"))
+}
+
+/// Build an InternalAuthContext from a REST request's AuthContext.
+///
+/// Combines three common steps into one call:
+/// 1. Get team repository from state
+/// 2. Build InternalAuthContext with org expansion
+/// 3. Resolve team names to UUIDs
+///
+/// This eliminates the repeated 3-line boilerplate across REST handlers.
+pub async fn resolve_rest_auth(
+    state: &ApiState,
+    context: &AuthContext,
+) -> Result<InternalAuthContext, ApiError> {
+    let team_repo = team_repo_from_state(state)?;
+    InternalAuthContext::from_rest_with_org(context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await
+        .map_err(ApiError::from)
 }
 
 /// Get effective team scopes with org admin expansion.

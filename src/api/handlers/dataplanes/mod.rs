@@ -27,7 +27,9 @@ use validator::Validate;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
+        handlers::team_access::{
+            require_resource_access_resolved, resolve_rest_auth, team_repo_from_state,
+        },
         routes::ApiState,
     },
     auth::{authorization::require_resource_access, models::AuthContext},
@@ -36,7 +38,7 @@ use crate::{
             CreateDataplaneInternalRequest, ListDataplanesInternalRequest,
             UpdateDataplaneInternalRequest,
         },
-        DataplaneOperations, InternalAuthContext,
+        DataplaneOperations,
     },
     storage::repositories::TeamRepository,
 };
@@ -78,11 +80,7 @@ pub async fn create_dataplane_handler(
     .await?;
 
     // Build internal auth context and request
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
 
     let internal_req = CreateDataplaneInternalRequest {
         team: team.clone(),
@@ -131,11 +129,7 @@ pub async fn list_dataplanes_handler(
 
     let (limit, offset) = query.clamp(1000);
 
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
 
     let ops = DataplaneOperations::new(state.xds_state.clone());
     let list_req =
@@ -170,11 +164,7 @@ pub async fn list_all_dataplanes_handler(
 
     let (limit, offset) = query.clamp(1000);
 
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
 
     let ops = DataplaneOperations::new(state.xds_state.clone());
     let list_req =
@@ -221,11 +211,7 @@ pub async fn get_dataplane_handler(
     )
     .await?;
 
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
 
     let ops = DataplaneOperations::new(state.xds_state.clone());
     let dataplane = ops.get(&team, &name, &auth).await?;
@@ -272,11 +258,7 @@ pub async fn update_dataplane_handler(
     )
     .await?;
 
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
 
     let internal_req = UpdateDataplaneInternalRequest {
         gateway_host: payload.gateway_host,
@@ -323,11 +305,7 @@ pub async fn delete_dataplane_handler(
     )
     .await?;
 
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
 
     let ops = DataplaneOperations::new(state.xds_state.clone());
     ops.delete(&team, &name, &auth).await?;
@@ -423,11 +401,7 @@ pub async fn generate_envoy_config_handler(
     .await?;
 
     // Use DataplaneOperations to get the dataplane (handles team resolution + access control)
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
 
     let ops = DataplaneOperations::new(state.xds_state.clone());
     let dataplane = ops.get(&team, &name, &auth).await?;
@@ -476,6 +450,7 @@ pub async fn generate_envoy_config_handler(
     let envoy_admin = &state.xds_state.config.envoy_admin;
 
     // Try to get team-specific admin port from database
+    let team_repo = team_repo_from_state(&state)?;
     let team_data = team_repo.get_team_by_name(&team).await.map_err(ApiError::from)?;
 
     // Use team-specific port if available, otherwise fall back to global config

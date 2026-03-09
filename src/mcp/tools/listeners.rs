@@ -7,8 +7,8 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    CreateListenerRequest as InternalCreateRequest, InternalAuthContext, ListListenersRequest,
-    ListenerOperations, UpdateListenerRequest as InternalUpdateRequest,
+    CreateListenerRequest as InternalCreateRequest, ListListenersRequest, ListenerOperations,
+    UpdateListenerRequest as InternalUpdateRequest,
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
@@ -460,10 +460,7 @@ pub async fn execute_list_listeners(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let list_req = ListListenersRequest {
         limit,
         offset,
@@ -540,10 +537,7 @@ pub async fn execute_get_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let listener = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for pretty output
@@ -660,10 +654,7 @@ pub async fn execute_create_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let create_req = InternalCreateRequest {
         name: name.to_string(),
         address,
@@ -729,10 +720,7 @@ pub async fn execute_update_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Get existing listener to build config
     let existing = ops.get(name, &auth).await?;
@@ -848,10 +836,7 @@ pub async fn execute_delete_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     ops.delete(name, &auth).await?;
 
     // 3. Format response with next-step guidance
@@ -962,10 +947,7 @@ pub async fn execute_get_listener_status(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let listener = ops.get(name, &auth).await?;
 
     // Query route config count

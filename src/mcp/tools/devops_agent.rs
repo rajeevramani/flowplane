@@ -4,9 +4,8 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    ClusterOperations, FilterOperations, InternalAuthContext, ListClustersRequest,
-    ListFiltersRequest, ListListenersRequest, ListRouteConfigsRequest, ListenerOperations,
-    RouteConfigOperations,
+    ClusterOperations, FilterOperations, ListClustersRequest, ListFiltersRequest,
+    ListListenersRequest, ListRouteConfigsRequest, ListenerOperations, RouteConfigOperations,
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
@@ -126,10 +125,7 @@ pub async fn execute_devops_get_deployment_status(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // Get cluster status
     let cluster_ops = ClusterOperations::new(xds_state.clone());

@@ -136,8 +136,10 @@ pub use clusters::{cp_query_service_tool, execute_query_service};
 // Re-export schema export tool
 pub use schemas::{cp_export_schema_openapi_tool, execute_export_schema_openapi};
 
+use crate::internal_api::InternalAuthContext;
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
+use crate::storage::repositories::TeamRepository;
 use crate::storage::DbPool;
 use serde_json::Value;
 
@@ -158,6 +160,21 @@ pub(crate) async fn validate_team_in_org(
         return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
     }
     Ok(())
+}
+
+/// Resolve MCP auth context from team name and org ID.
+///
+/// Shared helper that eliminates the repeated `InternalAuthContext::from_mcp` +
+/// `resolve_teams` + `map_err` boilerplate across all MCP tool execute functions.
+pub(crate) async fn resolve_mcp_auth(
+    team: &str,
+    org_id: Option<&OrgId>,
+    team_repo: &dyn TeamRepository,
+) -> Result<InternalAuthContext, McpError> {
+    InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))
 }
 
 /// Get all available MCP tools.

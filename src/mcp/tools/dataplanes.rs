@@ -4,8 +4,8 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    CreateDataplaneInternalRequest, DataplaneOperations, InternalAuthContext,
-    ListDataplanesInternalRequest, UpdateDataplaneInternalRequest,
+    CreateDataplaneInternalRequest, DataplaneOperations, ListDataplanesInternalRequest,
+    UpdateDataplaneInternalRequest,
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
@@ -311,10 +311,7 @@ pub async fn execute_list_dataplanes(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = ListDataplanesInternalRequest { limit, offset };
 
@@ -363,10 +360,7 @@ pub async fn execute_get_dataplane(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let dataplane = ops.get(dataplane_team, name, &auth).await?;
 
@@ -422,10 +416,7 @@ pub async fn execute_create_dataplane(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateDataplaneInternalRequest {
         team: dataplane_team.to_string(),
@@ -500,10 +491,7 @@ pub async fn execute_update_dataplane(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = UpdateDataplaneInternalRequest { gateway_host, description };
 
@@ -554,10 +542,7 @@ pub async fn execute_delete_dataplane(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(dataplane_team, name, &auth).await?;
 

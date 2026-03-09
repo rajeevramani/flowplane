@@ -8,8 +8,8 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    ClusterOperations, CreateClusterRequest as InternalCreateRequest, InternalAuthContext,
-    ListClustersRequest, UpdateClusterRequest as InternalUpdateRequest,
+    ClusterOperations, CreateClusterRequest as InternalCreateRequest, ListClustersRequest,
+    UpdateClusterRequest as InternalUpdateRequest,
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
@@ -263,10 +263,7 @@ pub async fn execute_list_clusters(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let list_req = ListClustersRequest {
         limit,
         offset,
@@ -341,10 +338,7 @@ pub async fn execute_get_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let cluster = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for pretty output
@@ -788,10 +782,7 @@ pub async fn execute_create_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let result = ops.create(internal_req, &auth).await?;
 
     // 7. Format rich response with details and next-step guidance
@@ -849,10 +840,7 @@ pub async fn execute_update_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let existing = ops.get(name, &auth).await?;
 
     // 3. Parse existing configuration
@@ -946,10 +934,7 @@ pub async fn execute_delete_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     ops.delete(name, &auth).await?;
 
     // 3. Format response with next-step guidance
@@ -986,10 +971,7 @@ pub async fn execute_get_cluster_health(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let cluster = ops.get(name, &auth).await?;
     let cluster_id = cluster.id.clone();
 

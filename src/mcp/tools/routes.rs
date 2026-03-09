@@ -5,7 +5,7 @@
 use crate::domain::OrgId;
 use crate::internal_api::routes::transform_virtual_hosts_for_internal;
 use crate::internal_api::{
-    CreateRouteConfigRequest, InternalAuthContext, ListRouteConfigsRequest, RouteConfigOperations,
+    CreateRouteConfigRequest, ListRouteConfigsRequest, RouteConfigOperations,
     UpdateRouteConfigRequest,
 };
 use crate::mcp::error::McpError;
@@ -156,10 +156,7 @@ pub async fn execute_list_route_configs(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let list_req = ListRouteConfigsRequest {
         limit,
         offset,
@@ -258,10 +255,7 @@ pub async fn execute_get_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let rc = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for structured output
@@ -915,10 +909,7 @@ pub async fn execute_create_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateRouteConfigRequest {
         name: name.to_string(),
@@ -1004,10 +995,7 @@ pub async fn execute_update_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = UpdateRouteConfigRequest { config: configuration };
 
@@ -1057,10 +1045,7 @@ pub async fn execute_delete_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(name, &auth).await?;
 
@@ -1377,7 +1362,7 @@ pub async fn execute_get_route(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    use crate::internal_api::{InternalAuthContext, RouteOperations};
+    use crate::internal_api::RouteOperations;
 
     let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: route_config".to_string())
@@ -1405,10 +1390,7 @@ pub async fn execute_get_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let route = ops.get(route_config, virtual_host, name, &auth).await?;
 
@@ -1444,7 +1426,7 @@ pub async fn execute_create_route(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    use crate::internal_api::{CreateRouteRequest, InternalAuthContext, RouteOperations};
+    use crate::internal_api::{CreateRouteRequest, RouteOperations};
 
     let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: route_config".to_string())
@@ -1486,10 +1468,7 @@ pub async fn execute_create_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateRouteRequest {
         route_config: route_config.to_string(),
@@ -1540,7 +1519,7 @@ pub async fn execute_update_route(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    use crate::internal_api::{InternalAuthContext, RouteOperations, UpdateRouteRequest};
+    use crate::internal_api::{RouteOperations, UpdateRouteRequest};
 
     let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: route_config".to_string())
@@ -1574,10 +1553,7 @@ pub async fn execute_update_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = UpdateRouteRequest { path_pattern, match_type, rule_order, action, exposure };
 
@@ -1608,7 +1584,7 @@ pub async fn execute_delete_route(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    use crate::internal_api::{InternalAuthContext, RouteOperations};
+    use crate::internal_api::RouteOperations;
 
     let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: route_config".to_string())
@@ -1636,10 +1612,7 @@ pub async fn execute_delete_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(route_config, virtual_host, name, &auth).await?;
 

@@ -34,15 +34,14 @@ use crate::{
     api::{
         error::ApiError,
         handlers::team_access::{
-            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
-            verify_team_access,
+            get_effective_team_ids, require_resource_access_resolved, resolve_rest_auth,
+            team_repo_from_state, verify_team_access,
         },
         routes::ApiState,
     },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::{FilterId, ListenerId, RouteConfigId},
-    internal_api::auth::InternalAuthContext,
     internal_api::filters::FilterOperations,
     internal_api::types::{
         ListFiltersRequest as InternalListFiltersRequest,
@@ -130,11 +129,7 @@ pub async fn list_filters_handler(
 
     // Delegate to internal API layer for team-scoped listing
     let ops = FilterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let result = ops.list(internal_request, &auth).await?;
     let total = result.count as i64;
 
@@ -245,11 +240,7 @@ pub async fn get_filter_handler(
 
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let filter = ops.get(&id, &auth).await?;
 
     let response = filter_response_from_data(filter)?;
@@ -294,11 +285,7 @@ pub async fn update_filter_handler(
 
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let result = ops.update(&id, internal_request, &auth).await?;
 
     let response = filter_response_from_data(result.data)?;
@@ -331,11 +318,7 @@ pub async fn delete_filter_handler(
 
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     ops.delete(&id, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)

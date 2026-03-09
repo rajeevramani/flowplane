@@ -5,8 +5,7 @@
 use crate::domain::OrgId;
 use crate::internal_api::routes::transform_path;
 use crate::internal_api::{
-    CreateFilterRequest, FilterOperations, InternalAuthContext, ListFiltersRequest,
-    UpdateFilterRequest,
+    CreateFilterRequest, FilterOperations, ListFiltersRequest, UpdateFilterRequest,
 };
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
@@ -143,10 +142,7 @@ pub async fn execute_list_filters(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = ListFiltersRequest { filter_type, limit, offset, include_defaults: true };
 
@@ -199,10 +195,7 @@ pub async fn execute_get_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let filter_with_installations = ops.get_with_installations(name, &auth).await?;
     let filter = &filter_with_installations.filter;
@@ -555,10 +548,7 @@ pub async fn execute_create_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateFilterRequest {
         name: name.to_string(),
@@ -621,10 +611,7 @@ pub async fn execute_update_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Parse optional updates (auto-wrap config if needed)
     let new_name = args
@@ -703,10 +690,7 @@ pub async fn execute_delete_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(name, &auth).await?;
 
@@ -945,10 +929,7 @@ pub async fn execute_attach_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Execute appropriate attachment
     let (target_type, target_name) = if let Some(listener_name) = listener {
@@ -1038,10 +1019,7 @@ pub async fn execute_detach_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Execute appropriate detachment
     let (target_type, target_name) = if let Some(listener_name) = listener {
@@ -1110,10 +1088,7 @@ pub async fn execute_list_filter_attachments(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let filter_with_installations = ops.get_with_installations(filter, &auth).await?;
     let filter_data = &filter_with_installations.filter;

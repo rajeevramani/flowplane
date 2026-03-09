@@ -3,7 +3,7 @@
 //! Control Plane tools for discovering and inspecting API schemas learned through traffic analysis.
 
 use crate::domain::OrgId;
-use crate::internal_api::{AggregatedSchemaOperations, InternalAuthContext, ListSchemasRequest};
+use crate::internal_api::{AggregatedSchemaOperations, ListSchemasRequest};
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
 use crate::xds::XdsState;
@@ -255,10 +255,7 @@ pub async fn execute_export_schema_openapi(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // Fetch schemas via internal API
     let ops = AggregatedSchemaOperations::new(xds_state.clone());
@@ -335,10 +332,7 @@ pub async fn execute_list_aggregated_schemas(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = ListSchemasRequest { path, http_method, min_confidence, latest_only, limit, offset };
 
@@ -402,10 +396,7 @@ pub async fn execute_get_aggregated_schema(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let schema = ops.get(id, &auth).await?;
 

@@ -26,12 +26,11 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
+        handlers::team_access::{require_resource_access_resolved, resolve_rest_auth},
         routes::ApiState,
     },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
-    internal_api::auth::InternalAuthContext,
     internal_api::listeners::ListenerOperations,
     internal_api::types::{
         CreateListenerRequest as InternalCreateListenerRequest,
@@ -94,11 +93,7 @@ pub async fn create_listener_handler(
 
     // Delegate to internal API layer
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let result = ops.create(internal_request, &auth).await?;
 
     let response = listener_response_from_data(result.data)?;
@@ -134,11 +129,7 @@ pub async fn list_listeners_handler(
 
     // Delegate to internal API layer
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let result = ops.list(internal_request, &auth).await?;
     let total = result.count as i64;
 
@@ -172,11 +163,7 @@ pub async fn get_listener_handler(
 
     // Delegate to internal API layer (includes team access verification)
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let listener = ops.get(&name, &auth).await?;
 
     let response = listener_response_from_data(listener)?;
@@ -223,11 +210,7 @@ pub async fn update_listener_handler(
 
     // Delegate to internal API layer (includes team access verification and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     let result = ops.update(&name, internal_request, &auth).await?;
 
     let response = listener_response_from_data(result.data)?;
@@ -256,11 +239,7 @@ pub async fn delete_listener_handler(
 
     // Delegate to internal API layer (includes default listener protection, team access, and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let team_repo = team_repo_from_state(&state)?;
-    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
-        .await
-        .resolve_teams(team_repo)
-        .await?;
+    let auth = resolve_rest_auth(&state, &context).await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
