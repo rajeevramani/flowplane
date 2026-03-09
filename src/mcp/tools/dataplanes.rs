@@ -318,10 +318,10 @@ pub async fn execute_list_dataplanes(
 
     let req = ListDataplanesInternalRequest { limit, offset };
 
-    let dataplanes = ops.list(req, &auth).await?;
+    let response = ops.list(req, &auth).await?;
 
     let result = json!({
-        "dataplanes": dataplanes.iter().map(|dp| {
+        "dataplanes": response.dataplanes.iter().map(|dp| {
             json!({
                 "id": dp.id.to_string(),
                 "team": dp.team,
@@ -332,7 +332,7 @@ pub async fn execute_list_dataplanes(
                 "updated_at": dp.updated_at.to_rfc3339()
             })
         }).collect::<Vec<_>>(),
-        "count": dataplanes.len()
+        "count": response.count
     });
 
     let result_text =

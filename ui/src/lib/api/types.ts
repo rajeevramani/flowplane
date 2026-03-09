@@ -1700,9 +1700,8 @@ export interface DataplaneResponse {
 	updatedAt: string;
 }
 
-/** Request to create a new dataplane */
+/** Request to create a new dataplane. Team is derived from URL path. */
 export interface CreateDataplaneBody {
-	team: string;
 	name: string;
 	gatewayHost?: string;
 	description?: string;

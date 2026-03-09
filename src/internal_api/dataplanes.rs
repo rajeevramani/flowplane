@@ -13,8 +13,8 @@ use tracing::{info, instrument};
 use crate::internal_api::auth::InternalAuthContext;
 use crate::internal_api::error::InternalError;
 use crate::internal_api::types::{
-    CreateDataplaneInternalRequest, ListDataplanesInternalRequest, OperationResult,
-    UpdateDataplaneInternalRequest,
+    CreateDataplaneInternalRequest, ListDataplanesInternalRequest, ListDataplanesResponse,
+    OperationResult, UpdateDataplaneInternalRequest,
 };
 use crate::storage::repositories::{CreateDataplaneRequest, DataplaneData, UpdateDataplaneRequest};
 use crate::xds::XdsState;
@@ -33,42 +33,78 @@ impl DataplaneOperations {
         Self { xds_state }
     }
 
-    /// List dataplanes with team-based filtering
-    ///
-    /// # Arguments
-    /// * `req` - List request with optional pagination
-    /// * `auth` - Authentication context for team filtering
-    ///
-    /// # Returns
-    /// * `Ok(Vec<DataplaneData>)` with filtered dataplanes
-    #[instrument(skip(self, auth), fields(limit = ?req.limit, offset = ?req.offset))]
-    pub async fn list(
-        &self,
-        req: ListDataplanesInternalRequest,
-        auth: &InternalAuthContext,
-    ) -> Result<Vec<DataplaneData>, InternalError> {
-        // Get pool from cluster_repository (pattern used in handlers)
+    /// Get a DataplaneRepository from XdsState.
+    fn get_repo(&self) -> Result<crate::storage::repositories::DataplaneRepository, InternalError> {
         let cluster_repo = self
             .xds_state
             .cluster_repository
             .as_ref()
             .ok_or_else(|| InternalError::service_unavailable("Repository not configured"))?;
-        let repository =
-            crate::storage::repositories::DataplaneRepository::new(cluster_repo.pool().clone());
+        Ok(crate::storage::repositories::DataplaneRepository::new(cluster_repo.pool().clone()))
+    }
 
-        // Admin can see all dataplanes
-        let dataplanes = if auth.is_admin {
-            repository.list(req.limit, req.offset).await.map_err(InternalError::from)?
+    /// List dataplanes across all accessible teams (for admin/multi-team endpoints).
+    ///
+    /// Returns dataplanes with correct total count for pagination.
+    /// Admin users see all dataplanes; non-admin users see only their teams' dataplanes.
+    #[instrument(skip(self, auth), fields(limit = ?req.limit, offset = ?req.offset))]
+    pub async fn list(
+        &self,
+        req: ListDataplanesInternalRequest,
+        auth: &InternalAuthContext,
+    ) -> Result<ListDataplanesResponse, InternalError> {
+        let repository = self.get_repo()?;
+
+        let (dataplanes, count) = if auth.is_admin {
+            let dataplanes =
+                repository.list(req.limit, req.offset).await.map_err(InternalError::from)?;
+            let count = repository.count_all().await.map_err(InternalError::from)?;
+            (dataplanes, count)
         } else {
-            // Non-admin users can only see dataplanes from their allowed teams
-            // auth.allowed_teams already contains UUIDs (resolved by resolve_teams())
-            repository
+            let dataplanes = repository
                 .list_by_teams(&auth.allowed_teams, req.limit, req.offset)
                 .await
-                .map_err(InternalError::from)?
+                .map_err(InternalError::from)?;
+            let count = repository
+                .count_by_teams(&auth.allowed_teams)
+                .await
+                .map_err(InternalError::from)?;
+            (dataplanes, count)
         };
 
-        Ok(dataplanes)
+        Ok(ListDataplanesResponse { dataplanes, count })
+    }
+
+    /// List dataplanes for a specific team with correct total count.
+    ///
+    /// Verifies the caller has access to the specified team before querying.
+    #[instrument(skip(self, auth), fields(team = %team, limit = ?req.limit, offset = ?req.offset))]
+    pub async fn list_by_team(
+        &self,
+        team: &str,
+        req: ListDataplanesInternalRequest,
+        auth: &InternalAuthContext,
+    ) -> Result<ListDataplanesResponse, InternalError> {
+        // Resolve team name to UUID
+        let team_id = self.xds_state.resolve_team_name(team).await.map_err(InternalError::from)?;
+
+        // Verify team access
+        if !auth.can_access_team(Some(&team_id)) {
+            return Err(InternalError::forbidden(format!(
+                "Cannot list dataplanes for team '{}'",
+                team
+            )));
+        }
+
+        let repository = self.get_repo()?;
+
+        let dataplanes = repository
+            .list_by_team(&team_id, req.limit, req.offset)
+            .await
+            .map_err(InternalError::from)?;
+        let count = repository.count_by_team(&team_id).await.map_err(InternalError::from)?;
+
+        Ok(ListDataplanesResponse { dataplanes, count })
     }
 
     /// Get a specific dataplane by name and team
@@ -96,14 +132,7 @@ impl DataplaneOperations {
             return Err(InternalError::not_found("Dataplane", name));
         }
 
-        // Get pool from cluster_repository (pattern used in handlers)
-        let cluster_repo = self
-            .xds_state
-            .cluster_repository
-            .as_ref()
-            .ok_or_else(|| InternalError::service_unavailable("Repository not configured"))?;
-        let repository =
-            crate::storage::repositories::DataplaneRepository::new(cluster_repo.pool().clone());
+        let repository = self.get_repo()?;
 
         // Get the dataplane
         let dataplane = repository.get_by_name(&team_id, name).await.map_err(|e| {
@@ -153,14 +182,8 @@ impl DataplaneOperations {
             )));
         }
 
-        // 3. Get pool from cluster_repository
-        let cluster_repo = self
-            .xds_state
-            .cluster_repository
-            .as_ref()
-            .ok_or_else(|| InternalError::service_unavailable("Repository not configured"))?;
-        let repository =
-            crate::storage::repositories::DataplaneRepository::new(cluster_repo.pool().clone());
+        // 3. Get repository
+        let repository = self.get_repo()?;
 
         // 4. Check if dataplane already exists
         let existing =
@@ -212,16 +235,8 @@ impl DataplaneOperations {
         // 1. Get existing dataplane and verify access
         let existing = self.get(team, name, auth).await?;
 
-        // 2. Get pool from cluster_repository
-        let cluster_repo = self
-            .xds_state
-            .cluster_repository
-            .as_ref()
-            .ok_or_else(|| InternalError::service_unavailable("Repository not configured"))?;
-        let repository =
-            crate::storage::repositories::DataplaneRepository::new(cluster_repo.pool().clone());
-
-        // 3. Update via repository
+        // 2. Get repository and update
+        let repository = self.get_repo()?;
         let update_request = UpdateDataplaneRequest {
             gateway_host: req.gateway_host.map(Some),
             description: req.description.map(Some),
@@ -260,16 +275,8 @@ impl DataplaneOperations {
         // 1. Get existing dataplane and verify access
         let existing = self.get(team, name, auth).await?;
 
-        // 2. Get pool from cluster_repository
-        let cluster_repo = self
-            .xds_state
-            .cluster_repository
-            .as_ref()
-            .ok_or_else(|| InternalError::service_unavailable("Repository not configured"))?;
-        let repository =
-            crate::storage::repositories::DataplaneRepository::new(cluster_repo.pool().clone());
-
-        // 3. Delete via repository
+        // 2. Get repository and delete
+        let repository = self.get_repo()?;
         repository.delete(&existing.id).await.map_err(InternalError::from)?;
 
         info!(
@@ -477,8 +484,9 @@ mod tests {
         let result = ops.list(list_req, &team_a_auth).await.expect("list dataplanes");
 
         // Should only see team-a dataplanes
-        assert_eq!(result.len(), 2);
-        for dataplane in &result {
+        assert_eq!(result.dataplanes.len(), 2);
+        assert_eq!(result.count, 2);
+        for dataplane in &result.dataplanes {
             assert_eq!(dataplane.team, TEAM_A_ID);
         }
     }

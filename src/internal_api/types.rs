@@ -481,6 +481,15 @@ pub struct ListDataplanesInternalRequest {
     pub offset: Option<i32>,
 }
 
+/// Response for listing dataplanes
+#[derive(Debug)]
+pub struct ListDataplanesResponse {
+    /// List of dataplanes
+    pub dataplanes: Vec<crate::storage::repositories::DataplaneData>,
+    /// Total count of dataplanes matching the query (before pagination)
+    pub count: i64,
+}
+
 /// Request to create a new dataplane
 #[derive(Debug, Clone)]
 pub struct CreateDataplaneInternalRequest {

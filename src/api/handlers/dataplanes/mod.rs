@@ -3,6 +3,9 @@
 //! CRUD operations for dataplanes (Envoy instances with gateway_host).
 //! Certificates are managed via /proxy-certificates endpoint (shared per dataplane name).
 //! See ADR-008 for certificate model decision.
+//!
+//! Handlers use the internal API layer (`DataplaneOperations`) for unified
+//! validation and team-based access control.
 
 pub mod types;
 
@@ -22,16 +25,20 @@ use tracing::instrument;
 use validator::Validate;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
-    auth::{authorization::require_resource_access, models::AuthContext},
-    storage::repositories::{
-        CreateDataplaneRequest, DataplaneRepository, TeamRepository, UpdateDataplaneRequest,
+    api::{
+        error::ApiError,
+        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
+        routes::ApiState,
     },
-};
-
-use super::team_access::{
-    get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
-    verify_team_access,
+    auth::{authorization::require_resource_access, models::AuthContext},
+    internal_api::{
+        types::{
+            CreateDataplaneInternalRequest, ListDataplanesInternalRequest,
+            UpdateDataplaneInternalRequest,
+        },
+        DataplaneOperations, InternalAuthContext,
+    },
+    storage::repositories::TeamRepository,
 };
 
 /// Create a new dataplane
@@ -57,13 +64,7 @@ pub async fn create_dataplane_handler(
     Path(team): Path<String>,
     Json(payload): Json<CreateDataplaneBody>,
 ) -> Result<(StatusCode, Json<DataplaneResponse>), ApiError> {
-    // Validate request
     payload.validate().map_err(ApiError::from)?;
-
-    // Validate team matches
-    if payload.team != team {
-        return Err(ApiError::BadRequest("Team in body must match team in path".to_string()));
-    }
 
     // Authorization
     require_resource_access_resolved(
@@ -76,42 +77,24 @@ pub async fn create_dataplane_handler(
     )
     .await?;
 
-    // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(
-        &state,
-        &team,
-        context.org_id.as_ref(),
-    )
-    .await?;
+    // Build internal auth context and request
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
 
-    // Get repository
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
-    let repo = DataplaneRepository::new(cluster_repo.pool().clone());
-
-    // Check if name is available
-    if repo.exists_by_name(&team_id, &payload.name).await.map_err(ApiError::from)? {
-        return Err(ApiError::Conflict(format!(
-            "Dataplane with name '{}' already exists for team '{}'",
-            payload.name, team
-        )));
-    }
-
-    // Create dataplane
-    let request = CreateDataplaneRequest {
-        team: team_id,
+    let internal_req = CreateDataplaneInternalRequest {
+        team: team.clone(),
         name: payload.name,
         gateway_host: payload.gateway_host,
         description: payload.description,
     };
 
-    let dataplane = repo.create(request).await.map_err(ApiError::from)?;
+    let ops = DataplaneOperations::new(state.xds_state.clone());
+    let result = ops.create(internal_req, &auth).await?;
 
-    Ok((StatusCode::CREATED, Json(DataplaneResponse::from(dataplane))))
+    Ok((StatusCode::CREATED, Json(DataplaneResponse::from(result.data))))
 }
 
 /// List dataplanes for a team
@@ -148,33 +131,21 @@ pub async fn list_dataplanes_handler(
 
     let (limit, offset) = query.clamp(1000);
 
-    // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(
-        &state,
-        &team,
-        context.org_id.as_ref(),
-    )
-    .await?;
-
-    // Get repository
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
-    let repo = DataplaneRepository::new(cluster_repo.pool().clone());
-
-    let dataplanes = repo
-        .list_by_team(&team_id, Some(limit as i32), Some(offset as i32))
+    let team_repo = team_repo_from_state(&state)?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
         .await
-        .map_err(ApiError::from)?;
+        .resolve_teams(team_repo)
+        .await?;
 
-    let total = dataplanes.len() as i64;
+    let ops = DataplaneOperations::new(state.xds_state.clone());
+    let list_req =
+        ListDataplanesInternalRequest { limit: Some(limit as i32), offset: Some(offset as i32) };
+    let result = ops.list_by_team(&team, list_req, &auth).await?;
+
     let items: Vec<DataplaneResponse> =
-        dataplanes.into_iter().map(DataplaneResponse::from).collect();
+        result.dataplanes.into_iter().map(DataplaneResponse::from).collect();
 
-    Ok(Json(PaginatedResponse::new(items, total, limit, offset)))
+    Ok(Json(PaginatedResponse::new(items, result.count, limit, offset)))
 }
 
 /// List all dataplanes (admin or multi-team access)
@@ -199,30 +170,21 @@ pub async fn list_all_dataplanes_handler(
 
     let (limit, offset) = query.clamp(1000);
 
-    // Get effective teams for the user
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
-    let pool = cluster_repo.pool().clone();
-
     let team_repo = team_repo_from_state(&state)?;
-    let teams = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-
-    let repo = DataplaneRepository::new(pool);
-
-    let dataplanes = repo
-        .list_by_teams(&teams, Some(limit as i32), Some(offset as i32))
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
         .await
-        .map_err(ApiError::from)?;
+        .resolve_teams(team_repo)
+        .await?;
 
-    let total = dataplanes.len() as i64;
+    let ops = DataplaneOperations::new(state.xds_state.clone());
+    let list_req =
+        ListDataplanesInternalRequest { limit: Some(limit as i32), offset: Some(offset as i32) };
+    let result = ops.list(list_req, &auth).await?;
+
     let items: Vec<DataplaneResponse> =
-        dataplanes.into_iter().map(DataplaneResponse::from).collect();
+        result.dataplanes.into_iter().map(DataplaneResponse::from).collect();
 
-    Ok(Json(PaginatedResponse::new(items, total, limit, offset)))
+    Ok(Json(PaginatedResponse::new(items, result.count, limit, offset)))
 }
 
 /// Get a specific dataplane by name
@@ -259,32 +221,14 @@ pub async fn get_dataplane_handler(
     )
     .await?;
 
-    // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(
-        &state,
-        &team,
-        context.org_id.as_ref(),
-    )
-    .await?;
-
-    // Get repository
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
-    let repo = DataplaneRepository::new(cluster_repo.pool().clone());
-
-    let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
-            ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
-        })?;
-
-    // Verify team access using unified verifier
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
+
+    let ops = DataplaneOperations::new(state.xds_state.clone());
+    let dataplane = ops.get(&team, &name, &auth).await?;
 
     Ok(Json(DataplaneResponse::from(dataplane)))
 }
@@ -315,7 +259,6 @@ pub async fn update_dataplane_handler(
 ) -> Result<Json<DataplaneResponse>, ApiError> {
     let (team, name) = path;
 
-    // Validate request
     payload.validate().map_err(ApiError::from)?;
 
     // Authorization
@@ -329,43 +272,21 @@ pub async fn update_dataplane_handler(
     )
     .await?;
 
-    // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(
-        &state,
-        &team,
-        context.org_id.as_ref(),
-    )
-    .await?;
-
-    // Get repository
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
-    let repo = DataplaneRepository::new(cluster_repo.pool().clone());
-
-    // Get existing dataplane
-    let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
-            ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
-        })?;
-
-    // Verify team access using unified verifier
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
 
-    // Update dataplane
-    let request = UpdateDataplaneRequest {
-        gateway_host: Some(payload.gateway_host),
-        description: Some(payload.description),
+    let internal_req = UpdateDataplaneInternalRequest {
+        gateway_host: payload.gateway_host,
+        description: payload.description,
     };
 
-    let updated = repo.update(&dataplane.id, request).await.map_err(ApiError::from)?;
+    let ops = DataplaneOperations::new(state.xds_state.clone());
+    let result = ops.update(&team, &name, internal_req, &auth).await?;
 
-    Ok(Json(DataplaneResponse::from(updated)))
+    Ok(Json(DataplaneResponse::from(result.data)))
 }
 
 /// Delete a dataplane
@@ -402,36 +323,14 @@ pub async fn delete_dataplane_handler(
     )
     .await?;
 
-    // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(
-        &state,
-        &team,
-        context.org_id.as_ref(),
-    )
-    .await?;
-
-    // Get repository
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
-    let repo = DataplaneRepository::new(cluster_repo.pool().clone());
-
-    // Get existing dataplane
-    let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
-            ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
-        })?;
-
-    // Verify team access using unified verifier
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
 
-    // Delete dataplane
-    repo.delete(&dataplane.id).await.map_err(ApiError::from)?;
+    let ops = DataplaneOperations::new(state.xds_state.clone());
+    ops.delete(&team, &name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -523,33 +422,15 @@ pub async fn generate_envoy_config_handler(
     )
     .await?;
 
-    // Resolve team name to UUID for database storage
-    let team_id = crate::api::handlers::team_access::resolve_team_name(
-        &state,
-        &team,
-        context.org_id.as_ref(),
-    )
-    .await?;
-
-    // Get repository
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::service_unavailable("Database unavailable"))?;
-    let repo = DataplaneRepository::new(cluster_repo.pool().clone());
-
-    // Get dataplane
-    let dataplane =
-        repo.get_by_name(&team_id, &name).await.map_err(ApiError::from)?.ok_or_else(|| {
-            ApiError::NotFound(format!("Dataplane '{}' not found for team '{}'", name, team))
-        })?;
-
-    // Verify team access using unified verifier
+    // Use DataplaneOperations to get the dataplane (handles team resolution + access control)
     let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let dataplane = verify_team_access(dataplane, &team_scopes).await?;
+    let auth = InternalAuthContext::from_rest_with_org(&context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await?;
+
+    let ops = DataplaneOperations::new(state.xds_state.clone());
+    let dataplane = ops.get(&team, &name, &auth).await?;
 
     let format = query.format.as_deref().unwrap_or("yaml").to_lowercase();
 
@@ -595,7 +476,6 @@ pub async fn generate_envoy_config_handler(
     let envoy_admin = &state.xds_state.config.envoy_admin;
 
     // Try to get team-specific admin port from database
-    let team_repo = team_repo_from_state(&state)?;
     let team_data = team_repo.get_team_by_name(&team).await.map_err(ApiError::from)?;
 
     // Use team-specific port if available, otherwise fall back to global config
@@ -705,4 +585,276 @@ pub async fn generate_envoy_config_handler(
     };
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::{Path, Query, State};
+    use axum::Extension;
+
+    use crate::api::test_utils::{create_test_state, TestTeamBuilder};
+    use crate::auth::models::{Grant, GrantType};
+
+    /// Create a team-scoped AuthContext with dataplane grants
+    fn dataplane_auth_context(team: &str, actions: &[&str]) -> AuthContext {
+        let grants: Vec<Grant> = actions
+            .iter()
+            .map(|action| Grant {
+                grant_type: GrantType::Resource,
+                team_id: format!("{}-uuid", team),
+                team_name: team.to_string(),
+                resource_type: Some("dataplanes".to_string()),
+                action: Some(action.to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            })
+            .collect();
+        AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("test-token"),
+            format!("{}-user", team),
+            vec![],
+        )
+        .with_grants(grants, None)
+    }
+
+    async fn setup_state() -> (crate::storage::test_helpers::TestDatabase, ApiState) {
+        let (_db, state) = create_test_state().await;
+
+        let cluster_repo = state.xds_state.cluster_repository.as_ref().unwrap();
+        let pool = cluster_repo.pool().clone();
+
+        for team_name in &["test-team", "team-a", "team-b"] {
+            TestTeamBuilder::new(team_name).insert(&pool).await;
+        }
+
+        (_db, state)
+    }
+
+    /// Insert a dataplane directly into the database for test setup
+    async fn insert_dataplane(
+        state: &ApiState,
+        team_name: &str,
+        name: &str,
+        gateway_host: Option<&str>,
+    ) {
+        let auth = dataplane_auth_context(team_name, &["create"]);
+        let _ = create_dataplane_handler(
+            State(state.clone()),
+            Extension(auth),
+            Path(team_name.to_string()),
+            Json(CreateDataplaneBody {
+                name: name.to_string(),
+                gateway_host: gateway_host.map(String::from),
+                description: None,
+            }),
+        )
+        .await
+        .expect("insert dataplane");
+    }
+
+    #[tokio::test]
+    async fn create_dataplane_returns_201() {
+        let (_db, state) = setup_state().await;
+
+        let auth = dataplane_auth_context("test-team", &["create"]);
+        let body = CreateDataplaneBody {
+            name: "prod-dp".to_string(),
+            gateway_host: Some("https://api.example.com".to_string()),
+            description: Some("Production dataplane".to_string()),
+        };
+
+        let (status, Json(response)) = create_dataplane_handler(
+            State(state),
+            Extension(auth),
+            Path("test-team".to_string()),
+            Json(body),
+        )
+        .await
+        .expect("create dataplane");
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(response.name, "prod-dp");
+        assert_eq!(response.gateway_host, Some("https://api.example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn create_dataplane_rejects_duplicate_name() {
+        let (_db, state) = setup_state().await;
+        insert_dataplane(&state, "test-team", "dup-dp", None).await;
+
+        let auth = dataplane_auth_context("test-team", &["create"]);
+        let body = CreateDataplaneBody {
+            name: "dup-dp".to_string(),
+            gateway_host: None,
+            description: None,
+        };
+
+        let result = create_dataplane_handler(
+            State(state),
+            Extension(auth),
+            Path("test-team".to_string()),
+            Json(body),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_dataplanes_returns_correct_total() {
+        let (_db, state) = setup_state().await;
+
+        // Create 3 dataplanes for test-team
+        for i in 0..3 {
+            insert_dataplane(&state, "test-team", &format!("dp-{}", i), None).await;
+        }
+
+        let auth = dataplane_auth_context("test-team", &["read"]);
+        let response = list_dataplanes_handler(
+            State(state),
+            Extension(auth),
+            Path("test-team".to_string()),
+            Query(PaginationQuery { limit: 2, offset: 0 }),
+        )
+        .await
+        .expect("list dataplanes");
+
+        let paginated = response.0;
+        assert_eq!(paginated.items.len(), 2); // limited to 2
+        assert_eq!(paginated.total, 3); // total is 3
+    }
+
+    #[tokio::test]
+    async fn get_dataplane_returns_details() {
+        let (_db, state) = setup_state().await;
+        insert_dataplane(&state, "test-team", "my-dp", Some("https://gw.example.com")).await;
+
+        let auth = dataplane_auth_context("test-team", &["read"]);
+        let result = get_dataplane_handler(
+            State(state),
+            Extension(auth),
+            Path(("test-team".to_string(), "my-dp".to_string())),
+        )
+        .await
+        .expect("get dataplane");
+
+        assert_eq!(result.0.name, "my-dp");
+        assert_eq!(result.0.gateway_host, Some("https://gw.example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_dataplane_rejects_cross_team_access() {
+        let (_db, state) = setup_state().await;
+        insert_dataplane(&state, "team-a", "secret-dp", None).await;
+
+        // team-b user tries to get team-a's dataplane
+        let auth = dataplane_auth_context("team-b", &["read"]);
+        let result = get_dataplane_handler(
+            State(state),
+            Extension(auth),
+            Path(("team-a".to_string(), "secret-dp".to_string())),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_dataplane_persists_changes() {
+        let (_db, state) = setup_state().await;
+        insert_dataplane(&state, "test-team", "updatable-dp", Some("https://old.example.com"))
+            .await;
+
+        let auth = dataplane_auth_context("test-team", &["read", "update"]);
+        let result = update_dataplane_handler(
+            State(state),
+            Extension(auth),
+            Path(("test-team".to_string(), "updatable-dp".to_string())),
+            Json(UpdateDataplaneBody {
+                gateway_host: Some("https://new.example.com".to_string()),
+                description: Some("Updated".to_string()),
+            }),
+        )
+        .await
+        .expect("update dataplane");
+
+        assert_eq!(result.0.gateway_host, Some("https://new.example.com".to_string()));
+        assert_eq!(result.0.description, Some("Updated".to_string()));
+    }
+
+    #[tokio::test]
+    async fn delete_dataplane_returns_204() {
+        let (_db, state) = setup_state().await;
+        insert_dataplane(&state, "test-team", "deletable-dp", None).await;
+
+        let auth = dataplane_auth_context("test-team", &["read", "delete"]);
+        let status = delete_dataplane_handler(
+            State(state),
+            Extension(auth),
+            Path(("test-team".to_string(), "deletable-dp".to_string())),
+        )
+        .await
+        .expect("delete dataplane");
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn delete_dataplane_rejects_cross_team() {
+        let (_db, state) = setup_state().await;
+        insert_dataplane(&state, "team-a", "team-a-dp", None).await;
+
+        let auth = dataplane_auth_context("team-b", &["read", "delete"]);
+        let result = delete_dataplane_handler(
+            State(state),
+            Extension(auth),
+            Path(("team-a".to_string(), "team-a-dp".to_string())),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn list_all_dataplanes_returns_correct_total() {
+        let (_db, state) = setup_state().await;
+
+        // Create dataplanes across teams
+        insert_dataplane(&state, "team-a", "a-dp-1", None).await;
+        insert_dataplane(&state, "team-a", "a-dp-2", None).await;
+        insert_dataplane(&state, "team-b", "b-dp-1", None).await;
+
+        // Multi-team user
+        let grants: Vec<Grant> = ["team-a", "team-b"]
+            .iter()
+            .map(|team| Grant {
+                grant_type: GrantType::Resource,
+                team_id: format!("{}-uuid", team),
+                team_name: team.to_string(),
+                resource_type: Some("dataplanes".to_string()),
+                action: Some("read".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            })
+            .collect();
+        let auth = AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("multi-team-token"),
+            "multi-team-user".into(),
+            vec![],
+        )
+        .with_grants(grants, None);
+
+        let response = list_all_dataplanes_handler(
+            State(state),
+            Extension(auth),
+            Query(PaginationQuery { limit: 10, offset: 0 }),
+        )
+        .await
+        .expect("list all dataplanes");
+
+        let paginated = response.0;
+        assert_eq!(paginated.items.len(), 3);
+        assert_eq!(paginated.total, 3);
+    }
 }

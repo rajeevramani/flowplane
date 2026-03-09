@@ -401,10 +401,10 @@ pub struct CreateListenerRequest {
 }
 
 /// Dataplane request - matches backend CreateDataplaneBody
+/// Team is derived from the URL path, not the body.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateDataplaneRequest {
-    pub team: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_host: Option<String>,
@@ -597,9 +597,10 @@ impl ApiClient {
     pub async fn create_dataplane(
         &self,
         token: &str,
+        team: &str,
         req: &CreateDataplaneRequest,
     ) -> anyhow::Result<DataplaneResponse> {
-        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, req.team);
+        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, team);
 
         let resp = self
             .client
@@ -623,9 +624,10 @@ impl ApiClient {
     pub async fn create_dataplane_idempotent(
         &self,
         token: &str,
+        team: &str,
         req: &CreateDataplaneRequest,
     ) -> anyhow::Result<DataplaneResponse> {
-        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, req.team);
+        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, team);
 
         let resp = self
             .client
@@ -643,7 +645,7 @@ impl ApiClient {
 
         // If conflict (409), list dataplanes and find by name
         if status == StatusCode::CONFLICT {
-            if let Ok(dataplanes) = self.list_dataplanes(token, &req.team).await {
+            if let Ok(dataplanes) = self.list_dataplanes(token, team).await {
                 for dp in dataplanes {
                     if dp.name == req.name {
                         return Ok(dp);
@@ -1832,8 +1834,8 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     let dataplane_a = with_timeout(TestTimeout::default_with_label("Create Dataplane A"), async {
         api.create_dataplane_idempotent(
             &admin_token,
+            &team_a.name,
             &CreateDataplaneRequest {
-                team: team_a.name.clone(),
                 name: format!("{}-dataplane", team_a.name),
                 gateway_host: Some("127.0.0.1".to_string()),
                 description: Some(format!("Default dataplane for {}", team_a.name)),
@@ -1847,8 +1849,8 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     let dataplane_b = with_timeout(TestTimeout::default_with_label("Create Dataplane B"), async {
         api.create_dataplane_idempotent(
             &admin_token,
+            &team_b.name,
             &CreateDataplaneRequest {
-                team: team_b.name.clone(),
                 name: format!("{}-dataplane", team_b.name),
                 gateway_host: Some("127.0.0.1".to_string()),
                 description: Some(format!("Default dataplane for {}", team_b.name)),
@@ -1944,8 +1946,8 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
         with_timeout(TestTimeout::default_with_label("Create shared dataplane"), async {
             api.create_dataplane_idempotent(
                 &admin_token,
+                &team.name,
                 &CreateDataplaneRequest {
-                    team: team.name.clone(),
                     name: format!("{}-dataplane", team.name),
                     gateway_host: Some("127.0.0.1".to_string()),
                     description: Some("Shared dataplane for E2E tests".to_string()),

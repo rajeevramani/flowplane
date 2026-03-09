@@ -244,8 +244,8 @@ async fn test_102_team_isolation() {
     let dataplane_b = with_timeout(TestTimeout::default_with_label("Create Dataplane B"), async {
         api.create_dataplane_idempotent(
             &ctx.admin_token,
+            &team_b.name,
             &CreateDataplaneRequest {
-                team: team_b.name.clone(),
                 name: format!("{}-dataplane", team_b.name),
                 gateway_host: Some("127.0.0.1".to_string()),
                 description: Some("Dataplane for team B".to_string()),
