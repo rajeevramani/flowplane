@@ -19,15 +19,12 @@ lazy_static! {
         r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     )
     .expect("UUID regex is a valid compile-time constant");
-    static ref DATETIME_PATTERN: Regex =
-        Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
-            .expect("DateTime regex is a valid compile-time constant");
+    static ref DATETIME_PATTERN: Regex = Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+        .expect("DateTime regex is a valid compile-time constant");
     static ref DATE_PATTERN: Regex =
-        Regex::new(r"^\d{4}-\d{2}-\d{2}$")
-            .expect("Date regex is a valid compile-time constant");
-    static ref IPV4_PATTERN: Regex =
-        Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$")
-            .expect("IPv4 regex is a valid compile-time constant");
+        Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("Date regex is a valid compile-time constant");
+    static ref IPV4_PATTERN: Regex = Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$")
+        .expect("IPv4 regex is a valid compile-time constant");
 }
 
 /// Inferred schema type
@@ -530,9 +527,7 @@ impl SchemaInferenceEngine {
         }
 
         // UUID: 8-4-4-4-12 hex pattern
-        if s.len() == 36
-            && s.chars().filter(|&c| c == '-').count() == 4
-            && UUID_PATTERN.is_match(s)
+        if s.len() == 36 && s.chars().filter(|&c| c == '-').count() == 4 && UUID_PATTERN.is_match(s)
         {
             return StringFormat::Uuid;
         }

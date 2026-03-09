@@ -529,17 +529,16 @@ impl TeamRepository for SqlxTeamRepository {
 /// a repository instance. Returns `Ok(true)` when the team exists in the
 /// given org, `Ok(false)` otherwise.
 pub async fn team_belongs_to_org(pool: &DbPool, team_id: &str, org_id: &str) -> Result<bool> {
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2",
-    )
-    .bind(team_id)
-    .bind(org_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| FlowplaneError::Database {
-        source: e,
-        context: format!("Failed to check team {} in org {}", team_id, org_id),
-    })?;
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
+            .bind(team_id)
+            .bind(org_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to check team {} in org {}", team_id, org_id),
+            })?;
 
     Ok(count > 0)
 }
@@ -984,10 +983,9 @@ mod tests {
             .await
             .expect("create team");
 
-        let belongs =
-            team_belongs_to_org(&pool, team.id.as_str(), test_org_id().as_str())
-                .await
-                .expect("check belongs");
+        let belongs = team_belongs_to_org(&pool, team.id.as_str(), test_org_id().as_str())
+            .await
+            .expect("check belongs");
         assert!(belongs);
     }
 
@@ -1009,10 +1007,9 @@ mod tests {
             .await
             .expect("create team");
 
-        let belongs =
-            team_belongs_to_org(&pool, team.id.as_str(), "nonexistent-org-id")
-                .await
-                .expect("check belongs");
+        let belongs = team_belongs_to_org(&pool, team.id.as_str(), "nonexistent-org-id")
+            .await
+            .expect("check belongs");
         assert!(!belongs);
     }
 
