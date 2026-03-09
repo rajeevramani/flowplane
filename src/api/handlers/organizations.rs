@@ -493,7 +493,18 @@ pub async fn admin_delete_organization(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
 
+    // Collect org member user_ids BEFORE deletion (cascade will remove memberships)
+    let membership_repo = org_membership_repository_for_state(&state)?;
+    let org_members = membership_repo.list_org_members(&org_id).await.map_err(ApiError::from)?;
+
     repo.delete_organization(&org_id).await.map_err(ApiError::from)?;
+
+    // Evict permission cache for all former org members
+    if let Some(ref cache) = state.permission_cache {
+        for member in &org_members {
+            cache.evict_by_user_id(&member.user_id).await;
+        }
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1407,7 +1418,21 @@ pub async fn delete_org_team(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", path.team_name)))?;
 
+    // Collect team member user_ids BEFORE deletion (cascade will remove memberships)
+    let membership_repo: Arc<dyn TeamMembershipRepository> = Arc::new(
+        crate::storage::repositories::SqlxTeamMembershipRepository::new(pool_for_state(&state)?),
+    );
+    let team_members =
+        membership_repo.list_team_members(team.id.as_ref()).await.map_err(ApiError::from)?;
+
     team_repo.delete_team(&team.id).await.map_err(ApiError::from)?;
+
+    // Evict permission cache for all former team members
+    if let Some(ref cache) = state.permission_cache {
+        for member in &team_members {
+            cache.evict_by_user_id(&member.user_id).await;
+        }
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

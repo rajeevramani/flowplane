@@ -523,6 +523,27 @@ impl TeamRepository for SqlxTeamRepository {
     }
 }
 
+/// Check whether a team (by UUID) belongs to a specific organization.
+///
+/// Standalone function for use by MCP tools that have a `DbPool` but not
+/// a repository instance. Returns `Ok(true)` when the team exists in the
+/// given org, `Ok(false)` otherwise.
+pub async fn team_belongs_to_org(pool: &DbPool, team_id: &str, org_id: &str) -> Result<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2",
+    )
+    .bind(team_id)
+    .bind(org_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| FlowplaneError::Database {
+        source: e,
+        context: format!("Failed to check team {} in org {}", team_id, org_id),
+    })?;
+
+    Ok(count > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,5 +964,70 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains(&fake_id));
+    }
+
+    #[tokio::test]
+    async fn test_team_belongs_to_org_true() {
+        let _db = TestDatabase::new("team_belongs_org_true").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool.clone());
+
+        let team = repo
+            .create_team(CreateTeamRequest {
+                name: "org-check-team".to_string(),
+                display_name: "Org Check Team".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: test_org_id(),
+                settings: None,
+            })
+            .await
+            .expect("create team");
+
+        let belongs =
+            team_belongs_to_org(&pool, team.id.as_str(), test_org_id().as_str())
+                .await
+                .expect("check belongs");
+        assert!(belongs);
+    }
+
+    #[tokio::test]
+    async fn test_team_belongs_to_org_wrong_org() {
+        let _db = TestDatabase::new("team_belongs_org_wrong").await;
+        let pool = _db.pool.clone();
+        let repo = SqlxTeamRepository::new(pool.clone());
+
+        let team = repo
+            .create_team(CreateTeamRequest {
+                name: "wrong-org-team".to_string(),
+                display_name: "Wrong Org Team".to_string(),
+                description: None,
+                owner_user_id: None,
+                org_id: test_org_id(),
+                settings: None,
+            })
+            .await
+            .expect("create team");
+
+        let belongs =
+            team_belongs_to_org(&pool, team.id.as_str(), "nonexistent-org-id")
+                .await
+                .expect("check belongs");
+        assert!(!belongs);
+    }
+
+    #[tokio::test]
+    async fn test_team_belongs_to_org_nonexistent_team() {
+        let _db = TestDatabase::new("team_belongs_org_noexist").await;
+        let pool = _db.pool.clone();
+
+        let belongs = team_belongs_to_org(
+            &pool,
+            "00000000-0000-0000-0000-000000000000",
+            test_org_id().as_str(),
+        )
+        .await
+        .expect("check belongs");
+        assert!(!belongs);
     }
 }

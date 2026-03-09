@@ -111,7 +111,7 @@ pub use secret::{
     CreateSecretReferenceRequest, CreateSecretRequest, SecretData, SecretRepository,
     UpdateSecretRequest,
 };
-pub use team::{SqlxTeamRepository, TeamRepository};
+pub use team::{team_belongs_to_org, SqlxTeamRepository, TeamRepository};
 pub use user::{
     SqlxTeamMembershipRepository, SqlxUserRepository, TeamMembershipRepository, UserRepository,
 };

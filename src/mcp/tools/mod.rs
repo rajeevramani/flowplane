@@ -150,16 +150,11 @@ pub(crate) async fn validate_team_in_org(
     team: &str,
     org_id: &OrgId,
 ) -> Result<(), McpError> {
-    let row: Option<(i64,)> =
-        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
-            .bind(team)
-            .bind(org_id.as_str())
-            .fetch_optional(db_pool)
-            .await
-            .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
+    let belongs = crate::storage::repositories::team_belongs_to_org(db_pool, team, org_id.as_str())
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
 
-    let count = row.map(|r| r.0).unwrap_or(0);
-    if count == 0 {
+    if !belongs {
         return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
     }
     Ok(())

@@ -24,6 +24,9 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::instrument;
 
+// validate_team_in_org is shared — use super::validate_team_in_org
+use super::validate_team_in_org;
+
 /// Returns the MCP tool definition for listing listeners.
 ///
 /// This tool supports pagination via `limit` and `offset` parameters.
@@ -878,6 +881,11 @@ pub async fn execute_query_port(
         args.get("port").and_then(|v| v.as_i64()).ok_or_else(|| {
             McpError::InvalidParams("Missing required parameter: port".to_string())
         })? as i32;
+
+    // Validate team belongs to caller's org
+    if let Some(oid) = org_id {
+        validate_team_in_org(db_pool, team, oid).await?;
+    }
 
     tracing::debug!(team = %team, port = %port, "Querying port availability");
 
