@@ -481,13 +481,13 @@ async fn test_2603_grant_lifecycle() {
     let (api, admin_token, org_name, _org_id, team_name, _team_id, user_id, user_email, password) =
         setup_grant_test("s4-lifecycle").await;
 
-    // Step 1: No grants, but user has org membership → listing endpoints return 200
-    // (the team=None path in check_resource_access allows org members to reach listing
-    // handlers, which then filter by the user's teams — returning an empty list)
+    // Step 1: User has default clusters:read grant from team membership (members get
+    // read grants for all resources via grants_for_org_role). Listing returns 200 (empty
+    // because no clusters exist yet in this team).
     let user_token = get_user_token(&user_email, &password).await;
     let clusters_path = format!("/api/v1/teams/{}/clusters", team_name);
     let (status, body) =
-        with_timeout(TestTimeout::default_with_label("GET clusters (no grant)"), async {
+        with_timeout(TestTimeout::default_with_label("GET clusters (default grant)"), async {
             api.get(&user_token, &clusters_path).await
         })
         .await
@@ -496,18 +496,17 @@ async fn test_2603_grant_lifecycle() {
     assert_eq!(
         status.as_u16(),
         200,
-        "Org member with no grants → listing returns 200 (empty), got {}",
+        "Team member with default clusters:read grant → 200 (empty list), got {}",
         status
     );
-    // Verify the list is empty (user has no team grants)
     let empty = vec![];
     let clusters = body.as_array().unwrap_or(&empty);
     assert!(
         clusters.is_empty(),
-        "User with no grants should see no clusters, got {} items",
+        "No clusters created yet, should see empty list, got {} items",
         clusters.len()
     );
-    println!("ok Step 1: no grant → 200 (empty list)");
+    println!("ok Step 1: default grant → 200 (empty list)");
 
     // Step 2: Create clusters:read grant → should succeed
     create_grant(&api, &admin_token, &org_name, &user_id, &team_name, "clusters", "read").await;
@@ -534,7 +533,7 @@ async fn test_2603_grant_lifecycle() {
     assert!(grant.is_some(), "clusters:read grant should appear in list");
     let grant_id = grant.unwrap()["id"].as_str().expect("Grant should have id");
 
-    // Step 3: Revoke grant → should be denied again
+    // Step 3: Revoke grant → should be denied again (403, same as step 1)
     delete_grant(&api, &admin_token, &org_name, &user_id, grant_id).await;
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -549,11 +548,11 @@ async fn test_2603_grant_lifecycle() {
 
     assert_eq!(
         status.as_u16(),
-        200,
-        "After revocation → listing returns 200 (empty, same as step 1), got {}",
+        403,
+        "After revocation → 403 (same as step 1), got {}",
         status
     );
-    println!("ok Step 3: grant revoked → 200 (empty list)");
+    println!("ok Step 3: grant revoked → 403 (access denied)");
 
     // Verify grant no longer in list
     let grants = list_grants(&api, &admin_token, &org_name, &user_id).await;
