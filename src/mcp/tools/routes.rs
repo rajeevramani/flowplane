@@ -20,6 +20,9 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::instrument;
 
+// validate_team_in_org is shared — use super::validate_team_in_org
+use super::validate_team_in_org;
+
 /// Tool definition for listing routes
 pub fn cp_list_routes_tool() -> Tool {
     Tool::new(
@@ -346,6 +349,11 @@ pub async fn execute_list_routes(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
+    // Validate team belongs to caller's org
+    if let Some(oid) = org_id {
+        validate_team_in_org(db_pool, team, oid).await?;
+    }
+
     let limit = args["limit"].as_i64().unwrap_or(100).min(1000) as i32;
     let offset = args["offset"].as_i64().unwrap_or(0) as i32;
     let route_config_filter = args["route_config"].as_str();

@@ -252,9 +252,11 @@ pub async fn list_secrets_handler(
     .await?;
 
     // Verify team access - user must have access to the requested team
+    // Empty team_scopes means user has no team memberships (e.g. admin:all only),
+    // which must NOT grant access to team-owned secrets.
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    if !team_scopes.is_empty() && !team_scopes.contains(&team_id) {
+    if !team_scopes.contains(&team_id) {
         return Err(ApiError::NotFound("Team not found".to_string()));
     }
 

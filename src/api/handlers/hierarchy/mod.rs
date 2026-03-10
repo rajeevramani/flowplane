@@ -28,6 +28,7 @@ use utoipa;
 use crate::{
     api::handlers::team_access::{
         get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+        verify_team_access,
     },
     api::{error::ApiError, routes::ApiState},
     auth::models::AuthContext,
@@ -37,42 +38,6 @@ use crate::{
 };
 
 // === Helper Functions ===
-
-/// Verify that a route config belongs to one of the user's teams or is global.
-/// Returns the route config if authorized, otherwise returns NotFound error (to avoid leaking existence).
-async fn verify_route_config_access(
-    route_config: RouteConfigData,
-    team_scopes: &[String],
-) -> Result<RouteConfigData, ApiError> {
-    // Admin:all or resource-level scopes (empty team_scopes) can access everything
-    if team_scopes.is_empty() {
-        return Ok(route_config);
-    }
-
-    // Check if route config is global (team = NULL) or belongs to one of user's teams
-    match &route_config.team {
-        None => Ok(route_config), // Global route config, accessible to all
-        Some(route_team) => {
-            if team_scopes.contains(route_team) {
-                Ok(route_config)
-            } else {
-                // Record cross-team access attempt for security monitoring
-                if let Some(from_team) = team_scopes.first() {
-                    crate::observability::metrics::record_cross_team_access_attempt(
-                        from_team, route_team, "routes",
-                    )
-                    .await;
-                }
-
-                // Return 404 to avoid leaking existence of other teams' resources
-                Err(ApiError::NotFound(format!(
-                    "Route config with name '{}' not found",
-                    route_config.name
-                )))
-            }
-        }
-    }
-}
 
 /// Resolve a route config name to its data with team access verification
 async fn resolve_route_config_with_access(
@@ -92,7 +57,7 @@ async fn resolve_route_config_with_access(
     let team_repo = team_repo_from_state(state)?;
     let team_scopes = get_effective_team_ids(context, team_repo, context.org_id.as_ref()).await?;
 
-    verify_route_config_access(route_config, &team_scopes).await
+    verify_team_access(route_config, &team_scopes).await
 }
 
 /// Resolve a virtual host by route config name and vhost name with team access verification
