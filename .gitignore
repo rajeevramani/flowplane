@@ -95,6 +95,7 @@ ui/playwright/.auth/
 ui/test-results/
 ui/.netlify/
 ui/.vercel/
+.playwright-mcp
 # Environment variables
 # Editor directories and files
 .idea
@@ -118,6 +119,8 @@ AGENTS.md
 GEMINI.md
 
 examples/custom-filter/add-header/target
+
+.archive
 
 # Terraform
 **/.terraform/
