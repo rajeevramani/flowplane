@@ -39,7 +39,6 @@ use crate::{
         },
         routes::ApiState,
     },
-    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::{FilterId, ListenerId, RouteConfigId},
     internal_api::filters::FilterOperations,
@@ -391,14 +390,22 @@ pub async fn delete_filter_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(team = %_team, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %team, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_name)): Path<(String, String)>,
+    Path((team, route_name)): Path<(String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "update", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve route name to internal UUID for database foreign key
     let route_config_id = resolve_route_config_id(&state, &route_name).await?;
@@ -436,13 +443,21 @@ pub async fn attach_filter_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(team = %_team, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_name, filter_id)): Path<(String, String, String)>,
+    Path((team, route_name, filter_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "update", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve route name to internal UUID for database foreign key
     let route_config_id = resolve_route_config_id(&state, &route_name).await?;
@@ -479,13 +494,21 @@ pub async fn detach_filter_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(team = %_team, route_name = %route_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_name = %route_name, user_id = ?context.user_id))]
 pub async fn list_route_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_name)): Path<(String, String)>,
+    Path((team, route_name)): Path<(String, String)>,
 ) -> Result<Json<RouteFiltersResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Resolve route name to internal UUID for database query
     let route_config_id = resolve_route_config_id(&state, &route_name).await?;

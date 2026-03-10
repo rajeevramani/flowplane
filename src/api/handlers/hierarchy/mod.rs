@@ -26,9 +26,10 @@ use tracing::{info, instrument};
 use utoipa;
 
 use crate::{
-    api::handlers::team_access::{get_effective_team_ids, team_repo_from_state},
+    api::handlers::team_access::{
+        get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+    },
     api::{error::ApiError, routes::ApiState},
-    auth::authorization::require_resource_access,
     auth::models::AuthContext,
     domain::FilterId,
     services::FilterService,
@@ -152,13 +153,21 @@ async fn resolve_route(
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state, context), fields(team = %_team, route_config_name = %route_config_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, user_id = ?context.user_id))]
 pub async fn list_virtual_hosts_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_config_name)): Path<(String, String)>,
+    Path((team, route_config_name)): Path<(String, String)>,
 ) -> Result<Json<ListVirtualHostsResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team access verification happens in resolve_route_config_with_access
     let route_config =
@@ -212,13 +221,21 @@ pub async fn list_virtual_hosts_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(team = %_team, route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
 pub async fn list_virtual_host_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_config_name, vhost_name)): Path<(String, String, String)>,
+    Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
 ) -> Result<Json<VirtualHostFiltersResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -256,14 +273,22 @@ pub async fn list_virtual_host_filters_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(team = %_team, route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_virtual_host_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_config_name, vhost_name)): Path<(String, String, String)>,
+    Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "update", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -304,13 +329,21 @@ pub async fn attach_filter_to_virtual_host_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(team = %_team, route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_virtual_host_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_config_name, vhost_name, filter_id)): Path<(String, String, String, String)>,
+    Path((team, route_config_name, vhost_name, filter_id)): Path<(String, String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "update", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -352,13 +385,21 @@ pub async fn detach_filter_from_virtual_host_handler(
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state, context), fields(team = %_team, route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
 pub async fn list_route_rules_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_config_name, vhost_name)): Path<(String, String, String)>,
+    Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
 ) -> Result<Json<ListRouteRulesResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -410,18 +451,21 @@ pub async fn list_route_rules_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(team = %_team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, user_id = ?context.user_id))]
 pub async fn list_route_rule_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_config_name, vhost_name, route_name)): Path<(
-        String,
-        String,
-        String,
-        String,
-    )>,
+    Path((team, route_config_name, vhost_name, route_name)): Path<(String, String, String, String)>,
 ) -> Result<Json<RouteRuleFiltersResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "read",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team access verification happens in resolve_route
     let route =
@@ -460,19 +504,22 @@ pub async fn list_route_rule_filters_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(team = %_team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_route_rule_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_config_name, vhost_name, route_name)): Path<(
-        String,
-        String,
-        String,
-        String,
-    )>,
+    Path((team, route_config_name, vhost_name, route_name)): Path<(String, String, String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "update", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team access verification happens in resolve_route
     let route =
@@ -515,11 +562,11 @@ pub async fn attach_filter_to_route_rule_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(team = %_team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_route_rule_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((_team, route_config_name, vhost_name, route_name, filter_id)): Path<(
+    Path((team, route_config_name, vhost_name, route_name, filter_id)): Path<(
         String,
         String,
         String,
@@ -527,7 +574,15 @@ pub async fn detach_filter_from_route_rule_handler(
         String,
     )>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "update", None)?;
+    require_resource_access_resolved(
+        &state,
+        &context,
+        "routes",
+        "update",
+        Some(&team),
+        context.org_id.as_ref(),
+    )
+    .await?;
 
     // Team access verification happens in resolve_route
     let route =
