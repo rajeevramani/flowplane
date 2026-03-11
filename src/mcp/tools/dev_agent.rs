@@ -6,7 +6,7 @@
 
 use crate::domain::OrgId;
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::storage::DbPool;
 use serde_json::{json, Value};
 use tracing::instrument;
@@ -166,7 +166,7 @@ pub async fn execute_dev_preflight_check(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -290,6 +290,7 @@ async fn check_name_exists(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::protocol::ContentBlock;
     use crate::storage::test_helpers::{seed_reporting_data, TestDatabase, TEAM_A_ID, TEAM_B_ID};
 
     // Helper: create a TestDatabase with reporting seed data

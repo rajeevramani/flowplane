@@ -141,7 +141,26 @@ use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::storage::repositories::TeamRepository;
 use crate::storage::DbPool;
-use serde_json::Value;
+use serde_json::{json, Value};
+
+/// Returns the standard pagination schema properties (limit + offset) for MCP tool definitions.
+pub(crate) fn pagination_schema(resource: &str) -> Value {
+    json!({
+        "limit": {
+            "type": "integer",
+            "description": format!("Maximum number of {} to return (default: 50, max: 1000)", resource),
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 50
+        },
+        "offset": {
+            "type": "integer",
+            "description": format!("Number of {} to skip for pagination (default: 0)", resource),
+            "minimum": 0,
+            "default": 0
+        }
+    })
+}
 
 /// Validate that a team belongs to the caller's org. Returns McpError on failure.
 ///

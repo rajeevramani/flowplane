@@ -12,7 +12,7 @@ use crate::internal_api::{
     UpdateClusterRequest as InternalUpdateRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_query_response, build_rich_create_response, build_rich_delete_response,
     build_update_response, ResourceRef,
@@ -48,21 +48,7 @@ WORKFLOW CONTEXT:
 
 RELATED TOOLS: cp_get_cluster (details), cp_create_cluster (create), cp_list_route_configs (routes using clusters)"#.to_string(), json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of clusters to return (default: 50, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of clusters to skip for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
+            "properties": super::pagination_schema("clusters")
         }))
 }
 
@@ -239,7 +225,7 @@ pub async fn execute_query_service(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_list_clusters tool.
@@ -312,7 +298,7 @@ pub async fn execute_list_clusters(
 
     tracing::info!(team = %team, cluster_count = result.count, "Successfully listed clusters");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_get_cluster tool.
@@ -362,7 +348,7 @@ pub async fn execute_get_cluster(
 
     tracing::info!(team = %team, cluster_name = %name, "Successfully retrieved cluster");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Returns the MCP tool definition for creating a cluster.
@@ -802,7 +788,7 @@ pub async fn execute_create_cluster(
         "Successfully created cluster via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_cluster tool.
@@ -884,7 +870,7 @@ pub async fn execute_update_cluster(
         "Successfully updated cluster via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_cluster tool.
@@ -922,7 +908,7 @@ pub async fn execute_delete_cluster(
 
     tracing::info!(team = %team, cluster_name = %name, "Successfully deleted cluster via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_get_cluster_health tool.
@@ -1014,7 +1000,7 @@ pub async fn execute_get_cluster_health(
         "Successfully retrieved cluster health"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // === Helper Functions for MCP-Specific Parsing ===
@@ -1106,6 +1092,7 @@ fn parse_circuit_breakers(cb_json: &Value) -> Option<crate::xds::CircuitBreakers
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
+    use crate::mcp::protocol::ContentBlock;
     use crate::storage::test_helpers::TestDatabase;
 
     async fn setup_test_xds() -> (TestDatabase, Arc<XdsState>) {

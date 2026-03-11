@@ -8,7 +8,7 @@ use crate::internal_api::{
     ListListenersRequest, ListRouteConfigsRequest, ListenerOperations, RouteConfigOperations,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -260,7 +260,7 @@ pub async fn execute_devops_get_deployment_status(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================

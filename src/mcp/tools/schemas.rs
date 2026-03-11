@@ -5,7 +5,7 @@
 use crate::domain::OrgId;
 use crate::internal_api::{AggregatedSchemaOperations, ListSchemasRequest};
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -56,43 +56,32 @@ CONFIDENCE SCORES:
 - Below 0.5: Low confidence, recently observed or inconsistent
 
 RELATED TOOLS: cp_get_aggregated_schema (get specific schema by ID)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Search pattern for API path (e.g., '/api/users' or '/v1/')"
-                },
-                "httpMethod": {
-                    "type": "string",
-                    "description": "Filter by HTTP method",
-                    "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
-                },
-                "minConfidence": {
-                    "type": "number",
-                    "description": "Minimum confidence score (0.0 to 1.0). Higher values indicate more reliable schemas.",
-                    "minimum": 0.0,
-                    "maximum": 1.0
-                },
-                "latestOnly": {
-                    "type": "boolean",
-                    "description": "If true, only return the latest version of each endpoint (default: true)"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of schemas to return (1-1000, default: 100)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 100
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Offset for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("schemas");
+            props["path"] = json!({
+                "type": "string",
+                "description": "Search pattern for API path (e.g., '/api/users' or '/v1/')"
+            });
+            props["httpMethod"] = json!({
+                "type": "string",
+                "description": "Filter by HTTP method",
+                "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+            });
+            props["minConfidence"] = json!({
+                "type": "number",
+                "description": "Minimum confidence score (0.0 to 1.0). Higher values indicate more reliable schemas.",
+                "minimum": 0.0,
+                "maximum": 1.0
+            });
+            props["latestOnly"] = json!({
+                "type": "boolean",
+                "description": "If true, only return the latest version of each endpoint (default: true)"
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -308,7 +297,7 @@ pub async fn execute_export_schema_openapi(
     }
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute list aggregated schemas operation using the internal API layer.
@@ -374,7 +363,7 @@ pub async fn execute_list_aggregated_schemas(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get aggregated schema operation using the internal API layer.
@@ -436,7 +425,7 @@ pub async fn execute_get_aggregated_schema(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 #[cfg(test)]

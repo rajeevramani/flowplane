@@ -442,6 +442,16 @@ pub struct ToolCallResult {
     pub is_error: Option<bool>,
 }
 
+impl ToolCallResult {
+    pub fn text(text: String) -> Self {
+        Self { content: vec![ContentBlock::Text { text }], is_error: None }
+    }
+
+    pub fn error_text(text: String) -> Self {
+        Self { content: vec![ContentBlock::Text { text }], is_error: Some(true) }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ContentBlock {

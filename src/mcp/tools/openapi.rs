@@ -5,7 +5,7 @@
 use crate::domain::OrgId;
 use crate::internal_api::{ListOpenApiImportsRequest, OpenApiOperations};
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -54,19 +54,7 @@ RETURNS: Array of import metadata objects sorted by imported_at (newest first).
 RELATED TOOLS: cp_get_openapi_import (detailed view of single import)"#,
         json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return",
-                    "minimum": 1,
-                    "maximum": 100
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of results to skip for pagination",
-                    "minimum": 0
-                }
-            }
+            "properties": super::pagination_schema("imports")
         }),
     )
 }
@@ -179,7 +167,7 @@ pub async fn execute_list_openapi_imports(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get OpenAPI import operation using the internal API layer.
@@ -219,7 +207,7 @@ pub async fn execute_get_openapi_import(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 #[cfg(test)]
@@ -294,7 +282,7 @@ mod tests {
         let limit = &schema["properties"]["limit"];
         assert_eq!(limit["type"], "integer");
         assert_eq!(limit["minimum"], 1);
-        assert_eq!(limit["maximum"], 100);
+        assert_eq!(limit["maximum"], 1000);
 
         // Check offset constraints
         let offset = &schema["properties"]["offset"];

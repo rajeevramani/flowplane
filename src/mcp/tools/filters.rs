@@ -8,7 +8,7 @@ use crate::internal_api::{
     CreateFilterRequest, FilterOperations, ListFiltersRequest, UpdateFilterRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_delete_response, build_rich_create_response, build_rich_delete_response,
     build_update_response,
@@ -52,29 +52,18 @@ FILTER TYPES:
 RETURNS: Array of filter objects with name, filter_type, configuration, and metadata.
 
 RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "filterType": {
-                    "type": "string",
-                    "description": "Filter by filter type (e.g., jwt_auth, oauth2, cors, rate_limit)",
-                    "enum": ["jwt_auth", "oauth2", "local_rate_limit", "cors", "header_mutation", "ext_authz", "rbac", "custom_response", "compressor", "mcp"]
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of filters to return (1-1000, default: 100)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 100
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Offset for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("filters");
+            props["filterType"] = json!({
+                "type": "string",
+                "description": "Filter by filter type (e.g., jwt_auth, oauth2, cors, rate_limit)",
+                "enum": ["jwt_auth", "oauth2", "local_rate_limit", "cors", "header_mutation", "ext_authz", "rbac", "custom_response", "compressor", "mcp"]
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -174,7 +163,7 @@ pub async fn execute_list_filters(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get filter operation using the internal API layer.
@@ -230,7 +219,7 @@ pub async fn execute_get_filter(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 // =============================================================================
@@ -578,7 +567,7 @@ pub async fn execute_create_filter(
         "Successfully created filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_filter tool using the internal API layer.
@@ -653,7 +642,7 @@ pub async fn execute_update_filter(
         "Successfully updated filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_filter tool using the internal API layer.
@@ -697,7 +686,7 @@ pub async fn execute_delete_filter(
         "Successfully deleted filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -974,7 +963,7 @@ pub async fn execute_attach_filter(
         "Successfully attached filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_detach_filter tool.
@@ -1051,7 +1040,7 @@ pub async fn execute_detach_filter(
         "Successfully detached filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_list_filter_attachments tool.
@@ -1124,7 +1113,7 @@ pub async fn execute_list_filter_attachments(
         "Successfully listed filter attachments via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]

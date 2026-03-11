@@ -6,7 +6,7 @@
 
 use crate::domain::OrgId;
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::storage::repositories::{
     AuditLogFilters, AuditLogRepository, ClusterRepository, DataplaneRepository,
     NackEventRepository, ReportingRepository,
@@ -288,7 +288,7 @@ pub async fn execute_ops_trace_request(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute ops_topology: view the full gateway topology.
@@ -354,7 +354,7 @@ pub async fn execute_ops_topology(
     };
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Check health check thresholds in a cluster's configuration JSON.
@@ -638,7 +638,7 @@ pub async fn execute_ops_config_validate(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute ops_audit_query: query recent audit log entries (PII-stripped).
@@ -695,7 +695,7 @@ pub async fn execute_ops_audit_query(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Ops tool: view xDS delivery status per dataplane.
@@ -950,7 +950,7 @@ pub async fn execute_ops_xds_delivery_status(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -1062,7 +1062,7 @@ pub async fn execute_ops_nack_history(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -1072,6 +1072,7 @@ pub async fn execute_ops_nack_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::protocol::ContentBlock;
     use crate::storage::test_helpers::{seed_reporting_data, TestDatabase, TEAM_A_ID, TEAM_B_ID};
 
     // Helper: create a TestDatabase with reporting seed data

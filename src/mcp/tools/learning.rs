@@ -7,7 +7,7 @@ use crate::internal_api::{
     CreateLearningSessionInternalRequest, LearningSessionOperations, ListLearningSessionsRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_action_response, build_create_response, build_delete_response,
 };
@@ -56,27 +56,18 @@ RETURNS: Array of learning session objects with:
 - created_at, started_at, completed_at: Lifecycle timestamps
 
 RELATED TOOLS: cp_get_learning_session (details), cp_create_learning_session (new session)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Filter by session status",
-                    "enum": ["pending", "active", "completing", "completed", "cancelled", "failed"]
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return",
-                    "minimum": 1,
-                    "maximum": 100
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of results to skip for pagination",
-                    "minimum": 0
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("learning sessions");
+            props["status"] = json!({
+                "type": "string",
+                "description": "Filter by session status",
+                "enum": ["pending", "active", "completing", "completed", "cancelled", "failed"]
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -313,7 +304,7 @@ pub async fn execute_list_learning_sessions(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get learning session operation using the internal API layer.
@@ -361,7 +352,7 @@ pub async fn execute_get_learning_session(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute create learning session operation using the internal API layer.
@@ -447,7 +438,7 @@ pub async fn execute_create_learning_session(
         "Successfully created learning session via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute delete learning session operation using the internal API layer.
@@ -482,7 +473,7 @@ pub async fn execute_delete_learning_session(
 
     tracing::info!(team = %team, session_id = %id, "Successfully deleted learning session via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -587,7 +578,7 @@ pub async fn execute_activate_learning_session(
 
     tracing::info!(team = %team, session_id = %id, "Learning session activated via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -831,7 +822,7 @@ pub async fn execute_ops_learning_session_health(
 
     let text = serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]

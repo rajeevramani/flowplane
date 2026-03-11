@@ -9,7 +9,7 @@ use crate::internal_api::{
     UpdateRouteConfigRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_delete_response, build_query_response, build_rich_create_response,
     build_rich_delete_response, build_update_response, ResourceRef,
@@ -60,26 +60,17 @@ HIERARCHY:
   - Routes match paths and forward to clusters
 
 RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of routes to return (default: 100, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of routes to skip (for pagination)",
-                    "minimum": 0
-                },
-                "routeConfig": {
-                    "type": "string",
-                    "description": "Filter by route configuration name to see routes in a specific config"
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("routes");
+            props["routeConfig"] = json!({
+                "type": "string",
+                "description": "Filter by route configuration name to see routes in a specific config"
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -119,21 +110,7 @@ WORKFLOW CONTEXT:
 RELATED TOOLS: cp_list_routes (individual routes), cp_create_route_config (create), cp_list_listeners (consumers)"#.to_string(),
         json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of route configs to return (default: 50, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of route configs to skip for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
+            "properties": super::pagination_schema("route configs")
         }),
     )
 }
@@ -197,7 +174,7 @@ pub async fn execute_list_route_configs(
 
     tracing::info!(team = %team, route_config_count = result.count, "Successfully listed route configs");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Returns the MCP tool definition for getting a route config by name.
@@ -283,7 +260,7 @@ pub async fn execute_get_route_config(
 
     tracing::info!(team = %team, route_config_name = %name, "Successfully retrieved route config");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Returns the MCP tool definition for querying path routing.
@@ -462,7 +439,7 @@ pub async fn execute_list_routes(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute the cp_query_path tool.
@@ -574,7 +551,7 @@ pub async fn execute_query_path(
 
     tracing::info!(team = %team, path = %query_path, port = ?port, found = found, "Path query completed");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -959,7 +936,7 @@ pub async fn execute_create_route_config(
         "Successfully created route config via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_route_config tool using the internal API layer.
@@ -1022,7 +999,7 @@ pub async fn execute_update_route_config(
         "Successfully updated route config via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_route_config tool using the internal API layer.
@@ -1068,7 +1045,7 @@ pub async fn execute_delete_route_config(
         "Successfully deleted route config via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -1421,7 +1398,7 @@ pub async fn execute_get_route(
         "Successfully retrieved route"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_create_route tool
@@ -1514,7 +1491,7 @@ pub async fn execute_create_route(
         "Successfully created route via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_route tool
@@ -1579,7 +1556,7 @@ pub async fn execute_update_route(
         "Successfully updated route via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_route tool
@@ -1635,7 +1612,7 @@ pub async fn execute_delete_route(
         "Successfully deleted route via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]

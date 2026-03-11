@@ -11,7 +11,7 @@ use crate::internal_api::{
     UpdateListenerRequest as InternalUpdateRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_query_response, build_rich_create_response, build_rich_delete_response,
     build_update_response, ResourceRef,
@@ -63,21 +63,7 @@ TRAFFIC FLOW:
 RELATED TOOLS: cp_get_listener (details), cp_create_listener (create), cp_list_route_configs (routes)"#,
         json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of listeners to return (default: 50, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of listeners to skip for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
+            "properties": super::pagination_schema("listeners")
         }),
     )
 }
@@ -511,7 +497,7 @@ pub async fn execute_list_listeners(
 
     tracing::info!(team = %team, listener_count = result.count, "Successfully listed listeners");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_get_listener tool.
@@ -563,7 +549,7 @@ pub async fn execute_get_listener(
 
     tracing::info!(team = %team, listener_name = %name, "Successfully retrieved listener");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_create_listener tool.
@@ -690,7 +676,7 @@ pub async fn execute_create_listener(
         "Successfully created listener via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_listener tool.
@@ -799,7 +785,7 @@ pub async fn execute_update_listener(
         "Successfully updated listener via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_listener tool.
@@ -836,7 +822,7 @@ pub async fn execute_delete_listener(
 
     tracing::info!(team = %team, listener_name = %name, "Successfully deleted listener via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_query_port tool.
@@ -909,7 +895,7 @@ pub async fn execute_query_port(
 
     tracing::info!(team = %team, port = %port, found = found, "Port query completed");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_get_listener_status tool.
@@ -989,7 +975,7 @@ pub async fn execute_get_listener_status(
         "Successfully retrieved listener status"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]

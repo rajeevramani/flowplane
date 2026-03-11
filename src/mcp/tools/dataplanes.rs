@@ -8,7 +8,7 @@ use crate::internal_api::{
     UpdateDataplaneInternalRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_delete_response, build_rich_create_response, build_update_response,
 };
@@ -50,19 +50,7 @@ RETURNS: Array of dataplane objects with:
 RELATED TOOLS: cp_get_dataplane (details), cp_create_dataplane (new dataplane)"#,
         json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return",
-                    "minimum": 1,
-                    "maximum": 1000
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of results to skip for pagination",
-                    "minimum": 0
-                }
-            }
+            "properties": super::pagination_schema("dataplanes")
         }),
     )
 }
@@ -335,7 +323,7 @@ pub async fn execute_list_dataplanes(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get dataplane operation using the internal API layer.
@@ -377,7 +365,7 @@ pub async fn execute_get_dataplane(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute create dataplane operation using the internal API layer.
@@ -447,7 +435,7 @@ pub async fn execute_create_dataplane(
         "Successfully created dataplane via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute update dataplane operation using the internal API layer.
@@ -509,7 +497,7 @@ pub async fn execute_update_dataplane(
         "Successfully updated dataplane via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute delete dataplane operation using the internal API layer.
@@ -558,7 +546,7 @@ pub async fn execute_delete_dataplane(
         "Successfully deleted dataplane via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]

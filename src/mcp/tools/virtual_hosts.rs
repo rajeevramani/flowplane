@@ -7,7 +7,7 @@ use crate::internal_api::{
     ListVirtualHostsRequest, UpdateVirtualHostRequest, VirtualHostOperations,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_delete_response, build_rich_create_response, build_update_response,
 };
@@ -53,26 +53,17 @@ RETURNS: Array of virtual host objects with:
 - created_at/updated_at: Timestamps
 
 RELATED TOOLS: cp_get_virtual_host (details), cp_create_virtual_host (create), cp_list_routes (routes within virtual hosts)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "routeConfig": {
-                    "type": "string",
-                    "description": "Filter by route configuration name to see virtual hosts in a specific config"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of virtual hosts to return (default: 100, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of virtual hosts to skip (for pagination)",
-                    "minimum": 0
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("virtual hosts");
+            props["routeConfig"] = json!({
+                "type": "string",
+                "description": "Filter by route configuration name to see virtual hosts in a specific config"
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -367,7 +358,7 @@ pub async fn execute_list_virtual_hosts(
         "Successfully listed virtual hosts"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute get virtual host operation
@@ -423,7 +414,7 @@ pub async fn execute_get_virtual_host(
         "Successfully retrieved virtual host"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute create virtual host operation
@@ -516,7 +507,7 @@ pub async fn execute_create_virtual_host(
         "Successfully created virtual host via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute update virtual host operation
@@ -606,7 +597,7 @@ pub async fn execute_update_virtual_host(
         "Successfully updated virtual host via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute delete virtual host operation
@@ -656,7 +647,7 @@ pub async fn execute_delete_virtual_host(
         "Successfully deleted virtual host via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]
