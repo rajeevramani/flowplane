@@ -6,8 +6,11 @@
 //!
 //! This module is only available in test builds (`#[cfg(test)]`).
 
-use crate::config::DatabaseConfig;
+use std::sync::Arc;
+
+use crate::config::{DatabaseConfig, SimpleXdsConfig};
 use crate::storage::{create_pool, DbPool};
+use crate::xds::XdsState;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
@@ -130,6 +133,20 @@ impl TestDatabase {
 
         Self { pool, _container: container }
     }
+}
+
+/// Create a test XDS state backed by a fresh PostgreSQL container.
+///
+/// This is the shared test setup for `internal_api/` tests. It creates a
+/// `TestDatabase` with all migrations and seed data, then wraps the pool
+/// in an `Arc<XdsState>` with default config.
+///
+/// The `TestDatabase` must be kept alive for the duration of the test.
+pub async fn create_test_xds_state(name: &str) -> (TestDatabase, Arc<XdsState>) {
+    let test_db = TestDatabase::new(name).await;
+    let pool = test_db.pool.clone();
+    let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
+    (test_db, state)
 }
 
 /// Seed common test entities that many tests depend on for FK constraints.

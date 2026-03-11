@@ -58,7 +58,7 @@ use crate::api::routes::ApiState;
 use crate::auth::models::{AuthContext, Grant, GrantType};
 use crate::domain::{OrgId, TeamId, TokenId, UserId};
 use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
-use crate::storage::test_helpers::TestDatabase;
+use crate::storage::test_helpers::{create_test_xds_state, TestDatabase};
 use crate::storage::DbPool;
 use crate::xds::XdsState;
 
@@ -85,21 +85,16 @@ impl TestApiStateBuilder {
     /// If no pool is provided, creates a PostgreSQL test database via Testcontainers.
     /// Returns both the TestDatabase (which must be kept alive) and the ApiState.
     pub async fn build(self) -> (TestDatabase, ApiState) {
-        let (test_db, pool) = match self.pool {
+        let (test_db, xds_state) = match self.pool {
             Some(p) => {
                 // When a pool is provided externally, create a dummy TestDatabase
                 // The caller is responsible for keeping their own container alive
                 let db = TestDatabase::new("api_state_builder").await;
-                (db, p)
+                let state = Arc::new(XdsState::with_database(Default::default(), p));
+                (db, state)
             }
-            None => {
-                let db = TestDatabase::new("api_state").await;
-                let pool = db.pool.clone();
-                (db, pool)
-            }
+            None => create_test_xds_state("api_state").await,
         };
-
-        let xds_state = Arc::new(XdsState::with_database(Default::default(), pool));
         let stats_cache = Arc::new(StatsCache::new(StatsCacheConfig::default()));
         let mcp_connection_manager = crate::mcp::create_connection_manager();
         let mcp_session_manager = crate::mcp::create_session_manager();

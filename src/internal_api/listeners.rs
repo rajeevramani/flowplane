@@ -269,15 +269,16 @@ impl ListenerOperations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
+    use crate::storage::test_helpers::{
+        create_test_xds_state, TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID,
+    };
     use crate::xds::listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig};
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
-        let test_db = TestDatabase::new("internal_api_listeners").await;
-        let pool = test_db.pool.clone();
+        let (test_db, state) = create_test_xds_state("internal_api_listeners").await;
 
         // Insert test dataplanes for various teams (using team UUIDs from seed data)
+        let pool = &test_db.pool;
         sqlx::query(
             r#"
             INSERT INTO dataplanes (id, team, name, gateway_host, description)
@@ -287,11 +288,10 @@ mod tests {
                 ('dp-team-b-123', '00000000-0000-0000-0000-000000000003', 'team-b-dataplane', '10.0.0.3', 'Team B dataplane')
         "#,
         )
-        .execute(&pool)
+        .execute(pool)
         .await
         .expect("insert test dataplanes");
 
-        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
         (test_db, state)
     }
 

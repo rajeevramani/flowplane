@@ -8,7 +8,6 @@
 //! - Team-based access control
 //! - Success and error responses
 
-use crate::config::SimpleXdsConfig;
 use crate::domain::RouteConfigId;
 use crate::mcp::tools::routes::{
     execute_create_route, execute_delete_route, execute_get_route, execute_update_route,
@@ -17,7 +16,7 @@ use crate::mcp::tools::virtual_hosts::{
     execute_create_virtual_host, execute_delete_virtual_host, execute_get_virtual_host,
     execute_list_virtual_hosts, execute_update_virtual_host,
 };
-use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
+use crate::storage::test_helpers::{create_test_xds_state, TestDatabase, TEST_TEAM_ID};
 use crate::storage::RouteConfigData;
 use crate::xds::XdsState;
 use serde_json::json;
@@ -28,10 +27,7 @@ use std::sync::Arc;
 // =============================================================================
 
 async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
-    let test_db = TestDatabase::new("internal_api_mcp_tool_execution").await;
-    let pool = test_db.pool.clone();
-    let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-    (test_db, state)
+    create_test_xds_state("internal_api_mcp_tool_execution").await
 }
 
 /// Helper to create a route config with cluster dependency
