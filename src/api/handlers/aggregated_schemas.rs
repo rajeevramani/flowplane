@@ -251,15 +251,8 @@ pub async fn list_aggregated_schemas_handler(
     Query(query): Query<ListAggregatedSchemasQuery>,
 ) -> Result<Json<Vec<AggregatedSchemaResponse>>, ApiError> {
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "aggregated-schemas",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Resolve team name to UUID
     use crate::storage::repositories::TeamRepository as _;
@@ -338,15 +331,8 @@ pub async fn get_aggregated_schema_handler(
     Path((team, id)): Path<(String, i64)>,
 ) -> Result<Json<AggregatedSchemaResponse>, ApiError> {
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "aggregated-schemas",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -398,15 +384,8 @@ pub async fn compare_aggregated_schemas_handler(
     Query(query): Query<CompareSchemaQuery>,
 ) -> Result<Json<SchemaComparisonResponse>, ApiError> {
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "aggregated-schemas",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -492,15 +471,8 @@ pub async fn export_aggregated_schema_handler(
     Query(query): Query<ExportSchemaQuery>,
 ) -> Result<Json<OpenApiExportResponse>, ApiError> {
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "aggregated-schemas",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -558,15 +530,8 @@ pub async fn export_multiple_schemas_handler(
     }
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "aggregated-schemas",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state

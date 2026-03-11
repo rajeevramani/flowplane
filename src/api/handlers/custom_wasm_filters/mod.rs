@@ -77,15 +77,8 @@ async fn verify_team_access_for_filters(
     team: &str,
     action: &str,
 ) -> Result<(), ApiError> {
-    require_resource_access_resolved(
-        state,
-        context,
-        "custom-wasm-filters",
-        action,
-        Some(team),
-        context.org_id.as_ref(),
-    )
-    .await
+    require_resource_access_resolved(state, context, "custom-wasm-filters", action, Some(team))
+        .await
 }
 
 /// Get the custom WASM filter service

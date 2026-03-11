@@ -324,15 +324,7 @@ pub async fn get_stats_overview_handler(
     Path(team): Path<String>,
 ) -> Result<Json<StatsOverviewResponse>, ApiError> {
     // Check permission for this team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "stats",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "stats", "read", Some(&team)).await?;
 
     let provider = create_stats_provider(&state).await?;
 
@@ -383,15 +375,7 @@ pub async fn get_stats_clusters_handler(
     Path(team): Path<String>,
 ) -> Result<Json<ClustersStatsResponse>, ApiError> {
     // Check permission for this team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "stats",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "stats", "read", Some(&team)).await?;
 
     let provider = create_stats_provider(&state).await?;
 
@@ -443,15 +427,7 @@ pub async fn get_stats_cluster_handler(
     Path((team, cluster)): Path<(String, String)>,
 ) -> Result<Json<ClusterStatsResponse>, ApiError> {
     // Check permission for this team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "stats",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "stats", "read", Some(&team)).await?;
 
     let provider = create_stats_provider(&state).await?;
 

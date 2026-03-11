@@ -124,15 +124,7 @@ pub async fn list_virtual_hosts_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_config_name)): Path<(String, String)>,
 ) -> Result<Json<ListVirtualHostsResponse>, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Team access verification happens in resolve_route_config_with_access
     let route_config =
@@ -192,15 +184,7 @@ pub async fn list_virtual_host_filters_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
 ) -> Result<Json<VirtualHostFiltersResponse>, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -245,15 +229,7 @@ pub async fn attach_filter_to_virtual_host_handler(
     Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -300,15 +276,7 @@ pub async fn detach_filter_from_virtual_host_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_config_name, vhost_name, filter_id)): Path<(String, String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -356,15 +324,7 @@ pub async fn list_route_rules_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
 ) -> Result<Json<ListRouteRulesResponse>, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -422,15 +382,7 @@ pub async fn list_route_rule_filters_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_config_name, vhost_name, route_name)): Path<(String, String, String, String)>,
 ) -> Result<Json<RouteRuleFiltersResponse>, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Team access verification happens in resolve_route
     let route =
@@ -476,15 +428,7 @@ pub async fn attach_filter_to_route_rule_handler(
     Path((team, route_config_name, vhost_name, route_name)): Path<(String, String, String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Team access verification happens in resolve_route
     let route =
@@ -539,15 +483,7 @@ pub async fn detach_filter_from_route_rule_handler(
         String,
     )>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Team access verification happens in resolve_route
     let route =

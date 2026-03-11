@@ -196,15 +196,8 @@ pub async fn create_learning_session_handler(
     Json(payload): Json<CreateLearningSessionBody>,
 ) -> Result<(StatusCode, Json<LearningSessionResponse>), ApiError> {
     // Authorization: require learning-sessions:create scope for the team from path
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "learning-sessions",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "learning-sessions", "create", Some(&team))
+        .await?;
 
     // Validate payload
     use validator::Validate;
@@ -295,15 +288,8 @@ pub async fn list_learning_sessions_handler(
     Query(query): Query<ListLearningSessionsQuery>,
 ) -> Result<Json<Vec<LearningSessionResponse>>, ApiError> {
     // Authorization: require learning-sessions:read scope for the team from path
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "learning-sessions",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "learning-sessions", "read", Some(&team))
+        .await?;
 
     let team_name = team.clone();
 
@@ -371,15 +357,8 @@ pub async fn get_learning_session_handler(
     Path((team, id)): Path<(String, String)>,
 ) -> Result<Json<LearningSessionResponse>, ApiError> {
     // Authorization: require learning-sessions:read scope for the team from path
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "learning-sessions",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "learning-sessions", "read", Some(&team))
+        .await?;
 
     // Get effective team scopes for access verification
     let team_repo = team_repo_from_state(&state)?;
@@ -439,15 +418,8 @@ pub async fn delete_learning_session_handler(
     // Note: This uses the dedicated delete scope (not write) to follow principle of least privilege.
     // Users who should only create/modify sessions need write scope, but cannot delete unless
     // explicitly granted the delete scope.
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "learning-sessions",
-        "delete",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "learning-sessions", "delete", Some(&team))
+        .await?;
 
     // Get effective team scopes for access verification
     let team_repo = team_repo_from_state(&state)?;

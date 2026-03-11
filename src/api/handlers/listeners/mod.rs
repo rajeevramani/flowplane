@@ -67,15 +67,7 @@ pub async fn create_listener_handler(
     validate_create_listener_body(&payload)?;
 
     // Verify user has create access to the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "listeners",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "listeners", "create", Some(&team)).await?;
 
     // Build ListenerConfig from REST body
     let config = listener_config_from_create(&payload)?;
@@ -117,15 +109,7 @@ pub async fn list_listeners_handler(
     Query(params): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<types::ListenerResponse>>, ApiError> {
     // Authorization: require listeners:read scope for the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "listeners",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "listeners", "read", Some(&team)).await?;
 
     let (limit, offset) = params.clamp(1000);
 
@@ -171,15 +155,7 @@ pub async fn get_listener_handler(
     Path((team, name)): Path<(String, String)>,
 ) -> Result<Json<types::ListenerResponse>, ApiError> {
     // Authorization: require listeners:read scope for the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "listeners",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "listeners", "read", Some(&team)).await?;
 
     // Delegate to internal API layer (includes team access verification)
     let ops = ListenerOperations::new(state.xds_state.clone());
@@ -214,15 +190,7 @@ pub async fn update_listener_handler(
     Json(payload): Json<types::UpdateListenerBody>,
 ) -> Result<Json<types::ListenerResponse>, ApiError> {
     // Authorization: require listeners:update scope for the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "listeners",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "listeners", "update", Some(&team)).await?;
 
     // REST-specific validation
     validate_update_listener_body(&payload)?;
@@ -269,15 +237,7 @@ pub async fn delete_listener_handler(
     Path((team, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     // Authorization: require listeners:delete scope for the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "listeners",
-        "delete",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "listeners", "delete", Some(&team)).await?;
 
     // Delegate to internal API layer (includes default listener protection, team access, and XDS refresh)
     let ops = ListenerOperations::new(state.xds_state.clone());

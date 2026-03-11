@@ -183,8 +183,8 @@ pub async fn require_resource_access_resolved(
     resource: &str,
     action: &str,
     team: Option<&str>,
-    org_id: Option<&OrgId>,
 ) -> Result<(), ApiError> {
+    let org_id = context.org_id.as_ref();
     let resolved_team = match team {
         Some(t) => Some(resolve_team_id_to_name(state, t, org_id).await?),
         None => None,

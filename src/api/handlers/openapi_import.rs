@@ -188,15 +188,8 @@ pub async fn import_openapi_handler(
     request: Request<Body>,
 ) -> std::result::Result<(StatusCode, Json<ImportResponse>), ApiError> {
     // Authorization: require openapi-import:create scope for the target team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "openapi-import",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "openapi-import", "create", Some(&team))
+        .await?;
 
     // Read request body
     let (parts, body) = request.into_parts();
@@ -377,15 +370,8 @@ pub async fn list_imports_handler(
     Path(team): Path<String>,
 ) -> std::result::Result<Json<ListImportsResponse>, ApiError> {
     // Authorization: require openapi-import:read scope for the target team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "openapi-import",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "openapi-import", "read", Some(&team))
+        .await?;
 
     let cluster_repo = state
         .xds_state
@@ -443,7 +429,6 @@ pub async fn get_import_handler(
         "openapi-import",
         "read",
         Some(&import_data.team),
-        context.org_id.as_ref(),
     )
     .await?;
 
@@ -530,7 +515,6 @@ pub async fn delete_import_handler(
         "openapi-import",
         "delete",
         Some(&import_data.team),
-        context.org_id.as_ref(),
     )
     .await?;
 

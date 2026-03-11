@@ -60,15 +60,7 @@ pub async fn create_secret_handler(
     payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "secrets",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "secrets", "create", Some(&team)).await?;
 
     // Resolve team name to UUID for database operations
     let team_id = crate::api::handlers::team_access::resolve_team_name(
@@ -150,15 +142,7 @@ pub async fn create_secret_reference_handler(
     payload.validate().map_err(ApiError::from)?;
 
     // Verify user has write access to the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "secrets",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "secrets", "create", Some(&team)).await?;
 
     // Resolve team name to UUID for database operations
     let team_id = crate::api::handlers::team_access::resolve_team_name(
@@ -233,15 +217,7 @@ pub async fn list_secrets_handler(
     Query(params): Query<ListSecretsQuery>,
 ) -> Result<Json<PaginatedResponse<SecretResponse>>, ApiError> {
     // Authorization: require secrets:read scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "secrets",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "secrets", "read", Some(&team)).await?;
 
     // Resolve team name to UUID for database operations
     let team_id = crate::api::handlers::team_access::resolve_team_name(
@@ -304,15 +280,7 @@ pub async fn get_secret_handler(
     Path(path): Path<TeamSecretPath>,
 ) -> Result<Json<SecretResponse>, ApiError> {
     // Authorization: require secrets:read scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "secrets",
-        "read",
-        Some(&path.team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "secrets", "read", Some(&path.team)).await?;
 
     // Resolve team name to UUID for database operations
     let team_id = crate::api::handlers::team_access::resolve_team_name(
@@ -372,15 +340,8 @@ pub async fn update_secret_handler(
     payload.validate().map_err(ApiError::from)?;
 
     // Authorization: require secrets:update scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "secrets",
-        "update",
-        Some(&path.team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "secrets", "update", Some(&path.team))
+        .await?;
 
     // Resolve team name to UUID for database operations
     let team_id = crate::api::handlers::team_access::resolve_team_name(
@@ -468,15 +429,8 @@ pub async fn delete_secret_handler(
     Path(path): Path<TeamSecretPath>,
 ) -> Result<StatusCode, ApiError> {
     // Authorization: require secrets:delete scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "secrets",
-        "delete",
-        Some(&path.team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "secrets", "delete", Some(&path.team))
+        .await?;
 
     // Resolve team name to UUID for database operations
     let team_id = crate::api::handlers::team_access::resolve_team_name(

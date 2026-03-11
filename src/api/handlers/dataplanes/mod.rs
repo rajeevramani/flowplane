@@ -69,15 +69,7 @@ pub async fn create_dataplane_handler(
     payload.validate().map_err(ApiError::from)?;
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "dataplanes",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "dataplanes", "create", Some(&team)).await?;
 
     // Build internal auth context and request
     let auth = resolve_rest_auth(&state, &context).await?;
@@ -117,15 +109,7 @@ pub async fn list_dataplanes_handler(
     Query(query): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<DataplaneResponse>>, ApiError> {
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "dataplanes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "dataplanes", "read", Some(&team)).await?;
 
     let (limit, offset) = query.clamp(1000);
 
@@ -201,15 +185,7 @@ pub async fn get_dataplane_handler(
     let (team, name) = path;
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "dataplanes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "dataplanes", "read", Some(&team)).await?;
 
     let auth = resolve_rest_auth(&state, &context).await?;
 
@@ -248,15 +224,7 @@ pub async fn update_dataplane_handler(
     payload.validate().map_err(ApiError::from)?;
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "dataplanes",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "dataplanes", "update", Some(&team)).await?;
 
     let auth = resolve_rest_auth(&state, &context).await?;
 
@@ -295,15 +263,7 @@ pub async fn delete_dataplane_handler(
     let (team, name) = path;
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "dataplanes",
-        "delete",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "dataplanes", "delete", Some(&team)).await?;
 
     let auth = resolve_rest_auth(&state, &context).await?;
 
@@ -396,7 +356,6 @@ pub async fn generate_envoy_config_handler(
         "generate-envoy-config",
         "read",
         Some(&team),
-        context.org_id.as_ref(),
     )
     .await?;
 

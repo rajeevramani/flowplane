@@ -119,15 +119,7 @@ pub async fn list_filters_handler(
     Path(team): Path<String>,
     Query(params): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<FilterResponse>>, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "read", Some(&team)).await?;
 
     let (limit, offset) = params.clamp(1000);
 
@@ -190,15 +182,7 @@ pub async fn create_filter_handler(
     validate_create_filter_request(&payload, state.filter_schema_registry.as_ref()).await?;
 
     // Verify user has create access to the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "create", Some(&team)).await?;
 
     // Resolve team name to UUID for database storage
     let team_id = crate::api::handlers::team_access::resolve_team_name(
@@ -256,15 +240,7 @@ pub async fn get_filter_handler(
     Path(path): Path<(String, String)>,
 ) -> Result<Json<FilterResponse>, ApiError> {
     let (team, id) = path;
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "read", Some(&team)).await?;
 
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
@@ -305,15 +281,7 @@ pub async fn update_filter_handler(
     validate_update_filter_request(&payload)?;
 
     // Verify user has update access
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "update", Some(&team)).await?;
 
     // Create internal API request
     let internal_request = InternalUpdateFilterRequest {
@@ -356,15 +324,7 @@ pub async fn delete_filter_handler(
 ) -> Result<StatusCode, ApiError> {
     let (team, id) = path;
     // Verify user has delete access
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "delete",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "delete", Some(&team)).await?;
 
     // Delegate to internal API layer (includes team access verification)
     let ops = FilterOperations::new(state.xds_state.clone());
@@ -397,15 +357,7 @@ pub async fn attach_filter_handler(
     Path((team, route_name)): Path<(String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Resolve route name to internal UUID for database foreign key
     let route_config_id = resolve_route_config_id(&state, &route_name).await?;
@@ -449,15 +401,7 @@ pub async fn detach_filter_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_name, filter_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Resolve route name to internal UUID for database foreign key
     let route_config_id = resolve_route_config_id(&state, &route_name).await?;
@@ -500,15 +444,7 @@ pub async fn list_route_filters_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_name)): Path<(String, String)>,
 ) -> Result<Json<RouteFiltersResponse>, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Resolve route name to internal UUID for database query
     let route_config_id = resolve_route_config_id(&state, &route_name).await?;
@@ -552,15 +488,7 @@ pub async fn attach_filter_to_listener_handler(
     Path((team, listener_name)): Path<(String, String)>,
     Json(payload): Json<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "listeners",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "listeners", "update", Some(&team)).await?;
 
     // Resolve listener name to internal UUID for database foreign key
     let listener_id = resolve_listener_id(&state, &listener_name).await?;
@@ -605,15 +533,7 @@ pub async fn detach_filter_from_listener_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, listener_name, filter_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "listeners",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "listeners", "update", Some(&team)).await?;
 
     // Resolve listener name to internal UUID for database foreign key
     let listener_id = resolve_listener_id(&state, &listener_name).await?;
@@ -654,15 +574,7 @@ pub async fn list_listener_filters_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, listener_name)): Path<(String, String)>,
 ) -> Result<Json<ListenerFiltersResponse>, ApiError> {
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "listeners",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "listeners", "read", Some(&team)).await?;
 
     // Resolve listener name to internal UUID for database query
     let listener_id = resolve_listener_id(&state, &listener_name).await?;
@@ -755,15 +667,7 @@ pub async fn install_filter_handler(
     Json(payload): Json<InstallFilterRequest>,
 ) -> Result<(StatusCode, Json<InstallFilterResponse>), ApiError> {
     let (team, filter_id) = path;
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "update", Some(&team)).await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -838,15 +742,7 @@ pub async fn uninstall_filter_handler(
     Path(path): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let (team, filter_id, listener_id) = path;
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "delete",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "delete", Some(&team)).await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -896,15 +792,7 @@ pub async fn list_filter_installations_handler(
     Path(path): Path<(String, String)>,
 ) -> Result<Json<FilterInstallationsResponse>, ApiError> {
     let (team, filter_id) = path;
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "read", Some(&team)).await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -960,15 +848,7 @@ pub async fn configure_filter_handler(
     Json(payload): Json<ConfigureFilterRequest>,
 ) -> Result<(StatusCode, Json<ConfigureFilterResponse>), ApiError> {
     let (team, filter_id) = path;
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "create", Some(&team)).await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -1078,15 +958,7 @@ pub async fn remove_filter_configuration_handler(
     Path(path): Path<(String, String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let (team, filter_id, scope_type, scope_id) = path;
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "delete",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "delete", Some(&team)).await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -1173,15 +1045,7 @@ pub async fn list_filter_configurations_handler(
     Path(path): Path<(String, String)>,
 ) -> Result<Json<FilterConfigurationsResponse>, ApiError> {
     let (team, filter_id) = path;
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "read", Some(&team)).await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
@@ -1233,15 +1097,7 @@ pub async fn get_filter_status_handler(
     Path(path): Path<(String, String)>,
 ) -> Result<Json<FilterStatusResponse>, ApiError> {
     let (team, filter_id) = path;
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "filters",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "filters", "read", Some(&team)).await?;
 
     let team_repo = team_repo_from_state(&state)?;
     let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;

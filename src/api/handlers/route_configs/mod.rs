@@ -69,15 +69,7 @@ pub async fn create_route_config_handler(
     validate_route_config_payload(&payload)?;
 
     // Verify user has create access to the specified team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "create", Some(&team)).await?;
 
     // Validate and convert to XDS config
     let xds_config = payload.to_xds_config().and_then(validate_route_config)?;
@@ -131,15 +123,7 @@ pub async fn list_route_configs_handler(
     Query(params): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<RouteConfigResponse>>, ApiError> {
     // Authorization: require routes:read scope with team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     let (limit, offset) = params.clamp(1000);
 
@@ -185,15 +169,7 @@ pub async fn get_route_config_handler(
     Path((team, name)): Path<(String, String)>,
 ) -> Result<Json<RouteConfigResponse>, ApiError> {
     // Authorization: require routes:read scope with team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Delegate to internal API layer (includes team access verification)
     let ops = RouteConfigOperations::new(state.xds_state.clone());
@@ -227,15 +203,7 @@ pub async fn update_route_config_handler(
     Json(payload): Json<RouteConfigDefinition>,
 ) -> Result<Json<RouteConfigResponse>, ApiError> {
     // Authorization: require routes:update scope with team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // REST-specific validation
     validate_route_config_payload(&payload)?;
@@ -295,15 +263,7 @@ pub async fn delete_route_config_handler(
     Path((team, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     // Authorization: require routes:delete scope with team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "routes",
-        "delete",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "routes", "delete", Some(&team)).await?;
 
     // Delegate to internal API layer (includes default route protection, team access, and XDS refresh)
     let ops = RouteConfigOperations::new(state.xds_state.clone());

@@ -67,15 +67,7 @@ pub async fn create_cluster_handler(
     payload.validate().map_err(ApiError::from)?;
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "clusters",
-        "create",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "clusters", "create", Some(&team)).await?;
 
     // Convert REST body to internal request
     let ClusterConfigParts { name, service_name, config } =
@@ -118,15 +110,7 @@ pub async fn list_clusters_handler(
     Query(params): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<types::ClusterResponse>>, ApiError> {
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "clusters",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "clusters", "read", Some(&team)).await?;
 
     let (limit, offset) = params.clamp(1000);
 
@@ -176,15 +160,7 @@ pub async fn get_cluster_handler(
     let (team, name) = path;
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "clusters",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "clusters", "read", Some(&team)).await?;
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
@@ -225,15 +201,7 @@ pub async fn update_cluster_handler(
     let (team, name) = path;
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "clusters",
-        "update",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "clusters", "update", Some(&team)).await?;
 
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
@@ -287,15 +255,7 @@ pub async fn delete_cluster_handler(
     let (team, name) = path;
 
     // Authorization
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "clusters",
-        "delete",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "clusters", "delete", Some(&team)).await?;
 
     // Use internal API layer
     let ops = ClusterOperations::new(state.xds_state.clone());
