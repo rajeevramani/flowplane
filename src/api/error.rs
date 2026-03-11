@@ -33,6 +33,7 @@ use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 
 use crate::auth::models::AuthError;
+use crate::domain::SecretValidationError;
 use crate::errors::FlowplaneError;
 
 /// API-layer error type for HTTP responses.
@@ -221,6 +222,15 @@ impl From<validator::ValidationErrors> for ApiError {
             .join("; ");
 
         ApiError::BadRequest(format!("Validation failed: {}", message))
+    }
+}
+
+/// Converts [`SecretValidationError`] to API-layer [`ApiError`].
+///
+/// Maps secret-specific validation errors to a 400 Bad Request response.
+impl From<SecretValidationError> for ApiError {
+    fn from(err: SecretValidationError) -> Self {
+        ApiError::BadRequest(format!("Validation failed: {}", err))
     }
 }
 

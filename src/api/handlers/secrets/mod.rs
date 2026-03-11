@@ -88,7 +88,7 @@ pub async fn create_secret_handler(
     }
 
     // Validate the secret spec
-    spec.validate().map_err(|e| ApiError::BadRequest(format!("Invalid secret: {}", e)))?;
+    spec.validate().map_err(ApiError::from)?;
 
     // Get repository
     let repo = state
@@ -390,7 +390,7 @@ pub async fn update_secret_handler(
             )));
         }
 
-        spec.validate().map_err(|e| ApiError::BadRequest(format!("Invalid secret: {}", e)))?;
+        spec.validate().map_err(ApiError::from)?;
 
         Some(spec)
     } else {
