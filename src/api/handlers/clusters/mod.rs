@@ -275,7 +275,7 @@ mod tests {
     use axum::{Extension, Json};
     use serde_json::Value;
 
-    use crate::api::test_utils::{create_test_state, team_auth_context};
+    use crate::api::test_utils::{create_test_state, scoped_team_auth_context, team_auth_context};
     use crate::storage::test_helpers::{PLATFORM_TEAM_ID, TEAM_A_ID, TEAM_B_ID};
 
     use types::{
@@ -517,29 +517,6 @@ mod tests {
 
     // === Team Isolation Tests ===
 
-    /// Create a team-scoped AuthContext for testing (grant-based)
-    fn team_context(team: &str, resource: &str, actions: &[&str]) -> AuthContext {
-        use crate::auth::models::{Grant, GrantType};
-        let mut ctx = AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("test-token"),
-            format!("{}-user", team),
-            vec![],
-        );
-        ctx.grants = actions
-            .iter()
-            .map(|action| Grant {
-                grant_type: GrantType::Resource,
-                team_id: format!("{}-uuid", team),
-                team_name: team.to_string(),
-                resource_type: Some(resource.to_string()),
-                action: Some(action.to_string()),
-                route_id: None,
-                allowed_methods: vec![],
-            })
-            .collect();
-        ctx
-    }
-
     /// Directly insert a cluster into the database with a team assignment
     async fn insert_cluster_with_team(
         state: &ApiState,
@@ -581,7 +558,7 @@ mod tests {
             .expect("insert global cluster");
 
         // User with team-a scope should see team-a and global clusters
-        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let team_a_context = scoped_team_auth_context("team-a", "clusters", &["read"]);
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(team_a_context),
@@ -599,7 +576,7 @@ mod tests {
         assert!(!names.contains(&"team-b-cluster"));
 
         // User with team-b scope should see team-b and global clusters
-        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let team_b_context = scoped_team_auth_context("team-b", "clusters", &["read"]);
         let response = list_clusters_handler(
             State(state.clone()),
             Extension(team_b_context),
@@ -626,7 +603,7 @@ mod tests {
             .expect("insert team-a cluster");
 
         // User from team-b tries to get team-a's cluster - should get 404
-        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let team_b_context = scoped_team_auth_context("team-b", "clusters", &["read"]);
         let result = get_cluster_handler(
             State(state.clone()),
             Extension(team_b_context),
@@ -645,7 +622,7 @@ mod tests {
         }
 
         // User from team-a can access their own cluster
-        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let team_a_context = scoped_team_auth_context("team-a", "clusters", &["read"]);
         let result = get_cluster_handler(
             State(state.clone()),
             Extension(team_a_context),
@@ -665,7 +642,7 @@ mod tests {
             .expect("insert global cluster");
 
         // Users from any team can access global clusters
-        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let team_a_context = scoped_team_auth_context("team-a", "clusters", &["read"]);
         let result = get_cluster_handler(
             State(state.clone()),
             Extension(team_a_context),
@@ -674,7 +651,7 @@ mod tests {
         .await;
         assert!(result.is_ok());
 
-        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let team_b_context = scoped_team_auth_context("team-b", "clusters", &["read"]);
         let result = get_cluster_handler(
             State(state.clone()),
             Extension(team_b_context),
@@ -698,7 +675,7 @@ mod tests {
         update_body.service_name = Some("updated".to_string());
 
         // User from team-b tries to update team-a's cluster - should get 404
-        let team_b_context = team_context("team-b", "clusters", &["update"]);
+        let team_b_context = scoped_team_auth_context("team-b", "clusters", &["update"]);
         let result = update_cluster_handler(
             State(state.clone()),
             Extension(team_b_context),
@@ -717,7 +694,7 @@ mod tests {
         }
 
         // User from team-a can update their own cluster
-        let team_a_context = team_context("team-a", "clusters", &["update"]);
+        let team_a_context = scoped_team_auth_context("team-a", "clusters", &["update"]);
         let result = update_cluster_handler(
             State(state.clone()),
             Extension(team_a_context),
@@ -741,7 +718,7 @@ mod tests {
             .expect("insert team-b cluster");
 
         // User from team-a tries to delete team-b's cluster - should get 404
-        let team_a_context = team_context("team-a", "clusters", &["delete"]);
+        let team_a_context = scoped_team_auth_context("team-a", "clusters", &["delete"]);
         let result = delete_cluster_handler(
             State(state.clone()),
             Extension(team_a_context.clone()),
@@ -779,7 +756,7 @@ mod tests {
         let body = sample_request();
 
         // Team-scoped user creates a cluster
-        let team_a_context = team_context("team-a", "clusters", &["create"]);
+        let team_a_context = scoped_team_auth_context("team-a", "clusters", &["create"]);
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
             Extension(team_a_context),
@@ -795,7 +772,7 @@ mod tests {
         assert_eq!(stored.team, Some(TEAM_A_ID.to_string()));
 
         // Verify that team-b user cannot access it
-        let team_b_context = team_context("team-b", "clusters", &["read"]);
+        let team_b_context = scoped_team_auth_context("team-b", "clusters", &["read"]);
         let result = get_cluster_handler(
             State(state.clone()),
             Extension(team_b_context),
@@ -813,7 +790,7 @@ mod tests {
         // Team user creates a cluster for their team
         let (_status, Json(created)) = create_cluster_handler(
             State(state.clone()),
-            Extension(team_context("platform", "clusters", &["create"])),
+            Extension(scoped_team_auth_context("platform", "clusters", &["create"])),
             Path("platform".to_string()),
             Json(body),
         )
@@ -826,7 +803,7 @@ mod tests {
         assert_eq!(stored.team, Some(PLATFORM_TEAM_ID.to_string()));
 
         // Verify that team users with platform team scope can access it
-        let platform_team_context = team_context("platform", "clusters", &["read"]);
+        let platform_team_context = scoped_team_auth_context("platform", "clusters", &["read"]);
         let result = get_cluster_handler(
             State(state.clone()),
             Extension(platform_team_context),
@@ -836,7 +813,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify that team-a users cannot access platform team cluster
-        let team_a_context = team_context("team-a", "clusters", &["read"]);
+        let team_a_context = scoped_team_auth_context("team-a", "clusters", &["read"]);
         let result_team_a = get_cluster_handler(
             State(state.clone()),
             Extension(team_a_context),

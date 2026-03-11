@@ -2734,23 +2734,16 @@ fn grant_row_to_response(row: GrantRow) -> GrantResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::test_utils::{admin_auth_context, org_admin_auth_context};
     use crate::auth::models::AuthContext;
     use crate::domain::TokenId;
 
     fn admin_context() -> AuthContext {
-        AuthContext::new(
-            TokenId::from_str_unchecked("admin-token"),
-            "admin".into(),
-            vec!["admin:all".into()],
-        )
+        admin_auth_context()
     }
 
     fn org_admin_context(org_name: &str) -> AuthContext {
-        AuthContext::new(
-            TokenId::from_str_unchecked("org-admin-token"),
-            "org-admin".into(),
-            vec![format!("org:{}:admin", org_name)],
-        )
+        org_admin_auth_context(org_name)
     }
 
     fn regular_context() -> AuthContext {

@@ -194,6 +194,13 @@ pub fn readonly_auth_context(team: &str) -> AuthContext {
         .with_grants(grants, None)
 }
 
+/// Create a team-scoped auth context for testing with specific resource and actions.
+pub fn scoped_team_auth_context(team: &str, resource: &str, actions: &[&str]) -> AuthContext {
+    let grants: Vec<Grant> =
+        actions.iter().map(|action| make_grant(resource, action, team)).collect();
+    AuthContext::new(TokenId::new(), format!("{}-user", team), vec![]).with_grants(grants, None)
+}
+
 /// Create a minimal auth context for testing (no scopes, no grants).
 pub fn minimal_auth_context() -> AuthContext {
     AuthContext::new(TokenId::new(), "minimal-token".to_string(), vec![])

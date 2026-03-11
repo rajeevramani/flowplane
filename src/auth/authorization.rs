@@ -646,28 +646,15 @@ pub fn verify_org_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::test_utils::{admin_auth_context, make_grant, minimal_auth_context};
     use crate::auth::models::Grant;
 
-    // === Grant-based test helpers ===
-
-    fn make_grant(resource: &str, action: &str, team_name: &str) -> Grant {
-        Grant {
-            grant_type: GrantType::Resource,
-            team_id: format!("test-team-id-{}", team_name),
-            team_name: team_name.to_string(),
-            resource_type: Some(resource.to_string()),
-            action: Some(action.to_string()),
-            route_id: None,
-            allowed_methods: vec![],
-        }
+    fn admin_context() -> AuthContext {
+        admin_auth_context()
     }
 
-    fn admin_context() -> AuthContext {
-        AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("admin-token"),
-            "admin".into(),
-            vec!["admin:all".into()],
-        )
+    fn no_grants_context() -> AuthContext {
+        minimal_auth_context()
     }
 
     fn platform_team_context() -> AuthContext {
@@ -683,15 +670,6 @@ mod tests {
                 make_grant("clusters", "read", "platform"),
             ],
             None,
-        )
-    }
-
-    fn no_grants_context() -> AuthContext {
-        // User with no org scopes and no grants — should be denied everything
-        AuthContext::new(
-            crate::domain::TokenId::from_str_unchecked("no-grants-token"),
-            "no-grants".into(),
-            vec![],
         )
     }
 
