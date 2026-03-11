@@ -203,7 +203,7 @@ pub fn validate_protocol_version(version: &str) -> Result<(), McpError> {
 
 /// Get database pool from API state
 ///
-/// Extracts the database pool from xDS state cluster repository.
+/// Extracts the database pool from xDS state.
 ///
 /// # Arguments
 /// * `state` - API state containing xDS state and repositories
@@ -211,13 +211,7 @@ pub fn validate_protocol_version(version: &str) -> Result<(), McpError> {
 /// # Returns
 /// Cloned database pool on success, error message on failure
 pub fn get_db_pool(state: &ApiState) -> Result<DbPool, String> {
-    let cluster_repo = state
-        .xds_state
-        .cluster_repository
-        .as_ref()
-        .ok_or_else(|| "Database not available".to_string())?;
-
-    Ok(cluster_repo.pool().clone())
+    state.xds_state.pool.clone().ok_or_else(|| "Database not available".to_string())
 }
 
 /// Create JSON-RPC error response

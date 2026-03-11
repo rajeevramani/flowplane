@@ -200,12 +200,12 @@ pub async fn require_resource_access_resolved(
 
 /// Get the database pool from ApiState.
 pub fn get_db_pool(state: &ApiState) -> Result<std::sync::Arc<crate::storage::DbPool>, ApiError> {
-    let cluster_repo = state
+    let pool = state
         .xds_state
-        .cluster_repository
+        .pool
         .as_ref()
         .ok_or_else(|| ApiError::service_unavailable("Database not available"))?;
-    Ok(std::sync::Arc::new(cluster_repo.pool().clone()))
+    Ok(std::sync::Arc::new(pool.clone()))
 }
 
 /// Get team repository from ApiState.
