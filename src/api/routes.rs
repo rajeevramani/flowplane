@@ -109,14 +109,40 @@ fn get_ui_static_dir() -> Option<PathBuf> {
     }
 }
 
+/// Describes the type of localhost warning for CORS origins, if any.
+#[derive(Debug, PartialEq)]
+enum CorsLocalhostWarning {
+    /// No localhost origins detected
+    None,
+    /// Localhost origins from default (FLOWPLANE_UI_ORIGIN not set)
+    DefaultsInUse,
+    /// Localhost origins explicitly configured via FLOWPLANE_UI_ORIGIN
+    ExplicitLocalhost,
+}
+
+/// Check if any CORS origins reference localhost and whether defaults are in use.
+fn check_cors_localhost(origins: &[String], using_defaults: bool) -> CorsLocalhostWarning {
+    let has_localhost = origins.iter().any(|o| o.contains("localhost") || o.contains("127.0.0.1"));
+
+    if has_localhost && using_defaults {
+        CorsLocalhostWarning::DefaultsInUse
+    } else if has_localhost {
+        CorsLocalhostWarning::ExplicitLocalhost
+    } else {
+        CorsLocalhostWarning::None
+    }
+}
+
 /// Build CORS layer from environment configuration
 /// Supports multiple origins via comma-separated FLOWPLANE_UI_ORIGIN
 /// Example: FLOWPLANE_UI_ORIGIN=http://localhost:3000,http://localhost:6274
 fn build_cors_layer() -> CorsLayer {
     // Read allowed origins from environment variable
     // Default includes localhost:3000 (UI) and localhost:6274 (MCP Inspector)
-    let allowed_origins_str = std::env::var("FLOWPLANE_UI_ORIGIN")
-        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:6274".to_string());
+    let env_value = std::env::var("FLOWPLANE_UI_ORIGIN");
+    let using_defaults = env_value.is_err();
+    let allowed_origins_str =
+        env_value.unwrap_or_else(|_| "http://localhost:3000,http://localhost:6274".to_string());
 
     // Parse comma-separated origins into a list
     let allowed_origins: Vec<String> = allowed_origins_str
@@ -124,6 +150,25 @@ fn build_cors_layer() -> CorsLayer {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+
+    // Warn if any origins reference localhost — not suitable for production
+    match check_cors_localhost(&allowed_origins, using_defaults) {
+        CorsLocalhostWarning::DefaultsInUse => {
+            tracing::warn!(
+                allowed_origins = ?allowed_origins,
+                "CORS using default localhost origins — FLOWPLANE_UI_ORIGIN is not set. \
+                 This is not suitable for production. Set FLOWPLANE_UI_ORIGIN to your production UI URL."
+            );
+        }
+        CorsLocalhostWarning::ExplicitLocalhost => {
+            tracing::warn!(
+                allowed_origins = ?allowed_origins,
+                "CORS allowed origins contain localhost/127.0.0.1 addresses. \
+                 This should not be used in production."
+            );
+        }
+        CorsLocalhostWarning::None => {}
+    }
 
     tracing::info!(
         allowed_origins = ?allowed_origins,
@@ -636,5 +681,38 @@ mod tests {
 
         // Clean up
         std::env::remove_var("FLOWPLANE_UI_ORIGIN");
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_defaults_in_use() {
+        let origins =
+            vec!["http://localhost:3000".to_string(), "http://localhost:6274".to_string()];
+        assert_eq!(check_cors_localhost(&origins, true), CorsLocalhostWarning::DefaultsInUse);
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_explicit_localhost() {
+        let origins =
+            vec!["http://localhost:3000".to_string(), "https://app.example.com".to_string()];
+        assert_eq!(check_cors_localhost(&origins, false), CorsLocalhostWarning::ExplicitLocalhost);
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_127_0_0_1() {
+        let origins = vec!["http://127.0.0.1:8080".to_string()];
+        assert_eq!(check_cors_localhost(&origins, false), CorsLocalhostWarning::ExplicitLocalhost);
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_none_for_production_origins() {
+        let origins =
+            vec!["https://app.example.com".to_string(), "https://admin.example.com".to_string()];
+        assert_eq!(check_cors_localhost(&origins, false), CorsLocalhostWarning::None);
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_empty_origins() {
+        let origins: Vec<String> = vec![];
+        assert_eq!(check_cors_localhost(&origins, true), CorsLocalhostWarning::None);
     }
 }
