@@ -86,7 +86,7 @@ PARAMETERS:
 - include_details (optional): Include full topology rows (default: false). When false, returns summary only (<120 tokens).
 
 EXAMPLE:
-{ "scope": "listener", "name": "http-8080", "include_details": true }
+{ "scope": "listener", "name": "http-8080", "includeDetails": true }
 
 RETURNS:
 - summary: Counts for listeners, route_configs, clusters, routes, orphans (always included)
@@ -113,7 +113,7 @@ Authorization: Requires cp:read scope."#,
                     "description": "Max rows per level (default: 50)",
                     "default": 50
                 },
-                "include_details": {
+                "includeDetails": {
                     "type": "boolean",
                     "description": "Include full topology rows (default: false — summary only for token efficiency)",
                     "default": false
@@ -193,7 +193,7 @@ Authorization: Requires audit:read scope (NOT covered by cp:read)."#,
         json!({
             "type": "object",
             "properties": {
-                "resource_type": {
+                "resourceType": {
                     "type": "string",
                     "description": "Filter by resource type (e.g., 'clusters', 'listeners', 'routes')"
                 },
@@ -307,7 +307,7 @@ pub async fn execute_ops_topology(
     let scope = args.get("scope").and_then(|v| v.as_str());
     let name = args.get("name").and_then(|v| v.as_str());
     let limit = args.get("limit").and_then(|v| v.as_i64());
-    let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(false);
+    let include_details = args.get("includeDetails").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let repo = ReportingRepository::new(db_pool.clone());
     let result = repo
@@ -649,7 +649,7 @@ pub async fn execute_ops_audit_query(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    let resource_type = args.get("resource_type").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let resource_type = args.get("resourceType").and_then(|v| v.as_str()).map(|s| s.to_string());
     let action = args.get("action").and_then(|v| v.as_str()).map(|s| s.to_string());
     let limit =
         args.get("limit").and_then(|v| v.as_i64()).map(|v| (v as i32).min(100)).or(Some(20));
@@ -728,7 +728,7 @@ Authorization: Requires cp:read scope."#,
         json!({
             "type": "object",
             "properties": {
-                "dataplane_name": {
+                "dataplaneName": {
                     "type": "string",
                     "description": "Filter to a specific dataplane name. Omit for all dataplanes."
                 }
@@ -777,11 +777,11 @@ Authorization: Requires cp:read scope."#,
                     "maximum": 100,
                     "default": 10
                 },
-                "dataplane_name": {
+                "dataplaneName": {
                     "type": "string",
                     "description": "Filter to a specific dataplane name"
                 },
-                "type_url": {
+                "typeUrl": {
                     "type": "string",
                     "description": "Filter by resource type: 'CDS', 'RDS', 'LDS', 'EDS', or full type URL"
                 },
@@ -826,8 +826,7 @@ pub async fn execute_ops_xds_delivery_status(
         validate_team_in_org(db_pool, team, oid).await?;
     }
 
-    let dataplane_filter =
-        args.get("dataplane_name").or_else(|| args.get("dataplaneId")).and_then(|v| v.as_str());
+    let dataplane_filter = args.get("dataplaneName").and_then(|v| v.as_str());
 
     let dataplane_repo = DataplaneRepository::new(db_pool.clone());
     let nack_repo = NackEventRepository::new(db_pool.clone());
@@ -984,8 +983,8 @@ pub async fn execute_ops_nack_history(
 
     let limit =
         args.get("limit").and_then(|v| v.as_i64()).map(|v| (v as i32).min(100)).unwrap_or(10);
-    let dataplane_name = args.get("dataplane_name").and_then(|v| v.as_str());
-    let type_url_filter = args.get("type_url").and_then(|v| v.as_str());
+    let dataplane_name = args.get("dataplaneName").and_then(|v| v.as_str());
+    let type_url_filter = args.get("typeUrl").and_then(|v| v.as_str());
     let since_str = args.get("since").and_then(|v| v.as_str());
 
     // Parse `since` timestamp if provided
@@ -1113,7 +1112,7 @@ mod tests {
         assert!(schema["properties"]["scope"].is_object());
         assert!(schema["properties"]["name"].is_object());
         assert!(schema["properties"]["limit"].is_object());
-        assert!(schema["properties"]["include_details"].is_object());
+        assert!(schema["properties"]["includeDetails"].is_object());
 
         // No required params
         assert!(
@@ -1356,7 +1355,7 @@ mod tests {
         let db = test_db("ops_topo_details").await;
 
         let result =
-            execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({"include_details": true}))
+            execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({"includeDetails": true}))
                 .await
                 .expect("should succeed");
 
@@ -1378,7 +1377,7 @@ mod tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"scope": "listener", "name": "http-8080", "include_details": true}),
+            json!({"scope": "listener", "name": "http-8080", "includeDetails": true}),
         )
         .await
         .expect("should succeed");
@@ -1404,7 +1403,7 @@ mod tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"limit": 1, "include_details": true}),
+            json!({"limit": 1, "includeDetails": true}),
         )
         .await
         .expect("should succeed");
@@ -1423,7 +1422,7 @@ mod tests {
         let db = test_db("ops_topo_team_iso").await;
 
         let result =
-            execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({"include_details": true}))
+            execute_ops_topology(&db.pool, TEAM_A_ID, None, json!({"includeDetails": true}))
                 .await
                 .expect("should succeed");
 
@@ -1535,7 +1534,7 @@ mod tests {
 
         let schema = &tool.input_schema;
         assert_eq!(schema["type"], "object");
-        assert!(schema["properties"]["resource_type"].is_object());
+        assert!(schema["properties"]["resourceType"].is_object());
         assert!(schema["properties"]["action"].is_object());
         assert!(schema["properties"]["limit"].is_object());
 
@@ -1698,7 +1697,7 @@ mod tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"action": "delete", "resource_type": "listeners"}),
+            json!({"action": "delete", "resourceType": "listeners"}),
         )
         .await
         .expect("should succeed");
@@ -1726,8 +1725,8 @@ mod tests {
         let schema = &tool.input_schema;
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["limit"].is_object());
-        assert!(schema["properties"]["dataplane_name"].is_object());
-        assert!(schema["properties"]["type_url"].is_object());
+        assert!(schema["properties"]["dataplaneName"].is_object());
+        assert!(schema["properties"]["typeUrl"].is_object());
         assert!(schema["properties"]["since"].is_object());
 
         // No required params
@@ -1884,7 +1883,7 @@ mod tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"dataplane_name": "dp-filter-1"}),
+            json!({"dataplaneName": "dp-filter-1"}),
         )
         .await
         .expect("should succeed");
@@ -2007,7 +2006,7 @@ mod tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"dataplane_name": "dp-alpha"}),
+            json!({"dataplaneName": "dp-alpha"}),
         )
         .await
         .expect("should succeed");
@@ -2045,10 +2044,9 @@ mod tests {
         .await;
 
         // Filter by "CDS" short form
-        let result =
-            execute_ops_nack_history(&db.pool, TEAM_A_ID, None, json!({"type_url": "CDS"}))
-                .await
-                .expect("should succeed");
+        let result = execute_ops_nack_history(&db.pool, TEAM_A_ID, None, json!({"typeUrl": "CDS"}))
+            .await
+            .expect("should succeed");
 
         let text = match &result.content[0] {
             ContentBlock::Text { text } => text,

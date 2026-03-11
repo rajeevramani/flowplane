@@ -63,18 +63,18 @@ RELATED TOOLS: cp_get_aggregated_schema (get specific schema by ID)"#,
                     "type": "string",
                     "description": "Search pattern for API path (e.g., '/api/users' or '/v1/')"
                 },
-                "http_method": {
+                "httpMethod": {
                     "type": "string",
                     "description": "Filter by HTTP method",
                     "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
                 },
-                "min_confidence": {
+                "minConfidence": {
                     "type": "number",
                     "description": "Minimum confidence score (0.0 to 1.0). Higher values indicate more reliable schemas.",
                     "minimum": 0.0,
                     "maximum": 1.0
                 },
-                "latest_only": {
+                "latestOnly": {
                     "type": "boolean",
                     "description": "If true, only return the latest version of each endpoint (default: true)"
                 },
@@ -184,7 +184,7 @@ Authorization: Requires aggregated-schemas:read scope."#,
         json!({
             "type": "object",
             "properties": {
-                "schema_ids": {
+                "schemaIds": {
                     "type": "array",
                     "description": "Array of schema IDs to include in the export",
                     "items": { "type": "integer" },
@@ -202,13 +202,13 @@ Authorization: Requires aggregated-schemas:read scope."#,
                     "type": "string",
                     "description": "Description for the API"
                 },
-                "include_metadata": {
+                "includeMetadata": {
                     "type": "boolean",
                     "description": "Include Flowplane extensions (x-flowplane-*). Default: false",
                     "default": false
                 }
             },
-            "required": ["schema_ids"]
+            "required": ["schemaIds"]
         }),
     )
 }
@@ -232,10 +232,10 @@ pub async fn execute_export_schema_openapi(
     }
 
     let schema_ids: Vec<i64> = args
-        .get("schema_ids")
+        .get("schemaIds")
         .and_then(|v| v.as_array())
         .ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: schema_ids".to_string())
+            McpError::InvalidParams("Missing required parameter: schemaIds".to_string())
         })?
         .iter()
         .filter_map(|v| v.as_i64())
@@ -248,7 +248,7 @@ pub async fn execute_export_schema_openapi(
     let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("Flowplane API").to_string();
     let version = args.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0").to_string();
     let description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let include_metadata = args.get("include_metadata").and_then(|v| v.as_bool()).unwrap_or(false);
+    let include_metadata = args.get("includeMetadata").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // Verify auth context
     let team_repo = xds_state
@@ -320,9 +320,9 @@ pub async fn execute_list_aggregated_schemas(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
-    let http_method = args.get("http_method").and_then(|v| v.as_str()).map(String::from);
-    let min_confidence = args.get("min_confidence").and_then(|v| v.as_f64());
-    let latest_only = args.get("latest_only").and_then(|v| v.as_bool());
+    let http_method = args.get("httpMethod").and_then(|v| v.as_str()).map(String::from);
+    let min_confidence = args.get("minConfidence").and_then(|v| v.as_f64());
+    let latest_only = args.get("latestOnly").and_then(|v| v.as_bool());
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
     let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32);
 
@@ -454,9 +454,9 @@ mod tests {
         // Verify input schema has expected properties
         let properties = &tool.input_schema["properties"];
         assert!(properties.get("path").is_some());
-        assert!(properties.get("http_method").is_some());
-        assert!(properties.get("min_confidence").is_some());
-        assert!(properties.get("latest_only").is_some());
+        assert!(properties.get("httpMethod").is_some());
+        assert!(properties.get("minConfidence").is_some());
+        assert!(properties.get("latestOnly").is_some());
 
         // Verify no required parameters
         assert!(
@@ -496,7 +496,7 @@ mod tests {
     fn test_list_tool_has_http_method_enum() {
         let tool = cp_list_aggregated_schemas_tool();
         let properties = &tool.input_schema["properties"];
-        let http_method = properties.get("http_method").unwrap();
+        let http_method = properties.get("httpMethod").unwrap();
 
         let enum_values = http_method["enum"].as_array().unwrap();
         assert!(enum_values.contains(&json!("GET")));
@@ -515,12 +515,12 @@ mod tests {
 
         let schema = &tool.input_schema;
         assert_eq!(schema["type"], "object");
-        assert!(schema["properties"]["schema_ids"].is_object());
+        assert!(schema["properties"]["schemaIds"].is_object());
         assert!(schema["properties"]["title"].is_object());
         assert!(schema["properties"]["version"].is_object());
-        assert!(schema["properties"]["include_metadata"].is_object());
+        assert!(schema["properties"]["includeMetadata"].is_object());
 
         let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("schema_ids")));
+        assert!(required.contains(&json!("schemaIds")));
     }
 }

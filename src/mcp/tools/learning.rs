@@ -181,21 +181,21 @@ Authorization: Requires learning-sessions:create scope.
         json!({
             "type": "object",
             "properties": {
-                "route_pattern": {
+                "routePattern": {
                     "type": "string",
                     "description": "Regex pattern to match routes for learning"
                 },
-                "target_sample_count": {
+                "targetSampleCount": {
                     "type": "integer",
                     "description": "Number of traffic samples to collect",
                     "minimum": 1,
                     "maximum": 100000
                 },
-                "cluster_name": {
+                "clusterName": {
                     "type": "string",
                     "description": "Optional cluster name to filter traffic"
                 },
-                "http_methods": {
+                "httpMethods": {
                     "type": "array",
                     "description": "Optional array of HTTP methods to include",
                     "items": {
@@ -203,12 +203,12 @@ Authorization: Requires learning-sessions:create scope.
                         "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
                     }
                 },
-                "auto_start": {
+                "autoStart": {
                     "type": "boolean",
                     "description": "Whether to automatically start the session (default: true)"
                 }
             },
-            "required": ["route_pattern", "target_sample_count"]
+            "required": ["routePattern", "targetSampleCount"]
         }),
     )
 }
@@ -373,23 +373,23 @@ pub async fn execute_create_learning_session(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
-    let route_pattern = args.get("route_pattern").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_pattern".to_string())
+    let route_pattern = args.get("routePattern").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routePattern".to_string())
     })?;
 
     let target_sample_count =
-        args.get("target_sample_count").and_then(|v| v.as_i64()).ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: target_sample_count".to_string())
+        args.get("targetSampleCount").and_then(|v| v.as_i64()).ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: targetSampleCount".to_string())
         })?;
 
     // 2. Parse optional fields
-    let cluster_name = args.get("cluster_name").and_then(|v| v.as_str()).map(String::from);
-    let http_methods = args.get("http_methods").and_then(|v| {
+    let cluster_name = args.get("clusterName").and_then(|v| v.as_str()).map(String::from);
+    let http_methods = args.get("httpMethods").and_then(|v| {
         v.as_array().map(|arr| {
             arr.iter().filter_map(|item| item.as_str().map(String::from)).collect::<Vec<_>>()
         })
     });
-    let auto_start = args.get("auto_start").and_then(|v| v.as_bool());
+    let auto_start = args.get("autoStart").and_then(|v| v.as_bool());
 
     tracing::debug!(
         team = %team,
@@ -866,8 +866,8 @@ mod tests {
 
         // Check required fields
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_pattern")));
-        assert!(required.contains(&json!("target_sample_count")));
+        assert!(required.contains(&json!("routePattern")));
+        assert!(required.contains(&json!("targetSampleCount")));
     }
 
     #[test]

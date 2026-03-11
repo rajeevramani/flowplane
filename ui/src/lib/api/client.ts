@@ -487,7 +487,7 @@ class ApiClient {
 	}
 
 	async adminUpdateTeam(id: string, request: UpdateTeamRequest): Promise<TeamResponse> {
-		return this.put<TeamResponse>(`/api/v1/admin/teams/${id}`, request);
+		return this.patch<TeamResponse>(`/api/v1/admin/teams/${id}`, request);
 	}
 
 	async adminDeleteTeam(id: string): Promise<void> {
@@ -546,7 +546,7 @@ class ApiClient {
 	}
 
 	async updateFilter(team: string, id: string, body: UpdateFilterRequest): Promise<FilterResponse> {
-		return this.put<FilterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/filters/${id}`, body);
+		return this.patch<FilterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/filters/${id}`, body);
 	}
 
 	async deleteFilter(team: string, id: string): Promise<void> {
@@ -838,7 +838,7 @@ class ApiClient {
 	 * Update an existing secret.
 	 */
 	async updateSecret(team: string, secretId: string, request: UpdateSecretRequest): Promise<SecretResponse> {
-		return this.put<SecretResponse>(
+		return this.patch<SecretResponse>(
 			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`,
 			request
 		);
@@ -1083,7 +1083,7 @@ class ApiClient {
 		id: string,
 		request: UpdateCustomWasmFilterRequest
 	): Promise<CustomWasmFilterResponse> {
-		return this.put<CustomWasmFilterResponse>(
+		return this.patch<CustomWasmFilterResponse>(
 			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}`,
 			request
 		);
@@ -1387,7 +1387,7 @@ class ApiClient {
 	 * Update a dataplane.
 	 */
 	async updateDataplane(team: string, name: string, body: UpdateDataplaneBody): Promise<DataplaneResponse> {
-		return this.put<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`, body);
+		return this.patch<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`, body);
 	}
 
 	/**
@@ -1468,7 +1468,7 @@ class ApiClient {
 	}
 
 	async updateOrganization(id: string, data: UpdateOrganizationRequest): Promise<OrganizationResponse> {
-		return this.put<OrganizationResponse>(`/api/v1/admin/organizations/${encodeURIComponent(id)}`, data);
+		return this.patch<OrganizationResponse>(`/api/v1/admin/organizations/${encodeURIComponent(id)}`, data);
 	}
 
 	async deleteOrganization(id: string): Promise<void> {
@@ -1541,7 +1541,7 @@ class ApiClient {
 		teamName: string,
 		data: UpdateTeamRequest
 	): Promise<TeamResponse> {
-		return this.put<TeamResponse>(
+		return this.patch<TeamResponse>(
 			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}`,
 			data
 		);

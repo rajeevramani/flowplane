@@ -55,7 +55,7 @@ RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#,
         json!({
             "type": "object",
             "properties": {
-                "filter_type": {
+                "filterType": {
                     "type": "string",
                     "description": "Filter by filter type (e.g., jwt_auth, oauth2, cors, rate_limit)",
                     "enum": ["jwt_auth", "oauth2", "local_rate_limit", "cors", "header_mutation", "ext_authz", "rbac", "custom_response", "compressor", "mcp"]
@@ -132,7 +132,7 @@ pub async fn execute_list_filters(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    let filter_type = args["filter_type"].as_str().map(|s| s.to_string());
+    let filter_type = args["filterType"].as_str().map(|s| s.to_string());
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
     let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32);
 
@@ -498,13 +498,9 @@ pub async fn execute_create_filter(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let filter_type = args
-        .get("filterType")
-        .or_else(|| args.get("filter_type"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: filterType".to_string())
-        })?;
+    let filter_type = args.get("filterType").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: filterType".to_string())
+    })?;
 
     let configuration = args.get("configuration").ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: configuration".to_string())
@@ -614,11 +610,7 @@ pub async fn execute_update_filter(
     let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Parse optional updates (auto-wrap config if needed)
-    let new_name = args
-        .get("newName")
-        .or_else(|| args.get("new_name"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let new_name = args.get("newName").and_then(|v| v.as_str()).map(|s| s.to_string());
     let new_description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
     let new_config = if let Some(config_json) = args.get("configuration") {
         // Look up existing filter to get its type for auto-wrapping
@@ -773,7 +765,7 @@ Authorization: Requires filters:update scope.
                     "type": "string",
                     "description": "Name of the listener to attach to (for listener-level attachment)"
                 },
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Name of the route configuration to attach to (for route-config-level attachment)"
                 },
@@ -837,7 +829,7 @@ Authorization: Requires filters:update scope.
                     "type": "string",
                     "description": "Name of the listener to detach from"
                 },
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Name of the route configuration to detach from"
                 }
@@ -908,14 +900,14 @@ pub async fn execute_attach_filter(
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
 
     let listener = args.get("listener").and_then(|v| v.as_str());
-    let route_config = args.get("route_config").and_then(|v| v.as_str());
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str());
     let order = args.get("order").and_then(|v| v.as_i64());
     let settings = args.get("settings").cloned();
 
     // 2. Validate exactly one target is specified
     if listener.is_none() && route_config.is_none() {
         return Err(McpError::InvalidParams(
-            "Must specify either 'listener' or 'route_config' as attachment target".to_string(),
+            "Must specify either 'listener' or 'routeConfig' as attachment target".to_string(),
         ));
     }
     if listener.is_some() && route_config.is_some() {
@@ -1000,12 +992,12 @@ pub async fn execute_detach_filter(
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
 
     let listener = args.get("listener").and_then(|v| v.as_str());
-    let route_config = args.get("route_config").and_then(|v| v.as_str());
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str());
 
     // 2. Validate exactly one target is specified
     if listener.is_none() && route_config.is_none() {
         return Err(McpError::InvalidParams(
-            "Must specify either 'listener' or 'route_config' as detachment target".to_string(),
+            "Must specify either 'listener' or 'routeConfig' as detachment target".to_string(),
         ));
     }
     if listener.is_some() && route_config.is_some() {

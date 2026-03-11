@@ -163,7 +163,7 @@ Authorization: Requires dataplanes:create scope.
                     "type": "string",
                     "description": "Dataplane name (unique within team)"
                 },
-                "gateway_host": {
+                "gatewayHost": {
                     "type": "string",
                     "description": "Optional gateway host URL (e.g., https://api.example.com)"
                 },
@@ -224,7 +224,7 @@ Authorization: Requires dataplanes:update scope.
                     "type": "string",
                     "description": "Dataplane name to update"
                 },
-                "gateway_host": {
+                "gatewayHost": {
                     "type": "string",
                     "description": "New gateway host URL"
                 },
@@ -400,7 +400,7 @@ pub async fn execute_create_dataplane(
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
     // 2. Parse optional fields
-    let gateway_host = args.get("gateway_host").and_then(|v| v.as_str()).map(String::from);
+    let gateway_host = args.get("gatewayHost").and_then(|v| v.as_str()).map(String::from);
     let description = args.get("description").and_then(|v| v.as_str()).map(String::from);
 
     tracing::debug!(
@@ -468,12 +468,12 @@ pub async fn execute_update_dataplane(
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
     // 2. Parse optional fields (at least one should be present)
-    let gateway_host = args.get("gateway_host").and_then(|v| v.as_str()).map(String::from);
+    let gateway_host = args.get("gatewayHost").and_then(|v| v.as_str()).map(String::from);
     let description = args.get("description").and_then(|v| v.as_str()).map(String::from);
 
     if gateway_host.is_none() && description.is_none() {
         return Err(McpError::InvalidParams(
-            "At least one field (gateway_host or description) must be provided for update"
+            "At least one field (gatewayHost or description) must be provided for update"
                 .to_string(),
         ));
     }

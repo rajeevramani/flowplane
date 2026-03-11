@@ -56,22 +56,22 @@ Authorization: Requires cp:read scope."#,
         json!({
             "type": "object",
             "properties": {
-                "cluster_names": {
+                "clusterNames": {
                     "type": "array",
                     "description": "List of cluster names to check (optional - checks all if empty)",
                     "items": {"type": "string"}
                 },
-                "listener_names": {
+                "listenerNames": {
                     "type": "array",
                     "description": "List of listener names to check (optional - checks all if empty)",
                     "items": {"type": "string"}
                 },
-                "filter_names": {
+                "filterNames": {
                     "type": "array",
                     "description": "List of filter names to check (optional - checks all if empty)",
                     "items": {"type": "string"}
                 },
-                "include_details": {
+                "includeDetails": {
                     "type": "boolean",
                     "description": "Include full configuration details (default: false)",
                     "default": false
@@ -94,24 +94,24 @@ pub async fn execute_devops_get_deployment_status(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let cluster_names: Vec<String> = args
-        .get("cluster_names")
+        .get("clusterNames")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
 
     let listener_names: Vec<String> = args
-        .get("listener_names")
+        .get("listenerNames")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
 
     let filter_names: Vec<String> = args
-        .get("filter_names")
+        .get("filterNames")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
 
-    let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(false);
+    let include_details = args.get("includeDetails").and_then(|v| v.as_bool()).unwrap_or(false);
 
     tracing::info!(
         team = %team,

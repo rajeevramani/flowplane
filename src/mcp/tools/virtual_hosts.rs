@@ -56,7 +56,7 @@ RELATED TOOLS: cp_get_virtual_host (details), cp_create_virtual_host (create), c
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Filter by route configuration name to see virtual hosts in a specific config"
                 },
@@ -108,7 +108,7 @@ RELATED TOOLS: cp_list_virtual_hosts (discovery), cp_update_virtual_host (modify
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "The route configuration name containing the virtual host"
                 },
@@ -117,7 +117,7 @@ RELATED TOOLS: cp_list_virtual_hosts (discovery), cp_update_virtual_host (modify
                     "description": "The virtual host name to retrieve"
                 }
             },
-            "required": ["route_config", "name"]
+            "required": ["routeConfig", "name"]
         }),
     )
 }
@@ -172,7 +172,7 @@ Authorization: Requires routes:create scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Name of the route configuration to add this virtual host to"
                 },
@@ -186,13 +186,13 @@ Authorization: Requires routes:create scope."#,
                     "items": {"type": "string"},
                     "minItems": 1
                 },
-                "rule_order": {
+                "ruleOrder": {
                     "type": "integer",
                     "description": "Priority order for matching (default: 0, lower numbers match first)",
                     "minimum": 0
                 }
             },
-            "required": ["route_config", "name", "domains"]
+            "required": ["routeConfig", "name", "domains"]
         }),
     )
 }
@@ -232,7 +232,7 @@ Authorization: Requires routes:update scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Name of the route configuration containing the virtual host"
                 },
@@ -246,13 +246,13 @@ Authorization: Requires routes:update scope."#,
                     "items": {"type": "string"},
                     "minItems": 1
                 },
-                "rule_order": {
+                "ruleOrder": {
                     "type": "integer",
                     "description": "New priority order for matching",
                     "minimum": 0
                 }
             },
-            "required": ["route_config", "name"]
+            "required": ["routeConfig", "name"]
         }),
     )
 }
@@ -288,7 +288,7 @@ Authorization: Requires routes:delete scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Name of the route configuration containing the virtual host"
                 },
@@ -297,7 +297,7 @@ Authorization: Requires routes:delete scope."#,
                     "description": "Name of the virtual host to delete"
                 }
             },
-            "required": ["route_config", "name"]
+            "required": ["routeConfig", "name"]
         }),
     )
 }
@@ -310,7 +310,7 @@ pub async fn execute_list_virtual_hosts(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    let route_config = args.get("route_config").and_then(|v| v.as_str());
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str());
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
     let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32);
 
@@ -378,8 +378,8 @@ pub async fn execute_get_virtual_host(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
     let name = args
@@ -435,8 +435,8 @@ pub async fn execute_create_virtual_host(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
     let name = args
@@ -466,7 +466,7 @@ pub async fn execute_create_virtual_host(
         return Err(McpError::InvalidParams("At least one domain is required".to_string()));
     }
 
-    let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let rule_order = args.get("ruleOrder").and_then(|v| v.as_i64()).map(|v| v as i32);
 
     tracing::debug!(
         team = %team,
@@ -528,8 +528,8 @@ pub async fn execute_update_virtual_host(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
     let name = args
@@ -565,12 +565,12 @@ pub async fn execute_update_virtual_host(
         None
     };
 
-    let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let rule_order = args.get("ruleOrder").and_then(|v| v.as_i64()).map(|v| v as i32);
 
     // Ensure at least one field is being updated
     if domains.is_none() && rule_order.is_none() {
         return Err(McpError::InvalidParams(
-            "At least one of 'domains' or 'rule_order' must be provided".to_string(),
+            "At least one of 'domains' or 'ruleOrder' must be provided".to_string(),
         ));
     }
 
@@ -618,8 +618,8 @@ pub async fn execute_delete_virtual_host(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
     let name = args
@@ -678,7 +678,7 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Get detailed information"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
+        assert!(required.contains(&json!("routeConfig")));
         assert!(required.contains(&json!("name")));
     }
 
@@ -689,7 +689,7 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Create"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
+        assert!(required.contains(&json!("routeConfig")));
         assert!(required.contains(&json!("name")));
         assert!(required.contains(&json!("domains")));
     }
@@ -701,7 +701,7 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Update"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
+        assert!(required.contains(&json!("routeConfig")));
         assert!(required.contains(&json!("name")));
     }
 
@@ -712,7 +712,7 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Delete"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
+        assert!(required.contains(&json!("routeConfig")));
         assert!(required.contains(&json!("name")));
     }
 }

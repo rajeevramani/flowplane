@@ -258,6 +258,22 @@ pub fn build_router_with_registry(
     // This creates spans for all HTTP requests with method, path, status, and latency
     let trace_layer = middleware::from_fn(trace_http_requests);
 
+    // Path parameter naming convention:
+    //   {team}              - team name or UUID (dual-lookup via resolve_team_name)
+    //   {name}              - human-readable unique name (clusters, route configs, listeners, dataplanes)
+    //   {id}                - UUID primary key (filters, secrets, certs, learning sessions, schemas)
+    //   {<resource>_name}   - name of a parent resource in nested paths (route_config_name, vhost_name)
+    //   {<resource>_id}     - UUID of a parent resource in nested paths (filter_id, principal_id)
+    //   {org_name}          - organization name
+    //   {agent_name}        - agent name
+    //
+    // RPC-style action sub-paths (e.g., /revoke, /export, /import, /invite, /download)
+    // are used intentionally for state transitions and operations that don't map to CRUD.
+    //
+    // Path structure by scope:
+    //   /api/v1/teams/{team}/...   - team-scoped resource CRUD (most endpoints)
+    //   /api/v1/orgs/{org_name}/.. - org-scoped user-facing endpoints (teams, agents, grants)
+    //   /api/v1/admin/...          - platform admin endpoints (org/team management, audit)
     let secured_api = Router::new()
         // Cluster endpoints (team-scoped)
         .route("/api/v1/teams/{team}/clusters", get(list_clusters_handler))
@@ -278,7 +294,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/filters", get(list_filters_handler))
         .route("/api/v1/teams/{team}/filters", post(create_filter_handler))
         .route("/api/v1/teams/{team}/filters/{id}", get(get_filter_handler))
-        .route("/api/v1/teams/{team}/filters/{id}", put(update_filter_handler))
+        .route("/api/v1/teams/{team}/filters/{id}", patch(update_filter_handler))
         .route("/api/v1/teams/{team}/filters/{id}", delete(delete_filter_handler))
         // Filter Install/Configure endpoints (team-scoped)
         .route("/api/v1/teams/{team}/filters/{filter_id}/status", get(get_filter_status_handler))
@@ -295,9 +311,9 @@ pub fn build_router_with_registry(
         .route("/api/v1/filter-types", get(list_filter_types_handler))
         .route("/api/v1/filter-types/{filter_type}", get(get_filter_type_handler))
         // Route config filter attachment endpoints (team-scoped)
-        .route("/api/v1/teams/{team}/route-configs/{route_config_id}/filters", get(list_route_filters_handler))
-        .route("/api/v1/teams/{team}/route-configs/{route_config_id}/filters", post(attach_filter_handler))
-        .route("/api/v1/teams/{team}/route-configs/{route_config_id}/filters/{filter_id}", delete(detach_filter_handler))
+        .route("/api/v1/teams/{team}/route-configs/{route_config_name}/filters", get(list_route_filters_handler))
+        .route("/api/v1/teams/{team}/route-configs/{route_config_name}/filters", post(attach_filter_handler))
+        .route("/api/v1/teams/{team}/route-configs/{route_config_name}/filters/{filter_id}", delete(detach_filter_handler))
         // Hierarchical filter attachment endpoints - Virtual Hosts (team-scoped)
         .route(
             "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts",
@@ -333,10 +349,10 @@ pub fn build_router_with_registry(
             delete(detach_filter_from_route_rule_handler),
         )
         // Listener-Filter attachment endpoints (team-scoped)
-        .route("/api/v1/teams/{team}/listeners/{listener_id}/filters", get(list_listener_filters_handler))
-        .route("/api/v1/teams/{team}/listeners/{listener_id}/filters", post(attach_filter_to_listener_handler))
+        .route("/api/v1/teams/{team}/listeners/{listener_name}/filters", get(list_listener_filters_handler))
+        .route("/api/v1/teams/{team}/listeners/{listener_name}/filters", post(attach_filter_to_listener_handler))
         .route(
-            "/api/v1/teams/{team}/listeners/{listener_id}/filters/{filter_id}",
+            "/api/v1/teams/{team}/listeners/{listener_name}/filters/{filter_id}",
             delete(detach_filter_from_listener_handler),
         )
         // OpenAPI import endpoints (team-scoped)
@@ -370,13 +386,13 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/secrets", post(create_secret_handler))
         .route("/api/v1/teams/{team}/secrets/reference", post(create_secret_reference_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", get(get_secret_handler))
-        .route("/api/v1/teams/{team}/secrets/{secret_id}", put(update_secret_handler))
+        .route("/api/v1/teams/{team}/secrets/{secret_id}", patch(update_secret_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", delete(delete_secret_handler))
         // Custom WASM filter endpoints
         .route("/api/v1/teams/{team}/custom-filters", get(list_custom_wasm_filters_handler))
         .route("/api/v1/teams/{team}/custom-filters", post(create_custom_wasm_filter_handler))
         .route("/api/v1/teams/{team}/custom-filters/{id}", get(get_custom_wasm_filter_handler))
-        .route("/api/v1/teams/{team}/custom-filters/{id}", put(update_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}", patch(update_custom_wasm_filter_handler))
         .route("/api/v1/teams/{team}/custom-filters/{id}", delete(delete_custom_wasm_filter_handler))
         .route("/api/v1/teams/{team}/custom-filters/{id}/download", get(download_wasm_binary_handler))
         // Listener endpoints (team-scoped)
@@ -395,7 +411,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/dataplanes", get(list_dataplanes_handler))
         .route("/api/v1/teams/{team}/dataplanes", post(create_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}", get(get_dataplane_handler))
-        .route("/api/v1/teams/{team}/dataplanes/{name}", put(update_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}", patch(update_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}", delete(delete_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}/envoy-config", get(generate_envoy_config_handler))
         // Aggregated schema endpoints (API catalog)
@@ -412,13 +428,13 @@ pub fn build_router_with_registry(
         .route("/api/v1/admin/teams", get(admin_list_teams))
         .route("/api/v1/admin/teams", post(admin_create_team))
         .route("/api/v1/admin/teams/{id}", get(admin_get_team))
-        .route("/api/v1/admin/teams/{id}", put(admin_update_team))
+        .route("/api/v1/admin/teams/{id}", patch(admin_update_team))
         .route("/api/v1/admin/teams/{id}", delete(admin_delete_team))
         // Org-scoped endpoints (authenticated users)
         .route("/api/v1/orgs/current", get(get_current_org))
         .route("/api/v1/orgs/{org_name}/teams", get(list_org_teams))
         .route("/api/v1/orgs/{org_name}/teams", post(create_org_team))
-        .route("/api/v1/orgs/{org_name}/teams/{team_name}", put(update_org_team).delete(delete_org_team))
+        .route("/api/v1/orgs/{org_name}/teams/{team_name}", patch(update_org_team).delete(delete_org_team))
         .route("/api/v1/orgs/{org_name}/teams/{team_name}/members", get(list_team_members).post(add_team_member))
         .route(
             "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
@@ -444,7 +460,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/admin/organizations", get(admin_list_organizations))
         .route("/api/v1/admin/organizations", post(admin_create_organization))
         .route("/api/v1/admin/organizations/{id}", get(admin_get_organization))
-        .route("/api/v1/admin/organizations/{id}", put(admin_update_organization))
+        .route("/api/v1/admin/organizations/{id}", patch(admin_update_organization))
         .route("/api/v1/admin/organizations/{id}", delete(admin_delete_organization))
         .route("/api/v1/admin/organizations/{id}/members", get(admin_list_org_members))
         .route("/api/v1/admin/organizations/{id}/members", post(admin_add_org_member))

@@ -38,7 +38,7 @@ PARAMETERS:
 - listener_name (optional): Listener name to check for duplicates
 
 EXAMPLE:
-{ "path": "/api/orders", "listen_port": 8080, "cluster_name": "orders-svc" }
+{ "path": "/api/orders", "listenPort": 8080, "clusterName": "orders-svc" }
 
 RETURNS:
 - ready: Boolean — true if all checks pass
@@ -55,19 +55,19 @@ Authorization: Requires cp:read scope."#,
                     "type": "string",
                     "description": "Request path to check for routing conflicts"
                 },
-                "listen_port": {
+                "listenPort": {
                     "type": "integer",
                     "description": "Port number to check availability"
                 },
-                "cluster_name": {
+                "clusterName": {
                     "type": "string",
                     "description": "Cluster name to check for duplicates"
                 },
-                "route_config_name": {
+                "routeConfigName": {
                     "type": "string",
                     "description": "Route config name to check for duplicates"
                 },
-                "listener_name": {
+                "listenerName": {
                     "type": "string",
                     "description": "Listener name to check for duplicates"
                 }
@@ -97,7 +97,7 @@ pub async fn execute_dev_preflight_check(
     let mut ready = true;
 
     // Check port availability (scoped to caller's org)
-    if let Some(port) = args.get("listen_port").and_then(|v| v.as_i64()) {
+    if let Some(port) = args.get("listenPort").and_then(|v| v.as_i64()) {
         let port_check = check_port_available(db_pool, port, org_id).await?;
         if !port_check["pass"].as_bool().unwrap_or(false) {
             ready = false;
@@ -115,7 +115,7 @@ pub async fn execute_dev_preflight_check(
     }
 
     // Check cluster name collision (scoped to caller's team)
-    if let Some(name) = args.get("cluster_name").and_then(|v| v.as_str()) {
+    if let Some(name) = args.get("clusterName").and_then(|v| v.as_str()) {
         let name_check = check_name_exists(db_pool, "clusters", "name", name, team).await?;
         if !name_check["pass"].as_bool().unwrap_or(false) {
             ready = false;
@@ -124,7 +124,7 @@ pub async fn execute_dev_preflight_check(
     }
 
     // Check route config name collision (scoped to caller's team)
-    if let Some(name) = args.get("route_config_name").and_then(|v| v.as_str()) {
+    if let Some(name) = args.get("routeConfigName").and_then(|v| v.as_str()) {
         let name_check = check_name_exists(db_pool, "route_configs", "name", name, team).await?;
         if !name_check["pass"].as_bool().unwrap_or(false) {
             ready = false;
@@ -133,7 +133,7 @@ pub async fn execute_dev_preflight_check(
     }
 
     // Check listener name collision (scoped to caller's team)
-    if let Some(name) = args.get("listener_name").and_then(|v| v.as_str()) {
+    if let Some(name) = args.get("listenerName").and_then(|v| v.as_str()) {
         let name_check = check_name_exists(db_pool, "listeners", "name", name, team).await?;
         if !name_check["pass"].as_bool().unwrap_or(false) {
             ready = false;
@@ -312,8 +312,8 @@ mod tests {
         let schema = &tool.input_schema;
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["path"].is_object());
-        assert!(schema["properties"]["listen_port"].is_object());
-        assert!(schema["properties"]["cluster_name"].is_object());
+        assert!(schema["properties"]["listenPort"].is_object());
+        assert!(schema["properties"]["clusterName"].is_object());
     }
 
     // ========================================================================
@@ -328,7 +328,7 @@ mod tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"path": "/api/unused", "listen_port": 55555, "cluster_name": "new-cluster"}),
+            json!({"path": "/api/unused", "listenPort": 55555, "clusterName": "new-cluster"}),
         )
         .await
         .expect("should succeed");
@@ -348,7 +348,7 @@ mod tests {
 
         // Port 8080 is used by team-a's listener
         let result =
-            execute_dev_preflight_check(&db.pool, TEAM_A_ID, None, json!({"listen_port": 8080}))
+            execute_dev_preflight_check(&db.pool, TEAM_A_ID, None, json!({"listenPort": 8080}))
                 .await
                 .expect("should succeed");
 
@@ -370,7 +370,7 @@ mod tests {
 
         // team-a queries about port 9090 which belongs to team-b
         let result =
-            execute_dev_preflight_check(&db.pool, TEAM_A_ID, None, json!({"listen_port": 9090}))
+            execute_dev_preflight_check(&db.pool, TEAM_A_ID, None, json!({"listenPort": 9090}))
                 .await
                 .expect("should succeed");
 
@@ -419,7 +419,7 @@ mod tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"cluster_name": "orders-svc"}),
+            json!({"clusterName": "orders-svc"}),
         )
         .await
         .expect("should succeed");

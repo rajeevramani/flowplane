@@ -546,12 +546,7 @@ async fn test_2603_grant_lifecycle() {
         .await
         .expect("GET clusters should return a response");
 
-    assert_eq!(
-        status.as_u16(),
-        403,
-        "After revocation → 403 (same as step 1), got {}",
-        status
-    );
+    assert_eq!(status.as_u16(), 403, "After revocation → 403 (same as step 1), got {}", status);
     println!("ok Step 3: grant revoked → 403 (access denied)");
 
     // Verify grant no longer in list

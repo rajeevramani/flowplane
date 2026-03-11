@@ -1359,7 +1359,7 @@ impl ApiClient {
 
         let resp = self
             .client
-            .put(&url)
+            .patch(&url)
             .header("Authorization", format!("Bearer {}", token))
             .json(&body)
             .send()

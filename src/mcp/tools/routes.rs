@@ -74,7 +74,7 @@ RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"
                     "description": "Number of routes to skip (for pagination)",
                     "minimum": 0
                 },
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Filter by route configuration name to see routes in a specific config"
                 }
@@ -356,7 +356,7 @@ pub async fn execute_list_routes(
 
     let limit = args["limit"].as_i64().unwrap_or(100).min(1000) as i32;
     let offset = args["offset"].as_i64().unwrap_or(0) as i32;
-    let route_config_filter = args["route_config"].as_str();
+    let route_config_filter = args["routeConfig"].as_str();
 
     // Build query with optional route_config filter
     let query = if route_config_filter.is_some() {
@@ -889,10 +889,9 @@ pub async fn execute_create_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let virtual_hosts =
-        args.get("virtualHosts").or_else(|| args.get("virtual_hosts")).ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
-        })?;
+    let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
+    })?;
 
     tracing::debug!(
         team = %team,
@@ -977,10 +976,9 @@ pub async fn execute_update_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let virtual_hosts =
-        args.get("virtualHosts").or_else(|| args.get("virtual_hosts")).ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
-        })?;
+    let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
+    })?;
 
     tracing::debug!(
         team = %team,
@@ -1118,11 +1116,11 @@ Authorization: Requires cp:read scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Route configuration name"
                 },
-                "virtual_host": {
+                "virtualHost": {
                     "type": "string",
                     "description": "Virtual host name within the route config"
                 },
@@ -1131,7 +1129,7 @@ Authorization: Requires cp:read scope."#,
                     "description": "Route name"
                 }
             },
-            "required": ["route_config", "virtual_host", "name"]
+            "required": ["routeConfig", "virtualHost", "name"]
         }),
     )
 }
@@ -1192,11 +1190,11 @@ Authorization: Requires routes:create scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Route configuration name"
                 },
-                "virtual_host": {
+                "virtualHost": {
                     "type": "string",
                     "description": "Virtual host name within the route config"
                 },
@@ -1204,11 +1202,11 @@ Authorization: Requires routes:create scope."#,
                     "type": "string",
                     "description": "Unique route name (within virtual host)"
                 },
-                "path_pattern": {
+                "pathPattern": {
                     "type": "string",
                     "description": "URL path pattern (e.g., '/api', '/users/{id}')"
                 },
-                "match_type": {
+                "matchType": {
                     "type": "string",
                     "enum": ["prefix", "exact", "regex", "template"],
                     "description": "Type of path matching"
@@ -1217,13 +1215,13 @@ Authorization: Requires routes:create scope."#,
                     "type": "object",
                     "description": "Route action (forward, weighted, or redirect)"
                 },
-                "rule_order": {
+                "ruleOrder": {
                     "type": "integer",
                     "description": "Priority order (default: 100, lower values match first)",
                     "default": 100
                 }
             },
-            "required": ["route_config", "virtual_host", "name", "path_pattern", "match_type", "action"]
+            "required": ["routeConfig", "virtualHost", "name", "pathPattern", "matchType", "action"]
         }),
     )
 }
@@ -1272,11 +1270,11 @@ Authorization: Requires routes:update scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Route configuration name"
                 },
-                "virtual_host": {
+                "virtualHost": {
                     "type": "string",
                     "description": "Virtual host name within the route config"
                 },
@@ -1284,16 +1282,16 @@ Authorization: Requires routes:update scope."#,
                     "type": "string",
                     "description": "Route name to update"
                 },
-                "path_pattern": {
+                "pathPattern": {
                     "type": "string",
                     "description": "New URL path pattern (optional)"
                 },
-                "match_type": {
+                "matchType": {
                     "type": "string",
                     "enum": ["prefix", "exact", "regex", "template"],
                     "description": "New match type (optional)"
                 },
-                "rule_order": {
+                "ruleOrder": {
                     "type": "integer",
                     "description": "New priority order (optional)"
                 },
@@ -1307,7 +1305,7 @@ Authorization: Requires routes:update scope."#,
                     "description": "New route action (optional)"
                 }
             },
-            "required": ["route_config", "virtual_host", "name"]
+            "required": ["routeConfig", "virtualHost", "name"]
         }),
     )
 }
@@ -1344,11 +1342,11 @@ Authorization: Requires routes:delete scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Route configuration name"
                 },
-                "virtual_host": {
+                "virtualHost": {
                     "type": "string",
                     "description": "Virtual host name within the route config"
                 },
@@ -1357,7 +1355,7 @@ Authorization: Requires routes:delete scope."#,
                     "description": "Route name to delete"
                 }
             },
-            "required": ["route_config", "virtual_host", "name"]
+            "required": ["routeConfig", "virtualHost", "name"]
         }),
     )
 }
@@ -1372,12 +1370,12 @@ pub async fn execute_get_route(
 ) -> Result<ToolCallResult, McpError> {
     use crate::internal_api::RouteOperations;
 
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
-    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    let virtual_host = args.get("virtualHost").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHost".to_string())
     })?;
 
     let name = args
@@ -1436,12 +1434,12 @@ pub async fn execute_create_route(
 ) -> Result<ToolCallResult, McpError> {
     use crate::internal_api::{CreateRouteRequest, RouteOperations};
 
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
-    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    let virtual_host = args.get("virtualHost").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHost".to_string())
     })?;
 
     let name = args
@@ -1449,19 +1447,19 @@ pub async fn execute_create_route(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let path_pattern = args.get("path_pattern").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: path_pattern".to_string())
+    let path_pattern = args.get("pathPattern").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: pathPattern".to_string())
     })?;
 
-    let match_type = args.get("match_type").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: match_type".to_string())
+    let match_type = args.get("matchType").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: matchType".to_string())
     })?;
 
     let action = args
         .get("action")
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: action".to_string()))?;
 
-    let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let rule_order = args.get("ruleOrder").and_then(|v| v.as_i64()).map(|v| v as i32);
 
     tracing::debug!(
         team = %team,
@@ -1529,12 +1527,12 @@ pub async fn execute_update_route(
 ) -> Result<ToolCallResult, McpError> {
     use crate::internal_api::{RouteOperations, UpdateRouteRequest};
 
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
-    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    let virtual_host = args.get("virtualHost").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHost".to_string())
     })?;
 
     let name = args
@@ -1542,9 +1540,9 @@ pub async fn execute_update_route(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let path_pattern = args.get("path_pattern").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let match_type = args.get("match_type").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let path_pattern = args.get("pathPattern").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let match_type = args.get("matchType").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let rule_order = args.get("ruleOrder").and_then(|v| v.as_i64()).map(|v| v as i32);
     let action = args.get("action").cloned();
     let exposure = args.get("exposure").and_then(|v| v.as_str()).map(|s| s.to_string());
 
@@ -1594,12 +1592,12 @@ pub async fn execute_delete_route(
 ) -> Result<ToolCallResult, McpError> {
     use crate::internal_api::RouteOperations;
 
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
-    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    let virtual_host = args.get("virtualHost").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHost".to_string())
     })?;
 
     let name = args
@@ -1697,8 +1695,8 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Get a specific route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
-        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("routeConfig")));
+        assert!(required.contains(&json!("virtualHost")));
         assert!(required.contains(&json!("name")));
     }
 
@@ -1709,11 +1707,11 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Create a new route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
-        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("routeConfig")));
+        assert!(required.contains(&json!("virtualHost")));
         assert!(required.contains(&json!("name")));
-        assert!(required.contains(&json!("path_pattern")));
-        assert!(required.contains(&json!("match_type")));
+        assert!(required.contains(&json!("pathPattern")));
+        assert!(required.contains(&json!("matchType")));
         assert!(required.contains(&json!("action")));
     }
 
@@ -1724,8 +1722,8 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Update an existing route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
-        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("routeConfig")));
+        assert!(required.contains(&json!("virtualHost")));
         assert!(required.contains(&json!("name")));
         assert_eq!(required.len(), 3); // Only 3 required, rest optional
     }
@@ -1737,8 +1735,8 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Delete a route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
-        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("routeConfig")));
+        assert!(required.contains(&json!("virtualHost")));
         assert!(required.contains(&json!("name")));
     }
 
