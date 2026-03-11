@@ -256,6 +256,8 @@ pub struct ZitadelAuthState {
     pub jwks_cache: JwksCache,
     pub pool: DbPool,
     pub permission_cache: Arc<PermissionCache>,
+    /// Rate limiter for authentication attempts (keyed by client IP).
+    pub auth_rate_limiter: Arc<crate::api::rate_limit::RateLimiter>,
 }
 
 // ---------------------------------------------------------------------------

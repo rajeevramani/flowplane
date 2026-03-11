@@ -263,11 +263,14 @@ pub fn build_router_with_registry(
                 .pool
                 .clone()
                 .expect("DB pool required for Zitadel auth middleware — start with --database");
+            let auth_rate_limiter =
+                Arc::new(crate::api::rate_limit::RateLimiter::auth_from_env());
             let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
                 jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
                 config: std::sync::Arc::new(zitadel_config),
                 pool,
                 permission_cache: permission_cache.clone(),
+                auth_rate_limiter,
             };
             (
                 tower::util::Either::Left(middleware::from_fn_with_state(

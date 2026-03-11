@@ -57,6 +57,19 @@ pub async fn authenticate(
         return Ok(next.run(request).await);
     }
 
+    // Rate limit by client IP before doing any JWT work
+    let client_ip_for_rate_limit = extract_client_ip(&request).unwrap_or_else(|| "unknown".into());
+    if let Err(retry_after) =
+        state.auth_rate_limiter.check_rate_limit(&client_ip_for_rate_limit).await
+    {
+        warn!(
+            client_ip = %client_ip_for_rate_limit,
+            retry_after_seconds = retry_after,
+            "Authentication rate limit exceeded"
+        );
+        return Err(ApiError::rate_limited("Too many authentication attempts", retry_after));
+    }
+
     let method = request.method();
     let path = request.uri().path();
     let correlation_id = uuid::Uuid::new_v4();
