@@ -141,6 +141,14 @@ impl Config {
 
         let xds_advertised_address = std::env::var("FLOWPLANE_XDS_ADVERTISED_ADDRESS").ok();
 
+        if xds_bind_address == "0.0.0.0" && xds_advertised_address.is_none() {
+            tracing::warn!(
+                "xDS bind address is 0.0.0.0 with no FLOWPLANE_XDS_ADVERTISED_ADDRESS set; \
+                 Envoy gRPC clusters (ExtProc, ALS) will fall back to 127.0.0.1 — \
+                 set FLOWPLANE_XDS_ADVERTISED_ADDRESS for Docker/K8s deployments"
+            );
+        }
+
         // Load resource configuration from environment variables
         let cluster_name =
             std::env::var("FLOWPLANE_CLUSTER_NAME").unwrap_or_else(|_| "demo_cluster".to_string());
