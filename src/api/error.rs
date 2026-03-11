@@ -114,7 +114,10 @@ impl IntoResponse for ApiError {
                 ("too_many_requests", message, Some(retry_after_seconds))
             }
             ApiError::ServiceUnavailable(msg) => ("service_unavailable", msg, None),
-            ApiError::Internal(msg) => ("internal_error", msg, None),
+            ApiError::Internal(msg) => {
+                tracing::error!(error.internal = %msg, "Internal server error");
+                ("internal_error", "An internal error occurred".to_string(), None)
+            }
         };
 
         let body = Json(ErrorBody { error: error_kind, message });
@@ -278,5 +281,81 @@ impl ApiError {
     /// Use when rate limits are exceeded.
     pub fn rate_limited<S: Into<String>>(msg: S, retry_after_seconds: u32) -> Self {
         ApiError::TooManyRequests { message: msg.into(), retry_after_seconds }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn internal_error_does_not_leak_details() {
+        let err = ApiError::Internal("secret SQL error: users table column mismatch".to_string());
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = response.into_body().collect().await.map(|b| b.to_bytes());
+        let body_str = match body {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(_) => panic!("failed to read response body"),
+        };
+
+        assert!(
+            !body_str.contains("SQL"),
+            "response body should not contain internal details, got: {body_str}"
+        );
+        assert!(
+            !body_str.contains("users table"),
+            "response body should not contain table names, got: {body_str}"
+        );
+        assert!(
+            body_str.contains("An internal error occurred"),
+            "response body should contain generic message, got: {body_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_internal_errors_preserve_message() {
+        let err = ApiError::NotFound("Cluster 'foo' not found".to_string());
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = response.into_body().collect().await.map(|b| b.to_bytes());
+        let body_str = match body {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(_) => panic!("failed to read response body"),
+        };
+
+        assert!(
+            body_str.contains("Cluster 'foo' not found"),
+            "non-internal errors should preserve their message, got: {body_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn database_error_converts_to_generic_internal() {
+        let fp_err = FlowplaneError::Database {
+            context: "Failed to query agent_grants table".to_string(),
+            source: sqlx::Error::RowNotFound,
+        };
+        let api_err: ApiError = fp_err.into();
+        let response = api_err.into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = response.into_body().collect().await.map(|b| b.to_bytes());
+        let body_str = match body {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(_) => panic!("failed to read response body"),
+        };
+
+        assert!(
+            !body_str.contains("agent_grants"),
+            "database errors should not leak table names, got: {body_str}"
+        );
     }
 }
