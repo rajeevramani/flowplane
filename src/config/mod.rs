@@ -14,9 +14,44 @@ pub use settings::{
 };
 pub use tls::ApiTlsConfig;
 
+/// Authentication mode for the control plane
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AuthMode {
+    /// Dev mode: synthetic identity, no Zitadel, local token auth
+    Dev,
+    /// Prod mode: Zitadel OIDC, JWT auth
+    #[default]
+    Prod,
+}
+
+impl std::fmt::Display for AuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthMode::Dev => write!(f, "dev"),
+            AuthMode::Prod => write!(f, "prod"),
+        }
+    }
+}
+
+impl AuthMode {
+    /// Parse auth mode from FLOWPLANE_AUTH_MODE environment variable.
+    /// Defaults to Prod if not set.
+    pub fn from_env() -> crate::Result<Self> {
+        match std::env::var("FLOWPLANE_AUTH_MODE").as_deref() {
+            Ok("dev") => Ok(AuthMode::Dev),
+            Ok("prod") | Err(_) => Ok(AuthMode::Prod),
+            Ok(other) => Err(crate::Error::config(format!(
+                "Invalid FLOWPLANE_AUTH_MODE '{}': expected 'dev' or 'prod'",
+                other
+            ))),
+        }
+    }
+}
+
 /// Simplified configuration for backwards compatibility and development
 #[derive(Debug, Clone, Default)]
 pub struct Config {
+    pub auth_mode: AuthMode,
     pub xds: SimpleXdsConfig,
     pub api: ApiServerConfig,
 }
@@ -124,6 +159,8 @@ impl Default for ApiServerConfig {
 impl Config {
     /// Create configuration from environment variables
     pub fn from_env() -> Result<Self> {
+        let auth_mode = AuthMode::from_env()?;
+
         let xds_port_str =
             std::env::var("FLOWPLANE_XDS_PORT").unwrap_or_else(|_| "18000".to_string());
 
@@ -196,6 +233,13 @@ impl Config {
         let api_bind_address =
             std::env::var("FLOWPLANE_API_BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1".to_string());
 
+        if auth_mode == AuthMode::Dev && api_bind_address == "0.0.0.0" {
+            tracing::error!(
+                "API bind address is 0.0.0.0 in dev mode — this exposes your dev instance to the network. \
+                 Use 127.0.0.1 (default) for local development."
+            );
+        }
+
         // Envoy admin interface configuration (used in bootstrap config generation)
         let envoy_admin_bind_address = std::env::var("FLOWPLANE_ENVOY_ADMIN_BIND_ADDRESS")
             .unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -217,6 +261,7 @@ impl Config {
             .unwrap_or_else(|_| "/dev/null".to_string());
 
         Ok(Self {
+            auth_mode,
             xds: SimpleXdsConfig {
                 bind_address: xds_bind_address,
                 port: xds_port,
@@ -533,5 +578,90 @@ mod tests {
             Some(v) => env::set_var("FLOWPLANE_ENVOY_ADMIN_PORT", v),
             None => env::remove_var("FLOWPLANE_ENVOY_ADMIN_PORT"),
         }
+    }
+
+    #[test]
+    fn test_auth_mode_from_env_dev() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let original = env::var("FLOWPLANE_AUTH_MODE").ok();
+
+        env::set_var("FLOWPLANE_AUTH_MODE", "dev");
+        let mode = AuthMode::from_env().unwrap();
+        assert_eq!(mode, AuthMode::Dev);
+
+        match original {
+            Some(v) => env::set_var("FLOWPLANE_AUTH_MODE", v),
+            None => env::remove_var("FLOWPLANE_AUTH_MODE"),
+        }
+    }
+
+    #[test]
+    fn test_auth_mode_from_env_prod() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let original = env::var("FLOWPLANE_AUTH_MODE").ok();
+
+        env::set_var("FLOWPLANE_AUTH_MODE", "prod");
+        let mode = AuthMode::from_env().unwrap();
+        assert_eq!(mode, AuthMode::Prod);
+
+        match original {
+            Some(v) => env::set_var("FLOWPLANE_AUTH_MODE", v),
+            None => env::remove_var("FLOWPLANE_AUTH_MODE"),
+        }
+    }
+
+    #[test]
+    fn test_auth_mode_from_env_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let original = env::var("FLOWPLANE_AUTH_MODE").ok();
+
+        env::remove_var("FLOWPLANE_AUTH_MODE");
+        let mode = AuthMode::from_env().unwrap();
+        assert_eq!(mode, AuthMode::Prod);
+
+        match original {
+            Some(v) => env::set_var("FLOWPLANE_AUTH_MODE", v),
+            None => env::remove_var("FLOWPLANE_AUTH_MODE"),
+        }
+    }
+
+    #[test]
+    fn test_auth_mode_from_env_invalid() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let original = env::var("FLOWPLANE_AUTH_MODE").ok();
+
+        env::set_var("FLOWPLANE_AUTH_MODE", "staging");
+        let result = AuthMode::from_env();
+        assert!(result.is_err());
+
+        match original {
+            Some(v) => env::set_var("FLOWPLANE_AUTH_MODE", v),
+            None => env::remove_var("FLOWPLANE_AUTH_MODE"),
+        }
+    }
+
+    #[test]
+    fn test_config_from_env_includes_auth_mode() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let original = env::var("FLOWPLANE_AUTH_MODE").ok();
+
+        env::set_var("FLOWPLANE_AUTH_MODE", "dev");
+        // Clear TLS vars to avoid side effects
+        env::remove_var("FLOWPLANE_XDS_TLS_CERT_PATH");
+        env::remove_var("FLOWPLANE_API_TLS_ENABLED");
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.auth_mode, AuthMode::Dev);
+
+        match original {
+            Some(v) => env::set_var("FLOWPLANE_AUTH_MODE", v),
+            None => env::remove_var("FLOWPLANE_AUTH_MODE"),
+        }
+    }
+
+    #[test]
+    fn test_auth_mode_display() {
+        assert_eq!(AuthMode::Dev.to_string(), "dev");
+        assert_eq!(AuthMode::Prod.to_string(), "prod");
     }
 }

@@ -59,6 +59,17 @@ async fn main() -> Result<()> {
 
     // Load configuration from environment variables
     let config = Config::from_env()?;
+
+    // Guard C3: Refuse startup if dev mode with Zitadel configured
+    if config.auth_mode == flowplane::AuthMode::Dev
+        && flowplane::auth::zitadel::ZitadelConfig::from_env().is_some()
+    {
+        return Err(flowplane::Error::config(
+            "Cannot start in dev mode while Zitadel is configured. \
+             Remove Zitadel environment variables or set FLOWPLANE_AUTH_MODE=prod.",
+        ));
+    }
+
     info!(
         xds_port = config.xds.port,
         xds_bind_address = %config.xds.bind_address,

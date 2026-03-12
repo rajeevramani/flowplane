@@ -59,7 +59,7 @@ coverage/
 CLAUDE.md
 CLAUDE.md.backup
 CLAUDE.md.bak
-
+.claude-bk/
 Database
 data/*
 !data/logs/
