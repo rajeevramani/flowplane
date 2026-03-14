@@ -3,11 +3,13 @@
 pub mod admin_summary;
 pub mod aggregated_schemas;
 pub mod audit_log;
+pub mod auth_mode;
 pub mod auth_session;
 pub mod bootstrap;
 pub mod clusters;
 pub mod custom_wasm_filters;
 pub mod dataplanes;
+pub mod expose;
 pub mod filters;
 pub mod health;
 pub mod hierarchy;
@@ -40,6 +42,7 @@ pub use aggregated_schemas::{
     list_aggregated_schemas_handler,
 };
 pub use audit_log::list_audit_logs;
+pub use auth_mode::{auth_mode_handler, AuthModeResponse};
 pub use auth_session::{auth_session_handler, AuthSessionResponse};
 pub use bootstrap::{bootstrap_initialize_handler, bootstrap_status_handler};
 pub use clusters::{
@@ -119,6 +122,9 @@ pub use teams::{
     admin_create_team, admin_delete_team, admin_get_team, admin_list_teams, admin_update_team,
     get_mtls_status_handler, list_teams_handler,
 };
+
+// Re-export expose/unexpose handlers
+pub use expose::{expose_handler, unexpose_handler, ExposeRequest, ExposeResponse};
 
 // Re-export DCR handler and types
 pub use oauth::{dcr_register_handler, DcrRequest, DcrResponse};

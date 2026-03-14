@@ -115,30 +115,40 @@ pub struct RouteConfigResponse {
 }
 
 /// Handle route commands
-pub async fn handle_route_command(command: RouteCommands, client: &FlowplaneClient) -> Result<()> {
+pub async fn handle_route_command(
+    command: RouteCommands,
+    client: &FlowplaneClient,
+    team: &str,
+) -> Result<()> {
     match command {
-        RouteCommands::Create { file, output } => create_route(client, file, &output).await?,
+        RouteCommands::Create { file, output } => create_route(client, team, file, &output).await?,
         RouteCommands::List { cluster, limit, offset, output } => {
-            list_routes(client, cluster, limit, offset, &output).await?
+            list_routes(client, team, cluster, limit, offset, &output).await?
         }
-        RouteCommands::Get { name, output } => get_route(client, &name, &output).await?,
+        RouteCommands::Get { name, output } => get_route(client, team, &name, &output).await?,
         RouteCommands::Update { name, file, output } => {
-            update_route(client, &name, file, &output).await?
+            update_route(client, team, &name, file, &output).await?
         }
-        RouteCommands::Delete { name, yes } => delete_route(client, &name, yes).await?,
+        RouteCommands::Delete { name, yes } => delete_route(client, team, &name, yes).await?,
     }
 
     Ok(())
 }
 
-async fn create_route(client: &FlowplaneClient, file: PathBuf, output: &str) -> Result<()> {
+async fn create_route(
+    client: &FlowplaneClient,
+    team: &str,
+    file: PathBuf,
+    output: &str,
+) -> Result<()> {
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     let body: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
-    let response: RouteConfigResponse = client.post_json("/api/v1/route-configs", &body).await?;
+    let path = format!("/api/v1/teams/{team}/route-configs");
+    let response: RouteConfigResponse = client.post_json(&path, &body).await?;
 
     print_output(&response, output)?;
     Ok(())
@@ -146,12 +156,13 @@ async fn create_route(client: &FlowplaneClient, file: PathBuf, output: &str) -> 
 
 async fn list_routes(
     client: &FlowplaneClient,
+    team: &str,
     cluster: Option<String>,
     limit: Option<i32>,
     offset: Option<i32>,
     output: &str,
 ) -> Result<()> {
-    let mut path = String::from("/api/v1/route-configs?");
+    let mut path = format!("/api/v1/teams/{team}/route-configs?");
     let mut params = Vec::new();
 
     if let Some(c) = cluster {
@@ -177,8 +188,8 @@ async fn list_routes(
     Ok(())
 }
 
-async fn get_route(client: &FlowplaneClient, name: &str, output: &str) -> Result<()> {
-    let path = format!("/api/v1/route-configs/{}", name);
+async fn get_route(client: &FlowplaneClient, team: &str, name: &str, output: &str) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/route-configs/{name}");
     let response: RouteConfigResponse = client.get_json(&path).await?;
 
     if output == "table" {
@@ -192,6 +203,7 @@ async fn get_route(client: &FlowplaneClient, name: &str, output: &str) -> Result
 
 async fn update_route(
     client: &FlowplaneClient,
+    team: &str,
     name: &str,
     file: PathBuf,
     output: &str,
@@ -202,14 +214,14 @@ async fn update_route(
     let body: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
-    let path = format!("/api/v1/route-configs/{}", name);
+    let path = format!("/api/v1/teams/{team}/route-configs/{name}");
     let response: RouteConfigResponse = client.put_json(&path, &body).await?;
 
     print_output(&response, output)?;
     Ok(())
 }
 
-async fn delete_route(client: &FlowplaneClient, name: &str, yes: bool) -> Result<()> {
+async fn delete_route(client: &FlowplaneClient, team: &str, name: &str, yes: bool) -> Result<()> {
     if !yes {
         println!("Are you sure you want to delete route config '{}'? (y/N)", name);
         let mut input = String::new();
@@ -220,7 +232,7 @@ async fn delete_route(client: &FlowplaneClient, name: &str, yes: bool) -> Result
         }
     }
 
-    let path = format!("/api/v1/route-configs/{}", name);
+    let path = format!("/api/v1/teams/{team}/route-configs/{name}");
     client.delete_no_content(&path).await?;
 
     println!("Route config '{}' deleted successfully", name);

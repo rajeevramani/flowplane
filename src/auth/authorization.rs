@@ -1742,4 +1742,121 @@ mod tests {
         assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
         assert!(!check_resource_access(&ctx, "clusters", "create", Some("engineering")));
     }
+
+    // =========================================================
+    // Dev auth context acceptance tests
+    // =========================================================
+
+    /// Construct the exact AuthContext that `dev_authenticate` produces.
+    fn dev_auth_context() -> AuthContext {
+        AuthContext::new(
+            crate::domain::TokenId::from_str_unchecked("dev-token-id"),
+            "dev-token".to_string(),
+            vec!["org:dev-org:admin".to_string()],
+        )
+        .with_org(OrgId::from_str_unchecked("dev-org-id"), "dev-org".to_string())
+    }
+
+    #[test]
+    fn dev_context_allows_tenant_resources_with_team() {
+        let ctx = dev_auth_context();
+
+        // Org admin gets implicit access to all teams in their org
+        assert!(check_resource_access(&ctx, "clusters", "read", Some("default")));
+        assert!(check_resource_access(&ctx, "clusters", "create", Some("default")));
+        assert!(check_resource_access(&ctx, "clusters", "update", Some("default")));
+        assert!(check_resource_access(&ctx, "clusters", "delete", Some("default")));
+
+        assert!(check_resource_access(&ctx, "routes", "read", Some("default")));
+        assert!(check_resource_access(&ctx, "routes", "create", Some("default")));
+        assert!(check_resource_access(&ctx, "routes", "update", Some("default")));
+        assert!(check_resource_access(&ctx, "routes", "delete", Some("default")));
+
+        assert!(check_resource_access(&ctx, "listeners", "read", Some("default")));
+        assert!(check_resource_access(&ctx, "listeners", "create", Some("default")));
+        assert!(check_resource_access(&ctx, "listeners", "update", Some("default")));
+        assert!(check_resource_access(&ctx, "listeners", "delete", Some("default")));
+
+        assert!(check_resource_access(&ctx, "filters", "read", Some("default")));
+        assert!(check_resource_access(&ctx, "filters", "create", Some("default")));
+        assert!(check_resource_access(&ctx, "filters", "update", Some("default")));
+        assert!(check_resource_access(&ctx, "filters", "delete", Some("default")));
+    }
+
+    #[test]
+    fn dev_context_allows_tenant_resources_without_team() {
+        let ctx = dev_auth_context();
+
+        // Org-scoped users pass team=None checks (handlers do fine-grained filtering)
+        assert!(check_resource_access(&ctx, "clusters", "read", None));
+        assert!(check_resource_access(&ctx, "routes", "create", None));
+        assert!(check_resource_access(&ctx, "listeners", "read", None));
+        assert!(check_resource_access(&ctx, "filters", "update", None));
+        assert!(check_resource_access(&ctx, "api-definitions", "read", None));
+        assert!(check_resource_access(&ctx, "secrets", "read", None));
+    }
+
+    #[test]
+    fn dev_context_allows_governance_resources() {
+        let ctx = dev_auth_context();
+
+        // Org admin has org_scopes so governance resources pass with team=None
+        assert!(check_resource_access(&ctx, "organizations", "read", None));
+        assert!(check_resource_access(&ctx, "teams", "read", None));
+        assert!(check_resource_access(&ctx, "users", "read", None));
+        assert!(check_resource_access(&ctx, "stats", "read", None));
+    }
+
+    #[test]
+    fn dev_context_is_not_platform_admin() {
+        let ctx = dev_auth_context();
+
+        // Dev user is org-admin, NOT platform admin
+        assert!(!has_admin_bypass(&ctx));
+
+        // Cannot use org_admin_only for a different org
+        assert!(require_org_admin_only(&ctx, "other-org").is_err());
+    }
+
+    #[test]
+    fn dev_context_has_correct_org_scopes() {
+        let ctx = dev_auth_context();
+
+        let orgs = extract_org_scopes(&ctx);
+        assert_eq!(orgs.len(), 1);
+        assert_eq!(orgs[0], ("dev-org".to_string(), "admin".to_string()));
+    }
+
+    #[test]
+    fn dev_context_has_correct_org_name() {
+        let ctx = dev_auth_context();
+        assert_eq!(ctx.org_name.as_deref(), Some("dev-org"));
+    }
+
+    #[test]
+    fn dev_context_has_no_agent_context() {
+        let ctx = dev_auth_context();
+        assert!(ctx.agent_context.is_none());
+    }
+
+    #[test]
+    fn dev_context_has_no_grants() {
+        let ctx = dev_auth_context();
+        let teams = extract_team_names(&ctx);
+        assert!(
+            teams.is_empty(),
+            "dev context has no explicit grants, only org-admin implicit access"
+        );
+    }
+
+    #[test]
+    fn dev_context_works_with_any_team_name() {
+        let ctx = dev_auth_context();
+
+        // Org admin implicit access works for any team name (within their org)
+        assert!(check_resource_access(&ctx, "clusters", "read", Some("engineering")));
+        assert!(check_resource_access(&ctx, "routes", "create", Some("platform")));
+        assert!(check_resource_access(&ctx, "listeners", "delete", Some("sre")));
+        assert!(check_resource_access(&ctx, "filters", "update", Some("arbitrary-team")));
+    }
 }

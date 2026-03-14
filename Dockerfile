@@ -76,6 +76,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 COPY filter-schemas ./filter-schemas
+COPY docker-compose-dev.yml ./
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
@@ -139,4 +140,4 @@ ENV RUST_LOG=info \
     FLOWPLANE_UI_DIR=/app/ui/build
 
 # Run the application
-CMD ["flowplane"]
+CMD ["flowplane", "serve"]

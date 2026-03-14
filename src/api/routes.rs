@@ -10,7 +10,9 @@ use axum::{
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::auth::middleware::{authenticate, ensure_dynamic_scopes};
+use crate::auth::middleware::{
+    authenticate, dev_authenticate, ensure_dynamic_scopes, DevAuthState,
+};
 use crate::domain::SharedFilterSchemaRegistry;
 use crate::observability::trace_http_requests;
 use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
@@ -40,26 +42,26 @@ use super::{
         admin_update_org_member_role, admin_update_organization, admin_update_team,
         apply_learned_schema_handler, attach_filter_handler, attach_filter_to_listener_handler,
         attach_filter_to_route_rule_handler, attach_filter_to_virtual_host_handler,
-        auth_session_handler, bootstrap_initialize_handler, bootstrap_status_handler,
-        bulk_disable_mcp_handler, bulk_enable_mcp_handler, check_learned_schema_handler,
-        compare_aggregated_schemas_handler, configure_filter_handler, create_cluster_handler,
-        create_filter_handler, create_learning_session_handler, create_listener_handler,
-        create_org_agent, create_org_team, create_principal_grant, create_route_config_handler,
-        dcr_register_handler, delete_cluster_handler, delete_filter_handler,
-        delete_learning_session_handler, delete_listener_handler, delete_org_agent,
-        delete_org_team, delete_principal_grant, delete_route_config_handler,
+        auth_mode_handler, auth_session_handler, bootstrap_initialize_handler,
+        bootstrap_status_handler, bulk_disable_mcp_handler, bulk_enable_mcp_handler,
+        check_learned_schema_handler, compare_aggregated_schemas_handler, configure_filter_handler,
+        create_cluster_handler, create_filter_handler, create_learning_session_handler,
+        create_listener_handler, create_org_agent, create_org_team, create_principal_grant,
+        create_route_config_handler, dcr_register_handler, delete_cluster_handler,
+        delete_filter_handler, delete_learning_session_handler, delete_listener_handler,
+        delete_org_agent, delete_org_team, delete_principal_grant, delete_route_config_handler,
         detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
         detach_filter_from_virtual_host_handler, detach_filter_handler, disable_mcp_handler,
         enable_mcp_handler, export_aggregated_schema_handler, export_multiple_schemas_handler,
-        generate_certificate_handler, get_aggregated_schema_handler, get_app_handler,
-        get_certificate_handler, get_cluster_handler, get_current_org, get_filter_handler,
-        get_filter_status_handler, get_filter_type_handler, get_learning_session_handler,
-        get_listener_handler, get_mcp_status_handler, get_mcp_tool_handler,
-        get_mtls_status_handler, get_route_config_handler, get_route_stats_handler,
-        get_stats_cluster_handler, get_stats_clusters_handler, get_stats_enabled_handler,
-        get_stats_overview_handler, health_handler, install_filter_handler,
-        list_aggregated_schemas_handler, list_all_scopes_handler, list_apps_handler,
-        list_audit_logs, list_certificates_handler, list_clusters_handler,
+        expose_handler, generate_certificate_handler, get_aggregated_schema_handler,
+        get_app_handler, get_certificate_handler, get_cluster_handler, get_current_org,
+        get_filter_handler, get_filter_status_handler, get_filter_type_handler,
+        get_learning_session_handler, get_listener_handler, get_mcp_status_handler,
+        get_mcp_tool_handler, get_mtls_status_handler, get_route_config_handler,
+        get_route_stats_handler, get_stats_cluster_handler, get_stats_clusters_handler,
+        get_stats_enabled_handler, get_stats_overview_handler, health_handler,
+        install_filter_handler, list_aggregated_schemas_handler, list_all_scopes_handler,
+        list_apps_handler, list_audit_logs, list_certificates_handler, list_clusters_handler,
         list_filter_configurations_handler, list_filter_installations_handler,
         list_filter_types_handler, list_filters_handler, list_learning_sessions_handler,
         list_listener_filters_handler, list_listeners_handler, list_mcp_tools_handler,
@@ -69,10 +71,10 @@ use super::{
         list_secrets_handler, list_team_members, list_teams_handler,
         list_virtual_host_filters_handler, list_virtual_hosts_handler, refresh_mcp_schema_handler,
         reload_filter_schemas_handler, remove_filter_configuration_handler, remove_team_member,
-        revoke_certificate_handler, set_app_status_handler, uninstall_filter_handler,
-        update_cluster_handler, update_filter_handler, update_listener_handler,
-        update_mcp_tool_handler, update_org_team, update_route_config_handler,
-        update_secret_handler,
+        revoke_certificate_handler, set_app_status_handler, unexpose_handler,
+        uninstall_filter_handler, update_cluster_handler, update_filter_handler,
+        update_listener_handler, update_mcp_tool_handler, update_org_team,
+        update_route_config_handler, update_secret_handler,
     },
 };
 
@@ -256,37 +258,49 @@ pub fn build_router_with_registry(
     // Create Zitadel admin client for user provisioning (invite endpoint)
     let zitadel_admin = crate::auth::zitadel_admin::ZitadelAdminClient::from_env().map(Arc::new);
 
-    let (auth_layer, api_permission_cache) = match crate::auth::zitadel::ZitadelConfig::from_env() {
-        Some(zitadel_config) => {
-            tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
-            let pool = state
-                .pool
-                .clone()
-                .expect("DB pool required for Zitadel auth middleware — start with --database");
-            let auth_rate_limiter =
-                Arc::new(crate::api::rate_limit::RateLimiter::auth_from_env());
-            let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
-                jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
-                config: std::sync::Arc::new(zitadel_config),
-                pool,
-                permission_cache: permission_cache.clone(),
-                auth_rate_limiter,
-            };
+    let auth_mode = std::env::var("FLOWPLANE_AUTH_MODE").unwrap_or_default();
+
+    let (auth_layer, api_permission_cache) =
+        if auth_mode == "dev" {
+            let dev_state = DevAuthState::from_env();
+            tracing::info!("Dev mode authentication enabled");
             (
-                tower::util::Either::Left(middleware::from_fn_with_state(
-                    zitadel_state,
-                    authenticate,
+                tower::util::Either::Left(tower::util::Either::Left(
+                    middleware::from_fn_with_state(dev_state, dev_authenticate),
                 )),
-                Some(permission_cache),
+                None,
             )
-        }
-        None => {
-            tracing::warn!(
-                "Zitadel not configured — starting in degraded mode (auth endpoints return 503)"
-            );
-            (tower::util::Either::Right(middleware::from_fn(reject_all_auth)), None)
-        }
-    };
+        } else {
+            match crate::auth::zitadel::ZitadelConfig::from_env() {
+                Some(zitadel_config) => {
+                    tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
+                    let pool = state.pool.clone().expect(
+                        "DB pool required for Zitadel auth middleware — start with --database",
+                    );
+                    let auth_rate_limiter =
+                        Arc::new(crate::api::rate_limit::RateLimiter::auth_from_env());
+                    let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
+                        jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
+                        config: std::sync::Arc::new(zitadel_config),
+                        pool,
+                        permission_cache: permission_cache.clone(),
+                        auth_rate_limiter,
+                    };
+                    (
+                        tower::util::Either::Left(tower::util::Either::Right(
+                            middleware::from_fn_with_state(zitadel_state, authenticate),
+                        )),
+                        Some(permission_cache),
+                    )
+                }
+                None => {
+                    tracing::warn!(
+                    "Zitadel not configured — starting in degraded mode (auth endpoints return 503)"
+                );
+                    (tower::util::Either::Right(middleware::from_fn(reject_all_auth)), None)
+                }
+            }
+        };
 
     let api_state = ApiState {
         xds_state: state.clone(),
@@ -449,6 +463,9 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/listeners/{name}", get(get_listener_handler))
         .route("/api/v1/teams/{team}/listeners/{name}", put(update_listener_handler))
         .route("/api/v1/teams/{team}/listeners/{name}", delete(delete_listener_handler))
+        // Expose/Unexpose endpoints (simplified service exposure)
+        .route("/api/v1/teams/{team}/expose", post(expose_handler))
+        .route("/api/v1/teams/{team}/expose/{name}", delete(unexpose_handler))
         // Learning session endpoints (team-scoped)
         .route("/api/v1/teams/{team}/learning-sessions", get(list_learning_sessions_handler))
         .route("/api/v1/teams/{team}/learning-sessions", post(create_learning_session_handler))
@@ -565,6 +582,7 @@ pub fn build_router_with_registry(
     // Public endpoints (no authentication required)
     let public_api = Router::new()
         .route("/health", get(health_handler))
+        .route("/api/v1/auth/mode", get(auth_mode_handler))
         .route("/api/v1/bootstrap/status", get(bootstrap_status_handler))
         .route("/api/v1/bootstrap/initialize", post(bootstrap_initialize_handler))
         // Scopes endpoint (public - needed for token creation UI)
@@ -608,7 +626,9 @@ pub fn build_router_with_registry(
         .merge(docs::docs_router())
         .layer(cors_layer);
 
-    // Check if UI static files directory exists and add fallback service
+    // Check if UI static files directory exists and add fallback service.
+    // Use a custom fallback that returns JSON 404 for /api/ paths and
+    // serves the SvelteKit SPA for everything else.
     if let Some(ui_dir) = get_ui_static_dir() {
         let index_file = ui_dir.join("index.html");
         let serve_dir = ServeDir::new(&ui_dir).not_found_service(ServeFile::new(&index_file));
@@ -616,7 +636,23 @@ pub fn build_router_with_registry(
         tracing::info!("Serving UI from {:?}", ui_dir);
 
         // API routes take precedence, then fall back to static files
-        api_router.fallback_service(serve_dir)
+        // But intercept /api/ paths to return JSON 404 instead of HTML
+        api_router.fallback_service(
+            axum::Router::new()
+                .route(
+                    "/api/{*path}",
+                    axum::routing::any(|| async {
+                        (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(serde_json::json!({
+                                "error": "not_found",
+                                "message": "API endpoint not found"
+                            })),
+                        )
+                    }),
+                )
+                .fallback_service(serve_dir),
+        )
     } else {
         api_router
     }

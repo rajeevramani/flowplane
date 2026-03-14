@@ -1,0 +1,109 @@
+# Flowplane Dev Mode — Local development without Zitadel
+#
+# Usage:
+#   FLOWPLANE_DEV_TOKEN=<token> docker compose -f docker-compose-dev.yml up -d
+#
+# The FLOWPLANE_DEV_TOKEN env var must be set before running.
+# Use `flowplane init` to generate and start automatically.
+
+services:
+  # PostgreSQL database
+  flowplane-pg:
+    image: postgres:17-alpine
+    container_name: flowplane-pg
+    environment:
+      POSTGRES_USER: flowplane
+      POSTGRES_PASSWORD: flowplane
+      POSTGRES_DB: flowplane
+    ports:
+      - "5432:5432"
+    volumes:
+      - flowplane-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowplane"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
+  # Flowplane Control Plane (dev mode)
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flowplane:latest
+    container_name: flowplane-control-plane
+    environment:
+      # Database
+      FLOWPLANE_DATABASE_URL: postgresql://flowplane:flowplane@flowplane-pg:5432/flowplane
+      FLOWPLANE_DATABASE_AUTO_MIGRATE: "true"
+      # Auth — hardcoded dev mode (never from host env)
+      FLOWPLANE_AUTH_MODE: dev
+      # Token — passed through from host (set by flowplane init)
+      FLOWPLANE_DEV_TOKEN: ${FLOWPLANE_DEV_TOKEN}
+      # Server
+      FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_API_PORT: 8080
+      FLOWPLANE_XDS_BIND_ADDRESS: 0.0.0.0
+      FLOWPLANE_XDS_PORT: 18000
+      FLOWPLANE_XDS_ADVERTISED_ADDRESS: control-plane
+      FLOWPLANE_COOKIE_SECURE: "false"
+      # Logging
+      RUST_LOG: info,flowplane=debug
+    ports:
+      - "8080:8080"
+      - "18000:18000"
+    depends_on:
+      flowplane-pg:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+
+  # Envoy sidecar (optional — activate with --profile envoy)
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    container_name: flowplane-envoy
+    profiles:
+      - envoy
+    entrypoint: ["/usr/local/bin/envoy"]
+    command:
+      - --config-path
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info
+    ports:
+      - "10000:10000"
+      - "10001-10020:10001-10020"
+      - "9901:9901"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    volumes:
+      - ${HOME}/.flowplane/envoy/:/etc/envoy/:ro
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9901/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  flowplane-pgdata:
+    driver: local
+
+networks:
+  flowplane-network:
+    name: flowplane-network

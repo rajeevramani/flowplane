@@ -28,4 +28,4 @@ services:
 
 networks:
   flowplane-network:
-    external: true
+    name: flowplane-network

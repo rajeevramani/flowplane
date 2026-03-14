@@ -161,3 +161,6 @@ phase-j-testing-strategy.png
 
 # Remove later
 deploy
+
+# Dolt database files (added by bd init)
+.dolt/

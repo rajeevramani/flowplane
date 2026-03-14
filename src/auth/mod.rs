@@ -7,6 +7,7 @@
 
 pub mod authorization;
 pub mod cache;
+pub mod dev_token;
 pub mod middleware;
 pub mod models;
 pub mod organization;

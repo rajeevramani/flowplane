@@ -166,7 +166,7 @@ services:
       zitadel:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/swagger-ui/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -183,4 +183,4 @@ volumes:
 
 networks:
   flowplane-network:
-    external: true
+    name: flowplane-network

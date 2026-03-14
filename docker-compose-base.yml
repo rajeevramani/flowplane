@@ -8,7 +8,7 @@
 
 networks:
   flowplane-network:
-    external: true
+    name: flowplane-network
 
 volumes:
   flowplane_data:
