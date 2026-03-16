@@ -24,6 +24,7 @@ debug/
 *.key
 *.pem
 *.crt
+temp-enovy.yaml
 
 # Logs and runtime data
 *.log
