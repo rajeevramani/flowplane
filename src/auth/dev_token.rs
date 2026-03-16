@@ -60,10 +60,18 @@ pub fn resolve_or_generate_dev_token() -> String {
 /// Creates the `.flowplane/` directory with `0700` permissions if it does not exist.
 /// The credentials file is created with `0600` permissions on Unix.
 pub fn write_credentials_file(token: &str, home_dir: &Path) -> Result<()> {
-    let dir = home_dir.join(".flowplane");
-    ensure_dir_with_permissions(&dir)?;
+    let target = home_dir.join(".flowplane").join(CREDENTIALS_FILE);
+    write_credentials_to_path(token, &target)
+}
 
-    let target = dir.join(CREDENTIALS_FILE);
+/// Write credentials to an explicit file path using atomic write-then-rename.
+///
+/// Creates the parent directory with `0700` permissions if it does not exist.
+/// The credentials file is created with `0600` permissions on Unix.
+pub fn write_credentials_to_path(token: &str, path: &Path) -> Result<()> {
+    let dir = path.parent().context("credentials path has no parent directory")?;
+    ensure_dir_with_permissions(dir)?;
+
     let tmp_path = dir.join(".credentials.tmp");
 
     // Write to a temp file first (same filesystem guarantees atomic rename)
@@ -75,8 +83,8 @@ pub fn write_credentials_file(token: &str, home_dir: &Path) -> Result<()> {
     }
 
     // Atomic rename
-    std::fs::rename(&tmp_path, &target).with_context(|| {
-        format!("failed to rename {} -> {}", tmp_path.display(), target.display())
+    std::fs::rename(&tmp_path, path).with_context(|| {
+        format!("failed to rename {} -> {}", tmp_path.display(), path.display())
     })?;
 
     Ok(())
@@ -87,8 +95,14 @@ pub fn write_credentials_file(token: &str, home_dir: &Path) -> Result<()> {
 /// Returns an error if the file does not exist or contains only whitespace.
 pub fn read_credentials_file(home_dir: &Path) -> Result<String> {
     let path = home_dir.join(".flowplane").join(CREDENTIALS_FILE);
+    read_credentials_from_path(&path)
+}
 
-    let content = std::fs::read_to_string(&path)
+/// Read credentials from an explicit file path.
+///
+/// Returns an error if the file does not exist or contains only whitespace.
+pub fn read_credentials_from_path(path: &Path) -> Result<String> {
+    let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read credentials file: {}", path.display()))?;
 
     let trimmed = content.trim().to_string();

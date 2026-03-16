@@ -308,7 +308,7 @@ pub async fn expose_handler(
     let route_ops = crate::internal_api::RouteConfigOperations::new(state.xds_state.clone());
     let existing_rc = route_ops.get(&route_config_name, &auth).await;
     if existing_rc.is_err() {
-        let rc_config = build_route_config_json(&payload.name, &cluster_name, &paths);
+        let rc_config = build_route_config_json(&route_config_name, &cluster_name, &paths);
         let create_rc = CreateRouteConfigRequest {
             name: route_config_name.clone(),
             team: Some(team.clone()),

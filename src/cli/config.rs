@@ -5,8 +5,38 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
+
+/// Resolved paths for CLI configuration files.
+///
+/// In production: derived from `$HOME`. In tests: derived from a `TempDir`.
+#[derive(Debug, Clone)]
+pub struct CliConfigPaths {
+    pub config_path: PathBuf,
+    pub credentials_path: PathBuf,
+    pub flowplane_dir: PathBuf,
+}
+
+impl CliConfigPaths {
+    /// Production paths from `$HOME` (or `USERPROFILE` on Windows).
+    pub fn from_home() -> Result<Self> {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .context("Unable to determine home directory")?;
+        Self::from_base(PathBuf::from(home))
+    }
+
+    /// Paths rooted at an arbitrary base directory (e.g. a `TempDir` in tests).
+    pub fn from_base(base: impl Into<PathBuf>) -> Result<Self> {
+        let fp_dir = base.into().join(".flowplane");
+        Ok(Self {
+            config_path: fp_dir.join("config.toml"),
+            credentials_path: fp_dir.join("credentials"),
+            flowplane_dir: fp_dir,
+        })
+    }
+}
 
 /// CLI configuration stored in ~/.flowplane/config.toml
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -47,45 +77,28 @@ pub struct CliConfig {
 impl CliConfig {
     /// Get the default configuration file path (~/.flowplane/config.toml)
     pub fn config_path() -> Result<PathBuf> {
-        let home = Self::home_dir()?;
-        let mut path = PathBuf::from(home);
-        path.push(".flowplane");
-        path.push("config.toml");
-        Ok(path)
+        CliConfigPaths::from_home().map(|p| p.config_path)
     }
 
     /// Get the credentials file path (~/.flowplane/credentials)
     pub fn credentials_path() -> Result<PathBuf> {
-        let home = Self::home_dir()?;
-        let mut path = PathBuf::from(home);
-        path.push(".flowplane");
-        path.push("credentials");
-        Ok(path)
+        CliConfigPaths::from_home().map(|p| p.credentials_path)
     }
 
-    fn home_dir() -> Result<String> {
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .context("Unable to determine home directory")
-    }
-
-    /// Load configuration from the default path
+    /// Load configuration from the default `$HOME`-based paths.
     pub fn load() -> Result<Self> {
-        let path = Self::config_path()?;
-
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-
-        let contents = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-
-        toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse config file: {}", path.display()))
+        let paths = CliConfigPaths::from_home()?;
+        Self::load_from_paths(&paths)
     }
 
-    /// Load configuration from a specific path
-    pub fn load_from_path(path: &PathBuf) -> Result<Self> {
+    /// Load configuration from resolved [`CliConfigPaths`].
+    pub fn load_from_paths(paths: &CliConfigPaths) -> Result<Self> {
+        Self::load_from_path(&paths.config_path)
+    }
+
+    /// Load configuration from a specific file path.
+    pub fn load_from_path(path: &(impl AsRef<Path> + ?Sized)) -> Result<Self> {
+        let path = path.as_ref();
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -97,27 +110,20 @@ impl CliConfig {
             .with_context(|| format!("Failed to parse config file: {}", path.display()))
     }
 
-    /// Save configuration to the default path
+    /// Save configuration to the default `$HOME`-based paths.
     pub fn save(&self) -> Result<()> {
-        let path = Self::config_path()?;
-
-        // Create the .flowplane directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-        }
-
-        let contents = toml::to_string_pretty(self).context("Failed to serialize configuration")?;
-
-        std::fs::write(&path, contents)
-            .with_context(|| format!("Failed to write config file: {}", path.display()))?;
-
-        Ok(())
+        let paths = CliConfigPaths::from_home()?;
+        self.save_to_paths(&paths)
     }
 
-    /// Save configuration to a specific path
-    pub fn save_to_path(&self, path: &PathBuf) -> Result<()> {
-        // Create parent directory if it doesn't exist
+    /// Save configuration to resolved [`CliConfigPaths`].
+    pub fn save_to_paths(&self, paths: &CliConfigPaths) -> Result<()> {
+        self.save_to_path(&paths.config_path)
+    }
+
+    /// Save configuration to a specific file path.
+    pub fn save_to_path(&self, path: &(impl AsRef<Path> + ?Sized)) -> Result<()> {
+        let path = path.as_ref();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
@@ -125,8 +131,17 @@ impl CliConfig {
 
         let contents = toml::to_string_pretty(self).context("Failed to serialize configuration")?;
 
-        std::fs::write(path, contents)
+        std::fs::write(path, &contents)
             .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+
+        // Restrict permissions to owner-only (0600) since config may contain sensitive data
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(path, perms)
+                .with_context(|| format!("Failed to set permissions on: {}", path.display()))?;
+        }
 
         Ok(())
     }

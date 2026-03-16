@@ -151,6 +151,14 @@ pub struct TestHarness {
     pub db_url: String,
     /// Whether we're using shared mode
     is_shared: bool,
+    /// Auth token to use for API requests (bearer token in dev, JWT in prod)
+    pub auth_token: String,
+    /// Team name for test resources
+    pub team: String,
+    /// Organization name
+    pub org: String,
+    /// Auth mode used
+    pub auth_mode: flowplane::config::AuthMode,
     /// mTLS certificate paths (if mTLS enabled)
     mtls_cert_paths: Option<MtlsCertPaths>,
     /// mTLS CA (kept alive to prevent TempDir cleanup in isolated mode)
@@ -231,6 +239,53 @@ impl TestHarness {
     /// the same certificates (e.g., for testing certificate validation).
     pub fn mtls_certs(&self) -> Option<&MtlsCertPaths> {
         self.mtls_cert_paths.as_ref()
+    }
+
+    // ========================================================================
+    // Authenticated Request Helpers
+    // ========================================================================
+
+    /// Make an authenticated GET request to the API.
+    pub async fn authed_get(&self, path: &str) -> anyhow::Result<reqwest::Response> {
+        let url = format!("{}{}", self.api_url(), path);
+        reqwest::Client::new()
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .send()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Make an authenticated POST request with a JSON body.
+    pub async fn authed_post(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<reqwest::Response> {
+        let url = format!("{}{}", self.api_url(), path);
+        reqwest::Client::new()
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .json(body)
+            .send()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Get a reqwest client pre-configured with the auth token.
+    pub fn authed_client(&self) -> reqwest::Client {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", self.auth_token))
+                .expect("valid header value"),
+        );
+        reqwest::Client::builder().default_headers(headers).build().expect("build reqwest client")
+    }
+
+    /// Check if this harness is running in dev auth mode.
+    pub fn is_dev_mode(&self) -> bool {
+        self.auth_mode == flowplane::config::AuthMode::Dev
     }
 }
 
@@ -329,6 +384,12 @@ impl TestHarness {
             None
         };
 
+        let auth_mode = match shared.auth_mode {
+            super::shared_infra::E2eAuthMode::Dev => flowplane::config::AuthMode::Dev,
+            super::shared_infra::E2eAuthMode::ProdMockOidc => flowplane::config::AuthMode::Prod,
+            super::shared_infra::E2eAuthMode::ProdZitadel => flowplane::config::AuthMode::Prod,
+        };
+
         Ok(Self {
             ports,
             cp_owned: None,
@@ -338,6 +399,10 @@ impl TestHarness {
             _temp_dir: None,
             db_url: shared.db_url.clone(),
             is_shared: true,
+            auth_token: shared.auth_token.clone(),
+            team: shared.team.clone(),
+            org: shared.org.clone(),
+            auth_mode,
             mtls_cert_paths,
             // In shared mode, cert lifetimes are managed by SharedInfrastructure
             _mtls_ca: None,
@@ -496,6 +561,32 @@ impl TestHarness {
             None
         };
 
+        // Determine auth mode and token for isolated mode
+        let e2e_mode = super::shared_infra::e2e_auth_mode();
+        let (auth_token, team, org, auth_mode) = match e2e_mode {
+            super::shared_infra::E2eAuthMode::Dev => {
+                // In dev isolated mode, the token was set in env by CP startup
+                let token = std::env::var("FLOWPLANE_DEV_TOKEN")
+                    .unwrap_or_else(|_| "isolated-dev-token".to_string());
+                (
+                    token,
+                    "default".to_string(),
+                    "dev-org".to_string(),
+                    flowplane::config::AuthMode::Dev,
+                )
+            }
+            super::shared_infra::E2eAuthMode::ProdMockOidc
+            | super::shared_infra::E2eAuthMode::ProdZitadel => {
+                // In prod isolated mode, there's no shared Zitadel/mock — token comes later
+                (
+                    String::new(),
+                    super::shared_infra::E2E_SHARED_TEAM.to_string(),
+                    "platform".to_string(),
+                    flowplane::config::AuthMode::Prod,
+                )
+            }
+        };
+
         Ok(Self {
             ports,
             cp_owned: Some(cp),
@@ -505,6 +596,10 @@ impl TestHarness {
             _temp_dir: Some(temp_dir),
             db_url,
             is_shared: false,
+            auth_token,
+            team,
+            org,
+            auth_mode,
             mtls_cert_paths,
             _mtls_ca: mtls_ca,
             _mtls_server_cert: mtls_server_cert,
@@ -646,6 +741,11 @@ fn unique_listener_port(test_name: &str) -> u16 {
 /// Quick harness startup for simple tests
 pub async fn quick_harness(test_name: &str) -> anyhow::Result<TestHarness> {
     TestHarness::start(TestHarnessConfig::new(test_name)).await
+}
+
+/// Dev-mode harness (shared, API-only)
+pub async fn dev_harness(test_name: &str) -> anyhow::Result<TestHarness> {
+    TestHarness::start(TestHarnessConfig::new(test_name).without_envoy()).await
 }
 
 /// Harness with auth mocks for JWT tests

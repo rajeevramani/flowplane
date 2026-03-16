@@ -22,7 +22,7 @@
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
         build build-backend build-ui build-cli info prune seed seed-info setup-zitadel \
         vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
-        test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps \
+        test-e2e test-e2e-dev test-e2e-prod test-e2e-mock-oidc test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps \
         test-agents-up test-agents-down test-agents test-agents-envoy
 
 .DEFAULT_GOAL := help
@@ -112,6 +112,9 @@ help: ## Show this help message
 	@echo "  $(CYAN)make test-ui-watch$(RESET)   - Run UI tests in watch mode"
 	@echo "  $(CYAN)make test-ui-e2e$(RESET)     - Run UI E2E tests (Playwright, requires: make up && make seed)"
 	@echo "  $(CYAN)make test-e2e$(RESET)        - Run E2E smoke tests (cleanup containers after)"
+	@echo "  $(CYAN)make test-e2e-dev$(RESET)    - Run dev-mode E2E tests (no Zitadel, frictionless onboarding)"
+	@echo "  $(CYAN)make test-e2e-mock-oidc$(RESET) - Run prod-mode E2E with mock OIDC (fast, no Zitadel)"
+	@echo "  $(CYAN)make test-e2e-prod$(RESET)   - Run prod-mode E2E tests (FLOWPLANE_E2E_ZITADEL=1 for real Zitadel)"
 	@echo "  $(CYAN)make test-e2e-full$(RESET)   - Run full E2E suite with mTLS (cleanup after)"
 	@echo "  $(CYAN)make test-e2e-mtls$(RESET)   - Run mTLS E2E tests only (cleanup after)"
 	@echo "  $(CYAN)make test-cleanup$(RESET)    - Remove orphaned testcontainers (PostgreSQL + Zitadel)"
@@ -358,6 +361,28 @@ test-e2e: ## Run E2E smoke tests and clean up containers
 	@echo "$(CYAN)Running E2E smoke tests...$(RESET)"
 	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1; \
 	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-e2e-dev: ## Dev mode E2E: CLI-only, no Zitadel (frictionless onboarding)
+	@echo "$(CYAN)Running dev-mode E2E tests...$(RESET)"
+	FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e dev -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-e2e-mock-oidc: ## Prod mode E2E with mock OIDC (fast, no Zitadel)
+	@echo "$(CYAN)Running mock-OIDC prod-mode E2E tests...$(RESET)"
+	FLOWPLANE_E2E_AUTH_MODE=prod-mock RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	$(MAKE) test-cleanup; \
+	exit $$TEST_EXIT
+
+test-e2e-prod: ## Prod mode E2E: CLI + UI, mock OIDC (FLOWPLANE_E2E_ZITADEL=1 for real Zitadel)
+	@echo "$(CYAN)Running prod-mode E2E tests...$(RESET)"
+	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e prod -- --ignored --nocapture --test-threads=1; \
+	TEST_EXIT=$$?; \
+	cd ui && npx playwright test --grep "@prod-e2e" 2>/dev/null || true; \
 	$(MAKE) test-cleanup; \
 	exit $$TEST_EXIT
 

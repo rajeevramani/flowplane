@@ -20,7 +20,7 @@ const DEV_COMPOSE_YAML: &str = include_str!("../../docker-compose-dev.yml");
 /// 4. `~/.rd/run/docker.sock` (Rancher Desktop)
 /// 5. `$XDG_RUNTIME_DIR/podman/podman.sock` (rootless Podman)
 /// 6. Fallback: `docker` or `podman` on PATH
-fn detect_runtime() -> Result<String> {
+pub(crate) fn detect_runtime() -> Result<String> {
     // 1. DOCKER_HOST env var — explicit override
     if let Ok(host) = std::env::var("DOCKER_HOST") {
         if !host.is_empty() {
@@ -288,9 +288,19 @@ static_resources:
 /// 7. Wait for /health
 /// 8. Write token to ~/.flowplane/credentials and config.toml
 pub fn handle_init(with_envoy: bool) -> Result<()> {
+    use super::compose_runner::ProductionComposeRunner;
+    let runner = ProductionComposeRunner::detect()?;
+    handle_init_with_runner(with_envoy, &runner)
+}
+
+/// Testable variant of `handle_init` that accepts an injected `ComposeRunner`.
+pub fn handle_init_with_runner(
+    with_envoy: bool,
+    runner: &dyn super::compose_runner::ComposeRunner,
+) -> Result<()> {
     loopback_guard()?;
 
-    let runtime = detect_runtime()?;
+    let runtime = runner.runtime_name();
     eprintln!("Using container runtime: {runtime}");
 
     let source_dir = resolve_source_dir()?;
@@ -311,31 +321,20 @@ pub fn handle_init(with_envoy: bool) -> Result<()> {
 
     // Remove stale orphan network if it exists (created outside compose).
     // Compose requires it to have correct labels; easiest to let compose recreate it.
-    let _ = Command::new(&runtime)
+    let _ = Command::new(runtime)
         .args(["network", "rm", "flowplane-network"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
 
-    // Build compose command
-    let mut cmd = Command::new(&runtime);
-    cmd.arg("compose").arg("-f").arg(&compose_path).arg("-p").arg("flowplane");
-
-    // Activate envoy profile if requested
-    if with_envoy {
-        cmd.arg("--profile").arg("envoy");
-    }
-
-    cmd.arg("up").arg("-d").arg("--force-recreate").arg("--build");
+    // Build profiles list
+    let profiles: Vec<&str> = if with_envoy { vec!["envoy"] } else { vec![] };
 
     // Pass the dev token as an env var for the compose file's ${FLOWPLANE_DEV_TOKEN}
-    cmd.env("FLOWPLANE_DEV_TOKEN", &token);
+    let env_vars: Vec<(&str, &str)> = vec![("FLOWPLANE_DEV_TOKEN", token.as_str())];
 
     eprintln!("Starting services...");
-    let status = cmd.status().context("failed to run docker/podman compose")?;
-    if !status.success() {
-        anyhow::bail!("docker compose up failed with exit code: {}", status);
-    }
+    runner.compose_up(&compose_path, "flowplane", &profiles, &env_vars, true)?;
 
     // Wait for the control plane to become healthy
     wait_for_healthy(60)?;
@@ -367,8 +366,16 @@ pub fn handle_init(with_envoy: bool) -> Result<()> {
 
 /// `flowplane down` — stop and optionally remove volumes.
 pub fn handle_down(volumes: bool) -> Result<()> {
-    let runtime = detect_runtime()?;
+    use super::compose_runner::ProductionComposeRunner;
+    let runner = ProductionComposeRunner::detect()?;
+    handle_down_with_runner(volumes, &runner)
+}
 
+/// Testable variant of `handle_down` that accepts an injected `ComposeRunner`.
+pub fn handle_down_with_runner(
+    volumes: bool,
+    runner: &dyn super::compose_runner::ComposeRunner,
+) -> Result<()> {
     let home = home_dir()?;
     let compose_path = home.join(".flowplane").join("docker-compose-dev.yml");
 
@@ -379,18 +386,8 @@ pub fn handle_down(volumes: bool) -> Result<()> {
         );
     }
 
-    let mut cmd = Command::new(&runtime);
-    cmd.arg("compose").arg("-f").arg(&compose_path).arg("-p").arg("flowplane").arg("down");
-
-    if volumes {
-        cmd.arg("--volumes");
-    }
-
     eprintln!("Stopping services...");
-    let status = cmd.status().context("failed to run docker/podman compose down")?;
-    if !status.success() {
-        anyhow::bail!("docker compose down failed with exit code: {}", status);
-    }
+    runner.compose_down(&compose_path, "flowplane", volumes)?;
 
     eprintln!("Flowplane services stopped.");
     if volumes {

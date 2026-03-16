@@ -5,5 +5,6 @@
 #![allow(dead_code)]
 
 pub mod db_metadata;
+pub mod env_guard;
 pub mod mock_oidc;
 pub mod test_db;

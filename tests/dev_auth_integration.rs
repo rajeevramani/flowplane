@@ -5,11 +5,13 @@
 //! via `tower::ServiceExt::oneshot`.
 
 #![cfg(feature = "postgres_tests")]
+#![allow(clippy::await_holding_lock)]
 
 mod common;
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
+use common::env_guard::EnvGuard;
 use common::test_db::TestDatabase;
 use flowplane::config::SimpleXdsConfig;
 use flowplane::startup::seed_dev_resources;
@@ -24,19 +26,22 @@ use tower::ServiceExt;
 // ---------------------------------------------------------------------------
 
 /// Build the full axum router in dev auth mode, seeded with dev resources.
-async fn dev_router(db: &TestDatabase) -> axum::Router {
-    // Set dev auth environment before building router
-    std::env::set_var("FLOWPLANE_AUTH_MODE", "dev");
-    std::env::set_var("FLOWPLANE_DEV_TOKEN", "test-dev-token-integration");
-    // Disable cookie secure for test (avoids HTTPS-only panic)
-    std::env::set_var("FLOWPLANE_COOKIE_SECURE", "false");
-    std::env::set_var("FLOWPLANE_BASE_URL", "http://localhost:8080");
+/// Returns the router and an EnvGuard that restores env vars on drop.
+async fn dev_router(
+    db: &TestDatabase,
+) -> (axum::Router, EnvGuard, std::sync::MutexGuard<'static, ()>) {
+    let lock = common::env_guard::ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let mut env = EnvGuard::new();
+    env.set("FLOWPLANE_AUTH_MODE", "dev");
+    env.set("FLOWPLANE_DEV_TOKEN", "test-dev-token-integration");
+    env.set("FLOWPLANE_COOKIE_SECURE", "false");
+    env.set("FLOWPLANE_BASE_URL", "http://localhost:8080");
 
     // Seed dev resources (org, team, user, dataplane)
     seed_dev_resources(&db.pool).await.expect("seed dev resources");
 
     let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), db.pool.clone()));
-    flowplane::api::routes::build_router(state)
+    (flowplane::api::routes::build_router(state), env, lock)
 }
 
 /// Make a JSON request with the dev bearer token.
@@ -85,7 +90,7 @@ async fn body_json(response: axum::response::Response) -> Value {
 #[tokio::test]
 async fn dev_auth_valid_token_returns_200() {
     let db = TestDatabase::new("dev_auth_valid").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let req = authed_request(Method::GET, "/api/v1/teams/default/clusters");
     let resp = app.oneshot(req).await.unwrap();
@@ -95,17 +100,28 @@ async fn dev_auth_valid_token_returns_200() {
 #[tokio::test]
 async fn dev_auth_wrong_token_returns_401() {
     let db = TestDatabase::new("dev_auth_wrong").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let req = request_with_token(Method::GET, "/api/v1/teams/default/clusters", "wrong-token");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .map(|v| v.to_str().unwrap_or(""))
+        .unwrap_or("");
+    assert!(
+        content_type.contains("application/json"),
+        "401 response should be JSON, got Content-Type: {}",
+        content_type
+    );
 }
 
 #[tokio::test]
 async fn dev_auth_missing_header_returns_401() {
     let db = TestDatabase::new("dev_auth_missing").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let req = Request::builder()
         .method(Method::GET)
@@ -115,12 +131,23 @@ async fn dev_auth_missing_header_returns_401() {
 
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .map(|v| v.to_str().unwrap_or(""))
+        .unwrap_or("");
+    assert!(
+        content_type.contains("application/json"),
+        "401 response should be JSON, got Content-Type: {}",
+        content_type
+    );
 }
 
 #[tokio::test]
 async fn dev_auth_options_passthrough() {
     let db = TestDatabase::new("dev_auth_options").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let req = Request::builder()
         .method(Method::OPTIONS)
@@ -130,7 +157,11 @@ async fn dev_auth_options_passthrough() {
 
     let resp = app.oneshot(req).await.unwrap();
     // OPTIONS should not be rejected by auth (CORS preflight)
-    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        matches!(resp.status(), StatusCode::OK | StatusCode::NO_CONTENT | StatusCode::METHOD_NOT_ALLOWED),
+        "OPTIONS should return 200, 204, or 405, got {}",
+        resp.status()
+    );
 }
 
 // ===========================================================================
@@ -140,7 +171,7 @@ async fn dev_auth_options_passthrough() {
 #[tokio::test]
 async fn cluster_crud_via_team_scoped_api() {
     let db = TestDatabase::new("cluster_crud").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     // Create cluster (camelCase body matching CreateClusterBody serde)
     let body = serde_json::json!({
@@ -199,7 +230,7 @@ async fn cluster_crud_via_team_scoped_api() {
 #[tokio::test]
 async fn listener_crud_via_team_scoped_api() {
     let db = TestDatabase::new("listener_crud").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     // Need a cluster + route config first for the listener to reference
     let cluster_body = serde_json::json!({
@@ -277,7 +308,7 @@ async fn listener_crud_via_team_scoped_api() {
 #[tokio::test]
 async fn route_config_crud_via_team_scoped_api() {
     let db = TestDatabase::new("route_config_crud").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     // Need a cluster for the route to point at
     let cluster_body = serde_json::json!({
@@ -339,7 +370,7 @@ async fn route_config_crud_via_team_scoped_api() {
 #[tokio::test]
 async fn old_non_team_scoped_paths_return_404() {
     let db = TestDatabase::new("old_paths_404").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     // These old paths (without /teams/{team}/) should not be routed
     let old_paths = ["/api/v1/clusters", "/api/v1/listeners", "/api/v1/route-configs"];
@@ -358,7 +389,7 @@ async fn old_non_team_scoped_paths_return_404() {
 #[tokio::test]
 async fn expose_creates_cluster_route_listener_atomically() {
     let db = TestDatabase::new("expose_create").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "my-svc",
@@ -383,6 +414,13 @@ async fn expose_creates_cluster_route_listener_atomically() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "cluster should exist after expose");
 
+    // Verify the cluster's stored endpoint matches the upstream host/port
+    let cluster_json = body_json(resp).await;
+    let endpoints = cluster_json["endpoints"].as_array().expect("endpoints array");
+    assert!(!endpoints.is_empty(), "cluster should have at least one endpoint");
+    assert_eq!(endpoints[0]["host"], "localhost", "endpoint host should match upstream");
+    assert_eq!(endpoints[0]["port"], 8080, "endpoint port should match upstream");
+
     let req = authed_request(Method::GET, "/api/v1/teams/default/route-configs/my-svc-routes");
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "route config should exist after expose");
@@ -395,7 +433,7 @@ async fn expose_creates_cluster_route_listener_atomically() {
 #[tokio::test]
 async fn unexpose_deletes_all_three_resources() {
     let db = TestDatabase::new("unexpose_delete").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     // First expose
     let body = serde_json::json!({
@@ -428,7 +466,7 @@ async fn unexpose_deletes_all_three_resources() {
 #[tokio::test]
 async fn expose_idempotent_same_upstream() {
     let db = TestDatabase::new("expose_idempotent").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "idem-svc",
@@ -453,7 +491,7 @@ async fn expose_idempotent_same_upstream() {
 #[tokio::test]
 async fn expose_rejects_empty_name() {
     let db = TestDatabase::new("expose_empty_name").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "",
@@ -462,12 +500,14 @@ async fn expose_rejects_empty_name() {
     let req = authed_request_with_body(Method::POST, "/api/v1/teams/default/expose", body);
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(resp).await;
+    assert!(json.get("error").is_some(), "400 response must include an 'error' field");
 }
 
 #[tokio::test]
 async fn expose_rejects_invalid_upstream() {
     let db = TestDatabase::new("expose_bad_upstream").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "bad-upstream",
@@ -476,12 +516,14 @@ async fn expose_rejects_invalid_upstream() {
     let req = authed_request_with_body(Method::POST, "/api/v1/teams/default/expose", body);
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(resp).await;
+    assert!(json.get("error").is_some(), "400 response must include an 'error' field");
 }
 
 #[tokio::test]
 async fn expose_rejects_port_outside_pool() {
     let db = TestDatabase::new("expose_bad_port").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "bad-port-svc",
@@ -491,6 +533,8 @@ async fn expose_rejects_port_outside_pool() {
     let req = authed_request_with_body(Method::POST, "/api/v1/teams/default/expose", body);
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(resp).await;
+    assert!(json.get("error").is_some(), "400 response must include an 'error' field");
 }
 
 // ===========================================================================
@@ -500,7 +544,7 @@ async fn expose_rejects_port_outside_pool() {
 #[tokio::test]
 async fn health_endpoint_no_auth_required() {
     let db = TestDatabase::new("health_no_auth").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let req = Request::builder().method(Method::GET).uri("/health").body(Body::empty()).unwrap();
 
@@ -511,7 +555,7 @@ async fn health_endpoint_no_auth_required() {
 #[tokio::test]
 async fn auth_mode_endpoint_returns_dev() {
     let db = TestDatabase::new("auth_mode_dev").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let req = Request::builder()
         .method(Method::GET)
@@ -532,7 +576,7 @@ async fn auth_mode_endpoint_returns_dev() {
 #[tokio::test]
 async fn unexpose_nonexistent_returns_204() {
     let db = TestDatabase::new("unexpose_nonexistent").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let req = authed_request(Method::DELETE, "/api/v1/teams/default/expose/no-such-svc");
     let resp = app.oneshot(req).await.unwrap();
@@ -546,7 +590,7 @@ async fn unexpose_nonexistent_returns_204() {
 #[tokio::test]
 async fn expose_with_explicit_port() {
     let db = TestDatabase::new("expose_explicit_port").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "explicit-port-svc",
@@ -567,7 +611,7 @@ async fn expose_with_explicit_port() {
 #[tokio::test]
 async fn expose_with_custom_paths() {
     let db = TestDatabase::new("expose_custom_paths").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "multi-path-svc",
@@ -591,7 +635,7 @@ async fn expose_with_custom_paths() {
 #[tokio::test]
 async fn expose_with_https_and_path_upstream() {
     let db = TestDatabase::new("expose_https_path").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "https-path-svc",
@@ -616,7 +660,7 @@ async fn expose_with_https_and_path_upstream() {
 #[tokio::test]
 async fn expose_route_config_has_valid_cluster_fk() {
     let db = TestDatabase::new("expose_fk_check").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({
         "name": "fk-test-svc",
@@ -665,7 +709,7 @@ async fn expose_route_config_has_valid_cluster_fk() {
 #[tokio::test]
 async fn misspelled_api_path_returns_json_not_html() {
     let db = TestDatabase::new("misspelled_path").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     // "liteners" is a deliberate misspelling of "listeners"
     let req = authed_request(Method::GET, "/api/v1/teams/default/liteners");
@@ -687,7 +731,7 @@ async fn misspelled_api_path_returns_json_not_html() {
 #[tokio::test]
 async fn nonexistent_api_path_returns_json_not_html() {
     let db = TestDatabase::new("nonexistent_path").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     let req = authed_request(Method::GET, "/api/v1/teams/default/nonexistent");
     let resp = app.oneshot(req).await.unwrap();
@@ -708,7 +752,7 @@ async fn nonexistent_api_path_returns_json_not_html() {
 #[tokio::test]
 async fn expose_wrong_http_method_returns_error_not_html() {
     let db = TestDatabase::new("expose_wrong_method").await;
-    let app = dev_router(&db).await;
+    let (app, _env, _lock) = dev_router(&db).await;
 
     // GET on expose endpoint — should be POST only
     let req = authed_request(Method::GET, "/api/v1/teams/default/expose");

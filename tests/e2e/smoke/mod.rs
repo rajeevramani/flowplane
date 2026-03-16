@@ -10,4 +10,8 @@
 //! ```
 
 pub mod test_bootstrap;
+pub mod test_cli_subprocess;
+pub mod test_dev_mode_smoke;
+pub mod test_mock_oidc_smoke;
+pub mod test_prod_mode_smoke;
 pub mod test_routing;

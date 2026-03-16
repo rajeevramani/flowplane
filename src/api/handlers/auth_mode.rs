@@ -54,88 +54,85 @@ pub async fn auth_mode_handler() -> (StatusCode, Json<AuthModeResponse>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
-    // NOTE: These tests mutate shared process env vars and MUST run serially.
-    // Use `cargo test -- --test-threads=1` or `#[serial_test::serial]` if flaky.
+    // Serialize all tests that mutate env vars to prevent races.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    /// RAII guard that restores env vars on drop (same pattern as tests/common/env_guard.rs).
+    struct EnvGuard {
+        originals: Vec<(String, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self { originals: vec![] }
+        }
+        fn set(&mut self, key: &str, value: &str) {
+            self.originals.push((key.to_string(), std::env::var(key).ok()));
+            std::env::set_var(key, value);
+        }
+        fn remove(&mut self, key: &str) {
+            self.originals.push((key.to_string(), std::env::var(key).ok()));
+            std::env::remove_var(key);
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, original) in self.originals.iter().rev() {
+                match original {
+                    Some(val) => std::env::set_var(key, val),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::await_holding_lock)] // auth_mode_handler is sync-in-async, no real suspend
     #[tokio::test]
     async fn test_auth_mode_handler_returns_prod_by_default() {
-        // Explicitly set to prod (don't remove — other tests race on this env var)
-        let original = std::env::var("FLOWPLANE_AUTH_MODE").ok();
-        std::env::set_var("FLOWPLANE_AUTH_MODE", "prod");
-        let original_issuer = std::env::var("FLOWPLANE_ZITADEL_ISSUER").ok();
-        let original_client = std::env::var("FLOWPLANE_OIDC_CLIENT_ID").ok();
-        std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER");
-        std::env::remove_var("FLOWPLANE_OIDC_CLIENT_ID");
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let mut env = EnvGuard::new();
+        env.set("FLOWPLANE_AUTH_MODE", "prod");
+        env.remove("FLOWPLANE_ZITADEL_ISSUER");
+        env.remove("FLOWPLANE_OIDC_CLIENT_ID");
 
         let (status, Json(response)) = auth_mode_handler().await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response.auth_mode, "prod");
-        // No OIDC info when env vars aren't set
         assert!(response.oidc_issuer.is_none());
         assert!(response.oidc_client_id.is_none());
-
-        // Restore
-        match original {
-            Some(val) => std::env::set_var("FLOWPLANE_AUTH_MODE", val),
-            None => std::env::remove_var("FLOWPLANE_AUTH_MODE"),
-        }
-        if let Some(val) = original_issuer {
-            std::env::set_var("FLOWPLANE_ZITADEL_ISSUER", val);
-        }
-        if let Some(val) = original_client {
-            std::env::set_var("FLOWPLANE_OIDC_CLIENT_ID", val);
-        }
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_auth_mode_handler_returns_dev_when_set() {
-        let original = std::env::var("FLOWPLANE_AUTH_MODE").ok();
-        std::env::set_var("FLOWPLANE_AUTH_MODE", "dev");
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let mut env = EnvGuard::new();
+        env.set("FLOWPLANE_AUTH_MODE", "dev");
 
         let (status, Json(response)) = auth_mode_handler().await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response.auth_mode, "dev");
-        // No OIDC info in dev mode
         assert!(response.oidc_issuer.is_none());
         assert!(response.oidc_client_id.is_none());
-
-        // Restore
-        match original {
-            Some(val) => std::env::set_var("FLOWPLANE_AUTH_MODE", val),
-            None => std::env::remove_var("FLOWPLANE_AUTH_MODE"),
-        }
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_auth_mode_prod_includes_oidc_info() {
-        let original_mode = std::env::var("FLOWPLANE_AUTH_MODE").ok();
-        let original_issuer = std::env::var("FLOWPLANE_ZITADEL_ISSUER").ok();
-        let original_client = std::env::var("FLOWPLANE_OIDC_CLIENT_ID").ok();
-
-        std::env::set_var("FLOWPLANE_AUTH_MODE", "prod");
-        std::env::set_var("FLOWPLANE_ZITADEL_ISSUER", "https://auth.example.com");
-        std::env::set_var("FLOWPLANE_OIDC_CLIENT_ID", "test-client-id");
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let mut env = EnvGuard::new();
+        env.set("FLOWPLANE_AUTH_MODE", "prod");
+        env.set("FLOWPLANE_ZITADEL_ISSUER", "https://auth.example.com");
+        env.set("FLOWPLANE_OIDC_CLIENT_ID", "test-client-id");
 
         let (status, Json(response)) = auth_mode_handler().await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response.auth_mode, "prod");
         assert_eq!(response.oidc_issuer.as_deref(), Some("https://auth.example.com"));
         assert_eq!(response.oidc_client_id.as_deref(), Some("test-client-id"));
-
-        // Restore
-        match original_mode {
-            Some(val) => std::env::set_var("FLOWPLANE_AUTH_MODE", val),
-            None => std::env::remove_var("FLOWPLANE_AUTH_MODE"),
-        }
-        match original_issuer {
-            Some(val) => std::env::set_var("FLOWPLANE_ZITADEL_ISSUER", val),
-            None => std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER"),
-        }
-        match original_client {
-            Some(val) => std::env::set_var("FLOWPLANE_OIDC_CLIENT_ID", val),
-            None => std::env::remove_var("FLOWPLANE_OIDC_CLIENT_ID"),
-        }
     }
 
     #[test]

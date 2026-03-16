@@ -8,6 +8,7 @@ pub mod auth;
 pub mod client;
 pub mod clusters;
 pub mod compose;
+pub mod compose_runner;
 pub mod config;
 pub mod config_cmd;
 pub mod credentials;
