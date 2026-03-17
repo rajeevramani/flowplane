@@ -25,6 +25,7 @@ use crate::common::{
     },
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
+    shared_infra::{E2eAuthMode, SharedInfrastructure},
     timeout::{with_timeout, TestTimeout},
 };
 
@@ -416,6 +417,12 @@ async fn smoke_test_xds_config() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn smoke_test_team_isolation() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!("SKIP: smoke_test_team_isolation requires multi-team isolation (prod mode only)");
+        return;
+    }
+
     let harness = TestHarness::start(TestHarnessConfig::new("smoke_test_team_isolation"))
         .await
         .expect("Failed to start test harness");

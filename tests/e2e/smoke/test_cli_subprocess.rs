@@ -15,9 +15,8 @@ use crate::common::harness::{TestHarness, TestHarnessConfig};
 #[tokio::test]
 #[ignore] // Requires RUN_E2E=1
 async fn test_cli_no_args_shows_help() {
-    let harness = TestHarness::start(TestHarnessConfig::new("cli_no_args").without_envoy())
-        .await
-        .unwrap();
+    let harness =
+        TestHarness::start(TestHarnessConfig::new("cli_no_args").without_envoy()).await.unwrap();
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // No subcommand → prints help and exits 0 (per cli/mod.rs None arm)
@@ -29,10 +28,9 @@ async fn test_cli_no_args_shows_help() {
 #[tokio::test]
 #[ignore] // Requires RUN_E2E=1
 async fn test_cli_invalid_subcommand() {
-    let harness =
-        TestHarness::start(TestHarnessConfig::new("cli_invalid_subcmd").without_envoy())
-            .await
-            .unwrap();
+    let harness = TestHarness::start(TestHarnessConfig::new("cli_invalid_subcmd").without_envoy())
+        .await
+        .unwrap();
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let output = cli.run(&["nonexistent-command"]).unwrap();
@@ -45,9 +43,7 @@ async fn test_cli_invalid_subcommand() {
 #[ignore] // Requires RUN_E2E=1
 async fn test_cli_without_credentials() {
     let harness =
-        TestHarness::start(TestHarnessConfig::new("cli_no_creds").without_envoy())
-            .await
-            .unwrap();
+        TestHarness::start(TestHarnessConfig::new("cli_no_creds").without_envoy()).await.unwrap();
 
     // Create a CliRunner then delete the credentials file to simulate missing auth
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -94,9 +90,8 @@ async fn test_cli_cluster_list() {
 #[tokio::test]
 #[ignore] // Requires RUN_E2E=1
 async fn test_cli_version_flag() {
-    let harness = TestHarness::start(TestHarnessConfig::new("cli_version").without_envoy())
-        .await
-        .unwrap();
+    let harness =
+        TestHarness::start(TestHarnessConfig::new("cli_version").without_envoy()).await.unwrap();
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let output = cli.run(&["--version"]).unwrap();

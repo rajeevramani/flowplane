@@ -59,7 +59,7 @@ async fn test_600_create_filter() {
             api.create_filter(
                 &ctx.admin_token,
                 &ctx.team_a_name,
-                "security-headers",
+                "security-headers-t600",
                 "header_mutation",
                 filter_config,
             )
@@ -68,7 +68,7 @@ async fn test_600_create_filter() {
         .await
         .expect("Filter creation should succeed");
 
-    assert_eq!(filter.name, "security-headers");
+    assert_eq!(filter.name, "security-headers-t600");
     assert_eq!(filter.filter_type, "header_mutation");
     println!("✓ Header mutation filter created: {} (id={})", filter.name, filter.id);
 }
@@ -152,7 +152,7 @@ async fn test_610_verify_headers() {
         .create_filter(
             &ctx.admin_token,
             &ctx.team_a_name,
-            "security-headers",
+            "security-headers-t610",
             "header_mutation",
             filter_config,
         )

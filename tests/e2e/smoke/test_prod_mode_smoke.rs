@@ -110,11 +110,8 @@ async fn prod_no_auth_header_returns_401() {
             .await;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED, "no auth → 401");
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -144,11 +141,8 @@ async fn prod_random_bearer_returns_401() {
         "random bearer token should be rejected in prod mode"
     );
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -180,11 +174,8 @@ async fn prod_malformed_jwt_returns_401() {
         "malformed JWT (2 parts) should be rejected"
     );
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -221,11 +212,8 @@ async fn prod_jwt_wrong_signature_returns_401() {
         "JWT with wrong signature should be rejected"
     );
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -255,11 +243,8 @@ async fn prod_empty_auth_header_returns_401() {
         "empty Authorization header → 401"
     );
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -285,11 +270,8 @@ async fn prod_bearer_spaces_only_returns_401() {
     .await;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED, "Bearer with only spaces → 401");
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -323,11 +305,8 @@ async fn prod_doubled_bearer_prefix_returns_401() {
         "doubled Bearer prefix should be rejected"
     );
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -335,41 +314,25 @@ async fn prod_doubled_bearer_prefix_returns_401() {
     );
 }
 
-/// Token with trailing newline → 401.
+/// Token with trailing newline is rejected at the HTTP transport layer.
 ///
-/// REAL BUG this test is designed to catch: If the server reads the token
-/// from a file and doesn't strip trailing whitespace, `token\n` would fail comparison.
+/// Newlines are illegal in HTTP header values (RFC 7230). The HTTP client
+/// rejects the header before it reaches the server. This test verifies
+/// that the token+newline combination cannot be sent at all.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn prod_token_with_trailing_newline_returns_401() {
-    let harness =
-        dev_harness("prod_trailing_newline_401").await.expect("harness should start");
+    let harness = dev_harness("prod_trailing_newline_401").await.expect("harness should start");
     if harness.is_dev_mode() {
         eprintln!("SKIP: requires prod mode");
         return;
     }
 
     let bad_header = format!("Bearer {}\n", harness.auth_token);
-    let resp = raw_request(
-        &harness.api_url(),
-        &format!("/api/v1/teams/{}/clusters", harness.team),
-        Some(&bad_header),
-    )
-    .await;
-    assert_eq!(
-        resp.status(),
-        reqwest::StatusCode::UNAUTHORIZED,
-        "token with trailing newline should be rejected"
-    );
+    let url = format!("{}/api/v1/teams/{}/clusters", harness.api_url(), harness.team);
+    let result = reqwest::Client::new().get(&url).header("Authorization", &bad_header).send().await;
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    assert!(
-        content_type.contains("application/json"),
-        "401 should return JSON, got: {}",
-        content_type
-    );
+    // Newlines in header values are rejected by the HTTP client (InvalidHeaderValue).
+    // The request never reaches the server — this is the correct behavior.
+    assert!(result.is_err(), "token with trailing newline should be rejected at transport level");
 }

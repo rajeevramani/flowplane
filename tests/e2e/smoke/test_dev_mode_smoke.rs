@@ -169,9 +169,7 @@ async fn dev_expose_routes_traffic_through_envoy() {
 
     // Try to reach Envoy on the auto-allocated port.
     // The expose route config uses domains: ["*"] and path prefix: "/".
-    let envoy_result = harness
-        .wait_for_route_on_port(port, "localhost", "/", 200)
-        .await;
+    let envoy_result = harness.wait_for_route_on_port(port, "localhost", "/", 200).await;
 
     match envoy_result {
         Ok(body) => {
@@ -188,8 +186,10 @@ async fn dev_expose_routes_traffic_through_envoy() {
                 Ok(dump) => {
                     // Print listener and route sections only (truncated)
                     for line in dump.lines() {
-                        if line.contains("e2e-envoy") || line.contains("route_config_name")
-                            || line.contains("\"port_value\"") || line.contains("10001")
+                        if line.contains("e2e-envoy")
+                            || line.contains("route_config_name")
+                            || line.contains("\"port_value\"")
+                            || line.contains("10001")
                         {
                             eprintln!("  {}", line);
                         }
@@ -198,10 +198,7 @@ async fn dev_expose_routes_traffic_through_envoy() {
                 Err(dump_err) => eprintln!("  Failed to get config_dump: {}", dump_err),
             }
             eprintln!("--- end config_dump ---");
-            panic!(
-                "Envoy did not converge route for e2e-envoy-svc on port {}: {}",
-                port, e
-            );
+            panic!("Envoy did not converge route for e2e-envoy-svc on port {}: {}", port, e);
         }
     }
 
@@ -236,11 +233,8 @@ async fn dev_no_auth_header_returns_401() {
             .await;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED, "no auth → 401");
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -266,11 +260,8 @@ async fn dev_wrong_token_returns_401() {
     .await;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED, "wrong token → 401");
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -296,11 +287,8 @@ async fn dev_empty_token_returns_401() {
     .await;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED, "empty token → 401");
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -337,11 +325,8 @@ async fn dev_doubled_bearer_prefix_returns_401() {
         "doubled Bearer prefix should be rejected"
     );
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -364,29 +349,14 @@ async fn dev_token_with_trailing_newline_rejected_at_transport() {
     }
 
     let bad_header = format!("Bearer {}\n", harness.auth_token);
-    let url = format!(
-        "{}/api/v1/teams/{}/clusters",
-        harness.api_url(),
-        harness.team
-    );
-    let result = reqwest::Client::new()
-        .get(&url)
-        .header("Authorization", &bad_header)
-        .send()
-        .await;
+    let url = format!("{}/api/v1/teams/{}/clusters", harness.api_url(), harness.team);
+    let result = reqwest::Client::new().get(&url).header("Authorization", &bad_header).send().await;
 
     // reqwest rejects newlines in header values — the request never leaves the client.
     // This is the correct security behavior: tokens with embedded newlines are malformed.
-    assert!(
-        result.is_err(),
-        "newline in header value should be rejected at transport level"
-    );
+    assert!(result.is_err(), "newline in header value should be rejected at transport level");
     let err = result.unwrap_err();
-    assert!(
-        err.is_builder(),
-        "error should be a builder/header error, got: {}",
-        err
-    );
+    assert!(err.is_builder(), "error should be a builder/header error, got: {}", err);
 }
 
 /// Token with trailing whitespace — accepted (hyper strips OWS per RFC 7230).
@@ -443,11 +413,8 @@ async fn dev_basic_auth_scheme_returns_401() {
         "Basic auth scheme should be rejected"
     );
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",
@@ -480,11 +447,8 @@ async fn dev_jwt_format_token_returns_401() {
         "JWT-format token should be rejected in dev mode (doesn't match dev token)"
     );
 
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 should return JSON, got: {}",

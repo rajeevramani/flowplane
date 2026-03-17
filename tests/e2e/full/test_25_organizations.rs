@@ -12,12 +12,11 @@
 
 use crate::common::{
     api_client::ApiClient,
-    shared_infra::SharedInfrastructure,
+    shared_infra::{E2eAuthMode, SharedInfrastructure},
     timeout::{with_timeout, TestTimeout},
-    zitadel,
 };
 
-/// Helper: obtain superadmin JWT and return (api, token)
+/// Helper: obtain admin token and return (api, token)
 async fn setup_org_test() -> (ApiClient, String) {
     let infra = SharedInfrastructure::get_or_init()
         .await
@@ -25,16 +24,11 @@ async fn setup_org_test() -> (ApiClient, String) {
 
     let api = ApiClient::new(infra.api_url());
 
-    let token = with_timeout(TestTimeout::default_with_label("Obtain superadmin JWT"), async {
-        zitadel::obtain_human_token(
-            &infra.zitadel_config,
-            zitadel::SUPERADMIN_EMAIL,
-            zitadel::SUPERADMIN_PASSWORD,
-        )
-        .await
+    let token = with_timeout(TestTimeout::default_with_label("Obtain admin token"), async {
+        infra.get_admin_token().await
     })
     .await
-    .expect("JWT acquisition should succeed");
+    .expect("Token acquisition should succeed");
 
     (api, token)
 }
@@ -43,6 +37,14 @@ async fn setup_org_test() -> (ApiClient, String) {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2500_default_org_from_bootstrap() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!(
+            "SKIP: test_2500_default_org_from_bootstrap requires admin privileges (prod mode only)"
+        );
+        return;
+    }
+
     let (api, admin_token) = setup_org_test().await;
 
     // List organizations - should see platform org
@@ -73,6 +75,12 @@ async fn test_2500_default_org_from_bootstrap() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2501_create_organization() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!("SKIP: test_2501_create_organization requires admin privileges (prod mode only)");
+        return;
+    }
+
     let (api, admin_token) = setup_org_test().await;
 
     // Create a new organization
@@ -111,6 +119,12 @@ async fn test_2501_create_organization() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2502_get_and_update_organization() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!("SKIP: test_2502_get_and_update_organization requires admin privileges (prod mode only)");
+        return;
+    }
+
     let (api, admin_token) = setup_org_test().await;
 
     // Create a test org
@@ -175,6 +189,12 @@ async fn test_2502_get_and_update_organization() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2503_org_membership_lifecycle() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2503_org_membership_lifecycle requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let (api, admin_token) = setup_org_test().await;
 
     // Create a test org
@@ -196,29 +216,21 @@ async fn test_2503_org_membership_lifecycle() {
 
     println!("ok Initial members count: {}", initial_members.members.len());
 
-    // Create user in Zitadel and JIT-provision via authentication
+    // Create user in auth provider and JIT-provision via authentication
     let infra = SharedInfrastructure::get_or_init().await.expect("Failed to get shared infra");
 
     let member_email = "member-test@e2e.test";
     let member_password = "MemberTest123!";
-    with_timeout(TestTimeout::default_with_label("Create Zitadel user"), async {
-        zitadel::create_human_user(
-            &infra.zitadel_config.base_url,
-            &infra.zitadel_config.admin_pat,
-            member_email,
-            "Member",
-            "Test User",
-            member_password,
-        )
-        .await
+    with_timeout(TestTimeout::default_with_label("Create test user"), async {
+        infra.create_test_user(member_email, "Member", "Test User", member_password).await
     })
     .await
-    .expect("Create Zitadel user should succeed");
+    .expect("Create test user should succeed");
 
     // Authenticate to trigger JIT provisioning in CP
     let member_token =
         with_timeout(TestTimeout::default_with_label("Authenticate test user"), async {
-            zitadel::obtain_human_token(&infra.zitadel_config, member_email, member_password).await
+            infra.get_user_token(member_email, member_password).await
         })
         .await
         .expect("User authentication should succeed");
@@ -287,6 +299,12 @@ async fn test_2503_org_membership_lifecycle() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2504_org_scoped_teams() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!("SKIP: test_2504_org_scoped_teams requires admin privileges (prod mode only)");
+        return;
+    }
+
     let (api, admin_token) = setup_org_test().await;
 
     // Create a tenant org (platform org is governance-only, no teams allowed)
@@ -343,6 +361,12 @@ async fn test_2504_org_scoped_teams() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2505_delete_organization() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!("SKIP: test_2505_delete_organization requires admin privileges (prod mode only)");
+        return;
+    }
+
     let (api, admin_token) = setup_org_test().await;
 
     // Create a disposable org
@@ -424,6 +448,12 @@ async fn test_2505_delete_organization() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2506_cross_org_isolation() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2506_cross_org_isolation requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let (api, admin_token) = setup_org_test().await;
 
     // Create two separate organizations
@@ -446,24 +476,16 @@ async fn test_2506_cross_org_isolation() {
 
     let alpha_email = "user-alpha@e2e.test";
     let alpha_password = "AlphaUser123!";
-    with_timeout(TestTimeout::default_with_label("Create Zitadel user"), async {
-        zitadel::create_human_user(
-            &infra.zitadel_config.base_url,
-            &infra.zitadel_config.admin_pat,
-            alpha_email,
-            "Alpha",
-            "User",
-            alpha_password,
-        )
-        .await
+    with_timeout(TestTimeout::default_with_label("Create test user"), async {
+        infra.create_test_user(alpha_email, "Alpha", "User", alpha_password).await
     })
     .await
-    .expect("Create Zitadel user should succeed");
+    .expect("Create test user should succeed");
 
     // Authenticate to trigger JIT provisioning
     let alpha_token =
         with_timeout(TestTimeout::default_with_label("Authenticate alpha user"), async {
-            zitadel::obtain_human_token(&infra.zitadel_config, alpha_email, alpha_password).await
+            infra.get_user_token(alpha_email, alpha_password).await
         })
         .await
         .expect("User authentication should succeed");

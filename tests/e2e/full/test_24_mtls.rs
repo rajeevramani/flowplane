@@ -31,7 +31,7 @@ use crate::common::{
     api_client::{setup_dev_context, setup_envoy_context, ApiClient, CreateDataplaneRequest},
     harness::{TestHarness, TestHarnessConfig},
     resource_setup::ResourceSetup,
-    shared_infra::unique_name,
+    shared_infra::{unique_name, E2eAuthMode, SharedInfrastructure},
     timeout::{with_timeout, TestTimeout},
 };
 
@@ -739,6 +739,12 @@ async fn test_204_rate_limit() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_205_certificate_team_isolation() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!("SKIP: test_205_certificate_team_isolation requires multi-team isolation (prod mode only)");
+        return;
+    }
+
     let harness = TestHarness::start(TestHarnessConfig::new("test_205_certificate_team_isolation"))
         .await
         .expect("Failed to start harness");

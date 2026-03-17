@@ -110,18 +110,10 @@ async fn body_json(response: axum::response::Response) -> Value {
 /// Assert response is JSON with an `error` field and NOT 500.
 async fn assert_json_error(resp: axum::response::Response, context: &str) -> (StatusCode, Value) {
     let status = resp.status();
-    assert_ne!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "{}: should not return 500",
-        context
-    );
+    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{}: should not return 500", context);
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         !content_type.contains("text/html"),
         "{}: should not return HTML, got Content-Type: {}",
@@ -273,11 +265,7 @@ async fn cluster_create_port_zero_returns_400() {
     let req = authed_json(Method::POST, "/api/v1/teams/default/clusters", body);
     let resp = app.oneshot(req).await.unwrap();
     // Endpoint port validated via range(min=1, max=65535) — port 0 is rejected.
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "port 0 violates range(min=1) validation",
-    );
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "port 0 violates range(min=1) validation",);
 }
 
 /// Create cluster with endpoint port > 65535 → 400.
@@ -361,11 +349,8 @@ async fn cluster_get_nonexistent_returns_404_json() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "404 should be JSON, got Content-Type: {}",
@@ -427,11 +412,7 @@ async fn cluster_put_mismatched_name_returns_error() {
         "serviceName": "updated-svc",
         "endpoints": [{"host": "10.0.0.1", "port": 9090}]
     });
-    let req = authed_json(
-        Method::PUT,
-        "/api/v1/teams/default/clusters/match-cluster",
-        update_body,
-    );
+    let req = authed_json(Method::PUT, "/api/v1/teams/default/clusters/match-cluster", update_body);
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
     // Should either reject the mismatch (400) or use the URL name (200)
@@ -468,11 +449,8 @@ async fn cluster_put_empty_endpoints_returns_400() {
         "serviceName": "empty-eps-svc",
         "endpoints": []
     });
-    let req = authed_json(
-        Method::PUT,
-        "/api/v1/teams/default/clusters/empty-eps-cluster",
-        update_body,
-    );
+    let req =
+        authed_json(Method::PUT, "/api/v1/teams/default/clusters/empty-eps-cluster", update_body);
     let resp = app.oneshot(req).await.unwrap();
     // Endpoints validated via length(min=1) — empty array is rejected.
     assert_eq!(
@@ -665,11 +643,8 @@ async fn listener_get_nonexistent_returns_404_json() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "listener 404 should be JSON, got Content-Type: {}",
@@ -762,11 +737,7 @@ async fn route_config_create_duplicate_name_returns_409() {
     });
 
     // First create
-    let req = authed_json(
-        Method::POST,
-        "/api/v1/teams/default/route-configs",
-        rc_body.clone(),
-    );
+    let req = authed_json(Method::POST, "/api/v1/teams/default/route-configs", rc_body.clone());
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
@@ -791,11 +762,8 @@ async fn route_config_get_nonexistent_returns_404_json() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "route config 404 should be JSON, got Content-Type: {}",
@@ -926,11 +894,7 @@ async fn cluster_post_to_specific_returns_405_or_404() {
     let (app, _env, _lock) = dev_router(&db).await;
 
     let body = serde_json::json!({"name": "test"});
-    let req = authed_json(
-        Method::POST,
-        "/api/v1/teams/default/clusters/some-cluster",
-        body,
-    );
+    let req = authed_json(Method::POST, "/api/v1/teams/default/clusters/some-cluster", body);
     let resp = app.oneshot(req).await.unwrap();
     await_assert_not_500_not_html(resp, "POST on specific cluster").await;
 }
@@ -978,7 +942,8 @@ async fn cluster_create_missing_content_type_returns_error() {
     let db = TestDatabase::new("adv_cluster_no_ct").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
-    let body = r#"{"name":"no-ct","serviceName":"no-ct","endpoints":[{"host":"127.0.0.1","port":8080}]}"#;
+    let body =
+        r#"{"name":"no-ct","serviceName":"no-ct","endpoints":[{"host":"127.0.0.1","port":8080}]}"#;
     let req = authed_no_content_type(Method::POST, "/api/v1/teams/default/clusters", body);
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
@@ -998,12 +963,7 @@ async fn cluster_create_wrong_content_type_returns_error() {
     let (app, _env, _lock) = dev_router(&db).await;
 
     let body = r#"{"name":"text-ct","serviceName":"text-ct","endpoints":[{"host":"127.0.0.1","port":8080}]}"#;
-    let req = authed_raw(
-        Method::POST,
-        "/api/v1/teams/default/clusters",
-        "text/plain",
-        body,
-    );
+    let req = authed_raw(Method::POST, "/api/v1/teams/default/clusters", "text/plain", body);
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
     assert!(
@@ -1070,12 +1030,7 @@ async fn cluster_create_empty_body_returns_400() {
     let db = TestDatabase::new("adv_cluster_empty_body").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
-    let req = authed_raw(
-        Method::POST,
-        "/api/v1/teams/default/clusters",
-        "application/json",
-        "",
-    );
+    let req = authed_raw(Method::POST, "/api/v1/teams/default/clusters", "application/json", "");
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
     assert!(
@@ -1146,11 +1101,7 @@ async fn cluster_create_very_long_name_handled() {
     let req = authed_json(Method::POST, "/api/v1/teams/default/clusters", body);
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
-    assert_ne!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "very long name should not cause 500"
-    );
+    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "very long name should not cause 500");
 }
 
 /// Route config with many virtual hosts → should handle without 500.
@@ -1229,18 +1180,10 @@ async fn team_path_traversal_returns_error() {
 
 async fn await_assert_not_500_not_html(resp: axum::response::Response, context: &str) {
     let status = resp.status();
-    assert_ne!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "{}: should not return 500",
-        context
-    );
+    assert_ne!(status, StatusCode::INTERNAL_SERVER_ERROR, "{}: should not return 500", context);
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         !content_type.contains("text/html"),
         "{}: should not return HTML, got Content-Type: {}",
@@ -1284,11 +1227,8 @@ async fn expose_name_with_special_chars_returns_400() {
         status
     );
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "error response should be JSON, got Content-Type: {}",
@@ -1316,11 +1256,8 @@ async fn expose_upstream_with_spaces_returns_400() {
         status
     );
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "error response should be JSON, got Content-Type: {}",
@@ -1348,11 +1285,8 @@ async fn expose_negative_port_returns_400() {
         status
     );
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "error response should be JSON, got Content-Type: {}",
@@ -1382,11 +1316,8 @@ async fn expose_empty_paths_array() {
         status
     );
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "response should be JSON, got Content-Type: {}",

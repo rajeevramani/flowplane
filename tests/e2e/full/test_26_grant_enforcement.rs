@@ -12,7 +12,6 @@ use crate::common::{
     api_client::ApiClient,
     shared_infra::SharedInfrastructure,
     timeout::{with_timeout, TestTimeout},
-    zitadel,
 };
 
 /// Shared setup: get infra, obtain superadmin token, create a tenant org + team,
@@ -27,17 +26,11 @@ async fn setup_grant_test(
 
     let api = ApiClient::new(infra.api_url());
 
-    let admin_token =
-        with_timeout(TestTimeout::default_with_label("Obtain superadmin JWT"), async {
-            zitadel::obtain_human_token(
-                &infra.zitadel_config,
-                zitadel::SUPERADMIN_EMAIL,
-                zitadel::SUPERADMIN_PASSWORD,
-            )
-            .await
-        })
-        .await
-        .expect("JWT acquisition should succeed");
+    let admin_token = with_timeout(TestTimeout::default_with_label("Obtain admin token"), async {
+        infra.get_admin_token().await
+    })
+    .await
+    .expect("Token acquisition should succeed");
 
     // Create tenant org
     let org_name = format!("grant-e2e-{}", suffix);
@@ -71,28 +64,21 @@ async fn setup_grant_test(
     let team_id = team.id.clone();
     let team_name = team.name.clone();
 
-    // Create human test user in Zitadel
+    // Create human test user in auth provider
     let user_email = format!("grant-user-{}@e2e.test", suffix);
     let user_password = "GrantTest123!";
-    with_timeout(TestTimeout::default_with_label("Create Zitadel user"), async {
-        zitadel::create_human_user(
-            &infra.zitadel_config.base_url,
-            &infra.zitadel_config.admin_pat,
-            &user_email,
-            "Grant",
-            &format!("User {}", suffix),
-            user_password,
-        )
-        .await
+    with_timeout(TestTimeout::default_with_label("Create test user"), async {
+        infra
+            .create_test_user(&user_email, "Grant", &format!("User {}", suffix), user_password)
+            .await
     })
     .await
-    .expect("Create Zitadel user should succeed");
+    .expect("Create test user should succeed");
 
     // JIT-provision user in CP by authenticating them
-    // (POST /api/v1/users no longer exists — users are provisioned via JWT auth)
     let user_token =
         with_timeout(TestTimeout::default_with_label("Authenticate test user"), async {
-            zitadel::obtain_human_token(&infra.zitadel_config, &user_email, user_password).await
+            infra.get_user_token(&user_email, user_password).await
         })
         .await
         .expect("User authentication should succeed");
@@ -217,14 +203,14 @@ async fn delete_grant(
     assert_eq!(status.as_u16(), 204, "Delete grant should return 204, got {}", status);
 }
 
-/// Helper: obtain a user JWT token
+/// Helper: obtain a user token (mode-agnostic)
 async fn get_user_token(user_email: &str, user_password: &str) -> String {
     let infra = SharedInfrastructure::get_or_init().await.expect("infra should be ready");
-    with_timeout(TestTimeout::default_with_label("Obtain user JWT"), async {
-        zitadel::obtain_human_token(&infra.zitadel_config, user_email, user_password).await
+    with_timeout(TestTimeout::default_with_label("Obtain user token"), async {
+        infra.get_user_token(user_email, user_password).await
     })
     .await
-    .expect("User JWT acquisition should succeed")
+    .expect("User token acquisition should succeed")
 }
 
 /// Helper: send an MCP JSON-RPC request with session initialization and return the parsed response
@@ -253,6 +239,12 @@ async fn mcp_request(api: &ApiClient, token: &str, method: &str, params: Value) 
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2600_read_with_matching_grant() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2600_read_with_matching_grant requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let (api, admin_token, org_name, _org_id, team_name, _team_id, user_id, user_email, password) =
         setup_grant_test("s1-read").await;
 
@@ -284,6 +276,12 @@ async fn test_2600_read_with_matching_grant() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2601_write_without_grant() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2601_write_without_grant requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let (api, admin_token, org_name, _org_id, team_name, _team_id, user_id, user_email, password) =
         setup_grant_test("s2-write").await;
 
@@ -327,19 +325,18 @@ async fn test_2601_write_without_grant() {
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2602_cross_team_isolation() {
     let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2602_cross_team_isolation requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let api = ApiClient::new(infra.api_url());
 
-    let admin_token =
-        with_timeout(TestTimeout::default_with_label("Obtain superadmin JWT"), async {
-            zitadel::obtain_human_token(
-                &infra.zitadel_config,
-                zitadel::SUPERADMIN_EMAIL,
-                zitadel::SUPERADMIN_PASSWORD,
-            )
-            .await
-        })
-        .await
-        .expect("JWT acquisition should succeed");
+    let admin_token = with_timeout(TestTimeout::default_with_label("Obtain admin token"), async {
+        infra.get_admin_token().await
+    })
+    .await
+    .expect("Token acquisition should succeed");
 
     // Create org with two teams
     let org = with_timeout(TestTimeout::default_with_label("Create org"), async {
@@ -368,27 +365,19 @@ async fn test_2602_cross_team_isolation() {
     .await
     .expect("Create team B should succeed");
 
-    // Create user in Zitadel
+    // Create test user in auth provider
     let user_email = "iso-user@e2e.test";
     let user_password = "IsoTest123!";
-    let _ = with_timeout(TestTimeout::default_with_label("Create Zitadel user"), async {
-        zitadel::create_human_user(
-            &infra.zitadel_config.base_url,
-            &infra.zitadel_config.admin_pat,
-            user_email,
-            "Isolation",
-            "User",
-            user_password,
-        )
-        .await
+    let _ = with_timeout(TestTimeout::default_with_label("Create test user"), async {
+        infra.create_test_user(user_email, "Isolation", "User", user_password).await
     })
     .await
-    .expect("Create Zitadel user should succeed");
+    .expect("Create test user should succeed");
 
     // JIT-provision user in CP by authenticating them
     let iso_user_token =
         with_timeout(TestTimeout::default_with_label("Authenticate isolation user"), async {
-            zitadel::obtain_human_token(&infra.zitadel_config, user_email, user_password).await
+            infra.get_user_token(user_email, user_password).await
         })
         .await
         .expect("User authentication should succeed");
@@ -478,6 +467,12 @@ async fn test_2602_cross_team_isolation() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2603_grant_lifecycle() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2603_grant_lifecycle requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let (api, admin_token, org_name, _org_id, team_name, _team_id, user_id, user_email, password) =
         setup_grant_test("s4-lifecycle").await;
 
@@ -603,14 +598,14 @@ async fn create_cp_agent(
     (agent_id, client_id, client_secret)
 }
 
-/// Helper: obtain an agent token via client_credentials grant
+/// Helper: obtain an agent token (mode-agnostic)
 async fn get_agent_token(client_id: &str, client_secret: &str) -> String {
     let infra = SharedInfrastructure::get_or_init().await.expect("infra should be ready");
-    with_timeout(TestTimeout::default_with_label("Obtain agent JWT"), async {
-        zitadel::obtain_agent_token(&infra.zitadel_config, client_id, client_secret).await
+    with_timeout(TestTimeout::default_with_label("Obtain agent token"), async {
+        infra.get_agent_token(client_id, client_secret).await
     })
     .await
-    .expect("Agent JWT acquisition should succeed")
+    .expect("Agent token acquisition should succeed")
 }
 
 /// Scenario 5: CP agent tools/list filtering — agent with clusters:read + routes:create
@@ -618,6 +613,12 @@ async fn get_agent_token(client_id: &str, client_secret: &str) -> String {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2604_cp_agent_tools_list_filtering() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2604_cp_agent_tools_list_filtering requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let (api, admin_token, org_name, _org_id, team_name, _team_id, _, _, _) =
         setup_grant_test("s5-list").await;
 
@@ -677,6 +678,12 @@ async fn test_2604_cp_agent_tools_list_filtering() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2605_cp_agent_tools_call_enforcement() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2605_cp_agent_tools_call_enforcement requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let (api, admin_token, org_name, _org_id, team_name, _team_id, _, _, _) =
         setup_grant_test("s6-call").await;
 
@@ -764,6 +771,12 @@ async fn test_2605_cp_agent_tools_call_enforcement() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn test_2606_agent_no_grants_sees_no_tools() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if !infra.supports_multi_user() {
+        println!("SKIP: test_2606_agent_no_grants_sees_no_tools requires multi-user auth (Zitadel mode). Skipping in {:?} mode.", infra.auth_mode);
+        return;
+    }
+
     let (api, admin_token, org_name, _org_id, team_name, _team_id, _, _, _) =
         setup_grant_test("s7-nogrant").await;
 

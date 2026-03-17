@@ -106,11 +106,8 @@ async fn dev_auth_wrong_token_returns_401() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 response should be JSON, got Content-Type: {}",
@@ -132,11 +129,8 @@ async fn dev_auth_missing_header_returns_401() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .map(|v| v.to_str().unwrap_or(""))
-        .unwrap_or("");
+    let content_type =
+        resp.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap_or("")).unwrap_or("");
     assert!(
         content_type.contains("application/json"),
         "401 response should be JSON, got Content-Type: {}",
@@ -158,7 +152,10 @@ async fn dev_auth_options_passthrough() {
     let resp = app.oneshot(req).await.unwrap();
     // OPTIONS should not be rejected by auth (CORS preflight)
     assert!(
-        matches!(resp.status(), StatusCode::OK | StatusCode::NO_CONTENT | StatusCode::METHOD_NOT_ALLOWED),
+        matches!(
+            resp.status(),
+            StatusCode::OK | StatusCode::NO_CONTENT | StatusCode::METHOD_NOT_ALLOWED
+        ),
         "OPTIONS should return 200, 204, or 405, got {}",
         resp.status()
     );

@@ -1777,28 +1777,37 @@ async fn ensure_org_admin_via_db(db_url: &str, user_id: &str, org_id: &str) -> a
 /// Obtains a superadmin JWT from Zitadel and uses it to create orgs, teams,
 /// and dataplanes via the CP REST API.
 pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Result<TestContext> {
-    use super::shared_infra::{unique_team_name, SharedInfrastructure};
-    use super::zitadel;
+    use super::shared_infra::{unique_team_name, E2eAuthMode, SharedInfrastructure};
+
+    // Get shared infrastructure
+    let infra = SharedInfrastructure::get_or_init().await?;
+
+    // Dev mode: use pre-seeded resources directly — no org/team/dataplane creation needed.
+    // Dev mode is single-tenant with a single user, so we skip all the Zitadel/multi-tenant setup.
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        let admin_token = infra.get_admin_token().await?;
+        return Ok(TestContext {
+            admin_token,
+            team_a_name: "default".to_string(),
+            team_a_id: "dev-default-team-id".to_string(),
+            team_a_dataplane_id: "dev-dataplane-id".to_string(),
+            team_b_name: "default".to_string(),
+            team_b_id: "dev-default-team-id".to_string(),
+            team_b_dataplane_id: "dev-dataplane-id".to_string(),
+            org_id: Some("dev-org-id".to_string()),
+            org_name: Some("dev-org".to_string()),
+        });
+    }
 
     // Generate unique team names for this test
     let team_a_name = unique_team_name(&format!("{}-team-a", test_name));
     let team_b_name = unique_team_name(&format!("{}-team-b", test_name));
 
-    // Get Zitadel config from shared infrastructure
-    let infra = SharedInfrastructure::get_or_init().await?;
-    let zitadel_config = &infra.zitadel_config;
-
-    // Obtain superadmin JWT token from Zitadel
-    let admin_token =
-        with_timeout(TestTimeout::default_with_label("Obtain superadmin JWT"), async {
-            zitadel::obtain_human_token(
-                zitadel_config,
-                zitadel::SUPERADMIN_EMAIL,
-                zitadel::SUPERADMIN_PASSWORD,
-            )
-            .await
-        })
-        .await?;
+    // Obtain admin token (mode-agnostic)
+    let admin_token = with_timeout(TestTimeout::default_with_label("Obtain admin token"), async {
+        infra.get_admin_token().await
+    })
+    .await?;
 
     // Create a tenant org for test resources (platform org is governance-only)
     let tenant_org = with_timeout(TestTimeout::default_with_label("Create tenant org"), async {
@@ -1900,27 +1909,37 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
 ///
 /// Obtains a superadmin JWT from Zitadel for API operations.
 pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::Result<TestContext> {
-    use super::shared_infra::{SharedInfrastructure, E2E_SHARED_TEAM};
-    use super::zitadel;
+    use super::shared_infra::{E2eAuthMode, SharedInfrastructure, E2E_SHARED_TEAM};
+
+    // Get shared infrastructure
+    let infra = SharedInfrastructure::get_or_init().await?;
+
+    // Dev mode: use pre-seeded resources directly.
+    // In dev mode, Envoy is configured with team "default" (matching seed data),
+    // so we return the pre-seeded "default" team context.
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        let admin_token = infra.get_admin_token().await?;
+        return Ok(TestContext {
+            admin_token,
+            team_a_name: "default".to_string(),
+            team_a_id: "dev-default-team-id".to_string(),
+            team_a_dataplane_id: "dev-dataplane-id".to_string(),
+            team_b_name: "default".to_string(),
+            team_b_id: "dev-default-team-id".to_string(),
+            team_b_dataplane_id: "dev-dataplane-id".to_string(),
+            org_id: Some("dev-org-id".to_string()),
+            org_name: Some("dev-org".to_string()),
+        });
+    }
 
     // Use the shared team name that Envoy is configured for
     let team_name = E2E_SHARED_TEAM.to_string();
 
-    // Get Zitadel config from shared infrastructure
-    let infra = SharedInfrastructure::get_or_init().await?;
-    let zitadel_config = &infra.zitadel_config;
-
-    // Obtain superadmin JWT token from Zitadel
-    let admin_token =
-        with_timeout(TestTimeout::default_with_label("Obtain superadmin JWT"), async {
-            zitadel::obtain_human_token(
-                zitadel_config,
-                zitadel::SUPERADMIN_EMAIL,
-                zitadel::SUPERADMIN_PASSWORD,
-            )
-            .await
-        })
-        .await?;
+    // Obtain admin token (mode-agnostic)
+    let admin_token = with_timeout(TestTimeout::default_with_label("Obtain admin token"), async {
+        infra.get_admin_token().await
+    })
+    .await?;
 
     // Create a tenant org for Envoy test resources (platform org is governance-only).
     // Uses the same org as setup_dev_context so all E2E tests share one tenant org.

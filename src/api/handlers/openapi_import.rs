@@ -271,8 +271,22 @@ pub async fn import_openapi_handler(
     )
     .await?;
 
-    // Create import metadata record
+    // Create import metadata record (idempotent: delete old import if same team+spec exists)
     let import_repo = ImportMetadataRepository::new(db_pool.clone());
+
+    // Check for existing import with same team + spec_name
+    if let Some(existing_import) =
+        import_repo.get_by_team_and_spec(&team_id, &spec_name).await.map_err(ApiError::from)?
+    {
+        tracing::info!(
+            existing_import_id = %existing_import.id,
+            spec_name = %spec_name,
+            team = %team_id,
+            "Replacing existing import with same team and spec name"
+        );
+        delete_import_cascade(&state.xds_state, &db_pool, &existing_import.id).await?;
+    }
+
     let import_metadata = import_repo
         .create(CreateImportMetadataRequest {
             spec_name: spec_name.clone(),
@@ -835,6 +849,33 @@ async fn materialize_listener(
         .listener_repository
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Listener repository not configured".to_string()))?;
+
+    // Check for address:port collision before attempting to create.
+    // The partial unique index UNIQUE(address, port) WHERE port IS NOT NULL
+    // would cause a 500 if we let the DB reject it.
+    if let Some(port) = listener_request.port {
+        if let Some(existing) = listener_repo
+            .find_by_address_port(&listener_request.address, port)
+            .await
+            .map_err(ApiError::from)?
+        {
+            return Err(ApiError::Conflict(format!(
+                "A listener already exists at {}:{} (name: '{}'). \
+                 Use a different port with new_listener_port, or use \
+                 listener_mode=existing with existing_listener_name={}",
+                listener_request.address, port, existing.name, existing.name,
+            )));
+        }
+    }
+
+    // Check for name collision
+    if listener_repo.exists_by_name(&listener_request.name).await.map_err(ApiError::from)? {
+        return Err(ApiError::Conflict(format!(
+            "A listener named '{}' already exists. Use a different name with new_listener_name, \
+             or use listener_mode=existing to add routes to the existing listener",
+            listener_request.name,
+        )));
+    }
 
     // Add import metadata
     listener_request.team = Some(team.to_string());

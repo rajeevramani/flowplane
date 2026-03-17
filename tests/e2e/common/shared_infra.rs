@@ -38,30 +38,25 @@ use crate::tls::support::TestCertificateAuthority;
 pub enum E2eAuthMode {
     /// Dev mode: no Zitadel, bearer token auth via FLOWPLANE_DEV_TOKEN
     Dev,
-    /// Prod mode with mock OIDC provider (fast, no Zitadel container)
-    ProdMockOidc,
-    /// Prod mode with real Zitadel container (slow, full fidelity)
-    ProdZitadel,
+    /// Prod mode with real Zitadel container
+    Prod,
 }
 
 /// Auth configuration produced during initialization.
 #[derive(Debug, Clone)]
 pub enum E2eAuthConfig {
     Dev { token: String },
-    MockOidc { issuer_url: String, jwks_url: String },
     Zitadel(ZitadelTestConfig),
 }
 
 /// Read `FLOWPLANE_E2E_AUTH_MODE` and return the corresponding enum variant.
 ///
 /// - `"dev"` → `E2eAuthMode::Dev`
-/// - `"prod-mock"` → `E2eAuthMode::ProdMockOidc`
-/// - `"prod"` or unset → `E2eAuthMode::ProdZitadel`
+/// - `"prod"` or unset → `E2eAuthMode::Prod`
 pub fn e2e_auth_mode() -> E2eAuthMode {
     match std::env::var("FLOWPLANE_E2E_AUTH_MODE").as_deref() {
         Ok("dev") => E2eAuthMode::Dev,
-        Ok("prod-mock") => E2eAuthMode::ProdMockOidc,
-        _ => E2eAuthMode::ProdZitadel,
+        _ => E2eAuthMode::Prod,
     }
 }
 
@@ -182,9 +177,6 @@ static SHARED_PG_CONTAINER: OnceLock<ContainerAsync<Postgres>> = OnceLock::new()
 /// Zitadel container for shared auth - must live for entire test run
 static SHARED_ZITADEL_CONTAINER: OnceLock<ContainerAsync<GenericImage>> = OnceLock::new();
 
-/// Mock OIDC server for ProdMockOidc mode - must live for entire test run
-static SHARED_MOCK_OIDC_SERVER: OnceLock<crate::mock_oidc::MockOidcServer> = OnceLock::new();
-
 /// Dedicated runtime for shared infrastructure - persists across all tests
 static SHARED_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -298,8 +290,7 @@ impl SharedInfrastructure {
 
         match mode {
             E2eAuthMode::Dev => Self::initialize_dev().await,
-            E2eAuthMode::ProdMockOidc => Self::initialize_prod_mock_oidc().await,
-            E2eAuthMode::ProdZitadel => Self::initialize_prod_zitadel().await,
+            E2eAuthMode::Prod => Self::initialize_prod_zitadel().await,
         }
     }
 
@@ -426,216 +417,7 @@ impl SharedInfrastructure {
         })
     }
 
-    /// Prod-MockOidc initialization: mock OIDC provider instead of Zitadel (fast).
-    async fn initialize_prod_mock_oidc() -> anyhow::Result<SharedInfrastructure> {
-        use crate::mock_oidc::{MockOidcConfig, MockOidcServer, UserInfo};
-
-        info!("Prod-MockOidc mode: starting mock OIDC provider (no Zitadel)");
-
-        // Start PostgreSQL container
-        info!("Starting PostgreSQL container for shared E2E database...");
-        let container = Postgres::default()
-            .with_tag("17-alpine")
-            .start()
-            .await
-            .expect("Failed to start PostgreSQL container for shared E2E");
-
-        let pg_host = container
-            .get_host()
-            .await
-            .expect("Failed to get PostgreSQL container host")
-            .to_string();
-        let pg_port = container
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get PostgreSQL container port");
-        let db_url = format!("postgresql://postgres:postgres@{}:{}/postgres", pg_host, pg_port);
-        info!(db_url = %db_url, "PostgreSQL container ready for shared E2E");
-
-        let _ = SHARED_PG_CONTAINER.set(container);
-
-        // Start mock OIDC provider with a known user identity
-        let mock_user = UserInfo {
-            sub: "mock-oidc-user-001".to_string(),
-            email: "admin@flowplane.local".to_string(),
-            name: "Mock Admin".to_string(),
-        };
-        let mock_config = MockOidcConfig {
-            user_info: mock_user,
-            project_id: "mock-project-id".to_string(),
-            audience: "mock-project-id".to_string(),
-            ..Default::default()
-        };
-        let mock_server = MockOidcServer::start(mock_config).await;
-        let issuer_url = mock_server.issuer.clone();
-        let jwks_url = mock_server.jwks_url();
-        let project_id = mock_server.project_id.clone();
-        info!(
-            issuer = %issuer_url,
-            jwks = %jwks_url,
-            "Mock OIDC provider started"
-        );
-
-        // Set CP environment variables for prod auth mode pointing at mock OIDC
-        std::env::set_var("FLOWPLANE_AUTH_MODE", "prod");
-        std::env::set_var("FLOWPLANE_ZITADEL_ISSUER", &issuer_url);
-        std::env::set_var("FLOWPLANE_ZITADEL_JWKS_URL", &jwks_url);
-        std::env::set_var("FLOWPLANE_ZITADEL_PROJECT_ID", &project_id);
-        std::env::set_var("FLOWPLANE_ZITADEL_AUDIENCE", &project_id);
-        std::env::set_var("FLOWPLANE_COOKIE_SECURE", "false");
-        std::env::set_var(
-            "FLOWPLANE_BASE_URL",
-            format!("http://localhost:{}", SHARED_API_PORT),
-        );
-        // Disable superadmin seeding since there's no real Zitadel admin API
-        std::env::remove_var("FLOWPLANE_SUPERADMIN_EMAIL");
-
-        // Start mock services
-        let mocks = MockServices::start_all().await;
-        info!(echo = %mocks.echo_endpoint(), "Mock services started");
-
-        // Start control plane
-        let cp_config = ControlPlaneConfig::new(
-            db_url.clone(),
-            SHARED_API_PORT,
-            SHARED_XDS_PORT,
-            SHARED_LISTENER_PORT,
-        );
-
-        let cp = with_timeout(TestTimeout::startup("Starting shared control plane"), async {
-            ControlPlaneHandle::start(cp_config).await
-        })
-        .await?;
-
-        with_timeout(TestTimeout::startup("Shared control plane ready"), async {
-            cp.wait_ready().await
-        })
-        .await?;
-        info!(api = %cp.api_addr, xds = %cp.xds_addr, "Shared control plane ready (prod-mock-oidc mode)");
-
-        // Issue a JWT from the mock OIDC provider
-        let auth_token = mock_server.issue_token().await;
-        info!("Mock OIDC JWT issued for test user");
-
-        // Seed the mock user into the database so permission lookups succeed.
-        // The Zitadel auth middleware will validate the JWT, extract sub, and JIT-provision
-        // the user. But we need platform resources + org membership for authorization.
-        {
-            use flowplane::storage::create_pool;
-            let db_cfg = flowplane::config::DatabaseConfig {
-                url: db_url.clone(),
-                auto_migrate: false, // CP already migrated
-                max_connections: 2,
-                min_connections: 1,
-                ..Default::default()
-            };
-            let pool = create_pool(&db_cfg).await?;
-
-            // Ensure platform resources (platform org + platform-admin team)
-            flowplane::api::handlers::bootstrap::ensure_platform_resources(&pool)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to ensure platform resources: {}", e))?;
-
-            // JIT provision the mock user
-            use flowplane::storage::repositories::{SqlxUserRepository, UserRepository};
-            let user_repo = SqlxUserRepository::new(pool.clone());
-            let user = user_repo
-                .upsert_from_jwt(
-                    "mock-oidc-user-001",
-                    "admin@flowplane.local",
-                    "Mock Admin",
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to upsert mock user: {}", e))?;
-
-            // Add the user as Owner of the platform org
-            use flowplane::auth::organization::OrgRole;
-            use flowplane::storage::repositories::{
-                OrgMembershipRepository, OrganizationRepository,
-                SqlxOrgMembershipRepository, SqlxOrganizationRepository,
-            };
-            let org_repo = SqlxOrganizationRepository::new(pool.clone());
-            let platform_org = org_repo
-                .get_organization_by_name("platform")
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to get platform org: {}", e))?
-                .ok_or_else(|| anyhow::anyhow!("Platform org not found after ensure_platform_resources"))?;
-
-            let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
-            // Idempotent: check if membership already exists
-            match membership_repo.get_membership(&user.id, &platform_org.id).await {
-                Ok(Some(_)) => {
-                    info!("Mock user already has platform owner membership");
-                }
-                Ok(None) => {
-                    membership_repo
-                        .create_membership(&user.id, &platform_org.id, OrgRole::Owner)
-                        .await
-                        .map_err(|e| {
-                            anyhow::anyhow!("Failed to create platform owner membership: {}", e)
-                        })?;
-                    info!("Mock user platform owner membership created");
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("Failed to check mock user membership: {}", e));
-                }
-            }
-        }
-
-        // Start Envoy if available
-        let envoy = if EnvoyHandle::is_available() {
-            let envoy_config = EnvoyConfig::new(SHARED_ENVOY_ADMIN_PORT, SHARED_XDS_PORT)
-                .with_metadata(serde_json::json!({
-                    "team": E2E_SHARED_TEAM
-                }));
-
-            let envoy = EnvoyHandle::start(envoy_config)?;
-
-            with_timeout(TestTimeout::startup("Shared Envoy ready"), async {
-                envoy.wait_ready().await
-            })
-            .await?;
-            info!(admin_port = SHARED_ENVOY_ADMIN_PORT, "Shared Envoy ready");
-
-            Some(envoy)
-        } else {
-            info!("Envoy binary not found - tests will skip proxy verification");
-            None
-        };
-
-        // Store mock OIDC server in static to keep it alive
-        let auth_config = E2eAuthConfig::MockOidc {
-            issuer_url: issuer_url.clone(),
-            jwks_url: jwks_url.clone(),
-        };
-        let _ = SHARED_MOCK_OIDC_SERVER.set(mock_server);
-
-        // Dummy ZitadelTestConfig for backward compat
-        let dummy_zitadel_config = ZitadelTestConfig {
-            base_url: String::new(),
-            admin_pat: String::new(),
-            project_id: project_id.clone(),
-            spa_client_id: String::new(),
-        };
-
-        Ok(SharedInfrastructure {
-            cp,
-            envoy,
-            mocks,
-            db_url,
-            zitadel_config: dummy_zitadel_config,
-            auth_mode: E2eAuthMode::ProdMockOidc,
-            auth_token,
-            team: E2E_SHARED_TEAM.to_string(),
-            org: "platform".to_string(),
-            auth_config,
-            mtls_ca: None,
-            mtls_server_cert: None,
-            mtls_envoy_client_cert: None,
-        })
-    }
-
-    /// Prod-Zitadel initialization: full Zitadel container (existing path).
+    /// Prod initialization: full Zitadel container.
     async fn initialize_prod_zitadel() -> anyhow::Result<SharedInfrastructure> {
         // Check if mTLS is requested via environment variable
         let enable_mtls = std::env::var("FLOWPLANE_E2E_MTLS").ok().as_deref() == Some("1");
@@ -835,7 +617,7 @@ impl SharedInfrastructure {
             envoy,
             mocks,
             db_url,
-            auth_mode: E2eAuthMode::ProdZitadel,
+            auth_mode: E2eAuthMode::Prod,
             auth_token: superadmin_token,
             team: E2E_SHARED_TEAM.to_string(),
             org: "platform".to_string(),
@@ -845,6 +627,85 @@ impl SharedInfrastructure {
             mtls_server_cert,
             mtls_envoy_client_cert,
         })
+    }
+
+    /// Get a token for the admin/superuser persona.
+    /// Dev: returns the dev bearer token
+    /// Prod: calls obtain_human_token with superadmin creds
+    pub async fn get_admin_token(&self) -> anyhow::Result<String> {
+        match &self.auth_mode {
+            E2eAuthMode::Dev => Ok(self.auth_token.clone()),
+            E2eAuthMode::Prod => {
+                zitadel::obtain_human_token(
+                    &self.zitadel_config,
+                    zitadel::SUPERADMIN_EMAIL,
+                    zitadel::SUPERADMIN_PASSWORD,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Get a token for a specific user persona.
+    /// Dev: returns the default auth_token (single-user mode)
+    /// Prod: calls obtain_human_token with provided creds
+    pub async fn get_user_token(&self, email: &str, password: &str) -> anyhow::Result<String> {
+        match &self.auth_mode {
+            E2eAuthMode::Dev => Ok(self.auth_token.clone()),
+            E2eAuthMode::Prod => {
+                zitadel::obtain_human_token(&self.zitadel_config, email, password).await
+            }
+        }
+    }
+
+    /// Get a token for a machine/agent user.
+    /// Dev: returns the default auth_token
+    /// Prod: calls obtain_agent_token with client credentials
+    pub async fn get_agent_token(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> anyhow::Result<String> {
+        match &self.auth_mode {
+            E2eAuthMode::Dev => Ok(self.auth_token.clone()),
+            E2eAuthMode::Prod => {
+                zitadel::obtain_agent_token(&self.zitadel_config, client_id, client_secret).await
+            }
+        }
+    }
+
+    /// Create a test user in the auth provider.
+    /// Dev: no-op (returns a fake user ID)
+    /// Prod: calls create_human_user
+    pub async fn create_test_user(
+        &self,
+        email: &str,
+        first_name: &str,
+        last_name: &str,
+        password: &str,
+    ) -> anyhow::Result<String> {
+        match &self.auth_mode {
+            E2eAuthMode::Dev => {
+                // Return a fake user ID — user doesn't exist in auth provider
+                Ok(format!("mock-user-{}", email))
+            }
+            E2eAuthMode::Prod => {
+                zitadel::create_human_user(
+                    &self.zitadel_config.base_url,
+                    &self.zitadel_config.admin_pat,
+                    email,
+                    first_name,
+                    last_name,
+                    password,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Check if running in a mode that supports multi-user testing
+    pub fn supports_multi_user(&self) -> bool {
+        matches!(self.auth_mode, E2eAuthMode::Prod)
     }
 
     /// Get API URL

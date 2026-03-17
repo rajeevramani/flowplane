@@ -14,9 +14,8 @@ use crate::common::{
         ApiClient,
     },
     harness::{TestHarness, TestHarnessConfig},
-    shared_infra::SharedInfrastructure,
+    shared_infra::{E2eAuthMode, SharedInfrastructure},
     timeout::{with_timeout, TestTimeout},
-    zitadel,
 };
 
 /// Test that superadmin can authenticate and access the API
@@ -27,19 +26,19 @@ async fn test_100_initialize_app() {
         .await
         .expect("Failed to initialize shared infrastructure");
 
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!("SKIP: test_100_initialize_app requires admin privileges (prod mode only)");
+        return;
+    }
+
     let api = ApiClient::new(infra.api_url());
 
-    // Obtain superadmin JWT
-    let token = with_timeout(TestTimeout::default_with_label("Obtain superadmin JWT"), async {
-        zitadel::obtain_human_token(
-            &infra.zitadel_config,
-            zitadel::SUPERADMIN_EMAIL,
-            zitadel::SUPERADMIN_PASSWORD,
-        )
-        .await
+    // Obtain admin token (mode-agnostic)
+    let token = with_timeout(TestTimeout::default_with_label("Obtain admin token"), async {
+        infra.get_admin_token().await
     })
     .await
-    .expect("JWT acquisition should succeed");
+    .expect("Token acquisition should succeed");
 
     // Verify JWT is valid by calling the API
     let orgs = with_timeout(TestTimeout::default_with_label("List organizations"), async {

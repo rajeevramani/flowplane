@@ -12,9 +12,16 @@ pub mod compose_runner;
 pub mod config;
 pub mod config_cmd;
 pub mod credentials;
+pub mod expose;
+pub mod filter;
+pub mod import;
+pub mod learn;
+pub mod list;
 pub mod listeners;
+pub mod logs;
 pub mod output;
 pub mod routes;
+pub mod status;
 pub mod teams;
 
 use std::sync::Arc;
@@ -125,6 +132,64 @@ pub enum Commands {
         #[command(subcommand)]
         command: teams::TeamCommands,
     },
+
+    /// Expose a local service through the gateway
+    Expose {
+        /// Upstream URL to expose (e.g., http://localhost:3000)
+        upstream: String,
+        /// Name for the exposed service (auto-generated if omitted)
+        #[arg(long)]
+        name: Option<String>,
+        /// Path prefix to route (can be specified multiple times)
+        #[arg(long)]
+        path: Option<Vec<String>>,
+        /// Port override (auto-assigned if omitted)
+        #[arg(long)]
+        port: Option<u16>,
+    },
+
+    /// Remove an exposed service
+    Unexpose {
+        /// Name of the exposed service to remove
+        name: String,
+    },
+
+    /// Import API definitions
+    Import {
+        #[command(subcommand)]
+        command: import::ImportCommands,
+    },
+
+    /// Manage API learning sessions
+    Learn {
+        #[command(subcommand)]
+        command: learn::LearnCommands,
+    },
+
+    /// Filter management commands (CRUD + attach/detach)
+    Filter {
+        #[command(subcommand)]
+        command: filter::FilterCommands,
+    },
+
+    /// Show system status or lookup a specific listener
+    Status {
+        /// Listener name to look up (omit for system overview)
+        name: Option<String>,
+    },
+
+    /// Run diagnostic health checks
+    Doctor,
+
+    /// List exposed services
+    List,
+
+    /// View local dev stack logs
+    Logs {
+        /// Follow log output
+        #[arg(short, long)]
+        follow: bool,
+    },
     // MCP is available via HTTP at /api/v1/mcp (no CLI command needed)
 }
 
@@ -223,6 +288,31 @@ async fn run_cli_commands(
         | Commands::Init { .. }
         | Commands::Down { .. }
         | Commands::Auth { .. } => unreachable!(),
+        Commands::Import { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            import::handle_import_command(&client, &team, command).await?
+        }
+        Commands::Expose { upstream, name, path, port } => {
+            let client = create_http_client(token, token_file, base_url.clone(), timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            let resolved_base_url = config::resolve_base_url(base_url);
+            expose::handle_expose_command(
+                &client,
+                &team,
+                &upstream,
+                name.as_deref(),
+                path,
+                port,
+                &resolved_base_url,
+            )
+            .await?
+        }
+        Commands::Unexpose { name } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            expose::handle_unexpose_command(&client, &team, &name).await?
+        }
         Commands::Database { command } => handle_database_command(command, &database).await?,
         Commands::Cluster { command } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
@@ -239,10 +329,39 @@ async fn run_cli_commands(
             let team = config::resolve_team(team_flag)?;
             routes::handle_route_command(command, &client, &team).await?
         }
+        Commands::Learn { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            learn::handle_learn_command(command, &client, &team).await?
+        }
         Commands::Config { command } => config_cmd::handle_config_command(command).await?,
         Commands::Team { command } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             teams::handle_team_command(command, &client).await?
+        }
+        Commands::Filter { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            filter::handle_filter_command(command, &client, &team).await?
+        }
+        Commands::Status { name } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            status::handle_status_command(&client, &team, name.as_deref()).await?
+        }
+        Commands::Doctor => {
+            let client = create_http_client(token, token_file, base_url.clone(), timeout, verbose)?;
+            let resolved_base_url = config::resolve_base_url(base_url);
+            status::handle_doctor_command(&client, &resolved_base_url).await?
+        }
+        Commands::List => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            list::handle_list_command(&client, &team).await?
+        }
+        Commands::Logs { follow } => {
+            let resolved_base_url = config::resolve_base_url(base_url);
+            logs::handle_logs_command(&resolved_base_url, follow).await?
         }
     }
 

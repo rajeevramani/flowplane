@@ -58,12 +58,7 @@ impl CliRunner {
         // Write credentials file with the auth token
         std::fs::write(fp_dir.join("credentials"), &harness.auth_token)?;
 
-        Ok(Self {
-            binary_path,
-            _home_dir: home_dir,
-            home_path,
-            env_vars: HashMap::new(),
-        })
+        Ok(Self { binary_path, _home_dir: home_dir, home_path, env_vars: HashMap::new() })
     }
 
     /// Add an env var for subsequent runs.
@@ -78,11 +73,7 @@ impl CliRunner {
     }
 
     /// Run a CLI command with an explicit timeout.
-    pub fn run_with_timeout(
-        &self,
-        args: &[&str],
-        timeout: Duration,
-    ) -> anyhow::Result<CliOutput> {
+    pub fn run_with_timeout(&self, args: &[&str], timeout: Duration) -> anyhow::Result<CliOutput> {
         let mut cmd = Command::new(&self.binary_path);
         cmd.args(args);
 
@@ -233,10 +224,7 @@ fn wait_with_timeout(
     match rx.recv_timeout(timeout) {
         Ok(result) => result.map_err(|e| anyhow::anyhow!("CLI process failed: {e}")),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            anyhow::bail!(
-                "CLI command timed out after {}s",
-                timeout.as_secs()
-            )
+            anyhow::bail!("CLI command timed out after {}s", timeout.as_secs())
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             anyhow::bail!("CLI process channel disconnected unexpectedly")
@@ -269,11 +257,8 @@ mod tests {
 
     #[test]
     fn test_cli_output_assertions() {
-        let output = CliOutput {
-            exit_code: 0,
-            stdout: "hello world\n".to_string(),
-            stderr: String::new(),
-        };
+        let output =
+            CliOutput { exit_code: 0, stdout: "hello world\n".to_string(), stderr: String::new() };
         output.assert_success();
         output.assert_exit_code(0);
         output.assert_stdout_contains("hello");
@@ -282,21 +267,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "Expected exit code 0")]
     fn test_cli_output_assert_success_panics_on_failure() {
-        let output = CliOutput {
-            exit_code: 1,
-            stdout: String::new(),
-            stderr: "error\n".to_string(),
-        };
+        let output =
+            CliOutput { exit_code: 1, stdout: String::new(), stderr: "error\n".to_string() };
         output.assert_success();
     }
 
     #[test]
     fn test_cli_output_assert_failure() {
-        let output = CliOutput {
-            exit_code: 1,
-            stdout: String::new(),
-            stderr: "error\n".to_string(),
-        };
+        let output =
+            CliOutput { exit_code: 1, stdout: String::new(), stderr: "error\n".to_string() };
         output.assert_failure();
         output.assert_stderr_contains("error");
     }

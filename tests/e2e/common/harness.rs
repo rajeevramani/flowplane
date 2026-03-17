@@ -386,8 +386,7 @@ impl TestHarness {
 
         let auth_mode = match shared.auth_mode {
             super::shared_infra::E2eAuthMode::Dev => flowplane::config::AuthMode::Dev,
-            super::shared_infra::E2eAuthMode::ProdMockOidc => flowplane::config::AuthMode::Prod,
-            super::shared_infra::E2eAuthMode::ProdZitadel => flowplane::config::AuthMode::Prod,
+            super::shared_infra::E2eAuthMode::Prod => flowplane::config::AuthMode::Prod,
         };
 
         Ok(Self {
@@ -575,13 +574,12 @@ impl TestHarness {
                     flowplane::config::AuthMode::Dev,
                 )
             }
-            super::shared_infra::E2eAuthMode::ProdMockOidc
-            | super::shared_infra::E2eAuthMode::ProdZitadel => {
+            super::shared_infra::E2eAuthMode::Prod => {
                 // In prod isolated mode, there's no shared Zitadel/mock — token comes later
                 (
                     String::new(),
                     super::shared_infra::E2E_SHARED_TEAM.to_string(),
-                    "platform".to_string(),
+                    "e2e-org".to_string(),
                     flowplane::config::AuthMode::Prod,
                 )
             }

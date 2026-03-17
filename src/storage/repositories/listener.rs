@@ -606,6 +606,37 @@ impl ListenerRepository {
         Ok(count)
     }
 
+    /// Find a listener by address and port.
+    ///
+    /// Used to detect address:port collisions before creating a new listener.
+    /// Only matches listeners that have a non-NULL port (matching the partial
+    /// unique index `idx_listeners_address_port`).
+    #[instrument(skip(self), fields(address = %address, port = %port), name = "db_find_listener_by_address_port")]
+    pub async fn find_by_address_port(
+        &self,
+        address: &str,
+        port: i64,
+    ) -> Result<Option<ListenerData>> {
+        let row = sqlx::query_as::<sqlx::Postgres, ListenerRow>(
+            "SELECT l.id, l.name, l.address, l.port, l.protocol, l.configuration, l.version, l.source, l.team, t.name as team_name, l.import_id, l.dataplane_id, l.created_at, l.updated_at \
+             FROM listeners l LEFT JOIN teams t ON l.team = t.id \
+             WHERE l.address = $1 AND l.port = $2 LIMIT 1"
+        )
+        .bind(address)
+        .bind(port)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, address = %address, port = %port, "Failed to find listener by address:port");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to find listener at {}:{}", address, port),
+            }
+        })?;
+
+        Ok(row.map(ListenerData::from))
+    }
+
     pub fn pool(&self) -> &DbPool {
         &self.pool
     }

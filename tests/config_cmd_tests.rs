@@ -23,10 +23,7 @@ fn config_paths_from_base_creates_expected_structure() {
 
     assert_eq!(paths.flowplane_dir, tmp.path().join(".flowplane"));
     assert_eq!(paths.config_path, tmp.path().join(".flowplane/config.toml"));
-    assert_eq!(
-        paths.credentials_path,
-        tmp.path().join(".flowplane/credentials")
-    );
+    assert_eq!(paths.credentials_path, tmp.path().join(".flowplane/credentials"));
 }
 
 // ---------------------------------------------------------------------------
@@ -57,15 +54,9 @@ fn config_round_trip_all_keys() {
     assert_eq!(loaded.timeout, Some(45));
     assert_eq!(loaded.team.as_deref(), Some("platform"));
     assert_eq!(loaded.org.as_deref(), Some("acme"));
-    assert_eq!(
-        loaded.oidc_issuer.as_deref(),
-        Some("https://auth.example.com")
-    );
+    assert_eq!(loaded.oidc_issuer.as_deref(), Some("https://auth.example.com"));
     assert_eq!(loaded.oidc_client_id.as_deref(), Some("client-id-xyz"));
-    assert_eq!(
-        loaded.callback_url.as_deref(),
-        Some("http://localhost:3000/callback")
-    );
+    assert_eq!(loaded.callback_url.as_deref(), Some("http://localhost:3000/callback"));
 }
 
 // ---------------------------------------------------------------------------
@@ -145,11 +136,7 @@ fn validate_config_key_accepts_all_valid_keys() {
         "callback_url",
     ];
     for key in &valid {
-        assert!(
-            validate_config_key(key).is_ok(),
-            "Expected key '{}' to be valid",
-            key
-        );
+        assert!(validate_config_key(key).is_ok(), "Expected key '{}' to be valid", key);
     }
 }
 
@@ -159,22 +146,10 @@ fn validate_config_key_accepts_all_valid_keys() {
 
 #[test]
 fn validate_config_key_rejects_unknown() {
-    let invalid = [
-        "unknown",
-        "Token",
-        "BASE_URL",
-        "oidc",
-        "",
-        "auth_mode",
-        "dev_token",
-    ];
+    let invalid = ["unknown", "Token", "BASE_URL", "oidc", "", "auth_mode", "dev_token"];
     for key in &invalid {
         let result = validate_config_key(key);
-        assert!(
-            result.is_err(),
-            "Expected key '{}' to be rejected",
-            key
-        );
+        assert!(result.is_err(), "Expected key '{}' to be rejected", key);
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("Unknown configuration key"),
@@ -197,10 +172,7 @@ fn config_save_creates_directory_and_file() {
     // Directory should not exist yet
     assert!(!paths.flowplane_dir.exists());
 
-    let config = CliConfig {
-        base_url: Some("http://test:1234".into()),
-        ..Default::default()
-    };
+    let config = CliConfig { base_url: Some("http://test:1234".into()), ..Default::default() };
     config.save_to_paths(&paths).unwrap();
 
     assert!(paths.flowplane_dir.exists());
@@ -219,20 +191,13 @@ fn config_file_is_readable_after_save() {
     let tmp = TempDir::new().unwrap();
     let paths = CliConfigPaths::from_base(tmp.path()).unwrap();
 
-    let config = CliConfig {
-        token: Some("secret".into()),
-        ..Default::default()
-    };
+    let config = CliConfig { token: Some("secret".into()), ..Default::default() };
     config.save_to_paths(&paths).unwrap();
 
     let metadata = std::fs::metadata(&paths.config_path).unwrap();
     let mode = metadata.mode() & 0o777;
     // File should be readable by owner at minimum
-    assert!(
-        mode & 0o400 != 0,
-        "Config file should be owner-readable, got mode {:o}",
-        mode
-    );
+    assert!(mode & 0o400 != 0, "Config file should be owner-readable, got mode {:o}", mode);
     // Config contains secrets (tokens) — no group or other access
     assert!(
         mode & 0o077 == 0,
@@ -247,10 +212,7 @@ fn config_file_is_readable_after_save() {
 
 #[test]
 fn config_omits_none_fields_in_toml() {
-    let config = CliConfig {
-        base_url: Some("http://localhost:8080".into()),
-        ..Default::default()
-    };
+    let config = CliConfig { base_url: Some("http://localhost:8080".into()), ..Default::default() };
 
     let toml_str = toml::to_string_pretty(&config).unwrap();
     assert!(toml_str.contains("base_url"));
@@ -269,17 +231,12 @@ fn config_oidc_issuer_round_trip() {
     let tmp = TempDir::new().unwrap();
     let paths = CliConfigPaths::from_base(tmp.path()).unwrap();
 
-    let config = CliConfig {
-        oidc_issuer: Some("https://zitadel.example.com".into()),
-        ..Default::default()
-    };
+    let config =
+        CliConfig { oidc_issuer: Some("https://zitadel.example.com".into()), ..Default::default() };
     config.save_to_paths(&paths).unwrap();
 
     let loaded = CliConfig::load_from_paths(&paths).unwrap();
-    assert_eq!(
-        loaded.oidc_issuer.as_deref(),
-        Some("https://zitadel.example.com")
-    );
+    assert_eq!(loaded.oidc_issuer.as_deref(), Some("https://zitadel.example.com"));
 }
 
 #[test]
@@ -287,17 +244,12 @@ fn config_oidc_client_id_round_trip() {
     let tmp = TempDir::new().unwrap();
     let paths = CliConfigPaths::from_base(tmp.path()).unwrap();
 
-    let config = CliConfig {
-        oidc_client_id: Some("my-client-id-12345".into()),
-        ..Default::default()
-    };
+    let config =
+        CliConfig { oidc_client_id: Some("my-client-id-12345".into()), ..Default::default() };
     config.save_to_paths(&paths).unwrap();
 
     let loaded = CliConfig::load_from_paths(&paths).unwrap();
-    assert_eq!(
-        loaded.oidc_client_id.as_deref(),
-        Some("my-client-id-12345")
-    );
+    assert_eq!(loaded.oidc_client_id.as_deref(), Some("my-client-id-12345"));
 }
 
 #[test]
@@ -312,10 +264,7 @@ fn config_callback_url_round_trip() {
     config.save_to_paths(&paths).unwrap();
 
     let loaded = CliConfig::load_from_paths(&paths).unwrap();
-    assert_eq!(
-        loaded.callback_url.as_deref(),
-        Some("http://localhost:3000/auth/callback")
-    );
+    assert_eq!(loaded.callback_url.as_deref(), Some("http://localhost:3000/auth/callback"));
 }
 
 // ---------------------------------------------------------------------------
@@ -342,15 +291,9 @@ fn config_incremental_update_preserves_other_keys() {
 
     // Reload and verify both old and new keys present
     let final_config = CliConfig::load_from_paths(&paths).unwrap();
-    assert_eq!(
-        final_config.base_url.as_deref(),
-        Some("http://original:8080")
-    );
+    assert_eq!(final_config.base_url.as_deref(), Some("http://original:8080"));
     assert_eq!(final_config.team.as_deref(), Some("eng"));
-    assert_eq!(
-        final_config.oidc_issuer.as_deref(),
-        Some("https://auth.test")
-    );
+    assert_eq!(final_config.oidc_issuer.as_deref(), Some("https://auth.test"));
 }
 
 // ---------------------------------------------------------------------------
@@ -405,10 +348,7 @@ fn cli_serve_dev_subcommand_parses() {
     use flowplane::cli::Cli;
 
     let result = Cli::try_parse_from(["flowplane", "serve", "--dev"]);
-    assert!(
-        result.is_ok(),
-        "Expected 'serve --dev' to be a valid subcommand"
-    );
+    assert!(result.is_ok(), "Expected 'serve --dev' to be a valid subcommand");
 }
 
 // ---------------------------------------------------------------------------
@@ -449,10 +389,7 @@ fn cli_config_set_invalid_key_rejected_by_clap() {
     use flowplane::cli::Cli;
 
     let result = Cli::try_parse_from(["flowplane", "config", "set", "bogus_key", "value"]);
-    assert!(
-        result.is_err(),
-        "Expected 'config set bogus_key' to be rejected by clap value_parser"
-    );
+    assert!(result.is_err(), "Expected 'config set bogus_key' to be rejected by clap value_parser");
 }
 
 #[test]
@@ -528,19 +465,10 @@ fn config_handles_special_characters_in_values() {
     config.save_to_paths(&paths).unwrap();
     let loaded = CliConfig::load_from_paths(&paths).unwrap();
 
-    assert_eq!(
-        loaded.base_url.as_deref(),
-        Some("http://host:8080/path?q=1&r=2")
-    );
+    assert_eq!(loaded.base_url.as_deref(), Some("http://host:8080/path?q=1&r=2"));
     assert_eq!(loaded.team.as_deref(), Some("team with spaces"));
-    assert_eq!(
-        loaded.oidc_issuer.as_deref(),
-        Some("https://auth.example.com/realms/my-realm")
-    );
-    assert_eq!(
-        loaded.callback_url.as_deref(),
-        Some("http://localhost:3000/callback#fragment")
-    );
+    assert_eq!(loaded.oidc_issuer.as_deref(), Some("https://auth.example.com/realms/my-realm"));
+    assert_eq!(loaded.callback_url.as_deref(), Some("http://localhost:3000/callback#fragment"));
 }
 
 // ---------------------------------------------------------------------------
@@ -566,8 +494,5 @@ totally_unknown_field = "should this fail?"
     // are silently ignored by toml::from_str. Load must succeed.
     let loaded = CliConfig::load_from_paths(&paths)
         .expect("unknown fields should be ignored (no deny_unknown_fields)");
-    assert_eq!(
-        loaded.base_url.as_deref(),
-        Some("http://localhost:8080"),
-    );
+    assert_eq!(loaded.base_url.as_deref(), Some("http://localhost:8080"),);
 }
