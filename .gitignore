@@ -37,6 +37,9 @@ logs/
 *.sqlite
 *.sqlite3
 
+# Agents
+agents/
+
 # Local development and temporary files
 .local/
 .tmp/
