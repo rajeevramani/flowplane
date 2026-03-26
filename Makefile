@@ -238,25 +238,40 @@ setup-zitadel: ## Configure Zitadel platform infrastructure (project, SPA app, e
 	@./scripts/setup-zitadel.sh
 
 seed-info: ## Display credentials and configuration
-	@echo ""
-	@echo "$(CYAN)━━━ Flowplane Auth Info ━━━$(RESET)"
-	@echo ""
-	@echo "  $(GREEN)Zitadel Console:$(RESET)"
-	@echo "    URL:           $(CYAN)http://localhost:8081$(RESET)"
-	@echo "    Admin login:   $(CYAN)zitadel-admin@zitadel.localhost$(RESET) / $(CYAN)Password1!$(RESET)"
-	@echo ""
-	@echo "  $(GREEN)Superadmin:$(RESET)"
-	@echo "    Email:         $(CYAN)admin@flowplane.local$(RESET)"
-	@echo "    Note:          Seeded automatically on first startup"
-	@echo ""
-	@echo "  $(GREEN)Demo User (after 'make seed'):$(RESET)"
-	@echo "    URL:           $(CYAN)http://localhost:8080$(RESET)"
-	@echo "    Login:         $(CYAN)demo@acme-corp.com$(RESET) / $(CYAN)Flowplane1!$(RESET)"
-	@echo "    Org:           $(CYAN)acme-corp$(RESET)"
-	@echo "    Team:          $(CYAN)engineering$(RESET)"
-	@echo ""
-	@echo "  $(YELLOW)Machine user credentials are shown during 'make seed'.$(RESET)"
-	@echo ""
+	@AUTH_MODE=$$(curl -sf --max-time 3 http://localhost:8080/api/v1/auth/mode 2>/dev/null | grep -o '"auth_mode":"[^"]*"' | cut -d'"' -f4); \
+	if [ "$$AUTH_MODE" = "dev" ]; then \
+		echo ""; \
+		echo "$(CYAN)━━━ Flowplane Dev Mode ━━━$(RESET)"; \
+		echo ""; \
+		echo "  $(GREEN)API:$(RESET)           $(CYAN)http://localhost:8080/api/v1/$(RESET)"; \
+		echo "  $(GREEN)User:$(RESET)          $(CYAN)dev@flowplane.local$(RESET)"; \
+		echo "  $(GREEN)Org:$(RESET)           $(CYAN)dev-org$(RESET)"; \
+		echo "  $(GREEN)Team:$(RESET)          $(CYAN)default$(RESET)"; \
+		echo "  $(GREEN)Token:$(RESET)         $(CYAN)~/.flowplane/credentials$(RESET)"; \
+		echo ""; \
+		echo "  $(YELLOW)Data is auto-seeded on startup. No 'make seed' needed.$(RESET)"; \
+		echo ""; \
+	else \
+		echo ""; \
+		echo "$(CYAN)━━━ Flowplane Auth Info ━━━$(RESET)"; \
+		echo ""; \
+		echo "  $(GREEN)Zitadel Console:$(RESET)"; \
+		echo "    URL:           $(CYAN)http://localhost:8081$(RESET)"; \
+		echo "    Admin login:   $(CYAN)zitadel-admin@zitadel.localhost$(RESET) / $(CYAN)Password1!$(RESET)"; \
+		echo ""; \
+		echo "  $(GREEN)Superadmin:$(RESET)"; \
+		echo "    Email:         $(CYAN)admin@flowplane.local$(RESET)"; \
+		echo "    Note:          Seeded automatically on first startup"; \
+		echo ""; \
+		echo "  $(GREEN)Demo User (after 'make seed'):$(RESET)"; \
+		echo "    URL:           $(CYAN)http://localhost:8080$(RESET)"; \
+		echo "    Login:         $(CYAN)demo@acme-corp.com$(RESET) / $(CYAN)Flowplane1!$(RESET)"; \
+		echo "    Org:           $(CYAN)acme-corp$(RESET)"; \
+		echo "    Team:          $(CYAN)engineering$(RESET)"; \
+		echo ""; \
+		echo "  $(YELLOW)Machine user credentials are shown during 'make seed'.$(RESET)"; \
+		echo ""; \
+	fi
 
 # =============================================================================
 # Container Operations
@@ -272,6 +287,7 @@ down: ## Stop all services
 	-$(DOCKER_COMPOSE) -f docker-compose-mockbackend.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-envoy.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-monitoring.yml down 2>/dev/null || true
+	-$(DOCKER_COMPOSE) -f docker-compose-dev.yml down 2>/dev/null || true
 	@echo "$(GREEN)All services stopped.$(RESET)"
 
 logs: ## Tail logs from all running services
@@ -287,6 +303,7 @@ clean: down ## Remove volumes and orphan containers
 	-$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v --remove-orphans 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml down -v --remove-orphans 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-secrets-tracing.yml down -v --remove-orphans 2>/dev/null || true
+	-$(DOCKER_COMPOSE) -f docker-compose-dev.yml down -v --remove-orphans 2>/dev/null || true
 	@echo "$(YELLOW)Removing stale Zitadel credentials...$(RESET)"
 	@rm -f zitadel/machinekey/admin-pat.txt zitadel/machinekey/admin-sa.json .env.zitadel ui/.env
 	@echo "$(GREEN)Cleanup complete.$(RESET)"

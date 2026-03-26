@@ -100,6 +100,27 @@ services:
       retries: 3
       start_period: 5s
 
+  # httpbin test backend (optional — activate with --profile httpbin)
+  httpbin:
+    image: kennethreitz/httpbin:latest
+    container_name: flowplane-httpbin
+    profiles:
+      - httpbin
+    ports:
+      - "8000:80"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    networks:
+      - flowplane-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/get"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
 volumes:
   flowplane-pgdata:
     driver: local

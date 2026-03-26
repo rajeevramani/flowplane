@@ -82,6 +82,9 @@ pub enum Commands {
         /// Also start an Envoy sidecar proxy
         #[arg(long)]
         with_envoy: bool,
+        /// Also start an httpbin test backend (available at localhost:8000)
+        #[arg(long)]
+        with_httpbin: bool,
     },
 
     /// Stop the local dev environment started by `flowplane init`
@@ -233,8 +236,9 @@ pub async fn run_cli() -> crate::Result<()> {
         Commands::Serve { dev } => {
             run_server(dev).await?;
         }
-        Commands::Init { with_envoy } => {
-            compose::handle_init(with_envoy).map_err(|e| crate::Error::config(format!("{e:#}")))?;
+        Commands::Init { with_envoy, with_httpbin } => {
+            compose::handle_init(with_envoy, with_httpbin)
+                .map_err(|e| crate::Error::config(format!("{e:#}")))?;
         }
         Commands::Down { volumes } => {
             compose::handle_down(volumes).map_err(|e| crate::Error::config(format!("{e:#}")))?;
@@ -847,7 +851,10 @@ mod tests {
         let result = Cli::try_parse_from(["flowplane", "init"]);
         assert!(result.is_ok());
         let cli = result.unwrap();
-        assert!(matches!(cli.command, Some(Commands::Init { with_envoy: false })));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init { with_envoy: false, with_httpbin: false })
+        ));
     }
 
     #[test]
@@ -855,7 +862,32 @@ mod tests {
         let result = Cli::try_parse_from(["flowplane", "init", "--with-envoy"]);
         assert!(result.is_ok());
         let cli = result.unwrap();
-        assert!(matches!(cli.command, Some(Commands::Init { with_envoy: true })));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init { with_envoy: true, with_httpbin: false })
+        ));
+    }
+
+    #[test]
+    fn test_cli_init_with_httpbin() {
+        let result = Cli::try_parse_from(["flowplane", "init", "--with-httpbin"]);
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init { with_envoy: false, with_httpbin: true })
+        ));
+    }
+
+    #[test]
+    fn test_cli_init_with_envoy_and_httpbin() {
+        let result = Cli::try_parse_from(["flowplane", "init", "--with-envoy", "--with-httpbin"]);
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init { with_envoy: true, with_httpbin: true })
+        ));
     }
 
     #[test]

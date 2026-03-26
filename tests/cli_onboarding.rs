@@ -76,7 +76,30 @@ mod cli_dispatch {
     fn init_with_envoy_flag() {
         let cli = Cli::try_parse_from(["flowplane", "init", "--with-envoy"])
             .expect("init --with-envoy should parse");
-        assert!(matches!(cli.command, Some(Commands::Init { with_envoy: true })));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init { with_envoy: true, with_httpbin: false })
+        ));
+    }
+
+    #[test]
+    fn init_with_httpbin_flag() {
+        let cli = Cli::try_parse_from(["flowplane", "init", "--with-httpbin"])
+            .expect("init --with-httpbin should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init { with_envoy: false, with_httpbin: true })
+        ));
+    }
+
+    #[test]
+    fn init_with_envoy_and_httpbin_flags() {
+        let cli = Cli::try_parse_from(["flowplane", "init", "--with-envoy", "--with-httpbin"])
+            .expect("init --with-envoy --with-httpbin should parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init { with_envoy: true, with_httpbin: true })
+        ));
     }
 
     #[test]

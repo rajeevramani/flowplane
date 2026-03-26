@@ -172,10 +172,16 @@ pub async fn post_handler(
         (sid, session_id_str, false)
     };
 
-    // Extract all authorized teams from token scopes.
-    // ?team= query param is accepted but ignored — multi-team sessions eliminate
-    // the need to specify a team at connection time.
-    let teams = extract_teams(&context);
+    // Extract authorized teams from token scopes/grants.
+    // In dev mode (org:*:admin with no grants), fall back to ?team= query param.
+    let mut teams = extract_teams(&context);
+    if teams.is_empty() {
+        if let Some(ref team) = query.team {
+            if !team.is_empty() {
+                teams = vec![team.clone()];
+            }
+        }
+    }
 
     // For new sessions, create the session bound to the token's authorized teams.
     // For existing sessions, the session ID is the security boundary — any valid

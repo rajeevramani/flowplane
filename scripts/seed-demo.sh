@@ -383,6 +383,21 @@ main() {
   echo -e "${CYAN}━━━ Flowplane Demo Seed ━━━${RESET}"
   echo ""
 
+  # Check if server is running in dev mode (no Zitadel, auto-seeded)
+  local auth_mode
+  auth_mode=$(curl -sf --max-time 5 "${FLOWPLANE_URL}/api/v1/auth/mode" 2>/dev/null | jq -r '.auth_mode // empty' 2>/dev/null)
+  if [ "$auth_mode" = "dev" ]; then
+    echo -e "${GREEN}Dev mode detected — data is auto-seeded on startup.${RESET}"
+    echo -e "  User:  ${CYAN}dev@flowplane.local${RESET}"
+    echo -e "  Org:   ${CYAN}dev-org${RESET}"
+    echo -e "  Team:  ${CYAN}default${RESET}"
+    echo -e "  Token: ${CYAN}~/.flowplane/credentials${RESET}"
+    echo ""
+    echo -e "  ${YELLOW}No manual seeding needed. Run 'make seed-info' for details.${RESET}"
+    echo ""
+    exit 0
+  fi
+
   wait_for_zitadel
   wait_for_flowplane
   read_pat

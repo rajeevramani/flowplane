@@ -287,15 +287,16 @@ static_resources:
 /// 6. Run `docker compose up -d --force-recreate`
 /// 7. Wait for /health
 /// 8. Write token to ~/.flowplane/credentials and config.toml
-pub fn handle_init(with_envoy: bool) -> Result<()> {
+pub fn handle_init(with_envoy: bool, with_httpbin: bool) -> Result<()> {
     use super::compose_runner::ProductionComposeRunner;
     let runner = ProductionComposeRunner::detect()?;
-    handle_init_with_runner(with_envoy, &runner)
+    handle_init_with_runner(with_envoy, with_httpbin, &runner)
 }
 
 /// Testable variant of `handle_init` that accepts an injected `ComposeRunner`.
 pub fn handle_init_with_runner(
     with_envoy: bool,
+    with_httpbin: bool,
     runner: &dyn super::compose_runner::ComposeRunner,
 ) -> Result<()> {
     loopback_guard()?;
@@ -328,7 +329,13 @@ pub fn handle_init_with_runner(
         .status();
 
     // Build profiles list
-    let profiles: Vec<&str> = if with_envoy { vec!["envoy"] } else { vec![] };
+    let mut profiles: Vec<&str> = Vec::new();
+    if with_envoy {
+        profiles.push("envoy");
+    }
+    if with_httpbin {
+        profiles.push("httpbin");
+    }
 
     // Pass the dev token as an env var for the compose file's ${FLOWPLANE_DEV_TOKEN}
     let env_vars: Vec<(&str, &str)> = vec![("FLOWPLANE_DEV_TOKEN", token.as_str())];
@@ -356,6 +363,9 @@ pub fn handle_init_with_runner(
     eprintln!("  xDS:   localhost:18000");
     if with_envoy {
         eprintln!("  Envoy: localhost:10000 (admin: localhost:9901)");
+    }
+    if with_httpbin {
+        eprintln!("  httpbin: http://localhost:8000");
     }
     eprintln!();
     eprintln!("Token saved to ~/.flowplane/credentials");
@@ -414,6 +424,12 @@ mod tests {
     fn test_embedded_compose_yaml_contains_envoy_profile() {
         assert!(DEV_COMPOSE_YAML.contains("profiles:"));
         assert!(DEV_COMPOSE_YAML.contains("- envoy"));
+    }
+
+    #[test]
+    fn test_embedded_compose_yaml_contains_httpbin_profile() {
+        assert!(DEV_COMPOSE_YAML.contains("- httpbin"));
+        assert!(DEV_COMPOSE_YAML.contains("flowplane-httpbin"));
     }
 
     #[test]
