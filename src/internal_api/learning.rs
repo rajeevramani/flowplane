@@ -133,7 +133,7 @@ impl LearningSessionOperations {
         })?;
 
         // Verify team access
-        if !auth.can_access_team(Some(&session.team)) {
+        if !auth.is_admin && !auth.can_access_team(Some(&session.team)) {
             return Err(InternalError::not_found("Learning session", id));
         }
 

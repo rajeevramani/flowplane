@@ -488,8 +488,8 @@ pub async fn delete_learning_session_handler(
     // This ensures Access Log Service is unregistered
     if let Some(learning_service) = state.xds_state.get_learning_session_service() {
         // If session is active, we need to unregister from Access Log Service
-        // The fail_session method handles this
-        learning_service.fail_session(&id, "Cancelled by user".to_string()).await.map_err(|e| {
+        // The cancel_session method handles this
+        learning_service.cancel_session(&id).await.map_err(|e| {
             tracing::error!(error = %e, session_id = %id, team = %session.team, "Failed to cancel learning session via service");
             ApiError::Internal(format!("Failed to cancel learning session: {}", e))
         })?;

@@ -230,11 +230,14 @@ async fn cancel_session(
     yes: bool,
 ) -> Result<()> {
     if !yes {
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            anyhow::bail!("Cannot prompt for confirmation: stdin is not a terminal. Use --yes to skip confirmation.");
+        }
         println!("Are you sure you want to cancel learning session '{}'? (y/N)", session_id);
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Cancelled");
+            println!("Aborted");
             return Ok(());
         }
     }
