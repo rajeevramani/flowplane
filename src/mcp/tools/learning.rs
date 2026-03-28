@@ -405,7 +405,7 @@ pub async fn execute_create_learning_session(
     let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateLearningSessionInternalRequest {
-        team: if team.is_empty() { None } else { Some(team.to_string()) },
+        team: auth.team.clone(),
         route_pattern: route_pattern.to_string(),
         cluster_name,
         http_methods,

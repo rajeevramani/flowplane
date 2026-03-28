@@ -11,8 +11,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::instrument;
 
-// validate_team_in_org is shared — use super::validate_team_in_org
-use super::validate_team_in_org;
+// validate_team_in_org removed — resolve_mcp_auth handles team validation
 
 /// Tool definition for listing aggregated schemas
 pub fn cp_list_aggregated_schemas_tool() -> Tool {
@@ -210,15 +209,9 @@ pub async fn execute_export_schema_openapi(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    // Validate team belongs to caller's org
-    if let Some(oid) = org_id {
-        let pool = xds_state
-            .cluster_repository
-            .as_ref()
-            .ok_or_else(|| McpError::InternalError("Database not available".to_string()))?
-            .pool();
-        validate_team_in_org(pool, team, oid).await?;
-    }
+    // Team validation is handled by resolve_mcp_auth below (resolves name → UUID
+    // and validates org membership). The previous validate_team_in_org call here
+    // was passing team name to a function expecting UUID, causing failures.
 
     let schema_ids: Vec<i64> = args
         .get("schemaIds")
