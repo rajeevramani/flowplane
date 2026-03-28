@@ -633,17 +633,32 @@ impl McpHandler {
         let result = match params.name.as_str() {
             // Read operations that only need db_pool (direct table query for efficiency)
             "cp_list_routes" => {
-                tools::execute_list_routes(&self.db_pool, &team_uuid, self.context.org_id.as_ref(), args)
-                    .await
+                tools::execute_list_routes(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             // Query-first tools (direct db_pool access for token efficiency)
             "cp_query_port" => {
-                tools::execute_query_port(&self.db_pool, &team_uuid, self.context.org_id.as_ref(), args)
-                    .await
+                tools::execute_query_port(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             "cp_query_path" => {
-                tools::execute_query_path(&self.db_pool, &team_uuid, self.context.org_id.as_ref(), args)
-                    .await
+                tools::execute_query_path(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             // Ops tools that only need db_pool (diagnostic/reporting queries)
             "ops_trace_request" => {

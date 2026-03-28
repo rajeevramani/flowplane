@@ -373,7 +373,9 @@ pub fn handle_init_with_runner(
     eprintln!();
     eprintln!("What's next?");
     if with_envoy && with_httpbin {
-        eprintln!("  flowplane expose http://httpbin:80 --name demo   Expose httpbin through Envoy");
+        eprintln!(
+            "  flowplane expose http://httpbin:80 --name demo   Expose httpbin through Envoy"
+        );
         eprintln!("  curl http://localhost:10001/get                  Verify traffic flows");
     }
     eprintln!("  flowplane list                                   See exposed services");
