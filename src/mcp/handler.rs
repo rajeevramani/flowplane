@@ -788,7 +788,11 @@ impl McpHandler {
             | "cp_list_filter_types"
             | "cp_get_filter_type"
             | "devops_get_deployment_status"
-            | "cp_export_schema_openapi" => {
+            | "cp_export_schema_openapi"
+            | "cp_list_secrets"
+            | "cp_get_secret"
+            | "cp_create_secret"
+            | "cp_delete_secret" => {
                 let xds_state = match &self.xds_state {
                     Some(state) => state,
                     None => {
@@ -1285,6 +1289,43 @@ impl McpHandler {
                     // DevOps agent workflow operations
                     "devops_get_deployment_status" => {
                         tools::execute_devops_get_deployment_status(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Secret operations
+                    "cp_list_secrets" => {
+                        tools::execute_list_secrets(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_get_secret" => {
+                        tools::execute_get_secret(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_create_secret" => {
+                        tools::execute_create_secret(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_delete_secret" => {
+                        tools::execute_delete_secret(
                             xds_state,
                             &tool_team,
                             self.context.org_id.as_ref(),

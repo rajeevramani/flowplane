@@ -7,8 +7,8 @@ pub mod types;
 
 use super::team_access::TeamPath;
 pub use types::{
-    CreateSecretReferenceRequest, CreateSecretRequest, ListSecretsQuery, SecretResponse,
-    TeamSecretPath, UpdateSecretRequest,
+    CreateSecretReferenceRequest, CreateSecretRequest, ListSecretsQuery, RotateSecretRequest,
+    SecretResponse, TeamSecretPath, UpdateSecretRequest,
 };
 
 use axum::{
@@ -152,17 +152,49 @@ pub async fn create_secret_reference_handler(
     )
     .await?;
 
-    // Validate backend type
-    let valid_backends = ["vault", "aws_secrets_manager", "gcp_secret_manager"];
-    if !valid_backends.contains(&payload.backend.as_str()) {
+    // Validate backend type string
+    let backend_type: crate::secrets::backends::SecretBackendType =
+        payload.backend.parse().map_err(|_| {
+            ApiError::BadRequest(format!(
+                "Invalid backend type '{}'. Valid options: vault, aws_secrets_manager, gcp_secret_manager",
+                payload.backend
+            ))
+        })?;
+
+    // Verify the backend is actually registered and available
+    let registry = state.xds_state.get_secret_backend_registry().ok_or_else(|| {
+        ApiError::service_unavailable(
+            "Secret backend registry not initialized. External secret backends are unavailable.",
+        )
+    })?;
+
+    if !registry.has_backend(backend_type) {
         return Err(ApiError::BadRequest(format!(
-            "Invalid backend type '{}'. Valid options: {:?}",
-            payload.backend, valid_backends
+            "Backend '{}' is not configured. Available backends: {:?}",
+            payload.backend,
+            registry.registered_backends()
         )));
     }
 
-    // Check if external_secrets feature is enabled
-    // (Optional - could be skipped for MVP)
+    // Validate the reference exists in the backend (best-effort)
+    match registry.validate_reference(backend_type, &payload.reference).await {
+        Ok(true) => { /* reference exists */ }
+        Ok(false) => {
+            return Err(ApiError::BadRequest(format!(
+                "Reference '{}' not found in {} backend",
+                payload.reference, payload.backend
+            )));
+        }
+        Err(e) => {
+            tracing::warn!(
+                backend = %payload.backend,
+                reference = %payload.reference,
+                error = %e,
+                "Failed to validate reference in backend, proceeding with creation"
+            );
+            // Allow creation even if validation fails (backend might be temporarily unavailable)
+        }
+    }
 
     // Get repository
     let repo = state
@@ -464,4 +496,109 @@ pub async fn delete_secret_handler(
     repo.delete(&path.secret_id).await.map_err(ApiError::from)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/teams/{team}/secrets/{secret_id}/rotate",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("secret_id" = String, Path, description = "Secret ID"),
+    ),
+    request_body = RotateSecretRequest,
+    responses(
+        (status = 200, description = "Secret rotated", body = SecretResponse),
+        (status = 400, description = "Validation error"),
+        (status = 404, description = "Secret not found"),
+        (status = 503, description = "Secret repository unavailable"),
+    ),
+    tag = "Secrets"
+)]
+#[instrument(skip(state, payload), fields(team = %path.team, secret_id = %path.secret_id, user_id = ?context.user_id))]
+pub async fn rotate_secret_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path(path): Path<TeamSecretPath>,
+    Json(payload): Json<RotateSecretRequest>,
+) -> Result<Json<SecretResponse>, ApiError> {
+    use validator::Validate;
+    payload.validate().map_err(ApiError::from)?;
+
+    // Authorization: require secrets:update scope
+    require_resource_access_resolved(&state, &context, "secrets", "update", Some(&path.team))
+        .await?;
+
+    // Resolve team name to UUID for database operations
+    let team_id = crate::api::handlers::team_access::resolve_team_name(
+        &state,
+        &path.team,
+        context.org_id.as_ref(),
+    )
+    .await?;
+
+    let repo = state
+        .xds_state
+        .secret_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("Secret repository unavailable"))?;
+
+    // Get existing secret to verify ownership and type
+    let existing = repo.get_by_id(&path.secret_id).await.map_err(|_| {
+        ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id))
+    })?;
+
+    // Verify team access using unified verifier
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+    let existing = verify_team_access(existing, &team_scopes).await?;
+
+    // Verify the secret belongs to the specified team (URL consistency)
+    if existing.team != team_id {
+        return Err(ApiError::NotFound(format!("Secret with ID '{}' not found", path.secret_id)));
+    }
+
+    // Reference-based secrets cannot be rotated through this endpoint
+    if existing.backend.is_some() {
+        return Err(ApiError::BadRequest(
+            "Cannot rotate a reference-based secret; update the external backend directly"
+                .to_string(),
+        ));
+    }
+
+    // Validate the new configuration matches the existing secret type
+    let spec: SecretSpec = serde_json::from_value(payload.configuration).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "Invalid secret configuration for type {:?}: {}",
+            existing.secret_type, e
+        ))
+    })?;
+
+    if spec.secret_type() != existing.secret_type {
+        return Err(ApiError::BadRequest(format!(
+            "Configuration type mismatch: expected {:?}, got {:?}",
+            existing.secret_type,
+            spec.secret_type()
+        )));
+    }
+
+    spec.validate().map_err(ApiError::from)?;
+
+    // Build update request with new configuration (version bump happens in repo.update)
+    // SDS re-push is automatic: the secret watcher polls updated_at and refreshes the cache
+    let request = DbUpdateSecretRequest {
+        description: None,
+        configuration: Some(spec),
+        expires_at: payload.expires_at.map(Some),
+    };
+
+    let updated = repo.update(&path.secret_id, request).await.map_err(ApiError::from)?;
+
+    tracing::info!(
+        secret_id = %path.secret_id,
+        secret_name = %updated.name,
+        new_version = updated.version,
+        "Secret rotated"
+    );
+
+    Ok(Json(SecretResponse::from_data(&updated)))
 }

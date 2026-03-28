@@ -32,7 +32,7 @@ use super::{
     },
     handlers::secrets::{
         create_secret_handler, create_secret_reference_handler, delete_secret_handler,
-        get_secret_handler,
+        get_secret_handler, rotate_secret_handler,
     },
     handlers::{
         add_team_member, admin_add_org_member, admin_create_organization, admin_create_team,
@@ -450,6 +450,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/secrets/{secret_id}", get(get_secret_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", patch(update_secret_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", delete(delete_secret_handler))
+        .route("/api/v1/teams/{team}/secrets/{secret_id}/rotate", post(rotate_secret_handler))
         // Custom WASM filter endpoints
         .route("/api/v1/teams/{team}/custom-filters", get(list_custom_wasm_filters_handler))
         .route("/api/v1/teams/{team}/custom-filters", post(create_custom_wasm_filter_handler))

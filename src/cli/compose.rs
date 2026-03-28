@@ -149,6 +149,15 @@ pub fn loopback_guard() -> Result<()> {
     Ok(())
 }
 
+/// Generate a base64-encoded 32-byte random key for dev-mode secret encryption.
+fn generate_dev_encryption_key() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    base64::engine::general_purpose::STANDARD.encode(key)
+}
+
 /// Write the embedded compose YAML to `~/.flowplane/docker-compose-dev.yml`.
 ///
 /// The file is written with a comment header pointing back to the source and
@@ -164,6 +173,10 @@ pub fn write_compose_file(source_dir: &Path) -> Result<PathBuf> {
     // Patch the build context to point at the source directory
     let patched = DEV_COMPOSE_YAML
         .replace("      context: .", &format!("      context: {}", source_dir.display()));
+
+    // Generate a random 32-byte encryption key for dev-mode secrets
+    let encryption_key = generate_dev_encryption_key();
+    let patched = patched.replace("__FLOWPLANE_DEV_ENCRYPTION_KEY__", &encryption_key);
 
     std::fs::write(&compose_path, patched)
         .with_context(|| format!("failed to write compose file: {}", compose_path.display()))?;

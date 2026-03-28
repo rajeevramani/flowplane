@@ -17,6 +17,7 @@ pub mod openapi;
 pub mod ops_agent;
 pub mod routes;
 pub mod schemas;
+pub mod secrets;
 pub mod virtual_hosts;
 
 // Re-export tool definitions for convenience
@@ -135,6 +136,14 @@ pub use clusters::{cp_query_service_tool, execute_query_service};
 
 // Re-export schema export tool
 pub use schemas::{cp_export_schema_openapi_tool, execute_export_schema_openapi};
+
+// Re-export secret tools
+pub use secrets::{
+    cp_create_secret_tool, cp_delete_secret_tool, cp_get_secret_tool, cp_list_secrets_tool,
+};
+pub use secrets::{
+    execute_create_secret, execute_delete_secret, execute_get_secret, execute_list_secrets,
+};
 
 use crate::internal_api::InternalAuthContext;
 use crate::mcp::error::McpError;
@@ -283,6 +292,11 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_query_service_tool(),
         // Schema export tools
         cp_export_schema_openapi_tool(),
+        // Secret CRUD tools
+        cp_list_secrets_tool(),
+        cp_get_secret_tool(),
+        cp_create_secret_tool(),
+        cp_delete_secret_tool(),
     ]
 }
 
@@ -328,8 +342,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 3 learning session + 1 learning diag + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 6 ops agent + 3 dev agent = 64 total
-        assert_eq!(tools.len(), 64);
+        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 3 learning session + 1 learning diag + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 6 ops agent + 3 dev agent + 4 secrets = 68 total
+        assert_eq!(tools.len(), 68);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 
@@ -388,6 +402,12 @@ mod tests {
         assert!(tool_names.contains(&"cp_get_learning_session"));
         assert!(tool_names.contains(&"cp_create_learning_session"));
         assert!(tool_names.contains(&"cp_delete_learning_session"));
+
+        // Secret tools
+        assert!(tool_names.contains(&"cp_list_secrets"));
+        assert!(tool_names.contains(&"cp_get_secret"));
+        assert!(tool_names.contains(&"cp_create_secret"));
+        assert!(tool_names.contains(&"cp_delete_secret"));
     }
 
     #[tokio::test]

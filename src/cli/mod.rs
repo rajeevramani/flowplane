@@ -21,6 +21,7 @@ pub mod listeners;
 pub mod logs;
 pub mod output;
 pub mod routes;
+pub mod secrets;
 pub mod status;
 pub mod teams;
 
@@ -195,6 +196,12 @@ EXAMPLES:
         command: filter::FilterCommands,
     },
 
+    /// Secret management commands (SDS secrets for TLS, API keys, etc.)
+    Secret {
+        #[command(subcommand)]
+        command: secrets::SecretCommands,
+    },
+
     /// Show system status or lookup a specific listener
     Status {
         /// Listener name to look up (omit for system overview)
@@ -367,6 +374,11 @@ async fn run_cli_commands(
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
             filter::handle_filter_command(command, &client, &team).await?
+        }
+        Commands::Secret { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            secrets::handle_secret_command(command, &client, &team).await?
         }
         Commands::Status { name } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;

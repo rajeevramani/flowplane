@@ -1176,6 +1176,8 @@ mod tests {
             "cp_query_service",
             "cp_export_schema_openapi",
             "ops_learning_session_health",
+            "cp_list_secrets",
+            "cp_get_secret",
         ];
 
         for tool_name in &read_tools {
@@ -1201,6 +1203,7 @@ mod tests {
             "cp_delete_filter",
             "cp_detach_filter",
             "cp_update_listener",
+            "cp_delete_secret",
         ];
 
         for tool_name in &high_tools {

@@ -51,6 +51,8 @@ services:
       FLOWPLANE_XDS_PORT: 18000
       FLOWPLANE_XDS_ADVERTISED_ADDRESS: control-plane
       FLOWPLANE_COOKIE_SECURE: "false"
+      # Secret Encryption (replaced with generated key at init time)
+      FLOWPLANE_SECRET_ENCRYPTION_KEY: __FLOWPLANE_DEV_ENCRYPTION_KEY__
       # Logging
       RUST_LOG: info,flowplane=debug
     ports:
