@@ -359,17 +359,27 @@ pub fn handle_init_with_runner(
 
     eprintln!();
     eprintln!("Flowplane is running!");
-    eprintln!("  API:   http://localhost:8080");
-    eprintln!("  xDS:   localhost:18000");
+    eprintln!();
+    eprintln!("  API:     http://localhost:8080");
+    eprintln!("  xDS:     localhost:18000");
     if with_envoy {
-        eprintln!("  Envoy: localhost:10000 (admin: localhost:9901)");
+        eprintln!("  Envoy:   localhost:10000 (admin: localhost:9901)");
     }
     if with_httpbin {
         eprintln!("  httpbin: http://localhost:8000");
     }
     eprintln!();
     eprintln!("Token saved to ~/.flowplane/credentials");
-    eprintln!("Run `flowplane down` to stop all services.");
+    eprintln!();
+    eprintln!("What's next?");
+    if with_envoy && with_httpbin {
+        eprintln!("  flowplane expose http://httpbin:80 --name demo   Expose httpbin through Envoy");
+        eprintln!("  curl http://localhost:10001/get                  Verify traffic flows");
+    }
+    eprintln!("  flowplane list                                   See exposed services");
+    eprintln!("  flowplane status                                 System health");
+    eprintln!("  flowplane logs -f                                Stream logs");
+    eprintln!("  flowplane down                                   Stop all services");
 
     Ok(())
 }

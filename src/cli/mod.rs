@@ -35,6 +35,15 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 #[command(name = "flowplane")]
 #[command(about = "Flowplane Envoy Control Plane")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(after_long_help = "\
+GETTING STARTED:
+  flowplane init --with-envoy --with-httpbin   Start everything you need
+  flowplane expose http://httpbin:80 --name demo   Expose httpbin through Envoy
+  curl http://localhost:10001/get                  Verify traffic flows
+
+  flowplane list                                   See exposed services
+  flowplane status                                 System health
+  flowplane down                                   Stop all services")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -78,6 +87,12 @@ pub enum Commands {
     },
 
     /// Bootstrap a local dev environment (PostgreSQL + control plane via Docker/Podman)
+    #[command(after_long_help = "\
+EXAMPLES:
+  flowplane init                                   Control plane + PostgreSQL
+  flowplane init --with-envoy                      Add an Envoy proxy
+  flowplane init --with-httpbin                    Add a test backend
+  flowplane init --with-envoy --with-httpbin       Full dev stack (recommended)")]
     Init {
         /// Also start an Envoy sidecar proxy
         #[arg(long)]
@@ -137,6 +152,11 @@ pub enum Commands {
     },
 
     /// Expose a local service through the gateway
+    #[command(after_long_help = "\
+EXAMPLES:
+  flowplane expose http://localhost:3000 --name my-api
+  flowplane expose http://httpbin:80 --name demo --port 9000
+  flowplane expose http://localhost:8000 --name svc --path /api/v1")]
     Expose {
         /// Upstream URL to expose (e.g., http://localhost:3000)
         upstream: String,
