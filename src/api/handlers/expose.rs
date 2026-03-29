@@ -379,22 +379,31 @@ pub async fn unexpose_handler(
     let route_config_name = format!("{}-routes", name);
     let cluster_name = name.clone();
 
+    let mut found_any = false;
+
     // Delete listener (skip if missing)
     let listener_ops = ListenerOperations::new(state.xds_state.clone());
     if let Ok(_listener) = listener_ops.get(&listener_name, &auth).await {
+        found_any = true;
         let _ = listener_ops.delete(&listener_name, &auth).await;
     }
 
     // Delete route config (skip if missing)
     let route_ops = crate::internal_api::RouteConfigOperations::new(state.xds_state.clone());
     if let Ok(_rc) = route_ops.get(&route_config_name, &auth).await {
+        found_any = true;
         let _ = route_ops.delete(&route_config_name, &auth).await;
     }
 
     // Delete cluster (skip if missing)
     let cluster_ops = ClusterOperations::new(state.xds_state.clone());
     if let Ok(_cluster) = cluster_ops.get(&cluster_name, &auth).await {
+        found_any = true;
         let _ = cluster_ops.delete(&cluster_name, &auth).await;
+    }
+
+    if !found_any {
+        return Err(ApiError::NotFound(format!("Service '{}' is not currently exposed", name)));
     }
 
     Ok(StatusCode::NO_CONTENT)
