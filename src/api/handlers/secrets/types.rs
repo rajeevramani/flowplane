@@ -174,7 +174,6 @@ pub struct ListSecretsQuery {
 
 /// Path parameters for team-scoped secret operations
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TeamSecretPath {
     pub team: String,
     pub secret_id: SecretId,

@@ -110,6 +110,12 @@ pub struct SecretResponse {
     pub reference_version: Option<String>,
 }
 
+/// Paginated response wrapper for secret list endpoint
+#[derive(Debug, Deserialize)]
+struct PaginatedSecrets {
+    items: Vec<SecretResponse>,
+}
+
 /// Request body for creating a secret
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -216,12 +222,12 @@ async fn list_secrets(
         format!("/api/v1/teams/{team}/secrets?{}", params.join("&"))
     };
 
-    let response: Vec<SecretResponse> = client.get_json(&path).await?;
+    let response: PaginatedSecrets = client.get_json(&path).await?;
 
     if output == "table" {
-        print_secrets_table(&response);
+        print_secrets_table(&response.items);
     } else {
-        print_output(&response, output)?;
+        print_output(&response.items, output)?;
     }
 
     Ok(())
