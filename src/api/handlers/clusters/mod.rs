@@ -71,7 +71,7 @@ pub async fn create_cluster_handler(
 
     // Convert REST body to internal request
     let ClusterConfigParts { name, service_name, config } =
-        cluster_parts_from_body(payload.clone());
+        cluster_parts_from_body(payload.clone())?;
 
     let internal_req =
         CreateClusterRequest { name, service_name, team: Some(team.clone()), config };
@@ -207,7 +207,7 @@ pub async fn update_cluster_handler(
     payload.validate().map_err(ApiError::from)?;
 
     let ClusterConfigParts { name: payload_name, service_name, config } =
-        cluster_parts_from_body(payload);
+        cluster_parts_from_body(payload)?;
 
     if payload_name != name {
         return Err(ApiError::BadRequest(format!(
