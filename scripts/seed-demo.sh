@@ -377,6 +377,36 @@ create_agent_grants() {
   ok "Grants: ${created} created, ${skipped} already existed"
 }
 
+# ── Create dataplane ────────────────────────────────────────────
+# Creates a dataplane for a team so that expose/listeners work.
+# Idempotent: handles 409 (already exists) gracefully.
+create_dataplane() {
+  local team="$1" name="$2" description="$3"
+
+  log "Creating dataplane '${name}' for team '${team}'..."
+  local raw http_code body
+  raw=$(curl -s -w '\n%{http_code}' \
+    -X POST \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n \
+      --arg name "$name" \
+      --arg desc "$description" \
+      '{name: $name, description: $desc}')" \
+    "${FLOWPLANE_URL}/api/v1/teams/${team}/dataplanes")
+  http_code=$(echo "$raw" | tail -1)
+  body=$(echo "$raw" | sed '$d')
+
+  if [ "$http_code" = "201" ]; then
+    ok "Dataplane '${name}' created for team '${team}'"
+  elif [ "$http_code" = "409" ]; then
+    skip "Dataplane '${name}' in team '${team}'"
+  else
+    fail "Dataplane creation failed (HTTP ${http_code}): ${body}"
+    exit 1
+  fi
+}
+
 # ── Main ───────────────────────────────────────────────────────
 main() {
   echo ""
@@ -436,6 +466,9 @@ main() {
 
   # Switch to org admin token for remaining operations
   ADMIN_TOKEN="$org_admin_token"
+
+  # Create default dataplane for the engineering team (required for expose)
+  create_dataplane "${TEAM_NAME}" "default-dataplane" "Default dataplane for ${TEAM_NAME}"
 
   # Provision agent via the Flowplane API (org admin required)
   create_agent \

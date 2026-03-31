@@ -6,7 +6,7 @@ Flowplane is a control plane for [Envoy proxy](https://www.envoyproxy.io/) that 
 
 ```bash
 git clone https://github.com/rajeevramani/flowplane.git && cd flowplane
-cargo install --path .                                     # Build the CLI
+cargo install --path . --locked                                     # Build the CLI
 flowplane init --with-envoy --with-httpbin                 # Start everything
 flowplane expose http://httpbin:80 --name demo             # Expose httpbin
 curl http://localhost:10001/get                             # Verify traffic
@@ -16,12 +16,13 @@ curl http://localhost:10001/get                             # Verify traffic
 |---------|-----|
 | API     | http://localhost:8080/api/v1/ |
 | UI      | http://localhost:8080/ |
-| Envoy   | http://localhost:10000 |
 | httpbin | http://localhost:8000 |
+
+Exposed services are available on auto-assigned ports in the 10001–10020 range. The `expose` command prints the assigned port.
 
 ## Documentation
 
-- [Quickstart](docs/quickstart.md) — Zero to proxying in 10 minutes
+- [Getting Started](docs/getting-started.md) — Install, expose a service, add rate limiting
 - [CLI Reference](docs/cli-reference.md) — Every command, flag, and example
 - [Filters](docs/filters.md) — Rate limiting, JWT auth, CORS, and more
 - [MCP Server](docs/mcp.md) — Use Flowplane as an MCP server with Claude Code

@@ -5,17 +5,17 @@ Expose a local service through Envoy with rate limiting in under 10 minutes.
 ## Prerequisites
 
 - **Docker** (or Podman)
-- **Rust 1.92+** — needed for `cargo install` ([rustup.rs](https://rustup.rs/))
+- **Rust 1.92+** — install via [rustup.rs](https://rustup.rs/)
 
 ## 1. Install
 
 ```bash
 git clone https://github.com/rajeevramani/flowplane.git
 cd flowplane
-cargo install --path .
+cargo install --path . --locked
 ```
 
-`cargo install` builds the `flowplane` CLI binary. The `flowplane init` command (next step) pulls the required Docker images automatically.
+This builds the `flowplane` CLI binary. The next step pulls Docker images automatically.
 
 ## 2. Boot the stack
 
@@ -23,30 +23,38 @@ cargo install --path .
 flowplane init --with-envoy --with-httpbin
 ```
 
-This starts four services in dev mode — no Zitadel, no login required. A dev token is auto-saved to `~/.flowplane/credentials`.
+This starts four containers in dev mode — no login required:
 
-| Service    | Address                              |
-|------------|--------------------------------------|
-| API        | http://localhost:8080                |
-| Envoy      | localhost:10000                      |
-| httpbin    | localhost:8000                       |
-| Swagger UI | http://localhost:8080/swagger-ui/    |
+| Service    | Address                           |
+|------------|-----------------------------------|
+| API        | http://localhost:8080              |
+| Swagger UI | http://localhost:8080/swagger-ui/  |
+| httpbin    | http://localhost:8000              |
+| Envoy      | localhost:10000 (base)            |
 
-## 3. Verify
+A dev token is generated and saved to `~/.flowplane/credentials`. All CLI commands use it automatically.
+
+> ⚠️ If you previously ran `make up` (prod mode), remove the stale network first: `docker network rm flowplane-network`
+
+## 3. Verify the stack
 
 ```bash
 flowplane status
 ```
 
-This shows listener, cluster, and filter counts.
+```
+Flowplane Status (team: default)
+----------------------------------------
+Listeners:  0
+Clusters:   0
+Filters:    0
+```
 
-Confirm dev mode is active:
+Confirm dev mode:
 
 ```bash
 curl http://localhost:8080/api/v1/auth/mode
 ```
-
-Expected response:
 
 ```json
 {"auth_mode":"dev"}
@@ -54,67 +62,104 @@ Expected response:
 
 ## 4. Expose httpbin
 
-**CLI:**
+<table>
+<tr><th>CLI</th><th>MCP</th></tr>
+<tr>
+<td>
 
 ```bash
-flowplane expose http://httpbin:80 --name demo
+flowplane expose http://httpbin:80 \
+  --name demo
 ```
 
-> Use the Docker service name (`httpbin`), not `localhost`. The control plane resolves names within the Docker network.
+Output:
 
-**MCP** (via `POST /api/v1/mcp` — see [Section 8](#8-explore) for connection setup):
+```
+Exposed 'demo' -> http://httpbin:80
+  Port:   10001
+  Paths:  /
 
-Step 1 — Create the cluster:
+  curl http://localhost:10001/
+```
+
+</td>
+<td>
+
+Three tool calls via `POST /api/v1/mcp`:
+
+**1. Create cluster:**
 
 ```json
-{"method": "tools/call", "params": {"name": "cp_create_cluster", "arguments": {
-  "name": "demo",
-  "endpoints": ["httpbin:80"],
-  "lb_policy": "ROUND_ROBIN"
-}}}
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_cluster",
+    "arguments": {
+      "name": "demo",
+      "serviceName": "demo-service",
+      "endpoints": [{"address": "httpbin", "port": 80}],
+      "team": "default"
+    }
+  }
+}
 ```
 
-Step 2 — Create a route config pointing to the cluster:
+**2. Create route config:**
 
 ```json
-{"method": "tools/call", "params": {"name": "cp_create_route_config", "arguments": {
-  "name": "demo-routes",
-  "virtualHosts": [{
-    "name": "demo-vhost",
-    "domains": ["*"],
-    "routes": [{
-      "name": "catch-all",
-      "match": {"path": {"type": "prefix", "value": "/"}},
-      "action": {"type": "forward", "cluster": "demo"}
-    }]
-  }]
-}}}
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_route_config",
+    "arguments": {
+      "name": "demo-routes",
+      "virtualHosts": [{
+        "name": "demo-vhost",
+        "domains": ["*"],
+        "routes": [{
+          "name": "catch-all",
+          "match": {"path": {"type": "prefix", "value": "/"}},
+          "action": {"type": "forward", "cluster": "demo"}
+        }]
+      }],
+      "team": "default"
+    }
+  }
+}
 ```
 
-Step 3 — Create a listener (requires a `dataplaneId` — get it from `cp_list_dataplanes`):
+**3. Create listener** (get `dataplaneId` from `cp_list_dataplanes` first):
 
 ```json
-{"method": "tools/call", "params": {"name": "cp_create_listener", "arguments": {
-  "name": "demo-listener",
-  "address": "0.0.0.0",
-  "port": 10001,
-  "dataplaneId": "<from cp_list_dataplanes>"
-}}}
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_listener",
+    "arguments": {
+      "name": "demo-listener",
+      "address": "0.0.0.0",
+      "port": 10001,
+      "routeConfigName": "demo-routes",
+      "dataplaneId": "<from cp_list_dataplanes>",
+      "team": "default"
+    }
+  }
+}
 ```
 
-> Port must be in the 10001–10020 range. Use `cp_query_port` to check availability.
+</td>
+</tr>
+</table>
 
-## 5. Test
+> ⚠️ Use the Docker service name (`httpbin`), not `localhost`. Inside the Docker network, `localhost` refers to the container itself.
 
-The `expose` command prints the assigned port. Use it in the curl:
+> ⚠️ **MCP in dev mode:** Always include `"team": "default"` in every tool call. The dev auth context has no grants, so team resolution fails without it.
+
+## 5. Test with curl
 
 ```bash
-curl http://localhost:<PORT>/get
+curl http://localhost:10001/get
 ```
-
-> On a fresh stack the first expose gets port 10001. If other services are already exposed, the port may differ — check the `expose` output.
-
-Expected response (truncated):
 
 ```json
 {
@@ -122,19 +167,27 @@ Expected response (truncated):
   "headers": {
     "Accept": "*/*",
     "Host": "localhost:10001",
-    "User-Agent": "curl/8.x"
+    "User-Agent": "curl/8.7.1",
+    "X-Envoy-Expected-Rq-Timeout-Ms": "15000"
   },
-  "origin": "172.x.x.x",
+  "origin": "10.89.0.5",
   "url": "http://localhost:10001/get"
 }
 ```
 
+The `X-Envoy-Expected-Rq-Timeout-Ms` header confirms the request went through Envoy.
+
+> ⚠️ The port is auto-assigned from the 10001–10020 range. On a fresh stack, the first expose gets 10001. Always check the `expose` output for the actual port.
+
 ## 6. Add a rate limit filter
 
-**CLI:**
+<table>
+<tr><th>CLI</th><th>MCP</th></tr>
+<tr>
+<td>
 
 ```bash
-cat > filter.json <<'EOF'
+cat > /tmp/rl-filter.json <<'EOF'
 {
   "name": "demo-rate-limit",
   "filterType": "local_rate_limit",
@@ -152,14 +205,17 @@ cat > filter.json <<'EOF'
 }
 EOF
 
-flowplane filter create -f filter.json
-flowplane filter attach demo-rate-limit --listener demo-listener --order 1
+flowplane filter create -f /tmp/rl-filter.json
+flowplane filter attach demo-rate-limit \
+  --listener demo-listener --order 1
 ```
 
-**MCP:**
+</td>
+<td>
+
+**1. Create filter:**
 
 ```json
-// 1. Create the filter
 {
   "method": "tools/call",
   "params": {
@@ -167,7 +223,7 @@ flowplane filter attach demo-rate-limit --listener demo-listener --order 1
     "arguments": {
       "name": "demo-rate-limit",
       "filterType": "local_rate_limit",
-      "config": {
+      "configuration": {
         "type": "local_rate_limit",
         "config": {
           "stat_prefix": "demo_rl",
@@ -177,35 +233,43 @@ flowplane filter attach demo-rate-limit --listener demo-listener --order 1
             "fill_interval_ms": 60000
           }
         }
-      }
+      },
+      "team": "default"
     }
   }
 }
+```
 
-// 2. Attach to the listener
+**2. Attach to listener:**
+
+```json
 {
   "method": "tools/call",
   "params": {
     "name": "cp_attach_filter",
     "arguments": {
-      "listener": "demo-listener",
       "filter": "demo-rate-limit",
-      "order": 1
+      "listener": "demo-listener",
+      "order": 1,
+      "team": "default"
     }
   }
 }
 ```
 
-## 7. Test rate limiting
+</td>
+</tr>
+</table>
+
+> ⚠️ The filter `config` field uses nested `{type, config}` — not a flat structure. The inner `type` must match the `filterType` field.
+
+## 7. Verify rate limiting
 
 ```bash
-PORT=10001  # use the port from `flowplane expose` output
 for i in 1 2 3 4 5; do
-  echo "Request $i: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:$PORT/get)"
+  echo "Request $i: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:10001/get)"
 done
 ```
-
-Expected output:
 
 ```
 Request 1: 200
@@ -215,71 +279,73 @@ Request 4: 429
 Request 5: 429
 ```
 
-The bucket allows 3 requests per 60-second window. Requests 4 and 5 are rejected with `429 Too Many Requests`.
+The token bucket allows 3 requests per 60-second window. Requests 4 and 5 get `429 Too Many Requests`.
 
 ## 8. Explore
 
-- **List exposed services:** `flowplane list`
-- **Swagger UI:** browse the full REST API at http://localhost:8080/swagger-ui/
-- **MCP endpoint:** `POST /api/v1/mcp` (Streamable HTTP, protocol version `2025-11-25`)
+```bash
+flowplane list                           # See exposed services
+flowplane status                         # System health overview
+flowplane doctor                         # Run diagnostic checks
+```
 
-To connect an MCP client:
+Browse the full REST API at http://localhost:8080/swagger-ui/.
+
+### MCP connection
+
+Flowplane exposes 60+ MCP tools at `POST /api/v1/mcp`. To connect from Claude Code or another MCP client:
 
 ```bash
 # Get your dev token
 flowplane auth token
 ```
 
-Required headers for MCP requests:
+Required headers:
 
 ```
 Authorization: Bearer <token>
 MCP-Protocol-Version: 2025-11-25
 ```
 
+After the `initialize` handshake, include the `MCP-Session-Id` header from the response on all subsequent requests.
+
 ## 9. Tear down
 
 ```bash
-# Stop containers
-flowplane down
-
-# Stop and remove volumes (deletes all data)
-flowplane down --volumes
+flowplane down             # Stop containers, keep data
+flowplane down --volumes   # Stop and delete all data
 ```
+
+---
 
 ## Advanced: Production Mode
 
-Use production mode when you need multi-tenant isolation and real authentication.
+Production mode adds Zitadel for multi-tenant authentication with OIDC.
 
 ```bash
-# Boot the full stack (includes Zitadel)
-make up ENVOY=1 HTTPBIN=1
-
-# Seed demo data
-make seed
-
-# Show credentials
-make seed-info
+make build                        # Build images (first time only)
+make up ENVOY=1 HTTPBIN=1         # Start full stack with Zitadel
+make seed                         # Create demo org and credentials
+make seed-info                    # Print login credentials
 ```
 
-Default credentials: `demo@acme-corp.com` / `Flowplane1!`
-
-Key differences from dev mode:
-
-| Setting       | Dev                | Prod                          |
-|---------------|--------------------|-------------------------------|
-| Auth          | Auto dev token     | Zitadel PKCE (`flowplane auth login`) |
-| xDS port      | 18000              | 50051                         |
-| Zitadel       | Not running        | localhost:8081                 |
-| Multi-tenant  | No                 | Yes                           |
+Default login: `demo@acme-corp.com` / `Flowplane1!`
 
 ```bash
-# Login opens a browser-based PKCE flow
-flowplane auth login
+flowplane auth login              # Opens browser-based PKCE flow
 ```
+
+| Setting      | Dev                  | Prod                                |
+|--------------|----------------------|-------------------------------------|
+| Auth         | Auto dev token       | Zitadel PKCE (`flowplane auth login`) |
+| xDS port     | 18000                | 50051                               |
+| Zitadel      | Not running          | localhost:8081                      |
+| Multi-tenant | Single `default` team | Multiple orgs and teams             |
+
+---
 
 ## Next steps
 
-- [CLI Reference](cli-reference.md) — full command documentation
-- [Filters](filters.md) — all filter types and configuration options
-- [MCP](mcp.md) — tool catalog and protocol details
+- [CLI Reference](cli-reference.md) — every command, flag, and example
+- [Filters](filters.md) — rate limiting, JWT auth, CORS, and 11 more filter types
+- [MCP Server](mcp.md) — full tool catalog for AI-driven gateway management
