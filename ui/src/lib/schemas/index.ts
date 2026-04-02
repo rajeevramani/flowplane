@@ -9,6 +9,14 @@ export {
 	type InviteMemberSchema
 } from './auth';
 
+// Cluster schemas
+export {
+	ClusterConfigSchema,
+	ClusterResponseSchema,
+	type ClusterConfig,
+	type ClusterResponseData
+} from './cluster';
+
 // Route configuration schemas
 export {
 	RouteNameSchema,

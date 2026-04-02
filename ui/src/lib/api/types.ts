@@ -195,13 +195,14 @@ export interface RouteResponse {
 // Routes are now accessed directly via RouteResponse
 
 // Cluster types
+export type { ClusterResponseData } from '$lib/schemas/cluster';
+export type ClusterConfig = import('$lib/schemas/cluster').ClusterConfig & Record<string, unknown>;
 export interface ClusterResponse {
 	name: string;
 	team: string;
 	serviceName: string;
 	importId?: string;
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	config: any; // Full cluster config - dynamic Envoy structure
+	config: ClusterConfig;
 }
 
 // Envoy configuration types

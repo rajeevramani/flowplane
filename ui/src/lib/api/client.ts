@@ -3,6 +3,7 @@ import { goto } from '$app/navigation';
 import { env } from '$env/dynamic/public';
 import { z } from 'zod';
 import { SecretResponseSchema, AdminListOrgsResponseSchema, AdminResourceSummarySchema, paginatedSchema } from './schemas';
+import { ClusterResponseSchema } from '$lib/schemas/cluster';
 import { getUserManager } from '$lib/auth/oidc-config';
 import type {
 	BootstrapStatusResponse,
@@ -433,11 +434,13 @@ class ApiClient {
 		if (searchParams.toString()) path += `?${searchParams.toString()}`;
 
 		const response = await this.get<PaginatedResponse<ClusterResponse>>(path);
-		return response.items;
+		const validated = parseResponse(response, paginatedSchema(ClusterResponseSchema));
+		return (validated as PaginatedResponse<ClusterResponse>).items;
 	}
 
 	async getCluster(team: string, name: string): Promise<ClusterResponse> {
-		return this.get<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`);
+		const data = await this.get<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`);
+		return parseResponse(data, ClusterResponseSchema) as ClusterResponse;
 	}
 
 	async deleteCluster(team: string, name: string): Promise<void> {
