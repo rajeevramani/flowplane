@@ -144,7 +144,19 @@ impl From<FlowplaneError> for ApiError {
             }
             FlowplaneError::Conflict { message, .. } => ApiError::Conflict(message),
             FlowplaneError::Auth { message, .. } => ApiError::Unauthorized(message),
-            FlowplaneError::ConstraintViolation { message, .. } => ApiError::Conflict(message),
+            FlowplaneError::ConstraintViolation { message, source } => {
+                // FK violation (23503) means a referenced resource doesn't exist → 400
+                // All other constraints (unique 23505, not-null, check) → 409
+                if let Some(db_err) = source.as_database_error() {
+                    if db_err.code().is_some_and(|c| c.as_ref() == "23503") {
+                        return ApiError::BadRequest(format!(
+                            "Referenced resource does not exist: {}",
+                            message
+                        ));
+                    }
+                }
+                ApiError::Conflict(message)
+            }
             FlowplaneError::Database { context, .. } => ApiError::Internal(context),
             FlowplaneError::Config { message, .. }
             | FlowplaneError::Transport(message)
