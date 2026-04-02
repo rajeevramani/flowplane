@@ -15,7 +15,7 @@ use tracing::instrument;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::{
             pagination::PaginatedResponse,
             team_access::{
@@ -190,7 +190,7 @@ pub async fn update_mcp_tool_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, name)): Path<(String, String)>,
-    Json(payload): Json<UpdateMcpToolBody>,
+    JsonBody(payload): JsonBody<UpdateMcpToolBody>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
     // Authorization: require mcp:update scope
     require_resource_access_resolved(&state, &context, "mcp", "update", Some(&team)).await?;
@@ -331,7 +331,7 @@ pub async fn apply_learned_schema_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, route_id)): Path<(String, String)>,
-    Json(payload): Json<ApplyLearnedSchemaRequest>,
+    JsonBody(payload): JsonBody<ApplyLearnedSchemaRequest>,
 ) -> Result<Json<ApplyLearnedSchemaResponse>, ApiError> {
     // Authorization: require mcp:create scope
     require_resource_access_resolved(&state, &context, "mcp", "create", Some(&team)).await?;

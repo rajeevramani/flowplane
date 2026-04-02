@@ -13,7 +13,11 @@ use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::{
-    api::{error::ApiError, handlers::team_access::require_admin, routes::ApiState},
+    api::{
+        error::{ApiError, JsonBody},
+        handlers::team_access::require_admin,
+        routes::ApiState,
+    },
     auth::{
         authorization::{extract_org_scopes, extract_team_names, has_admin_bypass},
         models::AuthContext,
@@ -164,7 +168,7 @@ pub struct ApiCreateTeamBody {
 pub async fn admin_create_team(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Json(body): Json<ApiCreateTeamBody>,
+    JsonBody(body): JsonBody<ApiCreateTeamBody>,
 ) -> Result<(StatusCode, Json<Team>), ApiError> {
     // Check admin authorization
     require_admin(&context)?;
@@ -297,7 +301,7 @@ pub async fn admin_update_team(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(payload): Json<UpdateTeamRequest>,
+    JsonBody(payload): JsonBody<UpdateTeamRequest>,
 ) -> Result<Json<Team>, ApiError> {
     // Check admin authorization
     require_admin(&context)?;

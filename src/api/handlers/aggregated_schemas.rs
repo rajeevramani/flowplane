@@ -13,7 +13,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
         routes::ApiState,
     },
@@ -522,7 +522,7 @@ pub async fn export_multiple_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(body): Json<ExportMultipleSchemasRequest>,
+    JsonBody(body): JsonBody<ExportMultipleSchemasRequest>,
 ) -> Result<Json<OpenApiExportResponse>, ApiError> {
     // Validate non-empty
     if body.schema_ids.is_empty() {

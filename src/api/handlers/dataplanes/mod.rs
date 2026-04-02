@@ -26,7 +26,7 @@ use validator::Validate;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{
             require_resource_access_resolved, resolve_rest_auth, team_repo_from_state,
         },
@@ -64,7 +64,7 @@ pub async fn create_dataplane_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(payload): Json<CreateDataplaneBody>,
+    JsonBody(payload): JsonBody<CreateDataplaneBody>,
 ) -> Result<(StatusCode, Json<DataplaneResponse>), ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
@@ -217,7 +217,7 @@ pub async fn update_dataplane_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<(String, String)>,
-    Json(payload): Json<UpdateDataplaneBody>,
+    JsonBody(payload): JsonBody<UpdateDataplaneBody>,
 ) -> Result<Json<DataplaneResponse>, ApiError> {
     let (team, name) = path;
 
@@ -577,7 +577,7 @@ mod tests {
             State(state.clone()),
             Extension(auth),
             Path(team_name.to_string()),
-            Json(CreateDataplaneBody {
+            JsonBody(CreateDataplaneBody {
                 name: name.to_string(),
                 gateway_host: gateway_host.map(String::from),
                 description: None,
@@ -602,7 +602,7 @@ mod tests {
             State(state),
             Extension(auth),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create dataplane");
@@ -628,7 +628,7 @@ mod tests {
             State(state),
             Extension(auth),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await;
 
@@ -705,7 +705,7 @@ mod tests {
             State(state),
             Extension(auth),
             Path(("test-team".to_string(), "updatable-dp".to_string())),
-            Json(UpdateDataplaneBody {
+            JsonBody(UpdateDataplaneBody {
                 gateway_host: Some("https://new.example.com".to_string()),
                 description: Some("Updated".to_string()),
             }),

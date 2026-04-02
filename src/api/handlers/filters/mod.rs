@@ -32,7 +32,7 @@ use tracing::{info, instrument};
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{
             get_effective_team_ids, require_resource_access_resolved, resolve_rest_auth,
             resolve_rest_auth_for_team, resolve_team_name, team_repo_from_state,
@@ -174,7 +174,7 @@ pub async fn create_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(payload): Json<CreateFilterRequest>,
+    JsonBody(payload): JsonBody<CreateFilterRequest>,
 ) -> Result<(StatusCode, Json<FilterResponse>), ApiError> {
     info!(
         filter_type = ?payload.filter_type,
@@ -280,7 +280,7 @@ pub async fn update_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<(String, String)>,
-    Json(payload): Json<UpdateFilterRequest>,
+    JsonBody(payload): JsonBody<UpdateFilterRequest>,
 ) -> Result<Json<FilterResponse>, ApiError> {
     let (team, id) = path;
     // REST-specific validation
@@ -361,7 +361,7 @@ pub async fn attach_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, route_name)): Path<(String, String)>,
-    Json(payload): Json<AttachFilterRequest>,
+    JsonBody(payload): JsonBody<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
     require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
@@ -492,7 +492,7 @@ pub async fn attach_filter_to_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, listener_name)): Path<(String, String)>,
-    Json(payload): Json<AttachFilterRequest>,
+    JsonBody(payload): JsonBody<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
     require_resource_access_resolved(&state, &context, "listeners", "update", Some(&team)).await?;
 
@@ -670,7 +670,7 @@ pub async fn install_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<(String, String)>,
-    Json(payload): Json<InstallFilterRequest>,
+    JsonBody(payload): JsonBody<InstallFilterRequest>,
 ) -> Result<(StatusCode, Json<InstallFilterResponse>), ApiError> {
     let (team, filter_id) = path;
     require_resource_access_resolved(&state, &context, "filters", "update", Some(&team)).await?;
@@ -851,7 +851,7 @@ pub async fn configure_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<(String, String)>,
-    Json(payload): Json<ConfigureFilterRequest>,
+    JsonBody(payload): JsonBody<ConfigureFilterRequest>,
 ) -> Result<(StatusCode, Json<ConfigureFilterResponse>), ApiError> {
     let (team, filter_id) = path;
     require_resource_access_resolved(&state, &context, "filters", "create", Some(&team)).await?;
@@ -1257,7 +1257,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await;
 
@@ -1277,7 +1277,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await;
 
@@ -1295,7 +1295,7 @@ mod tests {
             State(state),
             Extension(readonly_resource_auth_context("filters")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await;
 
@@ -1314,7 +1314,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("non-existent-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await;
 
@@ -1332,7 +1332,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create filter");
@@ -1378,7 +1378,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create filter");
@@ -1394,7 +1394,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path(("test-team".to_string(), created.id.clone())),
-            Json(update_body),
+            JsonBody(update_body),
         )
         .await;
 
@@ -1413,7 +1413,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create filter");
@@ -1425,7 +1425,7 @@ mod tests {
             State(state),
             Extension(readonly_resource_auth_context("filters")),
             Path(("test-team".to_string(), created.id.clone())),
-            Json(update_body),
+            JsonBody(update_body),
         )
         .await;
 
@@ -1445,7 +1445,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create filter");
@@ -1482,7 +1482,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create filter");
@@ -1528,7 +1528,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create filter");
@@ -1560,7 +1560,7 @@ mod tests {
                 State(state.clone()),
                 Extension(team_auth_context("test-team")),
                 Path("test-team".to_string()),
-                Json(body),
+                JsonBody(body),
             )
             .await
             .expect("create filter");
@@ -1592,7 +1592,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create filter");

@@ -4,7 +4,7 @@
 
 mod types;
 
-use crate::api::error::ApiError;
+use crate::api::error::{ApiError, JsonBody};
 use crate::api::handlers::team_access::{
     get_db_pool, require_resource_access_resolved, resolve_team_name, TeamPath,
 };
@@ -93,7 +93,7 @@ pub async fn enable_mcp_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
-    Json(body): Json<EnableMcpRequestBody>,
+    JsonBody(body): JsonBody<EnableMcpRequestBody>,
 ) -> Result<(StatusCode, Json<crate::api::handlers::mcp_tools::McpToolResponse>), ApiError> {
     // Verify team access
     require_resource_access_resolved(&state, &context, "mcp", "create", Some(&team)).await?;
@@ -212,7 +212,7 @@ pub async fn bulk_enable_mcp_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Json(body): Json<BulkMcpEnableRequest>,
+    JsonBody(body): JsonBody<BulkMcpEnableRequest>,
 ) -> Result<Json<BulkMcpEnableResponse>, ApiError> {
     // Verify team access
     require_resource_access_resolved(&state, &context, "mcp", "create", Some(&team)).await?;
@@ -282,7 +282,7 @@ pub async fn bulk_disable_mcp_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Json(body): Json<BulkMcpDisableRequest>,
+    JsonBody(body): JsonBody<BulkMcpDisableRequest>,
 ) -> Result<Json<BulkMcpDisableResponse>, ApiError> {
     // Verify team access
     require_resource_access_resolved(&state, &context, "mcp", "delete", Some(&team)).await?;

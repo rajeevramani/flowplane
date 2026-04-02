@@ -21,7 +21,11 @@ use utoipa::ToSchema;
 use validator::Validate;
 
 use crate::{
-    api::{error::ApiError, handlers::team_access::require_admin, routes::ApiState},
+    api::{
+        error::{ApiError, JsonBody},
+        handlers::team_access::require_admin,
+        routes::ApiState,
+    },
     auth::{
         authorization::{
             check_resource_access, has_admin_bypass, has_org_admin, require_org_admin_only,
@@ -434,7 +438,7 @@ pub async fn admin_update_organization(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(payload): Json<UpdateOrganizationRequest>,
+    JsonBody(payload): JsonBody<UpdateOrganizationRequest>,
 ) -> Result<Json<OrganizationResponse>, ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
@@ -576,7 +580,7 @@ pub async fn admin_add_org_member(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(payload): Json<AddOrgMemberRequest>,
+    JsonBody(payload): JsonBody<AddOrgMemberRequest>,
 ) -> Result<(StatusCode, Json<crate::auth::organization::OrgMembershipResponse>), ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
@@ -742,7 +746,7 @@ pub async fn admin_invite_org_member(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(payload): Json<InviteOrgMemberRequest>,
+    JsonBody(payload): JsonBody<InviteOrgMemberRequest>,
 ) -> Result<(StatusCode, Json<InviteOrgMemberResponse>), ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
@@ -1003,7 +1007,7 @@ pub async fn admin_update_org_member_role(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((id, user_id)): Path<(String, String)>,
-    Json(payload): Json<UpdateOrgMemberRoleRequest>,
+    JsonBody(payload): JsonBody<UpdateOrgMemberRoleRequest>,
 ) -> Result<Json<crate::auth::organization::OrgMembershipResponse>, ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
@@ -1340,7 +1344,7 @@ pub async fn update_org_team(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<OrgTeamPath>,
-    Json(payload): Json<crate::auth::team::UpdateTeamRequest>,
+    JsonBody(payload): JsonBody<crate::auth::team::UpdateTeamRequest>,
 ) -> Result<Json<crate::auth::team::Team>, ApiError> {
     // Verify caller is org admin (no platform admin bypass)
     crate::auth::authorization::require_org_admin_only(&context, &path.org_name)
@@ -1579,7 +1583,7 @@ pub async fn add_team_member(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<OrgTeamPath>,
-    Json(payload): Json<AddTeamMemberRequest>,
+    JsonBody(payload): JsonBody<AddTeamMemberRequest>,
 ) -> Result<(StatusCode, Json<TeamMemberResponse>), ApiError> {
     let (org, team) = resolve_org_team(&state, &context, &path.org_name, &path.team_name).await?;
 
@@ -1975,7 +1979,7 @@ pub async fn create_org_agent(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(org_name): Path<String>,
-    Json(payload): Json<CreateAgentRequest>,
+    JsonBody(payload): JsonBody<CreateAgentRequest>,
 ) -> Result<(StatusCode, Json<CreateAgentResponse>), ApiError> {
     // Step 1: Check team-scoped agents:create permission
     let team_for_auth = payload
@@ -2373,7 +2377,7 @@ pub async fn create_principal_grant(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((org_name, principal_id)): Path<(String, String)>,
-    Json(payload): Json<CreateGrantRequest>,
+    JsonBody(payload): JsonBody<CreateGrantRequest>,
 ) -> Result<(StatusCode, Json<GrantResponse>), ApiError> {
     require_org_admin_only(&context, &org_name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;

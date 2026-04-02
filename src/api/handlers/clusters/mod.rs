@@ -26,7 +26,7 @@ use tracing::instrument;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{
             require_resource_access_resolved, resolve_rest_auth, resolve_rest_auth_for_team,
             resolve_team_name,
@@ -64,7 +64,7 @@ pub async fn create_cluster_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(payload): Json<types::CreateClusterBody>,
+    JsonBody(payload): JsonBody<types::CreateClusterBody>,
 ) -> Result<(StatusCode, Json<types::ClusterResponse>), ApiError> {
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
@@ -204,7 +204,7 @@ pub async fn update_cluster_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<(String, String)>,
-    Json(payload): Json<types::CreateClusterBody>,
+    JsonBody(payload): JsonBody<types::CreateClusterBody>,
 ) -> Result<Json<types::ClusterResponse>, ApiError> {
     let (team, name) = path;
 
@@ -362,7 +362,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body.clone()),
+            JsonBody(body.clone()),
         )
         .await
         .expect("handler response");
@@ -392,7 +392,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect_err("expected validation error");
@@ -410,7 +410,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create cluster");
@@ -439,7 +439,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create cluster");
@@ -467,7 +467,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body.clone()),
+            JsonBody(body.clone()),
         )
         .await
         .expect("create cluster");
@@ -480,7 +480,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path(("test-team".to_string(), "api-cluster".to_string())),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("update cluster");
@@ -503,7 +503,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create cluster");
@@ -688,7 +688,7 @@ mod tests {
             State(state.clone()),
             Extension(team_b_context),
             Path(("team-b".to_string(), "team-a-cluster".to_string())),
-            Json(update_body.clone()),
+            JsonBody(update_body.clone()),
         )
         .await;
 
@@ -707,7 +707,7 @@ mod tests {
             State(state.clone()),
             Extension(team_a_context),
             Path(("team-a".to_string(), "team-a-cluster".to_string())),
-            Json(update_body),
+            JsonBody(update_body),
         )
         .await;
         assert!(result.is_ok());
@@ -769,7 +769,7 @@ mod tests {
             State(state.clone()),
             Extension(team_a_context),
             Path("team-a".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create cluster");
@@ -800,7 +800,7 @@ mod tests {
             State(state.clone()),
             Extension(scoped_team_auth_context("platform", "clusters", &["create"])),
             Path("platform".to_string()),
-            Json(body),
+            JsonBody(body),
         )
         .await
         .expect("create cluster");

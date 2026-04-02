@@ -30,7 +30,10 @@ use crate::{
         get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
         verify_team_access,
     },
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::{ApiError, JsonBody},
+        routes::ApiState,
+    },
     auth::models::AuthContext,
     domain::FilterId,
     services::FilterService,
@@ -227,7 +230,7 @@ pub async fn attach_filter_to_virtual_host_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
-    Json(payload): Json<AttachFilterRequest>,
+    JsonBody(payload): JsonBody<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
     require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
@@ -426,7 +429,7 @@ pub async fn attach_filter_to_route_rule_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, route_config_name, vhost_name, route_name)): Path<(String, String, String, String)>,
-    Json(payload): Json<AttachFilterRequest>,
+    JsonBody(payload): JsonBody<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
     require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 

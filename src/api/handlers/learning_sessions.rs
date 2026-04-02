@@ -15,7 +15,7 @@ use validator::Validate;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{
             get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
             verify_team_access,
@@ -193,7 +193,7 @@ pub async fn create_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(payload): Json<CreateLearningSessionBody>,
+    JsonBody(payload): JsonBody<CreateLearningSessionBody>,
 ) -> Result<(StatusCode, Json<LearningSessionResponse>), ApiError> {
     // Authorization: require learning-sessions:create scope for the team from path
     require_resource_access_resolved(&state, &context, "learning-sessions", "create", Some(&team))

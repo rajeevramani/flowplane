@@ -25,7 +25,7 @@ use tracing::instrument;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{
             require_resource_access_resolved, resolve_rest_auth, resolve_rest_auth_for_team,
             resolve_team_name,
@@ -66,7 +66,7 @@ pub async fn create_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(payload): Json<RouteConfigDefinition>,
+    JsonBody(payload): JsonBody<RouteConfigDefinition>,
 ) -> Result<(StatusCode, Json<RouteConfigResponse>), ApiError> {
     // REST-specific validation
     validate_route_config_payload(&payload)?;
@@ -205,7 +205,7 @@ pub async fn update_route_config_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, name)): Path<(String, String)>,
-    Json(payload): Json<RouteConfigDefinition>,
+    JsonBody(payload): JsonBody<RouteConfigDefinition>,
 ) -> Result<Json<RouteConfigResponse>, ApiError> {
     // Authorization: require routes:update scope with team
     require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
@@ -398,7 +398,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload.clone()),
+            JsonBody(payload.clone()),
         )
         .await
         .expect("create route config");
@@ -423,7 +423,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create route config");
@@ -450,7 +450,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create route config");
@@ -476,7 +476,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload.clone()),
+            JsonBody(payload.clone()),
         )
         .await
         .expect("create route config");
@@ -528,7 +528,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path(("test-team".into(), "primary-routes".into())),
-            Json(payload.clone()),
+            JsonBody(payload.clone()),
         )
         .await
         .expect("update route config");
@@ -564,7 +564,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create route config");
@@ -605,7 +605,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload.clone()),
+            JsonBody(payload.clone()),
         )
         .await
         .expect("create template route config");
@@ -637,7 +637,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -655,7 +655,7 @@ mod tests {
             State(state),
             Extension(readonly_resource_auth_context("routes")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -674,7 +674,7 @@ mod tests {
             State(state),
             Extension(minimal_auth_context()),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -729,7 +729,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload.clone()),
+            JsonBody(payload.clone()),
         )
         .await
         .expect("create route config");
@@ -739,7 +739,7 @@ mod tests {
             State(state),
             Extension(readonly_resource_auth_context("routes")),
             Path(("test-team".into(), "primary-routes".into())),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -759,7 +759,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create route config");
@@ -808,7 +808,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path(("test-team".into(), "non-existent-route".into())),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -845,7 +845,7 @@ mod tests {
             State(state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload.clone()),
+            JsonBody(payload.clone()),
         )
         .await
         .expect("create first route config");
@@ -855,7 +855,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -877,7 +877,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -898,7 +898,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -919,7 +919,7 @@ mod tests {
             State(state),
             Extension(team_auth_context("test-team")),
             Path("test-team".into()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -943,7 +943,7 @@ mod tests {
                 State(state.clone()),
                 Extension(team_auth_context("test-team")),
                 Path("test-team".into()),
-                Json(payload),
+                JsonBody(payload),
             )
             .await
             .expect("create route config");
@@ -975,7 +975,7 @@ mod tests {
                 State(state.clone()),
                 Extension(team_auth_context("test-team")),
                 Path("test-team".into()),
-                Json(payload),
+                JsonBody(payload),
             )
             .await
             .expect("create route config");

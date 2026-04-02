@@ -22,7 +22,10 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
 use crate::{
-    api::{error::ApiError, routes::ApiState},
+    api::{
+        error::{ApiError, JsonBody},
+        routes::ApiState,
+    },
     auth::{authorization::require_org_admin_only, models::AuthContext},
     storage::{
         repositories::{
@@ -154,7 +157,7 @@ fn api_err_to_dcr(e: ApiError) -> axum::response::Response {
 pub async fn dcr_register_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Json(payload): Json<DcrRequest>,
+    JsonBody(payload): JsonBody<DcrRequest>,
 ) -> Result<(StatusCode, Json<DcrResponse>), axum::response::Response> {
     // Validate request format first
     if let Err((error, error_description)) = validate_dcr_request(&payload) {

@@ -15,7 +15,9 @@ use utoipa::ToSchema;
 
 use crate::{
     api::{
-        error::ApiError, handlers::team_access::require_resource_access_resolved, routes::ApiState,
+        error::{ApiError, JsonBody},
+        handlers::team_access::require_resource_access_resolved,
+        routes::ApiState,
     },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
@@ -559,7 +561,7 @@ pub async fn set_app_status_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(app_id): Path<String>,
-    Json(body): Json<SetAppStatusRequest>,
+    JsonBody(body): JsonBody<SetAppStatusRequest>,
 ) -> Result<Json<AppStatusResponse>, ApiError> {
     // Require admin-apps:update access
     require_resource_access(&context, "admin-apps", "update", None)?;

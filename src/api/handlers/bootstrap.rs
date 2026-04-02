@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use utoipa::ToSchema;
 
-use crate::api::error::ApiError;
+use crate::api::error::{ApiError, JsonBody};
 use crate::api::routes::ApiState;
 use crate::auth::organization::{CreateOrganizationRequest, OrgRole, Organization};
 use crate::auth::team::{CreateTeamRequest, Team};
@@ -306,7 +306,7 @@ pub async fn seed_superadmin(pool: DbPool, admin_client: ZitadelAdminClient) {
 #[instrument(skip(state))]
 pub async fn bootstrap_initialize_handler(
     State(state): State<ApiState>,
-    Json(payload): Json<BootstrapInitializeRequest>,
+    JsonBody(payload): JsonBody<BootstrapInitializeRequest>,
 ) -> Result<(StatusCode, Json<BootstrapInitializeResponse>), ApiError> {
     // Require Zitadel project ID to be configured
     let project_id = std::env::var("FLOWPLANE_ZITADEL_PROJECT_ID").unwrap_or_default();

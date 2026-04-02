@@ -25,7 +25,7 @@ use tracing::instrument;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{
             require_resource_access_resolved, resolve_rest_auth, resolve_rest_auth_for_team,
             resolve_team_name,
@@ -64,7 +64,7 @@ pub async fn create_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(payload): Json<types::CreateListenerBody>,
+    JsonBody(payload): JsonBody<types::CreateListenerBody>,
 ) -> Result<(StatusCode, Json<types::ListenerResponse>), ApiError> {
     // REST-specific validation
     validate_create_listener_body(&payload)?;
@@ -194,7 +194,7 @@ pub async fn update_listener_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, name)): Path<(String, String)>,
-    Json(payload): Json<types::UpdateListenerBody>,
+    JsonBody(payload): JsonBody<types::UpdateListenerBody>,
 ) -> Result<Json<types::ListenerResponse>, ApiError> {
     // Authorization: require listeners:update scope for the specified team
     require_resource_access_resolved(&state, &context, "listeners", "update", Some(&team)).await?;
@@ -409,7 +409,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create listener");
@@ -456,7 +456,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(initial),
+            JsonBody(initial),
         )
         .await
         .expect("seed listener");
@@ -486,7 +486,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path(("test-team".to_string(), "edge-listener".to_string())),
-            Json(update_payload),
+            JsonBody(update_payload),
         )
         .await
         .expect("update listener");
@@ -563,7 +563,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create listener");
@@ -591,7 +591,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create listener");
@@ -618,7 +618,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create listener");
@@ -654,7 +654,7 @@ mod tests {
             State(api_state),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -672,7 +672,7 @@ mod tests {
             State(api_state),
             Extension(readonly_resource_auth_context("listeners")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -691,7 +691,7 @@ mod tests {
             State(api_state),
             Extension(minimal_auth_context()),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -746,7 +746,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create listener");
@@ -757,7 +757,7 @@ mod tests {
             State(api_state),
             Extension(readonly_resource_auth_context("listeners")),
             Path(("test-team".to_string(), "edge-listener".to_string())),
-            Json(update),
+            JsonBody(update),
         )
         .await;
 
@@ -777,7 +777,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await
         .expect("create listener");
@@ -824,7 +824,7 @@ mod tests {
             State(api_state),
             Extension(team_auth_context("test-team")),
             Path(("test-team".to_string(), "non-existent-listener".to_string())),
-            Json(update),
+            JsonBody(update),
         )
         .await;
 
@@ -861,7 +861,7 @@ mod tests {
             State(api_state.clone()),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload.clone()),
+            JsonBody(payload.clone()),
         )
         .await
         .expect("create first listener");
@@ -871,7 +871,7 @@ mod tests {
             State(api_state),
             Extension(team_auth_context("test-team")),
             Path("test-team".to_string()),
-            Json(payload),
+            JsonBody(payload),
         )
         .await;
 
@@ -894,7 +894,7 @@ mod tests {
                 State(api_state.clone()),
                 Extension(team_auth_context("test-team")),
                 Path("test-team".to_string()),
-                Json(payload),
+                JsonBody(payload),
             )
             .await
             .expect("create listener");
@@ -927,7 +927,7 @@ mod tests {
                 State(api_state.clone()),
                 Extension(team_auth_context("test-team")),
                 Path("test-team".to_string()),
-                Json(payload),
+                JsonBody(payload),
             )
             .await
             .expect("create listener");

@@ -15,7 +15,9 @@ use validator::Validate;
 
 use crate::{
     api::{
-        error::ApiError, handlers::team_access::require_resource_access_resolved, routes::ApiState,
+        error::{ApiError, JsonBody},
+        handlers::team_access::require_resource_access_resolved,
+        routes::ApiState,
     },
     auth::models::AuthContext,
     domain::ProxyCertificateId,
@@ -159,7 +161,7 @@ pub async fn generate_certificate_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(payload): Json<GenerateCertificateRequest>,
+    JsonBody(payload): JsonBody<GenerateCertificateRequest>,
 ) -> Result<(StatusCode, Json<GenerateCertificateResponse>), ApiError> {
     // Validate request
     payload.validate().map_err(ApiError::from)?;
@@ -430,7 +432,7 @@ pub async fn revoke_certificate_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, id)): Path<(String, String)>,
-    Json(payload): Json<RevokeCertificateRequest>,
+    JsonBody(payload): JsonBody<RevokeCertificateRequest>,
 ) -> Result<Json<CertificateMetadata>, ApiError> {
     // Validate request
     payload.validate().map_err(ApiError::from)?;

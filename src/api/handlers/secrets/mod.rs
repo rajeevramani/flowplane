@@ -20,7 +20,7 @@ use tracing::instrument;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::{
             pagination::PaginatedResponse,
             team_access::{
@@ -54,7 +54,7 @@ pub async fn create_secret_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Json(payload): Json<CreateSecretRequest>,
+    JsonBody(payload): JsonBody<CreateSecretRequest>,
 ) -> Result<(StatusCode, Json<SecretResponse>), ApiError> {
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
@@ -136,7 +136,7 @@ pub async fn create_secret_reference_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Json(payload): Json<CreateSecretReferenceRequest>,
+    JsonBody(payload): JsonBody<CreateSecretReferenceRequest>,
 ) -> Result<(StatusCode, Json<SecretResponse>), ApiError> {
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
@@ -366,7 +366,7 @@ pub async fn update_secret_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<TeamSecretPath>,
-    Json(payload): Json<UpdateSecretRequest>,
+    JsonBody(payload): JsonBody<UpdateSecretRequest>,
 ) -> Result<Json<SecretResponse>, ApiError> {
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
@@ -519,7 +519,7 @@ pub async fn rotate_secret_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(path): Path<TeamSecretPath>,
-    Json(payload): Json<RotateSecretRequest>,
+    JsonBody(payload): JsonBody<RotateSecretRequest>,
 ) -> Result<Json<SecretResponse>, ApiError> {
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;

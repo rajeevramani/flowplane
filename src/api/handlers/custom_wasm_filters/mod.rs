@@ -23,7 +23,7 @@ use tracing::{info, instrument, warn};
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::{
             pagination::{PaginatedResponse, PaginationQuery},
             team_access::{
@@ -114,7 +114,7 @@ pub async fn create_custom_wasm_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Json(payload): Json<CreateCustomWasmFilterRequest>,
+    JsonBody(payload): JsonBody<CreateCustomWasmFilterRequest>,
 ) -> Result<(StatusCode, Json<CustomWasmFilterResponse>), ApiError> {
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
@@ -253,7 +253,7 @@ pub async fn update_custom_wasm_filter_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(CustomFilterPath { team, id }): Path<CustomFilterPath>,
-    Json(payload): Json<UpdateCustomWasmFilterRequest>,
+    JsonBody(payload): JsonBody<UpdateCustomWasmFilterRequest>,
 ) -> Result<Json<CustomWasmFilterResponse>, ApiError> {
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
