@@ -94,10 +94,11 @@ pub async fn auth_session_handler(
         .collect();
 
     let email = context.user_email.clone().unwrap_or_default();
-    // Use email prefix as display name (the OIDC profile name isn't available here,
-    // but the middleware stores the JIT-provisioned name in the user row — the email
-    // is a reasonable fallback).
-    let name = email.split('@').next().unwrap_or("").to_string();
+    // Use OIDC profile name if available, fall back to email prefix.
+    let name = context
+        .user_name
+        .clone()
+        .unwrap_or_else(|| email.split('@').next().unwrap_or("").to_string());
 
     Json(AuthSessionResponse {
         user_id: context.user_id.as_ref().map(|id| id.to_string()).unwrap_or_default(),
@@ -195,6 +196,25 @@ mod tests {
         assert_eq!(resp.org_name.as_deref(), Some("acme-corp"));
         assert_eq!(resp.org_role.as_deref(), Some("member"));
         assert_eq!(resp.teams, vec!["engineering"]);
+    }
+
+    #[tokio::test]
+    async fn session_uses_oidc_name_when_available() {
+        let ctx = make_context(vec![]).with_user_name("Jane Doe".to_string());
+        let Json(resp) = auth_session_handler(Extension(ctx)).await;
+
+        assert_eq!(resp.name, "Jane Doe");
+        assert_eq!(resp.email, "admin@flowplane.local");
+    }
+
+    #[tokio::test]
+    async fn session_falls_back_to_email_prefix_when_no_name() {
+        let ctx = make_context(vec![]);
+        let Json(resp) = auth_session_handler(Extension(ctx)).await;
+
+        // No user_name set, should fall back to email prefix
+        assert_eq!(resp.name, "admin");
+        assert_eq!(resp.email, "admin@flowplane.local");
     }
 
     #[tokio::test]

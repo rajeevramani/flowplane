@@ -22,6 +22,7 @@ pub struct CachedPermissions {
     pub grants: Vec<Grant>,
     pub user_id: UserId,
     pub email: Option<String>,
+    pub name: Option<String>,
     pub org_id: Option<OrgId>,
     pub org_name: Option<String>,
     pub org_role: Option<String>,
@@ -34,6 +35,7 @@ pub struct CachedPermissions {
 pub struct CachedPermissionSnapshot {
     pub user_id: UserId,
     pub email: Option<String>,
+    pub name: Option<String>,
     pub org_scopes: HashSet<String>,
     pub grants: Vec<Grant>,
     pub org_id: Option<OrgId>,
@@ -76,6 +78,7 @@ impl PermissionCache {
         Some(CachedPermissionSnapshot {
             user_id: entry.user_id.clone(),
             email: entry.email.clone(),
+            name: entry.name.clone(),
             org_scopes: entry.org_scopes.clone(),
             grants: entry.grants.clone(),
             org_id: entry.org_id.clone(),
@@ -115,6 +118,7 @@ mod tests {
             grants: Vec::new(),
             user_id: UserId::from_string(user_id.to_string()),
             email: Some(format!("{user_id}@example.com")),
+            name: None,
             org_id: None,
             org_name: None,
             org_role: None,

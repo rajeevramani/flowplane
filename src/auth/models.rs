@@ -15,6 +15,8 @@ pub struct AuthContext {
     pub token_name: String,
     pub user_id: Option<UserId>,
     pub user_email: Option<String>,
+    /// Display name from OIDC profile (name claim or userinfo endpoint).
+    pub user_name: Option<String>,
     pub client_ip: Option<String>,
     pub user_agent: Option<String>,
     /// Organization ID for this user (if org-scoped)
@@ -37,6 +39,7 @@ impl AuthContext {
             token_name,
             user_id: None,
             user_email: None,
+            user_name: None,
             client_ip: None,
             user_agent: None,
             org_id: None,
@@ -59,6 +62,7 @@ impl AuthContext {
             token_name,
             user_id: Some(user_id),
             user_email: Some(user_email),
+            user_name: None,
             client_ip: None,
             user_agent: None,
             org_id: None,
@@ -80,6 +84,14 @@ impl AuthContext {
     pub fn with_org(mut self, org_id: OrgId, org_name: String) -> Self {
         self.org_id = Some(org_id);
         self.org_name = Some(org_name);
+        self
+    }
+
+    /// Set the user's display name (from OIDC name claim or userinfo endpoint).
+    pub fn with_user_name(mut self, name: String) -> Self {
+        if !name.is_empty() {
+            self.user_name = Some(name);
+        }
         self
     }
 

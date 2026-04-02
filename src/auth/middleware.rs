@@ -145,9 +145,12 @@ pub async fn authenticate(
                 None
             };
 
+            let user_name = if user.name.is_empty() { None } else { Some(user.name.clone()) };
+
             let snap = CachedPermissionSnapshot {
                 user_id: user.id.clone(),
                 email: Some(user.email.clone()),
+                name: user_name.clone(),
                 org_scopes: permissions.org_scopes.clone(),
                 grants: permissions.grants.clone(),
                 org_id: permissions.org_id.clone(),
@@ -165,6 +168,7 @@ pub async fn authenticate(
                         grants: permissions.grants,
                         user_id: user.id,
                         email: Some(user.email),
+                        name: user_name,
                         org_id: permissions.org_id,
                         org_name: permissions.org_name,
                         org_role: permissions.org_role,
@@ -188,6 +192,11 @@ pub async fn authenticate(
         snapshot.org_scopes.into_iter().collect(),
     )
     .with_grants(snapshot.grants, snapshot.agent_context);
+
+    // Populate display name from OIDC profile (name claim or userinfo endpoint)
+    if let Some(name) = snapshot.name {
+        context = context.with_user_name(name);
+    }
 
     // Populate org context if the user belongs to a non-platform org
     if let (Some(oid), Some(oname)) = (snapshot.org_id, snapshot.org_name) {
