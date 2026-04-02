@@ -413,7 +413,7 @@ async fn expose_creates_cluster_route_listener_atomically() {
 
     // Verify the cluster's stored endpoint matches the upstream host/port
     let cluster_json = body_json(resp).await;
-    let endpoints = cluster_json["endpoints"].as_array().expect("endpoints array");
+    let endpoints = cluster_json["config"]["endpoints"].as_array().expect("endpoints array");
     assert!(!endpoints.is_empty(), "cluster should have at least one endpoint");
     assert_eq!(endpoints[0]["host"], "localhost", "endpoint host should match upstream");
     assert_eq!(endpoints[0]["port"], 8080, "endpoint port should match upstream");
