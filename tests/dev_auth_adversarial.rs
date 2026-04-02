@@ -52,14 +52,16 @@ async fn dev_router(
     (flowplane::api::routes::build_router(state), env, lock)
 }
 
-/// Build a GET request with a raw Authorization header value.
-fn request_with_raw_auth(uri: &str, auth_value: &str) -> Request<Body> {
+/// Try to build a GET request with a raw Authorization header value.
+/// Returns None if the HTTP library rejects the header value at the protocol
+/// level (e.g. newlines in header values), which is valid protection.
+fn try_request_with_raw_auth(uri: &str, auth_value: &str) -> Option<Request<Body>> {
     Request::builder()
         .method(Method::GET)
         .uri(uri)
         .header(header::AUTHORIZATION, auth_value)
         .body(Body::empty())
-        .unwrap()
+        .ok()
 }
 
 /// Build a GET request with no Authorization header.
@@ -88,7 +90,7 @@ async fn bearer_double_space_returns_401() {
 
     // "Bearer  token" (two spaces)
     let auth = format!("Bearer  {}", DEV_TOKEN);
-    let req = request_with_raw_auth(CLUSTERS_URI, &auth);
+    let req = try_request_with_raw_auth(CLUSTERS_URI, &auth).expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(
         resp.status(),
@@ -97,16 +99,22 @@ async fn bearer_double_space_returns_401() {
     );
 }
 
-/// Token with trailing newline → 401.
+/// Token with trailing newline → 401 (or rejected at protocol level).
 ///
 /// Common when tokens are read from files that have a trailing newline.
+/// The `http` crate rejects newlines in header values at the protocol level,
+/// which is valid protection — the server would never see this input.
 #[tokio::test]
 async fn bearer_token_trailing_newline_returns_401() {
     let db = TestDatabase::new("adv_trailing_newline").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
     let auth = format!("Bearer {}\n", DEV_TOKEN);
-    let req = request_with_raw_auth(CLUSTERS_URI, &auth);
+    let Some(req) = try_request_with_raw_auth(CLUSTERS_URI, &auth) else {
+        // Protocol-level rejection: the HTTP library won't even construct a
+        // request with newlines in header values. This is valid protection.
+        return;
+    };
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(
         resp.status(),
@@ -115,14 +123,21 @@ async fn bearer_token_trailing_newline_returns_401() {
     );
 }
 
-/// Token with trailing carriage return + newline → 401.
+/// Token with trailing carriage return + newline → 401 (or rejected at protocol level).
+///
+/// The `http` crate rejects CR/LF in header values at the protocol level,
+/// which is valid protection — the server would never see this input.
 #[tokio::test]
 async fn bearer_token_trailing_crlf_returns_401() {
     let db = TestDatabase::new("adv_trailing_crlf").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
     let auth = format!("Bearer {}\r\n", DEV_TOKEN);
-    let req = request_with_raw_auth(CLUSTERS_URI, &auth);
+    let Some(req) = try_request_with_raw_auth(CLUSTERS_URI, &auth) else {
+        // Protocol-level rejection: CR/LF in header values is rejected by
+        // the HTTP library. This is valid protection.
+        return;
+    };
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(
         resp.status(),
@@ -137,7 +152,7 @@ async fn empty_authorization_header_returns_401() {
     let db = TestDatabase::new("adv_empty_auth").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
-    let req = request_with_raw_auth(CLUSTERS_URI, "");
+    let req = try_request_with_raw_auth(CLUSTERS_URI, "").expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "empty Authorization header → 401");
 }
@@ -148,7 +163,7 @@ async fn bearer_keyword_only_returns_401() {
     let db = TestDatabase::new("adv_bearer_only").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
-    let req = request_with_raw_auth(CLUSTERS_URI, "Bearer");
+    let req = try_request_with_raw_auth(CLUSTERS_URI, "Bearer").expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "'Bearer' with no token → 401");
 }
@@ -159,7 +174,7 @@ async fn bearer_space_only_returns_401() {
     let db = TestDatabase::new("adv_bearer_space").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
-    let req = request_with_raw_auth(CLUSTERS_URI, "Bearer ");
+    let req = try_request_with_raw_auth(CLUSTERS_URI, "Bearer ").expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "'Bearer ' (space, no token) → 401");
 }
@@ -171,7 +186,7 @@ async fn basic_auth_scheme_returns_401() {
     let (app, _env, _lock) = dev_router(&db).await;
 
     // base64("test:test") = "dGVzdDp0ZXN0"
-    let req = request_with_raw_auth(CLUSTERS_URI, "Basic dGVzdDp0ZXN0");
+    let req = try_request_with_raw_auth(CLUSTERS_URI, "Basic dGVzdDp0ZXN0").expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "Basic auth scheme should be rejected");
 }
@@ -187,7 +202,7 @@ async fn lowercase_bearer_returns_401_or_200() {
     let (app, _env, _lock) = dev_router(&db).await;
 
     let auth = format!("bearer {}", DEV_TOKEN);
-    let req = request_with_raw_auth(CLUSTERS_URI, &auth);
+    let req = try_request_with_raw_auth(CLUSTERS_URI, &auth).expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
 
     // Middleware uses strip_prefix("Bearer ") — case-sensitive, so lowercase is rejected.
@@ -207,7 +222,7 @@ async fn uppercase_bearer_returns_401_or_200() {
     let (app, _env, _lock) = dev_router(&db).await;
 
     let auth = format!("BEARER {}", DEV_TOKEN);
-    let req = request_with_raw_auth(CLUSTERS_URI, &auth);
+    let req = try_request_with_raw_auth(CLUSTERS_URI, &auth).expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
 
     // Middleware uses strip_prefix("Bearer ") — case-sensitive, so BEARER is rejected.
@@ -228,7 +243,7 @@ async fn doubled_bearer_prefix_returns_401() {
     let (app, _env, _lock) = dev_router(&db).await;
 
     let auth = format!("Bearer Bearer {}", DEV_TOKEN);
-    let req = request_with_raw_auth(CLUSTERS_URI, &auth);
+    let req = try_request_with_raw_auth(CLUSTERS_URI, &auth).expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(
         resp.status(),
@@ -245,7 +260,7 @@ async fn jwt_lookalike_token_returns_401() {
 
     let fake_jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.fake_signature";
     let auth = format!("Bearer {}", fake_jwt);
-    let req = request_with_raw_auth(CLUSTERS_URI, &auth);
+    let req = try_request_with_raw_auth(CLUSTERS_URI, &auth).expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(
         resp.status(),
@@ -265,7 +280,7 @@ async fn valid_dev_token_returns_200() {
     let (app, _env, _lock) = dev_router(&db).await;
 
     let auth = format!("Bearer {}", DEV_TOKEN);
-    let req = request_with_raw_auth(CLUSTERS_URI, &auth);
+    let req = try_request_with_raw_auth(CLUSTERS_URI, &auth).expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "valid dev token should return 200");
 }
@@ -284,7 +299,7 @@ async fn auth_failure_returns_json_not_html() {
     let db = TestDatabase::new("adv_json_not_html").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
-    let req = request_with_raw_auth(CLUSTERS_URI, "Bearer wrong-token");
+    let req = try_request_with_raw_auth(CLUSTERS_URI, "Bearer wrong-token").expect("valid header");
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 

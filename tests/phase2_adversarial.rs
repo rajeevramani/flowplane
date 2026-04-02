@@ -364,7 +364,9 @@ async fn cluster_get_sql_injection_returns_404() {
     let db = TestDatabase::new("adv_cluster_sqli").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
-    let req = authed_get("/api/v1/teams/default/clusters/'; DROP TABLE clusters;--");
+    // URL-encode the special characters so the URI is valid at the HTTP level.
+    // The server should still reject this as 404 or 400.
+    let req = authed_get("/api/v1/teams/default/clusters/%27%3B%20DROP%20TABLE%20clusters%3B--");
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
     assert!(
