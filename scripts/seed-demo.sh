@@ -361,6 +361,7 @@ create_agent_grants() {
     "secrets:read"
     "secrets:create"
     "secrets:update"
+    "secrets:delete"
   )
 
   log "Creating grants for agent '${agent_id}' in org '${org_name}'..."
