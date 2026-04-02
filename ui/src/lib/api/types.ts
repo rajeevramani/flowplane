@@ -708,6 +708,73 @@ export interface CustomResponseConfig {
 }
 
 // ============================================================================
+// CORS Filter Types
+// ============================================================================
+
+// Origin matcher type for CORS allow_origin rules
+export type CorsMatchType = 'exact' | 'prefix' | 'suffix' | 'contains' | 'regex';
+
+// Individual origin matcher
+export interface CorsOriginMatcher {
+	type: CorsMatchType;
+	value: string;
+}
+
+// CORS policy configuration (nested under policy key)
+export interface CorsPolicyConfig {
+	allow_origin: CorsOriginMatcher[];
+	allow_methods?: string[];
+	allow_headers?: string[];
+	expose_headers?: string[];
+	max_age?: number;
+	allow_credentials?: boolean;
+	filter_enabled?: RuntimeFractionalPercentConfig;
+	shadow_enabled?: RuntimeFractionalPercentConfig;
+	allow_private_network_access?: boolean;
+	forward_not_matching_preflights?: boolean;
+}
+
+// Top-level CORS config wrapping policy
+export interface CorsConfig {
+	policy: CorsPolicyConfig;
+}
+
+// ============================================================================
+// Rate Limit (External) Filter Types
+// ============================================================================
+
+// gRPC service configuration for external rate limit service
+export interface RateLimitGrpcService {
+	envoy_grpc?: {
+		cluster_name: string;
+		authority?: string;
+	};
+	google_grpc?: {
+		target_uri: string;
+		stat_prefix?: string;
+	};
+	timeout?: string;
+}
+
+// External rate limit service configuration
+export interface RateLimitServiceConfig {
+	grpc_service: RateLimitGrpcService;
+	transport_api_version?: string;
+}
+
+// External rate limit filter configuration
+export interface RateLimitConfig {
+	domain: string;
+	rate_limit_service: RateLimitServiceConfig;
+	stage?: number;
+	request_type?: 'internal' | 'external' | 'both';
+	timeout?: string;
+	failure_mode_deny?: boolean;
+	rate_limited_as_resource_exhausted?: boolean;
+	enable_x_ratelimit_headers?: 'OFF' | 'DRAFT_VERSION_03';
+}
+
+// ============================================================================
 // MCP Filter Types
 // ============================================================================
 
@@ -729,6 +796,8 @@ export type FilterConfig =
 	| { type: 'header_mutation'; config: HeaderMutationFilterConfig }
 	| { type: 'jwt_auth'; config: JwtAuthenticationFilterConfig }
 	| { type: 'local_rate_limit'; config: LocalRateLimitConfig }
+	| { type: 'cors'; config: CorsConfig }
+	| { type: 'rate_limit'; config: RateLimitConfig }
 	| { type: 'custom_response'; config: CustomResponseConfig }
 	| { type: 'mcp'; config: McpFilterConfig };
 

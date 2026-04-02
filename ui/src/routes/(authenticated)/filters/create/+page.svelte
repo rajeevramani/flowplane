@@ -4,9 +4,11 @@
 	import { onMount } from 'svelte';
 	import { Loader2 } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
-	import type { FilterType, FilterConfig, FilterTypeInfo } from '$lib/api/types';
+	import type { FilterType, FilterConfig, FilterTypeInfo, CorsConfig, RateLimitConfig } from '$lib/api/types';
 	import Badge from '$lib/components/Badge.svelte';
 	import DynamicFilterForm from '$lib/components/filters/DynamicFilterForm.svelte';
+	import CorsConfigForm from '$lib/components/filters/CorsConfigForm.svelte';
+	import RateLimitConfigForm from '$lib/components/filters/RateLimitConfigForm.svelte';
 	import { generateDefaultValues, generateFormFields } from '$lib/utils/json-schema-form';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
 	import { validateRequired, validateMaxLength, runValidators } from '$lib/utils/validators';
@@ -237,11 +239,23 @@
 				<h2 class="text-lg font-semibold text-gray-900 mb-4">
 					{selectedFilterType.displayName} Configuration
 				</h2>
-				<DynamicFilterForm
-					filterType={selectedFilterType}
-					config={dynamicConfig}
-					onConfigChange={handleDynamicConfigChange}
-				/>
+				{#if filterType === 'cors'}
+					<CorsConfigForm
+						config={dynamicConfig as unknown as CorsConfig}
+						onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+					/>
+				{:else if filterType === 'rate_limit'}
+					<RateLimitConfigForm
+						config={dynamicConfig as unknown as RateLimitConfig}
+						onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+					/>
+				{:else}
+					<DynamicFilterForm
+						filterType={selectedFilterType}
+						config={dynamicConfig}
+						onConfigChange={handleDynamicConfigChange}
+					/>
+				{/if}
 			{:else}
 				<div class="text-center py-8 text-gray-500">
 					<p>Select a filter type to configure.</p>

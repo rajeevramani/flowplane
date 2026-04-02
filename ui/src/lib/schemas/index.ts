@@ -25,6 +25,14 @@ export {
 	type ListCertificatesResponseData
 } from './certificate';
 
+// Filter config schemas
+export {
+	CorsConfigSchema,
+	RateLimitConfigSchema,
+	type CorsConfigData,
+	type RateLimitConfigData
+} from './filter-configs';
+
 // Expose schemas
 export {
 	ExposeFormSchema,
