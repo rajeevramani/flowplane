@@ -1221,6 +1221,14 @@ export interface UpdateSecretRequest {
 	expires_at?: string | null;
 }
 
+/** Request to rotate a secret (replaces configuration, bumps version) */
+export interface RotateSecretRequest {
+	/** New secret configuration (same shape as create, replaces existing) */
+	configuration: Record<string, unknown>;
+	/** Optional new expiration time (ISO 8601 format) */
+	expires_at?: string | null;
+}
+
 /** Query parameters for listing secrets */
 export interface ListSecretsQuery {
 	/** Maximum number of secrets to return */

@@ -62,6 +62,7 @@ import type {
 	CreateSecretRequest,
 	CreateSecretReferenceRequest,
 	UpdateSecretRequest,
+	RotateSecretRequest,
 	ListSecretsQuery,
 	// Filter Install/Configure types
 	InstallFilterRequest,
@@ -858,6 +859,16 @@ class ApiClient {
 	async updateSecret(team: string, secretId: string, request: UpdateSecretRequest): Promise<SecretResponse> {
 		return this.patch<SecretResponse>(
 			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`,
+			request
+		);
+	}
+
+	/**
+	 * Rotate a secret (replaces configuration, bumps version).
+	 */
+	async rotateSecret(team: string, secretId: string, request: RotateSecretRequest): Promise<SecretResponse> {
+		return this.post<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}/rotate`,
 			request
 		);
 	}
