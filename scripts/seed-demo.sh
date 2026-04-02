@@ -308,6 +308,9 @@ create_agent() {
     AGENT_CLIENT_SECRET=$(echo "$body" | jq -r '.clientSecret // empty')
     AGENT_ID=$(echo "$body" | jq -r '.agentId // empty')
   elif [ "$http_code" = "200" ]; then
+    # Idempotent: agent exists — extract agentId so grants can still be created.
+    # Credentials are only returned on first creation (201), not on re-provision (200).
+    AGENT_ID=$(echo "$body" | jq -r '.agentId // empty')
     skip "Agent '${agent_name}' already exists in '${org_name}'"
   else
     fail "Agent creation failed (HTTP ${http_code}): ${body}"
@@ -326,7 +329,7 @@ get_team_id() {
   body=$(echo "$raw" | sed '$d')
 
   if [ "$http_code" = "200" ]; then
-    echo "$body" | jq -r ".teams[] | select(.name==\"${team_name}\") | .id // empty" | head -1
+    echo "$body" | jq -r ".teams[] | select(.name==\"${team_name}\") | .id // empty" 2>/dev/null | head -1
   else
     fail "Failed to list teams in org '${org_name}' (HTTP ${http_code}): ${body}"
     exit 1
@@ -504,18 +507,21 @@ main() {
     "Flowplane agent service account" \
     '["'"${TEAM_NAME}"'"]'
 
-  # Create grants for the agent if it was newly provisioned
-  if [ -n "${AGENT_ID}" ]; then
-    log "Resolving team '${TEAM_NAME}' for agent grants..."
-    local team_id
-    team_id=$(get_team_id "${ORG_NAME}" "${TEAM_NAME}")
-    if [ -z "$team_id" ] || [ "$team_id" = "null" ]; then
-      fail "Could not resolve team '${TEAM_NAME}' to a UUID"
-      exit 1
-    fi
-    ok "Team '${TEAM_NAME}' id: ${team_id}"
-    create_agent_grants "${ORG_NAME}" "${AGENT_ID}" "${team_id}"
+  # Always attempt to create grants — idempotent (409 = already exists).
+  # This ensures grants are created even on re-runs where the agent already existed.
+  if [ -z "${AGENT_ID}" ]; then
+    fail "Agent ID not available — cannot create grants"
+    exit 1
   fi
+  log "Resolving team '${TEAM_NAME}' for agent grants..."
+  local team_id
+  team_id=$(get_team_id "${ORG_NAME}" "${TEAM_NAME}")
+  if [ -z "$team_id" ] || [ "$team_id" = "null" ]; then
+    fail "Could not resolve team '${TEAM_NAME}' to a UUID"
+    exit 1
+  fi
+  ok "Team '${TEAM_NAME}' id: ${team_id}"
+  create_agent_grants "${ORG_NAME}" "${AGENT_ID}" "${team_id}"
 
   echo ""
   echo -e "${GREEN}━━━ Seed complete ━━━${RESET}"
@@ -526,16 +532,16 @@ main() {
   echo -e "    Org:       ${CYAN}${ORG_NAME}${RESET}"
   echo -e "    Team:      ${CYAN}${TEAM_NAME}${RESET}"
   echo ""
+  echo -e "  ${BOLD}Agent (${AGENT_NAME}):${RESET}"
   if [ -n "${AGENT_CLIENT_ID}" ]; then
-    echo -e "  ${BOLD}Agent (${AGENT_NAME}):${RESET}"
     echo -e "    Client ID:     ${CYAN}${AGENT_CLIENT_ID}${RESET}"
     echo -e "    Client Secret: ${CYAN}${AGENT_CLIENT_SECRET}${RESET}"
     echo -e "    Token URL:     ${CYAN}${ZITADEL_HOST}/oauth/v2/token${RESET}"
-    if [ -n "${AGENT_ID}" ]; then
-      echo -e "    Grants:        clusters/routes/listeners/filters/learning-sessions/secrets (read,create,update)"
-    fi
-    echo ""
+  else
+    echo -e "    ${YELLOW}Credentials were returned at first creation only.${RESET}"
   fi
+  echo -e "    Grants:        clusters/routes/listeners/filters/learning-sessions/secrets (read,create,update)"
+  echo ""
   echo -e "  ${BOLD}Superadmin:${RESET}"
   echo -e "    Login:     ${CYAN}admin@flowplane.local${RESET} (seeded automatically on startup)"
   echo ""
