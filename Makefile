@@ -166,6 +166,8 @@ endif
 		echo ""; \
 		echo "$(YELLOW)First run detected — configuring Zitadel...$(RESET)"; \
 		./scripts/setup-zitadel.sh; \
+		echo "$(YELLOW)Restarting control-plane to load Zitadel config...$(RESET)"; \
+		$(DOCKER_COMPOSE) $(BASE_COMPOSE) restart control-plane; \
 	fi
 
 up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
@@ -190,6 +192,13 @@ ifdef ENVOY
 	@echo "    Listener: http://localhost:10000"
 	@echo "    Admin:    http://localhost:9901"
 endif
+	@if [ ! -f .env.zitadel ]; then \
+		echo ""; \
+		echo "$(YELLOW)First run detected — configuring Zitadel...$(RESET)"; \
+		./scripts/setup-zitadel.sh; \
+		echo "$(YELLOW)Restarting control-plane to load Zitadel config...$(RESET)"; \
+		$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-mtls-dev.yml restart control-plane; \
+	fi
 	@echo ""
 	@echo "$(YELLOW)Next: Run PKI setup$(RESET)"
 	@echo "  make vault-setup"
@@ -236,6 +245,7 @@ seed: ## Seed demo data (org, users, teams with DB permissions)
 
 setup-zitadel: ## Configure Zitadel platform infrastructure (project, SPA app, env files)
 	@./scripts/setup-zitadel.sh
+	@echo "$(YELLOW)Note: Restart control-plane to load new config: docker compose restart control-plane$(RESET)"
 
 seed-info: ## Display credentials and configuration
 	@AUTH_MODE=$$(curl -sf --max-time 3 http://localhost:8080/api/v1/auth/mode 2>/dev/null | grep -o '"auth_mode":"[^"]*"' | cut -d'"' -f4); \

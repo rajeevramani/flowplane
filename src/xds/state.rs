@@ -185,9 +185,10 @@ impl XdsState {
                     }
                 },
                 Err(_) => {
-                    debug!(
+                    warn!(
                         "FLOWPLANE_SECRET_ENCRYPTION_KEY not set, SDS disabled. \
-                         Set this env var to enable secret management."
+                         Secret create will return 503. Set this env var to enable secret management. \
+                         Generate with: openssl rand -base64 32"
                     );
                     (None, None)
                 }
