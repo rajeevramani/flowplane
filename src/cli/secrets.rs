@@ -13,7 +13,7 @@ pub enum SecretCommands {
     /// Create a new secret
     #[command(
         long_about = "Create a new secret for Envoy Secret Discovery Service.\n\nSecrets can be generic (API keys, tokens), TLS certificates,\ncertificate validation contexts (CA certs), or session ticket keys.",
-        after_help = "EXAMPLES:\n    # Create a generic secret\n    flowplane secret create --name my-api-key --type generic_secret \\\n        --config '{\"secret\": \"base64-encoded-value\"}'\n\n    # Create a TLS certificate\n    flowplane secret create --name my-tls-cert --type tls_certificate \\\n        --config '{\"certificate_chain\": \"...\", \"private_key\": \"...\"}'\n\n    # Create with description and expiry\n    flowplane secret create --name my-secret --type generic_secret \\\n        --config '{\"secret\": \"dGVzdA==\"}' --description 'API key for upstream' \\\n        --expires-at '2027-01-01T00:00:00Z'"
+        after_help = "EXAMPLES:\n    # Create a generic secret (type is auto-injected from --type)\n    flowplane secret create --name my-api-key --type generic_secret \\\n        --config '{\"secret\": \"base64-encoded-value\"}'\n\n    # Create a TLS certificate\n    flowplane secret create --name my-tls-cert --type tls_certificate \\\n        --config '{\"certificate_chain\": \"...\", \"private_key\": \"...\"}'\n\n    # Create with description and expiry\n    flowplane secret create --name my-secret --type generic_secret \\\n        --config '{\"secret\": \"dGVzdA==\"}' --description 'API key for upstream' \\\n        --expires-at '2027-01-01T00:00:00Z'\n\n    # Explicit type in config (must match --type)\n    flowplane secret create --name my-key --type generic_secret \\\n        --config '{\"type\": \"generic_secret\", \"secret\": \"dGVzdA==\"}'"
     )]
     Create {
         /// Name of the secret (must be unique within the team)
@@ -174,8 +174,10 @@ async fn create_secret(
         );
     }
 
-    let configuration: serde_json::Value =
+    let mut configuration: serde_json::Value =
         serde_json::from_str(&config).context("Invalid JSON in --config")?;
+
+    inject_type_into_config(&mut configuration, &secret_type)?;
 
     let body = CreateSecretRequest { name, secret_type, configuration, description, expires_at };
 
@@ -329,5 +331,104 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
+/// Inject the `type` tag from `--type` flag into the config JSON object.
+///
+/// The API requires a `"type"` discriminator inside the configuration for
+/// `SecretSpec` deserialization. This auto-injects it so users don't need
+/// to redundantly specify the type in both `--type` and `--config`.
+fn inject_type_into_config(configuration: &mut serde_json::Value, secret_type: &str) -> Result<()> {
+    if let Some(obj) = configuration.as_object_mut() {
+        match obj.get("type") {
+            Some(existing_type) => {
+                if let Some(existing_str) = existing_type.as_str() {
+                    if existing_str != secret_type {
+                        anyhow::bail!(
+                            "Conflicting types: --type '{}' but config JSON has type '{}'. \
+                             Remove the type field from --config or make them match.",
+                            secret_type,
+                            existing_str
+                        );
+                    }
+                }
+            }
+            None => {
+                obj.insert("type".to_string(), serde_json::Value::String(secret_type.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn inject_type_adds_missing_type() {
+        let mut config = json!({"secret": "dGVzdA=="});
+        inject_type_into_config(&mut config, "generic_secret").unwrap();
+        assert_eq!(config["type"], "generic_secret");
+        assert_eq!(config["secret"], "dGVzdA==");
+    }
+
+    #[test]
+    fn inject_type_matching_type_is_ok() {
+        let mut config = json!({"type": "generic_secret", "secret": "dGVzdA=="});
+        inject_type_into_config(&mut config, "generic_secret").unwrap();
+        assert_eq!(config["type"], "generic_secret");
+    }
+
+    #[test]
+    fn inject_type_conflicting_type_errors() {
+        let mut config = json!({"type": "tls_certificate", "secret": "dGVzdA=="});
+        let result = inject_type_into_config(&mut config, "generic_secret");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Conflicting types"));
+        assert!(err.contains("generic_secret"));
+        assert!(err.contains("tls_certificate"));
+    }
+
+    #[test]
+    fn inject_type_non_string_type_field_is_ignored() {
+        // If someone puts a non-string "type" value, don't error — let the API reject it
+        let mut config = json!({"type": 42, "secret": "dGVzdA=="});
+        let result = inject_type_into_config(&mut config, "generic_secret");
+        assert!(result.is_ok());
+        // Original non-string value preserved
+        assert_eq!(config["type"], 42);
+    }
+
+    #[test]
+    fn inject_type_non_object_config_is_noop() {
+        let mut config = json!("not-an-object");
+        let result = inject_type_into_config(&mut config, "generic_secret");
+        assert!(result.is_ok());
+        assert_eq!(config, json!("not-an-object"));
+    }
+
+    #[test]
+    fn inject_type_all_secret_types() {
+        for secret_type in VALID_SECRET_TYPES {
+            let mut config = json!({"secret": "dGVzdA=="});
+            inject_type_into_config(&mut config, secret_type).unwrap();
+            assert_eq!(config["type"], *secret_type);
+        }
+    }
+
+    #[test]
+    fn inject_type_preserves_other_fields() {
+        let mut config = json!({
+            "certificate_chain": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
+            "private_key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----"
+        });
+        inject_type_into_config(&mut config, "tls_certificate").unwrap();
+        assert_eq!(config["type"], "tls_certificate");
+        assert!(config["certificate_chain"].is_string());
+        assert!(config["private_key"].is_string());
     }
 }
