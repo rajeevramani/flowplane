@@ -63,16 +63,18 @@ test.describe('Agent CRUD + Grant Management', () => {
 		const matrixVisible = await matrixTable.isVisible().catch(() => false);
 
 		if (matrixVisible) {
-			// Find an unchecked checkbox in the matrix and check it
+			// Find an unchecked checkbox in the matrix and get its title for a stable locator
 			const uncheckedCell = matrixTable
 				.locator('input[type="checkbox"]:not(:checked)')
 				.first();
 			if (await uncheckedCell.isVisible()) {
+				const title = await uncheckedCell.getAttribute('title');
 				await uncheckedCell.check();
 				// Wait for the grant to be created (network call)
 				await page.waitForTimeout(1000);
-				// Verify the checkbox is now checked
-				await expect(uncheckedCell).toBeChecked();
+				// Use a stable locator based on title to verify the specific checkbox
+				const stableCheckbox = matrixTable.locator(`input[type="checkbox"][title="${title}"]`);
+				await expect(stableCheckbox).toBeChecked();
 			}
 		}
 
@@ -97,9 +99,13 @@ test.describe('Agent CRUD + Grant Management', () => {
 		if (matrixVisible) {
 			const checkedCell = matrixTable.locator('input[type="checkbox"]:checked').first();
 			if (await checkedCell.isVisible()) {
+				// Capture the title for a stable locator — the :checked selector shifts
+				// to the next checked checkbox after uncheck, causing assertion timeouts
+				const title = await checkedCell.getAttribute('title');
 				await checkedCell.uncheck();
 				await page.waitForTimeout(1000);
-				await expect(checkedCell).not.toBeChecked();
+				const stableCheckbox = matrixTable.locator(`input[type="checkbox"][title="${title}"]`);
+				await expect(stableCheckbox).not.toBeChecked();
 			}
 		}
 
@@ -174,8 +180,10 @@ test.describe('Agent CRUD + Grant Management', () => {
 		const matrixVisible = await matrixTable.isVisible().catch(() => false);
 
 		if (matrixVisible) {
-			// Find an unchecked checkbox, check it, verify, uncheck, verify
-			const checkbox = matrixTable.locator('input[type="checkbox"]').first();
+			// Use title attribute for a stable locator across re-renders
+			const firstCheckbox = matrixTable.locator('input[type="checkbox"]').first();
+			const title = await firstCheckbox.getAttribute('title');
+			const checkbox = matrixTable.locator(`input[type="checkbox"][title="${title}"]`);
 			const wasChecked = await checkbox.isChecked();
 
 			// Toggle on
