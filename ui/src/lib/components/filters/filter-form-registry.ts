@@ -16,7 +16,9 @@
  */
 export const CUSTOM_FORM_FILTER_TYPES = new Set([
 	'cors',
-	'rate_limit'
+	'rate_limit',
+	'compressor',
+	'ext_authz'
 ]);
 
 /**

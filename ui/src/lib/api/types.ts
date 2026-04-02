@@ -519,7 +519,7 @@ export type AttachmentPoint = 'route' | 'listener' | 'cluster';
 
 // Filter type uses snake_case to match backend serde serialization
 // Note: jwt_authn is the Envoy filter name variant (with 'n')
-export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'local_rate_limit' | 'rate_limit' | 'ext_authz' | 'custom_response' | 'mcp';
+export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'local_rate_limit' | 'rate_limit' | 'ext_authz' | 'compressor' | 'custom_response' | 'mcp';
 
 // ============================================================================
 // JWT Authentication Filter Types
@@ -775,6 +775,97 @@ export interface RateLimitConfig {
 }
 
 // ============================================================================
+// Compressor Filter Types
+// ============================================================================
+
+export interface CompressorCommonConfig {
+	min_content_length?: number;
+	content_type?: string[];
+	disable_on_etag_header?: boolean;
+	remove_accept_encoding_header?: boolean;
+}
+
+export interface CompressorResponseDirectionConfig {
+	common_config?: CompressorCommonConfig;
+}
+
+export interface CompressorLibraryConfig {
+	type: 'gzip';
+	compression_level?: 'best_speed' | 'best_compression' | 'default_compression';
+	compression_strategy?: 'default_strategy' | 'filtered' | 'huffman_only' | 'rle' | 'fixed';
+	memory_level?: number;
+	window_bits?: number;
+	chunk_size?: number;
+}
+
+export interface CompressorConfig {
+	response_direction_config?: CompressorResponseDirectionConfig;
+	compressor_library?: CompressorLibraryConfig;
+}
+
+// ============================================================================
+// External Authorization Filter Types
+// ============================================================================
+
+export interface ExtAuthzGrpcService {
+	envoy_grpc?: {
+		cluster_name: string;
+		authority?: string;
+	};
+	google_grpc?: {
+		target_uri: string;
+		stat_prefix?: string;
+	};
+	timeout?: string;
+}
+
+export interface ExtAuthzHeaderKeyValue {
+	key: string;
+	value: string;
+}
+
+export interface ExtAuthzServerUri {
+	uri?: string;
+	cluster?: string;
+	timeout_ms?: number;
+}
+
+export interface ExtAuthzServiceConfig {
+	type: 'grpc' | 'http';
+	target_uri?: string;
+	timeout_ms?: number;
+	initial_metadata?: ExtAuthzHeaderKeyValue[];
+	server_uri?: ExtAuthzServerUri;
+	path_prefix?: string;
+	headers_to_add?: ExtAuthzHeaderKeyValue[];
+	authorization_request?: {
+		allowed_headers?: string[];
+		headers_to_add?: ExtAuthzHeaderKeyValue[];
+	};
+	authorization_response?: {
+		allowed_upstream_headers?: string[];
+		allowed_client_headers?: string[];
+		allowed_client_headers_on_success?: string[];
+	};
+}
+
+export interface ExtAuthzWithRequestBody {
+	max_request_bytes?: number;
+	allow_partial_message?: boolean;
+	pack_as_bytes?: boolean;
+}
+
+export interface ExtAuthzConfig {
+	service: ExtAuthzServiceConfig;
+	failure_mode_allow?: boolean;
+	with_request_body?: ExtAuthzWithRequestBody;
+	clear_route_cache?: boolean;
+	status_on_error?: number;
+	stat_prefix?: string;
+	include_peer_certificate?: boolean;
+}
+
+// ============================================================================
 // MCP Filter Types
 // ============================================================================
 
@@ -798,6 +889,8 @@ export type FilterConfig =
 	| { type: 'local_rate_limit'; config: LocalRateLimitConfig }
 	| { type: 'cors'; config: CorsConfig }
 	| { type: 'rate_limit'; config: RateLimitConfig }
+	| { type: 'compressor'; config: CompressorConfig }
+	| { type: 'ext_authz'; config: ExtAuthzConfig }
 	| { type: 'custom_response'; config: CustomResponseConfig }
 	| { type: 'mcp'; config: McpFilterConfig };
 

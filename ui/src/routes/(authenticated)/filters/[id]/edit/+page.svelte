@@ -4,12 +4,14 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { ArrowLeft, Loader2, Server, Sliders, ExternalLink } from 'lucide-svelte';
-	import type { FilterResponse, FilterConfig, FilterTypeInfo, FilterStatusResponse, CorsConfig, RateLimitConfig } from '$lib/api/types';
+	import type { FilterResponse, FilterConfig, FilterTypeInfo, FilterStatusResponse, CorsConfig, RateLimitConfig, CompressorConfig, ExtAuthzConfig } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import DynamicFilterForm from '$lib/components/filters/DynamicFilterForm.svelte';
 	import CorsConfigForm from '$lib/components/filters/CorsConfigForm.svelte';
 	import RateLimitConfigForm from '$lib/components/filters/RateLimitConfigForm.svelte';
+	import CompressorConfigForm from '$lib/components/filters/CompressorConfigForm.svelte';
+	import ExtAuthzConfigForm from '$lib/components/filters/ExtAuthzConfigForm.svelte';
 	import { selectedTeam } from '$lib/stores/team';
 
 	let currentTeam = $state<string>('');
@@ -363,6 +365,16 @@
 			{:else if filter && filter.filterType === 'rate_limit'}
 				<RateLimitConfigForm
 					config={dynamicConfig as unknown as RateLimitConfig}
+					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+				/>
+			{:else if filter && filter.filterType === 'compressor'}
+				<CompressorConfigForm
+					config={dynamicConfig as unknown as CompressorConfig}
+					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+				/>
+			{:else if filter && filter.filterType === 'ext_authz'}
+				<ExtAuthzConfigForm
+					config={dynamicConfig as unknown as ExtAuthzConfig}
 					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
 				/>
 			{:else if filterTypeInfo}

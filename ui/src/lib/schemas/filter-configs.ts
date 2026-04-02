@@ -80,3 +80,86 @@ export const RateLimitConfigSchema = z.object({
 });
 
 export type RateLimitConfigData = z.infer<typeof RateLimitConfigSchema>;
+
+// ============================================================================
+// Compressor Filter Schema
+// ============================================================================
+
+const CompressorCommonConfigSchema = z.object({
+	min_content_length: z.number().int().min(0).optional(),
+	content_type: z.array(z.string()).optional(),
+	disable_on_etag_header: z.boolean().optional(),
+	remove_accept_encoding_header: z.boolean().optional()
+});
+
+const CompressorResponseDirectionConfigSchema = z.object({
+	common_config: CompressorCommonConfigSchema.optional()
+});
+
+const CompressorLibraryConfigSchema = z.object({
+	type: z.literal('gzip'),
+	compression_level: z.enum(['best_speed', 'best_compression', 'default_compression']).optional(),
+	compression_strategy: z.enum(['default_strategy', 'filtered', 'huffman_only', 'rle', 'fixed']).optional(),
+	memory_level: z.number().int().min(1).max(9).optional(),
+	window_bits: z.number().int().min(9).max(15).optional(),
+	chunk_size: z.number().int().min(1024).optional()
+});
+
+export const CompressorConfigSchema = z.object({
+	response_direction_config: CompressorResponseDirectionConfigSchema.optional(),
+	compressor_library: CompressorLibraryConfigSchema.optional()
+});
+
+export type CompressorConfigData = z.infer<typeof CompressorConfigSchema>;
+
+// ============================================================================
+// External Authorization Filter Schema
+// ============================================================================
+
+const ExtAuthzHeaderKeyValueSchema = z.object({
+	key: z.string().min(1, 'Header key is required'),
+	value: z.string()
+});
+
+const ExtAuthzServerUriSchema = z.object({
+	uri: z.string().optional(),
+	cluster: z.string().optional(),
+	timeout_ms: z.number().int().min(1).optional()
+});
+
+const ExtAuthzServiceConfigSchema = z.object({
+	type: z.enum(['grpc', 'http']),
+	target_uri: z.string().optional(),
+	timeout_ms: z.number().int().min(1).optional(),
+	initial_metadata: z.array(ExtAuthzHeaderKeyValueSchema).optional(),
+	server_uri: ExtAuthzServerUriSchema.optional(),
+	path_prefix: z.string().optional(),
+	headers_to_add: z.array(ExtAuthzHeaderKeyValueSchema).optional(),
+	authorization_request: z.object({
+		allowed_headers: z.array(z.string()).optional(),
+		headers_to_add: z.array(ExtAuthzHeaderKeyValueSchema).optional()
+	}).optional(),
+	authorization_response: z.object({
+		allowed_upstream_headers: z.array(z.string()).optional(),
+		allowed_client_headers: z.array(z.string()).optional(),
+		allowed_client_headers_on_success: z.array(z.string()).optional()
+	}).optional()
+});
+
+const ExtAuthzWithRequestBodySchema = z.object({
+	max_request_bytes: z.number().int().min(0).optional(),
+	allow_partial_message: z.boolean().optional(),
+	pack_as_bytes: z.boolean().optional()
+});
+
+export const ExtAuthzConfigSchema = z.object({
+	service: ExtAuthzServiceConfigSchema,
+	failure_mode_allow: z.boolean().optional(),
+	with_request_body: ExtAuthzWithRequestBodySchema.optional(),
+	clear_route_cache: z.boolean().optional(),
+	status_on_error: z.number().int().min(100).max(599).optional(),
+	stat_prefix: z.string().optional(),
+	include_peer_certificate: z.boolean().optional()
+});
+
+export type ExtAuthzConfigData = z.infer<typeof ExtAuthzConfigSchema>;

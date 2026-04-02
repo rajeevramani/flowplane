@@ -1,9 +1,11 @@
 // Filter component exports
 export { default as AttachmentPointBadge } from './AttachmentPointBadge.svelte';
 export { default as ClusterSelectorField } from './ClusterSelectorField.svelte';
+export { default as CompressorConfigForm } from './CompressorConfigForm.svelte';
 export { default as CorsConfigForm } from './CorsConfigForm.svelte';
 export { default as CustomResponseConfigForm } from './CustomResponseConfigForm.svelte';
 export { default as DynamicFilterForm } from './DynamicFilterForm.svelte';
+export { default as ExtAuthzConfigForm } from './ExtAuthzConfigForm.svelte';
 export { default as DynamicFormField } from './DynamicFormField.svelte';
 export { default as FilterAttachmentList } from './FilterAttachmentList.svelte';
 export { default as FilterOverridePanel } from './FilterOverridePanel.svelte';
