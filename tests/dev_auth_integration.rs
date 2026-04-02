@@ -567,17 +567,17 @@ async fn auth_mode_endpoint_returns_dev() {
 }
 
 // ===========================================================================
-// Unexpose on non-existent service is idempotent (204)
+// Unexpose on non-existent service returns 404
 // ===========================================================================
 
 #[tokio::test]
-async fn unexpose_nonexistent_returns_204() {
+async fn unexpose_nonexistent_returns_404() {
     let db = TestDatabase::new("unexpose_nonexistent").await;
     let (app, _env, _lock) = dev_router(&db).await;
 
     let req = authed_request(Method::DELETE, "/api/v1/teams/default/expose/no-such-svc");
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT, "unexpose of missing service should be 204");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "unexpose of missing service should be 404");
 }
 
 // ===========================================================================
