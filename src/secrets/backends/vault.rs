@@ -42,8 +42,11 @@ impl VaultBackendConfig {
     /// - `FLOWPLANE_VAULT_KV_MOUNT` (default: "secret")
     pub fn from_env() -> Result<Option<Self>> {
         // Check for address - required for Vault backend
-        let address =
-            std::env::var("FLOWPLANE_VAULT_ADDR").or_else(|_| std::env::var("VAULT_ADDR")).ok();
+        // Gate on env var being present AND non-empty
+        let address = std::env::var("FLOWPLANE_VAULT_ADDR")
+            .or_else(|_| std::env::var("VAULT_ADDR"))
+            .ok()
+            .filter(|s| !s.trim().is_empty());
 
         let Some(address) = address else {
             return Ok(None);
@@ -321,6 +324,10 @@ impl SecretBackend for VaultSecretBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Env vars are process-global; serialize all tests that modify them
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_vault_backend_config_default() {
@@ -335,14 +342,121 @@ mod tests {
 
     #[test]
     fn test_backend_type() {
-        // Just verify the type constant
         assert_eq!(SecretBackendType::Vault.as_str(), "vault");
     }
 
     #[test]
     fn test_config_from_env_no_addr() {
-        // Without VAULT_ADDR set, should return None
-        // (assuming env is clean or address is not set)
-        // This is a basic test - integration tests would test with actual Vault
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved_fp = std::env::var("FLOWPLANE_VAULT_ADDR").ok();
+        let saved_va = std::env::var("VAULT_ADDR").ok();
+        std::env::remove_var("FLOWPLANE_VAULT_ADDR");
+        std::env::remove_var("VAULT_ADDR");
+
+        let result = VaultBackendConfig::from_env();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none(), "Should return None when VAULT_ADDR is not set");
+
+        if let Some(v) = saved_fp {
+            std::env::set_var("FLOWPLANE_VAULT_ADDR", v);
+        }
+        if let Some(v) = saved_va {
+            std::env::set_var("VAULT_ADDR", v);
+        }
+    }
+
+    #[test]
+    fn test_config_from_env_empty_addr() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved_fp = std::env::var("FLOWPLANE_VAULT_ADDR").ok();
+        let saved_va = std::env::var("VAULT_ADDR").ok();
+        std::env::remove_var("FLOWPLANE_VAULT_ADDR");
+        std::env::set_var("VAULT_ADDR", "");
+
+        let result = VaultBackendConfig::from_env();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none(), "Should return None when VAULT_ADDR is empty");
+
+        if let Some(v) = saved_fp {
+            std::env::set_var("FLOWPLANE_VAULT_ADDR", v);
+        }
+        if let Some(v) = saved_va {
+            std::env::set_var("VAULT_ADDR", v);
+        } else {
+            std::env::remove_var("VAULT_ADDR");
+        }
+    }
+
+    #[test]
+    fn test_config_from_env_whitespace_addr() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved_fp = std::env::var("FLOWPLANE_VAULT_ADDR").ok();
+        let saved_va = std::env::var("VAULT_ADDR").ok();
+        std::env::remove_var("FLOWPLANE_VAULT_ADDR");
+        std::env::set_var("VAULT_ADDR", "   ");
+
+        let result = VaultBackendConfig::from_env();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none(), "Should return None when VAULT_ADDR is whitespace-only");
+
+        if let Some(v) = saved_fp {
+            std::env::set_var("FLOWPLANE_VAULT_ADDR", v);
+        }
+        if let Some(v) = saved_va {
+            std::env::set_var("VAULT_ADDR", v);
+        } else {
+            std::env::remove_var("VAULT_ADDR");
+        }
+    }
+
+    #[test]
+    fn test_config_from_env_valid_addr() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved_fp = std::env::var("FLOWPLANE_VAULT_ADDR").ok();
+        let saved_va = std::env::var("VAULT_ADDR").ok();
+        std::env::remove_var("FLOWPLANE_VAULT_ADDR");
+        std::env::set_var("VAULT_ADDR", "http://localhost:8200");
+
+        let result = VaultBackendConfig::from_env();
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert!(config.is_some(), "Should return Some when VAULT_ADDR is set");
+        let config = config.unwrap();
+        assert_eq!(config.address, "http://localhost:8200");
+        assert_eq!(config.kv_mount_path, "secret");
+
+        if let Some(v) = saved_fp {
+            std::env::set_var("FLOWPLANE_VAULT_ADDR", v);
+        }
+        if let Some(v) = saved_va {
+            std::env::set_var("VAULT_ADDR", v);
+        } else {
+            std::env::remove_var("VAULT_ADDR");
+        }
+    }
+
+    #[test]
+    fn test_config_from_env_flowplane_prefix_takes_precedence() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved_fp = std::env::var("FLOWPLANE_VAULT_ADDR").ok();
+        let saved_va = std::env::var("VAULT_ADDR").ok();
+        std::env::set_var("FLOWPLANE_VAULT_ADDR", "http://preferred:8200");
+        std::env::set_var("VAULT_ADDR", "http://fallback:8200");
+
+        let result = VaultBackendConfig::from_env();
+        assert!(result.is_ok());
+        let config = result.unwrap().unwrap();
+        assert_eq!(config.address, "http://preferred:8200");
+
+        if let Some(v) = saved_fp {
+            std::env::set_var("FLOWPLANE_VAULT_ADDR", v);
+        } else {
+            std::env::remove_var("FLOWPLANE_VAULT_ADDR");
+        }
+        if let Some(v) = saved_va {
+            std::env::set_var("VAULT_ADDR", v);
+        } else {
+            std::env::remove_var("VAULT_ADDR");
+        }
     }
 }
