@@ -68,6 +68,7 @@ pub async fn create_listener_handler(
 ) -> Result<(StatusCode, Json<types::ListenerResponse>), ApiError> {
     // REST-specific validation
     validate_create_listener_body(&payload)?;
+    crate::validation::validate_resource_name(&payload.name).map_err(ApiError::BadRequest)?;
 
     // Verify user has create access to the specified team
     require_resource_access_resolved(&state, &context, "listeners", "create", Some(&team)).await?;

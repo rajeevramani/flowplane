@@ -70,6 +70,7 @@ pub async fn create_route_config_handler(
 ) -> Result<(StatusCode, Json<RouteConfigResponse>), ApiError> {
     // REST-specific validation
     validate_route_config_payload(&payload)?;
+    crate::validation::validate_resource_name(&payload.name).map_err(ApiError::BadRequest)?;
 
     // Verify user has create access to the specified team
     require_resource_access_resolved(&state, &context, "routes", "create", Some(&team)).await?;

@@ -68,6 +68,7 @@ pub async fn create_cluster_handler(
 ) -> Result<(StatusCode, Json<types::ClusterResponse>), ApiError> {
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
+    crate::validation::validate_resource_name(&payload.name).map_err(ApiError::BadRequest)?;
 
     // Authorization
     require_resource_access_resolved(&state, &context, "clusters", "create", Some(&team)).await?;

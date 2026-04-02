@@ -87,6 +87,7 @@ fn parse_upstream(upstream: &str) -> Result<(String, u16), ApiError> {
     let port: u16 = parts[0]
         .parse()
         .map_err(|_| ApiError::BadRequest(format!("Invalid upstream port in '{}'", upstream)))?;
+    crate::validation::validate_port_nonzero(port).map_err(ApiError::BadRequest)?;
     let host = parts[1].to_string();
     if host.is_empty() {
         return Err(ApiError::BadRequest("Upstream host cannot be empty".to_string()));
@@ -218,9 +219,8 @@ pub async fn expose_handler(
     JsonBody(payload): JsonBody<ExposeRequest>,
 ) -> Result<(StatusCode, Json<ExposeResponse>), ApiError> {
     // Validate input
-    if payload.name.is_empty() {
-        return Err(ApiError::BadRequest("Service name cannot be empty".to_string()));
-    }
+    crate::validation::validate_resource_name(&payload.name).map_err(ApiError::BadRequest)?;
+    crate::validation::validate_upstream(&payload.upstream).map_err(ApiError::BadRequest)?;
     let (upstream_host, upstream_port) = parse_upstream(&payload.upstream)?;
 
     // Reject explicitly empty paths array — default to ["/"] only when field is omitted
@@ -474,6 +474,24 @@ mod tests {
     #[test]
     fn parse_upstream_empty_host() {
         let result = parse_upstream(":8080");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_upstream_port_zero_rejected() {
+        let result = parse_upstream("localhost:0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_name_special_chars_rejected() {
+        let result = crate::validation::validate_resource_name("test@!#");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_upstream_spaces_rejected() {
+        let result = crate::validation::validate_upstream("localhost :8080");
         assert!(result.is_err());
     }
 

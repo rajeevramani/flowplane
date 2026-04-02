@@ -183,6 +183,7 @@ pub async fn create_filter_handler(
         "Creating filter - received payload"
     );
     validate_create_filter_request(&payload, state.filter_schema_registry.as_ref()).await?;
+    crate::validation::validate_resource_name(&payload.name).map_err(ApiError::BadRequest)?;
 
     // Verify user has create access to the specified team
     require_resource_access_resolved(&state, &context, "filters", "create", Some(&team)).await?;
