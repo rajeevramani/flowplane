@@ -20,7 +20,8 @@
 		Cable,
 		Network,
 		Globe,
-		Zap
+		Zap,
+		ShieldCheck
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { isOrgAdmin } from '$lib/stores/org';
@@ -54,6 +55,7 @@
 		{ id: 'route-configs', label: 'Route Configurations', href: '/route-configs', icon: Layers },
 		{ id: 'listeners', label: 'Listeners', href: '/listeners', icon: Radio },
 		{ id: 'secrets', label: 'Secrets', href: '/secrets', icon: Lock },
+		{ id: 'certificates', label: 'Certificates', href: '/certificates', icon: ShieldCheck },
 		{ id: 'imports', label: 'Imports', href: '/imports', icon: FileUp }
 	];
 

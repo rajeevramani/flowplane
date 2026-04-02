@@ -17,6 +17,14 @@ export {
 	type ClusterResponseData
 } from './cluster';
 
+// Certificate schemas
+export {
+	CertificateMetadataSchema,
+	ListCertificatesResponseSchema,
+	type CertificateMetadataData,
+	type ListCertificatesResponseData
+} from './certificate';
+
 // Expose schemas
 export {
 	ExposeFormSchema,
