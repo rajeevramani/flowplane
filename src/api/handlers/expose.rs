@@ -14,7 +14,7 @@ use tracing::instrument;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{require_resource_access_resolved, resolve_rest_auth},
         routes::ApiState,
     },
@@ -215,13 +215,22 @@ pub async fn expose_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(team): Path<String>,
-    Json(payload): Json<ExposeRequest>,
+    JsonBody(payload): JsonBody<ExposeRequest>,
 ) -> Result<(StatusCode, Json<ExposeResponse>), ApiError> {
     // Validate input
     if payload.name.is_empty() {
         return Err(ApiError::BadRequest("Service name cannot be empty".to_string()));
     }
     let (upstream_host, upstream_port) = parse_upstream(&payload.upstream)?;
+
+    // Reject explicitly empty paths array — default to ["/"] only when field is omitted
+    if let Some(ref p) = payload.paths {
+        if p.is_empty() {
+            return Err(ApiError::BadRequest(
+                "paths array cannot be empty; omit the field to default to [\"/\"]".to_string(),
+            ));
+        }
+    }
 
     // Authorization
     require_resource_access_resolved(&state, &context, "listeners", "create", Some(&team)).await?;

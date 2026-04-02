@@ -164,6 +164,9 @@ pub async fn get_cluster_handler(
 ) -> Result<Json<types::ClusterResponse>, ApiError> {
     let (team, name) = path;
 
+    // Reject names with control characters (null bytes etc.) before hitting DB
+    crate::api::error::validate_path_name(&name, "Cluster")?;
+
     // Authorization
     require_resource_access_resolved(&state, &context, "clusters", "read", Some(&team)).await?;
 

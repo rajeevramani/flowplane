@@ -29,12 +29,61 @@
 //! // Returns: 404 Not Found with JSON body: {"error": "not_found", "message": "Listener with ID '123' not found"}
 //! ```
 
-use axum::{http::StatusCode, response::IntoResponse, Json};
-use serde::Serialize;
+use axum::{
+    extract::{rejection::JsonRejection, FromRequest, Request},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::auth::models::AuthError;
 use crate::domain::SecretValidationError;
 use crate::errors::FlowplaneError;
+
+/// Custom JSON extractor that converts deserialization errors to JSON 400 responses
+/// instead of Axum's default text/plain rejection.
+pub struct JsonBody<T>(pub T);
+
+impl<T, S> FromRequest<S> for JsonBody<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(JsonBody(value)),
+            Err(rejection) => Err(match rejection {
+                JsonRejection::JsonDataError(e) => {
+                    ApiError::BadRequest(format!("Invalid JSON data: {}", e))
+                }
+                JsonRejection::JsonSyntaxError(e) => {
+                    ApiError::BadRequest(format!("Invalid JSON syntax: {}", e))
+                }
+                JsonRejection::MissingJsonContentType(e) => {
+                    ApiError::BadRequest(format!("Missing JSON content type: {}", e))
+                }
+                _ => ApiError::BadRequest("Invalid request body".to_string()),
+            }),
+        }
+    }
+}
+
+/// Validate that a resource name doesn't contain control characters (including null bytes)
+/// that would cause database errors.  Returns `Ok(())` if the name is safe for DB lookup,
+/// or an appropriate `ApiError::NotFound` if it contains invalid characters.
+pub fn validate_path_name(name: &str, resource_type: &str) -> Result<(), ApiError> {
+    if name.contains('\0') || name.chars().any(|c| c.is_control()) {
+        return Err(ApiError::NotFound(format!(
+            "{} '{}' not found",
+            resource_type,
+            name.replace('\0', "").replace(|c: char| c.is_control(), "")
+        )));
+    }
+    Ok(())
+}
 
 /// API-layer error type for HTTP responses.
 ///
