@@ -136,10 +136,14 @@ pub async fn resolve_team_name(
         return Ok(team_name.to_string());
     }
     let team_repo = team_repo_from_state(state)?;
-    let ids = team_repo
-        .resolve_team_ids(org_id, &[team_name.to_string()])
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to resolve team: {}", e)))?;
+    let ids = team_repo.resolve_team_ids(org_id, &[team_name.to_string()]).await.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            ApiError::NotFound(format!("Team '{}' not found", team_name))
+        } else {
+            ApiError::Internal(format!("Failed to resolve team: {}", e))
+        }
+    })?;
     ids.into_iter()
         .next()
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team_name)))
@@ -237,6 +241,27 @@ pub async fn resolve_rest_auth(
         .resolve_teams(team_repo)
         .await
         .map_err(ApiError::from)
+}
+
+/// Resolve REST auth context scoped to a specific team from the URL path.
+///
+/// Like `resolve_rest_auth`, but also resolves the URL-path team name to a UUID
+/// and sets `requested_team` on the context. This ensures `verify_team_access`
+/// will check that the fetched resource actually belongs to the requested team,
+/// preventing cross-team reads via unrelated URL paths.
+pub async fn resolve_rest_auth_for_team(
+    state: &ApiState,
+    context: &AuthContext,
+    url_team: &str,
+) -> Result<InternalAuthContext, ApiError> {
+    let team_repo = team_repo_from_state(state)?;
+    let team_id = resolve_team_name(state, url_team, context.org_id.as_ref()).await?;
+    let auth = InternalAuthContext::from_rest_with_org(context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(auth.with_requested_team(team_id))
 }
 
 /// Get effective team scopes with org admin expansion.

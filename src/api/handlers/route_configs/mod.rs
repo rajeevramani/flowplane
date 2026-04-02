@@ -27,7 +27,8 @@ use crate::{
     api::{
         error::ApiError,
         handlers::team_access::{
-            require_resource_access_resolved, resolve_rest_auth, resolve_team_name,
+            require_resource_access_resolved, resolve_rest_auth, resolve_rest_auth_for_team,
+            resolve_team_name,
         },
         routes::ApiState,
     },
@@ -175,9 +176,9 @@ pub async fn get_route_config_handler(
     // Authorization: require routes:read scope with team
     require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
-    // Delegate to internal API layer (includes team access verification)
+    // Delegate to internal API layer — scope auth to the URL-path team for isolation
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     let route_config = ops.get(&name, &auth).await?;
 
     Ok(Json(route_config_response_from_data(route_config)?))
@@ -228,9 +229,9 @@ pub async fn update_route_config_handler(
     // Create internal API request
     let internal_request = InternalUpdateRouteConfigRequest { config: config_value };
 
-    // Delegate to internal API layer (includes team access, XDS refresh, and route hierarchy sync)
+    // Delegate to internal API layer — scope auth to the URL-path team for isolation
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     let result = ops.update(&name, internal_request, &auth).await?;
 
     let response = RouteConfigResponse {
@@ -269,9 +270,9 @@ pub async fn delete_route_config_handler(
     // Authorization: require routes:delete scope with team
     require_resource_access_resolved(&state, &context, "routes", "delete", Some(&team)).await?;
 
-    // Delegate to internal API layer (includes default route protection, team access, and XDS refresh)
+    // Delegate to internal API layer — scope auth to the URL-path team for isolation
     let ops = RouteConfigOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)

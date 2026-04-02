@@ -35,7 +35,8 @@ use crate::{
         error::ApiError,
         handlers::team_access::{
             get_effective_team_ids, require_resource_access_resolved, resolve_rest_auth,
-            resolve_team_name, team_repo_from_state, verify_team_access,
+            resolve_rest_auth_for_team, resolve_team_name, team_repo_from_state,
+            verify_team_access,
         },
         routes::ApiState,
     },
@@ -244,9 +245,9 @@ pub async fn get_filter_handler(
     let (team, id) = path;
     require_resource_access_resolved(&state, &context, "filters", "read", Some(&team)).await?;
 
-    // Delegate to internal API layer (includes team access verification)
+    // Delegate to internal API layer — scope auth to the URL-path team for isolation
     let ops = FilterOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     let filter = ops.get(&id, &auth).await?;
 
     // Query attachment count (same as list handler)
@@ -295,9 +296,9 @@ pub async fn update_filter_handler(
         config: payload.config.clone(),
     };
 
-    // Delegate to internal API layer (includes team access verification)
+    // Delegate to internal API layer — scope auth to the URL-path team for isolation
     let ops = FilterOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     let result = ops.update(&id, internal_request, &auth).await?;
 
     let response = filter_response_from_data(result.data)?;
@@ -331,9 +332,9 @@ pub async fn delete_filter_handler(
     // Verify user has delete access
     require_resource_access_resolved(&state, &context, "filters", "delete", Some(&team)).await?;
 
-    // Delegate to internal API layer (includes team access verification)
+    // Delegate to internal API layer — scope auth to the URL-path team for isolation
     let ops = FilterOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     ops.delete(&id, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)

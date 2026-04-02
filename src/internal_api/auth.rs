@@ -29,6 +29,10 @@ pub struct InternalAuthContext {
     pub org_id: Option<OrgId>,
     /// Organization name for this user (if org-scoped)
     pub org_name: Option<String>,
+    /// The specific team UUID from the URL path.
+    /// When set, `verify_team_access` also checks that the resource belongs
+    /// to this exact team, preventing cross-team reads via unrelated URL paths.
+    pub requested_team: Option<String>,
 }
 
 impl InternalAuthContext {
@@ -50,6 +54,7 @@ impl InternalAuthContext {
             allowed_teams,
             org_id: context.org_id.clone(),
             org_name: context.org_name.clone(),
+            requested_team: None,
         }
     }
 
@@ -73,6 +78,7 @@ impl InternalAuthContext {
             allowed_teams,
             org_id: context.org_id.clone(),
             org_name: context.org_name.clone(),
+            requested_team: None,
         }
     }
 
@@ -89,7 +95,7 @@ impl InternalAuthContext {
         let allowed_teams = if is_admin { Vec::new() } else { vec![team.to_string()] };
         let team = if is_admin { None } else { Some(team.to_string()) };
 
-        Self { team, is_admin, allowed_teams, org_id, org_name }
+        Self { team, is_admin, allowed_teams, org_id, org_name, requested_team: None }
     }
 
     /// Create an admin context (for governance operations only).
@@ -97,7 +103,14 @@ impl InternalAuthContext {
     /// This context has `is_admin=true` for governance access but no team memberships.
     /// It cannot access tenant resources — use `for_team()` for team-scoped access.
     pub fn admin() -> Self {
-        Self { team: None, is_admin: true, allowed_teams: Vec::new(), org_id: None, org_name: None }
+        Self {
+            team: None,
+            is_admin: true,
+            allowed_teams: Vec::new(),
+            org_id: None,
+            org_name: None,
+            requested_team: None,
+        }
     }
 
     /// Create a team-scoped context
@@ -109,6 +122,7 @@ impl InternalAuthContext {
             allowed_teams: vec![team_str],
             org_id: None,
             org_name: None,
+            requested_team: None,
         }
     }
 
@@ -117,7 +131,24 @@ impl InternalAuthContext {
     /// The first team in the list becomes the primary team.
     pub fn for_teams(teams: Vec<String>) -> Self {
         let team = teams.first().cloned();
-        Self { team, is_admin: false, allowed_teams: teams, org_id: None, org_name: None }
+        Self {
+            team,
+            is_admin: false,
+            allowed_teams: teams,
+            org_id: None,
+            org_name: None,
+            requested_team: None,
+        }
+    }
+
+    /// Scope this auth context to a specific team (UUID).
+    ///
+    /// When set, `verify_team_access` enforces that the resource belongs to this
+    /// exact team. This prevents cross-team reads where a user accesses
+    /// `/teams/A/resources/X` but resource X actually belongs to team B.
+    pub fn with_requested_team(mut self, team_id: String) -> Self {
+        self.requested_team = Some(team_id);
+        self
     }
 
     /// Resolve team names to UUIDs using the team repository.
@@ -175,7 +206,9 @@ impl InternalAuthContext {
     }
 }
 
-/// Verify that a resource belongs to one of the user's teams or is global.
+/// Verify that a resource belongs to one of the user's teams or is global,
+/// AND (if `requested_team` is set) that the resource belongs to the specific
+/// team from the URL path.
 ///
 /// This is the internal API equivalent of the REST `verify_team_access` function.
 /// Returns `Ok(resource)` if access is allowed, or `Err(NotFound)` to hide existence.
@@ -190,8 +223,20 @@ pub async fn verify_team_access<T: TeamOwned>(
         // Global resource (team = NULL) - accessible to all
         None => Ok(resource),
 
-        // Team-owned resource - verify membership
+        // Team-owned resource - verify membership AND path-team match
         Some(resource_team) => {
+            // If a specific team was requested (from URL path), verify the resource
+            // actually belongs to that team. This prevents cross-team reads where
+            // /teams/A/resources/X returns resource X that belongs to team B.
+            if let Some(ref requested) = auth.requested_team {
+                if resource_team != requested.as_str() {
+                    return Err(InternalError::not_found(
+                        T::resource_type(),
+                        resource.resource_name(),
+                    ));
+                }
+            }
+
             if auth.allowed_teams.iter().any(|scope| scope == resource_team) {
                 Ok(resource)
             } else {

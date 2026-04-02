@@ -28,7 +28,8 @@ use crate::{
     api::{
         error::ApiError,
         handlers::team_access::{
-            require_resource_access_resolved, resolve_rest_auth, resolve_team_name,
+            require_resource_access_resolved, resolve_rest_auth, resolve_rest_auth_for_team,
+            resolve_team_name,
         },
         routes::ApiState,
     },
@@ -166,9 +167,9 @@ pub async fn get_cluster_handler(
     // Authorization
     require_resource_access_resolved(&state, &context, "clusters", "read", Some(&team)).await?;
 
-    // Use internal API layer
+    // Use internal API layer — scope auth to the URL-path team for isolation
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     let cluster = ops.get(&name, &auth).await?;
 
     // Convert to response DTO
@@ -223,9 +224,9 @@ pub async fn update_cluster_handler(
     // Convert to internal request
     let internal_req = UpdateClusterRequest { service_name: Some(service_name), config };
 
-    // Use internal API layer
+    // Use internal API layer — scope auth to the URL-path team for isolation
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     let result = ops.update(&name, internal_req, &auth).await?;
 
     // Convert to response DTO
@@ -261,9 +262,9 @@ pub async fn delete_cluster_handler(
     // Authorization
     require_resource_access_resolved(&state, &context, "clusters", "delete", Some(&team)).await?;
 
-    // Use internal API layer
+    // Use internal API layer — scope auth to the URL-path team for isolation
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let auth = resolve_rest_auth_for_team(&state, &context, &team).await?;
     ops.delete(&name, &auth).await?;
 
     Ok(StatusCode::NO_CONTENT)
