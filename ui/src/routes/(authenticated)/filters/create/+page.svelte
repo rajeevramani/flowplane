@@ -4,13 +4,15 @@
 	import { onMount } from 'svelte';
 	import { Loader2 } from 'lucide-svelte';
 	import { selectedTeam } from '$lib/stores/team';
-	import type { FilterType, FilterConfig, FilterTypeInfo, CorsConfig, RateLimitConfig, CompressorConfig, ExtAuthzConfig } from '$lib/api/types';
+	import type { FilterType, FilterConfig, FilterTypeInfo, CorsConfig, RateLimitConfig, CompressorConfig, ExtAuthzConfig, RbacConfig, OAuth2Config } from '$lib/api/types';
 	import Badge from '$lib/components/Badge.svelte';
 	import DynamicFilterForm from '$lib/components/filters/DynamicFilterForm.svelte';
 	import CorsConfigForm from '$lib/components/filters/CorsConfigForm.svelte';
 	import RateLimitConfigForm from '$lib/components/filters/RateLimitConfigForm.svelte';
 	import CompressorConfigForm from '$lib/components/filters/CompressorConfigForm.svelte';
 	import ExtAuthzConfigForm from '$lib/components/filters/ExtAuthzConfigForm.svelte';
+	import RbacConfigForm from '$lib/components/filters/RbacConfigForm.svelte';
+	import OAuth2ConfigForm from '$lib/components/filters/OAuth2ConfigForm.svelte';
 	import { generateDefaultValues, generateFormFields } from '$lib/utils/json-schema-form';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
 	import { validateRequired, validateMaxLength, runValidators } from '$lib/utils/validators';
@@ -259,6 +261,16 @@
 				{:else if filterType === 'ext_authz'}
 					<ExtAuthzConfigForm
 						config={dynamicConfig as unknown as ExtAuthzConfig}
+						onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+					/>
+				{:else if filterType === 'rbac'}
+					<RbacConfigForm
+						config={dynamicConfig as unknown as RbacConfig}
+						onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+					/>
+				{:else if filterType === 'oauth2'}
+					<OAuth2ConfigForm
+						config={dynamicConfig as unknown as OAuth2Config}
 						onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
 					/>
 				{:else}

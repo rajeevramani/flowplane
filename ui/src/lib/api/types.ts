@@ -866,6 +866,115 @@ export interface ExtAuthzConfig {
 }
 
 // ============================================================================
+// RBAC Filter Types
+// ============================================================================
+
+export type RbacAction = 'allow' | 'deny' | 'log';
+
+export interface PermissionRule {
+	type: string;
+	any?: boolean;
+	name?: string;
+	exact_match?: string;
+	prefix_match?: string;
+	suffix_match?: string;
+	present_match?: boolean;
+	path?: string;
+	ignore_case?: boolean;
+	port?: number;
+	filter?: string;
+	rules?: PermissionRule[];
+	rule?: PermissionRule;
+}
+
+export interface PrincipalRule {
+	type: string;
+	any?: boolean;
+	principal_name?: string;
+	address_prefix?: string;
+	prefix_len?: number;
+	name?: string;
+	exact_match?: string;
+	prefix_match?: string;
+	ids?: PrincipalRule[];
+	id?: PrincipalRule;
+}
+
+export interface RbacPolicy {
+	permissions: PermissionRule[];
+	principals: PrincipalRule[];
+}
+
+export interface RbacRulesConfig {
+	action: RbacAction;
+	policies: Record<string, RbacPolicy>;
+}
+
+export interface RbacConfig {
+	rules?: RbacRulesConfig;
+	rules_stat_prefix?: string;
+	shadow_rules?: RbacRulesConfig;
+	shadow_rules_stat_prefix?: string;
+	track_per_rule_stats?: boolean;
+}
+
+// ============================================================================
+// OAuth2 Filter Types
+// ============================================================================
+
+export type OAuth2AuthType = 'url_encoded_body' | 'basic_auth';
+
+export interface TokenEndpointConfig {
+	uri: string;
+	cluster: string;
+	timeout_ms?: number;
+}
+
+export interface TokenSecretConfig {
+	name: string;
+}
+
+export interface OAuth2CookieNames {
+	bearer_token?: string;
+	oauth_hmac?: string;
+	oauth_expires?: string;
+	id_token?: string;
+	refresh_token?: string;
+}
+
+export interface OAuth2CredentialsConfig {
+	client_id: string;
+	token_secret?: TokenSecretConfig;
+	cookie_domain?: string;
+	cookie_names?: OAuth2CookieNames;
+}
+
+export interface PassThroughMatcher {
+	path_exact?: string;
+	path_prefix?: string;
+	path_regex?: string;
+	header_name?: string;
+	header_value?: string;
+}
+
+export interface OAuth2Config {
+	token_endpoint: TokenEndpointConfig;
+	authorization_endpoint: string;
+	credentials: OAuth2CredentialsConfig;
+	redirect_uri: string;
+	redirect_path?: string;
+	signout_path?: string;
+	auth_scopes?: string[];
+	auth_type?: OAuth2AuthType;
+	forward_bearer_token?: boolean;
+	preserve_authorization_header?: boolean;
+	use_refresh_token?: boolean;
+	default_expires_in_seconds?: number;
+	stat_prefix?: string;
+	pass_through_matcher?: PassThroughMatcher[];
+}
+
+// ============================================================================
 // MCP Filter Types
 // ============================================================================
 
@@ -891,6 +1000,8 @@ export type FilterConfig =
 	| { type: 'rate_limit'; config: RateLimitConfig }
 	| { type: 'compressor'; config: CompressorConfig }
 	| { type: 'ext_authz'; config: ExtAuthzConfig }
+	| { type: 'rbac'; config: RbacConfig }
+	| { type: 'oauth2'; config: OAuth2Config }
 	| { type: 'custom_response'; config: CustomResponseConfig }
 	| { type: 'mcp'; config: McpFilterConfig };
 

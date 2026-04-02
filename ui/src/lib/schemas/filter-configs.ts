@@ -163,3 +163,122 @@ export const ExtAuthzConfigSchema = z.object({
 });
 
 export type ExtAuthzConfigData = z.infer<typeof ExtAuthzConfigSchema>;
+
+// ============================================================================
+// RBAC Filter Schema
+// ============================================================================
+
+const RbacActionSchema = z.enum(['allow', 'deny', 'log']);
+
+const PermissionRuleSchema: z.ZodType = z.lazy(() =>
+	z.object({
+		type: z.string(),
+		any: z.boolean().optional(),
+		name: z.string().optional(),
+		exact_match: z.string().optional(),
+		prefix_match: z.string().optional(),
+		suffix_match: z.string().optional(),
+		present_match: z.boolean().optional(),
+		path: z.string().optional(),
+		ignore_case: z.boolean().optional(),
+		port: z.number().int().min(1).max(65535).optional(),
+		filter: z.string().optional(),
+		rules: z.array(PermissionRuleSchema).optional(),
+		rule: PermissionRuleSchema.optional()
+	})
+);
+
+const PrincipalRuleSchema: z.ZodType = z.lazy(() =>
+	z.object({
+		type: z.string(),
+		any: z.boolean().optional(),
+		principal_name: z.string().optional(),
+		address_prefix: z.string().optional(),
+		prefix_len: z.number().int().min(0).max(128).optional(),
+		name: z.string().optional(),
+		exact_match: z.string().optional(),
+		prefix_match: z.string().optional(),
+		ids: z.array(PrincipalRuleSchema).optional(),
+		id: PrincipalRuleSchema.optional()
+	})
+);
+
+const RbacPolicySchema = z.object({
+	permissions: z.array(PermissionRuleSchema).min(1, 'At least one permission is required'),
+	principals: z.array(PrincipalRuleSchema).min(1, 'At least one principal is required')
+});
+
+const RbacRulesConfigSchema = z.object({
+	action: RbacActionSchema,
+	policies: z.record(z.string(), RbacPolicySchema)
+});
+
+export const RbacConfigSchema = z
+	.object({
+		rules: RbacRulesConfigSchema.optional(),
+		rules_stat_prefix: z.string().optional(),
+		shadow_rules: RbacRulesConfigSchema.optional(),
+		shadow_rules_stat_prefix: z.string().optional(),
+		track_per_rule_stats: z.boolean().optional()
+	})
+	.refine((data) => data.rules || data.shadow_rules, {
+		message: 'At least rules or shadow_rules must be provided'
+	});
+
+export type RbacConfigData = z.infer<typeof RbacConfigSchema>;
+
+// ============================================================================
+// OAuth2 Filter Schema
+// ============================================================================
+
+const TokenEndpointSchema = z.object({
+	uri: z.string().min(1, 'Token endpoint URI is required'),
+	cluster: z.string().min(1, 'Token endpoint cluster is required'),
+	timeout_ms: z.number().int().min(1).optional()
+});
+
+const TokenSecretSchema = z.object({
+	name: z.string().min(1, 'Secret name is required')
+});
+
+const OAuth2CookieNamesSchema = z.object({
+	bearer_token: z.string().optional(),
+	oauth_hmac: z.string().optional(),
+	oauth_expires: z.string().optional(),
+	id_token: z.string().optional(),
+	refresh_token: z.string().optional()
+});
+
+const OAuth2CredentialsSchema = z.object({
+	client_id: z.string().min(1, 'Client ID is required'),
+	token_secret: TokenSecretSchema.optional(),
+	cookie_domain: z.string().optional(),
+	cookie_names: OAuth2CookieNamesSchema.optional()
+});
+
+const PassThroughMatcherSchema = z.object({
+	path_exact: z.string().optional(),
+	path_prefix: z.string().optional(),
+	path_regex: z.string().optional(),
+	header_name: z.string().optional(),
+	header_value: z.string().optional()
+});
+
+export const OAuth2ConfigSchema = z.object({
+	token_endpoint: TokenEndpointSchema,
+	authorization_endpoint: z.string().min(1, 'Authorization endpoint is required'),
+	credentials: OAuth2CredentialsSchema,
+	redirect_uri: z.string().min(1, 'Redirect URI is required'),
+	redirect_path: z.string().optional(),
+	signout_path: z.string().optional(),
+	auth_scopes: z.array(z.string()).optional(),
+	auth_type: z.enum(['url_encoded_body', 'basic_auth']).optional(),
+	forward_bearer_token: z.boolean().optional(),
+	preserve_authorization_header: z.boolean().optional(),
+	use_refresh_token: z.boolean().optional(),
+	default_expires_in_seconds: z.number().int().min(0).optional(),
+	stat_prefix: z.string().optional(),
+	pass_through_matcher: z.array(PassThroughMatcherSchema).optional()
+});
+
+export type OAuth2ConfigData = z.infer<typeof OAuth2ConfigSchema>;
