@@ -797,9 +797,22 @@ async fn handle_whoami() -> Result<()> {
 
         if let Ok(payload_bytes) = URL_SAFE_NO_PAD.decode(padded.trim_end_matches('=')) {
             if let Ok(payload) = serde_json::from_slice::<JwtPayload>(&payload_bytes) {
+                // If email/name are missing from the JWT (typical for Zitadel access tokens),
+                // fetch them from the userinfo endpoint.
+                let (email, name) = if payload.email.is_some() || payload.name.is_some() {
+                    (payload.email.clone(), payload.name.clone())
+                } else if let Some(issuer) = payload.iss.as_deref() {
+                    fetch_userinfo(&creds.access_token, issuer)
+                        .await
+                        .map(|(e, n)| (Some(e), n))
+                        .unwrap_or((None, None))
+                } else {
+                    (None, None)
+                };
+
                 println!("Subject:  {}", payload.sub.as_deref().unwrap_or("<unknown>"));
-                println!("Email:    {}", payload.email.as_deref().unwrap_or("<not set>"));
-                println!("Name:     {}", payload.name.as_deref().unwrap_or("<not set>"));
+                println!("Email:    {}", email.as_deref().unwrap_or("<not set>"));
+                println!("Name:     {}", name.as_deref().unwrap_or("<not set>"));
                 println!("Issuer:   {}", payload.iss.as_deref().unwrap_or("<unknown>"));
 
                 if let Some(exp) = payload.exp {
@@ -829,6 +842,28 @@ async fn handle_whoami() -> Result<()> {
     println!("Token:      {}...", &creds.access_token[..20.min(creds.access_token.len())]);
 
     Ok(())
+}
+
+/// Fetch email and name from the Zitadel userinfo endpoint.
+///
+/// Derives the userinfo URL from the JWT issuer claim.
+async fn fetch_userinfo(token: &str, issuer: &str) -> Option<(String, Option<String>)> {
+    let userinfo_url = format!("{issuer}/oidc/v1/userinfo");
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&userinfo_url)
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    let email = body.get("email").and_then(|v| v.as_str()).map(|s| s.to_string())?;
+    let name = body.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+    Some((email, name))
 }
 
 fn format_duration(total_seconds: i64) -> String {

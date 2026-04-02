@@ -1,11 +1,8 @@
 //! Cluster validation and conversion utilities
 
 use crate::{
-    api::error::ApiError,
-    services::ClusterService,
-    storage::ClusterData,
-    validation::business_rules::validate_outlier_detection_config,
-    xds::ClusterSpec,
+    api::error::ApiError, services::ClusterService, storage::ClusterData,
+    validation::business_rules::validate_outlier_detection_config, xds::ClusterSpec,
 };
 
 use super::types::{CreateClusterBody, HealthCheckRequest};

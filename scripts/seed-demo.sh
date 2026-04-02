@@ -244,24 +244,40 @@ read_pat() {
   done
 }
 
-# ── Bootstrap demo org ───────────────────────────────────────────
-bootstrap_demo_org() {
-  log "Bootstrapping org '${ORG_NAME}' with team '${TEAM_NAME}'..."
+# ── Create demo org via admin API ────────────────────────────────
+# Uses the platform admin token to create the org. Returns org ID in ORG_ID.
+# Idempotent: if the org already exists (409), looks it up by name.
+create_demo_org() {
+  log "Creating org '${ORG_NAME}' via admin API..."
   local raw http_code body
   raw=$(curl -s -w '\n%{http_code}' \
     -X POST \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "{\"orgName\": \"${ORG_NAME}\", \"displayName\": \"${ORG_DISPLAY}\", \"teamName\": \"${TEAM_NAME}\"}" \
-    "${FLOWPLANE_URL}/api/v1/bootstrap/initialize")
+    -d "$(jq -n \
+      --arg name "$ORG_NAME" \
+      --arg display "$ORG_DISPLAY" \
+      '{name: $name, displayName: $display}')" \
+    "${FLOWPLANE_URL}/api/v1/admin/organizations")
   http_code=$(echo "$raw" | tail -1)
   body=$(echo "$raw" | sed '$d')
 
   if [ "$http_code" = "201" ]; then
-    ok "Org '${ORG_NAME}' and team '${TEAM_NAME}' created"
+    ORG_ID=$(echo "$body" | jq -r '.id')
+    ok "Org '${ORG_NAME}' created (id: ${ORG_ID})"
   elif [ "$http_code" = "409" ]; then
-    skip "Org '${ORG_NAME}'"
+    # Org exists — look it up
+    local list_body
+    list_body=$(curl -s -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      "${FLOWPLANE_URL}/api/v1/admin/organizations")
+    ORG_ID=$(echo "$list_body" | jq -r ".items[] | select(.name==\"${ORG_NAME}\") | .id")
+    if [ -z "$ORG_ID" ] || [ "$ORG_ID" = "null" ]; then
+      fail "Org '${ORG_NAME}' exists (409) but could not resolve its ID"
+      exit 1
+    fi
+    skip "Org '${ORG_NAME}' (id: ${ORG_ID})"
   else
-    fail "Bootstrap failed (HTTP ${http_code}): ${body}"
+    fail "Org creation failed (HTTP ${http_code}): ${body}"
     exit 1
   fi
 }
@@ -305,14 +321,14 @@ get_team_id() {
   local raw http_code body
   raw=$(curl -s -w '\n%{http_code}' \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-    "${FLOWPLANE_URL}/api/v1/orgs/${org_name}/teams/${team_name}")
+    "${FLOWPLANE_URL}/api/v1/orgs/${org_name}/teams")
   http_code=$(echo "$raw" | tail -1)
   body=$(echo "$raw" | sed '$d')
 
   if [ "$http_code" = "200" ]; then
-    echo "$body" | jq -r '.id // empty'
+    echo "$body" | jq -r ".teams[] | select(.name==\"${team_name}\") | .id // empty" | head -1
   else
-    fail "Failed to look up team '${team_name}' in org '${org_name}' (HTTP ${http_code}): ${body}"
+    fail "Failed to list teams in org '${org_name}' (HTTP ${http_code}): ${body}"
     exit 1
   fi
 }
@@ -357,10 +373,10 @@ create_agent_grants() {
       -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
-        --arg teamId "$team_id" \
+        --arg team "$team_id" \
         --arg resourceType "$resource_type" \
         --arg action "$action" \
-        '{"grantType": "resource", "teamId": $teamId, "resourceType": $resourceType, "action": $action}')" \
+        '{"grantType": "resource", "team": $team, "resourceType": $resourceType, "action": $action}')" \
       "${FLOWPLANE_URL}/api/v1/orgs/${org_name}/principals/${agent_id}/grants")
     http_code=$(echo "$raw" | tail -1)
     body=$(echo "$raw" | sed '$d')
@@ -435,22 +451,10 @@ main() {
   # Wait for superadmin to be seeded (async on first startup)
   wait_for_superadmin
 
-  # Bootstrap creates the org + team in the Flowplane DB
-  bootstrap_demo_org
+  # Platform admin creates the org
+  create_demo_org
 
-  # Get org_id via API for the invite call
-  log "Looking up org '${ORG_NAME}'..."
-  local org_list_body
-  org_list_body=$(curl -s -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-    "${FLOWPLANE_URL}/api/v1/admin/organizations")
-  ORG_ID=$(echo "$org_list_body" | jq -r ".items[] | select(.name==\"${ORG_NAME}\") | .id")
-  if [ -z "$ORG_ID" ] || [ "$ORG_ID" = "null" ]; then
-    fail "Could not find org '${ORG_NAME}' via API"
-    exit 1
-  fi
-  ok "Org '${ORG_NAME}' id: ${ORG_ID}"
-
-  # Invite human user via the API (creates Zitadel user + local DB records)
+  # Platform admin invites the org admin user (with initial password)
   log "Inviting human user '${HUMAN_USERNAME}'..."
   invite_user "$ORG_ID" "$HUMAN_USERNAME" "admin" "$HUMAN_FIRST" "$HUMAN_LAST"
 
@@ -467,6 +471,29 @@ main() {
   # Switch to org admin token for remaining operations
   ADMIN_TOKEN="$org_admin_token"
 
+  # Org admin creates the team
+  log "Creating team '${TEAM_NAME}' in org '${ORG_NAME}'..."
+  local team_raw team_code team_body
+  team_raw=$(curl -s -w '\n%{http_code}' \
+    -X POST \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n \
+      --arg name "$TEAM_NAME" \
+      --arg display "${TEAM_NAME}" \
+      '{name: $name, displayName: $display}')" \
+    "${FLOWPLANE_URL}/api/v1/orgs/${ORG_NAME}/teams")
+  team_code=$(echo "$team_raw" | tail -1)
+  team_body=$(echo "$team_raw" | sed '$d')
+  if [ "$team_code" = "201" ]; then
+    ok "Team '${TEAM_NAME}' created in org '${ORG_NAME}'"
+  elif [ "$team_code" = "409" ]; then
+    skip "Team '${TEAM_NAME}' in org '${ORG_NAME}'"
+  else
+    fail "Team creation failed (HTTP ${team_code}): ${team_body}"
+    exit 1
+  fi
+
   # Create default dataplane for the engineering team (required for expose)
   create_dataplane "${TEAM_NAME}" "default-dataplane" "Default dataplane for ${TEAM_NAME}"
 
@@ -479,6 +506,7 @@ main() {
 
   # Create grants for the agent if it was newly provisioned
   if [ -n "${AGENT_ID}" ]; then
+    log "Resolving team '${TEAM_NAME}' for agent grants..."
     local team_id
     team_id=$(get_team_id "${ORG_NAME}" "${TEAM_NAME}")
     if [ -z "$team_id" ] || [ "$team_id" = "null" ]; then

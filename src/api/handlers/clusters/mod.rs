@@ -27,7 +27,9 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{require_resource_access_resolved, resolve_rest_auth},
+        handlers::team_access::{
+            require_resource_access_resolved, resolve_rest_auth, resolve_team_name,
+        },
         routes::ApiState,
     },
     auth::models::AuthContext,
@@ -114,9 +116,11 @@ pub async fn list_clusters_handler(
 
     let (limit, offset) = params.clamp(1000);
 
-    // Use internal API layer
+    // Use internal API layer, scoped to the requested team only.
     let ops = ClusterOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let mut auth = resolve_rest_auth(&state, &context).await?;
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+    auth.allowed_teams = vec![team_id];
     let list_req = ListClustersRequest {
         limit: Some(limit as i32),
         offset: Some(offset as i32),

@@ -259,6 +259,24 @@ create_email_action() {
   fi
 }
 
+# ── Generate secret encryption key ────────────────────────────────
+generate_encryption_key() {
+  # Reuse existing key if present (re-running setup must not rotate the key)
+  if [ -f "${PROJECT_DIR}/.env.zitadel" ]; then
+    local existing
+    existing=$(grep '^FLOWPLANE_SECRET_ENCRYPTION_KEY=' "${PROJECT_DIR}/.env.zitadel" 2>/dev/null | cut -d= -f2-)
+    if [ -n "$existing" ]; then
+      ENCRYPTION_KEY="$existing"
+      skip "Encryption key (reusing existing)"
+      return
+    fi
+  fi
+
+  log "Generating secret encryption key..."
+  ENCRYPTION_KEY=$(openssl rand -base64 32)
+  ok "Encryption key generated (32 bytes, base64-encoded)"
+}
+
 # ── Write env files ───────────────────────────────────────────────
 write_env_files() {
   log "Writing .env.zitadel..."
@@ -269,6 +287,7 @@ ZITADEL_ADMIN_PAT=${ZITADEL_PAT}
 FLOWPLANE_ZITADEL_PROJECT_ID=${PROJECT_ID}
 FLOWPLANE_ZITADEL_ADMIN_PAT=${ZITADEL_PAT}
 FLOWPLANE_ZITADEL_SPA_CLIENT_ID=${SPA_CLIENT_ID}
+FLOWPLANE_SECRET_ENCRYPTION_KEY=${ENCRYPTION_KEY}
 EOF
   chmod 600 "${PROJECT_DIR}/.env.zitadel"
   ok "Wrote .env.zitadel"
@@ -321,6 +340,7 @@ main() {
   create_spa_app
   create_email_action
 
+  generate_encryption_key
   write_env_files
   restart_control_plane
 

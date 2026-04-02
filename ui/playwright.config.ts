@@ -29,7 +29,7 @@ const orgadminAuthFile = join(__dirname, 'playwright', '.auth', 'orgadmin.json')
  */
 export default defineConfig({
 	testDir: './e2e',
-	fullyParallel: true,
+	fullyParallel: false,
 	forbidOnly: !!process.env.CI,
 	retries: process.env.CI ? 2 : 0,
 	workers: process.env.CI ? 1 : undefined,
@@ -49,11 +49,8 @@ export default defineConfig({
 			name: 'setup',
 			testMatch: /auth\.setup\.ts/
 		},
-		{
-			name: 'setup-orgadmin',
-			testMatch: /orgadmin\.setup\.ts/,
-			dependencies: ['setup']
-		},
+		// setup-orgadmin runs later (as setup-orgadmin-fresh) after admin/noauth
+		// to ensure its Zitadel session isn't invalidated by other OIDC flows
 
 		// ── Platform admin tests ───────────────────────
 		{
@@ -66,18 +63,8 @@ export default defineConfig({
 			testMatch: /(admin-pages|resource-pages|smoke)\.test\.ts/
 		},
 
-		// ── Org admin tests ────────────────────────────
-		{
-			name: 'orgadmin',
-			use: {
-				...devices['Desktop Chrome'],
-				storageState: orgadminAuthFile
-			},
-			dependencies: ['setup-orgadmin'],
-			testMatch: /(orgadmin|agents|teams|members|resource-crud|routes|org-context)\.test\.ts/
-		},
-
 		// ── Auth flow tests (no pre-existing session) ──
+		// Runs alongside admin tests (no auth state to invalidate)
 		{
 			name: 'noauth',
 			use: {
@@ -88,16 +75,36 @@ export default defineConfig({
 			testMatch: /auth\.test\.ts/
 		},
 
+		// ── Re-authenticate orgadmin after admin/noauth tests ──
+		// Admin tests and noauth login flows can invalidate the orgadmin
+		// Zitadel session server-side. Re-running setup ensures a fresh session.
+		{
+			name: 'setup-orgadmin-fresh',
+			testMatch: /orgadmin\.setup\.ts/,
+			dependencies: ['admin', 'noauth']
+		},
+
+		// ── Org admin tests ────────────────────────────
+		// Depend on fresh orgadmin setup to guarantee valid Zitadel session
+		{
+			name: 'orgadmin',
+			use: {
+				...devices['Desktop Chrome'],
+				storageState: orgadminAuthFile
+			},
+			dependencies: ['setup-orgadmin-fresh'],
+			testMatch: /(orgadmin|agents|teams|members|resource-crud|routes|org-context)\.test\.ts/
+		},
+
 		// ── Permission enforcement tests ───────────────
-		// These tests use per-test storageState overrides for different user roles.
-		// They depend on orgadmin setup so the org context exists.
+		// Runs after orgadmin tests
 		{
 			name: 'enforce',
 			use: {
 				...devices['Desktop Chrome'],
 				storageState: orgadminAuthFile
 			},
-			dependencies: ['setup-orgadmin'],
+			dependencies: ['orgadmin'],
 			testMatch: /permission-enforcement\.test\.ts/
 		}
 	],

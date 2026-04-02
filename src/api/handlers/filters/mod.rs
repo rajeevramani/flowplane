@@ -35,7 +35,7 @@ use crate::{
         error::ApiError,
         handlers::team_access::{
             get_effective_team_ids, require_resource_access_resolved, resolve_rest_auth,
-            team_repo_from_state, verify_team_access,
+            resolve_team_name, team_repo_from_state, verify_team_access,
         },
         routes::ApiState,
     },
@@ -131,9 +131,11 @@ pub async fn list_filters_handler(
         include_defaults: true,
     };
 
-    // Delegate to internal API layer for team-scoped listing
+    // Delegate to internal API layer, scoped to the requested team only.
     let ops = FilterOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let mut auth = resolve_rest_auth(&state, &context).await?;
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+    auth.allowed_teams = vec![team_id];
     let result = ops.list(internal_request, &auth).await?;
     let total = result.count as i64;
 
@@ -247,7 +249,10 @@ pub async fn get_filter_handler(
     let auth = resolve_rest_auth(&state, &context).await?;
     let filter = ops.get(&id, &auth).await?;
 
-    let response = filter_response_from_data(filter)?;
+    // Query attachment count (same as list handler)
+    let repository = require_filter_repository(&state)?;
+    let attachment_count = repository.count_attachments(&filter.id).await.ok();
+    let response = filter_response_from_data_with_count(filter, attachment_count)?;
 
     Ok(Json(response))
 }

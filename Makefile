@@ -304,6 +304,7 @@ clean: down ## Remove volumes and orphan containers
 	-$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml down -v --remove-orphans 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-secrets-tracing.yml down -v --remove-orphans 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-dev.yml down -v --remove-orphans 2>/dev/null || true
+	-@$(DOCKER) network rm flowplane-network 2>/dev/null || true
 	@echo "$(YELLOW)Removing stale Zitadel credentials...$(RESET)"
 	@rm -f zitadel/machinekey/admin-pat.txt zitadel/machinekey/admin-sa.json .env.zitadel ui/.env
 	@echo "$(GREEN)Cleanup complete.$(RESET)"
@@ -470,8 +471,7 @@ _ensure-e2e-deps:
 	fi
 
 _ensure-network:
-	@$(DOCKER) network inspect flowplane-network >/dev/null 2>&1 || \
-		$(DOCKER) network create flowplane-network >/dev/null 2>&1
+	@# No-op: let docker-compose manage the network to avoid label conflicts
 
 # =============================================================================
 # Agent Integration Tests

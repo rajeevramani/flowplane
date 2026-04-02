@@ -26,7 +26,9 @@ use tracing::instrument;
 use crate::{
     api::{
         error::ApiError,
-        handlers::team_access::{require_resource_access_resolved, resolve_rest_auth},
+        handlers::team_access::{
+            require_resource_access_resolved, resolve_rest_auth, resolve_team_name,
+        },
         routes::ApiState,
     },
     auth::models::AuthContext,
@@ -120,9 +122,13 @@ pub async fn list_listeners_handler(
         include_defaults: true,
     };
 
-    // Delegate to internal API layer
+    // Delegate to internal API layer, scoped to the requested team only.
+    // resolve_rest_auth returns ALL teams the user belongs to, but the URL
+    // specifies a single team — filter to just that team for isolation.
     let ops = ListenerOperations::new(state.xds_state.clone());
-    let auth = resolve_rest_auth(&state, &context).await?;
+    let mut auth = resolve_rest_auth(&state, &context).await?;
+    let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
+    auth.allowed_teams = vec![team_id];
     let result = ops.list(internal_request, &auth).await?;
     let total = result.count as i64;
 
