@@ -19,7 +19,8 @@
 		Bot,
 		Cable,
 		Network,
-		Globe
+		Globe,
+		Zap
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
 	import { isOrgAdmin } from '$lib/stores/org';
@@ -166,6 +167,20 @@
 				</a>
 			</div>
 		{/if}
+
+		<!-- Quick Actions -->
+		<div class="px-3 mb-4">
+			<a
+				href="/expose"
+				class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+					{isActive('/expose')
+					? 'bg-blue-600 text-white'
+					: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+			>
+				<Zap class="h-5 w-5" />
+				Expose Service
+			</a>
+		</div>
 
 		<!-- Resources Section -->
 		<div class="px-3 mb-4">

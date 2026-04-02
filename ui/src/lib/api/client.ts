@@ -100,6 +100,9 @@ import type {
 	LearnedSchemaAvailability,
 	ApplyLearnedSchemaRequest,
 	ApplyLearnedSchemaResponse,
+	// Expose types
+	ExposeRequest,
+	ExposeResponse,
 	// Dataplane types
 	DataplaneResponse,
 	CreateDataplaneBody,
@@ -613,6 +616,18 @@ class ApiClient {
 		return this.get<RouteHierarchyFiltersResponse>(
 			`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts/${encodeURIComponent(virtualHostName)}/routes/${encodeURIComponent(routeName)}/filters`
 		);
+	}
+
+	// ============================================================================
+	// Expose / Unexpose Methods
+	// ============================================================================
+
+	async expose(team: string, body: ExposeRequest): Promise<ExposeResponse> {
+		return this.post<ExposeResponse>(`/api/v1/teams/${encodeURIComponent(team)}/expose`, body);
+	}
+
+	async unexpose(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/expose/${encodeURIComponent(name)}`);
 	}
 
 	// ============================================================================

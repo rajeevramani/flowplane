@@ -928,6 +928,24 @@ export interface ListCertificatesQuery {
 	offset?: number;
 }
 
+// Expose/Unexpose types
+export interface ExposeRequest {
+	name: string;
+	upstream: string;
+	paths?: string[];
+	port?: number;
+}
+
+export interface ExposeResponse {
+	name: string;
+	upstream: string;
+	port: number;
+	paths: string[];
+	cluster: string;
+	route_config: string;
+	listener: string;
+}
+
 // Envoy configuration request with mTLS options
 export interface EnvoyConfigRequestWithMtls extends EnvoyConfigRequest {
 	/** Enable mTLS configuration in envoy config */

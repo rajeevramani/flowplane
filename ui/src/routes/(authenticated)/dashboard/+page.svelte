@@ -269,6 +269,16 @@
 
 				<!-- Developer actions -->
 				<a
+					href="/expose"
+					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
+				>
+					<h4 class="text-lg font-semibold text-gray-900 mb-2">Expose Service</h4>
+					<p class="text-sm text-gray-600">
+						Quickly expose a backend service through Envoy with one click
+					</p>
+				</a>
+
+				<a
 					href="/imports/import"
 					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
 				>

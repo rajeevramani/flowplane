@@ -17,6 +17,14 @@ export {
 	type ClusterResponseData
 } from './cluster';
 
+// Expose schemas
+export {
+	ExposeFormSchema,
+	ExposeResponseSchema,
+	type ExposeFormData,
+	type ExposeResponseData
+} from './expose';
+
 // Route configuration schemas
 export {
 	RouteNameSchema,
