@@ -187,8 +187,8 @@
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed 2026-04-03. Documented jwt_auth (working, local JWKS requires valid keys or Envoy NACKs), ext_authz (gRPC and HTTP modes, both create successfully, gRPC tested with attach), rbac (allow/deny/log modes, tested GET-only policy with 403 on POST). credential_injector is NOT a FilterType (XDS module exists but not in enum) — documented as unavailable with workaround."
     },
     {
       "id": "US-013",

@@ -45,6 +45,32 @@
 - MCP filter's Envoy name is `envoy.filters.http.mcp`, NOT `envoy.filters.http.ext_proc` — the old docs/filters.md was wrong
 - Per-route `typedPerFilterConfig` keys use Envoy HTTP filter names (e.g., `envoy.filters.http.local_ratelimit`), not Flowplane type names
 - The old filters.md listed phantom types (rate_limit_quota, health_check, credential_injector, ext_proc, router) not in `src/domain/filter.rs` — always verify against the FilterType enum
+- JWT auth `local` JWKS must contain at least one valid public key — empty `{"keys":[]}` causes Envoy NACK: "Jwks doesn't have any valid public key"
+- JWT auth `local` JWKS inline_string must have properly encoded RSA `n` and `e` fields — malformed base64url causes NACK: "Jwks RSA [n] or [e] field is missing or has a parse error"
+- RouteMatchConfig path uses PascalCase enum variant names: `{"Prefix": "/"}`, `{"Exact": "/path"}`, `{"Regex": ".*"}` — NOT snake_case
+- ext_authz gRPC `target_uri` is an Envoy cluster name (not a URL) — the cluster must exist or requests will fail
+- ext_authz with `failure_mode_allow: false` returns 403 when the authz service is unreachable
+- RBAC filter requires at least `rules` or `shadow_rules` — empty config fails validation
+- RBAC permission/principal types use tagged union with `"type"` field: `{"type": "header", "name": ":method", "exact_match": "GET"}`
+- `credential_injector` is NOT a FilterType — it exists as an XDS module (`src/xds/filters/http/credential_injector.rs`) but is not registered in `src/domain/filter.rs` FilterType enum
+- Available filter types (from API error): header_mutation, jwt_auth, local_rate_limit, custom_response, mcp, cors, compressor, ext_authz, rbac, oauth2 (10 implemented + rate_limit defined but not implemented = 11 in enum)
+
+## 2026-04-03 - US-012
+- Appended auth and security filter sections to docs/filters.md: jwt_auth, ext_authz, rbac
+- jwt_auth: local JWKS with valid RSA key, provider config fields, requirement types, per-route reference_only behavior
+- ext_authz: gRPC and HTTP modes, service config fields, failure_mode_allow behavior, per-route full_config_override
+- rbac: allow/deny/log actions, permission and principal types, shadow rules, per-route full_config_override
+- credential_injector: documented as NOT a FilterType with API error output and header_mutation workaround
+- All filter creates tested against live dev stack; jwt_auth and rbac attach+verify tested with real traffic
+- Files changed: docs/filters.md
+- **Learnings for future iterations:**
+  - JWT auth local JWKS requires real public keys — `{"keys":[]}` and malformed keys both cause Envoy NACK
+  - RouteMatchConfig path enum uses PascalCase: `{"Prefix": "/"}` not `{"prefix": "/"}` — critical for jwt_auth rules
+  - ext_authz gRPC `target_uri` is a cluster name, not a URL — different from HTTP mode's `server_uri.uri`
+  - RBAC `header` permission type can match pseudo-headers like `:method` for HTTP method filtering
+  - `credential_injector` XDS module exists but is not wired into the FilterType enum — phantom type, use header_mutation instead
+  - The API error message lists all available built-in types — useful for verifying what's actually registered
+---
 
 ## 2026-04-03 - US-010
 - Replaced outdated docs/filters.md with accurate content sourced from `src/domain/filter.rs`
