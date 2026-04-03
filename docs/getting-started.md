@@ -46,323 +46,96 @@ curl http://localhost:8080/health
 
 `flowplane status` shows a system overview (control plane, Envoy, database). The `/health` endpoint returns `200 OK` when the control plane is ready.
 
----
+## Expose a service
 
-## Manual Setup
-
-> Skip this section if you used `make seed` above — everything below is already configured.
-
-### 1. Start the Control Plane
-
-Using Docker Compose (recommended):
+The `expose` command creates all the gateway resources (cluster, route, listener) in one step:
 
 ```bash
-make up
+flowplane expose http://httpbin:80 --name demo
 ```
 
-Or from source (requires a running PostgreSQL instance):
+```
+Exposed 'demo' -> http://httpbin:80
+  Port:   10001
+  Paths:  /
+
+  curl http://localhost:10001/
+```
+
+This created a cluster pointing to `httpbin:80`, a route config forwarding `/` to that cluster, and a listener on port `10001`. The port is auto-assigned from the range 10001-10020.
+
+### Test it
+
+Send a request through the Envoy gateway:
 
 ```bash
-export DATABASE_URL=postgres://flowplane:flowplane@localhost:5432/flowplane
-cargo run --release
+curl http://localhost:10001/get
 ```
 
-The server starts with:
-- **Web UI**: http://127.0.0.1:8080
-- **API Server**: http://127.0.0.1:8080/api/v1/
-- **Swagger UI**: http://127.0.0.1:8080/swagger-ui/
-- **xDS Server**: 0.0.0.0:18000 (gRPC)
-- **Metrics**: http://0.0.0.0:9090/metrics (when enabled)
+```json
+{
+  "args": {},
+  "headers": {
+    "Accept": "*/*",
+    "Host": "localhost:10001",
+    "User-Agent": "curl/8.7.1",
+    "X-Envoy-Expected-Rq-Timeout-Ms": "15000"
+  },
+  "origin": "10.89.0.13",
+  "url": "http://localhost:10001/get"
+}
+```
 
-### 2. Bootstrap Authentication
+The `X-Envoy-Expected-Rq-Timeout-Ms` header confirms the request went through Envoy.
 
-On first startup with an empty database, Flowplane displays setup instructions. Initialize the system by creating your admin account.
-
-> **Note:** After bootstrapping, the platform admin creates an organization. Creating an org automatically provisions a default team (`{org-name}-default`). Resources (clusters, routes, listeners) belong to teams. The examples below use `my-org-default`, the auto-created default team for the `my-org` organization.
+Try other httpbin endpoints:
 
 ```bash
-# Initialize with your admin credentials
-curl -X POST http://127.0.0.1:8080/api/v1/bootstrap/initialize \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "admin@example.com",
-    "password": "YOUR_SECURE_PASSWORD",
-    "name": "Admin User"
-  }'
-
-# Response includes a setup token (for optional session creation):
-# {
-#   "setupToken": "fp_setup_...",
-#   "expiresAt": "...",
-#   "message": "Bootstrap complete! Admin user 'Admin User' created successfully."
-# }
+curl http://localhost:10001/status/200    # Returns 200 OK
+curl http://localhost:10001/headers       # Echo request headers
+curl -X POST http://localhost:10001/post -d '{"key":"value"}'  # Echo POST body
 ```
 
-Now login to get a session:
+### Check what's exposed
 
 ```bash
-# Login with your credentials
-curl -X POST http://127.0.0.1:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "admin@example.com",
-    "password": "YOUR_SECURE_PASSWORD"
-  }'
-
-# Response includes session cookie and CSRF token
+flowplane list
 ```
 
-Create an API token for programmatic access:
+```
+Name                           Port     Protocol
+-------------------------------------------------------
+demo                           10001    HTTP
+```
 
 ```bash
-# Create an API token (use Authorization header and CSRF token from login response)
-curl -X POST http://127.0.0.1:8080/api/v1/tokens \
-  -H "Authorization: Bearer SESSION_TOKEN" \
-  -H "X-CSRF-Token: CSRF_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "admin-api-token",
-    "description": "Token with admin:all scope",
-    "scopes": ["admin:all"]
-  }'
-
-# Save the returned token
-export FLOWPLANE_TOKEN="fp_pat_..."
+flowplane status
 ```
 
-### 3. Create an Organization
+```
+Flowplane Status (team: default)
+----------------------------------------
+Listeners:  1
+Clusters:   1
+Filters:    0
+```
 
-Create an organization — this automatically provisions a default team (`my-org-default`):
+### Expose options
+
+| Flag | Description |
+|---|---|
+| `--name <NAME>` | Service name (auto-generated from URL if omitted) |
+| `--path <PATH>` | Path prefix to route (repeatable, defaults to `/`) |
+| `--port <PORT>` | Port override (auto-assigned from 10001-10020 if omitted) |
+
+### Remove an exposed service
 
 ```bash
-curl -X POST http://127.0.0.1:8080/api/v1/admin/organizations \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "my-org",
-    "displayName": "My Organization"
-  }'
-
-# Response:
-# {
-#   "id": "...",
-#   "name": "my-org",
-#   "displayName": "My Organization",
-#   "defaultTeam": "my-org-default"
-# }
+flowplane unexpose demo
 ```
 
-The `my-org-default` team is ready to use immediately for creating resources.
-
-### 4. Verify API Access
-
-```bash
-# Check health
-curl http://127.0.0.1:8080/health
-
-# List clusters (should be empty)
-curl -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/clusters
+```
+Removed exposed service 'demo'
 ```
 
-## Creating Resources
-
-### Create a Cluster
-
-Clusters define upstream backends:
-
-```bash
-curl -X POST http://127.0.0.1:8080/api/v1/clusters \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "team": "my-org-default",
-    "name": "httpbin-cluster",
-    "serviceName": "httpbin",
-    "endpoints": [
-      { "host": "httpbin.org", "port": 443 }
-    ],
-    "connectTimeoutSeconds": 5,
-    "useTls": true,
-    "tlsServerName": "httpbin.org"
-  }'
-```
-
-### Create a Route Configuration
-
-Route configs map requests to clusters:
-
-```bash
-curl -X POST http://127.0.0.1:8080/api/v1/route-configs \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "team": "my-org-default",
-    "name": "demo-routes",
-    "virtualHosts": [
-      {
-        "name": "default",
-        "domains": ["*"],
-        "routes": [
-          {
-            "name": "to-httpbin",
-            "match": {
-              "path": {"type": "prefix", "value": "/"}
-            },
-            "action": {
-              "type": "forward",
-              "cluster": "httpbin-cluster",
-              "timeoutSeconds": 10
-            }
-          }
-        ]
-      }
-    ]
-  }'
-```
-
-### Create a Listener
-
-Listeners bind to ports and reference route configs:
-
-```bash
-curl -X POST http://127.0.0.1:8080/api/v1/listeners \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "team": "my-org-default",
-    "name": "demo-listener",
-    "address": "0.0.0.0",
-    "port": 10000,
-    "protocol": "HTTP",
-    "filterChains": [
-      {
-        "name": "default",
-        "filters": [
-          {
-            "name": "envoy.filters.network.http_connection_manager",
-            "type": "httpConnectionManager",
-            "routeConfigName": "demo-routes",
-            "httpFilters": [
-              {
-                "name": "envoy.filters.http.router",
-                "filter": { "type": "router" }
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  }'
-```
-
-### Create a Dataplane
-
-A dataplane represents an Envoy instance managed by Flowplane:
-
-```bash
-curl -X POST http://127.0.0.1:8080/api/v1/teams/my-org-default/dataplanes \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "team": "my-org-default",
-    "name": "my-envoy",
-    "description": "Local development Envoy"
-  }'
-```
-
-## Connecting Envoy
-
-### Generate Envoy Configuration
-
-```bash
-# Get envoy config for your dataplane
-curl -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  http://127.0.0.1:8080/api/v1/teams/my-org-default/dataplanes/my-envoy/envoy-config > envoy-bootstrap.yaml
-```
-
-### Start Envoy
-
-```bash
-# Using func-e
-func-e run -c envoy-bootstrap.yaml
-
-# Or using envoy directly
-envoy -c envoy-bootstrap.yaml
-```
-
-### Verify Traffic
-
-```bash
-# Send request through Envoy (port 10000)
-curl -i http://127.0.0.1:10000/status/200
-```
-
-## Using the Web UI
-
-The Web UI is integrated with the Flowplane server and served from the same port as the API. No separate UI process is required.
-
-Access the dashboard at http://localhost:8080
-
-### UI Features
-
-- **Dashboard** - Overview of resources and quick actions
-- **Clusters** - Manage upstream backends with health checks, circuit breakers
-- **Listeners** - Configure ports and TLS
-- **Route Configs** - Define routing rules and virtual hosts
-- **Filters** - Install and configure HTTP filters
-- **Secrets** - Manage TLS certificates and credentials
-- **Tokens** - Create and rotate API tokens
-- **Stats** - Real-time Envoy metrics (when enabled)
-
-## OpenAPI Import
-
-Import an OpenAPI specification to auto-generate resources:
-
-```bash
-curl -X POST "http://127.0.0.1:8080/api/v1/openapi/import?team=my-org-default" \
-  -H "Authorization: Bearer $FLOWPLANE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d @your-openapi-spec.json
-```
-
-This creates clusters, routes, and optionally a listener from your API spec.
-
-## Environment Configuration
-
-Create a `.env` file for custom settings:
-
-```bash
-# Copy example
-cp .env.example .env
-
-# Edit as needed
-# Key variables:
-# DATABASE_URL=postgres://flowplane:flowplane@localhost:5432/flowplane
-# FLOWPLANE_API_PORT=8080
-# FLOWPLANE_XDS_PORT=18000
-```
-
-See the [README](../README.md) for the full list of environment variables.
-
-## Next Steps
-
-- [Swagger UI](http://localhost:8080/swagger-ui/) - Interactive API reference
-- [HTTP Filters](filters.md) - Rate limiting, JWT, OAuth2, CORS, and 15 more
-- [Configuration](configuration.md) - Environment variables and settings
-- [Architecture](architecture.md) - System design overview
-- [Tracing & Operations](tracing-operations.md) - Observability and monitoring
-- [TLS](tls.md) - TLS termination and mTLS
-- [Secrets Management (SDS)](secrets-sds.md) - Certificate and secret management
-- [MCP Integration](mcp.md) - AI agent tools and prompts
-- [CLI](cli.md) - Command-line interface
-
-### Cookbooks
-
-- [Routing Cookbook](routing-cookbook.md) - Weighted routes, redirects, rewrites
-
-### Deployment
-
-- [Kubernetes](deployment/kubernetes.md)
-- [Multi-Region](deployment/multi-region.md)
-- [Multi-Dataplane](deployment/multi-dataplane.md)
+This tears down the listener, route config, and cluster in one step.
