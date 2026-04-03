@@ -139,3 +139,127 @@ Removed exposed service 'demo'
 ```
 
 This tears down the listener, route config, and cluster in one step.
+
+## Add a rate limit filter
+
+Flowplane filters let you add behavior to your gateway without changing upstream code. This section adds local rate limiting to the `demo` service.
+
+First, re-expose the service if you removed it:
+
+```bash
+flowplane expose http://httpbin:80 --name demo
+```
+
+### Create the filter
+
+Save this as `rate-limit-filter.json`:
+
+```json
+{
+  "name": "rate-limit",
+  "filterType": "local_rate_limit",
+  "config": {
+    "type": "local_rate_limit",
+    "config": {
+      "stat_prefix": "http_local_rate_limiter",
+      "token_bucket": {
+        "max_tokens": 3,
+        "tokens_per_fill": 3,
+        "fill_interval_ms": 60000
+      },
+      "filter_enabled": {
+        "numerator": 100,
+        "denominator": "hundred"
+      },
+      "filter_enforced": {
+        "numerator": 100,
+        "denominator": "hundred"
+      }
+    }
+  },
+  "team": "default"
+}
+```
+
+Key fields:
+- `filterType` — the filter type (`local_rate_limit` for in-memory rate limiting)
+- `config` — nested structure with `type` and `config` (the inner config holds filter-specific settings)
+- `token_bucket` — allows 3 requests per 60 seconds, then rejects with 429
+- `filter_enabled` / `filter_enforced` — both set to 100% so every request is checked and enforced
+
+Create the filter:
+
+```bash
+flowplane filter create -f rate-limit-filter.json
+```
+
+```json
+{
+  "id": "e8169ce5-f561-4deb-ae77-86bf26d4a4f5",
+  "name": "rate-limit",
+  "filterType": "local_rate_limit",
+  "version": 1,
+  "team": "default",
+  "allowedAttachmentPoints": ["route", "listener"]
+}
+```
+
+### Attach to the listener
+
+Filters are not active until attached to a listener (or route):
+
+```bash
+flowplane filter attach rate-limit --listener demo-listener
+```
+
+```
+Filter 'rate-limit' attached to listener 'demo-listener'
+```
+
+> The listener name follows the `expose` naming convention: `<name>-listener`. Since we used `--name demo`, the listener is `demo-listener`.
+
+### Test rate limiting
+
+Send five requests in quick succession:
+
+```bash
+for i in 1 2 3 4 5; do
+  echo "Request $i: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:10001/get)"
+done
+```
+
+```
+Request 1: 200
+Request 2: 200
+Request 3: 200
+Request 4: 429
+Request 5: 429
+```
+
+The first three requests succeed (consuming all tokens). Requests 4 and 5 are rejected with `429 Too Many Requests` and the body `local_rate_limited`. The bucket refills after 60 seconds.
+
+### Verify filter status
+
+```bash
+flowplane filter list
+```
+
+```
+Name                           Type                 Team            Version    Attached  
+------------------------------------------------------------------------------------------
+rate-limit                     local_rate_limit     default         1          1
+```
+
+### Clean up the filter
+
+To remove rate limiting, detach the filter from the listener, then delete it:
+
+```bash
+flowplane filter detach rate-limit --listener demo-listener
+flowplane filter delete rate-limit --yes
+```
+
+```
+Filter 'rate-limit' detached from listener 'demo-listener'
+Filter 'rate-limit' deleted successfully
+```
