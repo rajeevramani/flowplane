@@ -109,8 +109,8 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed 2026-04-03. Expose/unexpose, cluster, route, listener, filter CRUD all documented with tested output. Filter JSON uses nested config.type + config.config structure with snake_case denominators. Listener create requires dataplaneId (dev-dataplane-id in dev mode). Filter must be detached before delete (409 conflict)."
     },
     {
       "id": "US-008",

@@ -19,6 +19,32 @@
 - `flowplane status <name>` requires the full listener name (e.g., `demo-listener`), not the short display name
 - `flowplane doctor` checks CP health and Envoy readiness at localhost:9901 — skips Envoy check for remote servers
 - `flowplane database` subcommands require `--database-url` or `DATABASE_URL` env var — `init` handles migrations automatically
+- Listener create requires `dataplaneId` — dev mode uses `dev-dataplane-id`; expose handles this automatically
+- Filter delete returns 409 if filter is still attached — must detach first
+- Cluster update JSON must include the `name` field (400 error otherwise)
+- Listener filter chain type is `httpConnectionManager` (camelCase), NOT `HttpConnectionManager` (PascalCase)
+- Rate limit denominator values are snake_case: `hundred`, `ten_thousand`, `million` — NOT SCREAMING_CASE
+- Dev mode token is stored at `~/.flowplane/credentials` (plain text), not in config.toml JWT
+- Dev mode token env var: `FLOWPLANE_DEV_TOKEN` on the control plane container
+
+## 2026-04-03 - US-007
+- Appended Expose/Unexpose and Resource CRUD sections to docs/cli-reference.md
+- Documented expose (with --name, --path, --port flags), unexpose, and validation errors (port range)
+- Documented cluster CRUD: create, list, get, update, delete with JSON examples
+- Documented route CRUD: create, list, get, update, delete with path match types and action fields
+- Documented listener CRUD: create, list, get, update, delete with filter chain format
+- Documented filter CRUD: create, list, get, delete, attach, detach with nested config structure
+- All JSON examples tested against live dev stack with real output captured
+- Files changed: docs/cli-reference.md
+- **Learnings for future iterations:**
+  - Listener create requires `dataplaneId` field — dev mode uses `dev-dataplane-id`; the expose command handles this automatically
+  - Listener filter chain `type` field is camelCase (`httpConnectionManager`), not PascalCase
+  - Cluster update requires `name` in the JSON body (not just the CLI argument) — 400 error otherwise
+  - Rate limit denominator values are snake_case (`hundred`), not SCREAMING_CASE (`HUNDRED`)
+  - Filter delete returns 409 Conflict if still attached to any listeners — must detach first
+  - Dev mode auth: FLOWPLANE_DEV_TOKEN env var on control plane container, stored at `~/.flowplane/credentials`
+  - The getting-started.md filter example uses `fill_interval: "60s"` and `HUNDRED` but the actual API expects `fill_interval_ms: 60000` and `hundred` — contradictions to flag in US-014
+---
 
 ## 2026-04-03 - US-006
 - Created docs/cli-reference.md with global flags section and stack management commands
