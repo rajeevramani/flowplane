@@ -92,9 +92,10 @@ test.describe('Agent CRUD + Grant Management', () => {
 		await manageLink.click();
 		await waitForPageLoad(page);
 
-		// Look for a checked checkbox in PermissionMatrix
+		// Try PermissionMatrix path first (cp-tool agents)
 		const matrixTable = page.locator('table').filter({ hasText: 'Resource' });
 		const matrixVisible = await matrixTable.isVisible().catch(() => false);
+		let revokedViaMatrix = false;
 
 		if (matrixVisible) {
 			const checkedCell = matrixTable.locator('input[type="checkbox"]:checked').first();
@@ -106,21 +107,26 @@ test.describe('Agent CRUD + Grant Management', () => {
 				await page.waitForTimeout(1000);
 				const stableCheckbox = matrixTable.locator(`input[type="checkbox"][title="${title}"]`);
 				await expect(stableCheckbox).not.toBeChecked();
+				revokedViaMatrix = true;
 			}
 		}
 
-		// Or look for Delete button in the grants table
-		const deleteBtn = page.getByRole('button', { name: /delete/i }).first();
-		const hasDeleteBtn = await deleteBtn.isVisible().catch(() => false);
-		if (hasDeleteBtn) {
-			await deleteBtn.click();
-			// Confirm in the delete modal
-			const confirmBtn = page
-				.locator('[role="dialog"]')
-				.getByRole('button', { name: /delete|confirm|remove/i });
-			if (await confirmBtn.isVisible()) {
-				await confirmBtn.click();
-				await page.waitForTimeout(1000);
+		// Fall back to grants table Delete button (gateway agents) — only if matrix path didn't work
+		if (!revokedViaMatrix) {
+			// Scope to the grants table to avoid matching the "Delete Agent" header button
+			const grantsTable = page.locator('table').filter({ hasText: 'Actions' });
+			const deleteBtn = grantsTable.getByRole('button', { name: /delete/i }).first();
+			const hasDeleteBtn = await deleteBtn.isVisible().catch(() => false);
+			if (hasDeleteBtn) {
+				await deleteBtn.click();
+				// Confirm in the delete modal
+				const confirmBtn = page
+					.locator('[role="dialog"]')
+					.getByRole('button', { name: /delete|confirm|remove/i });
+				if (await confirmBtn.isVisible()) {
+					await confirmBtn.click();
+					await page.waitForTimeout(1000);
+				}
 			}
 		}
 
