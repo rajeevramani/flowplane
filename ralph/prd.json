@@ -156,8 +156,8 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed 2026-04-03. Replaced outdated filters.md with accurate content from src/domain/filter.rs. 11 filter types documented (rate_limit marked not implemented). Removed phantom filter types (rate_limit_quota, health_check, credential_injector, ext_proc, router) that were in the old doc but not in source. Nested config structure documented with tested header_mutation example. Per-route override table covers all four behaviors (full config, reference only, disable only, not supported). Detach-before-delete workflow tested with 409 error output."
     },
     {
       "id": "US-011",
@@ -171,8 +171,8 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed 2026-04-03. Documented local_rate_limit (working), cors (working), compressor (creates but Envoy NACKs on attach due to empty RuntimeKey bug). rate_limit (external) rejected by API as not implemented. router is not a FilterType (phantom from old docs)."
     },
     {
       "id": "US-012",

@@ -181,4 +181,260 @@ Error: Cannot delete filter 'add-headers': Resource conflict: Filter is attached
 
 ---
 
-*Individual filter type examples continue below. See [CLI Reference](cli-reference.md) for command syntax.*
+## Traffic management filters
+
+### local_rate_limit
+
+Local (in-memory) rate limiting. Tokens are tracked per Envoy instance — not shared across instances. Use this for single-instance deployments or as a per-node safety net.
+
+> The external `rate_limit` type (distributed rate limiting via a gRPC service) is defined but **not implemented**. The API rejects it with `400 Bad Request: Filter type 'rate_limit' is not yet fully supported`.
+
+**Required fields:** `stat_prefix`, `token_bucket`
+
+Save as `rate-limit.json`:
+
+```json
+{
+  "name": "demo-rate-limit",
+  "filterType": "local_rate_limit",
+  "config": {
+    "type": "local_rate_limit",
+    "config": {
+      "stat_prefix": "demo_rate_limit",
+      "token_bucket": {
+        "max_tokens": 3,
+        "tokens_per_fill": 3,
+        "fill_interval_ms": 60000
+      },
+      "filter_enabled": {"numerator": 100, "denominator": "hundred"},
+      "filter_enforced": {"numerator": 100, "denominator": "hundred"}
+    }
+  }
+}
+```
+
+```
+$ flowplane filter create -f rate-limit.json
+{
+  "id": "e4ba4636-...",
+  "name": "demo-rate-limit",
+  "filterType": "local_rate_limit",
+  "version": 1,
+  "source": "native_api",
+  "team": "default",
+  ...
+  "allowedAttachmentPoints": ["route", "listener"]
+}
+
+$ flowplane filter attach demo-rate-limit --listener demo-listener
+Filter 'demo-rate-limit' attached to listener 'demo-listener'
+```
+
+Verify — 3 tokens per 60 seconds means the 4th request gets rejected:
+
+```
+$ for i in 1 2 3 4 5; do curl -s -o /dev/null -w "Request $i: %{http_code}\n" http://localhost:10001/get; done
+Request 1: 200
+Request 2: 200
+Request 3: 200
+Request 4: 429
+Request 5: 429
+```
+
+The 429 response body is `local_rate_limited` (plain text, not JSON).
+
+**Config fields:**
+
+| Field | Type | Required | Description |
+|-------|------|:--------:|-------------|
+| `stat_prefix` | string | Yes | Prefix for rate limit stats |
+| `token_bucket.max_tokens` | u32 | Yes | Maximum tokens in the bucket |
+| `token_bucket.tokens_per_fill` | u32 | No | Tokens added per refill (defaults to `max_tokens`) |
+| `token_bucket.fill_interval_ms` | u64 | Yes | Refill interval in milliseconds (must be > 0) |
+| `filter_enabled` | object | No | Fraction of requests where filter runs (defaults to 100%) |
+| `filter_enforced` | object | No | Fraction of enabled requests where limit is enforced (defaults to 100%) |
+| `status_code` | u16 | No | HTTP status when rate limited (default 429, range 400-599) |
+| `per_downstream_connection` | bool | No | Track tokens per connection instead of globally |
+| `rate_limited_as_resource_exhausted` | bool | No | Return gRPC RESOURCE_EXHAUSTED instead of UNAVAILABLE |
+
+**`filter_enabled` and `filter_enforced`** both default to 100% if omitted. The `denominator` field accepts `hundred`, `ten_thousand`, or `million` (snake_case).
+
+---
+
+### cors
+
+Cross-Origin Resource Sharing policy. Controls which origins, methods, and headers are allowed for cross-origin requests.
+
+**Required fields:** `policy.allow_origin` (at least one matcher)
+
+Save as `cors.json`:
+
+```json
+{
+  "name": "demo-cors",
+  "filterType": "cors",
+  "config": {
+    "type": "cors",
+    "config": {
+      "policy": {
+        "allow_origin": [
+          {"type": "exact", "value": "https://example.com"}
+        ],
+        "allow_methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["X-Request-Id"],
+        "max_age": 3600,
+        "allow_credentials": true,
+        "filter_enabled": {"numerator": 100, "denominator": "hundred"}
+      }
+    }
+  }
+}
+```
+
+```
+$ flowplane filter create -f cors.json
+{
+  "id": "8cdb6c06-...",
+  "name": "demo-cors",
+  "filterType": "cors",
+  "version": 1,
+  "source": "native_api",
+  "team": "default",
+  ...
+  "allowedAttachmentPoints": ["route", "listener"]
+}
+
+$ flowplane filter attach demo-cors --listener demo-listener
+Filter 'demo-cors' attached to listener 'demo-listener'
+```
+
+Verify with a CORS preflight request from a matching origin:
+
+```
+$ curl -s -D - -o /dev/null \
+    -X OPTIONS \
+    -H "Origin: https://example.com" \
+    -H "Access-Control-Request-Method: POST" \
+    -H "Access-Control-Request-Headers: Content-Type" \
+    http://localhost:10001/get
+HTTP/1.1 200 OK
+access-control-allow-origin: https://example.com
+access-control-allow-credentials: true
+access-control-allow-methods: GET, POST, PUT, DELETE, PATCH, OPTIONS
+access-control-max-age: 3600
+access-control-allow-headers: Content-Type
+...
+```
+
+On a regular GET with the matching origin:
+
+```
+$ curl -s -D - -o /dev/null -H "Origin: https://example.com" http://localhost:10001/get
+HTTP/1.1 200 OK
+access-control-allow-origin: https://example.com
+access-control-allow-credentials: true
+...
+```
+
+**Origin matcher types:**
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `exact` | Exact string match | `{"type": "exact", "value": "https://example.com"}` |
+| `prefix` | Prefix match | `{"type": "prefix", "value": "https://"}` |
+| `suffix` | Suffix match | `{"type": "suffix", "value": ".example.com"}` |
+| `contains` | Substring match | `{"type": "contains", "value": "example"}` |
+| `regex` | RE2 regex match | `{"type": "regex", "value": "https://.*\\.example\\.com"}` |
+
+**Policy fields:**
+
+| Field | Type | Required | Description |
+|-------|------|:--------:|-------------|
+| `allow_origin` | array | Yes | Origin matchers (at least one required) |
+| `allow_methods` | array | No | Allowed HTTP methods (e.g., `["GET", "POST"]`) |
+| `allow_headers` | array | No | Allowed request headers |
+| `expose_headers` | array | No | Response headers exposed to clients |
+| `max_age` | u64 | No | Preflight cache duration in seconds |
+| `allow_credentials` | bool | No | Allow credentials (cannot be `true` with wildcard `*` origin) |
+| `filter_enabled` | object | No | Fraction of requests where CORS policy is enforced |
+| `shadow_enabled` | object | No | Fraction of requests where policy is evaluated but not enforced |
+| `allow_private_network_access` | bool | No | Allow requests from private networks |
+| `forward_not_matching_preflights` | bool | No | Forward unmatched preflights to upstream |
+
+**Validation rules:**
+- `allow_origin` must not be empty
+- `allow_credentials: true` cannot be combined with a wildcard (`*`) exact origin
+- Method names must be valid HTTP methods (or `*`)
+- Header names must be valid HTTP header names (or `*`)
+
+---
+
+### compressor
+
+Response compression using gzip. Compresses responses that match the configured content types and exceed the minimum content length.
+
+> **Known issue:** Attaching the compressor filter causes an Envoy NACK due to an empty `RuntimeKey` in the generated xDS config. The filter creates successfully in Flowplane but Envoy rejects the listener update. This will be fixed in a future release.
+
+Save as `compressor.json`:
+
+```json
+{
+  "name": "demo-gzip",
+  "filterType": "compressor",
+  "config": {
+    "type": "compressor",
+    "config": {
+      "response_direction_config": {
+        "common_config": {
+          "min_content_length": 256,
+          "content_type": ["application/json", "text/html"]
+        }
+      },
+      "compressor_library": {
+        "type": "gzip",
+        "compression_level": "default_compression"
+      }
+    }
+  }
+}
+```
+
+```
+$ flowplane filter create -f compressor.json
+{
+  "id": "02af0e00-...",
+  "name": "demo-gzip",
+  "filterType": "compressor",
+  "version": 1,
+  "source": "native_api",
+  "team": "default",
+  ...
+  "allowedAttachmentPoints": ["route", "listener"]
+}
+```
+
+**Compressor library — gzip fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `memory_level` | u32 | — | Memory level 1-9 (higher = faster, more memory) |
+| `window_bits` | u32 | — | Window bits 9-15 (higher = better compression) |
+| `compression_level` | string | `best_speed` | `best_speed`, `best_compression`, or `default_compression` |
+| `compression_strategy` | string | `default_strategy` | `default_strategy`, `filtered`, `huffman_only`, `rle`, or `fixed` |
+| `chunk_size` | u32 | — | Internal compression chunk buffer size in bytes |
+
+**Common config fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `min_content_length` | u32 | Minimum response size in bytes to trigger compression |
+| `content_type` | array | Content types to compress (e.g., `["application/json"]`) |
+| `disable_on_etag_header` | bool | Skip compression when response has ETag |
+| `remove_accept_encoding_header` | bool | Remove Accept-Encoding after compression decision |
+
+**Per-route:** The compressor supports `disable_only` per-route behavior — you can disable compression for specific routes but cannot override the full config.
+
+---
+
+*Auth and security filter examples continue in the next section.*
