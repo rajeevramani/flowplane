@@ -935,8 +935,8 @@ $ flowplane filter create --file header-mutation.json
 **Attach and verify:**
 
 ```
-$ flowplane filter attach --listener test-filters-listener add-custom-headers
-Filter 'add-custom-headers' attached to listener 'test-filters-listener'
+$ flowplane filter attach add-custom-headers --listener demo-listener
+Filter 'add-custom-headers' attached to listener 'demo-listener'
 ```
 
 Request headers — httpbin echoes them back:
@@ -1026,8 +1026,8 @@ $ flowplane filter create --file custom-response.json
 **Attach and verify:**
 
 ```
-$ flowplane filter attach --listener test-filters-listener json-error-pages
-Filter 'json-error-pages' attached to listener 'test-filters-listener'
+$ flowplane filter attach json-error-pages --listener demo-listener
+Filter 'json-error-pages' attached to listener 'demo-listener'
 ```
 
 Normal traffic is unaffected:
@@ -1116,8 +1116,8 @@ In `reject_no_mcp` mode, only valid MCP requests are allowed:
 **Attach and verify:**
 
 ```
-$ flowplane filter attach --listener test-filters-listener mcp-gateway
-Filter 'mcp-gateway' attached to listener 'test-filters-listener'
+$ flowplane filter attach mcp-gateway --listener demo-listener
+Filter 'mcp-gateway' attached to listener 'demo-listener'
 
 $ curl -s http://localhost:10001/get | head -3
 {
