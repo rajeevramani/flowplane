@@ -46,6 +46,7 @@ agents/
 .cache/
 .specify/
 .codex/
+ralph/
 
 # Documentation build artifacts
 book/
