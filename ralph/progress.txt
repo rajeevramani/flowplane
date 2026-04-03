@@ -4,6 +4,82 @@
 
 ## Codebase Patterns
 - `docs/quickstart.md` was already deleted before this PRD started — always verify file existence before planning deletion work
+- The `expose` command source is on `release/v0.2.0` branch at `src/cli/expose.rs`, not on `main` — Docker stack must be built from release/v0.2.0 for the expose API endpoint to work
+- The installed `flowplane` binary at `~/.local/bin/flowplane` may have more commands than the current branch source — always check `flowplane --help` against the live binary
+- To test docs against a live stack when current branch lacks server features: `git stash && git checkout release/v0.2.0 && flowplane init ... && git checkout <branch> && git stash pop`
+- Filter JSON uses camelCase for top-level API fields (`filterType`, not `filter_type`) — the Rust struct has `#[serde(rename_all = "camelCase")]`
+- Filter config is nested: `"config": {"type": "local_rate_limit", "config": {...actual settings...}}` — custom Serialize/Deserialize on FilterConfig enum
+- `local_rate_limit` is the implemented in-memory rate limiter; `rate_limit` (external/distributed) exists as FilterType but has `is_implemented: false`
+- Listener naming convention from `expose`: `<name>-listener` — needed for `filter attach --listener`
+- MCP endpoints: `/api/v1/mcp/cp` (control plane) and `/api/v1/mcp/api` (gateway API) — both Streamable HTTP
+- `flowplane down` preserves database volume; `flowplane down --volumes` deletes it
+- Prod mode uses `make up ENVOY=1 HTTPBIN=1` + `make seed` + `flowplane auth login` — requires Zitadel
+- Prod mode xDS port is 50051 (vs 18000 in dev mode)
+- `flowplane list` strips the `-listener` suffix for display — `demo-listener` shows as `demo`
+- `flowplane status <name>` requires the full listener name (e.g., `demo-listener`), not the short display name
+- `flowplane doctor` checks CP health and Envoy readiness at localhost:9901 — skips Envoy check for remote servers
+- `flowplane database` subcommands require `--database-url` or `DATABASE_URL` env var — `init` handles migrations automatically
+
+## 2026-04-03 - US-006
+- Created docs/cli-reference.md with global flags section and stack management commands
+- Documented: init, down, serve, status, doctor, list, logs, database
+- Each command's flags verified from src/cli/mod.rs source on release/v0.2.0
+- after_long_help output captured for init (EXAMPLES block)
+- All testable commands tested against live stack with real output captured
+- Files changed: docs/cli-reference.md
+- **Learnings for future iterations:**
+  - `flowplane status <name>` takes the full listener name including `-listener` suffix
+  - `flowplane list` output has a blank line before/after the table
+  - `flowplane doctor` probes Envoy at localhost:9901, not the admin port — `is_loopback()` determines whether to probe
+  - `flowplane serve` is for direct server execution without Docker — `init` is the recommended dev path
+  - `flowplane database` commands are for production; `init` auto-migrates
+---
+
+## 2026-04-03 - US-005
+- Appended Explore, Tear Down, and Production Mode sections to getting-started.md
+- Explore covers: status, doctor, list, swagger-ui URL, MCP connection endpoints
+- Tear down: `flowplane down` (preserves data) and `flowplane down --volumes` (deletes data)
+- Prod mode: `make up ENVOY=1 HTTPBIN=1`, seed, auth login, dev/prod comparison table
+- Next steps section links to cli-reference.md and filters.md
+- All explore and tear down commands tested against live stack with real output captured
+- Files changed: docs/getting-started.md
+- **Learnings for future iterations:**
+  - MCP uses Streamable HTTP (not SSE) at `/api/v1/mcp/cp` and `/api/v1/mcp/api` — verified from `src/mcp/streamable_http/`
+  - `flowplane down` output is clean: "Stopping services..." then "Flowplane services stopped."
+  - `flowplane down --volumes` adds: "Volumes removed — database data has been deleted."
+  - Prod mode comparison table: xDS port difference (18000 dev vs 50051 prod) confirmed from Dockerfile EXPOSE and init code
+  - `make up` Makefile targets do NOT include Zitadel setup — that's handled separately by `scripts/setup-zitadel.sh`
+---
+
+## 2026-04-03 - US-004
+- Appended "Add a rate limit filter" section to getting-started.md after the Expose section
+- Used `local_rate_limit` filter type (the only implemented rate limiter — external `rate_limit` is not implemented)
+- Created filter JSON with nested config structure, tested against live stack
+- Tested rate limiting: 200/200/200/429/429 pattern with 3 tokens per 60 seconds
+- Documented full lifecycle: create → attach → test → detach → delete
+- Files changed: docs/getting-started.md
+- **Learnings for future iterations:**
+  - API expects camelCase fields (`filterType`, not `filter_type`) — the Rust CreateFilterRequest struct uses `#[serde(rename_all = "camelCase")]`
+  - Filter config uses custom serde: outer `config` has `{"type": "...", "config": {...}}` — not a flat structure
+  - `filter_enabled` and `filter_enforced` both default to disabled — you must explicitly set both to 100% for the filter to work
+  - 429 response body is `local_rate_limited` (plain text, not JSON)
+  - `token_bucket.tokens_per_fill` defaults to `max_tokens` if omitted, but explicit is better for docs
+---
+
+## 2026-04-03 - US-003
+- Appended "Expose a service" section to getting-started.md after the Verify section
+- Removed outdated Manual Setup, Creating Resources, Connecting Envoy, UI, OpenAPI Import, Environment Config, and Next Steps sections (277 lines of stale content)
+- Tested `flowplane expose http://httpbin:80 --name demo` against live dev stack — port 10001 auto-assigned
+- Tested `curl http://localhost:10001/get` — confirmed traffic flows through Envoy (X-Envoy-Expected-Rq-Timeout-Ms header present)
+- Tested `flowplane list`, `flowplane status`, `flowplane unexpose demo` — all captured
+- Read expose source from release/v0.2.0 branch: `src/cli/expose.rs` (handles name generation, loopback detection, Envoy probe)
+- Files changed: docs/getting-started.md
+- **Learnings for future iterations:**
+  - Docker stack must be built from release/v0.2.0 branch for expose API to work — current branch (from main) lacks the `/api/v1/teams/{team}/expose` endpoint
+  - `flowplane expose` creates cluster + route-config + listener atomically; `unexpose` tears them down in reverse
+  - Auto-name generation: strips scheme, takes host:port, replaces non-alphanumeric with hyphens (e.g., `http://localhost:3000` -> `localhost-3000`)
+  - The old getting-started.md had 277 lines of outdated content (manual setup with curl, dataplane creation, func-e) that was replaced
+---
 
 ## 2026-04-03 - US-002
 - Replaced Prerequisites, Installation, and Quick Start sections in getting-started.md

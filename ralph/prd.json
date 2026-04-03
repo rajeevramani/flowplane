@@ -1,227 +1,257 @@
 {
   "project": "Flowplane",
   "branchName": "ralph/v020-docs-rewrite",
-  "description": "Rewrite developer documentation (getting-started, cli-reference, filters) to be accurate against v0.2.0 codebase, add two Excalidraw diagrams, delete redundant quickstart.md",
+  "description": "V0.2.0 Developer Documentation Rewrite — replace all outdated docs with three fresh, tested, developer-first docs written from source code",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Delete quickstart.md and remove references",
-      "description": "As a documentation maintainer, I want to remove the redundant quickstart so new users aren't confused by two overlapping guides.",
+      "title": "Delete outdated docs",
+      "description": "As a maintainer, I want to remove all outdated documentation so that new docs start from a clean slate.",
       "acceptanceCriteria": [
-        "docs/quickstart.md deleted",
-        "No remaining references to quickstart.md in other docs, README, or any markdown files",
-        "getting-started.md is the single entry point for new users"
+        "All files in docs/ are deleted (including subdirectories: deployment/, filters/, images/, learning-manual/)",
+        "docs/ directory exists but is empty (ready for new content)",
+        "No broken internal links remain in CLAUDE.md or other project files referencing deleted docs"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Simple deletion. Do a grep for 'quickstart' across all .md files and fix any references."
+      "notes": "docs/quickstart.md was already deleted before this PRD started. Verified no stale references."
     },
     {
       "id": "US-002",
-      "title": "Update getting-started.md prerequisites through boot",
-      "description": "As a new developer, I want accurate install and boot instructions so I can get Flowplane running.",
+      "title": "Write getting-started.md — Prerequisites through Boot",
+      "description": "As a new developer, I want clear setup instructions so that I can get Flowplane running from scratch.",
       "acceptanceCriteria": [
-        "Prerequisites section lists Docker and Rust requirements accurately",
-        "Install step uses git clone + cargo install --path . --locked",
-        "Boot step uses flowplane init --with-envoy --with-httpbin",
-        "Verify step shows flowplane status and curl /health",
-        "Port range (10001-10020) verified against codebase and documented correctly",
-        "Read .claude/skills/flowplane-ops/SKILL.md and .claude/skills/flowplane-dev/SKILL.md as source of truth before editing"
+        "docs/getting-started.md exists with sections: Prerequisites, Install, Boot the stack, Verify",
+        "Prerequisites lists Docker and Rust with version requirements (verified against source)",
+        "Install command (git clone + cargo install --path . --locked) is tested and output captured",
+        "Boot command (flowplane init --with-envoy --with-httpbin) is tested and output captured",
+        "Verify steps (flowplane status, health check curl) are tested and output captured",
+        "Port range verified against source code (expected 10001-10020)"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "Update in-place — don't rewrite from scratch. Keep the existing section structure."
+      "notes": "Completed 2026-04-03. Port range 10001-10020 confirmed from docker-compose-envoy.yml."
     },
     {
       "id": "US-003",
-      "title": "Update getting-started.md expose and filter sections",
-      "description": "As a new developer, I want working expose and filter examples so I can proxy a service and add rate limiting.",
+      "title": "Write getting-started.md — Expose and Test",
+      "description": "As a new developer, I want to expose httpbin through the gateway and test it so that I see Flowplane working end-to-end.",
       "acceptanceCriteria": [
-        "Expose section shows CLI only — remove any side-by-side CLI/MCP table",
-        "Expose example uses correct current syntax from .claude/skills/flowplane-cli/references/commands.md",
-        "Filter create example uses correct nested {type, config} JSON structure",
-        "Rate limit verification shows the 200/200/200/429/429 pattern",
-        "Read .claude/skills/flowplane-cli/references/commands.md as source of truth before editing"
+        "Expose section appended to docs/getting-started.md after the Verify section",
+        "Uses CLI only — no MCP column or MCP examples",
+        "flowplane expose command tested against the live dev stack, real output captured",
+        "Curl test through the gateway (port 10001-10020) works and output captured",
+        "Read src/cli/expose.rs and src/domain/ to document accurate behavior and flags",
+        "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": "The filter config structure is the most commonly broken thing — verify the nested {type, config} pattern against the skills reference."
+      "passes": true,
+      "notes": "Completed 2026-04-03. expose source on release/v0.2.0 branch (src/cli/expose.rs). Docker stack must be built from release/v0.2.0 for expose API to work."
     },
     {
       "id": "US-004",
-      "title": "Update getting-started.md explore, teardown, and prod sections",
-      "description": "As a new developer, I want accurate explore/teardown instructions and a prod-mode appendix.",
+      "title": "Write getting-started.md — Add a Rate Limit Filter",
+      "description": "As a new developer, I want to add rate limiting to my exposed API so that I understand Flowplane's filter system.",
       "acceptanceCriteria": [
-        "Explore section references current MCP tool count (check .claude/skills/flowplane-api/SKILL.md for count)",
-        "Tear down instructions use correct commands",
-        "Prod mode section uses make up ENVOY=1 HTTPBIN=1 (not raw docker compose)",
-        "Prod mode seed flow updated to match v0.2.0 fixes",
-        "Dev/prod comparison table is accurate",
-        "Network label bug warning removed if fixed or kept if still relevant (check git log)",
-        "Next steps section links to cli-reference, filters, mcp docs"
+        "Rate limit section appended to docs/getting-started.md after Expose section",
+        "Filter create command uses correct nested config structure ({type, config}) verified against source (src/domain/filter.rs)",
+        "Filter create and filter attach commands tested against live stack, real output captured",
+        "Rate limiting verification tested — show 200/200/200/429/429 curl pattern with real output",
+        "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "Read .claude/skills/flowplane-ops/SKILL.md for boot/teardown commands. Check Makefile for make up syntax."
+      "passes": true,
+      "notes": "Completed 2026-04-03. Filter type is local_rate_limit (external rate_limit not implemented). JSON uses camelCase filterType and nested config.type + config.config structure."
     },
     {
       "id": "US-005",
-      "title": "Update cli-reference.md stack management and expose sections",
-      "description": "As a developer, I want accurate CLI reference for stack management and expose/unexpose commands.",
+      "title": "Write getting-started.md — Explore, Tear Down, and Prod Mode",
+      "description": "As a new developer, I want to know what else I can do and how to clean up, plus a brief intro to production mode.",
       "acceptanceCriteria": [
-        "Global flags section is accurate",
-        "Stack management commands (init, down, serve, status, doctor, list) are correct",
-        "Expose/unexpose documents error behaviors: 409 for name conflicts, proper 4xx for validation",
-        "Input validation rules documented: valid names, positive ports, valid upstream URLs",
-        "All examples cross-checked against .claude/skills/flowplane-cli/references/commands.md",
-        "flowplane expose --help output included if after_long_help was added (check source)"
+        "Explore section appended to docs/getting-started.md: list, status, doctor, swagger-ui, MCP connection info",
+        "Tear down command (flowplane down) tested and output captured",
+        "Prod mode section is brief: make up ENVOY=1 HTTPBIN=1, seed, auth login, dev/prod comparison table",
+        "Prod mode clearly marked as untestable without Zitadel (if applicable)",
+        "Next steps section links to cli-reference.md, filters.md",
+        "Explore and tear down commands tested against live stack",
+        "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "Read .claude/skills/flowplane-cli/SKILL.md + references/commands.md as source of truth."
+      "passes": true,
+      "notes": "Completed 2026-04-03. Explore commands (status, doctor, list, swagger-ui, MCP endpoints) tested against live stack. Tear down (down, down --volumes) tested. Prod mode section documents make up ENVOY=1, seed, auth login, and dev/prod comparison table."
     },
     {
       "id": "US-006",
-      "title": "Update cli-reference.md resource CRUD and filter sections",
-      "description": "As a developer, I want accurate CLI reference for resource CRUD and filter attach/detach.",
+      "title": "Write cli-reference.md — Stack Management and Global Flags",
+      "description": "As a developer, I want a CLI reference for stack management commands so that I can operate Flowplane confidently.",
       "acceptanceCriteria": [
-        "Cluster, listener, route-config CRUD examples match current API",
-        "Filter create/attach/detach examples use correct nested {type, config} structure",
-        "All JSON payload examples cross-checked against .claude/skills/flowplane-cli/references/commands.md",
-        "Import OpenAPI section is accurate",
-        "Learning sessions section is accurate"
+        "docs/cli-reference.md created with global flags section at the top",
+        "Stack management commands documented: init, down, serve, status, doctor, list",
+        "Each command's flags and arguments verified by reading src/cli/ source files",
+        "Every example command tested against the live stack with real output captured",
+        "after_long_help output included for key commands if present in source",
+        "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": "Read .claude/skills/flowplane-cli/references/commands.md as source of truth."
+      "passes": true,
+      "notes": "Completed 2026-04-03. Stack management commands (init, down, serve, status, doctor, list, logs, database) documented with flags from source and real output from live stack."
     },
     {
       "id": "US-007",
-      "title": "Update cli-reference.md secrets, auth, and config sections",
-      "description": "As a developer, I want accurate CLI reference for secrets, auth, and config commands.",
+      "title": "Write cli-reference.md — Expose, Unexpose, and Resource CRUD",
+      "description": "As a developer, I want accurate reference docs for resource management commands.",
       "acceptanceCriteria": [
-        "secret create syntax updated — --config flag no longer requires redundant type field",
-        "auth whoami documents email/name display in prod mode",
-        "Auth commands (login, logout, whoami, token) are accurate for both dev and prod",
-        "Config commands (show, path, set) are accurate",
-        "Read .claude/skills/flowplane-secrets/SKILL.md for secrets command syntax"
+        "Expose/unexpose section appended to docs/cli-reference.md with 409 conflict behavior and validation errors",
+        "Resource CRUD documented: cluster, listener, route-config, filter (create, list, show, update, delete)",
+        "Filter attach/detach documented with examples",
+        "Every JSON payload example tested against the live stack with real output captured",
+        "Input validation rules noted: valid names, positive ports, valid upstream URLs",
+        "Typecheck passes"
       ],
       "priority": 7,
       "passes": false,
-      "notes": "Read .claude/skills/flowplane-secrets/SKILL.md and .claude/skills/flowplane-cli/references/commands.md."
+      "notes": ""
     },
     {
       "id": "US-008",
-      "title": "Update filters.md filter types and config structure",
-      "description": "As a developer adding filters, I want an accurate filter types table and correct config structure documentation.",
+      "title": "Write cli-reference.md — Import OpenAPI and Learning Sessions",
+      "description": "As a developer, I want reference docs for import and learning session commands.",
       "acceptanceCriteria": [
-        "Filter count reconciled — check FilterType enum in src/domain/ and compare against skills and existing docs",
-        "Filter types table is complete and accurate with all current types",
-        "Config structure section documents the nested {type, config} pattern correctly",
-        "How filters work section (create -> attach -> verify) is accurate",
-        "Read .claude/skills/flowplane-api/SKILL.md + references/filters-quick-ref.md as source of truth"
+        "Import OpenAPI section appended to docs/cli-reference.md with flags and examples",
+        "Learning sessions section documented: start, stop, status, list",
+        "Every example tested against the live stack with real output captured",
+        "Read src/cli/ source files for accurate flags and arguments",
+        "Typecheck passes"
       ],
       "priority": 8,
       "passes": false,
-      "notes": "The filter count discrepancy (skills say 11, docs say 14) must be resolved by checking the actual FilterType enum."
+      "notes": ""
     },
     {
       "id": "US-009",
-      "title": "Update filters.md per-filter examples",
-      "description": "As a developer, I want a working JSON example for each filter type.",
+      "title": "Write cli-reference.md — Secrets, Auth, and Config",
+      "description": "As a developer, I want reference docs for secrets, auth, and config CLI commands.",
       "acceptanceCriteria": [
-        "Every filter type has a working JSON config example using nested {type, config} structure",
-        "credential_injector example updated to show SDS/secrets integration",
-        "Per-route override examples are correct",
-        "Detach and delete examples are correct",
-        "All examples cross-checked against .claude/skills/flowplane-api/references/filters-quick-ref.md"
+        "Secrets section appended to docs/cli-reference.md — secret create --config uses correct syntax (no redundant type field)",
+        "Auth commands documented: login, logout, whoami, token — note that whoami shows email/name in prod mode",
+        "Config commands documented: show, path, set",
+        "Every example tested against the live stack with real output captured",
+        "Read src/cli/ source for accurate flags",
+        "Typecheck passes"
       ],
       "priority": 9,
       "passes": false,
-      "notes": "Read .claude/skills/flowplane-api/references/filters-quick-ref.md for exact JSON payloads."
+      "notes": ""
     },
     {
       "id": "US-010",
-      "title": "Create developer workflow Excalidraw diagram",
-      "description": "As a new developer, I want a visual overview of the Flowplane development cycle.",
+      "title": "Write filters.md — Overview, Types Table, and Config Structure",
+      "description": "As a developer, I want to understand how filters work and see all available types at a glance.",
       "acceptanceCriteria": [
-        "Call Excalidraw MCP read_me tool first to learn element format",
-        "Create 6-step cycle diagram: build service -> create resources (manual) OR learning session (auto) -> expose -> add filters -> test -> publish",
-        "Both paths (manual + learning session) converge at expose step",
-        "Dashed green annotation arrow labeled 'This information is already in Flowplane'",
-        "Hand-drawn style (roughness: 1), dark red/maroon flow arrows, green annotation arrows",
-        "Save to docs/developer-workflow.excalidraw in same JSON format as docs/mcp-tool-call-lifecycle.excalidraw",
-        "Add markdown reference to diagram in docs/getting-started.md after Boot the stack section"
+        "docs/filters.md created with overview section: create -> attach -> verify workflow",
+        "Filter types table lists ALL filter types read from src/domain/filter.rs (not from memory)",
+        "Config structure section explains nested {type, config} format with example",
+        "Per-route overrides documented with example",
+        "Detach and delete workflow documented with tested commands",
+        "Typecheck passes"
       ],
       "priority": 10,
       "passes": false,
-      "notes": "Read docs/mcp-tool-call-lifecycle.excalidraw first to match the JSON format. Use Excalidraw MCP tools."
+      "notes": ""
     },
     {
       "id": "US-011",
-      "title": "Create architecture overview Excalidraw diagram",
-      "description": "As a new developer, I want an architecture diagram showing how Flowplane components connect.",
+      "title": "Write filters.md — Traffic filters (rate_limit, router, cors, compressor)",
+      "description": "As a developer, I want working examples for traffic management filters.",
       "acceptanceCriteria": [
-        "4 layers left-to-right: Developer -> Control Plane -> Envoy -> Upstream Services",
-        "Developer layer shows 3 surfaces: CLI, MCP tools, REST API/UI",
-        "Control plane shows: REST API (8080), MCP Server (/api/v1/mcp), xDS Server (18000 dev / 50051 prod), PostgreSQL",
-        "Envoy shows: xDS config reception, proxy to upstreams, ports 10001-10020",
-        "Arrow colors: blue (developer), red/orange (xDS config), purple (request traffic)",
-        "Component colors: blue (control plane), green (Envoy), gray (upstreams)",
-        "Hand-drawn style (roughness: 1), rounded rectangles",
-        "Save to docs/architecture.excalidraw",
-        "Add markdown reference in docs/getting-started.md Explore section"
+        "One section per filter appended to docs/filters.md: rate_limit, router, cors, compressor",
+        "Each filter has a working JSON create example tested against the live stack",
+        "Real output captured for each create and attach command",
+        "Source code for each filter type read before writing the example",
+        "Typecheck passes"
       ],
       "priority": 11,
       "passes": false,
-      "notes": "Use Excalidraw MCP tools. Match JSON format of existing docs/mcp-tool-call-lifecycle.excalidraw."
+      "notes": ""
     },
     {
       "id": "US-012",
-      "title": "Verify all getting-started.md examples against dev stack",
-      "description": "As a documentation reader, I need every code example in getting-started.md to work.",
+      "title": "Write filters.md — Auth and security filters (jwt_authn, ext_authz, rbac, credential_injector)",
+      "description": "As a developer, I want working examples for auth and security filters.",
       "acceptanceCriteria": [
-        "Boot dev stack with flowplane init --with-envoy --with-httpbin",
-        "Execute every CLI command shown in getting-started.md sequentially",
-        "Verify output matches what the doc shows (or update doc to match)",
-        "Execute every curl command shown and verify responses",
-        "Fix any failing examples in the doc (not the code)",
-        "Report any discrepancies between skills and actual behavior"
+        "One section per filter appended to docs/filters.md: jwt_authn, ext_authz, rbac, credential_injector",
+        "credential_injector example includes secret creation (SDS) and full test flow",
+        "Each filter has a working JSON create example tested against the live stack",
+        "Real output captured for each create and attach command",
+        "Source code for each filter type read before writing the example",
+        "Typecheck passes"
       ],
       "priority": 12,
       "passes": false,
-      "notes": "This is pure verification — run the commands and fix docs. Do NOT change Flowplane code."
+      "notes": ""
     },
     {
       "id": "US-013",
-      "title": "Verify cli-reference.md and filters.md examples against dev stack",
-      "description": "As a documentation reader, I need every code example in cli-reference and filters docs to work.",
+      "title": "Write filters.md — Remaining filters (header_mutation, health_check, lua, tap, ext_proc, wasm, gzip, bandwidth_limit)",
+      "description": "As a developer, I want working examples for all remaining filter types.",
       "acceptanceCriteria": [
-        "Dev stack must be running (flowplane init --with-envoy --with-httpbin)",
-        "Execute representative examples from each section of cli-reference.md",
-        "Execute every filter create/attach example from filters.md",
-        "Fix any failing examples in the docs (not the code)",
-        "Report any discrepancies between skills and actual behavior"
+        "One section per remaining filter type appended to docs/filters.md",
+        "Verify the complete filter list from src/domain/filter.rs — include any filters not covered by US-011/US-012",
+        "Each filter has a working JSON create example tested against the live stack",
+        "Real output captured for each create and attach command",
+        "Source code for each filter type read before writing the example",
+        "No guessed or fabricated output",
+        "Typecheck passes"
       ],
       "priority": 13,
       "passes": false,
-      "notes": "Reuse the dev stack from US-012. Focus on commands that changed in v0.2.0."
+      "notes": "Check src/domain/filter.rs for the actual list — the filter names in this story title are approximate. Include whatever is actually in the codebase."
     },
     {
       "id": "US-014",
-      "title": "Verify prod-mode examples against prod stack",
-      "description": "As a developer moving to production, I need the prod-mode examples to work.",
+      "title": "Correct skills that contradict source code",
+      "description": "As a maintainer, I want skills to match reality so that future AI assistance is accurate.",
       "acceptanceCriteria": [
-        "Boot prod stack with make up ENVOY=1 HTTPBIN=1",
-        "Verify prod-specific examples from getting-started.md (seed, auth login, etc.)",
-        "Verify auth commands (login, logout, whoami, token) work in prod mode",
-        "Verify dev/prod comparison table in getting-started.md is accurate",
-        "Fix any failing examples in the docs",
-        "Tear down prod stack after verification"
+        "Review all contradictions discovered during doc writing (check progress.txt notes)",
+        "Update any skill files (.claude/skills/) where content contradicts source code",
+        "Log each correction with the file path and what was wrong vs what is correct",
+        "Typecheck passes"
       ],
       "priority": 14,
       "passes": false,
-      "notes": "Requires Zitadel running. If prod stack can't boot, document the blocker and skip."
+      "notes": "This is a sweep at the end — contradictions should be noted in progress.txt as they are discovered during earlier stories."
+    },
+    {
+      "id": "US-015",
+      "title": "Final end-to-end verification walkthrough",
+      "description": "As a maintainer, I want confidence that the docs work as a complete sequence for a new user.",
+      "acceptanceCriteria": [
+        "Tear down existing stack: flowplane down --volumes",
+        "Follow getting-started.md from step 1 as a brand new user",
+        "Every command runs successfully in sequence — no step fails",
+        "Continue through cli-reference.md testing every example",
+        "Continue through filters.md testing every example",
+        "Any failures found are fixed in the docs",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Second pass — catches ordering issues and state dependencies between examples."
+    },
+    {
+      "id": "US-016",
+      "title": "Create Excalidraw diagrams (stretch)",
+      "description": "As a new developer, I want visual diagrams showing the developer workflow and architecture.",
+      "acceptanceCriteria": [
+        "docs/developer-workflow.excalidraw created — 6-step developer journey cycle with dashed green annotation arrow",
+        "docs/architecture.excalidraw created — left-to-right component diagram (Developer -> Control Plane -> Envoy -> Upstream)",
+        "Hand-drawn style (roughness: 1), color scheme per prompt spec",
+        "Diagrams referenced in getting-started.md with markdown image syntax or excalidraw.com note",
+        "Created using Excalidraw MCP tools (read_me then create_view)"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "STRETCH — docs are complete without this. Only attempt if all other stories pass."
     }
   ]
 }
