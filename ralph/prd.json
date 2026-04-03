@@ -218,8 +218,8 @@
         "Typecheck passes"
       ],
       "priority": 14,
-      "passes": false,
-      "notes": "This is a sweep at the end — contradictions should be noted in progress.txt as they are discovered during earlier stories."
+      "passes": true,
+      "notes": "Completed 2026-04-03. Fixed 7 skill files: filter-types.md (full rewrite — removed phantom types, added gotchas), filters-quick-ref.md (full rewrite — removed phantom types, added status column), domain-model.md (15→11 filter count), commands.md (jwt_authn→jwt_auth, removed credential_injector), flowplane-dev SKILL.md (jwt_authn→jwt_auth, removed phantoms from category tables), flowplane-api SKILL.md (marked phantom types in filter table), flowplane-secrets SKILL.md (noted credential_injector not a FilterType)."
     },
     {
       "id": "US-015",
