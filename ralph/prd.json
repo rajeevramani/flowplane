@@ -204,8 +204,8 @@
         "Typecheck passes"
       ],
       "priority": 13,
-      "passes": false,
-      "notes": "Check src/domain/filter.rs for the actual list — the filter names in this story title are approximate. Include whatever is actually in the codebase."
+      "passes": true,
+      "notes": "Completed 2026-04-03. Documented header_mutation (working, request/response headers verified), custom_response (working, 503→JSON replacement verified), mcp (pass_through working, reject_no_mcp requires custom Envoy extension), oauth2 (creates/attaches, listener-only, requires auth-cluster + SDS secrets). All 11 FilterType enum members now have dedicated sections. credential_injector documented as not a FilterType."
     },
     {
       "id": "US-014",

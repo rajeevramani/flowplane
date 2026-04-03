@@ -3,6 +3,13 @@
 # Started: 2026-04-03
 
 ## Codebase Patterns
+- `filter create` CLI uses `--file <FILE>` not inline `--name`/`--type`/`--config` flags — JSON spec file required
+- `filter delete` prompts for confirmation (y/N) — pipe `echo "y"` for scripting
+- OAuth2 is the only filter with `allowedAttachmentPoints: ["listener"]` — all others support route+listener
+- OAuth2 auto-references an SDS secret named `hmac-secret` for cookie signing (hardcoded in `to_any()`)
+- MCP filter `reject_no_mcp` mode requires custom `envoy.filters.http.mcp` extension in Envoy — standard dev image may not include it
+- `header_mutation` does NOT require listener-level config (`requires_listener_config: false`) — works with empty config
+- `custom_response` matcher uses tagged union for status codes: `{"type": "exact", "code": 503}` or `{"type": "range", "min": 500, "max": 599}`
 - Compressor filter has a known Envoy NACK bug: `RuntimeFeatureFlag.RuntimeKey` is empty in `src/xds/filters/http/compressor.rs` `to_any()` (line ~266) — Envoy requires non-empty runtime_key
 - `rate_limit` (external) is rejected by the API with 400 — only `local_rate_limit` works for rate limiting
 - `router` is NOT a Flowplane FilterType — it's an internal Envoy filter added automatically to every listener
@@ -54,6 +61,24 @@
 - RBAC permission/principal types use tagged union with `"type"` field: `{"type": "header", "name": ":method", "exact_match": "GET"}`
 - `credential_injector` is NOT a FilterType — it exists as an XDS module (`src/xds/filters/http/credential_injector.rs`) but is not registered in `src/domain/filter.rs` FilterType enum
 - Available filter types (from API error): header_mutation, jwt_auth, local_rate_limit, custom_response, mcp, cors, compressor, ext_authz, rbac, oauth2 (10 implemented + rate_limit defined but not implemented = 11 in enum)
+
+## 2026-04-03 - US-013
+- Appended remaining filter sections to docs/filters.md: header_mutation, custom_response, mcp, oauth2
+- header_mutation: full working example with create/attach/verify (request injection + response header confirmed via curl)
+- custom_response: full working example with status code matcher — 503→JSON body replacement verified
+- mcp: two modes documented (pass_through, reject_no_mcp); pass_through verified working; reject_no_mcp noted as requiring custom Envoy extension
+- oauth2: full config documented with all fields, pass_through_matcher for route bypass, SDS secret prerequisites
+- All filter creates tested against live dev stack with real output captured
+- Verified all 11 FilterType enum members now have dedicated documentation sections
+- Files changed: docs/filters.md
+- **Learnings for future iterations:**
+  - `filter create` CLI uses `--file` flag, not inline `--name`/`--type`/`--config` — must write JSON to a file first
+  - `filter delete` prompts interactively — pipe `echo "y"` for automated cleanup
+  - OAuth2 hardcodes `hmac-secret` as the SDS secret name for cookie signing in `to_any()` — not user-configurable
+  - MCP filter `reject_no_mcp` mode had no observable effect in dev stack — likely requires custom Envoy extension compilation
+  - `custom_response` matcher's `response.body` must not be empty string (validation rejects it)
+  - `header_mutation` `response_headers_to_remove: ["server"]` doesn't remove `server: envoy` — Envoy adds it after filter processing
+---
 
 ## 2026-04-03 - US-012
 - Appended auth and security filter sections to docs/filters.md: jwt_auth, ext_authz, rbac
