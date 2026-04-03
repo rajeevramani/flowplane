@@ -1,99 +1,139 @@
-# HTTP Filters
+# Filters
 
-Flowplane exposes Envoy HTTP filters through structured JSON models, providing user-friendly configuration without requiring protobuf knowledge. The registry keeps filters ordered, ensures the router filter is appended last, and translates configs into correct Envoy protobuf type URLs.
+Filters add processing logic to traffic flowing through Envoy. Flowplane manages the full lifecycle: create a filter, attach it to a listener, verify it works, then detach and delete when done.
 
-All filters support both global (listener-level) and per-route configuration via `typedPerFilterConfig` unless otherwise noted.
+## Workflow
 
-## Available Filters
+```
+create  -->  attach  -->  verify  -->  detach  -->  delete
+```
 
-| Filter | Envoy Filter Name | Description | Per-Route Support | Documentation |
-|--------|-------------------|-------------|-------------------|---------------|
-| **OAuth2** | `envoy.filters.http.oauth2` | OAuth2 authentication with authorization code flow | No | [oauth2.md](filters/oauth2.md) |
-| **JWT Authentication** | `envoy.filters.http.jwt_authn` | JWT token validation with JWKS providers | Yes | [jwt_authn.md](filters/jwt_authn.md) |
-| **External Authorization** | `envoy.filters.http.ext_authz` | External authorization service integration | Yes | [ext_authz.md](filters/ext_authz.md) |
-| **RBAC** | `envoy.filters.http.rbac` | Role-based access control policies | Yes | Coming soon |
-| **Local Rate Limit** | `envoy.filters.http.local_ratelimit` | In-process token bucket rate limiting | Yes | [local_rate_limit.md](filters/local_rate_limit.md) |
-| **Rate Limit** | `envoy.filters.http.ratelimit` | Distributed rate limiting with external service | Yes | Coming soon |
-| **Rate Limit Quota** | `envoy.filters.http.rate_limit_quota` | Advanced quota management with RLQS | Yes | Coming soon |
-| **CORS** | `envoy.filters.http.cors` | Cross-Origin Resource Sharing policies | Yes | Coming soon |
-| **Header Mutation** | `envoy.filters.http.header_mutation` | Request/response header manipulation | Yes | Coming soon |
-| **Custom Response** | `envoy.filters.http.custom_response` | Custom error responses for status codes | Yes | Coming soon |
-| **Health Check** | `envoy.filters.http.health_check` | Health check endpoint responses | No | Coming soon |
-| **Credential Injector** | `envoy.filters.http.credential_injector` | OAuth2/API key credential injection | No | Coming soon |
-| **External Processor** | `envoy.filters.http.ext_proc` | External request/response processing | No | Coming soon |
-| **Compressor** | `envoy.filters.http.compressor` | Response compression (gzip, brotli) | Yes | [compressor.md](filters/compressor.md) |
-| **MCP** | `envoy.filters.http.ext_proc` | AI/LLM gateway traffic inspection for JSON-RPC 2.0 and SSE | No | Coming soon |
-| **Router** | `envoy.filters.http.router` | Terminal filter for request routing (auto-appended) | N/A | Coming soon |
+1. **Create** a filter with its configuration
+2. **Attach** it to a listener (traffic starts flowing through it immediately)
+3. **Verify** the behavior with a test request
+4. **Detach** from the listener when done
+5. **Delete** the filter resource
 
-## Filter Categories
+A filter must be detached from all listeners before it can be deleted. Attempting to delete an attached filter returns `409 Conflict`:
 
-### Authentication & Authorization
-- **OAuth2** - Full OAuth2 authorization code flow with PKCE support
-- **JWT Authentication** - JWT validation with remote/local JWKS
-- **External Authorization** - Delegate auth decisions to external service
-- **RBAC** - Policy-based access control
+```
+$ flowplane filter delete my-filter -y
+Error: Cannot delete filter 'my-filter': Resource conflict: Filter is attached to
+1 listener(s). Detach before deleting.
+```
 
-### Traffic Control
-- **Local Rate Limit** - Per-instance rate limiting
-- **Rate Limit** - Distributed rate limiting across instances
-- **Rate Limit Quota** - Dynamic quota management
+## Filter types
 
-### Request/Response Manipulation
-- **Header Mutation** - Add, remove, or modify headers
-- **Custom Response** - Return custom responses for specific status codes
-- **Compressor** - Compress response bodies
+All filter types from `src/domain/filter.rs`. The `filterType` value in JSON uses snake_case.
 
-### Security
-- **CORS** - Cross-origin request handling
-- **Credential Injector** - Inject credentials for upstream calls
+| Type | Description | Implemented | Per-route behavior |
+|------|-------------|:-----------:|-------------------|
+| `header_mutation` | Add, modify, or remove HTTP headers | Yes | Full config override |
+| `jwt_auth` | JSON Web Token authentication | Yes | Reference only |
+| `cors` | Cross-Origin Resource Sharing policy | Yes | Full config override |
+| `compressor` | Response compression (gzip) | Yes | Disable only |
+| `local_rate_limit` | Local (in-memory) rate limiting | Yes | Full config override |
+| `rate_limit` | External/distributed rate limiting (requires gRPC service) | No | Full config override |
+| `ext_authz` | External authorization service | Yes | Full config override |
+| `rbac` | Role-based access control | Yes | Full config override |
+| `oauth2` | OAuth2 authentication | Yes | Not supported |
+| `custom_response` | Modify responses based on status codes | Yes | Full config override |
+| `mcp` | Model Context Protocol for AI/LLM gateway traffic | Yes | Disable only |
 
-### Observability & Health
-- **Health Check** - Respond to health probes
-- **External Processor** - Custom processing logic
+> `rate_limit` (external/distributed) is defined but **not implemented**. Use `local_rate_limit` for in-memory rate limiting.
 
-## Registry Model
+## Config structure
 
-* `HttpFilterConfigEntry` carries `name`, `isOptional`, `disabled`, and a tagged `filter` payload.
-* If the router filter is missing, it is appended automatically. Multiple router entries trigger a validation error.
-* Custom filters can still be supplied by providing a `TypedConfig` (type URL + base64 payload), but the goal is to cover common Envoy filters natively.
-
-## Adding Filters to a Listener
-
-Filters are added to the `httpFilters` array within a listener's filter chain:
+Every filter uses a nested config format. The outer object has three required fields:
 
 ```json
 {
-  "name": "my-listener",
-  "address": "0.0.0.0",
-  "port": 8080,
-  "protocol": "HTTP",
-  "filterChains": [{
-    "name": "default",
-    "filters": [{
-      "name": "envoy.filters.network.http_connection_manager",
-      "type": "httpConnectionManager",
-      "routeConfigName": "my-routes",
-      "httpFilters": [
-        {
-          "name": "envoy.filters.http.oauth2",
-          "filter": {
-            "type": "oauth2",
-            ...
-          }
-        },
-        {
-          "name": "envoy.filters.http.router",
-          "filter": {"type": "router"}
-        }
-      ]
-    }]
-  }]
+  "name": "my-filter",
+  "filterType": "<type>",
+  "config": {
+    "type": "<type>",
+    "config": {
+      ...filter-specific settings...
+    }
+  }
 }
 ```
 
-## Per-Route Configuration
+- **`filterType`** (top-level): the filter type as a string (e.g., `"header_mutation"`)
+- **`config.type`**: must match `filterType`
+- **`config.config`**: the filter-specific configuration object
 
-For filters that support per-route configuration, use `typedPerFilterConfig` on routes, virtual hosts, or weighted clusters:
+Top-level fields use **camelCase** (`filterType`, not `filter_type`). Inner config fields use the naming convention of each filter type (usually snake_case).
+
+### Example: header_mutation
+
+Save this as `header-filter.json`:
+
+```json
+{
+  "name": "add-headers",
+  "filterType": "header_mutation",
+  "config": {
+    "type": "header_mutation",
+    "config": {
+      "request_headers_to_add": [
+        {"key": "X-Gateway", "value": "flowplane", "append": false}
+      ]
+    }
+  }
+}
+```
+
+```
+$ flowplane filter create -f header-filter.json
+{
+  "id": "a32152e4-...",
+  "name": "add-headers",
+  "filterType": "header_mutation",
+  "version": 1,
+  "source": "native_api",
+  "team": "default",
+  ...
+  "allowedAttachmentPoints": ["route", "listener"]
+}
+```
+
+## Attachment
+
+Filters attach to **listeners** via `filter attach`. The `--order` flag controls execution order when multiple filters are attached (lower numbers execute first).
+
+```
+$ flowplane filter attach add-headers --listener demo-listener
+Filter 'add-headers' attached to listener 'demo-listener'
+```
+
+Verify the filter is working:
+
+```
+$ curl -s http://localhost:10001/headers | python3 -m json.tool
+{
+    "headers": {
+        "Accept": "*/*",
+        "Host": "localhost:10001",
+        "User-Agent": "curl/8.7.1",
+        "X-Envoy-Expected-Rq-Timeout-Ms": "15000",
+        "X-Gateway": "flowplane"
+    }
+}
+```
+
+## Per-route overrides
+
+Filters attached at the listener level apply to all traffic. To customize behavior per route, use `typedPerFilterConfig` in the route definition. The level of customization depends on the filter type:
+
+| Per-route behavior | What you can do | Filter types |
+|-------------------|-----------------|--------------|
+| **Full config** | Override the entire filter config per route | header_mutation, cors, local_rate_limit, ext_authz, rbac, custom_response |
+| **Reference only** | Reference a named config from the listener-level filter | jwt_auth |
+| **Disable only** | Disable the filter for specific routes | compressor, mcp |
+| **Not supported** | No per-route customization | oauth2 |
+
+Per-route overrides are set in the route's `typedPerFilterConfig` field when creating or updating a route config via the API or MCP tools:
 
 ```json
 {
@@ -103,24 +143,42 @@ For filters that support per-route configuration, use `typedPerFilterConfig` on 
     "action": {"type": "forward", "cluster": "backend"},
     "typedPerFilterConfig": {
       "envoy.filters.http.local_ratelimit": {
-        "filter_type": "local_rate_limit",
-        "stat_prefix": "api_route",
+        "stat_prefix": "api_rate_limit",
         "token_bucket": {
           "max_tokens": 100,
           "tokens_per_fill": 100,
           "fill_interval_ms": 1000
-        }
+        },
+        "filter_enabled": {"numerator": 100, "denominator": "hundred"},
+        "filter_enforced": {"numerator": 100, "denominator": "hundred"}
       }
     }
   }]
 }
 ```
 
-## Adding a New Filter
+The key in `typedPerFilterConfig` is the Envoy HTTP filter name (e.g., `envoy.filters.http.local_ratelimit`), not the Flowplane filter type name.
 
-1. Create a module in `src/xds/filters/http/` with serializable structs and `to_any()/from_proto` helpers.
-2. Register it in `src/xds/filters/http/mod.rs` by extending `HttpFilterKind` and, if needed, `HttpScopedConfig`.
-3. Add unit tests covering successful conversion, validation failures, and Any round-trips.
-4. Document the filter in `docs/filters/` with usage examples.
+## Detach and delete
 
-This pattern keeps configuration ergonomic while maintaining full fidelity with Envoy's proto surface.
+To remove a filter, always detach first:
+
+```
+$ flowplane filter detach add-headers --listener demo-listener
+Filter 'add-headers' detached from listener 'demo-listener'
+
+$ flowplane filter delete add-headers -y
+Filter 'add-headers' deleted successfully
+```
+
+If you try to delete without detaching:
+
+```
+$ flowplane filter delete add-headers -y
+Error: Cannot delete filter 'add-headers': Resource conflict: Filter is attached to
+1 listener(s). Detach before deleting.
+```
+
+---
+
+*Individual filter type examples continue below. See [CLI Reference](cli-reference.md) for command syntax.*
