@@ -124,8 +124,8 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed 2026-04-03. Import OpenAPI (import openapi) and learning sessions (learn start/list/get/cancel) documented with all flags from source and real output from live stack. These are CLI commands (not MCP-only) available in the release/v0.2.0 binary."
     },
     {
       "id": "US-009",
@@ -140,8 +140,8 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Completed 2026-04-03. Secrets CRUD (create/list/get/delete), auth commands (login/token/whoami/logout), and config commands (init/show/set/path) documented with flags from source and real output from live stack. Secret create requires explicit type field in --config JSON (not auto-injected by live binary). Token resolution order documented (5-level priority chain). Dev mode auth login shows existing token; prod mode opens browser for OIDC PKCE."
     },
     {
       "id": "US-010",

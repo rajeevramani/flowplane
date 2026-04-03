@@ -3,6 +3,10 @@
 # Started: 2026-04-03
 
 ## Codebase Patterns
+- `import` and `learn` are CLI commands in the release/v0.2.0 binary but NOT in the current branch source under `src/cli/` — use `git show release/v0.2.0:src/cli/import.rs` to read source
+- `import openapi` auto-resolves the dataplane ID by listing dataplanes — no `--dataplane-id` flag needed
+- `learn start` default output is JSON; `learn list` default output is table — asymmetric defaults
+- Learning session response uses camelCase (`routePattern`, `targetSampleCount`, `currentSampleCount`, `progressPercentage`)
 - `docs/quickstart.md` was already deleted before this PRD started — always verify file existence before planning deletion work
 - The `expose` command source is on `release/v0.2.0` branch at `src/cli/expose.rs`, not on `main` — Docker stack must be built from release/v0.2.0 for the expose API endpoint to work
 - The installed `flowplane` binary at `~/.local/bin/flowplane` may have more commands than the current branch source — always check `flowplane --help` against the live binary
@@ -26,6 +30,48 @@
 - Rate limit denominator values are snake_case: `hundred`, `ten_thousand`, `million` — NOT SCREAMING_CASE
 - Dev mode token is stored at `~/.flowplane/credentials` (plain text), not in config.toml JWT
 - Dev mode token env var: `FLOWPLANE_DEV_TOKEN` on the control plane container
+- Secret create `--config` JSON must include `"type"` field matching `--type` flag — the live binary does NOT auto-inject it (source code has inject logic but may not be in the release binary)
+- Secret config uses `configuration` field in the API request body (camelCase: `secretType`, `expiresAt`, `createdAt`, `updatedAt`)
+- Valid secret types: `generic_secret`, `tls_certificate`, `certificate_validation_context`, `session_ticket_keys`
+- Token resolution priority: `--token` > `--token-file` > `~/.flowplane/credentials` > `~/.flowplane/config.toml` > `FLOWPLANE_TOKEN` env var
+- `auth whoami` in dev mode shows "opaque (dev mode token)"; in prod mode decodes JWT and fetches userinfo from Zitadel
+- `config show` default output is YAML; `config set` key validation is compile-time via clap value_parser
+- `config.toml` keys include `oidc_issuer`, `oidc_client_id`, `callback_url` (not documented in user-facing help but accepted)
+
+## 2026-04-03 - US-009
+- Appended Secrets, Authentication, and Configuration sections to docs/cli-reference.md
+- Secrets: create, list, get, delete — all four subcommands documented with flags and tested output
+- Secret types table: generic_secret, tls_certificate, certificate_validation_context, session_ticket_keys
+- Auth: login (dev + prod modes), token, whoami (dev + prod output), logout
+- Config: init, show (yaml/json/table), set (8 supported keys), path
+- Token resolution order documented (5-level priority chain)
+- All commands tested against live dev stack with real output captured
+- Files changed: docs/cli-reference.md
+- **Learnings for future iterations:**
+  - Secret create `--config` must include `"type"` field — the live binary does not auto-inject it despite source code having inject_type_into_config()
+  - `auth login` auto-detects dev/prod mode via `GET /api/v1/auth/mode` endpoint
+  - `auth whoami` in prod mode fetches email/name from Zitadel userinfo endpoint if not in JWT claims
+  - `config show` default format is YAML (not table or JSON)
+  - `config set` accepts 8 keys: token, base_url, timeout, team, org, oidc_issuer, oidc_client_id, callback_url
+  - Config file permissions set to 0600 on Unix (contains sensitive data)
+---
+
+## 2026-04-03 - US-008
+- Appended Import OpenAPI and Learning Sessions sections to docs/cli-reference.md
+- Import OpenAPI: `import openapi <FILE>` with `--name` and `--port` flags, tested against live stack
+- Learning sessions: `learn start`, `learn list`, `learn get`, `learn cancel` — all subcommands documented
+- `learn start` flags: `--route-pattern`, `--target-sample-count` (required), `--cluster-name`, `--http-methods`, `--max-duration-seconds`, `--triggered-by`, `--deployment-version`, `-o`
+- Session lifecycle table: active → completing → completed (or cancelled/failed)
+- All commands tested against live dev stack with real output captured
+- Files changed: docs/cli-reference.md
+- **Learnings for future iterations:**
+  - `import` and `learn` CLI commands exist in the release/v0.2.0 binary but NOT in the current branch source — must use `git show release/v0.2.0:src/cli/import.rs` to read the source
+  - `import openapi` auto-resolves dataplane ID by listing dataplanes via API — no `--dataplane-id` flag exposed to user
+  - `learn start` defaults to JSON output; `learn list` defaults to table — asymmetric defaults between subcommands
+  - Learning session status values: `active`, `completing`, `completed`, `cancelled`, `failed` (no `pending` state observed in practice — session starts immediately)
+  - Reimporting the same OpenAPI spec creates a new import record each time
+  - `unexpose` only finds listeners created by `expose` — listeners created by `import openapi` may need direct `listener delete`
+---
 
 ## 2026-04-03 - US-007
 - Appended Expose/Unexpose and Resource CRUD sections to docs/cli-reference.md
