@@ -29,7 +29,7 @@
         "Read .claude/skills/flowplane-ops/SKILL.md and .claude/skills/flowplane-dev/SKILL.md as source of truth before editing"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Update in-place — don't rewrite from scratch. Keep the existing section structure."
     },
     {

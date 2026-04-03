@@ -5,6 +5,18 @@
 ## Codebase Patterns
 - `docs/quickstart.md` was already deleted before this PRD started — always verify file existence before planning deletion work
 
+## 2026-04-03 - US-002
+- Replaced Prerequisites, Installation, and Quick Start sections in getting-started.md
+- New structure: Prerequisites (Docker + Rust) → Install (cargo install) → Boot (flowplane init) → Verify (status + health)
+- Port range 10001-10020 confirmed from docker-compose-envoy.yml and CLI validation
+- Dev mode services table: API 8080, xDS 18000, Envoy 10000 admin + 10001-10020 listeners, httpbin 8000
+- Files changed: docs/getting-started.md
+- **Learnings for future iterations:**
+  - Port range is enforced in CLI: `Port 9999 is outside the valid range 10001-10020`
+  - Dev mode xDS port is 18000, prod is 50051 — must document correctly per mode
+  - flowplane-ops and flowplane-dev skills are authoritative sources for boot commands
+---
+
 ## 2026-04-03 - US-001
 - `docs/quickstart.md` already deleted; no references to "quickstart" found in any .md files outside the PRD
 - `docs/getting-started.md` confirmed as the single entry point for new users
