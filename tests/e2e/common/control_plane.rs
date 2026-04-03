@@ -111,16 +111,16 @@ impl ControlPlaneHandle {
             envoy_admin: Default::default(),
         };
 
+        // Set env vars BEFORE XdsState::with_database() — it reads them during init
+        std::env::set_var("FLOWPLANE_USE_MOCK_CERT_BACKEND", "1");
+        std::env::set_var("FLOWPLANE_PERMISSION_CACHE_TTL_SECS", "0");
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "dGVzdC1lMmUtZW5jcnlwdGlvbi1rZXktMzItYnl0ZXM=",
+        );
+
         // Create state without Arc first so we can initialize the secret backend registry
         let mut state_struct = XdsState::with_database(simple_config, pool.clone());
-
-        // Enable mock certificate backend for E2E tests
-        // This allows testing the certificate API without requiring Vault
-        std::env::set_var("FLOWPLANE_USE_MOCK_CERT_BACKEND", "1");
-
-        // Disable permission cache for E2E tests so DB changes (e.g. new
-        // org memberships created during test setup) take effect immediately.
-        std::env::set_var("FLOWPLANE_PERMISSION_CACHE_TTL_SECS", "0");
 
         // Initialize secret backend registry with mock certificate backend
         // Note: encryption service may be None in test environment, but we can

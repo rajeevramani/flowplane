@@ -151,27 +151,27 @@ async fn dev_sds_secret_delivery() {
     );
 
     // Step 3: Create a JWT auth filter that references the secret via SDS.
-    // jwt_authn is a well-supported filter type that references secrets by name for JWKS.
+    // jwt_auth is a well-supported filter type that references secrets by name for JWKS.
     let filter_config = json!({
         "providers": {
             "sds-test-provider": {
                 "issuer": "https://sds-test-issuer.example.com",
                 "audiences": ["sds-test-audience"],
-                "remote_jwks": {
+                "jwks": {
+                    "type": "remote",
                     "http_uri": {
                         "uri": "https://sds-test-issuer.example.com/.well-known/jwks.json",
                         "cluster": cluster.name,
                         "timeout_ms": 5000
-                    },
-                    "cache_duration_seconds": 300
+                    }
                 },
                 "forward": true
             }
         },
         "rules": [
             {
-                "match": { "prefix": "/sds-test" },
-                "requires": { "provider_name": "sds-test-provider" }
+                "match": { "path": { "Prefix": "/sds-test" } },
+                "requires": { "type": "provider_name", "provider_name": "sds-test-provider" }
             }
         ]
     });
@@ -182,7 +182,7 @@ async fn dev_sds_secret_delivery() {
             &ctx.admin_token,
             &ctx.team_a_name,
             "sds-test-jwt-filter",
-            "jwt_authn",
+            "jwt_auth",
             filter_config,
         ),
     )
@@ -224,7 +224,7 @@ async fn dev_sds_secret_delivery() {
 
         // The filter name or JWT auth config should be present
         let filter_delivered = config_dump.contains("sds-test-jwt-filter")
-            || config_dump.contains("jwt_authn")
+            || config_dump.contains("jwt_auth")
             || config_dump.contains("sds-test-provider");
 
         assert!(
