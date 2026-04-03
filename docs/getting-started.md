@@ -1,97 +1,50 @@
 # Getting Started
 
-This guide walks you through setting up Flowplane and creating your first resources.
+This guide walks you through setting up Flowplane in dev mode and exposing your first service through Envoy.
 
 ## Prerequisites
 
-**For Docker deployment:**
-- Docker and Docker Compose
+- **Docker** (Docker Desktop, OrbStack, Rancher Desktop, or Podman)
+- **Rust** (stable, 1.75+) with cargo
 
-**For binary releases:**
-- No prerequisites (UI included)
-
-**For building from source:**
-- Rust (edition 2021) with cargo
-- Node.js 18+ (for building UI)
-- PostgreSQL 15+
-- protoc (Protocol Buffers compiler)
-
-Optional:
-- Envoy proxy (for testing xDS)
-
-## Installation
-
-### Option 1: Build from Source
+## Install
 
 ```bash
 git clone https://github.com/rajeevramani/flowplane.git
 cd flowplane
-
-# Build UI (required for web dashboard)
-cd ui && npm install && npm run build && cd ..
-
-# Build release binary
-cargo build --release
-
-# Binary is at target/release/flowplane
+cargo install --path . --locked
 ```
 
-The server automatically serves the UI from `./ui/build` when present. You can override this path with `FLOWPLANE_UI_DIR`.
+This installs the `flowplane` CLI binary.
 
-### Option 2: Docker Compose
+## Boot the stack
 
 ```bash
-# Clone repository
-git clone https://github.com/rajeevramani/flowplane.git
-cd flowplane
-
-# Start with Docker Compose
-make up
+flowplane init --with-envoy --with-httpbin
 ```
 
-Services start at:
-- **API & UI**: http://localhost:8080
-- **Swagger UI**: http://localhost:8080/swagger-ui/
-- **xDS**: localhost:50051 (gRPC)
+This starts PostgreSQL, the Flowplane control plane, Envoy, and httpbin in Docker containers. A dev token is generated and saved to `~/.flowplane/credentials` automatically.
 
-## Quick Start (2 minutes)
+Services after boot:
 
-The fastest path from clone to working proxy:
-
-```bash
-# Start Flowplane with Envoy and httpbin
-make up HTTPBIN=1 ENVOY=1
-
-# Seed demo data (admin, org, team, httpbin API via OpenAPI import)
-make seed
-
-# Test it — traffic flows through Envoy to httpbin!
-curl http://localhost:10016/get
-```
-
-**What `make seed` creates:**
-
-| Resource | Value |
+| Service | Address |
 |---|---|
-| Platform admin | `admin@flowplane.local` / `Admin123!` |
-| Org admin | `orgadmin@acme-corp.local` / `OrgAdmin123!` |
-| Organization | `acme-corp` |
-| Team | `engineering` |
-| API | httpbin (imported from OpenAPI spec) |
-| Listener | port 10016 (Envoy proxy) |
-| API tokens | Printed to terminal |
-
-**Access points:**
-
-| Service | URL |
-|---|---|
-| Web UI | http://localhost:8080 |
-| API | http://localhost:8080/api/v1/ |
+| Control plane API | http://localhost:8080 |
 | Swagger UI | http://localhost:8080/swagger-ui/ |
-| Envoy proxy | http://localhost:10016 |
-| xDS (gRPC) | localhost:50051 |
+| xDS server | localhost:18000 (gRPC) |
+| Envoy proxy | localhost:10000 (admin), ports 10001-10020 (listeners) |
+| httpbin | http://localhost:8000 |
 
-> Want to understand each step? Continue to [Manual Setup](#manual-setup) below.
+> Envoy listeners use ports **10001-10020**. The `expose` command auto-assigns the next available port in this range.
+
+## Verify
+
+```bash
+flowplane status
+curl http://localhost:8080/health
+```
+
+`flowplane status` shows a system overview (control plane, Envoy, database). The `/health` endpoint returns `200 OK` when the control plane is ready.
 
 ---
 

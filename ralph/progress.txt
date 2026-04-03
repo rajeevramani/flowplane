@@ -1,0 +1,15 @@
+# Ralph Progress: v020-docs-rewrite
+# Branch: ralph/v020-docs-rewrite
+# Started: 2026-04-03
+
+## Codebase Patterns
+- `docs/quickstart.md` was already deleted before this PRD started — always verify file existence before planning deletion work
+
+## 2026-04-03 - US-001
+- `docs/quickstart.md` already deleted; no references to "quickstart" found in any .md files outside the PRD
+- `docs/getting-started.md` confirmed as the single entry point for new users
+- No files changed — acceptance criteria already satisfied
+- **Learnings for future iterations:**
+  - Always check if the file exists before planning deletion work
+  - grep across all file types (not just .md) to catch stale references
+---
