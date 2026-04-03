@@ -61,6 +61,40 @@
 - RBAC permission/principal types use tagged union with `"type"` field: `{"type": "header", "name": ":method", "exact_match": "GET"}`
 - `credential_injector` is NOT a FilterType — it exists as an XDS module (`src/xds/filters/http/credential_injector.rs`) but is not registered in `src/domain/filter.rs` FilterType enum
 - Available filter types (from API error): header_mutation, jwt_auth, local_rate_limit, custom_response, mcp, cors, compressor, ext_authz, rbac, oauth2 (10 implemented + rate_limit defined but not implemented = 11 in enum)
+- `filter attach` argument order is flexible: both `<filter> --listener <name>` and `--listener <name> <filter>` work — but docs should use consistent order
+
+## 2026-04-04 - US-016
+- Created docs/developer-workflow.excalidraw — 6-step developer journey cycle (Boot → Expose → Filter → Test → Iterate → Production)
+- Dashed green arrows for iterate loop (steps 5→3) and repeat loop (step 6→1)
+- Created docs/architecture.excalidraw — 4-zone left-to-right component diagram (Developer → Control Plane → Data Plane → Upstream)
+- Architecture shows all interfaces: CLI, MCP Client, Web UI, Swagger UI → REST API, MCP Server, xDS, PostgreSQL → Envoy Proxy with Filters/Listeners → upstream services
+- Both diagrams use hand-drawn style (roughness:1), color-coded zones (blue/purple/green/yellow), and Excalidraw pastel fills
+- Added reference note in getting-started.md pointing to both diagrams with excalidraw.com viewing instruction
+- Created via Excalidraw MCP tools (read_me → create_view × 2 → read_checkpoint × 2 → save to .excalidraw files)
+- Files changed: docs/developer-workflow.excalidraw (new), docs/architecture.excalidraw (new), docs/getting-started.md
+- **Learnings for future iterations:**
+  - Excalidraw MCP `create_view` uses pseudo-elements (cameraUpdate, delete) that must be filtered out when saving to `.excalidraw` files
+  - `.excalidraw` files are JSON with schema: `{type: "excalidraw", version: 2, elements: [...], appState: {...}, files: {}}`
+  - `label` property on shapes is a `create_view` convenience — not part of the standard Excalidraw file format (labels become separate bound text elements)
+  - Color zones (opacity:35 rectangles) create effective visual grouping in architecture diagrams
+  - Camera updates in create_view are great for progressive reveal but don't persist in the file
+---
+
+## 2026-04-03 - US-015
+- Full end-to-end verification walkthrough from clean slate (down --volumes → init → all doc commands)
+- getting-started.md: all commands pass in sequence (init, status, health, expose, curl, list, rate-limit lifecycle, explore, tear down)
+- cli-reference.md: cluster/route/listener CRUD, filter CRUD+attach/detach, secrets CRUD, auth (login/whoami/token), config (show/path), learning sessions (start/list/cancel) — all pass
+- filters.md: header_mutation, cors, rbac, custom_response, mcp — all filter create/attach/verify/detach/delete pass
+- Found and fixed 3 inconsistent listener names in filters.md: header_mutation, custom_response, and mcp sections used `test-filters-listener` instead of `demo-listener`
+- Also fixed reversed argument order (`--listener <name> <filter>` → `<filter> --listener <name>`) in those 3 sections for consistency
+- Docker stack must be built from release/v0.2.0 branch for expose API to work — current branch (ralph/v020-docs-rewrite) lacks the endpoint
+- Files changed: docs/filters.md
+- **Learnings for future iterations:**
+  - The Docker image is built from the current git branch's source — switching branches changes what code runs in the container
+  - `flowplane init` on a branch without the expose API handler gives `405 Method Not Allowed` — always build from release/v0.2.0 for full functionality
+  - filter attach argument order is flexible (`<filter> --listener <name>` and `--listener <name> <filter>` both work) but docs should be consistent
+  - End-to-end verification should always start from `down --volumes` to catch state-dependent issues
+---
 
 ## 2026-04-03 - US-013
 - Appended remaining filter sections to docs/filters.md: header_mutation, custom_response, mcp, oauth2

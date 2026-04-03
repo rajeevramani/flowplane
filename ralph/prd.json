@@ -235,8 +235,8 @@
         "Typecheck passes"
       ],
       "priority": 15,
-      "passes": false,
-      "notes": "Second pass — catches ordering issues and state dependencies between examples."
+      "passes": true,
+      "notes": "Completed 2026-04-03. Full end-to-end walkthrough: down --volumes, init, expose, rate-limit, all CRUD resources, all filter types, secrets, auth, config, learning sessions. Fixed 3 inconsistent listener names in filters.md (test-filters-listener -> demo-listener) and normalized argument order in attach commands. All commands pass in sequence."
     },
     {
       "id": "US-016",
@@ -250,8 +250,8 @@
         "Created using Excalidraw MCP tools (read_me then create_view)"
       ],
       "priority": 16,
-      "passes": false,
-      "notes": "STRETCH — docs are complete without this. Only attempt if all other stories pass."
+      "passes": true,
+      "notes": "Completed 2026-04-04. Created developer-workflow.excalidraw (6-step cycle: Boot, Expose, Filter, Test, Iterate, Production with dashed green iterate/repeat arrows) and architecture.excalidraw (4-zone left-to-right: Developer -> Control Plane -> Data Plane -> Upstream). Both use hand-drawn style (roughness:1), color-coded zones, and were created via Excalidraw MCP tools. Referenced in getting-started.md with excalidraw.com note."
     }
   ]
 }

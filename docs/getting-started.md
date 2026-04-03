@@ -2,6 +2,8 @@
 
 This guide walks you through setting up Flowplane in dev mode and exposing your first service through Envoy.
 
+> **Visual guides**: See the [Developer Workflow](developer-workflow.excalidraw) diagram for the 6-step development cycle, and the [Architecture](architecture.excalidraw) diagram for a component overview. Open `.excalidraw` files at [excalidraw.com](https://excalidraw.com).
+
 ## Prerequisites
 
 - **Docker** (Docker Desktop, OrbStack, Rancher Desktop, or Podman)
