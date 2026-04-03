@@ -802,3 +802,274 @@ Filter 'my-rate-limit' deleted successfully
 ```
 
 A filter must be detached from all listeners before it can be deleted.
+
+---
+
+## Import OpenAPI
+
+Import API definitions from OpenAPI specification files. Creates clusters, routes, and listeners from the spec automatically.
+
+### `import openapi`
+
+```
+flowplane import openapi [OPTIONS] <FILE>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<FILE>` | Path to the OpenAPI spec file (YAML or JSON) |
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--name <NAME>` | Name for the imported service (derived from spec title if omitted) |
+| `--port <PORT>` | Port for the listener (default: auto-assigned) |
+
+The import process:
+1. Reads the OpenAPI spec (YAML or JSON, detected by file extension)
+2. Resolves the default dataplane for the team
+3. Creates clusters from `servers` entries
+4. Creates route configs from `paths`
+5. Creates a listener to receive traffic
+
+**Examples:**
+
+```
+$ flowplane import openapi petstore.yaml
+Imported 'Petstore'
+  Version:          1.0.0
+  Import ID:        d507c462-43d9-4a76-8b6b-fd9c098c353c
+  Routes created:   1
+  Clusters created: 1
+  Clusters reused:  0
+  Listener:         petstore-listener
+```
+
+With a custom name and port:
+
+```
+$ flowplane import openapi petstore.yaml --name my-petstore --port 10005
+Imported 'Petstore'
+  Version:          1.0.0
+  Import ID:        ebda20e2-2975-4c45-866c-7a19bbbddec7
+  Routes created:   1
+  Clusters created: 1
+  Clusters reused:  0
+  Listener:         my-petstore-listener
+```
+
+Reimporting the same spec creates a new import record (idempotent — reuses clusters when endpoints match).
+
+**Error cases:**
+
+```
+$ flowplane import openapi /tmp/nonexistent.yaml
+Error: Failed to read file '/tmp/nonexistent.yaml': No such file or directory (os error 2)
+```
+
+---
+
+## Learning Sessions
+
+Learning sessions observe live API traffic matching a route pattern, collect request/response samples, and automatically generate OpenAPI schemas when the target sample count is reached.
+
+### Session Lifecycle
+
+| Status | Description |
+|--------|-------------|
+| `active` | Collecting traffic samples |
+| `completing` | Target reached, generating schema |
+| `completed` | Schema generation finished |
+| `cancelled` | Manually cancelled |
+| `failed` | Encountered an error |
+
+### `learn start`
+
+Start a new learning session.
+
+```
+flowplane learn start [OPTIONS] --route-pattern <PATTERN> --target-sample-count <N>
+```
+
+**Required flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--route-pattern <PATTERN>` | Regex pattern to match routes (e.g., `'^/api/v1/.*'`) |
+| `--target-sample-count <N>` | Number of traffic samples to collect (1-100000) |
+
+**Optional flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--cluster-name <NAME>` | Filter traffic to a specific cluster |
+| `--http-methods <METHODS>...` | HTTP methods to include (e.g., `GET POST PUT`) |
+| `--max-duration-seconds <N>` | Maximum session duration in seconds |
+| `--triggered-by <TAG>` | Tag identifying who/what started this session |
+| `--deployment-version <VER>` | Deployment version being learned |
+| `-o, --output <FORMAT>` | Output format: `json` (default), `yaml`, `table` |
+
+**Examples:**
+
+Basic session — learn all traffic matching `/get`:
+
+```
+$ flowplane learn start --route-pattern '^/get.*' --target-sample-count 50
+{
+  "id": "59972969-e418-491a-9061-aea3df9446e2",
+  "team": "dev-default-team-id",
+  "routePattern": "^/get.*",
+  "clusterName": null,
+  "httpMethods": null,
+  "status": "active",
+  "createdAt": "2026-04-03T12:10:26.333572+00:00",
+  "startedAt": "2026-04-03T12:10:26.344478+00:00",
+  "endsAt": null,
+  "completedAt": null,
+  "targetSampleCount": 50,
+  "currentSampleCount": 0,
+  "progressPercentage": 0.0,
+  "triggeredBy": null,
+  "deploymentVersion": null,
+  "errorMessage": null
+}
+```
+
+With cluster filter, HTTP methods, and trigger tag:
+
+```
+$ flowplane learn start \
+    --route-pattern '^/api/v1/users/.*' \
+    --cluster-name demo \
+    --http-methods GET POST \
+    --target-sample-count 100 \
+    --triggered-by 'deploy-v2.3'
+```
+
+**Sample count guidance:**
+
+| Use case | Recommended count |
+|----------|------------------|
+| Simple CRUD APIs | 10–50 |
+| Complex APIs with varied responses | 100–500 |
+| High-variance endpoints | 500+ |
+
+### `learn list`
+
+List learning sessions with optional filtering.
+
+```
+flowplane learn list [OPTIONS]
+```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--status <STATUS>` | Filter by status: `pending`, `active`, `completing`, `completed`, `failed`, `cancelled` |
+| `--limit <N>` | Maximum number of results |
+| `--offset <N>` | Pagination offset |
+| `-o, --output <FORMAT>` | Output format: `table` (default), `json`, `yaml` |
+
+**Examples:**
+
+```
+$ flowplane learn list
+ID                                     Status       Route Pattern                  Samples  Target   Progress
+--------------------------------------------------------------------------------------------------------------
+59972969-e418-491a-9061-aea3df9446e2   active       ^/get.*                        0        50       0.0%
+```
+
+Filter by status:
+
+```
+$ flowplane learn list --status active
+```
+
+JSON output:
+
+```
+$ flowplane learn list --output json
+```
+
+No sessions:
+
+```
+$ flowplane learn list
+No learning sessions found
+```
+
+### `learn get`
+
+Get detailed information about a learning session.
+
+```
+flowplane learn get [OPTIONS] <SESSION_ID>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<SESSION_ID>` | Session UUID to retrieve |
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-o, --output <FORMAT>` | Output format: `json` (default), `yaml`, `table` |
+
+**Examples:**
+
+```
+$ flowplane learn get 59972969-e418-491a-9061-aea3df9446e2
+{
+  "id": "59972969-e418-491a-9061-aea3df9446e2",
+  "team": "dev-default-team-id",
+  "routePattern": "^/get.*",
+  "status": "active",
+  "targetSampleCount": 50,
+  "currentSampleCount": 0,
+  "progressPercentage": 0.0,
+  ...
+}
+```
+
+Table format:
+
+```
+$ flowplane learn get 59972969-e418-491a-9061-aea3df9446e2 --output table
+ID                                     Status       Route Pattern                  Samples  Target   Progress
+--------------------------------------------------------------------------------------------------------------
+59972969-e418-491a-9061-aea3df9446e2   active       ^/get.*                        0        50       0.0%
+```
+
+### `learn cancel`
+
+Cancel an active or pending learning session. Completed, failed, and already-cancelled sessions cannot be cancelled.
+
+```
+flowplane learn cancel [OPTIONS] <SESSION_ID>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<SESSION_ID>` | Session UUID to cancel |
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-y, --yes` | Skip confirmation prompt |
+
+**Examples:**
+
+```
+$ flowplane learn cancel 59972969-e418-491a-9061-aea3df9446e2 -y
+Learning session '59972969-e418-491a-9061-aea3df9446e2' cancelled successfully
+```
