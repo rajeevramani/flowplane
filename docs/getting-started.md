@@ -263,3 +263,127 @@ flowplane filter delete rate-limit --yes
 Filter 'rate-limit' detached from listener 'demo-listener'
 Filter 'rate-limit' deleted successfully
 ```
+
+## Explore
+
+A few commands to inspect and manage your running stack:
+
+### Status and diagnostics
+
+```bash
+flowplane status
+```
+
+```
+Flowplane Status (team: default)
+----------------------------------------
+Listeners:  1
+Clusters:   1
+Filters:    0
+```
+
+```bash
+flowplane doctor
+```
+
+```
+Flowplane Doctor
+----------------------------------------
+[ok]    Control plane health: ok
+[ok]    Envoy proxy: ready
+```
+
+### List exposed services
+
+```bash
+flowplane list
+```
+
+```
+Name                           Port     Protocol
+-------------------------------------------------------
+demo                           10001    HTTP
+```
+
+### Swagger UI
+
+The control plane serves interactive API docs at:
+
+```
+http://localhost:8080/swagger-ui/
+```
+
+Open this in a browser to explore all REST endpoints, try requests, and view response schemas.
+
+### MCP connection
+
+Flowplane exposes two MCP (Model Context Protocol) endpoints over Streamable HTTP:
+
+| Endpoint | URL | Purpose |
+|---|---|---|
+| Control plane | `http://localhost:8080/api/v1/mcp/cp` | Manage gateway resources (clusters, listeners, routes, filters) |
+| Gateway API | `http://localhost:8080/api/v1/mcp/api` | Proxy requests to upstream services |
+
+To connect from an MCP client (e.g., Claude Code), point it at the control plane endpoint with your auth token in the `Authorization` header.
+
+## Tear down
+
+Stop all services:
+
+```bash
+flowplane down
+```
+
+```
+Stopping services...
+Flowplane services stopped.
+```
+
+This stops and removes the containers but preserves your database volume. Your clusters, listeners, and filters are saved and will be restored on the next `flowplane init`.
+
+To also delete the database and start fresh:
+
+```bash
+flowplane down --volumes
+```
+
+```
+Stopping services...
+Flowplane services stopped.
+Volumes removed — database data has been deleted.
+```
+
+## Production mode
+
+Dev mode (`flowplane init`) uses a synthetic identity and bearer token — no external auth provider needed. Production mode adds Zitadel for real OIDC authentication, multi-user support, and team isolation.
+
+### Start in production mode
+
+```bash
+make up ENVOY=1 HTTPBIN=1
+```
+
+This starts the same stack but with Zitadel for identity management. After boot, seed the demo data and log in:
+
+```bash
+make seed
+flowplane auth login
+```
+
+> **Note:** Production mode requires a running Zitadel instance. The `make up` target starts one via Docker. Setup details are in `scripts/setup-zitadel.sh`.
+
+### Dev vs prod comparison
+
+| | Dev mode | Prod mode |
+|---|---|---|
+| **Start command** | `flowplane init --with-envoy` | `make up ENVOY=1` |
+| **Auth** | Bearer token (auto-generated) | Zitadel OIDC (PKCE) |
+| **Users** | Single synthetic user | Multi-user with roles |
+| **Teams** | `default` team | Multiple teams with isolation |
+| **xDS port** | 18000 | 50051 |
+| **Identity provider** | None | Zitadel (`localhost:8081`) |
+
+## Next steps
+
+- **[CLI Reference](cli-reference.md)** — complete command reference for all `flowplane` subcommands
+- **[Filters](filters.md)** — deep dive into all filter types with working examples
