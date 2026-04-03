@@ -437,4 +437,446 @@ $ flowplane filter create -f compressor.json
 
 ---
 
-*Auth and security filter examples continue in the next section.*
+## JWT Authentication (`jwt_auth`)
+
+Validates JSON Web Tokens on incoming requests. Supports local JWKS (inline keys) and remote JWKS (fetched from a URL). Rejects requests with missing or invalid tokens.
+
+**Create:**
+
+```bash
+flowplane filter create --file jwt-auth-filter.json
+```
+
+```json
+{
+  "name": "my-jwt-auth",
+  "filterType": "jwt_auth",
+  "config": {
+    "type": "jwt_auth",
+    "config": {
+      "providers": {
+        "my-provider": {
+          "issuer": "https://accounts.example.com",
+          "audiences": ["my-api"],
+          "forward": true,
+          "from_headers": [
+            {"name": "Authorization", "value_prefix": "Bearer "}
+          ],
+          "jwks": {
+            "type": "local",
+            "inline_string": "{\"keys\":[{\"kty\":\"RSA\",\"alg\":\"RS256\",\"use\":\"sig\",\"kid\":\"key-1\",\"n\":\"...\",\"e\":\"AQAB\"}]}"
+          }
+        }
+      },
+      "rules": [
+        {
+          "match": {"path": {"Prefix": "/"}},
+          "requires": {
+            "type": "provider_name",
+            "provider_name": "my-provider"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+The `inline_string` value must be a valid JWKS JSON string with at least one valid public key. Envoy validates the keys at config load time — an empty keyset or invalid key data causes a NACK.
+
+**Attach and verify:**
+
+```
+$ flowplane filter attach my-jwt-auth --listener demo-listener
+Filter 'my-jwt-auth' attached to listener 'demo-listener'
+
+$ curl -s http://localhost:10001/get
+Jwt is missing
+
+$ curl -s -w "\n%{http_code}\n" http://localhost:10001/get
+Jwt is missing
+401
+
+$ curl -s -w "\n%{http_code}\n" -H "Authorization: Bearer not-a-real-jwt" http://localhost:10001/get
+Jwt is not in the form of Header.Payload.Signature with two dots and 3 sections
+401
+```
+
+Requests without a valid JWT get `401` with a plain-text error body.
+
+**Provider fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `issuer` | string | — | Expected `iss` claim value |
+| `audiences` | array | — | Accepted `aud` claim values |
+| `forward` | bool | `false` | Forward JWT to upstream after verification |
+| `from_headers` | array | `[{name: "Authorization", value_prefix: "Bearer "}]` | Headers to extract JWT from |
+| `from_params` | array | — | Query parameters to extract JWT from |
+| `from_cookies` | array | — | Cookies to extract JWT from |
+| `forward_payload_header` | string | — | Header to forward decoded JWT payload in (base64url) |
+| `payload_in_metadata` | string | — | Metadata key for JWT payload (for use by other filters) |
+| `claim_to_headers` | array | — | Map JWT claims to request headers (`header_name`, `claim_name`) |
+| `clock_skew_seconds` | u32 | `60` | Tolerance for `exp`/`nbf` validation |
+| `require_expiration` | bool | `false` | Reject tokens without `exp` claim |
+| `max_lifetime_seconds` | u64 | — | Maximum allowed token lifetime |
+
+**JWKS source options:**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `local` | `inline_string` | Inline JWKS JSON string |
+| `remote` | `http_uri.uri`, `http_uri.cluster`, `http_uri.timeout_ms` | Fetch JWKS from a URL via an Envoy cluster |
+
+Remote JWKS example:
+
+```json
+"jwks": {
+  "type": "remote",
+  "http_uri": {
+    "uri": "https://accounts.example.com/.well-known/jwks.json",
+    "cluster": "jwks-cluster",
+    "timeout_ms": 1000
+  },
+  "cache_duration_seconds": 600
+}
+```
+
+When using remote JWKS, the `cluster` must be a valid Envoy cluster name created via `flowplane cluster create`.
+
+**Requirement types:**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `provider_name` | `provider_name` | Require JWT from a named provider |
+| `provider_with_audiences` | `provider_name`, `audiences` | Require JWT with specific audiences |
+| `requires_any` | `requirements` | Logical OR of nested requirements |
+| `requires_all` | `requirements` | Logical AND of nested requirements |
+| `allow_missing` | — | Allow missing JWT but reject invalid ones |
+| `allow_missing_or_failed` | — | Allow both missing and invalid JWTs |
+
+**Per-route:** The `jwt_auth` filter supports `reference_only` per-route behavior — you can reference a named requirement from the top-level `requirement_map` or disable JWT checks for specific routes:
+
+```json
+{"disabled": true}
+```
+
+```json
+{"requirement_name": "my-named-requirement"}
+```
+
+---
+
+## External Authorization (`ext_authz`)
+
+Delegates authorization decisions to an external gRPC or HTTP service. If the authz service denies the request (or is unreachable with `failure_mode_allow: false`), the request is rejected.
+
+**Create (gRPC mode):**
+
+```bash
+flowplane filter create --file ext-authz-grpc.json
+```
+
+```json
+{
+  "name": "my-ext-authz",
+  "filterType": "ext_authz",
+  "config": {
+    "type": "ext_authz",
+    "config": {
+      "service": {
+        "type": "grpc",
+        "target_uri": "ext-authz-cluster",
+        "timeout_ms": 500
+      },
+      "failure_mode_allow": false,
+      "stat_prefix": "ext_authz"
+    }
+  }
+}
+```
+
+The `target_uri` in gRPC mode is an Envoy cluster name (not a URL). Create the cluster first with `flowplane cluster create`.
+
+```
+$ flowplane filter create --file ext-authz-grpc.json
+{
+  "id": "...",
+  "name": "my-ext-authz",
+  "filterType": "ext_authz",
+  ...
+  "config": {
+    "config": {
+      "service": {
+        "type": "grpc",
+        "target_uri": "ext-authz-cluster",
+        "timeout_ms": 500,
+        "initial_metadata": []
+      },
+      "failure_mode_allow": false,
+      "stat_prefix": "ext_authz",
+      ...
+    },
+    "type": "ext_authz"
+  },
+  "allowedAttachmentPoints": ["route", "listener"]
+}
+```
+
+**Attach and verify:**
+
+```
+$ flowplane filter attach my-ext-authz --listener demo-listener
+Filter 'my-ext-authz' attached to listener 'demo-listener'
+
+$ curl -s -w "\n%{http_code}\n" http://localhost:10001/get
+
+403
+```
+
+With `failure_mode_allow: false`, requests return `403` when the authz service is unreachable. Set to `true` to allow requests through when the authz service is down.
+
+**Create (HTTP mode):**
+
+```json
+{
+  "name": "my-ext-authz-http",
+  "filterType": "ext_authz",
+  "config": {
+    "type": "ext_authz",
+    "config": {
+      "service": {
+        "type": "http",
+        "server_uri": {
+          "uri": "http://authz-service:8080/check",
+          "cluster": "authz-http-cluster",
+          "timeout_ms": 300
+        },
+        "path_prefix": "/authz",
+        "authorization_request": {
+          "allowed_headers": ["authorization", "x-request-id"]
+        }
+      },
+      "failure_mode_allow": true,
+      "clear_route_cache": true
+    }
+  }
+}
+```
+
+**Config fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `service` | object | — | Tagged union: `{"type": "grpc", ...}` or `{"type": "http", ...}` |
+| `failure_mode_allow` | bool | `false` | Allow requests when authz service is unavailable |
+| `with_request_body` | object | — | Buffer request body: `max_request_bytes`, `allow_partial_message`, `pack_as_bytes` |
+| `clear_route_cache` | bool | `false` | Clear route cache after successful authorization |
+| `status_on_error` | u32 | — | HTTP status code on authz error (default: 403) |
+| `stat_prefix` | string | — | Statistics prefix for metrics |
+| `include_peer_certificate` | bool | `false` | Include client certificate in authz request |
+
+**gRPC service fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `target_uri` | string | — | Envoy cluster name for the gRPC authz service |
+| `timeout_ms` | u64 | `200` | gRPC call timeout in milliseconds |
+| `initial_metadata` | array | — | Metadata headers: `[{"key": "...", "value": "..."}]` |
+
+**HTTP service fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `server_uri.uri` | string | — | URL of the HTTP authz service |
+| `server_uri.cluster` | string | — | Envoy cluster name for the HTTP authz service |
+| `server_uri.timeout_ms` | u64 | `200` | HTTP call timeout in milliseconds |
+| `path_prefix` | string | — | Path prefix for authorization requests |
+| `authorization_request.allowed_headers` | array | — | Original request headers to include in authz request |
+| `authorization_response.allowed_upstream_headers` | array | — | Authz response headers to add to upstream request |
+| `authorization_response.allowed_client_headers` | array | — | Authz response headers to add to client response on denial |
+
+**Per-route:** The `ext_authz` filter supports `full_config_override` per-route behavior — you can disable authz or pass context extensions:
+
+```json
+{"disabled": true}
+```
+
+```json
+{
+  "context_extensions": {"route-type": "public"},
+  "disable_request_body_buffering": true
+}
+```
+
+---
+
+## Role-Based Access Control (`rbac`)
+
+Enforces access control based on policies that combine permissions (what actions) with principals (who). Supports allow, deny, and log (shadow) modes.
+
+**Create (allow GET only):**
+
+```bash
+flowplane filter create --file rbac-filter.json
+```
+
+```json
+{
+  "name": "my-rbac",
+  "filterType": "rbac",
+  "config": {
+    "type": "rbac",
+    "config": {
+      "rules": {
+        "action": "allow",
+        "policies": {
+          "allow-get-only": {
+            "permissions": [
+              {"type": "header", "name": ":method", "exact_match": "GET"}
+            ],
+            "principals": [
+              {"type": "any", "any": true}
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**Attach and verify:**
+
+```
+$ flowplane filter attach my-rbac --listener demo-listener
+Filter 'my-rbac' attached to listener 'demo-listener'
+
+$ curl -s -w "\n%{http_code}\n" http://localhost:10001/get
+{
+  "args": {},
+  "headers": { ... },
+  ...
+}
+200
+
+$ curl -s -w "\n%{http_code}\n" -X POST http://localhost:10001/post
+RBAC: access denied
+403
+```
+
+GET requests are allowed; all other methods are denied with `403`.
+
+**Create (deny by source IP):**
+
+```json
+{
+  "name": "deny-internal",
+  "filterType": "rbac",
+  "config": {
+    "type": "rbac",
+    "config": {
+      "rules": {
+        "action": "deny",
+        "policies": {
+          "deny-internal-net": {
+            "permissions": [
+              {"type": "any", "any": true}
+            ],
+            "principals": [
+              {"type": "source_ip", "address_prefix": "10.0.0.0", "prefix_len": 8}
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**Actions:**
+
+| Action | Description |
+|--------|-------------|
+| `allow` | Allow requests matching any policy; deny all others |
+| `deny` | Deny requests matching any policy; allow all others |
+| `log` | Shadow mode — log matches without enforcing (for testing policies) |
+
+**Permission types (tagged union, `"type"` field selects variant):**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `any` | `any: true` | Match all requests |
+| `header` | `name`, `exact_match`/`prefix_match`/`suffix_match`/`present_match` | Match by request header |
+| `url_path` | `path`, `ignore_case` | Match by URL path |
+| `destination_port` | `port` | Match by destination port |
+| `and_rules` | `rules: [...]` | Logical AND of nested permissions |
+| `or_rules` | `rules: [...]` | Logical OR of nested permissions |
+| `not_rule` | `rule: {...}` | Logical NOT of a permission |
+
+**Principal types (tagged union, `"type"` field selects variant):**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `any` | `any: true` | Match any requester |
+| `authenticated` | `principal_name` | Match authenticated principals |
+| `source_ip` | `address_prefix`, `prefix_len` | Match by source IP CIDR |
+| `direct_remote_ip` | `address_prefix`, `prefix_len` | Match by direct remote IP CIDR |
+| `header` | `name`, `exact_match`/`prefix_match` | Match by request header value |
+| `and_ids` | `ids: [...]` | Logical AND of nested principals |
+| `or_ids` | `ids: [...]` | Logical OR of nested principals |
+| `not_id` | `id: {...}` | Logical NOT of a principal |
+
+**Shadow rules:** Use `shadow_rules` instead of `rules` to log policy matches without enforcement. Useful for testing new policies before enforcing them:
+
+```json
+{
+  "rules": {
+    "action": "allow",
+    "policies": { "allow-all": { "permissions": [{"type": "any", "any": true}], "principals": [{"type": "any", "any": true}] } }
+  },
+  "shadow_rules": {
+    "action": "deny",
+    "policies": { "proposed-deny": { "permissions": [...], "principals": [...] } }
+  },
+  "track_per_rule_stats": true
+}
+```
+
+**Per-route:** The `rbac` filter supports `full_config_override` per-route behavior — you can disable RBAC or provide override rules:
+
+```json
+{"disabled": true}
+```
+
+```json
+{
+  "rbac": {
+    "action": "allow",
+    "policies": {
+      "route-specific-policy": {
+        "permissions": [{"type": "any", "any": true}],
+        "principals": [{"type": "header", "name": "x-admin", "exact_match": "true"}]
+      }
+    }
+  }
+}
+```
+
+---
+
+## credential_injector
+
+> **Not a Flowplane FilterType.** The `credential_injector` exists as an XDS module (`src/xds/filters/http/credential_injector.rs`) but is not registered in the `FilterType` enum in `src/domain/filter.rs`. Attempting to create one returns:
+>
+> ```
+> Error: Unknown filter type 'credential_injector'. Available built-in types:
+> header_mutation, jwt_auth, local_rate_limit, custom_response, mcp, cors,
+> compressor, ext_authz, rbac, oauth2
+> ```
+>
+> If you need to inject credentials (e.g., API keys) into upstream requests, use the `header_mutation` filter to add the required headers.
+
+---
+
+*Remaining filter examples continue in the next section.*
