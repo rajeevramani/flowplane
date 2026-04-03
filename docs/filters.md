@@ -879,4 +879,356 @@ GET requests are allowed; all other methods are denied with `403`.
 
 ---
 
-*Remaining filter examples continue in the next section.*
+## Utility and observability filters
+
+### header_mutation
+
+Add, modify, or remove HTTP headers on requests and responses. This filter does not require listener-level config — it works with an empty config — and supports full per-route override.
+
+**Config fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `request_headers_to_add` | array | Headers to add/overwrite on requests. Each entry: `{key, value, append}` |
+| `request_headers_to_remove` | array | Header names to strip from requests |
+| `response_headers_to_add` | array | Headers to add/overwrite on responses. Each entry: `{key, value, append}` |
+| `response_headers_to_remove` | array | Header names to strip from responses |
+
+Each header entry has:
+- `key` — header name (required, cannot be empty)
+- `value` — header value
+- `append` — `false` (default) overwrites existing header; `true` appends a second value
+
+**Create:**
+
+Save to `header-mutation.json`:
+
+```json
+{
+  "name": "add-custom-headers",
+  "filterType": "header_mutation",
+  "config": {
+    "type": "header_mutation",
+    "config": {
+      "request_headers_to_add": [
+        {"key": "x-custom-header", "value": "hello-from-flowplane", "append": false}
+      ],
+      "response_headers_to_add": [
+        {"key": "x-powered-by", "value": "flowplane", "append": false}
+      ],
+      "response_headers_to_remove": ["server"]
+    }
+  }
+}
+```
+
+```
+$ flowplane filter create --file header-mutation.json
+{
+  "id": "b4a9ffe5-...",
+  "name": "add-custom-headers",
+  "filterType": "header_mutation",
+  ...
+}
+```
+
+**Attach and verify:**
+
+```
+$ flowplane filter attach --listener test-filters-listener add-custom-headers
+Filter 'add-custom-headers' attached to listener 'test-filters-listener'
+```
+
+Request headers — httpbin echoes them back:
+
+```
+$ curl -s http://localhost:10001/get
+{
+  "headers": {
+    "X-Custom-Header": "hello-from-flowplane",
+    ...
+  }
+}
+```
+
+Response headers:
+
+```
+$ curl -sI http://localhost:10001/get
+HTTP/1.1 200 OK
+x-powered-by: flowplane
+...
+```
+
+> **Note:** `response_headers_to_remove: ["server"]` may not remove the `server: envoy` header because Envoy adds it after filter processing. Use the `envoy.reloadable_features.enable_connect_udp_support` bootstrap flag or Envoy's `server_header_transformation` setting to control the server header.
+
+**Per-route:** Supports `full_config` override — you can set different headers per route via `typedPerFilterConfig` with key `envoy.filters.http.header_mutation`.
+
+---
+
+### custom_response
+
+Replace error responses with custom content based on status code matching. Useful for returning JSON error bodies instead of default HTML, or for branding error pages.
+
+**Config fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `matchers` | array | List of status code matcher rules (preferred) |
+| `custom_response_matcher` | object | Legacy base64 protobuf matcher (not recommended) |
+
+Each matcher rule has:
+- `status_code` — one of:
+  - `{"type": "exact", "code": 503}` — match a single status code
+  - `{"type": "range", "min": 500, "max": 599}` — match a range
+  - `{"type": "list", "codes": [502, 503, 504]}` — match specific codes
+- `response` — the replacement response:
+  - `status_code` (optional) — override status code
+  - `body` (optional) — response body string
+  - `headers` — map of headers to add (e.g., `{"content-type": "application/json"}`)
+
+**Create:**
+
+Save to `custom-response.json`:
+
+```json
+{
+  "name": "json-error-pages",
+  "filterType": "custom_response",
+  "config": {
+    "type": "custom_response",
+    "config": {
+      "matchers": [
+        {
+          "status_code": {"type": "exact", "code": 503},
+          "response": {
+            "status_code": 503,
+            "body": "{\"error\": \"Service temporarily unavailable\", \"status_code\": 503}",
+            "headers": {"content-type": "application/json"}
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+```
+$ flowplane filter create --file custom-response.json
+{
+  "id": "9edc7221-...",
+  "name": "json-error-pages",
+  "filterType": "custom_response",
+  ...
+}
+```
+
+**Attach and verify:**
+
+```
+$ flowplane filter attach --listener test-filters-listener json-error-pages
+Filter 'json-error-pages' attached to listener 'test-filters-listener'
+```
+
+Normal traffic is unaffected:
+
+```
+$ curl -s http://localhost:10001/get | head -3
+{
+  "args": {},
+  "headers": {
+```
+
+A 503 response gets replaced with the custom JSON body:
+
+```
+$ curl -s http://localhost:10001/status/503
+{"error": "Service temporarily unavailable", "status_code": 503}
+
+$ curl -sI http://localhost:10001/status/503
+HTTP/1.1 503 Service Unavailable
+content-type: application/json
+content-length: 64
+```
+
+**Per-route:** Supports `full_config` override — you can set different custom responses per route.
+
+---
+
+### mcp
+
+Model Context Protocol filter for AI/LLM gateway traffic. Inspects HTTP traffic for MCP protocol compliance (JSON-RPC 2.0 over POST, SSE streaming).
+
+**Config fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `traffic_mode` | string | `pass_through` (default) — proxy all traffic normally. `reject_no_mcp` — reject non-MCP requests |
+
+**Create (pass-through mode):**
+
+Save to `mcp-filter.json`:
+
+```json
+{
+  "name": "mcp-gateway",
+  "filterType": "mcp",
+  "config": {
+    "type": "mcp",
+    "config": {
+      "traffic_mode": "pass_through"
+    }
+  }
+}
+```
+
+```
+$ flowplane filter create --file mcp-filter.json
+{
+  "id": "a87b04bf-...",
+  "name": "mcp-gateway",
+  "filterType": "mcp",
+  ...
+}
+```
+
+**Create (reject mode):**
+
+```json
+{
+  "name": "mcp-strict",
+  "filterType": "mcp",
+  "config": {
+    "type": "mcp",
+    "config": {
+      "traffic_mode": "reject_no_mcp"
+    }
+  }
+}
+```
+
+In `reject_no_mcp` mode, only valid MCP requests are allowed:
+- POST with JSON-RPC 2.0 messages
+- GET with `Accept: text/event-stream` (SSE)
+
+> **Note:** The `reject_no_mcp` mode requires the custom `envoy.filters.http.mcp` extension to be compiled into Envoy. The standard dev-mode Envoy image may not include this extension — in that case both modes behave as pass-through.
+
+**Attach and verify:**
+
+```
+$ flowplane filter attach --listener test-filters-listener mcp-gateway
+Filter 'mcp-gateway' attached to listener 'test-filters-listener'
+
+$ curl -s http://localhost:10001/get | head -3
+{
+  "args": {},
+  "headers": {
+```
+
+**Per-route:** Supports `disable_only` — can disable MCP filtering for specific routes, but cannot override the config.
+
+---
+
+### oauth2
+
+OAuth2 authentication filter. Redirects unauthenticated users to an OAuth2 provider and manages token cookies. This is a **listener-only** filter — Envoy does not support per-route configuration for OAuth2.
+
+**Config fields:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `token_endpoint.uri` | string | yes | Token endpoint URL |
+| `token_endpoint.cluster` | string | yes | Envoy cluster for token endpoint |
+| `token_endpoint.timeout_ms` | number | no | Timeout in ms (default: 5000) |
+| `authorization_endpoint` | string | yes | Authorization endpoint URL |
+| `credentials.client_id` | string | yes | OAuth2 client ID |
+| `credentials.token_secret` | object | no | SDS secret config `{name}` for client secret |
+| `credentials.cookie_domain` | string | no | Domain for OAuth cookies |
+| `redirect_uri` | string | yes | Callback URL (must match provider config) |
+| `redirect_path` | string | no | Callback path (default: `/oauth2/callback`) |
+| `signout_path` | string | no | Sign-out path (clears cookies) |
+| `auth_scopes` | array | no | Scopes to request (default: `["openid", "profile", "email"]`) |
+| `auth_type` | string | no | `url_encoded_body` (default) or `basic_auth` |
+| `forward_bearer_token` | bool | no | Forward token to upstream (default: true) |
+| `preserve_authorization_header` | bool | no | Keep existing auth header (default: false) |
+| `use_refresh_token` | bool | no | Auto-renew tokens (default: false) |
+| `pass_through_matcher` | array | no | Paths to bypass OAuth2 (see below) |
+
+**Pass-through matchers** — the only way to make specific routes public (since OAuth2 has no per-route config):
+
+| Field | Description |
+|---|---|
+| `path_exact` | Exact path match (e.g., `/healthz`) |
+| `path_prefix` | Path prefix match (e.g., `/api/public/`) |
+| `path_regex` | Regex path match (e.g., `^/static/.*`) |
+| `header_name` + `header_value` | Custom header match |
+
+**Create:**
+
+Save to `oauth2-filter.json`:
+
+```json
+{
+  "name": "oauth2-auth",
+  "filterType": "oauth2",
+  "config": {
+    "type": "oauth2",
+    "config": {
+      "token_endpoint": {
+        "uri": "https://auth.example.com/oauth/token",
+        "cluster": "auth-cluster",
+        "timeout_ms": 5000
+      },
+      "authorization_endpoint": "https://auth.example.com/oauth/authorize",
+      "credentials": {
+        "client_id": "my-client-id",
+        "token_secret": {"name": "oauth2-token-secret"}
+      },
+      "redirect_uri": "https://app.example.com/oauth2/callback",
+      "redirect_path": "/oauth2/callback",
+      "auth_scopes": ["openid", "profile", "email"],
+      "forward_bearer_token": true,
+      "pass_through_matcher": [
+        {"path_exact": "/healthz"},
+        {"path_prefix": "/api/public/"}
+      ]
+    }
+  }
+}
+```
+
+```
+$ flowplane filter create --file oauth2-filter.json
+{
+  "id": "5721d9bd-...",
+  "name": "oauth2-auth",
+  "filterType": "oauth2",
+  "allowedAttachmentPoints": ["listener"],
+  ...
+}
+```
+
+Note `allowedAttachmentPoints: ["listener"]` — OAuth2 cannot be attached to routes.
+
+**Attach:**
+
+```
+$ flowplane filter attach --listener my-listener oauth2-auth
+Filter 'oauth2-auth' attached to listener 'my-listener'
+```
+
+**Prerequisites for OAuth2 to work:**
+
+1. **Auth cluster** — the `token_endpoint.cluster` must reference an existing Flowplane cluster pointing to your OAuth provider
+2. **Client secret** — create an SDS secret named `oauth2-token-secret` with the client secret value
+3. **HMAC secret** — the filter automatically references an SDS secret named `hmac-secret` for cookie signing
+
+```
+flowplane secret create --name oauth2-token-secret --type generic_secret \
+  --config '{"type": "generic_secret", "secret": "your-client-secret-here"}'
+
+flowplane secret create --name hmac-secret --type generic_secret \
+  --config '{"type": "generic_secret", "secret": "random-32-byte-hmac-key-here"}'
+```
+
+> **Per-route:** Not supported. Envoy rejects `typedPerFilterConfig` for `envoy.filters.http.oauth2` with: "The filter envoy.filters.http.oauth2 doesn't support virtual host or route specific configurations". Use `pass_through_matcher` to bypass OAuth2 for specific paths.
