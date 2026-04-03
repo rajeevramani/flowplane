@@ -49,34 +49,32 @@ test.describe('Agent CRUD + Grant Management', () => {
 	test('add grant to agent via PermissionMatrix', async ({ page }) => {
 		const errors = collectPageErrors(page);
 
-		// Navigate to seeded agent (or the first agent in the list)
-		await page.goto(`/organizations/${orgName}/agents`);
+		// Navigate directly to the seeded agent (known cp-tool with grants for engineering team)
+		await page.goto(`/organizations/${orgName}/agents/${SEED.agent}`);
 		await waitForPageLoad(page);
 
-		// Click "Manage" on the first agent
-		const manageLink = page.getByRole('link', { name: /manage/i }).first();
-		await manageLink.click();
-		await waitForPageLoad(page);
+		// Wait for PermissionMatrix to render — use 'execute' column header to distinguish
+		// from the Active Grants table which also has a 'Resource' column
+		const matrixTable = page.locator('table').filter({ has: page.locator('th:text("execute")') });
+		await expect(matrixTable).toBeVisible({ timeout: 10000 });
 
-		// If PermissionMatrix is visible (cp-tool agents), toggle a grant
-		const matrixTable = page.locator('table').filter({ hasText: 'Resource' });
-		const matrixVisible = await matrixTable.isVisible().catch(() => false);
+		// Select engineering team (seeded grants are for this team)
+		const teamSelect = page.locator('#matrix-team');
+		await teamSelect.selectOption({ label: SEED.team });
+		await page.waitForTimeout(500);
 
-		if (matrixVisible) {
-			// Find an unchecked checkbox in the matrix and get its title for a stable locator
-			const uncheckedCell = matrixTable
-				.locator('input[type="checkbox"]:not(:checked)')
-				.first();
-			if (await uncheckedCell.isVisible()) {
-				const title = await uncheckedCell.getAttribute('title');
-				await uncheckedCell.check();
-				// Wait for the grant to be created (network call)
-				await page.waitForTimeout(1000);
-				// Use a stable locator based on title to verify the specific checkbox
-				const stableCheckbox = matrixTable.locator(`input[type="checkbox"][title="${title}"]`);
-				await expect(stableCheckbox).toBeChecked();
-			}
-		}
+		// Find an unchecked checkbox in the matrix and check it
+		const uncheckedCell = matrixTable
+			.locator('input[type="checkbox"]:not(:checked)')
+			.first();
+		await expect(uncheckedCell).toBeVisible({ timeout: 5000 });
+		const title = await uncheckedCell.getAttribute('title');
+		await uncheckedCell.check();
+		// Wait for the grant to be created (network call)
+		await page.waitForTimeout(1000);
+		// Use a stable locator based on title to verify the specific checkbox
+		const stableCheckbox = matrixTable.locator(`input[type="checkbox"][title="${title}"]`);
+		await expect(stableCheckbox).toBeChecked();
 
 		assertNoPageErrors(errors);
 	});
@@ -85,50 +83,33 @@ test.describe('Agent CRUD + Grant Management', () => {
 	test('revoke grant from agent', async ({ page }) => {
 		const errors = collectPageErrors(page);
 
-		await page.goto(`/organizations/${orgName}/agents`);
+		// Navigate directly to the seeded agent (known cp-tool with grants)
+		await page.goto(`/organizations/${orgName}/agents/${SEED.agent}`);
 		await waitForPageLoad(page);
 
-		const manageLink = page.getByRole('link', { name: /manage/i }).first();
-		await manageLink.click();
-		await waitForPageLoad(page);
+		// Use the Active Grants table to revoke — it shows all grants regardless of team,
+		// which is more reliable than the PermissionMatrix (which filters by selected team)
+		const grantsTable = page.locator('table').filter({ hasText: 'Actions' });
+		await expect(grantsTable).toBeVisible({ timeout: 10000 });
 
-		// Try PermissionMatrix path first (cp-tool agents)
-		const matrixTable = page.locator('table').filter({ hasText: 'Resource' });
-		const matrixVisible = await matrixTable.isVisible().catch(() => false);
-		let revokedViaMatrix = false;
+		// Count grants before deletion
+		const rowsBefore = await grantsTable.locator('tbody tr').count();
 
-		if (matrixVisible) {
-			const checkedCell = matrixTable.locator('input[type="checkbox"]:checked').first();
-			if (await checkedCell.isVisible()) {
-				// Capture the title for a stable locator — the :checked selector shifts
-				// to the next checked checkbox after uncheck, causing assertion timeouts
-				const title = await checkedCell.getAttribute('title');
-				await checkedCell.uncheck();
-				await page.waitForTimeout(1000);
-				const stableCheckbox = matrixTable.locator(`input[type="checkbox"][title="${title}"]`);
-				await expect(stableCheckbox).not.toBeChecked();
-				revokedViaMatrix = true;
-			}
-		}
+		// Click Delete on the first grant
+		const deleteBtn = grantsTable.getByRole('button', { name: /delete/i }).first();
+		await deleteBtn.click();
 
-		// Fall back to grants table Delete button (gateway agents) — only if matrix path didn't work
-		if (!revokedViaMatrix) {
-			// Scope to the grants table to avoid matching the "Delete Agent" header button
-			const grantsTable = page.locator('table').filter({ hasText: 'Actions' });
-			const deleteBtn = grantsTable.getByRole('button', { name: /delete/i }).first();
-			const hasDeleteBtn = await deleteBtn.isVisible().catch(() => false);
-			if (hasDeleteBtn) {
-				await deleteBtn.click();
-				// Confirm in the delete modal
-				const confirmBtn = page
-					.locator('[role="dialog"]')
-					.getByRole('button', { name: /delete|confirm|remove/i });
-				if (await confirmBtn.isVisible()) {
-					await confirmBtn.click();
-					await page.waitForTimeout(1000);
-				}
-			}
-		}
+		// Confirm in the delete modal
+		const confirmBtn = page
+			.locator('[role="dialog"]')
+			.getByRole('button', { name: /delete|confirm|remove/i });
+		await expect(confirmBtn).toBeVisible({ timeout: 5000 });
+		await confirmBtn.click();
+		await page.waitForTimeout(1000);
+
+		// Verify one fewer grant
+		const rowsAfter = await grantsTable.locator('tbody tr').count();
+		expect(rowsAfter).toBeLessThan(rowsBefore);
 
 		assertNoPageErrors(errors);
 	});
