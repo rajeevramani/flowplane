@@ -1030,6 +1030,22 @@ async fn delete_import_cascade(
     Ok(())
 }
 
+/// Public wrapper around `delete_import_cascade` for use by other handlers (e.g., unexpose).
+pub async fn delete_import_resources(
+    xds_state: &XdsState,
+    db_pool: &crate::storage::DbPool,
+    import_id: &str,
+) -> std::result::Result<(), ApiError> {
+    delete_import_cascade(xds_state, db_pool, import_id).await?;
+
+    // Trigger xDS refresh for all resource types
+    xds_state.refresh_clusters_from_repository().await.map_err(ApiError::from)?;
+    xds_state.refresh_listeners_from_repository().await.map_err(ApiError::from)?;
+    xds_state.refresh_routes_from_repository().await.map_err(ApiError::from)?;
+
+    Ok(())
+}
+
 fn parse_openapi_document(
     bytes: &Bytes,
     mime: Option<&mime::Mime>,

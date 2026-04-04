@@ -97,7 +97,12 @@ impl McpFilterConfig {
     pub fn to_any(&self) -> Result<EnvoyAny, crate::Error> {
         self.validate()?;
 
-        let proto = McpProto { traffic_mode: self.traffic_mode.to_proto() };
+        let proto = McpProto {
+            traffic_mode: self.traffic_mode.to_proto(),
+            clear_route_cache: false,
+            max_request_body_size: None,
+            parser_config: None,
+        };
 
         Ok(any_from_message(MCP_TYPE_URL, &proto))
     }
@@ -152,7 +157,12 @@ impl McpPerRouteConfig {
 
         // MCP per-route uses the same proto as the listener config
         // The traffic_mode defaults to PassThrough for per-route configs
-        let proto = McpProto { traffic_mode: TrafficMode::PassThrough.to_proto() };
+        let proto = McpProto {
+            traffic_mode: TrafficMode::PassThrough.to_proto(),
+            clear_route_cache: false,
+            max_request_body_size: None,
+            parser_config: None,
+        };
 
         Ok(any_from_message(MCP_PER_ROUTE_TYPE_URL, &proto))
     }

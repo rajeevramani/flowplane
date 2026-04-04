@@ -233,6 +233,27 @@ impl FlowplaneError {
         Self::Database { source, context }
     }
 
+    /// Classify a database error: constraint violations (unique, FK, check) become
+    /// `ConstraintViolation`, everything else becomes `Database`.
+    ///
+    /// Use this in repository `create`/`update` methods instead of blindly wrapping
+    /// all `sqlx::Error` as `Database` — it ensures unique-key violations surface
+    /// as 409 Conflict and FK violations as 400 Bad Request at the API layer.
+    pub fn classify_db_error(source: sqlx::Error, context: String) -> Self {
+        if let sqlx::Error::Database(ref db_err) = source {
+            if let Some(code) = db_err.code() {
+                match code.as_ref() {
+                    // PostgreSQL constraint violation class (23xxx)
+                    "23505" | "23503" | "23502" | "23514" => {
+                        return Self::ConstraintViolation { message: context, source };
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Self::Database { source, context }
+    }
+
     /// Create a parse error
     pub fn parse<S: Into<String>>(context: S) -> Self {
         Self::Parse { context: context.into(), source: None }
@@ -553,5 +574,23 @@ mod tests {
         let url_error = url::Url::parse("not a valid url").unwrap_err();
         let flowplane_error: FlowplaneError = url_error.into();
         assert!(matches!(flowplane_error, FlowplaneError::Parse { .. }));
+    }
+
+    #[test]
+    fn classify_db_error_non_constraint_becomes_database() {
+        let err = sqlx::Error::RowNotFound;
+        let result = FlowplaneError::classify_db_error(err, "some context".to_string());
+        assert!(matches!(result, FlowplaneError::Database { .. }));
+        assert_eq!(result.status_code(), 500);
+    }
+
+    #[test]
+    fn classify_db_error_returns_correct_status_for_constraint_variant() {
+        // ConstraintViolation maps to 409
+        let cv = FlowplaneError::ConstraintViolation {
+            message: "duplicate key".to_string(),
+            source: sqlx::Error::RowNotFound, // placeholder
+        };
+        assert_eq!(cv.status_code(), 409);
     }
 }

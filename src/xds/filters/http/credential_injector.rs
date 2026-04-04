@@ -100,6 +100,7 @@ impl CredentialInjectorConfig {
             let generic = GenericCredential {
                 credential: Some(build_sds_secret_config(&secret.name)),
                 header: secret.header.clone(),
+                header_value_prefix: String::new(),
             };
             Some(TypedExtensionConfig {
                 name: "envoy.http.injected_credentials.generic".to_string(),

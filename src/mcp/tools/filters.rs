@@ -487,6 +487,9 @@ pub async fn execute_create_filter(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
+    crate::validation::validate_resource_name(name)
+        .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
     let filter_type = args.get("filterType").and_then(|v| v.as_str()).ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: filterType".to_string())
     })?;

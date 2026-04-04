@@ -700,6 +700,9 @@ pub async fn execute_create_cluster(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
+    crate::validation::validate_resource_name(name)
+        .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
     let service_name = args.get("serviceName").and_then(|v| v.as_str()).ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: serviceName".to_string())
     })?;

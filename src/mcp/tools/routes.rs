@@ -866,6 +866,9 @@ pub async fn execute_create_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
+    crate::validation::validate_resource_name(name)
+        .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
     let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
     })?;

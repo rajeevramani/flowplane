@@ -23,7 +23,10 @@ use crate::{
         ClusterOperations, CreateClusterRequest, CreateListenerRequest, CreateRouteConfigRequest,
         ListenerOperations,
     },
-    storage::{repositories::TeamRepository, DataplaneRepository},
+    storage::{
+        repositories::{import_metadata::ImportMetadataRepository, TeamRepository},
+        DataplaneRepository,
+    },
     xds::{
         listener::{FilterChainConfig, FilterConfig, FilterType, ListenerConfig},
         route::{
@@ -176,7 +179,11 @@ async fn get_team_dataplane(state: &ApiState, team: &str) -> Result<String, ApiE
 /// Uses typed `RouteConfig` struct to ensure the stored JSON matches the
 /// xDS deserialization format exactly — avoids "missing field" errors when
 /// the xDS snapshot is rebuilt.
-fn build_route_config_json(name: &str, cluster_name: &str, paths: &[String]) -> serde_json::Value {
+fn build_route_config_json(
+    name: &str,
+    cluster_name: &str,
+    paths: &[String],
+) -> Result<serde_json::Value, ApiError> {
     let routes: Vec<RouteRule> = paths
         .iter()
         .enumerate()
@@ -208,7 +215,8 @@ fn build_route_config_json(name: &str, cluster_name: &str, paths: &[String]) -> 
         }],
     };
 
-    serde_json::to_value(&config).expect("RouteConfig serialization cannot fail")
+    serde_json::to_value(&config)
+        .map_err(|e| ApiError::Internal(format!("Failed to serialize route config: {}", e)))
 }
 
 #[instrument(skip(state, payload), fields(team = %team, service_name = %payload.name))]
@@ -317,7 +325,7 @@ pub async fn expose_handler(
     let route_ops = crate::internal_api::RouteConfigOperations::new(state.xds_state.clone());
     let existing_rc = route_ops.get(&route_config_name, &auth).await;
     if existing_rc.is_err() {
-        let rc_config = build_route_config_json(&route_config_name, &cluster_name, &paths);
+        let rc_config = build_route_config_json(&route_config_name, &cluster_name, &paths)?;
         let create_rc = CreateRouteConfigRequest {
             name: route_config_name.clone(),
             team: Some(team.clone()),
@@ -411,11 +419,74 @@ pub async fn unexpose_handler(
         let _ = cluster_ops.delete(&cluster_name, &auth).await;
     }
 
+    // If direct name pattern didn't match, check for import-created resources.
+    // OpenAPI imports create resources with sanitized naming (e.g., `<title>-<host>`)
+    // that don't match the `<name>` / `<name>-routes` / `<name>-listener` convention.
     if !found_any {
+        let import_deleted = try_delete_import_by_name(&state, &team, &name).await?;
+        if import_deleted {
+            return Ok(StatusCode::NO_CONTENT);
+        }
         return Err(ApiError::NotFound(format!("Service '{}' is not currently exposed", name)));
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Try to find and delete an OpenAPI import whose spec_name or gateway_name matches.
+async fn try_delete_import_by_name(
+    state: &ApiState,
+    team: &str,
+    name: &str,
+) -> Result<bool, ApiError> {
+    let cluster_repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Cluster repository not configured".to_string()))?;
+    let db_pool = cluster_repo.pool().clone();
+    let import_repo = ImportMetadataRepository::new(db_pool.clone());
+
+    // Resolve team name to ID for lookup
+    let team_id =
+        crate::api::handlers::team_access::resolve_team_name(state, team, None).await.ok();
+
+    // Search by spec_name match (exact match first, then sanitized gateway name)
+    let imports = import_repo
+        .list_by_team(team_id.as_deref().unwrap_or(team))
+        .await
+        .map_err(ApiError::from)?;
+
+    let sanitized_name = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+
+    let matching_import = imports.iter().find(|imp| {
+        // Match by spec_name (case-insensitive)
+        imp.spec_name.to_lowercase() == name.to_lowercase()
+            // Match by sanitized gateway name
+            || imp.spec_name
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+                == sanitized_name
+    });
+
+    if let Some(import) = matching_import {
+        let import_id = import.id.clone();
+        crate::api::handlers::openapi_import::delete_import_resources(
+            &state.xds_state,
+            &db_pool,
+            &import_id,
+        )
+        .await?;
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 // === Tests ===
@@ -506,7 +577,7 @@ mod tests {
 
     #[test]
     fn build_route_config_with_default_paths() {
-        let config = build_route_config_json("svc", "svc", &["/".to_string()]);
+        let config = build_route_config_json("svc", "svc", &["/".to_string()]).expect("serialize");
         // Typed structs serialize field names as-is (snake_case)
         assert_eq!(config["name"], "svc");
         let vhosts = config["virtual_hosts"].as_array().expect("virtual_hosts");
@@ -522,7 +593,7 @@ mod tests {
     #[test]
     fn build_route_config_with_multiple_paths() {
         let paths = vec!["/api".to_string(), "/health".to_string()];
-        let config = build_route_config_json("svc", "svc", &paths);
+        let config = build_route_config_json("svc", "svc", &paths).expect("serialize");
         let routes = config["virtual_hosts"][0]["routes"].as_array().expect("routes");
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[0]["match"]["path"]["Prefix"], "/api");

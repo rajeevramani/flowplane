@@ -566,10 +566,16 @@ pub async fn execute_create_listener(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
+    crate::validation::validate_resource_name(name)
+        .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
     let port =
         args.get("port").and_then(|v| v.as_u64()).ok_or_else(|| {
             McpError::InvalidParams("Missing required parameter: port".to_string())
         })? as u16;
+
+    crate::validation::validate_port_nonzero(port)
+        .map_err(|e| McpError::InvalidParams(e.to_string()))?;
 
     let address = args.get("address").and_then(|v| v.as_str()).unwrap_or("0.0.0.0").to_string();
     let protocol = args.get("protocol").and_then(|v| v.as_str()).unwrap_or("HTTP").to_string();

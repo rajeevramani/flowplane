@@ -268,8 +268,8 @@ pub async fn execute_get_secret(
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to get secret: {}", e)))?;
 
-    // Enforce team isolation
-    if !auth.allowed_teams.contains(&secret.team) {
+    // Enforce team isolation — admin can access any secret (dev mode / governance)
+    if !auth.is_admin && !auth.allowed_teams.contains(&secret.team) {
         return Err(McpError::Forbidden("Secret not found in your team".to_string()));
     }
 
@@ -408,7 +408,7 @@ pub async fn execute_delete_secret(
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to get secret: {}", e)))?;
 
-    if !auth.allowed_teams.contains(&secret.team) {
+    if !auth.is_admin && !auth.allowed_teams.contains(&secret.team) {
         return Err(McpError::Forbidden("Secret not found in your team".to_string()));
     }
 

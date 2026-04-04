@@ -69,6 +69,9 @@ pub async fn create_cluster_handler(
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
     crate::validation::validate_resource_name(&payload.name).map_err(ApiError::BadRequest)?;
+    for ep in &payload.endpoints {
+        crate::validation::validate_port_nonzero(ep.port).map_err(ApiError::BadRequest)?;
+    }
 
     // Authorization
     require_resource_access_resolved(&state, &context, "clusters", "create", Some(&team)).await?;
@@ -214,6 +217,9 @@ pub async fn update_cluster_handler(
 
     use validator::Validate;
     payload.validate().map_err(ApiError::from)?;
+    for ep in &payload.endpoints {
+        crate::validation::validate_port_nonzero(ep.port).map_err(ApiError::BadRequest)?;
+    }
 
     let ClusterConfigParts { name: payload_name, service_name, config } =
         cluster_parts_from_body(payload)?;

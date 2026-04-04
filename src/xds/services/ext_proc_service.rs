@@ -192,6 +192,7 @@ impl ExternalProcessor for FlowplaneExtProcService {
                                     mode_override: None,
                                     dynamic_metadata: None,
                                     override_message_timeout: None,
+                                    request_drain: false,
                                 };
                             } else {
                                 // No matching session, skip processing
@@ -212,6 +213,7 @@ impl ExternalProcessor for FlowplaneExtProcService {
                                     mode_override: None,
                                     dynamic_metadata: None,
                                     override_message_timeout: None,
+                                    request_drain: false,
                                 };
                             }
                         }
@@ -259,6 +261,7 @@ impl ExternalProcessor for FlowplaneExtProcService {
                                 mode_override: None,
                                 dynamic_metadata: None,
                                 override_message_timeout: None,
+                                request_drain: false,
                             };
                         }
 
@@ -282,6 +285,7 @@ impl ExternalProcessor for FlowplaneExtProcService {
                                 mode_override: None,
                                 dynamic_metadata: None,
                                 override_message_timeout: None,
+                                request_drain: false,
                             };
                         }
 
@@ -363,6 +367,7 @@ impl ExternalProcessor for FlowplaneExtProcService {
                                 mode_override: None,
                                 dynamic_metadata: None,
                                 override_message_timeout: None,
+                                request_drain: false,
                             };
                         }
 
