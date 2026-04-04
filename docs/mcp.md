@@ -11,8 +11,6 @@ The same path handles `GET` (SSE session) and `DELETE` (session teardown).
 **Authentication:** Bearer token via the `Authorization` header.
 
 ```bash
-# After `make seed` has bootstrapped the database:
-flowplane auth login
 flowplane auth token   # prints the bearer token
 ```
 
@@ -42,7 +40,7 @@ Any client that supports Streamable HTTP transport can connect. Set the URL to `
 
 ## Tools
 
-Flowplane registers 64+ tools. They fall into two categories:
+Flowplane registers 68 tools. They fall into two categories:
 
 - **Control plane tools** (`cp_*`, `ops_*`, `devops_*`, `dev_*`) — manage gateway configuration and diagnose issues.
 - **Gateway API tools** (`api_*`) — proxy calls through the Envoy gateway to upstream services. These are generated dynamically from learned or imported API schemas.
@@ -51,21 +49,17 @@ Flowplane registers 64+ tools. They fall into two categories:
 
 | Category | Tools | Description |
 |---|---|---|
-| **Clusters** | `cp_list_clusters`, `cp_get_cluster`, `cp_create_cluster`, `cp_update_cluster`, `cp_delete_cluster`, `cp_get_cluster_health` | Upstream service endpoints |
+| **Clusters** | `cp_list_clusters`, `cp_get_cluster`, `cp_create_cluster`, `cp_update_cluster`, `cp_delete_cluster`, `cp_get_cluster_health`, `cp_query_service` | Upstream service endpoints |
 | **Listeners** | `cp_list_listeners`, `cp_get_listener`, `cp_create_listener`, `cp_update_listener`, `cp_delete_listener`, `cp_query_port`, `cp_get_listener_status` | Envoy listener ports and protocols |
 | **Route Configs** | `cp_list_route_configs`, `cp_get_route_config`, `cp_create_route_config`, `cp_update_route_config`, `cp_delete_route_config` | Top-level routing configuration |
 | **Virtual Hosts** | `cp_list_virtual_hosts`, `cp_get_virtual_host`, `cp_create_virtual_host`, `cp_update_virtual_host`, `cp_delete_virtual_host` | Domain-based request matching |
 | **Routes** | `cp_list_routes`, `cp_get_route`, `cp_create_route`, `cp_update_route`, `cp_delete_route`, `cp_query_path` | Path-to-cluster routing rules |
 | **Filters** | `cp_list_filters`, `cp_get_filter`, `cp_create_filter`, `cp_update_filter`, `cp_delete_filter`, `cp_attach_filter`, `cp_detach_filter`, `cp_list_filter_attachments`, `cp_list_filter_types`, `cp_get_filter_type` | HTTP filters and filter chains |
-| **Dataplanes** | `cp_list_dataplanes`, `cp_get_dataplane`, `cp_create_dataplane`, `cp_register_dataplane`, `cp_update_dataplane`, `cp_deregister_dataplane`, `cp_delete_dataplane` | Envoy instance management |
-| **Learning** | `cp_list_learning_sessions`, `cp_get_learning_session`, `cp_create_learning_session`, `cp_start_learning`, `cp_stop_learning`, `cp_activate_learning_session`, `cp_delete_learning_session` | API traffic learning and schema generation |
-| **Schemas** | `cp_list_schemas`, `cp_list_aggregated_schemas`, `cp_get_schema`, `cp_get_aggregated_schema`, `cp_export_schema`, `cp_export_schema_openapi` | Aggregated API schemas and OpenAPI export |
-| **OpenAPI Import** | `cp_import_openapi`, `cp_list_openapi_imports`, `cp_get_openapi_import` | Import routes from OpenAPI specs |
-| **Secrets** | `cp_list_secrets`, `cp_get_secret`, `cp_create_secret`, `cp_update_secret`, `cp_delete_secret` | Secrets for filter configs |
-| **Certificates** | `cp_list_certificates`, `cp_get_certificate`, `cp_create_certificate`, `cp_delete_certificate` | TLS certificate management |
-| **WASM Filters** | `cp_list_wasm_filters`, `cp_get_wasm_filter`, `cp_upload_wasm_filter`, `cp_update_wasm_filter`, `cp_delete_wasm_filter` | Custom WASM filter management |
-| **Reports** | `cp_list_reports`, `cp_get_report` | Configuration reports |
-| **Query** | `cp_query_service` | Service summary lookup |
+| **Dataplanes** | `cp_list_dataplanes`, `cp_get_dataplane`, `cp_create_dataplane`, `cp_update_dataplane`, `cp_delete_dataplane` | Envoy instance management |
+| **Learning** | `cp_list_learning_sessions`, `cp_get_learning_session`, `cp_create_learning_session`, `cp_activate_learning_session`, `cp_delete_learning_session` | API traffic learning and schema generation |
+| **Schemas** | `cp_list_aggregated_schemas`, `cp_get_aggregated_schema`, `cp_export_schema_openapi` | Aggregated API schemas and OpenAPI export |
+| **OpenAPI Import** | `cp_list_openapi_imports`, `cp_get_openapi_import` | Import routes from OpenAPI specs |
+| **Secrets** | `cp_list_secrets`, `cp_get_secret`, `cp_create_secret`, `cp_delete_secret` | Secrets for filter configs |
 
 ### Ops and Agent Tools
 
@@ -97,105 +91,155 @@ Every tool has a risk level that indicates its impact:
 
 ### 1. Expose httpbin Through the Gateway
 
-Route traffic from an Envoy listener to a running httpbin instance.
+Route traffic from an Envoy listener to a running httpbin instance. Each step is an MCP `tools/call` request.
 
+**Step 1: Create a cluster**
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_cluster",
+    "arguments": {
+      "name": "httpbin",
+      "serviceName": "httpbin-service",
+      "endpoints": [{"address": "httpbin", "port": 80}],
+      "team": "default"
+    }
+  }
+}
 ```
-# Step 1: Create a cluster pointing to httpbin
-cp_create_cluster
-  name: "httpbin"
-  address: "host.docker.internal"
-  port: 8000
 
-# Step 2: Create routing — route config → virtual host → route
-cp_create_route_config
-  name: "httpbin-routes"
+**Step 2: Create routing (route config + virtual host + route)**
 
-cp_create_virtual_host
-  name: "httpbin-vhost"
-  routeConfigName: "httpbin-routes"
-  domains: ["*"]
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_route_config",
+    "arguments": {
+      "name": "httpbin-routes",
+      "virtualHosts": [{
+        "name": "httpbin-vhost",
+        "domains": ["*"],
+        "routes": [{
+          "name": "catch-all",
+          "match": {"path": {"type": "prefix", "value": "/"}},
+          "action": {"type": "forward", "cluster": "httpbin"}
+        }]
+      }],
+      "team": "default"
+    }
+  }
+}
+```
 
-cp_create_route
-  name: "httpbin-catch-all"
-  virtualHostName: "httpbin-vhost"
-  routeConfigName: "httpbin-routes"
-  route_pattern: "/"
-  clusterName: "httpbin"
+**Step 3: Create a listener** (get `dataplaneId` from `cp_list_dataplanes` first)
 
-# Step 3: Create a listener on port 10000 with the route config
-cp_create_listener
-  name: "httpbin-listener"
-  port: 10000
-  routeConfigName: "httpbin-routes"
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_listener",
+    "arguments": {
+      "name": "httpbin-listener",
+      "address": "0.0.0.0",
+      "port": 10001,
+      "routeConfigName": "httpbin-routes",
+      "dataplaneId": "<from cp_list_dataplanes>",
+      "team": "default"
+    }
+  }
+}
 ```
 
 Verify:
 
 ```bash
-curl http://localhost:10000/get
+curl http://localhost:10001/get
 ```
 
 ### 2. Add Rate Limiting
 
 Attach a local rate limit filter to an existing listener.
 
-```
-# Step 1: Look up the filter type to get the config schema
-cp_list_filter_types
-cp_get_filter_type
-  name: "local_rate_limit"
+**Step 1: Create the filter**
 
-# Step 2: Create a rate limit filter (10 req/min)
-cp_create_filter
-  name: "rate-limit-10rpm"
-  filterType: "local_rate_limit"
-  config: {
-    "max_tokens": 10,
-    "tokens_per_fill": 10,
-    "fill_interval_sec": 60
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_filter",
+    "arguments": {
+      "name": "rate-limit-10rpm",
+      "filterType": "local_rate_limit",
+      "configuration": {
+        "type": "local_rate_limit",
+        "config": {
+          "stat_prefix": "httpbin_rl",
+          "token_bucket": {
+            "max_tokens": 10,
+            "tokens_per_fill": 10,
+            "fill_interval_ms": 60000
+          }
+        }
+      },
+      "team": "default"
+    }
   }
+}
+```
 
-# Step 3: Attach to the listener
-cp_attach_filter
-  filterName: "rate-limit-10rpm"
-  listenerName: "httpbin-listener"
+**Step 2: Attach to the listener**
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_attach_filter",
+    "arguments": {
+      "filter": "rate-limit-10rpm",
+      "listener": "httpbin-listener",
+      "order": 1,
+      "team": "default"
+    }
+  }
+}
 ```
 
 Verify:
 
 ```bash
-# Send requests until you get HTTP 429
 for i in $(seq 1 15); do
-  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:10000/get
+  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:10001/get
 done
 ```
 
 ### 3. Import an OpenAPI Spec
 
-Create routes and clusters automatically from an OpenAPI specification.
+Import via the CLI (the `cp_list_openapi_imports` and `cp_get_openapi_import` tools can verify the result):
 
-```
-# Import from a URL
-cp_import_openapi
-  name: "petstore"
-  spec_url: "https://petstore3.swagger.io/api/v3/openapi.json"
-  clusterName: "petstore-api"
-  routeConfigName: "petstore-routes"
-
-# Verify what was created
-cp_list_routes
-  routeConfigName: "petstore-routes"
-
-cp_list_openapi_imports
+```bash
+flowplane import openapi ./petstore.yaml --name petstore --port 10002
 ```
 
-The import parses the spec and creates a route for each operation, mapped to the target cluster.
+Then list what was created:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_list_openapi_imports",
+    "arguments": {"team": "default"}
+  }
+}
+```
 
 ## Authorization
 
 Tools are authorized through Flowplane's role-based access control. Each tool maps to a `(resource, action)` pair checked by `check_resource_access()`.
 
-Resource scopes: `clusters`, `listeners`, `routes`, `filters`, `secrets`, `proxy-certificates`, `custom-wasm-filters`, `learning-sessions`, `aggregated-schemas`, `reports`, `dataplanes`, `audit`, `api`.
+Resource scopes: `clusters`, `listeners`, `routes`, `filters`, `secrets`, `proxy-certificates`, `learning-sessions`, `aggregated-schemas`, `dataplanes`, `audit`, `api`.
 
 Actions: `read`, `create`, `update`, `delete`, `execute`.
 

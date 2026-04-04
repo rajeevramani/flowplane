@@ -17,8 +17,6 @@ Filters execute in order within the listener's filter chain. The Router filter i
 | Filter | Type Key | Envoy Filter | Per-Route | Description |
 |--------|----------|-------------|-----------|-------------|
 | Local Rate Limit | `local_rate_limit` | `envoy.filters.http.local_ratelimit` | Yes | Per-instance token bucket rate limiting |
-| Rate Limit | `rate_limit` | `envoy.filters.http.ratelimit` | Yes | Distributed rate limiting via external service |
-| Rate Limit Quota | `rate_limit_quota` | `envoy.filters.http.rate_limit_quota` | Yes | Quota-based rate limiting (RLQS) |
 | JWT Auth | `jwt_auth` | `envoy.filters.http.jwt_authn` | Yes | Validate JWTs against JWKS endpoints |
 | OAuth2 | `oauth2` | `envoy.filters.http.oauth2` | No | OAuth 2.0 authorization code flow |
 | Ext Auth | `ext_authz` | `envoy.filters.http.ext_authz` | Yes | Delegate auth to external service |
@@ -26,10 +24,8 @@ Filters execute in order within the listener's filter chain. The Router filter i
 | CORS | `cors` | `envoy.filters.http.cors` | Yes | Cross-origin resource sharing |
 | Header Mutation | `header_mutation` | `envoy.filters.http.header_mutation` | Yes | Add, remove, or modify headers |
 | Custom Response | `custom_response` | `envoy.filters.http.custom_response` | Yes | Override responses for specific status codes |
-| Health Check | `health_check` | `envoy.filters.http.health_check` | No | Respond to health probes at the proxy |
-| Credential Injector | `credential_injector` | `envoy.filters.http.credential_injector` | No | Inject credentials into upstream requests via SDS |
-| Ext Proc | `ext_proc` | `envoy.filters.http.ext_proc` | No | External request/response processing via gRPC |
 | Compressor | `compressor` | `envoy.filters.http.compressor` | Yes | Compress responses (gzip, brotli) |
+| MCP | `mcp` | `envoy.filters.http.ext_proc` | No | MCP-driven request processing |
 
 **Per-Route** indicates whether the filter supports per-route overrides via `typedPerFilterConfig` (see [Per-Route Overrides](#per-route-overrides)).
 

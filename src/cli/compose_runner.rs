@@ -90,7 +90,14 @@ impl ComposeRunner for ProductionComposeRunner {
         remove_volumes: bool,
     ) -> Result<()> {
         let mut cmd = std::process::Command::new(&self.runtime);
-        cmd.arg("compose").arg("-f").arg(compose_path).arg("-p").arg(project_name).arg("down");
+        cmd.arg("compose").arg("-f").arg(compose_path).arg("-p").arg(project_name);
+
+        // Always pass all profiles so profiled services (envoy, httpbin) are also stopped.
+        // These are no-ops if those containers weren't started.
+        cmd.arg("--profile").arg("envoy");
+        cmd.arg("--profile").arg("httpbin");
+
+        cmd.arg("down");
 
         if remove_volumes {
             cmd.arg("--volumes");

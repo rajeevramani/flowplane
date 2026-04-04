@@ -1,50 +1,77 @@
 # Flowplane
 
-Flowplane is a control plane for [Envoy proxy](https://www.envoyproxy.io/) that lets you configure API gateways through a CLI, REST API, or MCP server. It manages clusters (upstream services), listeners (ports), routes (path matching), and filters (rate limiting, JWT auth, CORS, and more) — all stored in PostgreSQL and pushed to Envoy via xDS. AI agents can drive the entire workflow through 60+ MCP tools.
+A control plane for [Envoy proxy](https://www.envoyproxy.io/) that manages gateway configuration through a CLI, REST API, or MCP server. Stores clusters, listeners, routes, and filters in PostgreSQL and pushes them to Envoy via xDS.
 
-## Quickstart
+## Quick Start
 
 ```bash
 git clone https://github.com/rajeevramani/flowplane.git && cd flowplane
-cargo install --path . --locked                                     # Build the CLI
-flowplane init --with-envoy --with-httpbin                 # Start everything
-flowplane expose http://httpbin:80 --name demo             # Expose httpbin
-curl http://localhost:10001/get                             # Verify traffic
+cargo install --path . --locked
+flowplane init --with-envoy --with-httpbin
+flowplane expose http://httpbin:80 --name demo
+curl http://localhost:10001/get
 ```
 
-| Service | URL |
-|---------|-----|
-| API     | http://localhost:8080/api/v1/ |
-| UI      | http://localhost:8080/ |
-| httpbin | http://localhost:8000 |
+`expose` creates a cluster (upstream), route config (path matching), and listener (Envoy port) in one command. Traffic flows through Envoy — you'll see `server: envoy` in the response headers.
 
-Exposed services are available on auto-assigned ports in the 10001–10020 range. The `expose` command prints the assigned port.
+```
+{
+  "headers": {
+    "X-Envoy-Expected-Rq-Timeout-Ms": "15000",
+    ...
+  },
+  "url": "http://localhost:10001/get"
+}
+```
+
+```bash
+flowplane status    # 1 listener, 1 cluster, 0 filters
+flowplane list      # demo → port 10001
+flowplane down      # stop everything
+```
+
+## Architecture
+
+```mermaid
+graph LR
+    Dev[Developer / AI Agent] -->|REST API / MCP| CP[Flowplane Control Plane]
+    CP -->|gRPC xDS| Envoy[Envoy Proxy]
+    Envoy -->|HTTP| US[Upstream Services]
+```
+
+## Key Features
+
+- **xDS control plane** — ADS, LDS, RDS, CDS, EDS, and SDS over gRPC
+- **10 HTTP filters** — JWT auth, OAuth2, CORS, rate limiting, header mutation, ext authz, RBAC, compression, custom response, MCP
+- **68 MCP tools** — AI agents can deploy and manage gateway configuration end-to-end
+- **API schema learning** — capture live traffic, infer JSON schemas, export as OpenAPI
+- **Multi-tenant** — org/team hierarchy with Zitadel RBAC
+- **REST API + Web UI** — JSON API and SvelteKit dashboard on port 8080
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) — Install, expose a service, add rate limiting
-- [CLI Reference](docs/cli-reference.md) — Every command, flag, and example
-- [Filters](docs/filters.md) — Rate limiting, JWT auth, CORS, and more
-- [MCP Server](docs/mcp.md) — Use Flowplane as an MCP server with Claude Code
+| Topic | Link |
+|-------|------|
+| Full walkthrough | [Getting Started](docs/getting-started.md) |
+| CLI commands | [CLI Reference](docs/cli-reference.md) |
+| Filter configuration | [Filters](docs/filters.md) |
+| MCP tools | [MCP Integration](docs/mcp.md) |
 
 ## Production Mode
 
-For multi-user deployments with Zitadel authentication:
-
 ```bash
-make up HTTPBIN=1 ENVOY=1    # Full stack with Zitadel
-make seed                     # Create demo org and credentials
+make up HTTPBIN=1 ENVOY=1    # full stack with Zitadel
+make seed                     # create demo org and credentials
 flowplane auth login          # OIDC login
 ```
 
-See [Quickstart](docs/quickstart.md) for the full walkthrough.
+See [Production Quickstart](docs/quickstart.md) for details.
 
 ## Requirements
 
-- Docker (or Podman)
-- Rust 1.92+ (for building from source)
-- Node.js 18+ (for the UI)
+- Docker or Podman
+- Rust 1.92+
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

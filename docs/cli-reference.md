@@ -13,8 +13,7 @@ Every subcommand accepts these flags:
 | `--base-url <URL>` | API base URL (default: `http://localhost:8080`) |
 | `--timeout <SECS>` | Request timeout in seconds |
 | `--team <NAME>` | Team context for resource commands |
-| `--database-url <URL>` | Database URL override |
-| `-v, --verbose` | Verbose logging (`serve` only) |
+| `-v, --verbose` | Verbose logging |
 
 Most `create`, `list`, and `get` subcommands accept `-o, --output <FMT>` (`json`, `yaml`, `table`). Default is `json` for create/get, `table` for list.
 
@@ -55,22 +54,6 @@ flowplane down [--volumes]
 
 ```bash
 flowplane down --volumes
-```
-
-### flowplane serve
-
-Start the control plane directly (outside Docker).
-
-```
-flowplane serve [--dev]
-```
-
-| Flag | Effect |
-|---|---|
-| `--dev` | Dev mode: opaque token auth, auto-seed, no Zitadel |
-
-```bash
-flowplane serve --dev
 ```
 
 ### flowplane status
@@ -197,7 +180,7 @@ flowplane expose <UPSTREAM> [--name <NAME>] [--path <PATH>]... [--port <PORT>]
 
 ```bash
 flowplane expose http://httpbin:80 --name demo
-flowplane expose http://httpbin:80 --name demo --path /get --path /post --port 10001
+flowplane expose http://httpbin:80 --name demo --path /get --path /post
 ```
 
 > ⚠️ Use Docker service hostnames (e.g., `httpbin`), not `localhost`. Inside the Docker network, `localhost` refers to the control plane container.
@@ -336,8 +319,19 @@ Manage Envoy listeners (entry points for traffic).
   "address": "0.0.0.0",
   "port": 10001,
   "protocol": "HTTP",
-  "dataplaneId": "<from dataplane list>",
-  "routeConfigName": "my-routes"
+  "dataplaneId": "dev-dataplane-id",
+  "filterChains": [
+    {
+      "name": "default",
+      "filters": [
+        {
+          "name": "envoy.filters.network.http_connection_manager",
+          "type": "httpConnectionManager",
+          "routeConfigName": "my-routes"
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -347,8 +341,8 @@ Manage Envoy listeners (entry points for traffic).
 | `address` | No | Bind address (default: `0.0.0.0`) |
 | `port` | Yes | Port in 10000-10020 range |
 | `protocol` | No | `HTTP` (default), `HTTPS`, `TCP` |
-| `dataplaneId` | Yes | UUID of the target dataplane |
-| `routeConfigName` | No | Route config to bind to this listener |
+| `dataplaneId` | Yes | ID of the target dataplane (use `dev-dataplane-id` in dev mode) |
+| `filterChains` | Yes | Array of filter chains. For HTTP, use a single chain with an `httpConnectionManager` filter |
 
 > ⚠️ Port range: Envoy exposes ports 10000-10020. Listener ports outside this range work in the DB but Envoy won't serve traffic on them.
 
@@ -517,7 +511,7 @@ The JSON structure uses nested `config.type` + `config.config`:
 }
 ```
 
-Available filter types: `local_rate_limit`, `rate_limit`, `jwt_auth`, `oauth2`, `ext_authz`, `rbac`, `cors`, `header_mutation`, `custom_response`, `compressor`, `mcp`.
+Available filter types: `local_rate_limit`, `jwt_auth`, `oauth2`, `ext_authz`, `rbac`, `cors`, `header_mutation`, `custom_response`, `compressor`, `mcp`.
 
 <details>
 <summary>CORS filter payload</summary>
@@ -756,7 +750,40 @@ flowplane learn cancel <session-id> --yes
 
 ## Secrets
 
-> ⚠️ Secret commands are available via the REST API (`/api/v1/teams/{team}/secrets`) and MCP tools (`cp_create_secret`, `cp_list_secrets`, `cp_get_secret`, `cp_delete_secret`). See the [Getting Started](getting-started.md) guide for the REST and MCP interfaces. CLI subcommands for secrets are in development.
+### flowplane secret create
+
+```
+flowplane secret create --name <NAME> --type <TYPE> --config <JSON> [-o json|yaml|table]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--name` | Yes | Unique secret name |
+| `--type` | Yes | Secret type: `generic_secret`, `tls_certificate`, `validation_context` |
+| `--config` | Yes | JSON config string (structure depends on type) |
+
+```bash
+flowplane secret create --name my-secret --type generic_secret \
+  --config '{"type":"generic_secret","secret":"dGVzdC1zZWNyZXQ="}'
+```
+
+### flowplane secret list
+
+```
+flowplane secret list [-o json|yaml|table]
+```
+
+### flowplane secret get
+
+```
+flowplane secret get <SECRET_ID> [-o json|yaml|table]
+```
+
+### flowplane secret delete
+
+```
+flowplane secret delete <SECRET_ID> [--yes]
+```
 
 ---
 
@@ -829,7 +856,7 @@ flowplane config path
 
 ## Database
 
-Admin commands for managing the PostgreSQL schema. These connect directly to the database, not through the API.
+Admin commands for managing the PostgreSQL schema. These connect directly to the database (requires `FLOWPLANE_DATABASE_URL` env var), not through the API.
 
 ### flowplane database migrate
 

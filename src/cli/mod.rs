@@ -80,7 +80,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Start the Flowplane control plane server
+    /// Start the Flowplane control plane server (internal — used by Docker entrypoint)
+    #[command(hide = true)]
     Serve {
         /// Run in dev mode (synthetic identity, no Zitadel)
         #[arg(long)]

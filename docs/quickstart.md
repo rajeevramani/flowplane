@@ -5,15 +5,14 @@ Expose a local HTTP service through an Envoy proxy with rate limiting in under 1
 ## Prerequisites
 
 - **Docker** (or Podman — auto-detected)
-- **git**
 - **Rust toolchain** (for building from source) — [install via rustup](https://rustup.rs/)
 
 ## 1. Install and start
 
 ```bash
-git clone <repo-url> flowplane
+git clone https://github.com/rajeevramani/flowplane.git
 cd flowplane
-cargo install --path .
+cargo install --path . --locked
 flowplane init --with-envoy --with-httpbin
 ```
 
@@ -23,8 +22,8 @@ This starts PostgreSQL, the Flowplane control plane, an Envoy proxy, and an http
 |---------|-----|
 | API | http://localhost:8080/api/v1/ |
 | UI | http://localhost:8080/ |
-| Envoy | http://localhost:10000 |
-| httpbin | http://localhost:8000 |
+| Envoy | ports 10001-10020 (auto-assigned) |
+| httpbin | http://localhost:8000 (direct, not through Envoy) |
 
 ## 2. Expose httpbin
 
@@ -32,9 +31,7 @@ This starts PostgreSQL, the Flowplane control plane, an Envoy proxy, and an http
 flowplane expose http://httpbin:80 --name httpbin-service
 ```
 
-This single command creates a cluster, route config, listener, and virtual host. Envoy picks up the new configuration via xDS.
-
-Output:
+This creates a cluster, route config, listener, and virtual host. Envoy picks up the configuration via xDS.
 
 ```
 Exposed 'httpbin-service' -> http://httpbin:80
@@ -50,20 +47,21 @@ Exposed 'httpbin-service' -> http://httpbin:80
 curl http://localhost:10001/get
 ```
 
-You should see a JSON response from httpbin:
-
 ```json
 {
   "args": {},
   "headers": {
     "Accept": "*/*",
     "Host": "localhost:10001",
-    "User-Agent": "curl/8.x"
+    "User-Agent": "curl/8.7.1",
+    "X-Envoy-Expected-Rq-Timeout-Ms": "15000"
   },
-  "origin": "172.17.0.1",
+  "origin": "10.89.0.5",
   "url": "http://localhost:10001/get"
 }
 ```
+
+The `X-Envoy-Expected-Rq-Timeout-Ms` header confirms traffic flows through Envoy.
 
 ## 4. Add a rate limit filter
 
@@ -74,26 +72,14 @@ cat > /tmp/ratelimit.json << 'EOF'
 {
   "name": "demo-rate-limit",
   "filterType": "local_rate_limit",
-  "description": "Allow 3 requests per minute",
-  "configuration": {
-    "stat_prefix": "demo_rate_limit",
-    "token_bucket": {
-      "max_tokens": 3,
-      "tokens_per_fill": 3,
-      "fill_interval": "60s"
-    },
-    "filter_enabled": {
-      "runtime_key": "local_rate_limit_enabled",
-      "default_value": {
-        "numerator": 100,
-        "denominator": "HUNDRED"
-      }
-    },
-    "filter_enforced": {
-      "runtime_key": "local_rate_limit_enforced",
-      "default_value": {
-        "numerator": 100,
-        "denominator": "HUNDRED"
+  "config": {
+    "type": "local_rate_limit",
+    "config": {
+      "stat_prefix": "demo_rl",
+      "token_bucket": {
+        "max_tokens": 3,
+        "tokens_per_fill": 3,
+        "fill_interval_ms": 60000
       }
     }
   }
@@ -104,8 +90,8 @@ EOF
 Create the filter and attach it to the listener:
 
 ```bash
-flowplane filter create --file /tmp/ratelimit.json
-flowplane filter attach demo-rate-limit --listener httpbin-service-listener
+flowplane filter create -f /tmp/ratelimit.json
+flowplane filter attach demo-rate-limit --listener httpbin-service-listener --order 1
 ```
 
 ## 5. Test the rate limit
@@ -113,7 +99,7 @@ flowplane filter attach demo-rate-limit --listener httpbin-service-listener
 Send a few rapid requests:
 
 ```bash
-for i in $(seq 1 5); do
+for i in 1 2 3 4 5; do
   echo "Request $i: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:10001/get)"
 done
 ```
@@ -128,27 +114,28 @@ Request 5: 429
 
 Requests beyond the token bucket limit receive `429 Too Many Requests`.
 
-## 6. Explore the UI
+## 6. Explore
 
-Open http://localhost:8080. In dev mode no login is required — the dashboard shows the cluster, listener, routes, and attached filters you just created.
+```bash
+flowplane list      # see exposed services
+flowplane status    # system health
+flowplane doctor    # diagnostic checks
+```
+
+Open http://localhost:8080 for the web UI. In dev mode no login is required.
+
+Browse the REST API at http://localhost:8080/swagger-ui/.
 
 ## Cleanup
 
-Stop all services:
-
 ```bash
-flowplane down
-```
-
-To remove volumes and start fresh:
-
-```bash
-flowplane down --volumes
+flowplane down             # stop containers, keep data
+flowplane down --volumes   # stop and delete all data
 ```
 
 ## Production Mode
 
-For multi-user deployments, `make up` boots the full stack with Zitadel for authentication and multi-tenant isolation.
+For multi-user deployments with Zitadel authentication:
 
 ```bash
 make up HTTPBIN=1 ENVOY=1
@@ -158,10 +145,9 @@ flowplane auth login
 
 `make seed` creates the `acme-corp` demo org with credentials: `demo@acme-corp.com` / `Flowplane1!`.
 
-See [CLI Reference](cli-reference.md) for the full command documentation.
-
 ## Next steps
 
-- [CLI Reference](cli-reference.md) — full command documentation
-- [Filters](filters.md) — all supported filter types and configuration
-- [MCP Tools](mcp.md) — programmatic control via Model Context Protocol
+- [Getting Started](getting-started.md) — full walkthrough with MCP examples
+- [CLI Reference](cli-reference.md) — every command, flag, and example
+- [Filters](filters.md) — all 10 filter types and configuration
+- [MCP Tools](mcp.md) — 68 tools for AI-driven gateway management
