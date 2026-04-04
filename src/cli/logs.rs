@@ -60,9 +60,8 @@ pub async fn handle_logs_command(base_url: &str, follow: bool) -> Result<()> {
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to run {runtime} compose: {e}"))?;
 
-    let status = child
-        .wait()
-        .map_err(|e| anyhow::anyhow!("Failed to wait for {runtime} compose: {e}"))?;
+    let status =
+        child.wait().map_err(|e| anyhow::anyhow!("Failed to wait for {runtime} compose: {e}"))?;
 
     if !status.success() {
         anyhow::bail!("{runtime} compose logs exited with status {status}");
