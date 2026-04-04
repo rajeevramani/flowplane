@@ -20,7 +20,7 @@ pub enum McpError {
     #[error("Internal error: {0}")]
     InternalError(String),
 
-    #[error("Tool not found: {0}")]
+    #[error("Tool not available: {0}")]
     ToolNotFound(String),
 
     #[error("Resource not found: {0}")]
@@ -89,9 +89,10 @@ impl McpError {
         match self {
             McpError::ParseError(_) => error_codes::PARSE_ERROR,
             McpError::InvalidRequest(_) | McpError::NotInitialized => error_codes::INVALID_REQUEST,
-            McpError::MethodNotFound(_)
-            | McpError::ToolNotFound(_)
-            | McpError::ResourceNotFound(_) => error_codes::METHOD_NOT_FOUND,
+            McpError::MethodNotFound(_) | McpError::ResourceNotFound(_) => {
+                error_codes::METHOD_NOT_FOUND
+            }
+            McpError::ToolNotFound(_) => error_codes::INVALID_REQUEST,
             McpError::InvalidParams(_) => error_codes::INVALID_PARAMS,
             McpError::InternalError(_)
             | McpError::GatewayError(_)
@@ -149,7 +150,7 @@ mod tests {
         );
         assert_eq!(
             McpError::ToolNotFound("test".to_string()).error_code(),
-            error_codes::METHOD_NOT_FOUND
+            error_codes::INVALID_REQUEST
         );
         assert_eq!(
             McpError::ResourceNotFound("test".to_string()).error_code(),
@@ -174,8 +175,8 @@ mod tests {
         let error = McpError::ToolNotFound("test_tool".to_string());
         let json_rpc_error = error.to_json_rpc_error();
 
-        assert_eq!(json_rpc_error.code, error_codes::METHOD_NOT_FOUND);
-        assert_eq!(json_rpc_error.message, "Tool not found: test_tool");
+        assert_eq!(json_rpc_error.code, error_codes::INVALID_REQUEST);
+        assert_eq!(json_rpc_error.message, "Tool not available: test_tool");
         assert!(json_rpc_error.data.is_none());
     }
 

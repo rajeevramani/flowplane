@@ -96,7 +96,7 @@
 			settingsLoadError = null;
 
 			// Get all configurations for this filter
-			const configurationsResponse = await apiClient.listFilterConfigurations(filter.id);
+			const configurationsResponse = await apiClient.listFilterConfigurations(filter.team, filter.id);
 
 			// Find the configuration matching this route scope
 			const routeConfig = configurationsResponse.configurations.find(
@@ -127,11 +127,11 @@
 
 			if (newSettings === null) {
 				// Remove the configuration (reset to base)
-				await apiClient.removeFilterConfiguration(filter.id, 'route', scopeId);
+				await apiClient.removeFilterConfiguration(filter.team, filter.id, 'route', scopeId);
 				settings = null;
 			} else {
 				// Save or update the configuration
-				await apiClient.configureFilter(filter.id, {
+				await apiClient.configureFilter(filter.team, filter.id, {
 					scopeType: 'route',
 					scopeId,
 					settings: newSettings

@@ -347,6 +347,7 @@ mod tests {
             path_pattern: "/api/users".to_string(),
             match_type: RouteMatchType::Prefix,
             rule_order: 1,
+            exposure: "internal".to_string(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }

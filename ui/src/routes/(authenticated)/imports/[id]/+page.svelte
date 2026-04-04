@@ -5,6 +5,8 @@
 	import { page } from '$app/stores';
 	import { ArrowLeft, Trash2, FileText, Database, Server, Route as RouteIcon } from 'lucide-svelte';
 	import type { ImportDetailsResponse, RouteResponse, ClusterResponse, ListenerResponse } from '$lib/api/types';
+	import { selectedTeam } from '$lib/stores/team';
+	import { get } from 'svelte/store';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import JsonPanel from '$lib/components/route-config/JsonPanel.svelte';
@@ -41,11 +43,12 @@
 		error = null;
 
 		try {
+			const team = get(selectedTeam);
 			const [importData, routesData, clustersData, listenersData] = await Promise.all([
 				apiClient.getImport(importId),
-				apiClient.listRouteConfigs(),
-				apiClient.listClusters(),
-				apiClient.listListeners()
+				team ? apiClient.listRouteConfigs(team) : Promise.resolve([]),
+				team ? apiClient.listClusters(team) : Promise.resolve([]),
+				team ? apiClient.listListeners(team) : Promise.resolve([])
 			]);
 
 			importDetails = importData;
@@ -436,7 +439,7 @@
 						</h2>
 						<div class="border border-gray-200 rounded-lg divide-y divide-gray-200">
 							{#each clusters as cluster}
-								{@const config = cluster.config || {}}
+								{@const config = cluster.config as Record<string, any>}
 								<div class="p-4 hover:bg-gray-50 transition-colors">
 									<div class="flex items-start justify-between mb-2">
 										<div class="flex-1">

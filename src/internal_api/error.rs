@@ -179,12 +179,23 @@ impl From<FlowplaneError> for InternalError {
             FlowplaneError::NotFound { resource_type, id } => {
                 InternalError::not_found(resource_type, id)
             }
-            FlowplaneError::Conflict { message, .. } => {
-                // Try to parse conflict message to extract resource info
-                InternalError::InternalError { message }
-            }
-            FlowplaneError::ConstraintViolation { message, .. } => {
-                InternalError::InternalError { message }
+            FlowplaneError::Conflict { message, .. } => InternalError::conflict(message),
+            FlowplaneError::ConstraintViolation { message, source } => {
+                // Differentiate constraint types by PostgreSQL error code
+                if let Some(db_err) = source.as_database_error() {
+                    if let Some(code) = db_err.code() {
+                        return match code.as_ref() {
+                            // FK violation: referenced resource doesn't exist
+                            "23503" => InternalError::validation(format!(
+                                "Referenced resource does not exist: {}",
+                                message
+                            )),
+                            // Unique, not-null, check violations → conflict
+                            _ => InternalError::conflict(message),
+                        };
+                    }
+                }
+                InternalError::conflict(message)
             }
             FlowplaneError::Auth { message, .. } => InternalError::forbidden(message),
             FlowplaneError::Database { context, .. } => InternalError::database(context),
@@ -284,6 +295,21 @@ mod tests {
             }
             _ => panic!("Expected Conflict"),
         }
+    }
+
+    #[test]
+    fn test_conflict_flowplane_error_maps_to_conflict() {
+        let err = FlowplaneError::conflict("Resource already exists", "Cluster");
+        let internal_err: InternalError = err.into();
+        match internal_err {
+            InternalError::Conflict { message } => {
+                assert!(message.contains("already exists"));
+            }
+            other => panic!("Expected Conflict, got: {:?}", other),
+        }
+        // Verify it maps to 409 through the API layer
+        let api_err: ApiError = InternalError::conflict("test conflict").into();
+        assert!(matches!(api_err, ApiError::Conflict(_)));
     }
 
     #[test]

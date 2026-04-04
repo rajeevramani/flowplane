@@ -8,6 +8,7 @@
 	import { checkStatsEnabled } from '$lib/stores/stats';
 	import { currentOrg } from '$lib/stores/org';
 	import { getAdminSummary } from '$lib/stores/adminSummary';
+	import { getUserManager } from '$lib/auth/oidc-config';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -35,6 +36,15 @@
 
 	onMount(async () => {
 		try {
+			// Check OIDC authentication
+			const userManager = await getUserManager();
+			const user = await userManager.getUser();
+			if (!user || user.expired) {
+				goto('/login');
+				return;
+			}
+
+			// Build session info from OIDC token claims
 			sessionInfo = await apiClient.getSessionInfo();
 
 			// Populate org store from session info
@@ -57,6 +67,7 @@
 				const orgTeamsResponse = await apiClient.listOrgTeams(sessionInfo.orgName);
 				availableTeams = orgTeamsResponse.teams.map((t) => t.name);
 			} else {
+				console.warn('listTeams fallback: user has no orgName, using unscoped team list');
 				const teamsResponse = await apiClient.listTeams();
 				availableTeams = teamsResponse.teams;
 			}
@@ -100,10 +111,10 @@
 		}
 
 		const [routes, clusters, listeners, filters, imports, secrets, dataplanes] = await Promise.all([
-			safeCall(() => apiClient.listRouteConfigs()),
-			safeCall(() => apiClient.listClusters()),
-			safeCall(() => apiClient.listListeners()),
-			safeCall(() => apiClient.listFilters()),
+			safeCall(() => currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([])),
+			safeCall(() => currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([])),
+			safeCall(() => currentTeam ? apiClient.listListeners(currentTeam) : Promise.resolve([])),
+			safeCall(() => currentTeam ? apiClient.listFilters(currentTeam) : Promise.resolve([])),
 			safeCall(() =>
 				currentTeam
 					? apiClient.listImports(currentTeam)

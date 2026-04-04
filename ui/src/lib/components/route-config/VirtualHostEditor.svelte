@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Plus, Trash2, ChevronDown, ChevronUp, Filter, X } from 'lucide-svelte';
+	import { HTTP_METHODS } from '$lib/constants';
 	import type { VirtualHostDefinition, RouteRuleDefinition, FilterResponse, HierarchyLevel } from '$lib/api/types';
 	import { RouteFilterSection } from '$lib/components/route-config';
 
@@ -144,7 +145,7 @@
 		const newRoute: RouteFormState = {
 			id: `route-${Date.now()}`,
 			name: `route-${virtualHost.routes.length + 1}`,
-			method: 'GET',
+			method: '*',
 			path: '/',
 			pathType: 'prefix',
 			cluster: availableClusters[0] || '',
@@ -489,7 +490,7 @@
 							<div class="border {hasRouteFilters ? 'border-amber-200 bg-amber-50/50' : 'border-gray-200 bg-gray-50'} rounded-md p-3">
 								<div class="flex items-center justify-between mb-3">
 									<span class="text-sm font-medium text-gray-900">
-										{route.method} {route.path}
+										{route.method === '*' ? 'ANY' : route.method} {route.path}
 									</span>
 									<div class="flex items-center gap-2">
 										{#if onAddRouteFilter && !hasRouteFilters}
@@ -542,13 +543,9 @@
 											onchange={(e) => handleUpdateRoute(route.id, 'method', e.currentTarget.value)}
 											class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
 										>
-											<option value="GET">GET</option>
-											<option value="POST">POST</option>
-											<option value="PUT">PUT</option>
-											<option value="DELETE">DELETE</option>
-											<option value="PATCH">PATCH</option>
-											<option value="HEAD">HEAD</option>
-											<option value="OPTIONS">OPTIONS</option>
+											{#each HTTP_METHODS as m}
+												<option value={m}>{m === '*' ? 'ANY' : m}</option>
+											{/each}
 										</select>
 									</div>
 

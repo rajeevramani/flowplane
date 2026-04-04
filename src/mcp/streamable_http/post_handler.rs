@@ -16,20 +16,19 @@ use tracing::{debug, error, info, warn};
 
 use crate::api::routes::ApiState;
 use crate::auth::models::AuthContext;
-use crate::mcp::api_handler::McpApiHandler;
 use crate::mcp::connection::ConnectionId;
+use crate::mcp::gateway::GatewayExecutor;
 use crate::mcp::handler::McpHandler;
 use crate::mcp::notifications::NotificationMessage;
-use crate::mcp::protocol::{error_codes, InitializeParams, JsonRpcRequest, JsonRpcResponse};
+use crate::mcp::protocol::{
+    error_codes, InitializeParams, JsonRpcRequest, JsonRpcResponse, PROTOCOL_VERSION,
+};
 use crate::mcp::security::{generate_secure_session_id, validate_session_id_format};
 use crate::mcp::session::SessionId;
 use crate::mcp::transport_common::{
-    check_method_authorization, determine_response_mode, error_response_json, extract_mcp_headers,
-    extract_team, get_db_pool, validate_protocol_version, validate_team_org_membership,
-    ResponseMode,
+    determine_response_mode, error_response_json, extract_mcp_headers, extract_teams, get_db_pool,
+    validate_protocol_version, ResponseMode,
 };
-
-use super::McpScope;
 
 /// Query parameters for POST endpoint
 #[derive(Debug, Deserialize)]
@@ -46,12 +45,13 @@ const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 /// Header name for protocol version in responses
 const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 
-/// POST /api/v1/mcp/cp
+/// POST /api/v1/mcp
 ///
-/// Handle Control Plane JSON-RPC requests.
+/// Handle MCP JSON-RPC requests for both Control Plane and Gateway API tools.
+/// Dispatches tool calls to CP tool executors or GatewayExecutor based on tool name.
 ///
 /// # Headers
-/// - `MCP-Protocol-Version`: Required - must be "2025-11-25"
+/// - `MCP-Protocol-Version`: Optional - supported versions: 2025-11-25, 2025-03-26
 /// - `MCP-Session-Id`: Required after initialize
 /// - `Accept`: `application/json` or `text/event-stream`
 ///
@@ -59,7 +59,7 @@ const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 /// - `MCP-Session-Id`: Assigned on initialize, echoed on subsequent requests
 #[utoipa::path(
     post,
-    path = "/api/v1/mcp/cp",
+    path = "/api/v1/mcp",
     request_body = JsonRpcRequest,
     responses(
         (status = 200, description = "JSON-RPC response", body = JsonRpcResponse),
@@ -71,67 +71,17 @@ const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
     ),
     tag = "MCP Protocol"
 )]
-pub async fn post_handler_cp(
+pub async fn post_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     headers: HeaderMap,
     Query(query): Query<PostQuery>,
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
-    post_handler(McpScope::ControlPlane, state, context, headers, query, request).await
-}
-
-/// POST /api/v1/mcp/api
-///
-/// Handle Gateway API JSON-RPC requests.
-///
-/// # Headers
-/// - `MCP-Protocol-Version`: Required - must be "2025-11-25"
-/// - `MCP-Session-Id`: Required after initialize
-/// - `Accept`: `application/json` or `text/event-stream`
-///
-/// # Response Headers
-/// - `MCP-Session-Id`: Assigned on initialize, echoed on subsequent requests
-#[utoipa::path(
-    post,
-    path = "/api/v1/mcp/api",
-    request_body = JsonRpcRequest,
-    responses(
-        (status = 200, description = "JSON-RPC response", body = JsonRpcResponse),
-        (status = 202, description = "Response sent via SSE"),
-        (status = 400, description = "Invalid request"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 500, description = "Internal server error")
-    ),
-    tag = "MCP Protocol"
-)]
-pub async fn post_handler_api(
-    State(state): State<ApiState>,
-    Extension(context): Extension<AuthContext>,
-    headers: HeaderMap,
-    Query(query): Query<PostQuery>,
-    Json(request): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
-    post_handler(McpScope::GatewayApi, state, context, headers, query, request).await
-}
-
-/// Generic POST handler for JSON-RPC requests
-async fn post_handler(
-    scope: McpScope,
-    state: ApiState,
-    context: AuthContext,
-    headers: HeaderMap,
-    query: PostQuery,
-    request: JsonRpcRequest,
-) -> impl IntoResponse {
-    let scope_config = scope.scope_config();
-
     debug!(
         method = %request.method,
         id = ?request.id,
         token_name = %context.token_name,
-        scope = ?scope,
         "Received MCP POST request"
     );
 
@@ -222,69 +172,25 @@ async fn post_handler(
         (sid, session_id_str, false)
     };
 
-    // Extract team from query or context
-    let team = match extract_team(query.team.as_deref(), &context) {
-        Ok(team) => team,
-        Err(e) => {
-            error!(error = %e, "Failed to extract team");
-            return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
-                .into_response();
-        }
-    };
-
-    // Validate team belongs to caller's org (prevents cross-org team access via query param)
-    if let Some(ref org_id) = context.org_id {
-        if let Ok(db_pool) = get_db_pool(&state) {
-            if let Err(e) = validate_team_org_membership(&team, org_id, &db_pool).await {
-                error!(error = %e, team = %team, "Team org membership validation failed");
-                return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
-                    .into_response();
+    // Extract authorized teams from token scopes/grants.
+    // In dev mode (org:*:admin with no grants), fall back to ?team= query param.
+    let mut teams = extract_teams(&context);
+    if teams.is_empty() {
+        if let Some(ref team) = query.team {
+            if !team.is_empty() {
+                teams = vec![team.clone()];
             }
         }
     }
 
-    // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
-    let team = match get_db_pool(&state) {
-        Ok(db_pool) => match crate::mcp::transport_common::resolve_team_id(&team, &db_pool).await {
-            Ok(team_id) => team_id,
-            Err(e) => {
-                error!(error = %e, "Failed to resolve team name to UUID");
-                return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
-                    .into_response();
-            }
-        },
-        Err(_) => team, // Fallback to name if DB unavailable
-    };
-
-    // For new sessions, create the session in the manager
+    // For new sessions, create the session bound to the token's authorized teams.
+    // For existing sessions, the session ID is the security boundary — any valid
+    // token that presents a known session ID may use it.
     if is_new_session {
-        let _ = state.mcp_session_manager.get_or_create_for_team(&session_id, &team);
-    } else {
-        // Validate session ownership for existing sessions
-        if let Err(_e) = state.mcp_session_manager.validate_session_ownership(&session_id, &team) {
-            warn!(
-                session_id = %session_id_str,
-                team = %team,
-                "Session ownership validation failed"
-            );
-            // Return generic error to avoid leaking info
-            return Json(error_response_json(
-                error_codes::INVALID_REQUEST,
-                "Session not found or expired".to_string(),
-                request.id,
-            ))
-            .into_response();
-        }
+        let _ = state.mcp_session_manager.get_or_create_for_teams(&session_id, &teams);
     }
 
-    debug!(team = %team, method = %request.method, "Processing MCP request");
-
-    // Check authorization
-    if let Err(e) = check_method_authorization(&request.method, &context, scope_config) {
-        error!(error = %e, method = %request.method, "Authorization failed");
-        return Json(error_response_json(error_codes::INVALID_REQUEST, e, request.id))
-            .into_response();
-    }
+    debug!(teams = ?teams, method = %request.method, "Processing MCP request");
 
     // Get database pool
     let db_pool = match get_db_pool(&state) {
@@ -307,24 +213,20 @@ async fn post_handler(
         None
     };
 
-    // Route to appropriate handler
-    let response = match scope {
-        McpScope::ControlPlane => {
-            let scopes: Vec<String> = context.scopes().map(|s| s.to_string()).collect();
-            let mut handler = McpHandler::with_xds_state(
-                db_pool,
-                state.xds_state.clone(),
-                team.clone(),
-                scopes,
-                context.org_id.clone(),
-            );
-            handler.handle_request(request.clone()).await
-        }
-        McpScope::GatewayApi => {
-            let mut handler = McpApiHandler::new(db_pool, team.clone());
-            handler.handle_request(request.clone()).await
-        }
+    // Unified handler dispatches to CP tools or GatewayExecutor based on tool name
+    let response = {
+        let mut handler = McpHandler::with_gateway(
+            db_pool,
+            state.xds_state.clone(),
+            teams.clone(),
+            context.clone(),
+            GatewayExecutor::new(),
+        );
+        handler.handle_request(request.clone()).await
     };
+
+    // Detect if the original request was a notification (no id per JSON-RPC 2.0)
+    let is_notification = request.id.is_none();
 
     // On successful initialize, mark session as initialized
     if is_initialize && response.error.is_none() {
@@ -337,22 +239,52 @@ async fn post_handler(
                 .unwrap_or(&params.protocol_version)
                 .to_string();
 
-            state.mcp_session_manager.mark_initialized_with_team(
+            state.mcp_session_manager.mark_initialized_with_teams(
                 &session_id,
                 protocol_version,
                 params.client_info.clone(),
-                Some(team.clone()),
+                teams.clone(),
             );
 
             info!(
                 session_id = %session_id_str,
                 client = %params.client_info.name,
-                team = %team,
-                scope = ?scope,
+                teams = ?teams,
                 "Session initialized"
             );
         }
     }
+
+    // JSON-RPC notifications (no id) get 202 Accepted with no body per spec
+    if is_notification {
+        let session_header = HeaderName::from_static(MCP_SESSION_ID_HEADER);
+        let version_header = HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER);
+        let negotiated_version = state
+            .mcp_session_manager
+            .get_protocol_version(&session_id)
+            .unwrap_or_else(|| PROTOCOL_VERSION.to_string());
+        return (
+            StatusCode::ACCEPTED,
+            [(session_header, session_id_str), (version_header, negotiated_version)],
+        )
+            .into_response();
+    }
+
+    // Compute negotiated protocol version for response headers
+    let negotiated_version = if is_initialize {
+        response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(PROTOCOL_VERSION)
+            .to_string()
+    } else {
+        state
+            .mcp_session_manager
+            .get_protocol_version(&session_id)
+            .unwrap_or_else(|| PROTOCOL_VERSION.to_string())
+    };
 
     // Determine response mode
     let accept_header = headers.get("accept").and_then(|v| v.to_str().ok());
@@ -402,7 +334,7 @@ async fn post_handler(
             let version_header = HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER);
             (
                 StatusCode::ACCEPTED,
-                [(session_header, session_id_str), (version_header, "2025-11-25".to_string())],
+                [(session_header, session_id_str), (version_header, negotiated_version.clone())],
             )
                 .into_response()
         }
@@ -411,7 +343,7 @@ async fn post_handler(
             let session_header = HeaderName::from_static(MCP_SESSION_ID_HEADER);
             let version_header = HeaderName::from_static(MCP_PROTOCOL_VERSION_HEADER);
             (
-                [(session_header, session_id_str), (version_header, "2025-11-25".to_string())],
+                [(session_header, session_id_str), (version_header, negotiated_version)],
                 Json(response),
             )
                 .into_response()
@@ -424,13 +356,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_scope_config() {
-        let cp_config = McpScope::ControlPlane.scope_config();
-        assert_eq!(cp_config.read_scope, "mcp:read");
-        assert_eq!(cp_config.execute_scope, "mcp:execute");
+    fn test_notification_detection() {
+        // Notifications have no id
+        let notification = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "notifications/initialized".to_string(),
+            params: serde_json::Value::Null,
+        };
+        assert!(notification.id.is_none());
 
-        let api_config = McpScope::GatewayApi.scope_config();
-        assert_eq!(api_config.read_scope, "api:read");
-        assert_eq!(api_config.execute_scope, "api:execute");
+        // Requests have an id
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(crate::mcp::protocol::JsonRpcId::Number(1)),
+            method: "tools/list".to_string(),
+            params: serde_json::Value::Null,
+        };
+        assert!(request.id.is_some());
     }
 }

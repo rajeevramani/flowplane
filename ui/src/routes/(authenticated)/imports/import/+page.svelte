@@ -65,9 +65,9 @@
 
 		isLoadingListeners = true;
 		try {
-			const listeners = await apiClient.listListeners();
-			// Filter listeners by team
-			availableListeners = listeners.filter((l) => l.team === team);
+			const listeners = team ? await apiClient.listListeners(team) : [];
+			// Listeners are already team-scoped from the API
+			availableListeners = listeners;
 			// Reset selection when team changes
 			config.existingListenerName = availableListeners.length > 0 ? availableListeners[0].name : null;
 		} catch (err) {

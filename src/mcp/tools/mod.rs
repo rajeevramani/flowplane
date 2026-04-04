@@ -17,6 +17,7 @@ pub mod openapi;
 pub mod ops_agent;
 pub mod routes;
 pub mod schemas;
+pub mod secrets;
 pub mod virtual_hosts;
 
 // Re-export tool definitions for convenience
@@ -88,12 +89,14 @@ pub use schemas::{execute_get_aggregated_schema, execute_list_aggregated_schemas
 
 // Re-export learning session tools
 pub use learning::{
-    cp_create_learning_session_tool, cp_delete_learning_session_tool, cp_get_learning_session_tool,
-    cp_list_learning_sessions_tool,
+    cp_activate_learning_session_tool, cp_create_learning_session_tool,
+    cp_delete_learning_session_tool, cp_get_learning_session_tool, cp_list_learning_sessions_tool,
+    ops_learning_session_health_tool,
 };
 pub use learning::{
-    execute_create_learning_session, execute_delete_learning_session, execute_get_learning_session,
-    execute_list_learning_sessions,
+    execute_activate_learning_session, execute_create_learning_session,
+    execute_delete_learning_session, execute_get_learning_session, execute_list_learning_sessions,
+    execute_ops_learning_session_health,
 };
 
 // Re-export OpenAPI import tools
@@ -124,7 +127,9 @@ pub use dev_agent::{dev_preflight_check_tool, execute_dev_preflight_check};
 // Re-export Ops agent tools
 pub use ops_agent::{execute_ops_audit_query, ops_audit_query_tool};
 pub use ops_agent::{execute_ops_config_validate, execute_ops_topology, execute_ops_trace_request};
-pub use ops_agent::{ops_config_validate_tool, ops_topology_tool, ops_trace_request_tool};
+pub use ops_agent::{execute_ops_nack_history, execute_ops_xds_delivery_status};
+pub use ops_agent::{ops_config_validate_tool, ops_nack_history_tool, ops_topology_tool};
+pub use ops_agent::{ops_trace_request_tool, ops_xds_delivery_status_tool};
 
 // Re-export cluster query service tool
 pub use clusters::{cp_query_service_tool, execute_query_service};
@@ -132,10 +137,39 @@ pub use clusters::{cp_query_service_tool, execute_query_service};
 // Re-export schema export tool
 pub use schemas::{cp_export_schema_openapi_tool, execute_export_schema_openapi};
 
+// Re-export secret tools
+pub use secrets::{
+    cp_create_secret_tool, cp_delete_secret_tool, cp_get_secret_tool, cp_list_secrets_tool,
+};
+pub use secrets::{
+    execute_create_secret, execute_delete_secret, execute_get_secret, execute_list_secrets,
+};
+
+use crate::internal_api::InternalAuthContext;
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
+use crate::storage::repositories::TeamRepository;
 use crate::storage::DbPool;
-use serde_json::Value;
+use serde_json::{json, Value};
+
+/// Returns the standard pagination schema properties (limit + offset) for MCP tool definitions.
+pub(crate) fn pagination_schema(resource: &str) -> Value {
+    json!({
+        "limit": {
+            "type": "integer",
+            "description": format!("Maximum number of {} to return (default: 50, max: 1000)", resource),
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 50
+        },
+        "offset": {
+            "type": "integer",
+            "description": format!("Number of {} to skip for pagination (default: 0)", resource),
+            "minimum": 0,
+            "default": 0
+        }
+    })
+}
 
 /// Validate that a team belongs to the caller's org. Returns McpError on failure.
 ///
@@ -146,19 +180,29 @@ pub(crate) async fn validate_team_in_org(
     team: &str,
     org_id: &OrgId,
 ) -> Result<(), McpError> {
-    let row: Option<(i64,)> =
-        sqlx::query_as("SELECT COUNT(*) FROM teams WHERE id = $1 AND org_id = $2")
-            .bind(team)
-            .bind(org_id.as_str())
-            .fetch_optional(db_pool)
-            .await
-            .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
+    let belongs = crate::storage::repositories::team_belongs_to_org(db_pool, team, org_id.as_str())
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to validate team: {}", e)))?;
 
-    let count = row.map(|r| r.0).unwrap_or(0);
-    if count == 0 {
+    if !belongs {
         return Err(McpError::Forbidden(format!("Team '{}' not found in your organization", team)));
     }
     Ok(())
+}
+
+/// Resolve MCP auth context from team name and org ID.
+///
+/// Shared helper that eliminates the repeated `InternalAuthContext::from_mcp` +
+/// `resolve_teams` + `map_err` boilerplate across all MCP tool execute functions.
+pub(crate) async fn resolve_mcp_auth(
+    team: &str,
+    org_id: Option<&OrgId>,
+    team_repo: &dyn TeamRepository,
+) -> Result<InternalAuthContext, McpError> {
+    InternalAuthContext::from_mcp(team, org_id.cloned(), None)
+        .resolve_teams(team_repo)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))
 }
 
 /// Get all available MCP tools.
@@ -218,7 +262,10 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_list_filter_attachments_tool(),
         // Learning session tools
         cp_create_learning_session_tool(),
+        cp_activate_learning_session_tool(),
         cp_delete_learning_session_tool(),
+        // Learning session diagnostic tools
+        ops_learning_session_health_tool(),
         // OpenAPI import tools
         cp_list_openapi_imports_tool(),
         cp_get_openapi_import_tool(),
@@ -238,11 +285,18 @@ pub fn get_all_tools() -> Vec<Tool> {
         ops_topology_tool(),
         ops_config_validate_tool(),
         ops_audit_query_tool(),
+        ops_xds_delivery_status_tool(),
+        ops_nack_history_tool(),
         // Dev agent workflow tools
         dev_preflight_check_tool(),
         cp_query_service_tool(),
         // Schema export tools
         cp_export_schema_openapi_tool(),
+        // Secret CRUD tools
+        cp_list_secrets_tool(),
+        cp_get_secret_tool(),
+        cp_create_secret_tool(),
+        cp_delete_secret_tool(),
     ]
 }
 
@@ -288,8 +342,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 2 learning session + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 4 ops agent + 3 dev agent = 60 total
-        assert_eq!(tools.len(), 60);
+        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 3 learning session + 1 learning diag + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 6 ops agent + 3 dev agent + 4 secrets = 68 total
+        assert_eq!(tools.len(), 68);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 
@@ -348,6 +402,12 @@ mod tests {
         assert!(tool_names.contains(&"cp_get_learning_session"));
         assert!(tool_names.contains(&"cp_create_learning_session"));
         assert!(tool_names.contains(&"cp_delete_learning_session"));
+
+        // Secret tools
+        assert!(tool_names.contains(&"cp_list_secrets"));
+        assert!(tool_names.contains(&"cp_get_secret"));
+        assert!(tool_names.contains(&"cp_create_secret"));
+        assert!(tool_names.contains(&"cp_delete_secret"));
     }
 
     #[tokio::test]

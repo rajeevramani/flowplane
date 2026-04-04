@@ -98,4 +98,4 @@ ENV RUST_LOG=info \
     FLOWPLANE_XDS_BIND_ADDRESS=0.0.0.0 \
     FLOWPLANE_XDS_PORT=50051
 
-CMD ["flowplane"]
+CMD ["flowplane", "serve"]

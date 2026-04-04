@@ -23,7 +23,6 @@
 
 	interface FormState {
 		name: string;
-		team: string;
 		serviceName: string;
 		endpoints: EndpointFormState[];
 		lbPolicy: string;
@@ -53,7 +52,6 @@
 	// Initialize empty form state
 	let formState = $state<FormState>({
 		name: '',
-		team: currentTeam,
 		serviceName: '',
 		endpoints: [],
 		lbPolicy: 'ROUND_ROBIN',
@@ -78,7 +76,7 @@
 		}
 
 		try {
-			const cluster = await apiClient.getCluster(clusterName);
+			const cluster = await apiClient.getCluster(currentTeam, clusterName);
 			originalCluster = cluster;
 
 			// Parse cluster into form state
@@ -234,7 +232,6 @@
 
 		return {
 			name: cluster.name,
-			team: cluster.team,
 			serviceName: cluster.serviceName,
 			endpoints: endpoints.map((ep, i) => ({
 				id: `ep-${i}-${Date.now()}`,
@@ -255,8 +252,7 @@
 	let jsonPayload = $derived(buildClusterJSON(formState));
 
 	function buildClusterJSON(form: FormState): string {
-		const payload: any = {
-			team: form.team || currentTeam,
+		const payload: Record<string, unknown> = {
 			name: form.name || '',
 			serviceName: form.serviceName || '',
 			endpoints: form.endpoints
@@ -345,7 +341,7 @@
 		try {
 			const payload = JSON.parse(jsonPayload);
 			console.log('Updating cluster:', payload);
-			await apiClient.updateCluster(clusterName!, payload);
+			await apiClient.updateCluster(currentTeam, clusterName!, payload);
 			goto('/clusters');
 		} catch (e) {
 			console.error('Update failed:', e);

@@ -7,9 +7,7 @@
 		Radio,
 		FileUp,
 		Filter,
-		Users,
 		Building2,
-		Key,
 		FileText,
 		ChevronDown,
 		List,
@@ -21,10 +19,13 @@
 		Bot,
 		Cable,
 		Network,
-		Globe
+		Globe,
+		Zap,
+		ShieldCheck
 	} from 'lucide-svelte';
 	import type { SessionInfoResponse } from '$lib/api/types';
-	import { isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
+	import { isOrgAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	interface ResourceCounts {
 		routeConfigs: number;
@@ -54,6 +55,7 @@
 		{ id: 'route-configs', label: 'Route Configurations', href: '/route-configs', icon: Layers },
 		{ id: 'listeners', label: 'Listeners', href: '/listeners', icon: Radio },
 		{ id: 'secrets', label: 'Secrets', href: '/secrets', icon: Lock },
+		{ id: 'certificates', label: 'Certificates', href: '/certificates', icon: ShieldCheck },
 		{ id: 'imports', label: 'Imports', href: '/imports', icon: FileUp }
 	];
 
@@ -71,14 +73,13 @@
 
 	// Admin navigation items
 	const adminItems = [
-		{ id: 'users', label: 'Users', href: '/admin/users', icon: Users },
 		{ id: 'teams', label: 'Teams', href: '/admin/teams', icon: Building2 },
 		{ id: 'audit', label: 'Audit Log', href: '/admin/audit-log', icon: FileText }
 	];
 
 	// Derived admin flags from session scopes
-	let showOrganizations = $derived(isSystemAdmin(sessionInfo.scopes));
-	let showOrgSettings = $derived(isOrgAdmin(sessionInfo.scopes));
+	let showOrganizations = $derived(isGovernanceAdmin(sessionInfo));
+	let showOrgSettings = $derived(isOrgAdmin(sessionInfo.orgRole));
 
 	// Check if a path is active
 	function isActive(href: string): boolean {
@@ -168,6 +169,20 @@
 				</a>
 			</div>
 		{/if}
+
+		<!-- Quick Actions -->
+		<div class="px-3 mb-4">
+			<a
+				href="/expose"
+				class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+					{isActive('/expose')
+					? 'bg-blue-600 text-white'
+					: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+			>
+				<Zap class="h-5 w-5" />
+				Expose Service
+			</a>
+		</div>
 
 		<!-- Resources Section -->
 		<div class="px-3 mb-4">
@@ -299,7 +314,7 @@
 		</div>
 
 		<!-- Admin Section (only for governance admins) -->
-		{#if isSystemAdmin(sessionInfo.scopes)}
+		{#if isGovernanceAdmin(sessionInfo)}
 			<div class="px-3 mb-4">
 				<h3 class="px-3 mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
 					Admin
@@ -352,27 +367,36 @@
 							Org Settings
 						</a>
 					{/if}
+					{#if sessionInfo.orgName}
+						<a
+							href="/organizations/{sessionInfo.orgName}/teams"
+							class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+								{isActive(`/organizations/${sessionInfo.orgName}/teams`)
+								? 'bg-blue-600 text-white'
+								: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+						>
+							<Building2 class="h-5 w-5" />
+							Teams
+						</a>
+						<a
+							href="/organizations/{sessionInfo.orgName}/agents"
+							class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
+								{isActive(`/organizations/${sessionInfo.orgName}/agents`)
+								? 'bg-blue-600 text-white'
+								: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+						>
+							<Bot class="h-5 w-5" />
+							Agents
+						</a>
+					{/if}
 				</div>
 			</div>
 		{/if}
 
-		<!-- Tokens (accessible to all) -->
-		<div class="px-3">
-			<a
-				href="/tokens"
-				class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
-					{isActive('/tokens')
-					? 'bg-blue-600 text-white'
-					: 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
-			>
-				<Key class="h-5 w-5" />
-				Access Tokens
-			</a>
-		</div>
 	</nav>
 
-	<!-- Version Footer -->
+	<!-- Footer -->
 	<div class="px-4 py-3 border-t border-gray-800">
-		<span class="text-xs text-gray-500">v{sessionInfo.version}</span>
+		<span class="text-xs text-gray-500">Flowplane</span>
 	</div>
 </aside>

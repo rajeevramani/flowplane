@@ -13,7 +13,6 @@ fn default_health_check_type() -> String {
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 #[schema(example = json!({
-    "team": "payments",
     "name": "my-service-cluster",
     "serviceName": "inventory-service",
     "endpoints": [
@@ -50,11 +49,6 @@ fn default_health_check_type() -> String {
     }
 }))]
 pub struct CreateClusterBody {
-    /// Team identifier for ownership.
-    #[validate(length(min = 1, max = 100))]
-    #[schema(example = "payments")]
-    pub team: String,
-
     /// Unique name for the cluster.
     #[validate(length(min = 1, max = 50))]
     #[schema(example = "my-service-cluster")]

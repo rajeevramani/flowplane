@@ -1,7 +1,8 @@
 [package]
 name = "flowplane"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+default-run = "flowplane"
 
 # ============================================================================
 # Feature Flags
@@ -163,8 +164,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Testcontainers for PostgreSQL integration tests
 testcontainers = "0.26"
 testcontainers-modules = { version = "0.14", features = ["postgres"] }
-
-[[bench]]
-name = "token_repository"
-harness = false
-required-features = ["postgres_tests"]
+urlencoding = "2.1"
+getrandom = "0.3"

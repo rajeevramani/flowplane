@@ -42,7 +42,7 @@ pub mod validation;
 pub mod xds;
 
 // Re-export commonly used types and traits
-pub use config::Config;
+pub use config::{AuthMode, Config};
 pub use errors::{Error, FlowplaneError, Result};
 
 /// Application version from Cargo.toml

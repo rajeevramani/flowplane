@@ -17,7 +17,6 @@
 
 	interface FormState {
 		name: string;
-		team: string;
 		virtualHosts: VirtualHostFormState[];
 	}
 
@@ -39,7 +38,6 @@
 	// Initialize form state
 	let formState = $state<FormState>({
 		name: '',
-		team: currentTeam,
 		virtualHosts: [
 			{
 				id: `vh-${Date.now()}`,
@@ -54,8 +52,8 @@
 	onMount(async () => {
 		try {
 			const [clustersData, routeConfigsData] = await Promise.all([
-				apiClient.listClusters(),
-				apiClient.listRouteConfigs()
+				currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([]),
+				currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([])
 			]);
 			clusters = clustersData;
 			routeConfigs = routeConfigsData;
@@ -74,7 +72,6 @@
 
 	function buildRouteConfigJSON(form: FormState): string {
 		const payload: any = {
-			team: form.team || currentTeam,
 			name: form.name || '',
 			virtualHosts: form.virtualHosts.map((vh) => ({
 				name: vh.name,
@@ -113,12 +110,7 @@
 							path: r.pathType === 'template'
 								? { type: r.pathType, template: r.path }
 								: { type: r.pathType, value: r.path },
-							headers: [
-								{
-									name: ':method',
-									value: r.method
-								}
-							]
+							headers: r.method && r.method !== '*' ? [{ name: ':method', value: r.method }] : []
 						},
 						action
 					};
@@ -191,7 +183,7 @@
 
 		try {
 			const payload = JSON.parse(jsonPayload);
-			await apiClient.createRouteConfig(payload);
+			await apiClient.createRouteConfig(currentTeam, payload);
 			goto('/route-configs');
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to create configuration';
@@ -211,8 +203,8 @@
 		isSubmitting = true;
 
 		try {
-			const payload = { ...formData, team: currentTeam };
-			await apiClient.createRouteConfig(payload);
+			const payload = { ...formData };
+			await apiClient.createRouteConfig(currentTeam, payload);
 			goto('/route-configs');
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to create configuration';

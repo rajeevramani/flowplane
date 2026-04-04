@@ -195,11 +195,10 @@ impl AggregatedSchemaOperations {
 mod tests {
     use super::*;
     use crate::auth::team::CreateTeamRequest;
-    use crate::config::SimpleXdsConfig;
     use crate::domain::OrgId;
     use crate::storage::repositories::aggregated_schema::CreateAggregatedSchemaRequest;
     use crate::storage::repositories::{SqlxTeamRepository, TeamRepository};
-    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
+    use crate::storage::test_helpers::{create_test_xds_state, TestDatabase, TEAM_A_ID, TEAM_B_ID};
     use crate::storage::DbPool;
 
     struct TestSetup {
@@ -209,14 +208,10 @@ mod tests {
     }
 
     async fn setup_state() -> TestSetup {
-        let test_db = TestDatabase::new("internal_api_schemas").await;
+        let (test_db, state) = create_test_xds_state("internal_api_schemas").await;
         let pool = test_db.pool.clone();
 
-        TestSetup {
-            state: Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone())),
-            pool,
-            _db: test_db,
-        }
+        TestSetup { state, pool, _db: test_db }
     }
 
     async fn create_team(pool: &DbPool, name: &str) {
@@ -251,6 +246,8 @@ mod tests {
             http_method: method.to_string(),
             request_schema: Some(serde_json::json!({"type": "object"})),
             response_schemas: Some(serde_json::json!({"200": {"type": "object"}})),
+            request_headers: None,
+            response_headers: None,
             sample_count: 10,
             confidence_score: 0.95,
             breaking_changes: None,
@@ -342,6 +339,8 @@ mod tests {
             http_method: "GET".to_string(),
             request_schema: Some(serde_json::json!({"type": "object"})),
             response_schemas: Some(serde_json::json!({"200": {"type": "object"}})),
+            request_headers: None,
+            response_headers: None,
             sample_count: 20,
             confidence_score: 0.98,
             breaking_changes: None,
@@ -430,6 +429,8 @@ mod tests {
                 http_method: "GET".to_string(),
                 request_schema: Some(serde_json::json!({"type": "object"})),
                 response_schemas: Some(serde_json::json!({"200": {"type": "object"}})),
+                request_headers: None,
+                response_headers: None,
                 sample_count: i * 10,
                 confidence_score: 0.95,
                 breaking_changes: None,

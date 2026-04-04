@@ -46,7 +46,8 @@ async fn test_800_create_jwt_filter() {
         with_timeout(TestTimeout::default_with_label("Create JWKS cluster"), async {
             api.create_cluster(
                 &ctx.admin_token,
-                &simple_cluster(&ctx.team_a_name, "jwt-jwks-cluster", auth_host, auth_port),
+                &ctx.team_a_name,
+                &simple_cluster("jwt-jwks-cluster", auth_host, auth_port),
             )
             .await
         })
@@ -141,7 +142,8 @@ async fn test_810_auth_success() {
     let jwks_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "auth-jwks-cluster", auth_host, auth_port),
+            &ctx.team_a_name,
+            &simple_cluster("auth-jwks-cluster", auth_host, auth_port),
         )
         .await
         .expect("JWKS cluster creation should succeed");
@@ -152,7 +154,8 @@ async fn test_810_auth_success() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "jwt-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("jwt-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -163,13 +166,8 @@ async fn test_810_auth_success() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "jwt-route",
-                "jwt.e2e.local",
-                "/testing/jwt-api",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("jwt-route", "jwt.e2e.local", "/testing/jwt-api", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -180,8 +178,8 @@ async fn test_810_auth_success() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "jwt-listener",
                 harness.ports.listener,
                 &route.name,
@@ -244,7 +242,14 @@ async fn test_810_auth_success() {
 
     // Install filter on listener
     let installation = with_timeout(TestTimeout::default_with_label("Install filter"), async {
-        api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100)).await
+        api.install_filter(
+            &ctx.admin_token,
+            &ctx.team_a_name,
+            &filter.id,
+            &listener.name,
+            Some(100),
+        )
+        .await
     })
     .await
     .expect("Filter installation should succeed");
@@ -333,7 +338,8 @@ async fn test_811_auth_fail_invalid_jwt() {
     let jwks_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "fail-jwks-cluster", auth_host, auth_port),
+            &ctx.team_a_name,
+            &simple_cluster("fail-jwks-cluster", auth_host, auth_port),
         )
         .await
         .expect("JWKS cluster creation should succeed");
@@ -341,7 +347,8 @@ async fn test_811_auth_fail_invalid_jwt() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "fail-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("fail-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -349,13 +356,8 @@ async fn test_811_auth_fail_invalid_jwt() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "fail-route",
-                "fail.e2e.local",
-                "/testing/jwt-fail",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("fail-route", "fail.e2e.local", "/testing/jwt-fail", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -363,8 +365,8 @@ async fn test_811_auth_fail_invalid_jwt() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "fail-listener",
                 harness.ports.listener,
                 &route.name,
@@ -408,7 +410,7 @@ async fn test_811_auth_fail_invalid_jwt() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
@@ -492,7 +494,8 @@ async fn test_812_auth_fail_expired_jwt() {
     let jwks_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "expired-jwks-cluster", auth_host, auth_port),
+            &ctx.team_a_name,
+            &simple_cluster("expired-jwks-cluster", auth_host, auth_port),
         )
         .await
         .expect("JWKS cluster creation should succeed");
@@ -500,7 +503,8 @@ async fn test_812_auth_fail_expired_jwt() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "expired-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("expired-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -508,8 +512,8 @@ async fn test_812_auth_fail_expired_jwt() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "expired-route",
                 "expired.e2e.local",
                 "/testing/jwt-expired",
@@ -522,8 +526,8 @@ async fn test_812_auth_fail_expired_jwt() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "expired-listener",
                 harness.ports.listener,
                 &route.name,
@@ -567,7 +571,7 @@ async fn test_812_auth_fail_expired_jwt() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
@@ -631,7 +635,8 @@ async fn test_815_public_route_bypass() {
     let jwks_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "public-jwks-cluster", auth_host, auth_port),
+            &ctx.team_a_name,
+            &simple_cluster("public-jwks-cluster", auth_host, auth_port),
         )
         .await
         .expect("JWKS cluster creation should succeed");
@@ -639,7 +644,8 @@ async fn test_815_public_route_bypass() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "public-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("public-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -648,13 +654,8 @@ async fn test_815_public_route_bypass() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "public-route",
-                "public.e2e.local",
-                "/testing/jwt-public",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("public-route", "public.e2e.local", "/testing/jwt-public", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -662,8 +663,8 @@ async fn test_815_public_route_bypass() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "public-listener",
                 harness.ports.listener,
                 &route.name,
@@ -713,7 +714,7 @@ async fn test_815_public_route_bypass() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 

@@ -10,11 +10,10 @@
 //! - Parameter validation
 //! - Error cases
 
-use crate::config::SimpleXdsConfig;
 use crate::mcp::tools::filters::{
     execute_attach_filter, execute_detach_filter, execute_list_filter_attachments,
 };
-use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
+use crate::storage::test_helpers::{create_test_xds_state, TestDatabase, TEST_TEAM_ID};
 use crate::xds::XdsState;
 use serde_json::json;
 use std::sync::Arc;
@@ -24,14 +23,7 @@ use std::sync::Arc;
 // =============================================================================
 
 async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
-    let test_db = TestDatabase::new("internal_api_filter_attachment").await;
-    let pool = test_db.pool.clone();
-    let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-
-    // Teams are already seeded by TestDatabase::new() with predictable UUIDs:
-    // test-team -> TEST_TEAM_ID, team-a -> TEAM_A_ID, team-b -> TEAM_B_ID
-
-    (test_db, state)
+    create_test_xds_state("internal_api_filter_attachment").await
 }
 
 /// Helper to create a test filter

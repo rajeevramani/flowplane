@@ -6,7 +6,7 @@
 use crate::auth::user::{
     NewUser, NewUserTeamMembership, UpdateUser, User, UserStatus, UserTeamMembership,
 };
-use crate::domain::{OrgId, UserId};
+use crate::domain::UserId;
 use crate::errors::{FlowplaneError, Result};
 use crate::storage::DbPool;
 use async_trait::async_trait;
@@ -25,7 +25,9 @@ struct UserRow {
     pub name: String,
     pub status: String,
     pub is_admin: bool,
-    pub org_id: String,
+    pub zitadel_sub: Option<String>,
+    pub user_type: String,
+    pub agent_context: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -35,8 +37,9 @@ struct UserTeamMembershipRow {
     pub id: String,
     pub user_id: String,
     pub team: String,
-    pub scopes: String, // JSON array stored as string
     pub created_at: DateTime<Utc>,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
 }
 
 // Repository traits
@@ -61,9 +64,6 @@ pub trait UserRepository: Send + Sync {
     /// Update a user's password hash
     async fn update_password(&self, id: &UserId, password_hash: String) -> Result<()>;
 
-    /// Update a user's organization ID
-    async fn update_user_org(&self, id: &UserId, org_id: &crate::domain::OrgId) -> Result<()>;
-
     /// List all users (with pagination)
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>>;
 
@@ -75,6 +75,19 @@ pub trait UserRepository: Send + Sync {
 
     /// Delete a user (this will cascade delete team memberships)
     async fn delete_user(&self, id: &UserId) -> Result<()>;
+
+    /// Find a user by their Zitadel subject identifier (`sub` claim).
+    async fn find_by_zitadel_sub(&self, sub: &str) -> Result<Option<User>>;
+
+    /// Find all machine users that belong to a specific org.
+    async fn find_machine_users_by_org(&self, org_id: &str) -> Result<Vec<User>>;
+
+    /// Upsert a user from JWT claims (JIT provisioning).
+    ///
+    /// If a user with the given `zitadel_sub` already exists, updates email/name
+    /// and returns the existing user. Otherwise creates a new user row.
+    /// This operation is idempotent.
+    async fn upsert_from_jwt(&self, sub: &str, email: &str, name: &str) -> Result<User>;
 }
 
 #[async_trait]
@@ -103,13 +116,6 @@ pub trait TeamMembershipRepository: Send + Sync {
         user_id: &UserId,
         team: &str,
     ) -> Result<Option<UserTeamMembership>>;
-
-    /// Update scopes for a membership
-    async fn update_membership_scopes(
-        &self,
-        id: &str,
-        scopes: Vec<String>,
-    ) -> Result<UserTeamMembership>;
 
     /// Delete a team membership
     async fn delete_membership(&self, id: &str) -> Result<()>;
@@ -141,7 +147,9 @@ impl SqlxUserRepository {
             name: row.name,
             status,
             is_admin: row.is_admin,
-            org_id: OrgId::from_string(row.org_id),
+            zitadel_sub: row.zitadel_sub,
+            user_type: row.user_type,
+            agent_context: row.agent_context,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -157,8 +165,8 @@ impl UserRepository for SqlxUserRepository {
 
         sqlx::query(
             r#"
-            INSERT INTO users (id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO users (id, email, password_hash, name, status, is_admin, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
         )
         .bind(&id)
@@ -167,7 +175,6 @@ impl UserRepository for SqlxUserRepository {
         .bind(&user.name)
         .bind(&status)
         .bind(user.is_admin)
-        .bind(user.org_id.as_str())
         .bind(Utc::now())
         .bind(Utc::now())
         .execute(&self.pool)
@@ -185,7 +192,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_id = %id), name = "db_get_user")]
     async fn get_user(&self, id: &UserId) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE id = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users WHERE id = $1",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -201,7 +208,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_by_email")]
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE email = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -217,7 +224,7 @@ impl UserRepository for SqlxUserRepository {
     #[instrument(skip(self), fields(user_email = %email), name = "db_get_user_with_password")]
     async fn get_user_with_password(&self, email: &str) -> Result<Option<(User, String)>> {
         let row = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users WHERE email = $1",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -289,26 +296,10 @@ impl UserRepository for SqlxUserRepository {
         Ok(())
     }
 
-    #[instrument(skip(self), fields(user_id = %id), name = "db_update_user_org")]
-    async fn update_user_org(&self, id: &UserId, org_id: &crate::domain::OrgId) -> Result<()> {
-        sqlx::query("UPDATE users SET org_id = $1, updated_at = $2 WHERE id = $3")
-            .bind(org_id.as_str())
-            .bind(Utc::now())
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(|err| FlowplaneError::Database {
-                source: err,
-                context: "Failed to update user organization".to_string(),
-            })?;
-
-        Ok(())
-    }
-
     #[instrument(skip(self), fields(limit = limit, offset = offset), name = "db_list_users")]
     async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>> {
         let rows = sqlx::query_as::<_, UserRow>(
-            "SELECT id, email, password_hash, name, status, is_admin, org_id, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
@@ -362,6 +353,87 @@ impl UserRepository for SqlxUserRepository {
 
         Ok(())
     }
+
+    #[instrument(skip(self), fields(zitadel_sub = %sub), name = "db_find_by_zitadel_sub")]
+    async fn find_by_zitadel_sub(&self, sub: &str) -> Result<Option<User>> {
+        let row = sqlx::query_as::<_, UserRow>(
+            "SELECT id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at FROM users WHERE zitadel_sub = $1",
+        )
+        .bind(sub)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to find user by zitadel_sub".to_string(),
+        })?;
+
+        row.map(|r| self.row_to_user(r)).transpose()
+    }
+
+    #[instrument(skip(self), fields(org_id = %org_id), name = "db_find_machine_users_by_org")]
+    async fn find_machine_users_by_org(&self, org_id: &str) -> Result<Vec<User>> {
+        let rows = sqlx::query_as::<_, UserRow>(
+            r#"
+            SELECT u.id, u.email, u.password_hash, u.name, u.status, u.is_admin,
+                   u.zitadel_sub, u.user_type, u.agent_context, u.created_at, u.updated_at
+            FROM users u
+            JOIN organization_memberships om ON u.id = om.user_id
+            WHERE om.org_id = $1 AND u.user_type = 'machine'
+            ORDER BY u.created_at DESC
+            "#,
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to find machine users by org".to_string(),
+        })?;
+
+        rows.into_iter().map(|r| self.row_to_user(r)).collect()
+    }
+
+    #[instrument(skip(self), fields(zitadel_sub = %sub, email = %email), name = "db_upsert_from_jwt")]
+    async fn upsert_from_jwt(&self, sub: &str, email: &str, name: &str) -> Result<User> {
+        let id = UserId::new();
+
+        // When JWT doesn't include email (common for access tokens), use a
+        // unique placeholder so the NOT NULL UNIQUE constraint is satisfied.
+        // On conflict (existing user by zitadel_sub), preserve the real email
+        // that was set during invite rather than blanking it.
+        let effective_email =
+            if email.is_empty() { format!("zitadel-{}@jit.local", sub) } else { email.to_string() };
+
+        let row = sqlx::query_as::<_, UserRow>(
+            r#"
+            INSERT INTO users (id, email, password_hash, name, status, is_admin, zitadel_sub, created_at, updated_at)
+            VALUES ($1, $2, '', $3, 'active', false, $4, $5, $6)
+            ON CONFLICT (zitadel_sub) DO UPDATE SET
+                email = CASE
+                    WHEN $2 NOT LIKE '%@jit.local' THEN $2
+                    WHEN users.email != '' THEN users.email
+                    ELSE $2
+                END,
+                name = CASE WHEN $3 != '' THEN $3 ELSE users.name END,
+                updated_at = EXCLUDED.updated_at
+            RETURNING id, email, password_hash, name, status, is_admin, zitadel_sub, user_type, agent_context, created_at, updated_at
+            "#,
+        )
+        .bind(id.to_string())
+        .bind(&effective_email)
+        .bind(name)
+        .bind(sub)
+        .bind(Utc::now())
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to upsert user from JWT".to_string(),
+        })?;
+
+        self.row_to_user(row)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -375,17 +447,13 @@ impl SqlxTeamMembershipRepository {
     }
 
     fn row_to_membership(&self, row: UserTeamMembershipRow) -> Result<UserTeamMembership> {
-        // Parse scopes JSON array
-        let scopes: Vec<String> = serde_json::from_str(&row.scopes).map_err(|err| {
-            FlowplaneError::internal(format!("Failed to parse scopes JSON: {}", err))
-        })?;
-
         Ok(UserTeamMembership {
             id: row.id,
             user_id: UserId::from_string(row.user_id),
             team: row.team,
-            scopes,
             created_at: row.created_at,
+            user_name: row.user_name,
+            user_email: row.user_email,
         })
     }
 }
@@ -397,20 +465,15 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         &self,
         membership: NewUserTeamMembership,
     ) -> Result<UserTeamMembership> {
-        let scopes_json = serde_json::to_string(&membership.scopes).map_err(|err| {
-            FlowplaneError::internal(format!("Failed to serialize scopes: {}", err))
-        })?;
-
         sqlx::query(
             r#"
-            INSERT INTO user_team_memberships (id, user_id, team, scopes, created_at)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO user_team_memberships (id, user_id, team, created_at)
+            VALUES ($1, $2, $3, $4)
             "#,
         )
         .bind(&membership.id)
         .bind(membership.user_id.to_string())
         .bind(&membership.team)
-        .bind(&scopes_json)
         .bind(Utc::now())
         .execute(&self.pool)
         .await
@@ -427,7 +490,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(user_id = %user_id), name = "db_list_user_memberships")]
     async fn list_user_memberships(&self, user_id: &UserId) -> Result<Vec<UserTeamMembership>> {
         let rows = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE user_id = $1 ORDER BY created_at",
+            "SELECT utm.id, utm.user_id, utm.team, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.user_id = $1 ORDER BY utm.created_at",
         )
         .bind(user_id.to_string())
         .fetch_all(&self.pool)
@@ -443,7 +506,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(team = %team), name = "db_list_team_members")]
     async fn list_team_members(&self, team: &str) -> Result<Vec<UserTeamMembership>> {
         let rows = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE team = $1 ORDER BY created_at",
+            "SELECT utm.id, utm.user_id, utm.team, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.team = $1 ORDER BY utm.created_at",
         )
         .bind(team)
         .fetch_all(&self.pool)
@@ -479,7 +542,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
     #[instrument(skip(self), fields(membership_id = %id), name = "db_get_membership")]
     async fn get_membership(&self, id: &str) -> Result<Option<UserTeamMembership>> {
         let row = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE id = $1",
+            "SELECT utm.id, utm.user_id, utm.team, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -499,7 +562,7 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         team: &str,
     ) -> Result<Option<UserTeamMembership>> {
         let row = sqlx::query_as::<_, UserTeamMembershipRow>(
-            "SELECT id, user_id, team, scopes, created_at FROM user_team_memberships WHERE user_id = $1 AND team = $2",
+            "SELECT utm.id, utm.user_id, utm.team, utm.created_at, u.name AS user_name, u.email AS user_email FROM user_team_memberships utm LEFT JOIN users u ON u.id = utm.user_id WHERE utm.user_id = $1 AND utm.team = $2",
         )
         .bind(user_id.to_string())
         .bind(team)
@@ -511,31 +574,6 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
         })?;
 
         row.map(|r| self.row_to_membership(r)).transpose()
-    }
-
-    #[instrument(skip(self, scopes), fields(membership_id = %id), name = "db_update_membership_scopes")]
-    async fn update_membership_scopes(
-        &self,
-        id: &str,
-        scopes: Vec<String>,
-    ) -> Result<UserTeamMembership> {
-        let scopes_json = serde_json::to_string(&scopes).map_err(|err| {
-            FlowplaneError::internal(format!("Failed to serialize scopes: {}", err))
-        })?;
-
-        sqlx::query("UPDATE user_team_memberships SET scopes = $1 WHERE id = $2")
-            .bind(&scopes_json)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| FlowplaneError::Database {
-                source: err,
-                context: "Failed to update membership scopes".to_string(),
-            })?;
-
-        self.get_membership(id)
-            .await?
-            .ok_or_else(|| FlowplaneError::internal("Membership not found after update"))
     }
 
     #[instrument(skip(self), fields(membership_id = %id), name = "db_delete_membership")]
@@ -554,15 +592,38 @@ impl TeamMembershipRepository for SqlxTeamMembershipRepository {
 
     #[instrument(skip(self), fields(user_id = %user_id, team = %team), name = "db_delete_user_team_membership")]
     async fn delete_user_team_membership(&self, user_id: &UserId, team: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to begin transaction for team membership deletion".to_string(),
+        })?;
+
+        // Defense-in-depth: delete grants for this user+team before removing
+        // the membership. The handler layer also cleans grants, but doing it
+        // here prevents orphaned grants if any code path bypasses the handler.
+        sqlx::query("DELETE FROM grants WHERE principal_id = $1 AND team_id = $2")
+            .bind(user_id.as_str())
+            .bind(team)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| FlowplaneError::Database {
+                source: err,
+                context: "Failed to delete grants on team membership removal".to_string(),
+            })?;
+
         sqlx::query("DELETE FROM user_team_memberships WHERE user_id = $1 AND team = $2")
             .bind(user_id.to_string())
             .bind(team)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|err| FlowplaneError::Database {
                 source: err,
                 context: "Failed to delete user team membership".to_string(),
             })?;
+
+        tx.commit().await.map_err(|err| FlowplaneError::Database {
+            source: err,
+            context: "Failed to commit team membership deletion".to_string(),
+        })?;
 
         Ok(())
     }

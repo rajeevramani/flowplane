@@ -552,6 +552,75 @@ impl DataplaneRepository {
         Ok(())
     }
 
+    /// Counts dataplanes for a specific team.
+    #[instrument(skip(self), fields(team = %team), name = "db_count_dataplanes_by_team")]
+    pub async fn count_by_team(&self, team: &str) -> Result<i64> {
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>(
+            "SELECT COUNT(*) FROM dataplanes WHERE team = $1",
+        )
+        .bind(team)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, team = %team, "Failed to count dataplanes by team");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count dataplanes for team '{}'", team),
+            }
+        })?;
+
+        Ok(count)
+    }
+
+    /// Counts dataplanes filtered by multiple teams.
+    #[instrument(skip(self), fields(teams = ?teams), name = "db_count_dataplanes_by_teams")]
+    pub async fn count_by_teams(&self, teams: &[String]) -> Result<i64> {
+        if teams.is_empty() {
+            return Ok(0);
+        }
+
+        let placeholders = teams
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query_str = format!("SELECT COUNT(*) FROM dataplanes WHERE team IN ({})", placeholders);
+
+        let mut query = sqlx::query_scalar::<sqlx::Postgres, i64>(&query_str);
+        for team in teams {
+            query = query.bind(team);
+        }
+
+        let count = query.fetch_one(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, teams = ?teams, "Failed to count dataplanes by teams");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to count dataplanes for teams: {:?}", teams),
+            }
+        })?;
+
+        Ok(count)
+    }
+
+    /// Counts all dataplanes.
+    #[instrument(skip(self), name = "db_count_all_dataplanes")]
+    pub async fn count_all(&self) -> Result<i64> {
+        let count = sqlx::query_scalar::<sqlx::Postgres, i64>("SELECT COUNT(*) FROM dataplanes")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to count all dataplanes");
+                FlowplaneError::Database {
+                    source: e,
+                    context: "Failed to count all dataplanes".to_string(),
+                }
+            })?;
+
+        Ok(count)
+    }
+
     /// Returns the database pool.
     pub fn pool(&self) -> &DbPool {
         &self.pool

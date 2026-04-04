@@ -3,15 +3,13 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import type { TeamResponse, UpdateTeamRequest, UserResponse, TeamStatus } from '$lib/api/types';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import type { TeamResponse, UpdateTeamRequest, TeamStatus } from '$lib/api/types';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	let teamId = $derived($page.params.id ?? '');
 
 	let team = $state<TeamResponse | null>(null);
-	let users = $state<UserResponse[]>([]);
 	let isLoading = $state(true);
-	let isLoadingUsers = $state(true);
 	let isEditing = $state(false);
 	let isSubmitting = $state(false);
 	let isDeleting = $state(false);
@@ -32,12 +30,12 @@
 		// Check authentication and admin access
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!isSystemAdmin(sessionInfo.scopes)) {
+			if (!isGovernanceAdmin(sessionInfo)) {
 				goto('/dashboard');
 				return;
 			}
 
-			await Promise.all([loadTeam(), loadUsers()]);
+			await loadTeam();
 		} catch (err) {
 			goto('/login');
 		}
@@ -54,23 +52,10 @@
 			formData.description = team.description || '';
 			formData.ownerUserId = team.ownerUserId || '';
 			formData.status = team.status;
-		} catch (err: any) {
-			error = err.message || 'Failed to load team';
+		} catch (err: unknown) {
+			error = err instanceof Error ? err.message : 'Failed to load team';
 		} finally {
 			isLoading = false;
-		}
-	}
-
-	async function loadUsers() {
-		isLoadingUsers = true;
-		try {
-			const response = await apiClient.listUsers(100, 0);
-			users = response.items;
-		} catch (err: any) {
-			// Non-fatal error, just log
-			console.error('Failed to load users:', err);
-		} finally {
-			isLoadingUsers = false;
 		}
 	}
 
@@ -135,8 +120,8 @@
 			const updatedTeam = await apiClient.adminUpdateTeam(teamId, request);
 			team = updatedTeam;
 			isEditing = false;
-		} catch (err: any) {
-			submitError = err.message || 'Failed to update team';
+		} catch (err: unknown) {
+			submitError = err instanceof Error ? err.message : 'Failed to update team';
 		} finally {
 			isSubmitting = false;
 		}
@@ -149,8 +134,8 @@
 		try {
 			await apiClient.adminDeleteTeam(teamId);
 			goto('/admin/teams');
-		} catch (err: any) {
-			submitError = err.message || 'Failed to delete team';
+		} catch (err: unknown) {
+			submitError = err instanceof Error ? err.message : 'Failed to delete team';
 			showDeleteConfirm = false;
 		} finally {
 			isDeleting = false;
@@ -352,22 +337,15 @@
 							<!-- Owner -->
 							<div>
 								<label for="owner" class="block text-sm font-medium text-gray-700 mb-2">
-									Team Owner
+									Team Owner (User ID)
 								</label>
-								{#if isLoadingUsers}
-									<div class="text-sm text-gray-500">Loading users...</div>
-								{:else}
-									<select
-										id="owner"
-										bind:value={formData.ownerUserId}
-										class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-									>
-										<option value="">No owner</option>
-										{#each users as user}
-											<option value={user.id}>{user.name} ({user.email})</option>
-										{/each}
-									</select>
-								{/if}
+								<input
+									id="owner"
+									type="text"
+									bind:value={formData.ownerUserId}
+									placeholder="User ID or leave empty"
+									class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+								/>
 							</div>
 
 							<!-- Status -->

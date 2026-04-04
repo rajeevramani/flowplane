@@ -68,8 +68,9 @@ examples/
 specs/
 docs/
 
-# Docker compose files (don't copy into image)
+# Docker compose files (don't copy into image, except dev which is embedded via include_str!)
 docker-compose*.yml
+!docker-compose-dev.yml
 
 # Makefile (don't need in image)
 Makefile

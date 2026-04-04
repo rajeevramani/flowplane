@@ -1,22 +1,17 @@
-// API client with CSRF token handling
+// API client with OIDC JWT authentication
 import { goto } from '$app/navigation';
 import { env } from '$env/dynamic/public';
 import { z } from 'zod';
 import { SecretResponseSchema, AdminListOrgsResponseSchema, AdminResourceSummarySchema, paginatedSchema } from './schemas';
+import { ClusterResponseSchema } from '$lib/schemas/cluster';
+import { getUserManager } from '$lib/auth/oidc-config';
 import type {
-	LoginRequest,
-	LoginResponse,
-	ChangePasswordRequest,
 	BootstrapStatusResponse,
 	BootstrapInitializeRequest,
 	BootstrapInitializeResponse,
 	SessionInfoResponse,
 	DashboardStats,
 	ApiError,
-	PersonalAccessToken,
-	CreateTokenRequest,
-	TokenSecretResponse,
-	UpdateTokenRequest,
 	ImportOpenApiRequest,
 	ImportResponse,
 	ImportSummary,
@@ -31,14 +26,6 @@ import type {
 	CreateTeamRequest,
 	UpdateTeamRequest,
 	AdminListTeamsResponse,
-	UserResponse,
-	UserWithTeamsResponse,
-	CreateUserRequest,
-	UpdateUserRequest,
-	ListUsersResponse,
-	UserTeamMembership,
-	CreateTeamMembershipRequest,
-	UpdateTeamMembershipRequest,
 	AuditLogEntry,
 	ListAuditLogsQuery,
 	ListAuditLogsResponse,
@@ -75,6 +62,7 @@ import type {
 	CreateSecretRequest,
 	CreateSecretReferenceRequest,
 	UpdateSecretRequest,
+	RotateSecretRequest,
 	ListSecretsQuery,
 	// Filter Install/Configure types
 	InstallFilterRequest,
@@ -113,6 +101,9 @@ import type {
 	LearnedSchemaAvailability,
 	ApplyLearnedSchemaRequest,
 	ApplyLearnedSchemaResponse,
+	// Expose types
+	ExposeRequest,
+	ExposeResponse,
 	// Dataplane types
 	DataplaneResponse,
 	CreateDataplaneBody,
@@ -126,14 +117,22 @@ import type {
 	AdminListOrgsResponse,
 	CurrentOrgResponse,
 	ListOrgTeamsResponse,
+	OrgTeamMemberResponse,
+	ListOrgTeamMembersResponse,
+	AddOrgTeamMemberRequest,
 	OrgRole,
-	// Invitation types
-	InviteTokenInfo,
-	AcceptInvitationRequest,
-	LoginResponse as InvitationLoginResponse,
-	PaginatedInvitations,
-	CreateInvitationRequest,
-	CreateInvitationResponse,
+	// Agent types
+	AgentInfo,
+	ListAgentsResponse,
+	CreateAgentRequest,
+	CreateAgentResponse,
+	CreateGrantRequest,
+	GrantResponse,
+	GrantListResponse,
+	GrantSummary,
+	// Invite types
+	InviteOrgMemberRequest,
+	InviteOrgMemberResponse,
 	PaginatedResponse,
 	// Admin Summary types
 	AdminResourceSummary
@@ -152,35 +151,21 @@ function parseResponse<T>(data: unknown, schema: z.ZodType<T>): T {
 }
 
 class ApiClient {
-	private csrfToken: string | null = null;
-
-	constructor() {
-		// Load CSRF token from sessionStorage on initialization
-		if (typeof window !== 'undefined') {
-			this.csrfToken = sessionStorage.getItem('csrf_token');
-		}
-	}
-
-	private getHeaders(includeCSRF: boolean = false): HeadersInit {
-		const headers: HeadersInit = {
+	private async getHeaders(): Promise<HeadersInit> {
+		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
 		};
 
-		if (includeCSRF && this.csrfToken) {
-			headers['X-CSRF-Token'] = this.csrfToken;
+		const userManager = await getUserManager();
+		const user = await userManager.getUser();
+		if (user?.access_token) {
+			headers['Authorization'] = `Bearer ${user.access_token}`;
 		}
 
 		return headers;
 	}
 
 	private async handleResponse<T>(response: Response): Promise<T> {
-		// Check for CSRF token in response headers
-		const csrfHeader = response.headers.get('X-CSRF-Token');
-		if (csrfHeader) {
-			this.csrfToken = csrfHeader;
-			sessionStorage.setItem('csrf_token', csrfHeader);
-		}
-
 		if (!response.ok) {
 			// Handle 401 Unauthorized - redirect to login
 			if (response.status === 401) {
@@ -210,66 +195,60 @@ class ApiClient {
 		return response.json();
 	}
 
-	async login(credentials: LoginRequest): Promise<LoginResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
-			method: 'POST',
-			headers: this.getHeaders(),
-			body: JSON.stringify(credentials),
-			credentials: 'include', // Include cookies
-		});
-
-		const data = await this.handleResponse<LoginResponse>(response);
-
-		// Store CSRF token
-		if (data.csrfToken) {
-			this.csrfToken = data.csrfToken;
-			sessionStorage.setItem('csrf_token', data.csrfToken);
-		}
-
-		return data;
+	async login(): Promise<void> {
+		const userManager = await getUserManager();
+		await userManager.signinRedirect();
 	}
 
 	async logout(): Promise<void> {
 		try {
-			const response = await fetch(`${API_BASE}/api/v1/auth/sessions/logout`, {
-				method: 'POST',
-				headers: this.getHeaders(true), // Include CSRF token
-				credentials: 'include',
-			});
-
-			await this.handleResponse(response);
+			const userManager = await getUserManager();
+			await userManager.signoutRedirect();
 		} finally {
-			// Always clear local auth state
 			this.clearAuth();
 		}
 	}
 
 	async getSessionInfo(): Promise<SessionInfoResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/sessions/me`, {
-			method: 'GET',
-			headers: this.getHeaders(),
-			credentials: 'include',
-		});
+		const userManager = await getUserManager();
+		const user = await userManager.getUser();
+		if (!user || user.expired) {
+			throw new Error('Not authenticated');
+		}
 
-		return this.handleResponse<SessionInfoResponse>(response);
-	}
+		// Fetch DB-sourced permissions from backend (Auth v3: JWT is identity-only,
+		// all permissions come from Flowplane DB, not Zitadel role claims).
+		const backendSession = await this.get<{
+			userId: string;
+			email: string;
+			name: string;
+			isAdmin: boolean;
+			isPlatformAdmin: boolean;
+			orgScopes: string[];
+			grants: GrantSummary[];
+			teams: string[];
+			orgId?: string;
+			orgName?: string;
+			orgRole?: string;
+		}>('/api/v1/auth/session');
 
-	async changePassword(request: ChangePasswordRequest): Promise<void> {
-		const response = await fetch(`${API_BASE}/api/v1/auth/change-password`, {
-			method: 'POST',
-			headers: this.getHeaders(true), // Include CSRF token
-			body: JSON.stringify(request),
-			credentials: 'include',
-		});
-
-		await this.handleResponse<void>(response);
+		return {
+			userId: backendSession.userId,
+			name: backendSession.name || (user.profile.name as string) || '',
+			email: backendSession.email || (user.profile.email as string) || '',
+			isPlatformAdmin: backendSession.isPlatformAdmin,
+			teams: backendSession.teams,
+			orgScopes: backendSession.orgScopes,
+			grants: backendSession.grants,
+			expiresAt: user.expires_at ? new Date(user.expires_at * 1000).toISOString() : null,
+			orgId: backendSession.orgId,
+			orgName: backendSession.orgName,
+			orgRole: backendSession.orgRole,
+		};
 	}
 
 	clearAuth() {
-		this.csrfToken = null;
-		if (typeof window !== 'undefined') {
-			sessionStorage.removeItem('csrf_token');
-		}
+		getUserManager().then((um) => um.removeUser());
 		// Clear org context to prevent session leaking across logins
 		currentOrg.set({ organization: null, role: null });
 	}
@@ -278,7 +257,7 @@ class ApiClient {
 	async get<T>(path: string): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: await this.getHeaders(),
 			credentials: 'include',
 		});
 
@@ -288,7 +267,7 @@ class ApiClient {
 	async post<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'POST',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -299,7 +278,7 @@ class ApiClient {
 	async put<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'PUT',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -310,7 +289,7 @@ class ApiClient {
 	async delete<T>(path: string): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'DELETE',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			credentials: 'include',
 		});
 
@@ -320,7 +299,7 @@ class ApiClient {
 	async patch<T>(path: string, body: unknown): Promise<T> {
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'PATCH',
-			headers: this.getHeaders(true), // Include CSRF
+			headers: await this.getHeaders(),
 			body: JSON.stringify(body),
 			credentials: 'include',
 		});
@@ -332,7 +311,7 @@ class ApiClient {
 	async getBootstrapStatus(): Promise<BootstrapStatusResponse> {
 		const response = await fetch(`${API_BASE}/api/v1/bootstrap/status`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: { 'Content-Type': 'application/json' },
 		});
 
 		return this.handleResponse<BootstrapStatusResponse>(response);
@@ -343,49 +322,16 @@ class ApiClient {
 	): Promise<BootstrapInitializeResponse> {
 		const response = await fetch(`${API_BASE}/api/v1/bootstrap/initialize`, {
 			method: 'POST',
-			headers: this.getHeaders(),
+			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(data),
 		});
 
 		return this.handleResponse<BootstrapInitializeResponse>(response);
 	}
 
-	// Token management methods
-	async listTokens(limit?: number, offset?: number): Promise<PersonalAccessToken[]> {
-		let path = '/api/v1/tokens';
-		const params = new URLSearchParams();
-		if (limit) params.append('limit', limit.toString());
-		if (offset) params.append('offset', offset.toString());
-		if (params.toString()) path += `?${params.toString()}`;
-
-		const response = await this.get<PaginatedResponse<PersonalAccessToken>>(path);
-		return response.items;
-	}
-
-	async getToken(id: string): Promise<PersonalAccessToken> {
-		return this.get<PersonalAccessToken>(`/api/v1/tokens/${id}`);
-	}
-
-	async createToken(request: CreateTokenRequest): Promise<TokenSecretResponse> {
-		return this.post<TokenSecretResponse>('/api/v1/tokens', request);
-	}
-
-	async updateToken(id: string, request: UpdateTokenRequest): Promise<PersonalAccessToken> {
-		return this.put<PersonalAccessToken>(`/api/v1/tokens/${id}`, request);
-	}
-
-	async revokeToken(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/tokens/${id}`);
-	}
-
-	async rotateToken(id: string): Promise<TokenSecretResponse> {
-		return this.post<TokenSecretResponse>(`/api/v1/tokens/${id}/rotate`, {});
-	}
-
 	// OpenAPI import
 	async importOpenApiSpec(request: ImportOpenApiRequest): Promise<ImportResponse> {
 		const params = new URLSearchParams();
-		if (request.team) params.append('team', request.team);
 		params.append('listener_mode', request.listenerMode);
 		if (request.listenerMode === 'existing' && request.existingListenerName) {
 			params.append('existing_listener_name', request.existingListenerName);
@@ -396,16 +342,17 @@ class ApiClient {
 			if (request.newListenerPort) params.append('new_listener_port', request.newListenerPort.toString());
 		}
 
-		const path = `/api/v1/openapi/import${params.toString() ? `?${params.toString()}` : ''}`;
+		const path = `/api/v1/teams/${encodeURIComponent(request.team)}/openapi/import${params.toString() ? `?${params.toString()}` : ''}`;
 
 		// Determine content type based on spec format
 		const isYaml = request.spec.trim().startsWith('openapi:') || request.spec.trim().startsWith('swagger:');
 		const contentType = isYaml ? 'application/yaml' : 'application/json';
 
+		const baseHeaders = await this.getHeaders();
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'POST',
 			headers: {
-				...this.getHeaders(true), // Include CSRF
+				...baseHeaders,
 				'Content-Type': contentType
 			},
 			body: request.spec,
@@ -417,14 +364,15 @@ class ApiClient {
 
 	// Import methods (replacing API Definition methods)
 	async listImports(team: string): Promise<ImportSummary[]> {
-		const path = `/api/v1/openapi/imports?team=${encodeURIComponent(team)}`;
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/openapi/imports`;
 		const response = await this.get<{ imports: ImportSummary[] }>(path);
 		return response.imports;
 	}
 
 	// List all imports across all teams (admin only)
-	async listAllImports(): Promise<ImportSummary[]> {
-		const path = '/api/v1/openapi/imports';
+	// Note: use listImports(team) for team-scoped access
+	async listAllImports(team: string): Promise<ImportSummary[]> {
+		const path = `/api/v1/teams/${encodeURIComponent(team)}/openapi/imports`;
 		const response = await this.get<{ imports: ImportSummary[] }>(path);
 		return response.imports;
 	}
@@ -438,8 +386,8 @@ class ApiClient {
 	}
 
 	// Listener methods
-	async listListeners(params?: { limit?: number; offset?: number }): Promise<ListenerResponse[]> {
-		let path = '/api/v1/listeners';
+	async listListeners(team: string, params?: { limit?: number; offset?: number }): Promise<ListenerResponse[]> {
+		let path = `/api/v1/teams/${encodeURIComponent(team)}/listeners`;
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -449,17 +397,17 @@ class ApiClient {
 		return response.items;
 	}
 
-	async getListener(name: string): Promise<ListenerResponse> {
-		return this.get<ListenerResponse>(`/api/v1/listeners/${name}`);
+	async getListener(team: string, name: string): Promise<ListenerResponse> {
+		return this.get<ListenerResponse>(`/api/v1/teams/${encodeURIComponent(team)}/listeners/${encodeURIComponent(name)}`);
 	}
 
-	async deleteListener(name: string): Promise<void> {
-		return this.delete<void>(`/api/v1/listeners/${name}`);
+	async deleteListener(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/listeners/${encodeURIComponent(name)}`);
 	}
 
 	// Route Config methods
-	async listRouteConfigs(params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
-		let path = '/api/v1/route-configs';
+	async listRouteConfigs(team: string, params?: { limit?: number; offset?: number }): Promise<RouteResponse[]> {
+		let path = `/api/v1/teams/${encodeURIComponent(team)}/route-configs`;
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -469,56 +417,58 @@ class ApiClient {
 		return response.items;
 	}
 
-	async getRouteConfig(name: string): Promise<RouteResponse> {
-		return this.get<RouteResponse>(`/api/v1/route-configs/${name}`);
+	async getRouteConfig(team: string, name: string): Promise<RouteResponse> {
+		return this.get<RouteResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(name)}`);
 	}
 
-	async deleteRouteConfig(name: string): Promise<void> {
-		return this.delete<void>(`/api/v1/route-configs/${name}`);
+	async deleteRouteConfig(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(name)}`);
 	}
 
-	async updateRouteConfig(name: string, body: UpdateRouteBody): Promise<RouteResponse> {
-		return this.put<RouteResponse>(`/api/v1/route-configs/${name}`, body);
+	async updateRouteConfig(team: string, name: string, body: UpdateRouteBody): Promise<RouteResponse> {
+		return this.put<RouteResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(name)}`, body);
 	}
 
 	// Cluster methods
-	async listClusters(params?: { limit?: number; offset?: number }): Promise<ClusterResponse[]> {
-		let path = '/api/v1/clusters';
+	async listClusters(team: string, params?: { limit?: number; offset?: number }): Promise<ClusterResponse[]> {
+		let path = `/api/v1/teams/${encodeURIComponent(team)}/clusters`;
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
 		if (searchParams.toString()) path += `?${searchParams.toString()}`;
 
 		const response = await this.get<PaginatedResponse<ClusterResponse>>(path);
-		return response.items;
+		const validated = parseResponse(response, paginatedSchema(ClusterResponseSchema));
+		return (validated as PaginatedResponse<ClusterResponse>).items;
 	}
 
-	async getCluster(name: string): Promise<ClusterResponse> {
-		return this.get<ClusterResponse>(`/api/v1/clusters/${name}`);
+	async getCluster(team: string, name: string): Promise<ClusterResponse> {
+		const data = await this.get<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`);
+		return parseResponse(data, ClusterResponseSchema) as ClusterResponse;
 	}
 
-	async deleteCluster(name: string): Promise<void> {
-		return this.delete<void>(`/api/v1/clusters/${name}`);
+	async deleteCluster(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`);
 	}
 
-	async createCluster(body: CreateClusterBody): Promise<ClusterResponse> {
-		return this.post<ClusterResponse>('/api/v1/clusters', body);
+	async createCluster(team: string, body: CreateClusterBody): Promise<ClusterResponse> {
+		return this.post<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters`, body);
 	}
 
-	async updateCluster(name: string, body: CreateClusterBody): Promise<ClusterResponse> {
-		return this.put<ClusterResponse>(`/api/v1/clusters/${name}`, body);
+	async updateCluster(team: string, name: string, body: CreateClusterBody): Promise<ClusterResponse> {
+		return this.put<ClusterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/clusters/${encodeURIComponent(name)}`, body);
 	}
 
-	async createRouteConfig(body: CreateRouteBody): Promise<RouteResponse> {
-		return this.post<RouteResponse>('/api/v1/route-configs', body);
+	async createRouteConfig(team: string, body: CreateRouteBody): Promise<RouteResponse> {
+		return this.post<RouteResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs`, body);
 	}
 
-	async createListener(body: CreateListenerBody): Promise<ListenerResponse> {
-		return this.post<ListenerResponse>('/api/v1/listeners', body);
+	async createListener(team: string, body: CreateListenerBody): Promise<ListenerResponse> {
+		return this.post<ListenerResponse>(`/api/v1/teams/${encodeURIComponent(team)}/listeners`, body);
 	}
 
-	async updateListener(name: string, body: UpdateListenerBody): Promise<ListenerResponse> {
-		return this.put<ListenerResponse>(`/api/v1/listeners/${name}`, body);
+	async updateListener(team: string, name: string, body: UpdateListenerBody): Promise<ListenerResponse> {
+		return this.put<ListenerResponse>(`/api/v1/teams/${encodeURIComponent(team)}/listeners/${encodeURIComponent(name)}`, body);
 	}
 
 	// Team methods
@@ -544,59 +494,11 @@ class ApiClient {
 	}
 
 	async adminUpdateTeam(id: string, request: UpdateTeamRequest): Promise<TeamResponse> {
-		return this.put<TeamResponse>(`/api/v1/admin/teams/${id}`, request);
+		return this.patch<TeamResponse>(`/api/v1/admin/teams/${id}`, request);
 	}
 
 	async adminDeleteTeam(id: string): Promise<void> {
 		return this.delete<void>(`/api/v1/admin/teams/${id}`);
-	}
-
-	// User Management methods (admin only)
-	async listUsers(limit: number = 50, offset: number = 0): Promise<ListUsersResponse> {
-		const params = new URLSearchParams();
-		params.append('limit', limit.toString());
-		params.append('offset', offset.toString());
-
-		return this.get<ListUsersResponse>(`/api/v1/users?${params.toString()}`);
-	}
-
-	async getUser(id: string): Promise<UserWithTeamsResponse> {
-		return this.get<UserWithTeamsResponse>(`/api/v1/users/${id}`);
-	}
-
-	async createUser(request: CreateUserRequest): Promise<UserResponse> {
-		return this.post<UserResponse>('/api/v1/users', request);
-	}
-
-	async updateUser(id: string, request: UpdateUserRequest): Promise<UserResponse> {
-		return this.put<UserResponse>(`/api/v1/users/${id}`, request);
-	}
-
-	async deleteUser(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/users/${id}`);
-	}
-
-	async listUserTeams(userId: string): Promise<UserTeamMembership[]> {
-		return this.get<UserTeamMembership[]>(`/api/v1/users/${userId}/teams`);
-	}
-
-	async addTeamMembership(userId: string, request: CreateTeamMembershipRequest): Promise<UserTeamMembership> {
-		return this.post<UserTeamMembership>(`/api/v1/users/${userId}/teams`, request);
-	}
-
-	async removeTeamMembership(userId: string, team: string): Promise<void> {
-		return this.delete<void>(`/api/v1/users/${userId}/teams/${team}`);
-	}
-
-	async updateTeamMembershipScopes(
-		userId: string,
-		team: string,
-		request: UpdateTeamMembershipRequest
-	): Promise<UserTeamMembership> {
-		return this.put<UserTeamMembership>(
-			`/api/v1/users/${userId}/teams/${encodeURIComponent(team)}`,
-			request
-		);
 	}
 
 	// Audit Log methods (admin only)
@@ -630,9 +532,9 @@ class ApiClient {
 		return this.get<ListScopesResponse>('/api/v1/admin/scopes');
 	}
 
-	// Filter methods
-	async listFilters(params?: { limit?: number; offset?: number }): Promise<FilterResponse[]> {
-		let path = '/api/v1/filters';
+	// Filter methods (team-scoped)
+	async listFilters(team: string, params?: { limit?: number; offset?: number }): Promise<FilterResponse[]> {
+		let path = `/api/v1/teams/${encodeURIComponent(team)}/filters`;
 		const searchParams = new URLSearchParams();
 		if (params?.limit) searchParams.append('limit', params.limit.toString());
 		if (params?.offset) searchParams.append('offset', params.offset.toString());
@@ -642,30 +544,30 @@ class ApiClient {
 		return response.items;
 	}
 
-	async getFilter(id: string): Promise<FilterResponse> {
-		return this.get<FilterResponse>(`/api/v1/filters/${id}`);
+	async getFilter(team: string, id: string): Promise<FilterResponse> {
+		return this.get<FilterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/filters/${id}`);
 	}
 
-	async createFilter(body: CreateFilterRequest): Promise<FilterResponse> {
-		return this.post<FilterResponse>('/api/v1/filters', body);
+	async createFilter(team: string, body: CreateFilterRequest): Promise<FilterResponse> {
+		return this.post<FilterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/filters`, body);
 	}
 
-	async updateFilter(id: string, body: UpdateFilterRequest): Promise<FilterResponse> {
-		return this.put<FilterResponse>(`/api/v1/filters/${id}`, body);
+	async updateFilter(team: string, id: string, body: UpdateFilterRequest): Promise<FilterResponse> {
+		return this.patch<FilterResponse>(`/api/v1/teams/${encodeURIComponent(team)}/filters/${id}`, body);
 	}
 
-	async deleteFilter(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/filters/${id}`);
+	async deleteFilter(team: string, id: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/filters/${id}`);
 	}
 
 	// Route Config Filter methods
-	async listRouteConfigFilters(routeConfigName: string): Promise<RouteFiltersResponse> {
-		return this.get<RouteFiltersResponse>(`/api/v1/route-configs/${routeConfigName}/filters`);
+	async listRouteConfigFilters(team: string, routeConfigName: string): Promise<RouteFiltersResponse> {
+		return this.get<RouteFiltersResponse>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/filters`);
 	}
 
 	// Listener-Filter methods
-	async listListenerFilters(listenerId: string): Promise<ListenerFiltersResponse> {
-		return this.get<ListenerFiltersResponse>(`/api/v1/listeners/${listenerId}/filters`);
+	async listListenerFilters(team: string, listenerName: string): Promise<ListenerFiltersResponse> {
+		return this.get<ListenerFiltersResponse>(`/api/v1/teams/${encodeURIComponent(team)}/listeners/${encodeURIComponent(listenerName)}/filters`);
 	}
 
 	// ============================================================================
@@ -673,15 +575,16 @@ class ApiClient {
 	// ============================================================================
 
 	// List virtual hosts within a route config
-	async listVirtualHosts(routeConfigName: string): Promise<VirtualHostSummary[]> {
+	async listVirtualHosts(team: string, routeConfigName: string): Promise<VirtualHostSummary[]> {
 		const response = await this.get<{ routeConfigName: string; virtualHosts: VirtualHostSummary[] }>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts`
+			`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts`
 		);
 		return response.virtualHosts;
 	}
 
 	// List routes within a virtual host
 	async listRoutesInVirtualHost(
+		team: string,
 		routeConfigName: string,
 		virtualHostName: string
 	): Promise<RouteSummary[]> {
@@ -689,29 +592,43 @@ class ApiClient {
 			routeConfigName: string;
 			virtualHostName: string;
 			routes: RouteSummary[];
-		}>(`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes`);
+		}>(`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts/${encodeURIComponent(virtualHostName)}/routes`);
 		return response.routes;
 	}
 
 	// Virtual Host Filter methods
 	async listVirtualHostFilters(
+		team: string,
 		routeConfigName: string,
 		virtualHostName: string
 	): Promise<VirtualHostFiltersResponse> {
 		return this.get<VirtualHostFiltersResponse>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/filters`
+			`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts/${encodeURIComponent(virtualHostName)}/filters`
 		);
 	}
 
 	// Route (within Virtual Host) Filter methods
 	async listRouteHierarchyFilters(
+		team: string,
 		routeConfigName: string,
 		virtualHostName: string,
 		routeName: string
 	): Promise<RouteHierarchyFiltersResponse> {
 		return this.get<RouteHierarchyFiltersResponse>(
-			`/api/v1/route-configs/${routeConfigName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`
+			`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(routeConfigName)}/virtual-hosts/${encodeURIComponent(virtualHostName)}/routes/${encodeURIComponent(routeName)}/filters`
 		);
+	}
+
+	// ============================================================================
+	// Expose / Unexpose Methods
+	// ============================================================================
+
+	async expose(team: string, body: ExposeRequest): Promise<ExposeResponse> {
+		return this.post<ExposeResponse>(`/api/v1/teams/${encodeURIComponent(team)}/expose`, body);
+	}
+
+	async unexpose(team: string, name: string): Promise<void> {
+		return this.delete<void>(`/api/v1/teams/${encodeURIComponent(team)}/expose/${encodeURIComponent(name)}`);
 	}
 
 	// ============================================================================
@@ -940,8 +857,18 @@ class ApiClient {
 	 * Update an existing secret.
 	 */
 	async updateSecret(team: string, secretId: string, request: UpdateSecretRequest): Promise<SecretResponse> {
-		return this.put<SecretResponse>(
+		return this.patch<SecretResponse>(
 			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}`,
+			request
+		);
+	}
+
+	/**
+	 * Rotate a secret (replaces configuration, bumps version).
+	 */
+	async rotateSecret(team: string, secretId: string, request: RotateSecretRequest): Promise<SecretResponse> {
+		return this.post<SecretResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/secrets/${encodeURIComponent(secretId)}/rotate`,
 			request
 		);
 	}
@@ -963,9 +890,9 @@ class ApiClient {
 	 * Install a filter on a listener.
 	 * This adds the filter to the listener's HCM filter chain.
 	 */
-	async installFilter(filterId: string, request: InstallFilterRequest): Promise<InstallFilterResponse> {
+	async installFilter(team: string, filterId: string, request: InstallFilterRequest): Promise<InstallFilterResponse> {
 		return this.post<InstallFilterResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/installations`,
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/installations`,
 			request
 		);
 	}
@@ -973,18 +900,18 @@ class ApiClient {
 	/**
 	 * Uninstall a filter from a listener.
 	 */
-	async uninstallFilter(filterId: string, listenerId: string): Promise<void> {
+	async uninstallFilter(team: string, filterId: string, listenerId: string): Promise<void> {
 		return this.delete<void>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/installations/${encodeURIComponent(listenerId)}`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/installations/${encodeURIComponent(listenerId)}`
 		);
 	}
 
 	/**
 	 * List all listener installations for a filter.
 	 */
-	async listFilterInstallations(filterId: string): Promise<FilterInstallationsResponse> {
+	async listFilterInstallations(team: string, filterId: string): Promise<FilterInstallationsResponse> {
 		return this.get<FilterInstallationsResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/installations`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/installations`
 		);
 	}
 
@@ -992,9 +919,9 @@ class ApiClient {
 	 * Configure a filter for a scope (route-config, virtual-host, or route).
 	 * This sets per-route behavior for the filter.
 	 */
-	async configureFilter(filterId: string, request: ConfigureFilterRequest): Promise<ConfigureFilterResponse> {
+	async configureFilter(team: string, filterId: string, request: ConfigureFilterRequest): Promise<ConfigureFilterResponse> {
 		return this.post<ConfigureFilterResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations`,
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/configurations`,
 			request
 		);
 	}
@@ -1002,27 +929,27 @@ class ApiClient {
 	/**
 	 * Remove a filter configuration from a scope.
 	 */
-	async removeFilterConfiguration(filterId: string, scopeType: string, scopeId: string): Promise<void> {
+	async removeFilterConfiguration(team: string, filterId: string, scopeType: string, scopeId: string): Promise<void> {
 		return this.delete<void>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/configurations/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`
 		);
 	}
 
 	/**
 	 * List all configurations for a filter.
 	 */
-	async listFilterConfigurations(filterId: string): Promise<FilterConfigurationsResponse> {
+	async listFilterConfigurations(team: string, filterId: string): Promise<FilterConfigurationsResponse> {
 		return this.get<FilterConfigurationsResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/configurations`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/configurations`
 		);
 	}
 
 	/**
 	 * Get combined filter status with all installations and configurations.
 	 */
-	async getFilterStatus(filterId: string): Promise<FilterStatusResponse> {
+	async getFilterStatus(team: string, filterId: string): Promise<FilterStatusResponse> {
 		return this.get<FilterStatusResponse>(
-			`/api/v1/filters/${encodeURIComponent(filterId)}/status`
+			`/api/v1/teams/${encodeURIComponent(team)}/filters/${encodeURIComponent(filterId)}/status`
 		);
 	}
 
@@ -1031,25 +958,26 @@ class ApiClient {
 	// ============================================================================
 
 	/**
-	 * List learning sessions for the current user's team.
+	 * List learning sessions for a team.
 	 * Supports filtering by status and pagination.
 	 */
-	async listLearningSessions(query?: ListLearningSessionsQuery): Promise<LearningSessionResponse[]> {
+	async listLearningSessions(team: string, query?: ListLearningSessionsQuery): Promise<LearningSessionResponse[]> {
 		const params = new URLSearchParams();
 		if (query?.status) params.append('status', query.status);
 		if (query?.limit) params.append('limit', query.limit.toString());
 		if (query?.offset) params.append('offset', query.offset.toString());
 
-		const path = `/api/v1/learning-sessions${params.toString() ? `?${params.toString()}` : ''}`;
+		const base = `/api/v1/teams/${encodeURIComponent(team)}/learning-sessions`;
+		const path = `${base}${params.toString() ? `?${params.toString()}` : ''}`;
 		return this.get<LearningSessionResponse[]>(path);
 	}
 
 	/**
 	 * Get a specific learning session by ID.
 	 */
-	async getLearningSession(id: string): Promise<LearningSessionResponse> {
+	async getLearningSession(team: string, id: string): Promise<LearningSessionResponse> {
 		return this.get<LearningSessionResponse>(
-			`/api/v1/learning-sessions/${encodeURIComponent(id)}`
+			`/api/v1/teams/${encodeURIComponent(team)}/learning-sessions/${encodeURIComponent(id)}`
 		);
 	}
 
@@ -1057,16 +985,21 @@ class ApiClient {
 	 * Create a new learning session.
 	 * The session will automatically start capturing traffic matching the route pattern.
 	 */
-	async createLearningSession(request: CreateLearningSessionRequest): Promise<LearningSessionResponse> {
-		return this.post<LearningSessionResponse>('/api/v1/learning-sessions', request);
+	async createLearningSession(team: string, request: CreateLearningSessionRequest): Promise<LearningSessionResponse> {
+		return this.post<LearningSessionResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/learning-sessions`,
+			request
+		);
 	}
 
 	/**
 	 * Cancel a learning session.
 	 * This will stop traffic capture and mark the session as cancelled.
 	 */
-	async cancelLearningSession(id: string): Promise<void> {
-		return this.delete<void>(`/api/v1/learning-sessions/${encodeURIComponent(id)}`);
+	async cancelLearningSession(team: string, id: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/teams/${encodeURIComponent(team)}/learning-sessions/${encodeURIComponent(id)}`
+		);
 	}
 
 	// ============================================================================
@@ -1077,53 +1010,53 @@ class ApiClient {
 	 * List aggregated schemas discovered through learning sessions.
 	 * Supports filtering by path, HTTP method, and minimum confidence.
 	 */
-	async listAggregatedSchemas(query?: ListAggregatedSchemasQuery): Promise<AggregatedSchemaResponse[]> {
+	async listAggregatedSchemas(team: string, query?: ListAggregatedSchemasQuery): Promise<AggregatedSchemaResponse[]> {
 		const params = new URLSearchParams();
-		if (query?.team) params.append('team', query.team);
 		if (query?.path) params.append('path', query.path);
 		if (query?.httpMethod) params.append('http_method', query.httpMethod);
 		if (query?.minConfidence) params.append('min_confidence', query.minConfidence.toString());
 		if (query?.limit) params.append('limit', query.limit.toString());
 		if (query?.offset) params.append('offset', query.offset.toString());
 
-		const path = `/api/v1/aggregated-schemas${params.toString() ? `?${params.toString()}` : ''}`;
+		const basePath = `/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas`;
+		const path = `${basePath}${params.toString() ? `?${params.toString()}` : ''}`;
 		return this.get<AggregatedSchemaResponse[]>(path);
 	}
 
 	/**
 	 * Get a specific aggregated schema by ID.
 	 */
-	async getAggregatedSchema(id: number): Promise<AggregatedSchemaResponse> {
-		return this.get<AggregatedSchemaResponse>(`/api/v1/aggregated-schemas/${id}`);
+	async getAggregatedSchema(team: string, id: number): Promise<AggregatedSchemaResponse> {
+		return this.get<AggregatedSchemaResponse>(`/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas/${id}`);
 	}
 
 	/**
 	 * Compare two versions of a schema.
 	 * Returns differences including breaking changes.
 	 */
-	async compareSchemaVersions(id: number, withVersion: number): Promise<SchemaComparisonResponse> {
+	async compareSchemaVersions(team: string, id: number, withVersion: number): Promise<SchemaComparisonResponse> {
 		return this.get<SchemaComparisonResponse>(
-			`/api/v1/aggregated-schemas/${id}/compare?with_version=${withVersion}`
+			`/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas/${id}/compare?with_version=${withVersion}`
 		);
 	}
 
 	/**
 	 * Export a schema as OpenAPI 3.1 specification.
 	 */
-	async exportSchemaAsOpenApi(id: number, includeMetadata: boolean = false): Promise<OpenApiExportResponse> {
+	async exportSchemaAsOpenApi(team: string, id: number, includeMetadata: boolean = false): Promise<OpenApiExportResponse> {
 		const params = new URLSearchParams();
 		params.append('include_metadata', includeMetadata.toString());
 
 		return this.get<OpenApiExportResponse>(
-			`/api/v1/aggregated-schemas/${id}/export?${params.toString()}`
+			`/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas/${id}/export?${params.toString()}`
 		);
 	}
 
 	/**
 	 * Export multiple schemas as a unified OpenAPI 3.1 specification.
 	 */
-	async exportMultipleSchemasAsOpenApi(request: ExportMultipleSchemasRequest): Promise<OpenApiExportResponse> {
-		return this.post<OpenApiExportResponse>('/api/v1/aggregated-schemas/export', request);
+	async exportMultipleSchemasAsOpenApi(team: string, request: ExportMultipleSchemasRequest): Promise<OpenApiExportResponse> {
+		return this.post<OpenApiExportResponse>(`/api/v1/teams/${encodeURIComponent(team)}/aggregated-schemas/export`, request);
 	}
 
 	// ============================================================================
@@ -1179,7 +1112,7 @@ class ApiClient {
 		id: string,
 		request: UpdateCustomWasmFilterRequest
 	): Promise<CustomWasmFilterResponse> {
-		return this.put<CustomWasmFilterResponse>(
+		return this.patch<CustomWasmFilterResponse>(
 			`/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}`,
 			request
 		);
@@ -1204,7 +1137,7 @@ class ApiClient {
 			`${API_BASE}/api/v1/teams/${encodeURIComponent(team)}/custom-filters/${encodeURIComponent(id)}/download`,
 			{
 				method: 'GET',
-				headers: this.getHeaders(),
+				headers: await this.getHeaders(),
 				credentials: 'include'
 			}
 		);
@@ -1366,7 +1299,7 @@ class ApiClient {
 		try {
 			const response = await fetch(`${API_BASE}/api/v1/mcp/cp?team=${encodeURIComponent(team)}`, {
 				method: 'POST',
-				headers: this.getHeaders(true),
+				headers: await this.getHeaders(),
 				credentials: 'include',
 				body: JSON.stringify({
 					jsonrpc: '2.0',
@@ -1423,7 +1356,7 @@ class ApiClient {
 			`${API_BASE}/api/v1/mcp/cp/connections?team=${encodeURIComponent(team)}`,
 			{
 				method: 'GET',
-				headers: this.getHeaders(true),
+				headers: await this.getHeaders(),
 				credentials: 'include'
 			}
 		);
@@ -1483,7 +1416,7 @@ class ApiClient {
 	 * Update a dataplane.
 	 */
 	async updateDataplane(team: string, name: string, body: UpdateDataplaneBody): Promise<DataplaneResponse> {
-		return this.put<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`, body);
+		return this.patch<DataplaneResponse>(`/api/v1/teams/${encodeURIComponent(team)}/dataplanes/${encodeURIComponent(name)}`, body);
 	}
 
 	/**
@@ -1527,7 +1460,7 @@ class ApiClient {
 
 		const response = await fetch(`${API_BASE}${path}`, {
 			method: 'GET',
-			headers: this.getHeaders(),
+			headers: await this.getHeaders(),
 			credentials: 'include'
 		});
 
@@ -1564,7 +1497,7 @@ class ApiClient {
 	}
 
 	async updateOrganization(id: string, data: UpdateOrganizationRequest): Promise<OrganizationResponse> {
-		return this.put<OrganizationResponse>(`/api/v1/admin/organizations/${encodeURIComponent(id)}`, data);
+		return this.patch<OrganizationResponse>(`/api/v1/admin/organizations/${encodeURIComponent(id)}`, data);
 	}
 
 	async deleteOrganization(id: string): Promise<void> {
@@ -1576,9 +1509,10 @@ class ApiClient {
 	// ============================================================================
 
 	async listOrgMembers(orgId: string): Promise<OrgMembershipResponse[]> {
-		return this.get<OrgMembershipResponse[]>(
+		const response = await this.get<{ members: OrgMembershipResponse[] }>(
 			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/members`
 		);
+		return response.members;
 	}
 
 	async addOrgMember(orgId: string, data: AddOrgMemberRequest): Promise<OrgMembershipResponse> {
@@ -1622,97 +1556,119 @@ class ApiClient {
 		);
 	}
 
-	// ============================================================================
-	// Invitation API (Invite-Only Registration)
-	// ============================================================================
-
-	async validateInviteToken(token: string): Promise<InviteTokenInfo> {
-		const params = new URLSearchParams({ token });
-		const response = await fetch(
-			`${API_BASE}/api/v1/invitations/validate?${params.toString()}`,
-			{
-				method: 'GET',
-				headers: { 'Content-Type': 'application/json' },
-				credentials: 'include'
-			}
-		);
-
-		if (!response.ok) {
-			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-			try {
-				const errorData = await response.json();
-				errorMessage = errorData.message || errorMessage;
-			} catch {
-				// Use status text
-			}
-			throw new Error(errorMessage);
+	async getOrgTeam(orgName: string, teamName: string): Promise<TeamResponse> {
+		const response = await this.listOrgTeams(orgName);
+		const team = response.teams.find((t) => t.name === teamName);
+		if (!team) {
+			throw new Error(`Team '${teamName}' not found`);
 		}
-
-		return response.json();
+		return team;
 	}
 
-	async acceptInvitation(req: AcceptInvitationRequest): Promise<InvitationLoginResponse> {
-		const response = await fetch(`${API_BASE}/api/v1/invitations/accept`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(req),
-			credentials: 'include'
-		});
-
-		if (!response.ok) {
-			let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-			try {
-				const errorData = await response.json();
-				errorMessage = errorData.message || errorMessage;
-			} catch {
-				// Use status text
-			}
-			throw new Error(errorMessage);
-		}
-
-		const data: InvitationLoginResponse = await response.json();
-
-		// Replicate CSRF token storage from login()
-		if (data.csrfToken) {
-			this.csrfToken = data.csrfToken;
-			try {
-				sessionStorage.setItem('csrf_token', data.csrfToken);
-			} catch {
-				// Safari private browsing may throw on sessionStorage write
-			}
-		}
-
-		return data;
-	}
-
-	async listOrgInvitations(
+	async updateOrgTeam(
 		orgName: string,
-		limit?: number,
-		offset?: number
-	): Promise<PaginatedInvitations> {
-		const params = new URLSearchParams();
-		if (limit !== undefined) params.append('limit', limit.toString());
-		if (offset !== undefined) params.append('offset', offset.toString());
-
-		const query = params.toString();
-		return this.get<PaginatedInvitations>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations${query ? `?${query}` : ''}`
+		teamName: string,
+		data: UpdateTeamRequest
+	): Promise<TeamResponse> {
+		return this.patch<TeamResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}`,
+			data
 		);
 	}
 
-	async createOrgInvitation(
+	async deleteOrgTeam(orgName: string, teamName: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}`
+		);
+	}
+
+	async listTeamMembers(
 		orgName: string,
-		req: CreateInvitationRequest
-	): Promise<CreateInvitationResponse> {
-		return this.post<CreateInvitationResponse>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations`,
+		teamName: string
+	): Promise<ListOrgTeamMembersResponse> {
+		return this.get<ListOrgTeamMembersResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members`
+		);
+	}
+
+	async addTeamMember(
+		orgName: string,
+		teamName: string,
+		data: AddOrgTeamMemberRequest
+	): Promise<OrgTeamMemberResponse> {
+		return this.post<OrgTeamMemberResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members`,
+			data
+		);
+	}
+
+	async removeTeamMember(orgName: string, teamName: string, userId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(userId)}`
+		);
+	}
+
+	// ============================================================================
+	// Invite API (Instant Provisioning via Admin)
+	// ============================================================================
+
+	async inviteOrgMember(
+		orgId: string,
+		req: InviteOrgMemberRequest
+	): Promise<InviteOrgMemberResponse> {
+		return this.post<InviteOrgMemberResponse>(
+			`/api/v1/admin/organizations/${encodeURIComponent(orgId)}/invite`,
 			req
 		);
 	}
 
-	async revokeOrgInvitation(orgName: string, invId: string): Promise<void> {
+	// ============================================================================
+	// Agent API
+	// ============================================================================
+
+	async listOrgAgents(orgName: string): Promise<ListAgentsResponse> {
+		return this.get<ListAgentsResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents`
+		);
+	}
+
+	async createOrgAgent(orgName: string, data: CreateAgentRequest): Promise<CreateAgentResponse> {
+		return this.post<CreateAgentResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents`,
+			data
+		);
+	}
+
+	async deleteOrgAgent(orgName: string, agentName: string): Promise<void> {
 		return this.delete<void>(
-			`/api/v1/orgs/${encodeURIComponent(orgName)}/invitations/${encodeURIComponent(invId)}`
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/agents/${encodeURIComponent(agentName)}`
+		);
+	}
+
+	// ============================================================================
+	// Unified Grant API (principals — users and agents)
+	// ============================================================================
+
+	async createPrincipalGrant(
+		orgName: string,
+		principalId: string,
+		request: CreateGrantRequest
+	): Promise<GrantResponse> {
+		return this.post<GrantResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants`,
+			request
+		);
+	}
+
+	async listPrincipalGrants(orgName: string, principalId: string): Promise<GrantListResponse> {
+		return this.get<GrantListResponse>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants`
+		);
+	}
+
+	async deletePrincipalGrant(orgName: string, principalId: string, grantId: string): Promise<void> {
+		return this.delete<void>(
+			`/api/v1/orgs/${encodeURIComponent(orgName)}/principals/${encodeURIComponent(principalId)}/grants/${encodeURIComponent(grantId)}`
 		);
 	}
 }

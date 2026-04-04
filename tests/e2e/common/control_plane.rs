@@ -111,12 +111,16 @@ impl ControlPlaneHandle {
             envoy_admin: Default::default(),
         };
 
+        // Set env vars BEFORE XdsState::with_database() — it reads them during init
+        std::env::set_var("FLOWPLANE_USE_MOCK_CERT_BACKEND", "1");
+        std::env::set_var("FLOWPLANE_PERMISSION_CACHE_TTL_SECS", "0");
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "dGVzdC1lMmUtZW5jcnlwdGlvbi1rZXktMzItYnl0ZXM=",
+        );
+
         // Create state without Arc first so we can initialize the secret backend registry
         let mut state_struct = XdsState::with_database(simple_config, pool.clone());
-
-        // Enable mock certificate backend for E2E tests
-        // This allows testing the certificate API without requiring Vault
-        std::env::set_var("FLOWPLANE_USE_MOCK_CERT_BACKEND", "1");
 
         // Initialize secret backend registry with mock certificate backend
         // Note: encryption service may be None in test environment, but we can
@@ -140,6 +144,20 @@ impl ControlPlaneHandle {
         let state = Arc::new(state_struct);
         ensure_default_gateway_resources(&state).await?;
         info!("Default gateway resources created");
+
+        // Ensure platform resources exist (platform org + team) and seed superadmin
+        // This mirrors what main.rs does on startup
+        use flowplane::api::handlers::bootstrap::{ensure_platform_resources, seed_superadmin};
+        use flowplane::auth::zitadel_admin::ZitadelAdminClient;
+        let has_owner = ensure_platform_resources(&pool).await?;
+        if !has_owner {
+            if let Some(admin_client) = ZitadelAdminClient::from_env() {
+                let pool_clone = pool.clone();
+                tokio::spawn(async move {
+                    seed_superadmin(pool_clone, admin_client).await;
+                });
+            }
+        }
 
         // Start xDS server with oneshot shutdown
         let (sd_tx, sd_rx) = oneshot::channel::<()>();

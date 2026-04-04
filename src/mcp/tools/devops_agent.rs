@@ -4,12 +4,11 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    ClusterOperations, FilterOperations, InternalAuthContext, ListClustersRequest,
-    ListFiltersRequest, ListListenersRequest, ListRouteConfigsRequest, ListenerOperations,
-    RouteConfigOperations,
+    ClusterOperations, FilterOperations, ListClustersRequest, ListFiltersRequest,
+    ListListenersRequest, ListRouteConfigsRequest, ListenerOperations, RouteConfigOperations,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -57,22 +56,22 @@ Authorization: Requires cp:read scope."#,
         json!({
             "type": "object",
             "properties": {
-                "cluster_names": {
+                "clusterNames": {
                     "type": "array",
                     "description": "List of cluster names to check (optional - checks all if empty)",
                     "items": {"type": "string"}
                 },
-                "listener_names": {
+                "listenerNames": {
                     "type": "array",
                     "description": "List of listener names to check (optional - checks all if empty)",
                     "items": {"type": "string"}
                 },
-                "filter_names": {
+                "filterNames": {
                     "type": "array",
                     "description": "List of filter names to check (optional - checks all if empty)",
                     "items": {"type": "string"}
                 },
-                "include_details": {
+                "includeDetails": {
                     "type": "boolean",
                     "description": "Include full configuration details (default: false)",
                     "default": false
@@ -95,24 +94,24 @@ pub async fn execute_devops_get_deployment_status(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let cluster_names: Vec<String> = args
-        .get("cluster_names")
+        .get("clusterNames")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
 
     let listener_names: Vec<String> = args
-        .get("listener_names")
+        .get("listenerNames")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
 
     let filter_names: Vec<String> = args
-        .get("filter_names")
+        .get("filterNames")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
 
-    let include_details = args.get("include_details").and_then(|v| v.as_bool()).unwrap_or(false);
+    let include_details = args.get("includeDetails").and_then(|v| v.as_bool()).unwrap_or(false);
 
     tracing::info!(
         team = %team,
@@ -126,10 +125,7 @@ pub async fn execute_devops_get_deployment_status(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // Get cluster status
     let cluster_ops = ClusterOperations::new(xds_state.clone());
@@ -264,7 +260,7 @@ pub async fn execute_devops_get_deployment_status(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================

@@ -19,7 +19,7 @@ use crate::storage::repositories::{
     AggregatedSchemaRepository, CreateAggregatedSchemaRequest, InferredSchemaData,
     InferredSchemaRepository,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{info, instrument, warn};
 
 /// Schema aggregation service
@@ -184,12 +184,18 @@ impl SchemaAggregator {
 
         let has_breaking_changes = breaking_changes.is_some();
 
+        // Merge headers across observations: collect unique header names with one example value
+        let request_headers = merge_headers(&observations, |obs| obs.request_headers.as_ref());
+        let response_headers = merge_headers(&observations, |obs| obs.response_headers.as_ref());
+
         info!(
             method = %http_method,
             path = %path_pattern,
             sample_count = sample_count,
             confidence = confidence_score,
             has_breaking_changes = has_breaking_changes,
+            request_header_count = request_headers.as_ref().map_or(0, |v| v.as_array().map_or(0, |a| a.len())),
+            response_header_count = response_headers.as_ref().map_or(0, |v| v.as_array().map_or(0, |a| a.len())),
             "Prepared aggregation request for endpoint"
         );
 
@@ -200,6 +206,8 @@ impl SchemaAggregator {
             http_method: http_method.to_string(),
             request_schema,
             response_schemas,
+            request_headers,
+            response_headers,
             sample_count,
             confidence_score,
             breaking_changes,
@@ -268,6 +276,49 @@ where
     })?;
 
     Ok(Some(result))
+}
+
+/// Merge header observations across multiple samples into a deduplicated list.
+///
+/// Each observation stores headers as a JSON array of `{"name": "...", "example": "..."}`.
+/// This function collects all unique header names across observations, keeping one
+/// example value per header name. Returns `None` if no headers found.
+fn merge_headers<F>(
+    observations: &[InferredSchemaData],
+    header_accessor: F,
+) -> Option<serde_json::Value>
+where
+    F: Fn(&InferredSchemaData) -> Option<&serde_json::Value>,
+{
+    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut merged: Vec<serde_json::Value> = Vec::new();
+
+    for obs in observations {
+        if let Some(headers_val) = header_accessor(obs) {
+            if let Some(arr) = headers_val.as_array() {
+                for entry in arr {
+                    if let Some(name) = entry.get("name").and_then(|n| n.as_str()) {
+                        let lower_name = name.to_lowercase();
+                        if seen_names.insert(lower_name) {
+                            merged.push(entry.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if merged.is_empty() {
+        None
+    } else {
+        // Sort by header name for consistent output
+        merged.sort_by(|a, b| {
+            let name_a = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let name_b = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            name_a.to_lowercase().cmp(&name_b.to_lowercase())
+        });
+        Some(serde_json::Value::Array(merged))
+    }
 }
 
 /// Fix field-level stats after merging

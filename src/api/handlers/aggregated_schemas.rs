@@ -13,14 +13,10 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     api::{
-        error::ApiError,
-        handlers::team_access::{
-            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
-            verify_team_access,
-        },
+        error::{ApiError, JsonBody},
+        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
         routes::ApiState,
     },
-    auth::authorization::{extract_team_scopes, require_resource_access},
     auth::models::AuthContext,
 };
 
@@ -31,11 +27,6 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
 pub struct ListAggregatedSchemasQuery {
-    /// Team to filter schemas by (required for team-scoped users, optional for admins)
-    #[serde(default)]
-    #[schema(example = "engineering")]
-    pub team: Option<String>,
-
     /// Text search in API path (substring match)
     #[serde(default)]
     #[schema(example = "users")]
@@ -153,6 +144,8 @@ pub struct OpenApiExportResponse {
     pub info: OpenApiInfo,
     pub paths: serde_json::Value,
     pub components: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -237,8 +230,11 @@ fn schema_response_from_data(
 /// List aggregated schemas with optional filters
 #[utoipa::path(
     get,
-    path = "/api/v1/aggregated-schemas",
-    params(ListAggregatedSchemasQuery),
+    path = "/api/v1/teams/{team}/aggregated-schemas",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ListAggregatedSchemasQuery
+    ),
     responses(
         (status = 200, description = "List of aggregated schemas", body = Vec<AggregatedSchemaResponse>),
         (status = 400, description = "Bad request - invalid parameters"),
@@ -247,43 +243,20 @@ fn schema_response_from_data(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(user_id = ?context.user_id, path = ?query.path, http_method = ?query.http_method))]
+#[instrument(skip(state), fields(user_id = ?context.user_id, team = %team, path = ?query.path, http_method = ?query.http_method))]
 pub async fn list_aggregated_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Query(query): Query<ListAggregatedSchemasQuery>,
 ) -> Result<Json<Vec<AggregatedSchemaResponse>>, ApiError> {
-    // Determine team: use query parameter if provided, otherwise fall back to first team scope
-    let team = if let Some(ref requested_team) = query.team {
-        // Verify user has access to the requested team
-        require_resource_access_resolved(
-            &state,
-            &context,
-            "aggregated-schemas",
-            "read",
-            Some(requested_team),
-            context.org_id.as_ref(),
-        )
+    // Authorization
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
         .await?;
-        requested_team.clone()
-    } else {
-        // Fall back to first team scope from auth context
-        require_resource_access(&context, "aggregated-schemas", "read", None)?;
-        let team_scopes = extract_team_scopes(&context);
-        team_scopes
-            .first()
-            .ok_or_else(|| {
-                ApiError::BadRequest(
-                    "Team scope required for aggregated schemas. Provide 'team' query parameter."
-                        .to_string(),
-                )
-            })?
-            .clone()
-    };
 
     // Resolve team name to UUID
     use crate::storage::repositories::TeamRepository as _;
-    let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
+    let team_repo = team_repo_from_state(&state)?;
     let team_ids = team_repo
         .resolve_team_ids(context.org_id.as_ref(), &[team])
         .await
@@ -338,8 +311,9 @@ pub async fn list_aggregated_schemas_handler(
 /// Get aggregated schema by ID
 #[utoipa::path(
     get,
-    path = "/api/v1/aggregated-schemas/{id}",
+    path = "/api/v1/teams/{team}/aggregated-schemas/{id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = i64, Path, description = "Aggregated schema ID")
     ),
     responses(
@@ -350,14 +324,15 @@ pub async fn list_aggregated_schemas_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(schema_id = %id, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(schema_id = %id, team = %team, user_id = ?context.user_id))]
 pub async fn get_aggregated_schema_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<i64>,
+    Path((team, id)): Path<(String, i64)>,
 ) -> Result<Json<AggregatedSchemaResponse>, ApiError> {
     // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -372,28 +347,13 @@ pub async fn get_aggregated_schema_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access based on user's scope type
-    let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
-    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
-
-    let authorized_schema = if is_admin || has_global_resource_scope {
-        // Admin or global scope - allow access to all schemas
-        schema
-    } else {
-        // Team-scoped user - verify access
-        verify_team_access(schema, &team_scopes).await?
-    };
-
     tracing::info!(
         id = id,
-        team = %authorized_schema.team,
+        team = %team,
         "Retrieved aggregated schema"
     );
 
-    let response = schema_response_from_data(authorized_schema);
+    let response = schema_response_from_data(schema);
 
     Ok(Json(response))
 }
@@ -401,8 +361,9 @@ pub async fn get_aggregated_schema_handler(
 /// Compare schema versions
 #[utoipa::path(
     get,
-    path = "/api/v1/aggregated-schemas/{id}/compare",
+    path = "/api/v1/teams/{team}/aggregated-schemas/{id}/compare",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = i64, Path, description = "Current schema ID"),
         CompareSchemaQuery
     ),
@@ -415,15 +376,16 @@ pub async fn get_aggregated_schema_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(schema_id = %id, compare_version = %query.with_version, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(schema_id = %id, team = %team, compare_version = %query.with_version, user_id = ?context.user_id))]
 pub async fn compare_aggregated_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<i64>,
+    Path((team, id)): Path<(String, i64)>,
     Query(query): Query<CompareSchemaQuery>,
 ) -> Result<Json<SchemaComparisonResponse>, ApiError> {
     // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -438,27 +400,12 @@ pub async fn compare_aggregated_schemas_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access based on user's scope type
-    let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
-    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
-
-    let authorized_current = if is_admin || has_global_resource_scope {
-        // Admin or global scope - allow access to all schemas
-        current_schema.clone()
-    } else {
-        // Team-scoped user - verify access
-        verify_team_access(current_schema.clone(), &team_scopes).await?
-    };
-
     // Get comparison version (same path, method, different version)
     let compared_schema = repo
         .get_by_version(
-            &authorized_current.team,
-            &authorized_current.path,
-            &authorized_current.http_method,
+            &current_schema.team,
+            &current_schema.path,
+            &current_schema.http_method,
             query.with_version,
         )
         .await
@@ -469,29 +416,29 @@ pub async fn compare_aggregated_schemas_handler(
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "Version {} not found for endpoint {} {}",
-                query.with_version, authorized_current.http_method, authorized_current.path
+                query.with_version, current_schema.http_method, current_schema.path
             ))
         })?;
 
     // Calculate differences
     let differences = SchemaDifferences {
-        version_change: authorized_current.version - compared_schema.version,
-        sample_count_change: authorized_current.sample_count - compared_schema.sample_count,
-        confidence_change: authorized_current.confidence_score - compared_schema.confidence_score,
-        has_breaking_changes: authorized_current.breaking_changes.is_some(),
-        breaking_changes: authorized_current.breaking_changes.clone(),
+        version_change: current_schema.version - compared_schema.version,
+        sample_count_change: current_schema.sample_count - compared_schema.sample_count,
+        confidence_change: current_schema.confidence_score - compared_schema.confidence_score,
+        has_breaking_changes: current_schema.breaking_changes.is_some(),
+        breaking_changes: current_schema.breaking_changes.clone(),
     };
 
     tracing::info!(
         current_id = id,
-        current_version = authorized_current.version,
+        current_version = current_schema.version,
         compared_version = compared_schema.version,
-        team = %authorized_current.team,
+        team = %team,
         "Compared schema versions"
     );
 
     let response = SchemaComparisonResponse {
-        current_schema: schema_response_from_data(authorized_current),
+        current_schema: schema_response_from_data(current_schema),
         compared_schema: schema_response_from_data(compared_schema),
         differences,
     };
@@ -502,8 +449,9 @@ pub async fn compare_aggregated_schemas_handler(
 /// Export schema as OpenAPI 3.1 specification
 #[utoipa::path(
     get,
-    path = "/api/v1/aggregated-schemas/{id}/export",
+    path = "/api/v1/teams/{team}/aggregated-schemas/{id}/export",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = i64, Path, description = "Schema ID to export"),
         ExportSchemaQuery
     ),
@@ -515,15 +463,16 @@ pub async fn compare_aggregated_schemas_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(schema_id = %id, include_metadata = %query.include_metadata, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(schema_id = %id, team = %team, include_metadata = %query.include_metadata, user_id = ?context.user_id))]
 pub async fn export_aggregated_schema_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<i64>,
+    Path((team, id)): Path<(String, i64)>,
     Query(query): Query<ExportSchemaQuery>,
 ) -> Result<Json<OpenApiExportResponse>, ApiError> {
     // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -538,30 +487,12 @@ pub async fn export_aggregated_schema_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access based on user's scope type
-    // - Admin users (admin:all) can access all schemas
-    // - Users with global aggregated-schemas:read can access all schemas
-    // - Users with team:X:aggregated-schemas:read can only access their team's schemas
-    let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
-    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
-
-    let authorized_schema = if is_admin || has_global_resource_scope {
-        // Admin or global scope - allow access to all schemas
-        schema
-    } else {
-        // Team-scoped user - verify access
-        verify_team_access(schema, &team_scopes).await?
-    };
-
     // Build OpenAPI 3.1 specification
-    let openapi = build_openapi_spec(&authorized_schema, query.include_metadata);
+    let openapi = build_openapi_spec(&schema, query.include_metadata);
 
     tracing::info!(
         id = id,
-        team = %authorized_schema.team,
+        team = %team,
         include_metadata = query.include_metadata,
         "Exported schema as OpenAPI"
     );
@@ -572,7 +503,10 @@ pub async fn export_aggregated_schema_handler(
 /// Export multiple schemas as a unified OpenAPI 3.1 specification
 #[utoipa::path(
     post,
-    path = "/api/v1/aggregated-schemas/export",
+    path = "/api/v1/teams/{team}/aggregated-schemas/export",
+    params(
+        ("team" = String, Path, description = "Team name")
+    ),
     request_body = ExportMultipleSchemasRequest,
     responses(
         (status = 200, description = "Unified OpenAPI 3.1 specification", body = OpenApiExportResponse),
@@ -583,11 +517,12 @@ pub async fn export_aggregated_schema_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state, body), fields(schema_count = body.schema_ids.len(), user_id = ?context.user_id))]
+#[instrument(skip(state, body), fields(team = %team, schema_count = body.schema_ids.len(), user_id = ?context.user_id))]
 pub async fn export_multiple_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Json(body): Json<ExportMultipleSchemasRequest>,
+    Path(team): Path<String>,
+    JsonBody(body): JsonBody<ExportMultipleSchemasRequest>,
 ) -> Result<Json<OpenApiExportResponse>, ApiError> {
     // Validate non-empty
     if body.schema_ids.is_empty() {
@@ -595,7 +530,8 @@ pub async fn export_multiple_schemas_handler(
     }
 
     // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -618,29 +554,12 @@ pub async fn export_multiple_schemas_handler(
         return Err(ApiError::NotFound(format!("Schemas not found: {:?}", missing)));
     }
 
-    // Verify team access based on user's scope type
-    // - Admin users (admin:all) can access all schemas
-    // - Users with global aggregated-schemas:read can access all schemas
-    // - Users with team:X:aggregated-schemas:read can only access their team's schemas
-    let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
-    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
-
-    if !is_admin && !has_global_resource_scope {
-        // Team-scoped user - verify access to each schema
-        for schema in &schemas {
-            verify_team_access(schema.clone(), &team_scopes).await?;
-        }
-    }
-    // Admin or global scope - allow access to all schemas (no verification needed)
-
     // Build unified OpenAPI spec
     let openapi = build_unified_openapi_spec(&schemas, &body);
 
     tracing::info!(
         schema_count = schemas.len(),
+        team = %team,
         title = %body.title,
         version = %body.version,
         include_metadata = body.include_metadata,
@@ -830,6 +749,7 @@ fn build_openapi_spec(
         components: serde_json::json!({
             "schemas": {}
         }),
+        security: None,
     }
 }
 
@@ -897,6 +817,30 @@ pub fn build_unified_openapi_spec(
             if let Some(path_info) = method_params.get(method_key) {
                 if !path_info.query_params.is_empty() {
                     all_params.extend(build_query_parameters(&path_info.query_params));
+                }
+            }
+        }
+
+        // Add request headers as OpenAPI header parameters (skip auth-related ones
+        // which are handled via securitySchemes)
+        if let Some(schema) = endpoint_schemas.first() {
+            if let Some(ref headers) = schema.request_headers {
+                if let Some(arr) = headers.as_array() {
+                    for entry in arr {
+                        if let Some(name) = entry.get("name").and_then(|n| n.as_str()) {
+                            let lower = name.to_lowercase();
+                            // Auth headers go into securitySchemes, not parameters
+                            if lower == "authorization" || lower == "x-api-key" {
+                                continue;
+                            }
+                            all_params.push(serde_json::json!({
+                                "name": name,
+                                "in": "header",
+                                "required": false,
+                                "schema": { "type": "string" }
+                            }));
+                        }
+                    }
                 }
             }
         }
@@ -988,6 +932,31 @@ pub fn build_unified_openapi_spec(
             }
         }
 
+        // Add response headers to all response objects
+        if let Some(schema) = endpoint_schemas.first() {
+            if let Some(ref headers) = schema.response_headers {
+                if let Some(arr) = headers.as_array() {
+                    if !arr.is_empty() {
+                        let mut header_map = serde_json::json!({});
+                        for entry in arr {
+                            if let Some(name) = entry.get("name").and_then(|n| n.as_str()) {
+                                header_map[name] = serde_json::json!({
+                                    "schema": { "type": "string" },
+                                    "description": format!("Observed header: {}", name)
+                                });
+                            }
+                        }
+                        // Apply to all response objects
+                        if let Some(responses) = operation["responses"].as_object_mut() {
+                            for (_code, resp) in responses.iter_mut() {
+                                resp["headers"] = header_map.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Ensure responses object is not empty (OpenAPI requires at least one response)
         if operation["responses"].as_object().is_some_and(|m| m.is_empty()) {
             operation["responses"]["default"] = serde_json::json!({
@@ -1027,6 +996,60 @@ pub fn build_unified_openapi_spec(
         options.description.clone()
     };
 
+    // Detect security schemes from observed request headers across all schemas
+    let mut security_schemes = serde_json::json!({});
+    let mut global_security: Vec<serde_json::Value> = Vec::new();
+    let mut seen_auth_schemes: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for schema in schemas {
+        if let Some(ref headers) = schema.request_headers {
+            if let Some(arr) = headers.as_array() {
+                for entry in arr {
+                    let name = entry.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let example = entry.get("example").and_then(|e| e.as_str()).unwrap_or("");
+                    let lower = name.to_lowercase();
+
+                    if lower == "authorization" {
+                        // Detect scheme from redacted example: "Bearer ***", "Basic ***"
+                        let scheme_lower =
+                            example.split_whitespace().next().unwrap_or("").to_lowercase();
+                        if scheme_lower == "bearer" && seen_auth_schemes.insert("bearerAuth".into())
+                        {
+                            security_schemes["bearerAuth"] = serde_json::json!({
+                                "type": "http",
+                                "scheme": "bearer"
+                            });
+                            global_security.push(serde_json::json!({"bearerAuth": []}));
+                        } else if scheme_lower == "basic"
+                            && seen_auth_schemes.insert("basicAuth".into())
+                        {
+                            security_schemes["basicAuth"] = serde_json::json!({
+                                "type": "http",
+                                "scheme": "basic"
+                            });
+                            global_security.push(serde_json::json!({"basicAuth": []}));
+                        }
+                    } else if lower == "x-api-key" && seen_auth_schemes.insert("apiKeyAuth".into())
+                    {
+                        security_schemes["apiKeyAuth"] = serde_json::json!({
+                            "type": "apiKey",
+                            "in": "header",
+                            "name": name
+                        });
+                        global_security.push(serde_json::json!({"apiKeyAuth": []}));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut components = serde_json::json!({"schemas": {}});
+    if security_schemes.as_object().is_some_and(|m| !m.is_empty()) {
+        components["securitySchemes"] = security_schemes;
+    }
+
+    let security = if global_security.is_empty() { None } else { Some(global_security) };
+
     OpenApiExportResponse {
         openapi: "3.1.0".to_string(),
         info: OpenApiInfo {
@@ -1035,9 +1058,8 @@ pub fn build_unified_openapi_spec(
             description,
         },
         paths,
-        components: serde_json::json!({
-            "schemas": {}
-        }),
+        components,
+        security,
     }
 }
 
@@ -1223,6 +1245,8 @@ mod tests {
             response_schemas: Some(serde_json::json!({
                 "200": {"type": "object", "properties": {"id": {"type": "integer"}}}
             })),
+            request_headers: None,
+            response_headers: None,
             sample_count,
             confidence_score: confidence,
             breaking_changes: None,
@@ -1374,6 +1398,8 @@ mod tests {
                 serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}}),
             ),
             response_schemas: None, // No response captured
+            request_headers: None,
+            response_headers: None,
             sample_count: 5,
             confidence_score: 0.8,
             breaking_changes: None,
@@ -1433,6 +1459,8 @@ mod tests {
             response_schemas: Some(serde_json::json!({
                 status_code: {"type": "object", "properties": {"id": {"type": "integer"}}}
             })),
+            request_headers: None,
+            response_headers: None,
             sample_count,
             confidence_score: confidence,
             breaking_changes: None,
@@ -1510,6 +1538,8 @@ mod tests {
             previous_version_id: None,
             request_schema: Some(serde_json::json!({"type": "object"})),
             response_schemas: Some(serde_json::json!({})), // Empty map
+            request_headers: None,
+            response_headers: None,
             sample_count: 3,
             confidence_score: 0.7,
             breaking_changes: None,
@@ -1562,6 +1592,8 @@ mod tests {
                 response_schemas: Some(serde_json::json!({
                     "200": {"type": "object", "properties": {"id": {"type": "integer"}}}
                 })),
+                request_headers: None,
+                response_headers: None,
                 sample_count: 10,
                 confidence_score: 0.9,
                 breaking_changes: None,

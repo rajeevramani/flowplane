@@ -19,6 +19,21 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  NO PER-ROUTE SUPPORT — configured globally on the listener only.
+  Requires HTTPS (cookies use ;secure flag).
+
+  PREREQUISITES:
+  - token_endpoint requires a cluster that can reach the IDP
+  - Check cp_list_clusters first — reuse an existing IDP cluster if one exists
+  - If no cluster exists, create one with useTls=true before creating the filter
+
+  REQUIRED:
+  - token_endpoint (cluster + URI)
+  - authorization_endpoint
+  - credentials (client_id, token_secret, hmac_secret)
+  - redirect_uri (callback path)
+
 config_schema:
   type: object
   required:

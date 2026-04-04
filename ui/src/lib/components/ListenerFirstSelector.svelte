@@ -42,18 +42,15 @@
 	});
 
 	async function loadListenersForTeam(team: string) {
+		if (!team) {
+			listeners = [];
+			onListenersLoaded?.([]);
+			return;
+		}
 		isLoadingListeners = true;
 		loadError = null;
 		try {
-			// Backend filters by user's team scopes automatically:
-			// - Admin users get all listeners
-			// - Developer users get team-filtered listeners
-			const allListeners = await apiClient.listListeners();
-
-			// Filter by selected team for UX (when specific team chosen)
-			// When team is empty string (All Teams), show all listeners
-			listeners = team ? allListeners.filter((l) => l.team === team) : allListeners;
-
+			listeners = await apiClient.listListeners(team);
 			onListenersLoaded?.(listeners);
 		} catch (e) {
 			loadError = e instanceof Error ? e.message : 'Failed to load listeners';
@@ -81,11 +78,18 @@
 			}
 
 			// Fetch the route config
-			const routeConfig = await apiClient.getRouteConfig(routeConfigName);
+			const routeConfig = config.selectedTeam
+				? await apiClient.getRouteConfig(config.selectedTeam, routeConfigName)
+				: null;
+			if (!routeConfig) {
+				onRouteConfigLoaded(null, []);
+				return;
+			}
 
 			// Also fetch clusters to populate the cluster selector
-			const allClusters = await apiClient.listClusters();
-			const teamClusters = allClusters.filter((c) => c.team === config.selectedTeam);
+			const teamClusters = config.selectedTeam
+				? await apiClient.listClusters(config.selectedTeam)
+				: [];
 
 			onRouteConfigLoaded(routeConfig, teamClusters);
 		} catch (e) {

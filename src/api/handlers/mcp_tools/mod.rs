@@ -15,7 +15,7 @@ use tracing::instrument;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::{
             pagination::PaginatedResponse,
             team_access::{
@@ -51,16 +51,8 @@ pub async fn list_mcp_tools_handler(
     Path(team): Path<String>,
     Query(query): Query<ListMcpToolsQuery>,
 ) -> Result<Json<PaginatedResponse<McpToolResponse>>, ApiError> {
-    // Authorization: require mcp:read scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    // Authorization: require team mcp:read access
+    require_resource_access_resolved(&state, &context, "mcp", "read", Some(&team)).await?;
 
     // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
@@ -146,16 +138,8 @@ pub async fn get_mcp_tool_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, name)): Path<(String, String)>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
-    // Authorization: require mcp:read scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    // Authorization: require team mcp:read access
+    require_resource_access_resolved(&state, &context, "mcp", "read", Some(&team)).await?;
 
     // Check if it's a built-in CP tool first
     if let Some(cp_tool) = crate::mcp::tools::get_all_tools().into_iter().find(|t| t.name == name) {
@@ -206,18 +190,10 @@ pub async fn update_mcp_tool_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, name)): Path<(String, String)>,
-    Json(payload): Json<UpdateMcpToolBody>,
+    JsonBody(payload): JsonBody<UpdateMcpToolBody>,
 ) -> Result<Json<McpToolResponse>, ApiError> {
-    // Authorization: require mcp:write scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "write",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    // Authorization: require mcp:update scope
+    require_resource_access_resolved(&state, &context, "mcp", "update", Some(&team)).await?;
 
     // Check if it's a built-in CP tool - these cannot be modified
     if crate::mcp::tools::get_all_tools().iter().any(|t| t.name == name) {
@@ -303,16 +279,8 @@ pub async fn check_learned_schema_handler(
     Extension(context): Extension<AuthContext>,
     Path((team, route_id)): Path<(String, String)>,
 ) -> Result<Json<CheckLearnedSchemaResponse>, ApiError> {
-    // Authorization: require mcp:read scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    // Authorization: require team mcp:read access
+    require_resource_access_resolved(&state, &context, "mcp", "read", Some(&team)).await?;
 
     // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
@@ -363,18 +331,10 @@ pub async fn apply_learned_schema_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path((team, route_id)): Path<(String, String)>,
-    Json(payload): Json<ApplyLearnedSchemaRequest>,
+    JsonBody(payload): JsonBody<ApplyLearnedSchemaRequest>,
 ) -> Result<Json<ApplyLearnedSchemaResponse>, ApiError> {
-    // Authorization: require mcp:write scope
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "write",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    // Authorization: require mcp:create scope
+    require_resource_access_resolved(&state, &context, "mcp", "create", Some(&team)).await?;
 
     // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;

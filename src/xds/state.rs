@@ -95,6 +95,10 @@ pub struct XdsState {
     pub mcp_tool_repository: Option<crate::storage::McpToolRepository>,
     /// Team repository for resolving team names to IDs
     pub team_repository: Option<SqlxTeamRepository>,
+    /// NACK event repository for persisting xDS rejection events
+    pub nack_event_repository: Option<crate::storage::NackEventRepository>,
+    /// Raw database pool, used by auth middleware for permission loading.
+    pub pool: Option<DbPool>,
     update_tx: broadcast::Sender<Arc<ResourceUpdate>>,
     resource_caches: RwLock<HashMap<String, HashMap<String, CachedResource>>>,
 }
@@ -126,6 +130,8 @@ impl XdsState {
             custom_wasm_filter_repository: None,
             mcp_tool_repository: None,
             team_repository: None,
+            nack_event_repository: None,
+            pool: None,
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -133,6 +139,7 @@ impl XdsState {
 
     pub fn with_database(config: SimpleXdsConfig, pool: DbPool) -> Self {
         let (update_tx, _) = broadcast::channel(128);
+        let saved_pool = pool.clone();
         let cluster_repository = ClusterRepository::new(pool.clone());
         let route_config_repository = RouteConfigRepository::new(pool.clone());
         let listener_repository = ListenerRepository::new(pool.clone());
@@ -156,6 +163,9 @@ impl XdsState {
         // Team repository for name → ID resolution
         let team_repository = SqlxTeamRepository::new(pool.clone());
 
+        // NACK event repository for persisting xDS rejection events
+        let nack_event_repository = crate::storage::NackEventRepository::new(pool.clone());
+
         // Initialize secret repository and encryption service if encryption key is configured
         let (secret_repository, encryption_service) =
             match crate::services::SecretEncryptionConfig::from_env() {
@@ -175,9 +185,10 @@ impl XdsState {
                     }
                 },
                 Err(_) => {
-                    debug!(
+                    warn!(
                         "FLOWPLANE_SECRET_ENCRYPTION_KEY not set, SDS disabled. \
-                         Set this env var to enable secret management."
+                         Secret create will return 503. Set this env var to enable secret management. \
+                         Generate with: openssl rand -base64 32"
                     );
                     (None, None)
                 }
@@ -207,6 +218,8 @@ impl XdsState {
             custom_wasm_filter_repository: Some(custom_wasm_filter_repository),
             mcp_tool_repository: Some(mcp_tool_repository),
             team_repository: Some(team_repository),
+            nack_event_repository: Some(nack_event_repository),
+            pool: Some(saved_pool),
             update_tx,
             resource_caches: RwLock::new(HashMap::new()),
         }
@@ -622,6 +635,18 @@ impl XdsState {
                 error = %e,
                 "Failed to inject ExtProc configuration for learning sessions"
             );
+        }
+
+        // Inject agent RBAC filters for listeners that have active route grants
+        if let Some(ref pool) = self.pool {
+            if let Err(e) =
+                crate::xds::filters::injection::inject_agent_rbac_filters(&mut built, pool).await
+            {
+                warn!(
+                    error = %e,
+                    "Failed to inject agent RBAC filters"
+                );
+            }
         }
 
         let total_resources = built.len();

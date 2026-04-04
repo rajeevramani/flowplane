@@ -8,7 +8,6 @@
 //! - Team-based access control
 //! - Success and error responses
 
-use crate::config::SimpleXdsConfig;
 use crate::domain::RouteConfigId;
 use crate::mcp::tools::routes::{
     execute_create_route, execute_delete_route, execute_get_route, execute_update_route,
@@ -17,7 +16,7 @@ use crate::mcp::tools::virtual_hosts::{
     execute_create_virtual_host, execute_delete_virtual_host, execute_get_virtual_host,
     execute_list_virtual_hosts, execute_update_virtual_host,
 };
-use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
+use crate::storage::test_helpers::{create_test_xds_state, TestDatabase, TEST_TEAM_ID};
 use crate::storage::RouteConfigData;
 use crate::xds::XdsState;
 use serde_json::json;
@@ -28,10 +27,7 @@ use std::sync::Arc;
 // =============================================================================
 
 async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
-    let test_db = TestDatabase::new("internal_api_mcp_tool_execution").await;
-    let pool = test_db.pool.clone();
-    let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-    (test_db, state)
+    create_test_xds_state("internal_api_mcp_tool_execution").await
 }
 
 /// Helper to create a route config with cluster dependency
@@ -132,7 +128,7 @@ async fn test_mcp_list_virtual_hosts_by_route_config() {
 
     // Test: List virtual hosts for specific route config
     let args = json!({
-        "route_config": "routes-1"
+        "routeConfig": "routes-1"
     });
     let result = execute_list_virtual_hosts(&state, TEST_TEAM_ID, None, args).await;
 
@@ -170,7 +166,7 @@ async fn test_mcp_list_virtual_hosts_with_pagination() {
 
     // Test: List with limit
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "limit": 2,
         "offset": 0
     });
@@ -205,7 +201,7 @@ async fn test_mcp_get_virtual_host_success() {
 
     // Test: Get virtual host
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api"
     });
     let result = execute_get_virtual_host(&state, TEST_TEAM_ID, None, args).await;
@@ -236,7 +232,7 @@ async fn test_mcp_get_virtual_host_not_found() {
 
     // Test: Get non-existent virtual host
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "nonexistent"
     });
     let result = execute_get_virtual_host(&state, TEST_TEAM_ID, None, args).await;
@@ -258,7 +254,7 @@ async fn test_mcp_get_virtual_host_missing_params() {
 
     // Test: Missing name parameter
     let args = json!({
-        "route_config": "routes"
+        "routeConfig": "routes"
     });
     let result = execute_get_virtual_host(&state, TEST_TEAM_ID, None, args).await;
 
@@ -278,10 +274,10 @@ async fn test_mcp_create_virtual_host_success() {
 
     // Test: Create virtual host via MCP tool
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api",
         "domains": ["api.example.com", "*.api.example.com"],
-        "rule_order": 10
+        "ruleOrder": 10
     });
     let result = execute_create_virtual_host(&state, TEST_TEAM_ID, None, args).await;
 
@@ -316,7 +312,7 @@ async fn test_mcp_create_virtual_host_missing_required_params() {
 
     // Test: Missing name
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "domains": ["api.example.com"]
     });
     let result = execute_create_virtual_host(&state, TEST_TEAM_ID, None, args).await;
@@ -324,7 +320,7 @@ async fn test_mcp_create_virtual_host_missing_required_params() {
 
     // Test: Missing domains
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api"
     });
     let result = execute_create_virtual_host(&state, TEST_TEAM_ID, None, args).await;
@@ -340,7 +336,7 @@ async fn test_mcp_create_virtual_host_invalid_domains() {
 
     // Test: domains not an array
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api",
         "domains": "not-an-array"
     });
@@ -349,7 +345,7 @@ async fn test_mcp_create_virtual_host_invalid_domains() {
 
     // Test: Empty domains array
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api",
         "domains": []
     });
@@ -358,7 +354,7 @@ async fn test_mcp_create_virtual_host_invalid_domains() {
 
     // Test: domains contains non-string
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api",
         "domains": [123, 456]
     });
@@ -380,10 +376,10 @@ async fn test_mcp_update_virtual_host_success() {
 
     // Test: Update virtual host
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api",
         "domains": ["new.example.com", "*.new.example.com"],
-        "rule_order": 20
+        "ruleOrder": 20
     });
     let result = execute_update_virtual_host(&state, TEST_TEAM_ID, None, args).await;
 
@@ -413,9 +409,9 @@ async fn test_mcp_update_virtual_host_partial_update() {
 
     // Test: Update only rule_order
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api",
-        "rule_order": 30
+        "ruleOrder": 30
     });
     let result = execute_update_virtual_host(&state, TEST_TEAM_ID, None, args).await;
 
@@ -443,7 +439,7 @@ async fn test_mcp_update_virtual_host_no_fields_provided() {
 
     // Test: Update with no optional fields
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api"
     });
     let result = execute_update_virtual_host(&state, TEST_TEAM_ID, None, args).await;
@@ -466,7 +462,7 @@ async fn test_mcp_delete_virtual_host_success() {
 
     // Test: Delete virtual host
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "api"
     });
     let result = execute_delete_virtual_host(&state, TEST_TEAM_ID, None, args).await;
@@ -498,7 +494,7 @@ async fn test_mcp_delete_virtual_host_not_found() {
 
     // Test: Delete non-existent virtual host
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "nonexistent"
     });
     let result = execute_delete_virtual_host(&state, TEST_TEAM_ID, None, args).await;
@@ -524,7 +520,7 @@ async fn test_mcp_virtual_host_cross_team_access() {
 
     // Test: Try to access from team-b
     let args = json!({
-        "route_config": "team-a-routes",
+        "routeConfig": "team-a-routes",
         "name": "secret"
     });
     let result = execute_get_virtual_host(&state, "team-b", None, args).await;
@@ -543,7 +539,7 @@ async fn test_mcp_virtual_host_create_wrong_team() {
 
     // Test: Try to create virtual host as team-b
     let args = json!({
-        "route_config": "team-a-routes",
+        "routeConfig": "team-a-routes",
         "name": "forbidden",
         "domains": ["forbidden.example.com"]
     });
@@ -589,8 +585,8 @@ async fn test_mcp_get_route_success() {
 
     // Test: Get route via MCP tool
     let args = json!({
-        "route_config": "routes",
-        "virtual_host": "default",
+        "routeConfig": "routes",
+        "virtualHost": "default",
         "name": "api-route"
     });
     let result = execute_get_route(&state, TEST_TEAM_ID, None, args).await;
@@ -621,8 +617,8 @@ async fn test_mcp_get_route_not_found() {
 
     // Test: Get non-existent route
     let args = json!({
-        "route_config": "routes",
-        "virtual_host": "default",
+        "routeConfig": "routes",
+        "virtualHost": "default",
         "name": "nonexistent"
     });
     let result = execute_get_route(&state, TEST_TEAM_ID, None, args).await;
@@ -640,12 +636,12 @@ async fn test_mcp_create_route_success() {
 
     // Test: Create route via MCP tool
     let args = json!({
-        "route_config": "routes",
-        "virtual_host": "default",
+        "routeConfig": "routes",
+        "virtualHost": "default",
         "name": "new-route",
-        "path_pattern": "/api/v2",
-        "match_type": "prefix",
-        "rule_order": 20,
+        "pathPattern": "/api/v2",
+        "matchType": "prefix",
+        "ruleOrder": 20,
         "action": sample_route_action()
     });
     let result = execute_create_route(&state, TEST_TEAM_ID, None, args).await;
@@ -671,10 +667,10 @@ async fn test_mcp_create_route_missing_params() {
 
     // Test: Missing route_config
     let args = json!({
-        "virtual_host": "default",
+        "virtualHost": "default",
         "name": "route",
-        "path_pattern": "/api",
-        "match_type": "prefix",
+        "pathPattern": "/api",
+        "matchType": "prefix",
         "action": sample_route_action()
     });
     let result = execute_create_route(&state, TEST_TEAM_ID, None, args).await;
@@ -682,10 +678,10 @@ async fn test_mcp_create_route_missing_params() {
 
     // Test: Missing virtual_host
     let args = json!({
-        "route_config": "routes",
+        "routeConfig": "routes",
         "name": "route",
-        "path_pattern": "/api",
-        "match_type": "prefix",
+        "pathPattern": "/api",
+        "matchType": "prefix",
         "action": sample_route_action()
     });
     let result = execute_create_route(&state, TEST_TEAM_ID, None, args).await;
@@ -693,10 +689,10 @@ async fn test_mcp_create_route_missing_params() {
 
     // Test: Missing name
     let args = json!({
-        "route_config": "routes",
-        "virtual_host": "default",
-        "path_pattern": "/api",
-        "match_type": "prefix",
+        "routeConfig": "routes",
+        "virtualHost": "default",
+        "pathPattern": "/api",
+        "matchType": "prefix",
         "action": sample_route_action()
     });
     let result = execute_create_route(&state, TEST_TEAM_ID, None, args).await;
@@ -726,12 +722,12 @@ async fn test_mcp_update_route_success() {
 
     // Test: Update route
     let args = json!({
-        "route_config": "routes",
-        "virtual_host": "default",
+        "routeConfig": "routes",
+        "virtualHost": "default",
         "name": "update-me",
-        "path_pattern": "/new",
-        "match_type": "exact",
-        "rule_order": 30
+        "pathPattern": "/new",
+        "matchType": "exact",
+        "ruleOrder": 30
     });
     let result = execute_update_route(&state, TEST_TEAM_ID, None, args).await;
 
@@ -773,10 +769,10 @@ async fn test_mcp_update_route_partial() {
 
     // Test: Update only rule_order
     let args = json!({
-        "route_config": "routes",
-        "virtual_host": "default",
+        "routeConfig": "routes",
+        "virtualHost": "default",
         "name": "partial-update",
-        "rule_order": 50
+        "ruleOrder": 50
     });
     let result = execute_update_route(&state, TEST_TEAM_ID, None, args).await;
 
@@ -817,8 +813,8 @@ async fn test_mcp_delete_route_success() {
 
     // Test: Delete route
     let args = json!({
-        "route_config": "routes",
-        "virtual_host": "default",
+        "routeConfig": "routes",
+        "virtualHost": "default",
         "name": "delete-me"
     });
     let result = execute_delete_route(&state, TEST_TEAM_ID, None, args).await;
@@ -864,8 +860,8 @@ async fn test_mcp_route_cross_team_access() {
 
     // Test: Try to access from team-b
     let args = json!({
-        "route_config": "team-a-routes",
-        "virtual_host": "default",
+        "routeConfig": "team-a-routes",
+        "virtualHost": "default",
         "name": "secret"
     });
     let result = execute_get_route(&state, "team-b", None, args).await;

@@ -5,7 +5,7 @@
 	import type { CreateOrganizationRequest } from '$lib/api/types';
 	import { ErrorAlert, FormActions, PageHeader } from '$lib/components/forms';
 	import { validateRequired, validateMaxLength, runValidators } from '$lib/utils/validators';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 
 	let formData = $state({
 		name: '',
@@ -20,7 +20,7 @@
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			if (!isSystemAdmin(sessionInfo.scopes)) {
+			if (!isGovernanceAdmin(sessionInfo)) {
 				goto('/dashboard');
 				return;
 			}

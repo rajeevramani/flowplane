@@ -336,7 +336,7 @@ import_openapi() {
     fi
 
     log "Importing OpenAPI spec ($OPENAPI_SPEC)..."
-    local import_url="$BASE_URL/api/v1/openapi/import?team=$TEAM_NAME&listener_mode=new&new_listener_name=$TEAM_NAME-listener&new_listener_port=$LISTENER_PORT&dataplane_id=$DATAPLANE_ID"
+    local import_url="$BASE_URL/api/v1/teams/$TEAM_NAME/openapi/import?listener_mode=new&new_listener_name=$TEAM_NAME-listener&new_listener_port=$LISTENER_PORT&dataplane_id=$DATAPLANE_ID"
     post_file_jar "$import_url" "$OPENAPI_SPEC" "application/yaml" "$ORG_ADMIN_JAR" "$ORG_ADMIN_CSRF"
     if [ "$HTTP_STATUS" = "201" ]; then
         local routes_created clusters_created listener_name
@@ -429,7 +429,7 @@ main() {
     echo -e "    API spec:        ${CYAN}$(basename "$OPENAPI_SPEC")${RESET}"
     echo ""
     echo -e "  ${GREEN}Usage:${RESET}"
-    echo -e "    curl -H 'Authorization: Bearer ${CYAN}<token>${RESET}' $BASE_URL/api/v1/clusters"
+    echo -e "    curl -H 'Authorization: Bearer ${CYAN}<token>${RESET}' $BASE_URL/api/v1/teams/$TEAM_NAME/clusters"
     echo ""
 }
 

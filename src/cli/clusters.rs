@@ -119,30 +119,39 @@ pub struct ClusterResponse {
 pub async fn handle_cluster_command(
     command: ClusterCommands,
     client: &FlowplaneClient,
+    team: &str,
 ) -> Result<()> {
     match command {
-        ClusterCommands::Create { file, output } => create_cluster(client, file, &output).await?,
+        ClusterCommands::Create { file, output } => {
+            create_cluster(client, team, file, &output).await?
+        }
         ClusterCommands::List { service, limit, offset, output } => {
-            list_clusters(client, service, limit, offset, &output).await?
+            list_clusters(client, team, service, limit, offset, &output).await?
         }
-        ClusterCommands::Get { name, output } => get_cluster(client, &name, &output).await?,
+        ClusterCommands::Get { name, output } => get_cluster(client, team, &name, &output).await?,
         ClusterCommands::Update { name, file, output } => {
-            update_cluster(client, &name, file, &output).await?
+            update_cluster(client, team, &name, file, &output).await?
         }
-        ClusterCommands::Delete { name, yes } => delete_cluster(client, &name, yes).await?,
+        ClusterCommands::Delete { name, yes } => delete_cluster(client, team, &name, yes).await?,
     }
 
     Ok(())
 }
 
-async fn create_cluster(client: &FlowplaneClient, file: PathBuf, output: &str) -> Result<()> {
+async fn create_cluster(
+    client: &FlowplaneClient,
+    team: &str,
+    file: PathBuf,
+    output: &str,
+) -> Result<()> {
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     let body: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
-    let response: ClusterResponse = client.post_json("/api/v1/clusters", &body).await?;
+    let path = format!("/api/v1/teams/{team}/clusters");
+    let response: ClusterResponse = client.post_json(&path, &body).await?;
 
     print_output(&response, output)?;
     Ok(())
@@ -150,12 +159,13 @@ async fn create_cluster(client: &FlowplaneClient, file: PathBuf, output: &str) -
 
 async fn list_clusters(
     client: &FlowplaneClient,
+    team: &str,
     service: Option<String>,
     limit: Option<i32>,
     offset: Option<i32>,
     output: &str,
 ) -> Result<()> {
-    let mut path = String::from("/api/v1/clusters?");
+    let mut path = format!("/api/v1/teams/{team}/clusters?");
     let mut params = Vec::new();
 
     if let Some(s) = service {
@@ -181,8 +191,8 @@ async fn list_clusters(
     Ok(())
 }
 
-async fn get_cluster(client: &FlowplaneClient, name: &str, output: &str) -> Result<()> {
-    let path = format!("/api/v1/clusters/{}", name);
+async fn get_cluster(client: &FlowplaneClient, team: &str, name: &str, output: &str) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/clusters/{name}");
     let response: ClusterResponse = client.get_json(&path).await?;
 
     if output == "table" {
@@ -196,6 +206,7 @@ async fn get_cluster(client: &FlowplaneClient, name: &str, output: &str) -> Resu
 
 async fn update_cluster(
     client: &FlowplaneClient,
+    team: &str,
     name: &str,
     file: PathBuf,
     output: &str,
@@ -206,14 +217,14 @@ async fn update_cluster(
     let body: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
-    let path = format!("/api/v1/clusters/{}", name);
+    let path = format!("/api/v1/teams/{team}/clusters/{name}");
     let response: ClusterResponse = client.put_json(&path, &body).await?;
 
     print_output(&response, output)?;
     Ok(())
 }
 
-async fn delete_cluster(client: &FlowplaneClient, name: &str, yes: bool) -> Result<()> {
+async fn delete_cluster(client: &FlowplaneClient, team: &str, name: &str, yes: bool) -> Result<()> {
     if !yes {
         println!("Are you sure you want to delete cluster '{}'? (y/N)", name);
         let mut input = String::new();
@@ -224,7 +235,7 @@ async fn delete_cluster(client: &FlowplaneClient, name: &str, yes: bool) -> Resu
         }
     }
 
-    let path = format!("/api/v1/clusters/{}", name);
+    let path = format!("/api/v1/teams/{team}/clusters/{name}");
     client.delete_no_content(&path).await?;
 
     println!("Cluster '{}' deleted successfully", name);

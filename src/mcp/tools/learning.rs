@@ -4,13 +4,15 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    CreateLearningSessionInternalRequest, InternalAuthContext, LearningSessionOperations,
-    ListLearningSessionsRequest,
+    CreateLearningSessionInternalRequest, LearningSessionOperations, ListLearningSessionsRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
-use crate::mcp::response_builders::{build_create_response, build_delete_response};
+use crate::mcp::protocol::{Tool, ToolCallResult};
+use crate::mcp::response_builders::{
+    build_action_response, build_create_response, build_delete_response,
+};
 use crate::xds::XdsState;
+use regex::Regex;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::instrument;
@@ -54,27 +56,18 @@ RETURNS: Array of learning session objects with:
 - created_at, started_at, completed_at: Lifecycle timestamps
 
 RELATED TOOLS: cp_get_learning_session (details), cp_create_learning_session (new session)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Filter by session status",
-                    "enum": ["pending", "active", "completing", "completed", "cancelled", "failed"]
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return",
-                    "minimum": 1,
-                    "maximum": 100
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of results to skip for pagination",
-                    "minimum": 0
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("learning sessions");
+            props["status"] = json!({
+                "type": "string",
+                "description": "Filter by session status",
+                "enum": ["pending", "active", "completing", "completed", "cancelled", "failed"]
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -108,6 +101,12 @@ WHEN TO USE:
 - Verify session configuration
 - Investigate failed sessions
 - Get completion timestamp for schema lookup
+
+DIAGNOSTIC GUIDE:
+- status=pending + started_at=null → Session never activated. Recreate with auto_start=true or call cp_activate_learning_session
+- status=active + current_sample_count=0 → Regex pattern may not match traffic paths. Use ops_learning_session_health to test
+- status=active + samples increasing → Working normally. Monitor until target reached
+- status=failed + error_message present → Check error_message for root cause
 
 RELATED TOOLS: cp_list_learning_sessions (discovery), cp_create_learning_session (new session)"#,
         json!({
@@ -163,30 +162,31 @@ AUTO_START:
 - false: Session created in 'pending' state, activate manually later
 
 AFTER CREATION:
-- Session becomes 'active' and starts capturing traffic
+- Check the response: status must be 'active' and started_at must be non-null
+- If status is 'pending', the session was NOT activated — recreate with auto_start=true or call cp_activate_learning_session
 - Monitor progress with cp_get_learning_session
 - When complete, find generated schemas with cp_list_schemas
 
-Authorization: Requires cp:write scope.
+Authorization: Requires learning-sessions:create scope.
 "#,
         json!({
             "type": "object",
             "properties": {
-                "route_pattern": {
+                "routePattern": {
                     "type": "string",
                     "description": "Regex pattern to match routes for learning"
                 },
-                "target_sample_count": {
+                "targetSampleCount": {
                     "type": "integer",
                     "description": "Number of traffic samples to collect",
                     "minimum": 1,
                     "maximum": 100000
                 },
-                "cluster_name": {
+                "clusterName": {
                     "type": "string",
                     "description": "Optional cluster name to filter traffic"
                 },
-                "http_methods": {
+                "httpMethods": {
                     "type": "array",
                     "description": "Optional array of HTTP methods to include",
                     "items": {
@@ -194,12 +194,12 @@ Authorization: Requires cp:write scope.
                         "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
                     }
                 },
-                "auto_start": {
+                "autoStart": {
                     "type": "boolean",
                     "description": "Whether to automatically start the session (default: true)"
                 }
             },
-            "required": ["route_pattern", "target_sample_count"]
+            "required": ["routePattern", "targetSampleCount"]
         }),
     )
 }
@@ -239,7 +239,7 @@ WORKFLOW TO DELETE:
 2. If active/pending, call this tool
 3. Session is cancelled and removed
 
-Authorization: Requires cp:write scope.
+Authorization: Requires learning-sessions:delete scope.
 "#,
         json!({
             "type": "object",
@@ -272,10 +272,7 @@ pub async fn execute_list_learning_sessions(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = ListLearningSessionsRequest { status, limit, offset };
 
@@ -307,7 +304,7 @@ pub async fn execute_list_learning_sessions(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get learning session operation using the internal API layer.
@@ -328,10 +325,7 @@ pub async fn execute_get_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let session = ops.get(id, &auth).await?;
 
@@ -358,7 +352,7 @@ pub async fn execute_get_learning_session(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute create learning session operation using the internal API layer.
@@ -370,23 +364,23 @@ pub async fn execute_create_learning_session(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
-    let route_pattern = args.get("route_pattern").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_pattern".to_string())
+    let route_pattern = args.get("routePattern").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routePattern".to_string())
     })?;
 
     let target_sample_count =
-        args.get("target_sample_count").and_then(|v| v.as_i64()).ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: target_sample_count".to_string())
+        args.get("targetSampleCount").and_then(|v| v.as_i64()).ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: targetSampleCount".to_string())
         })?;
 
     // 2. Parse optional fields
-    let cluster_name = args.get("cluster_name").and_then(|v| v.as_str()).map(String::from);
-    let http_methods = args.get("http_methods").and_then(|v| {
+    let cluster_name = args.get("clusterName").and_then(|v| v.as_str()).map(String::from);
+    let http_methods = args.get("httpMethods").and_then(|v| {
         v.as_array().map(|arr| {
             arr.iter().filter_map(|item| item.as_str().map(String::from)).collect::<Vec<_>>()
         })
     });
-    let auto_start = args.get("auto_start").and_then(|v| v.as_bool());
+    let auto_start = args.get("autoStart").and_then(|v| v.as_bool());
 
     tracing::debug!(
         team = %team,
@@ -408,13 +402,10 @@ pub async fn execute_create_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateLearningSessionInternalRequest {
-        team: if team.is_empty() { None } else { Some(team.to_string()) },
+        team: auth.team.clone(),
         route_pattern: route_pattern.to_string(),
         cluster_name,
         http_methods,
@@ -424,9 +415,19 @@ pub async fn execute_create_learning_session(
 
     let result = ops.create(req, &auth).await?;
 
-    // 5. Format success response (minimal token-efficient format)
-    let output =
+    // 5. Format success response — include status so agents can verify activation
+    let mut output =
         build_create_response("learning_session", &result.data.route_pattern, &result.data.id);
+    output["status"] = json!(result.data.status.to_string());
+    output["started_at"] = match &result.data.started_at {
+        Some(ts) => json!(ts.to_rfc3339()),
+        None => json!(null),
+    };
+    if result.data.status.to_string() == "active" {
+        output["next_step"] = json!("Monitor with cp_get_learning_session. Send traffic to the gateway and watch current_sample_count increase.");
+    } else {
+        output["next_step"] = json!("Session is pending — activate with cp_activate_learning_session or recreate with auto_start=true");
+    }
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
@@ -437,7 +438,7 @@ pub async fn execute_create_learning_session(
         "Successfully created learning session via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute delete learning session operation using the internal API layer.
@@ -461,10 +462,7 @@ pub async fn execute_delete_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(id, &auth).await?;
 
@@ -475,7 +473,356 @@ pub async fn execute_delete_learning_session(
 
     tracing::info!(team = %team, session_id = %id, "Successfully deleted learning session via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
+}
+
+// =============================================================================
+// ACTIVATE LEARNING SESSION
+// =============================================================================
+
+/// Tool definition for activating a pending learning session
+pub fn cp_activate_learning_session_tool() -> Tool {
+    Tool::new(
+        "cp_activate_learning_session",
+        r#"Activate a pending learning session so it starts collecting traffic samples.
+
+PURPOSE: Start a session that was created with auto_start=false, or retry activation if it failed.
+
+WHEN TO USE:
+- Session status is 'pending' and started_at is null
+- Session was created without auto_start and needs manual activation
+- Activation failed during creation and you want to retry
+
+BEHAVIOR:
+- Transitions session from 'pending' to 'active'
+- Sets started_at timestamp
+- Registers route_pattern with the access log and ExtProc services
+- Injects ALS/ExtProc filters into all listeners via LDS refresh
+- After activation, Envoy begins streaming matching traffic to Flowplane
+
+PREREQUISITES:
+- Session must be in 'pending' state
+- Sessions in 'active', 'completed', or other states cannot be re-activated
+
+Required Parameters:
+- id: Session UUID to activate
+
+AFTER ACTIVATION:
+- Verify status changed to 'active' with cp_get_learning_session
+- Send traffic through the gateway matching the session's route_pattern
+- Monitor current_sample_count with cp_get_learning_session
+
+Authorization: Requires learning-sessions:execute scope.
+"#,
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Learning session UUID to activate"
+                }
+            },
+            "required": ["id"]
+        }),
+    )
+}
+
+/// Execute activate learning session
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_activate_learning_session")]
+pub async fn execute_activate_learning_session(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: id".to_string()))?;
+
+    // Verify team access via internal API
+    let ops = LearningSessionOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
+
+    // Verify the session exists and belongs to this team
+    let session = ops.get(id, &auth).await?;
+    if session.status.to_string() != "pending" {
+        return Err(McpError::InvalidParams(format!(
+            "Cannot activate session in '{}' state — must be 'pending'",
+            session.status
+        )));
+    }
+
+    // Activate via the learning session service
+    let service = xds_state.get_learning_session_service().ok_or_else(|| {
+        McpError::InternalError("Learning session service not available".to_string())
+    })?;
+
+    let activated = service
+        .activate_session(id)
+        .await
+        .map_err(|e| McpError::InternalError(format!("Failed to activate session: {}", e)))?;
+
+    let mut output = build_action_response(true, None);
+    output["status"] = json!(activated.status.to_string());
+    output["started_at"] = match &activated.started_at {
+        Some(ts) => json!(ts.to_rfc3339()),
+        None => json!(null),
+    };
+    output["next_step"] = json!("Session is now active. Send traffic through the gateway and monitor with cp_get_learning_session.");
+
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(team = %team, session_id = %id, "Learning session activated via MCP");
+
+    Ok(ToolCallResult::text(text))
+}
+
+// =============================================================================
+// LEARNING SESSION HEALTH DIAGNOSTIC
+// =============================================================================
+
+/// Tool definition for diagnosing learning session health
+pub fn ops_learning_session_health_tool() -> Tool {
+    Tool::new(
+        "ops_learning_session_health",
+        r#"Diagnose why a learning session is not collecting samples.
+
+PURPOSE: Systematic diagnostic for learning sessions that appear stuck — not collecting samples, staying in pending, or collecting fewer samples than expected.
+
+USE CASES:
+- Session created but current_sample_count stays at 0
+- Session stuck in 'pending' with started_at=null
+- Route pattern might not match actual traffic paths
+- Need to verify the learning pipeline is working
+
+CHECKS PERFORMED:
+1. Session status — is it active? If pending, it was never activated
+2. Regex pattern test — tests route_pattern against actual route paths configured in the gateway
+3. Time analysis — how long since activation, expected vs actual collection rate
+4. Error detection — checks error_message field for failures
+
+Required Parameters:
+- id: Learning session UUID to diagnose
+
+INTERPRETING RESULTS:
+- diagnosis=not_activated → Session never started. Use cp_activate_learning_session
+- diagnosis=regex_mismatch → Pattern doesn't match gateway routes. Check route_pattern
+- diagnosis=collecting → Working normally, samples are increasing
+- diagnosis=stalled → Active but no samples. Check if traffic is flowing through the gateway
+- diagnosis=error → Session failed. Check error_message
+
+Authorization: Requires cp:read scope.
+"#,
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Learning session UUID to diagnose"
+                }
+            },
+            "required": ["id"]
+        }),
+    )
+}
+
+/// Execute learning session health diagnostic
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_ops_learning_session_health")]
+pub async fn execute_ops_learning_session_health(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: id".to_string()))?;
+
+    // Get session via internal API (enforces team isolation)
+    let ops = LearningSessionOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
+
+    let session = ops.get(id, &auth).await?;
+
+    let status_str = session.status.to_string();
+    let mut checks: Vec<Value> = Vec::new();
+    let mut diagnosis;
+    let mut fix;
+
+    // Check 1: Status
+    match status_str.as_str() {
+        "pending" => {
+            checks.push(json!({
+                "check": "status",
+                "result": "FAIL",
+                "detail": "Session is pending — never activated. started_at is null."
+            }));
+            diagnosis = "not_activated";
+            fix = "Call cp_activate_learning_session or recreate with auto_start=true";
+        }
+        "active" => {
+            checks.push(json!({
+                "check": "status",
+                "result": "OK",
+                "detail": format!("Session is active since {}", session.started_at.map(|dt| dt.to_rfc3339()).unwrap_or_else(|| "unknown".to_string()))
+            }));
+            diagnosis = "active";
+            fix = "";
+        }
+        "failed" => {
+            checks.push(json!({
+                "check": "status",
+                "result": "FAIL",
+                "detail": format!("Session failed: {}", session.error_message.as_deref().unwrap_or("unknown error"))
+            }));
+            diagnosis = "error";
+            fix = "Check error_message. May need to recreate the session.";
+        }
+        "completed" | "completing" => {
+            checks.push(json!({
+                "check": "status",
+                "result": "OK",
+                "detail": format!("Session is {} — collected {}/{} samples", status_str, session.current_sample_count, session.target_sample_count)
+            }));
+            diagnosis = "completed";
+            fix = "Session finished. Use cp_list_aggregated_schemas to see results.";
+        }
+        "cancelled" => {
+            checks.push(json!({
+                "check": "status",
+                "result": "FAIL",
+                "detail": "Session was cancelled"
+            }));
+            diagnosis = "cancelled";
+            fix = "Create a new learning session to resume collection.";
+        }
+        _ => {
+            diagnosis = "unknown";
+            fix = "";
+        }
+    }
+
+    // Check 2: Regex pattern validation against configured routes
+    if diagnosis == "active" || diagnosis == "not_activated" {
+        let regex_result = Regex::new(&session.route_pattern);
+        match regex_result {
+            Ok(re) => {
+                // Pull route paths from the gateway to test against
+                let mut matched_paths = Vec::new();
+                let mut unmatched_paths = Vec::new();
+
+                if let Some(route_repo) = &xds_state.route_repository {
+                    for t in &auth.allowed_teams {
+                        if let Ok(routes) = route_repo.list_by_team(t).await {
+                            for route in routes {
+                                let path = &route.path_pattern;
+                                if re.is_match(path) {
+                                    matched_paths.push(path.clone());
+                                } else {
+                                    unmatched_paths.push(path.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if matched_paths.is_empty() && !unmatched_paths.is_empty() {
+                    checks.push(json!({
+                        "check": "regex_match",
+                        "result": "FAIL",
+                        "detail": format!("Pattern '{}' does NOT match any configured route paths", session.route_pattern),
+                        "configured_paths": unmatched_paths,
+                        "hint": "The regex must match the actual request paths sent through the gateway (e.g., /v2/api/account), not the route pattern definitions"
+                    }));
+                    if diagnosis == "active" {
+                        diagnosis = "regex_mismatch";
+                        fix = "The route_pattern regex doesn't match traffic paths. Delete this session and create a new one with a corrected pattern.";
+                    }
+                } else if matched_paths.is_empty() && unmatched_paths.is_empty() {
+                    checks.push(json!({
+                        "check": "regex_match",
+                        "result": "WARN",
+                        "detail": "No routes configured in the gateway — cannot test regex against route paths",
+                        "pattern": session.route_pattern
+                    }));
+                } else {
+                    checks.push(json!({
+                        "check": "regex_match",
+                        "result": "OK",
+                        "detail": format!("Pattern matches {}/{} configured route paths", matched_paths.len(), matched_paths.len() + unmatched_paths.len()),
+                        "matched_paths": matched_paths,
+                        "unmatched_paths": unmatched_paths
+                    }));
+                }
+            }
+            Err(e) => {
+                checks.push(json!({
+                    "check": "regex_match",
+                    "result": "FAIL",
+                    "detail": format!("Invalid regex pattern '{}': {}", session.route_pattern, e)
+                }));
+                if diagnosis == "active" {
+                    diagnosis = "invalid_regex";
+                    fix = "The route_pattern is not valid regex. Delete and recreate with a valid pattern.";
+                }
+            }
+        }
+    }
+
+    // Check 3: Sample progress (only for active sessions)
+    if diagnosis == "active" {
+        let progress_pct = if session.target_sample_count > 0 {
+            (session.current_sample_count as f64 / session.target_sample_count as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        if session.current_sample_count == 0 {
+            // Active but no samples — check how long it's been
+            let elapsed = session.started_at.map(|started| {
+                let duration = chrono::Utc::now() - started;
+                duration.num_seconds()
+            });
+
+            checks.push(json!({
+                "check": "sample_progress",
+                "result": "WARN",
+                "detail": format!("0/{} samples collected (0%). Active for {} seconds.", session.target_sample_count, elapsed.unwrap_or(0)),
+                "hint": "No samples yet. Verify: (1) traffic is flowing through the gateway on the correct port, (2) request paths match the route_pattern regex"
+            }));
+            diagnosis = "stalled";
+            fix = "Session is active but not collecting. Ensure traffic is being sent through the gateway listener and that request paths match the route_pattern.";
+        } else {
+            checks.push(json!({
+                "check": "sample_progress",
+                "result": "OK",
+                "detail": format!("{}/{} samples ({:.0}%)", session.current_sample_count, session.target_sample_count, progress_pct)
+            }));
+            diagnosis = "collecting";
+            fix = "";
+        }
+    }
+
+    let result = json!({
+        "session_id": session.id,
+        "route_pattern": session.route_pattern,
+        "status": status_str,
+        "diagnosis": diagnosis,
+        "fix": fix,
+        "checks": checks
+    });
+
+    let text = serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
+
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]
@@ -510,8 +857,8 @@ mod tests {
 
         // Check required fields
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_pattern")));
-        assert!(required.contains(&json!("target_sample_count")));
+        assert!(required.contains(&json!("routePattern")));
+        assert!(required.contains(&json!("targetSampleCount")));
     }
 
     #[test]
@@ -527,12 +874,36 @@ mod tests {
     }
 
     #[test]
+    fn test_cp_activate_learning_session_tool_definition() {
+        let tool = cp_activate_learning_session_tool();
+        assert_eq!(tool.name, "cp_activate_learning_session");
+        assert!(tool.description.as_ref().unwrap().contains("Activate"));
+        assert!(tool.description.as_ref().unwrap().contains("pending"));
+
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("id")));
+    }
+
+    #[test]
+    fn test_ops_learning_session_health_tool_definition() {
+        let tool = ops_learning_session_health_tool();
+        assert_eq!(tool.name, "ops_learning_session_health");
+        assert!(tool.description.as_ref().unwrap().contains("Diagnose"));
+        assert!(tool.description.as_ref().unwrap().contains("not collecting"));
+
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("id")));
+    }
+
+    #[test]
     fn test_tool_names_are_unique() {
         let tools = [
             cp_list_learning_sessions_tool(),
             cp_get_learning_session_tool(),
             cp_create_learning_session_tool(),
+            cp_activate_learning_session_tool(),
             cp_delete_learning_session_tool(),
+            ops_learning_session_health_tool(),
         ];
 
         let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();

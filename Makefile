@@ -9,8 +9,9 @@
 #
 # Optional services:
 #   make up HTTPBIN=1    - Add httpbin to any configuration
+#   make up MOCKBACKEND=1 - Add MockBank API
 #   make up ENVOY=1      - Add platform-admin Envoy proxy
-#   make up ENVOY=1 HTTPBIN=1  - Combine multiple options
+#   make up ENVOY=1 HTTPBIN=1 MOCKBACKEND=1  - Combine multiple options
 #
 # Operations:
 #   make down            - Stop all services
@@ -19,9 +20,9 @@
 #   make clean           - Remove volumes and orphan containers
 
 .PHONY: help up up-mtls up-tracing up-full down logs status clean \
-        build build-backend build-ui build-cli info prune seed \
+        build build-backend build-ui build-cli info prune seed seed-info setup-zitadel \
         vault-setup dev-db test test-ui test-ui-watch test-ui-e2e test-ui-report \
-        test-e2e test-e2e-full test-e2e-mtls test-cleanup fmt clippy check _ensure-e2e-deps \
+        test-e2e test-e2e-dev test-e2e-prod test-cleanup fmt clippy check _ensure-e2e-deps \
         test-agents-up test-agents-down test-agents test-agents-envoy
 
 .DEFAULT_GOAL := help
@@ -65,6 +66,13 @@ else
     ENVOY_COMPOSE :=
 endif
 
+# Conditional mockbackend - adds MockBank API to any configuration
+ifdef MOCKBACKEND
+    MOCKBACKEND_COMPOSE := -f docker-compose-mockbackend.yml
+else
+    MOCKBACKEND_COMPOSE :=
+endif
+
 # =============================================================================
 # Help
 # =============================================================================
@@ -73,13 +81,14 @@ help: ## Show this help message
 	@echo "$(CYAN)Flowplane Docker Compose Commands$(RESET)"
 	@echo ""
 	@echo "$(GREEN)Boot Configurations:$(RESET)"
-	@echo "  $(CYAN)make up$(RESET)              - Backend + UI"
+	@echo "  $(CYAN)make up$(RESET)              - Backend + UI + Zitadel (auto-configures on first run)"
 	@echo "  $(CYAN)make up-mtls$(RESET)         - Backend + UI + Vault (mTLS)"
 	@echo "  $(CYAN)make up-tracing$(RESET)      - Backend + UI + Jaeger"
 	@echo "  $(CYAN)make up-full$(RESET)         - Backend + UI + Jaeger + Vault + httpbin"
 	@echo ""
 	@echo "$(GREEN)Optional Services:$(RESET)"
 	@echo "  $(CYAN)HTTPBIN=1$(RESET)            - Add httpbin (e.g., make up HTTPBIN=1)"
+	@echo "  $(CYAN)MOCKBACKEND=1$(RESET)       - Add MockBank API (e.g., make up MOCKBACKEND=1)"
 	@echo "  $(CYAN)ENVOY=1$(RESET)              - Add platform-admin Envoy proxy (e.g., make up ENVOY=1)"
 	@echo ""
 	@echo "$(GREEN)Build Targets:$(RESET)"
@@ -101,17 +110,19 @@ help: ## Show this help message
 	@echo "  $(CYAN)make test$(RESET)            - Run cargo tests"
 	@echo "  $(CYAN)make test-ui$(RESET)         - Run UI component tests (Vitest)"
 	@echo "  $(CYAN)make test-ui-watch$(RESET)   - Run UI tests in watch mode"
-	@echo "  $(CYAN)make test-ui-e2e$(RESET)     - Run UI E2E tests (Playwright)"
-	@echo "  $(CYAN)make test-e2e$(RESET)        - Run E2E smoke tests (cleanup containers after)"
-	@echo "  $(CYAN)make test-e2e-full$(RESET)   - Run full E2E suite with mTLS (cleanup after)"
-	@echo "  $(CYAN)make test-e2e-mtls$(RESET)   - Run mTLS E2E tests only (cleanup after)"
-	@echo "  $(CYAN)make test-cleanup$(RESET)    - Remove orphaned testcontainer containers"
+	@echo "  $(CYAN)make test-ui-e2e$(RESET)     - Run UI E2E tests (Playwright, requires: make up && make seed)"
+	@echo "  $(CYAN)make test-e2e$(RESET)        - Run all E2E tests (dev + prod)"
+	@echo "  $(CYAN)make test-e2e-dev$(RESET)    - Run dev-mode E2E tests (bearer token, no Zitadel)"
+	@echo "  $(CYAN)make test-e2e-prod$(RESET)   - Run prod-mode E2E tests (real Zitadel, multi-user)"
+	@echo "                              mTLS: $(CYAN)FLOWPLANE_E2E_MTLS=1 make test-e2e-prod$(RESET)"
+	@echo "  $(CYAN)make test-cleanup$(RESET)    - Remove orphaned testcontainers (PostgreSQL + Zitadel)"
 	@echo "  $(CYAN)make fmt$(RESET)             - Run cargo fmt"
 	@echo "  $(CYAN)make clippy$(RESET)          - Run cargo clippy"
 	@echo "  $(CYAN)make check$(RESET)           - Run fmt + clippy + test"
 	@echo "  $(CYAN)make vault-setup$(RESET)     - Run Vault PKI setup script"
-	@echo "  $(CYAN)make seed$(RESET)            - Seed dev data (org, team, API, users)"
-	@echo "  $(CYAN)make seed-info$(RESET)       - Display seed data credentials"
+	@echo "  $(CYAN)make setup-zitadel$(RESET)  - Configure Zitadel platform infrastructure"
+	@echo "  $(CYAN)make seed$(RESET)            - Seed demo data (org, users, teams)"
+	@echo "  $(CYAN)make seed-info$(RESET)       - Display credentials and configuration"
 	@echo ""
 	@echo "$(GREEN)Agent Tests:$(RESET)"
 	@echo "  $(CYAN)make test-agents-up$(RESET)    - Start isolated agent test env"
@@ -120,35 +131,48 @@ help: ## Show this help message
 	@echo "  $(CYAN)make test-agents-envoy$(RESET) - Run agent tests with Envoy"
 	@echo ""
 	@echo "$(GREEN)Examples:$(RESET)"
-	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)  - Backend + Jaeger + httpbin"
-	@echo "  $(CYAN)make up ENVOY=1 HTTPBIN=1$(RESET)  - Backend + Envoy + httpbin"
-	@echo "  $(CYAN)make up-full$(RESET)               - Full stack with all services"
+	@echo "  $(CYAN)make up-tracing HTTPBIN=1$(RESET)            - Backend + Jaeger + httpbin"
+	@echo "  $(CYAN)make up ENVOY=1 HTTPBIN=1$(RESET)            - Backend + Envoy + httpbin"
+	@echo "  $(CYAN)make up HTTPBIN=1 MOCKBACKEND=1$(RESET)      - Backend + httpbin + MockBank"
+	@echo "  $(CYAN)make up-full$(RESET)                         - Full stack with all services"
 
 # =============================================================================
 # Boot Configurations
 # =============================================================================
 
-up: _ensure-network ## Start backend + UI
+up: _ensure-network ## Start backend + UI (auto-configures Zitadel on first run)
 	@echo "$(CYAN)Starting Flowplane (Backend + UI)...$(RESET)"
-	$(DOCKER_COMPOSE) $(BASE_COMPOSE) $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) $(HTTPBIN_COMPOSE) $(MOCKBACKEND_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
 	@echo "  UI:         http://localhost:8080/"
 	@echo "  Swagger:    http://localhost:8080/swagger-ui/"
 	@echo "  xDS gRPC:   localhost:50051"
+	@echo "  Zitadel:    http://localhost:8081 (admin: zitadel-admin@zitadel.localhost / Password1!)"
+	@echo "  Platform:   admin@flowplane.local / Flowplane1!"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
+endif
+ifdef MOCKBACKEND
+	@echo "  MockBank:   http://localhost:3001/v2/api/customers"
 endif
 ifdef ENVOY
 	@echo "  Envoy (platform-admin):"
 	@echo "    Listener: http://localhost:10000"
 	@echo "    Admin:    http://localhost:9901"
 endif
+	@if [ ! -f .env.zitadel ]; then \
+		echo ""; \
+		echo "$(YELLOW)First run detected — configuring Zitadel...$(RESET)"; \
+		./scripts/setup-zitadel.sh; \
+		echo "$(YELLOW)Restarting control-plane to load Zitadel config...$(RESET)"; \
+		$(DOCKER_COMPOSE) $(BASE_COMPOSE) restart control-plane; \
+	fi
 
 up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
 	@echo "$(CYAN)Starting Flowplane with Vault (mTLS)...$(RESET)"
-	$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-mtls-dev.yml $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
+	$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-mtls-dev.yml $(HTTPBIN_COMPOSE) $(MOCKBACKEND_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
@@ -156,21 +180,32 @@ up-mtls: _ensure-network ## Start backend + UI + Vault (mTLS)
 	@echo "  Swagger:    http://localhost:8080/swagger-ui/"
 	@echo "  xDS gRPC:   localhost:50051"
 	@echo "  Vault UI:   http://localhost:8200 (token: flowplane-dev-token)"
+	@echo "  Platform:   admin@flowplane.local / Flowplane1!"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
+endif
+ifdef MOCKBACKEND
+	@echo "  MockBank:   http://localhost:3001/v2/api/customers"
 endif
 ifdef ENVOY
 	@echo "  Envoy (platform-admin):"
 	@echo "    Listener: http://localhost:10000"
 	@echo "    Admin:    http://localhost:9901"
 endif
+	@if [ ! -f .env.zitadel ]; then \
+		echo ""; \
+		echo "$(YELLOW)First run detected — configuring Zitadel...$(RESET)"; \
+		./scripts/setup-zitadel.sh; \
+		echo "$(YELLOW)Restarting control-plane to load Zitadel config...$(RESET)"; \
+		$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-mtls-dev.yml restart control-plane; \
+	fi
 	@echo ""
 	@echo "$(YELLOW)Next: Run PKI setup$(RESET)"
 	@echo "  make vault-setup"
 
 up-tracing: _ensure-network ## Start backend + UI + Jaeger
 	@echo "$(CYAN)Starting Flowplane with Jaeger (tracing)...$(RESET)"
-	$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml $(HTTPBIN_COMPOSE) $(ENVOY_COMPOSE) up -d
+	$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml $(HTTPBIN_COMPOSE) $(MOCKBACKEND_COMPOSE) $(ENVOY_COMPOSE) up -d
 	@echo ""
 	@echo "$(GREEN)Services started!$(RESET)"
 	@echo "  API:        http://localhost:8080/api/v1/"
@@ -178,8 +213,12 @@ up-tracing: _ensure-network ## Start backend + UI + Jaeger
 	@echo "  Swagger:    http://localhost:8080/swagger-ui/"
 	@echo "  xDS gRPC:   localhost:50051"
 	@echo "  Jaeger UI:  http://localhost:16686"
+	@echo "  Platform:   admin@flowplane.local / Flowplane1!"
 ifdef HTTPBIN
 	@echo "  httpbin:    http://localhost:8000"
+endif
+ifdef MOCKBACKEND
+	@echo "  MockBank:   http://localhost:3001/v2/api/customers"
 endif
 ifdef ENVOY
 	@echo "  Envoy (platform-admin):"
@@ -199,27 +238,50 @@ up-full: _ensure-network ## Start backend + UI + Jaeger + Vault (full stack)
 	@echo "  Vault UI:   http://localhost:8200 (token: flowplane-dev-token)"
 	@echo "  Jaeger UI:  http://localhost:16686"
 	@echo "  httpbin:    http://localhost:8000"
+	@echo "  Platform:   admin@flowplane.local / Flowplane1!"
 
-seed: ## Seed dev data: org, org-admin, team, API, tokens
-	@./scripts/seed-data.sh
+seed: ## Seed demo data (org, users, teams with DB permissions)
+	@./scripts/seed-demo.sh
 
-seed-info: ## Display seed data credentials and configuration
-	@echo ""
-	@echo "$(CYAN)━━━ Flowplane Seed Info ━━━$(RESET)"
-	@echo ""
-	@echo "  $(GREEN)Credentials:$(RESET)"
-	@echo "    Platform admin:  $(CYAN)admin@flowplane.local$(RESET) / $(CYAN)Admin123!$(RESET)"
-	@echo "    Org admin:       $(CYAN)orgadmin@acme-corp.local$(RESET) / $(CYAN)OrgAdmin123!$(RESET)"
-	@echo ""
-	@echo "  $(GREEN)Resources:$(RESET)"
-	@echo "    Org:             $(CYAN)acme-corp$(RESET)"
-	@echo "    Team:            $(CYAN)engineering$(RESET)"
-	@echo "    Listener port:   $(CYAN)10016$(RESET)"
-	@echo "    API spec:        $(CYAN)httpbin.yaml$(RESET)"
-	@echo ""
-	@echo "  $(YELLOW)Note: API tokens are generated during 'make seed' and shown only once.$(RESET)"
-	@echo "  $(YELLOW)To view/rotate tokens, login to the UI or use the API.$(RESET)"
-	@echo ""
+setup-zitadel: ## Configure Zitadel platform infrastructure (project, SPA app, env files)
+	@./scripts/setup-zitadel.sh
+	@echo "$(YELLOW)Note: Restart control-plane to load new config: docker compose restart control-plane$(RESET)"
+
+seed-info: ## Display credentials and configuration
+	@AUTH_MODE=$$(curl -sf --max-time 3 http://localhost:8080/api/v1/auth/mode 2>/dev/null | grep -o '"auth_mode":"[^"]*"' | cut -d'"' -f4); \
+	if [ "$$AUTH_MODE" = "dev" ]; then \
+		echo ""; \
+		echo "$(CYAN)━━━ Flowplane Dev Mode ━━━$(RESET)"; \
+		echo ""; \
+		echo "  $(GREEN)API:$(RESET)           $(CYAN)http://localhost:8080/api/v1/$(RESET)"; \
+		echo "  $(GREEN)User:$(RESET)          $(CYAN)dev@flowplane.local$(RESET)"; \
+		echo "  $(GREEN)Org:$(RESET)           $(CYAN)dev-org$(RESET)"; \
+		echo "  $(GREEN)Team:$(RESET)          $(CYAN)default$(RESET)"; \
+		echo "  $(GREEN)Token:$(RESET)         $(CYAN)~/.flowplane/credentials$(RESET)"; \
+		echo ""; \
+		echo "  $(YELLOW)Data is auto-seeded on startup. No 'make seed' needed.$(RESET)"; \
+		echo ""; \
+	else \
+		echo ""; \
+		echo "$(CYAN)━━━ Flowplane Auth Info ━━━$(RESET)"; \
+		echo ""; \
+		echo "  $(GREEN)Zitadel Console:$(RESET)"; \
+		echo "    URL:           $(CYAN)http://localhost:8081$(RESET)"; \
+		echo "    Admin login:   $(CYAN)zitadel-admin@zitadel.localhost$(RESET) / $(CYAN)Password1!$(RESET)"; \
+		echo ""; \
+		echo "  $(GREEN)Superadmin:$(RESET)"; \
+		echo "    Email:         $(CYAN)admin@flowplane.local$(RESET)"; \
+		echo "    Note:          Seeded automatically on first startup"; \
+		echo ""; \
+		echo "  $(GREEN)Demo User (after 'make seed'):$(RESET)"; \
+		echo "    URL:           $(CYAN)http://localhost:8080$(RESET)"; \
+		echo "    Login:         $(CYAN)demo@acme-corp.com$(RESET) / $(CYAN)Flowplane1!$(RESET)"; \
+		echo "    Org:           $(CYAN)acme-corp$(RESET)"; \
+		echo "    Team:          $(CYAN)engineering$(RESET)"; \
+		echo ""; \
+		echo "  $(YELLOW)Machine user credentials are shown during 'make seed'.$(RESET)"; \
+		echo ""; \
+	fi
 
 # =============================================================================
 # Container Operations
@@ -232,8 +294,10 @@ down: ## Stop all services
 	-$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-secrets-tracing.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-httpbin.yml down 2>/dev/null || true
+	-$(DOCKER_COMPOSE) -f docker-compose-mockbackend.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) $(BASE_COMPOSE) -f docker-compose-envoy.yml down 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-monitoring.yml down 2>/dev/null || true
+	-$(DOCKER_COMPOSE) -f docker-compose-dev.yml down 2>/dev/null || true
 	@echo "$(GREEN)All services stopped.$(RESET)"
 
 logs: ## Tail logs from all running services
@@ -249,6 +313,10 @@ clean: down ## Remove volumes and orphan containers
 	-$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v --remove-orphans 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-jaeger.yml down -v --remove-orphans 2>/dev/null || true
 	-$(DOCKER_COMPOSE) -f docker-compose-secrets-tracing.yml down -v --remove-orphans 2>/dev/null || true
+	-$(DOCKER_COMPOSE) -f docker-compose-dev.yml down -v --remove-orphans 2>/dev/null || true
+	-@$(DOCKER) network rm flowplane-network 2>/dev/null || true
+	@echo "$(YELLOW)Removing stale Zitadel credentials...$(RESET)"
+	@rm -f zitadel/machinekey/admin-pat.txt zitadel/machinekey/admin-sa.json .env.zitadel ui/.env
 	@echo "$(GREEN)Cleanup complete.$(RESET)"
 
 # =============================================================================
@@ -298,43 +366,44 @@ test-ui-watch: ## Run UI component tests in watch mode
 	@echo "$(CYAN)Running UI tests in watch mode...$(RESET)"
 	cd ui && npx vitest
 
-test-ui-e2e: _ensure-e2e-deps ## Run UI E2E tests (self-contained)
-	@echo "$(CYAN)Running UI E2E tests...$(RESET)"
+test-ui-e2e: ## Run UI E2E tests (boots stack if not running)
+	@if ! $(DOCKER) ps --format '{{.Names}}' 2>/dev/null | grep -q flowplane-control-plane; then \
+		echo "$(YELLOW)Stack not running — starting...$(RESET)"; \
+		$(MAKE) up; \
+		echo "$(YELLOW)Seeding demo data...$(RESET)"; \
+		$(MAKE) seed; \
+	fi
+	@echo "$(CYAN)Running UI E2E tests (Playwright + Zitadel OIDC)...$(RESET)"
 	cd ui && npx playwright test; \
 	TEST_EXIT=$$?; \
 	echo ""; \
 	echo "$(GREEN)HTML report: make test-ui-report$(RESET)"; \
-	echo "$(CYAN)Stopping PostgreSQL...$(RESET)"; \
-	$(DOCKER_COMPOSE) $(BASE_COMPOSE) down -v >/dev/null 2>&1 || true; \
-	echo "$(GREEN)Cleanup complete.$(RESET)"; \
 	exit $$TEST_EXIT
 
 test-ui-report: ## Open Playwright HTML test report
 	cd ui && npx playwright show-report
 
-test-e2e: ## Run E2E smoke tests and clean up containers
-	@echo "$(CYAN)Running E2E smoke tests...$(RESET)"
-	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1; \
+test-e2e-dev: ## Dev mode E2E tests (bearer token, no Zitadel)
+	@echo "$(CYAN)Running dev-mode E2E tests...$(RESET)"
+	FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1; \
 	TEST_EXIT=$$?; \
 	$(MAKE) test-cleanup; \
 	exit $$TEST_EXIT
 
-test-e2e-full: ## Run full E2E suite and clean up containers
-	@echo "$(CYAN)Running full E2E suite...$(RESET)"
-	RUN_E2E=1 RUST_LOG=info FLOWPLANE_E2E_MTLS=1 cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1; \
+test-e2e-prod: ## Prod mode E2E tests (real Zitadel, multi-user)
+	@echo "$(CYAN)Running prod-mode E2E tests...$(RESET)"
+	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1; \
 	TEST_EXIT=$$?; \
 	$(MAKE) test-cleanup; \
 	exit $$TEST_EXIT
 
-test-e2e-mtls: ## Run mTLS E2E tests and clean up containers
-	@echo "$(CYAN)Running mTLS E2E tests...$(RESET)"
-	FLOWPLANE_E2E_MTLS=1 RUN_E2E=1 RUST_LOG=info cargo test --test e2e "test_24_mtls" -- --ignored --nocapture --test-threads=1; \
-	TEST_EXIT=$$?; \
-	$(MAKE) test-cleanup; \
-	exit $$TEST_EXIT
+test-e2e: ## Run all E2E tests (dev + prod)
+	@echo "$(CYAN)Running all E2E tests...$(RESET)"
+	$(MAKE) test-e2e-dev
+	$(MAKE) test-e2e-prod
 
-test-cleanup: ## Remove orphaned testcontainer PostgreSQL containers
-	@CONTAINERS=$$($(DOCKER) ps -q --filter "label=org.testcontainers.managed-by=testcontainers" --filter "ancestor=postgres" 2>/dev/null); \
+test-cleanup: ## Remove orphaned testcontainer containers (PostgreSQL + Zitadel)
+	@CONTAINERS=$$($(DOCKER) ps -q --filter "label=org.testcontainers.managed-by=testcontainers" 2>/dev/null); \
 	if [ -n "$$CONTAINERS" ]; then \
 		echo "$(YELLOW)Stopping $$(echo "$$CONTAINERS" | wc -l | tr -d ' ') testcontainer(s)...$(RESET)"; \
 		$(DOCKER) stop --time 5 $$CONTAINERS 2>/dev/null || true; \
@@ -412,8 +481,7 @@ _ensure-e2e-deps:
 	fi
 
 _ensure-network:
-	@$(DOCKER) network inspect flowplane-network >/dev/null 2>&1 || \
-		$(DOCKER) network create flowplane-network >/dev/null 2>&1
+	@# No-op: let docker-compose manage the network to avoid label conflicts
 
 # =============================================================================
 # Agent Integration Tests

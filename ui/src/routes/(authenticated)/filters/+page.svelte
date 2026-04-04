@@ -47,7 +47,7 @@
 		error = null;
 
 		try {
-			const filtersData = await apiClient.listFilters();
+			const filtersData = await apiClient.listFilters(currentTeam);
 			filters = filtersData;
 
 			// Load status for each filter (installations + configurations)
@@ -55,7 +55,7 @@
 			await Promise.all(
 				filtersData.map(async (filter) => {
 					try {
-						const status = await apiClient.getFilterStatus(filter.id);
+						const status = await apiClient.getFilterStatus(currentTeam, filter.id);
 						statusMap.set(filter.id, status);
 					} catch (e) {
 						// Ignore errors for individual status fetches
@@ -129,7 +129,7 @@
 		actionError = null;
 
 		try {
-			await apiClient.deleteFilter(filter.id);
+			await apiClient.deleteFilter(currentTeam, filter.id);
 			await loadData();
 		} catch (err) {
 			actionError = err instanceof Error ? err.message : 'Failed to delete filter';

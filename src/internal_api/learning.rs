@@ -133,7 +133,7 @@ impl LearningSessionOperations {
         })?;
 
         // Verify team access
-        if !auth.can_access_team(Some(&session.team)) {
+        if !auth.is_admin && !auth.can_access_team(Some(&session.team)) {
             return Err(InternalError::not_found("Learning session", id));
         }
 
@@ -212,8 +212,8 @@ impl LearningSessionOperations {
             "Learning session created via internal API"
         );
 
-        // 4. Auto-start if requested
-        let session = if req.auto_start.unwrap_or(false) {
+        // 4. Auto-start if requested (default: true — matches MCP tool docs)
+        let session = if req.auto_start.unwrap_or(true) {
             // Use the existing learning session service from XdsState if available
             if let Some(service) = self.xds_state.get_learning_session_service() {
                 // Activate the session
@@ -248,7 +248,7 @@ impl LearningSessionOperations {
             created
         };
 
-        let message = if req.auto_start.unwrap_or(false) {
+        let message = if req.auto_start.unwrap_or(true) {
             "Learning session created and activated successfully."
         } else {
             "Learning session created successfully. Use activate to start collecting samples."
@@ -353,14 +353,12 @@ impl LearningSessionOperations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
+    use crate::storage::test_helpers::{
+        create_test_xds_state, TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID,
+    };
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
-        let test_db = TestDatabase::new("internal_api_learning").await;
-        let pool = test_db.pool.clone();
-        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-        (test_db, state)
+        create_test_xds_state("internal_api_learning").await
     }
 
     #[tokio::test]

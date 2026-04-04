@@ -1,39 +1,29 @@
 /**
  * Filter Form Registry
  *
- * All filters now use dynamic forms generated from JSON Schema.
- * Custom form components are no longer needed.
+ * Maps filter types to custom form components. When a custom form is
+ * registered for a filter type, the create/edit pages render it instead
+ * of the generic DynamicFilterForm.
  *
- * This registry is kept for backward compatibility but returns empty/false
- * to ensure all filters use DynamicFilterForm.
+ * Custom forms provide better UX for complex filter types with
+ * field-level inputs, contextual help, and Zod validation.
  */
 
 /**
- * Registry of custom form components for specific filter types.
- * Empty - all filters now use DynamicFilterForm.
+ * Filter types that have custom form components.
+ * The create/edit pages check this to decide whether to render
+ * a custom form or the generic DynamicFilterForm.
  */
-export const CUSTOM_FORM_REGISTRY: Record<string, never> = {};
+export const CUSTOM_FORM_FILTER_TYPES = new Set([
+	'cors',
+	'rate_limit',
+	'compressor',
+	'ext_authz'
+]);
 
 /**
  * Check if a filter type has a custom form component.
- * Always returns false - all filters now use dynamic forms.
  */
-export function hasCustomForm(_filterType: string): boolean {
-	return false;
-}
-
-/**
- * Get the custom form component for a filter type.
- * Always returns null - all filters now use dynamic forms.
- */
-export function getCustomForm(_filterType: string): null {
-	return null;
-}
-
-/**
- * List all filter types that have custom forms.
- * Returns empty array - all filters now use dynamic forms.
- */
-export function listCustomFormTypes(): string[] {
-	return [];
+export function hasCustomForm(filterType: string): boolean {
+	return CUSTOM_FORM_FILTER_TYPES.has(filterType);
 }

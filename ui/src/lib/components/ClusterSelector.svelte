@@ -155,7 +155,12 @@
 			return cluster.name;
 		}
 		const firstEndpoint = endpoints[0];
-		const host = firstEndpoint.host || firstEndpoint.address;
+		if (typeof firstEndpoint === 'string') {
+			const parts = firstEndpoint.split(':');
+			const moreCount = endpoints.length > 1 ? ` (+${endpoints.length - 1} more)` : '';
+			return `${cluster.name} → ${firstEndpoint}${moreCount}`;
+		}
+		const host = firstEndpoint.host;
 		const port = firstEndpoint.port;
 		if (host) {
 			const hostDisplay = port ? `${host}:${port}` : host;

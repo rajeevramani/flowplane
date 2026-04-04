@@ -13,39 +13,28 @@ use serde_json::{json, Value};
 
 use super::timeout::{with_timeout, TestTimeout};
 
-/// Session information from login
-#[derive(Debug, Clone)]
-pub struct SessionInfo {
-    /// Session token (from cookie)
-    pub session_token: String,
-    /// CSRF token (for subsequent requests)
-    pub csrf_token: String,
-}
-
-/// Test context with authenticated sessions
+/// Test context with authenticated JWT tokens (from Zitadel OIDC).
+///
+/// All tokens are JWT Bearer tokens obtained from Zitadel via:
+/// - Human users: Session API + OIDC finalize flow
+/// - Machine users (agents): OAuth2 client_credentials grant
 #[derive(Debug)]
 pub struct TestContext {
-    /// Admin session (from bootstrap)
-    pub admin_session: SessionInfo,
-    /// Admin PAT token
+    /// Superadmin JWT token (platform admin)
     pub admin_token: String,
     /// Team A info
     pub team_a_name: String,
     pub team_a_id: String,
-    /// Team A developer token
-    pub team_a_dev_token: Option<String>,
     /// Team A dataplane ID (created during setup)
     pub team_a_dataplane_id: String,
     /// Team B info
     pub team_b_name: String,
     pub team_b_id: String,
-    /// Team B developer token
-    pub team_b_dev_token: Option<String>,
     /// Team B dataplane ID (created during setup)
     pub team_b_dataplane_id: String,
-    /// Default org ID (from bootstrap)
+    /// Default org ID
     pub org_id: Option<String>,
-    /// Default org name (from bootstrap)
+    /// Default org name
     pub org_name: Option<String>,
 }
 
@@ -56,42 +45,6 @@ pub struct ApiClient {
 }
 
 // Response types
-#[derive(Debug, Deserialize)]
-pub struct BootstrapResponse {
-    #[serde(rename = "setupToken")]
-    pub setup_token: String,
-    #[serde(default)]
-    pub message: String,
-}
-
-/// Login response - matches backend LoginResponseBody
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginResponse {
-    pub session_id: String,
-    pub csrf_token: String,
-    #[serde(default)]
-    pub expires_at: Option<String>,
-    #[serde(default)]
-    pub user_id: Option<String>,
-    #[serde(default)]
-    pub user_email: Option<String>,
-    #[serde(default)]
-    pub teams: Vec<String>,
-    #[serde(default)]
-    pub scopes: Vec<String>,
-    #[serde(default)]
-    pub org_id: Option<String>,
-    #[serde(default)]
-    pub org_name: Option<String>,
-}
-
-/// Token creation response - matches backend TokenSecretResponse
-#[derive(Debug, Deserialize)]
-pub struct TokenResponse {
-    pub token: String,
-    pub id: String,
-}
 
 /// Team response - matches backend Team struct
 #[derive(Debug, Deserialize)]
@@ -312,6 +265,27 @@ pub struct ListOrgMembersResponse {
     pub members: Vec<OrgMemberResponse>,
 }
 
+/// Auth session response (from GET /api/v1/auth/session)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthSessionResponse {
+    pub user_id: String,
+    pub email: String,
+    pub name: String,
+    pub is_admin: bool,
+    pub is_platform_admin: bool,
+    #[serde(default)]
+    pub org_scopes: Vec<String>,
+    #[serde(default)]
+    pub teams: Vec<String>,
+    #[serde(default)]
+    pub org_id: Option<String>,
+    #[serde(default)]
+    pub org_name: Option<String>,
+    #[serde(default)]
+    pub org_role: Option<String>,
+}
+
 /// Current org response
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -331,7 +305,6 @@ pub struct ListOrgTeamsResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateClusterRequest {
-    pub team: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_name: Option<String>,
@@ -365,7 +338,6 @@ pub struct ClusterEndpoint {
 
 #[derive(Debug, Serialize)]
 pub struct CreateRouteRequest {
-    pub team: String,
     pub name: String,
     #[serde(rename = "virtualHosts")]
     pub virtual_hosts: Vec<VirtualHost>,
@@ -412,10 +384,10 @@ pub struct RouteAction {
 }
 
 /// Listener request - matches backend CreateListenerBody
+/// Team is derived from the URL path, not the body.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateListenerRequest {
-    pub team: String,
     pub name: String,
     pub address: String,
     pub port: u16,
@@ -427,10 +399,10 @@ pub struct CreateListenerRequest {
 }
 
 /// Dataplane request - matches backend CreateDataplaneBody
+/// Team is derived from the URL path, not the body.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateDataplaneRequest {
-    pub team: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_host: Option<String>,
@@ -488,102 +460,23 @@ impl ApiClient {
         Self { client, base_url: base_url.into() }
     }
 
-    /// Bootstrap the application (first-time setup)
-    pub async fn bootstrap(
-        &self,
-        email: &str,
-        password: &str,
-        name: &str,
-    ) -> anyhow::Result<BootstrapResponse> {
-        let url = format!("{}/api/v1/bootstrap/initialize", self.base_url);
-        let body = json!({
-            "email": email,
-            "password": password,
-            "name": name,
-        });
-
-        let resp = self.client.post(&url).json(&body).send().await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Bootstrap failed: {} - {}", status, text);
-        }
-
-        let result: BootstrapResponse = resp.json().await?;
-        Ok(result)
-    }
-
-    /// Login with email/password
-    pub async fn login(&self, email: &str, password: &str) -> anyhow::Result<SessionInfo> {
-        let (session, _) = self.login_full(email, password).await?;
-        Ok(session)
-    }
-
-    /// Login with email/password and return full login response including org info
-    pub async fn login_full(
-        &self,
-        email: &str,
-        password: &str,
-    ) -> anyhow::Result<(SessionInfo, LoginResponse)> {
-        let url = format!("{}/api/v1/auth/login", self.base_url);
-        let body = json!({
-            "email": email,
-            "password": password,
-        });
-
-        let resp = self.client.post(&url).json(&body).send().await?;
-
-        let status = resp.status();
-
-        // Extract session token from Set-Cookie header before consuming body
-        let session_token = resp
-            .cookies()
-            .find(|c| c.name() == "fp_session")
-            .map(|c| c.value().to_string())
-            .unwrap_or_default();
-
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Login failed: {} - {}", status, text);
-        }
-
-        let login_resp: LoginResponse = resp.json().await?;
-        let session = SessionInfo { session_token, csrf_token: login_resp.csrf_token.clone() };
-
-        Ok((session, login_resp))
-    }
-
-    /// Create a personal access token (PAT)
-    pub async fn create_token(
-        &self,
-        session: &SessionInfo,
-        name: &str,
-        scopes: Vec<String>,
-    ) -> anyhow::Result<TokenResponse> {
-        let url = format!("{}/api/v1/tokens", self.base_url);
-        let body = json!({
-            "name": name,
-            "description": format!("Token for {}", name),
-            "scopes": scopes,
-        });
-
+    /// Get auth session info for the authenticated user
+    pub async fn get_auth_session(&self, token: &str) -> anyhow::Result<AuthSessionResponse> {
+        let url = format!("{}/api/v1/auth/session", self.base_url);
         let resp = self
             .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", session.session_token))
-            .header("X-CSRF-Token", &session.csrf_token)
-            .json(&body)
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
             .send()
             .await?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Create token failed: {} - {}", status, text);
+            anyhow::bail!("Get auth session failed: {} - {}", status, text);
         }
 
-        let result: TokenResponse = resp.json().await?;
+        let result: AuthSessionResponse = resp.json().await?;
         Ok(result)
     }
 
@@ -624,9 +517,10 @@ impl ApiClient {
     pub async fn create_cluster(
         &self,
         token: &str,
+        team: &str,
         req: &CreateClusterRequest,
     ) -> anyhow::Result<ClusterResponse> {
-        let url = format!("{}/api/v1/clusters", self.base_url);
+        let url = format!("{}/api/v1/teams/{}/clusters", self.base_url, team);
 
         let resp = self
             .client
@@ -650,9 +544,10 @@ impl ApiClient {
     pub async fn create_route(
         &self,
         token: &str,
+        team: &str,
         req: &CreateRouteRequest,
     ) -> anyhow::Result<RouteConfigResponse> {
-        let url = format!("{}/api/v1/route-configs", self.base_url);
+        let url = format!("{}/api/v1/teams/{}/route-configs", self.base_url, team);
 
         let resp = self
             .client
@@ -676,9 +571,10 @@ impl ApiClient {
     pub async fn create_listener(
         &self,
         token: &str,
+        team: &str,
         req: &CreateListenerRequest,
     ) -> anyhow::Result<ListenerResponse> {
-        let url = format!("{}/api/v1/listeners", self.base_url);
+        let url = format!("{}/api/v1/teams/{}/listeners", self.base_url, team);
 
         let resp = self
             .client
@@ -702,9 +598,10 @@ impl ApiClient {
     pub async fn create_dataplane(
         &self,
         token: &str,
+        team: &str,
         req: &CreateDataplaneRequest,
     ) -> anyhow::Result<DataplaneResponse> {
-        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, req.team);
+        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, team);
 
         let resp = self
             .client
@@ -728,9 +625,10 @@ impl ApiClient {
     pub async fn create_dataplane_idempotent(
         &self,
         token: &str,
+        team: &str,
         req: &CreateDataplaneRequest,
     ) -> anyhow::Result<DataplaneResponse> {
-        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, req.team);
+        let url = format!("{}/api/v1/teams/{}/dataplanes", self.base_url, team);
 
         let resp = self
             .client
@@ -748,7 +646,7 @@ impl ApiClient {
 
         // If conflict (409), list dataplanes and find by name
         if status == StatusCode::CONFLICT {
-            if let Ok(dataplanes) = self.list_dataplanes(token, &req.team).await {
+            if let Ok(dataplanes) = self.list_dataplanes(token, team).await {
                 for dp in dataplanes {
                     if dp.name == req.name {
                         return Ok(dp);
@@ -889,10 +787,9 @@ impl ApiClient {
         filter_type: &str,
         config: Value,
     ) -> anyhow::Result<FilterResponse> {
-        let url = format!("{}/api/v1/filters", self.base_url);
+        let url = format!("{}/api/v1/teams/{}/filters", self.base_url, team);
         // API expects config in {"type": "...", "config": {...}} format
         let body = json!({
-            "team": team,
             "name": name,
             "filterType": filter_type,
             "config": {
@@ -923,11 +820,13 @@ impl ApiClient {
     pub async fn install_filter(
         &self,
         token: &str,
+        team: &str,
         filter_id: &str,
         listener_name: &str,
         order: Option<i64>,
     ) -> anyhow::Result<FilterInstallationResponse> {
-        let url = format!("{}/api/v1/filters/{}/installations", self.base_url, filter_id);
+        let url =
+            format!("{}/api/v1/teams/{}/filters/{}/installations", self.base_url, team, filter_id);
         let body = json!({
             "listenerName": listener_name,
             "order": order.unwrap_or(100),
@@ -953,16 +852,18 @@ impl ApiClient {
 
     /// Attach a filter to a route
     /// This makes the filter active on the specified route.
-    /// Endpoint: POST /api/v1/route-configs/{route}/filters
+    /// Endpoint: POST /api/v1/teams/{team}/route-configs/{route}/filters
     /// Returns 204 No Content on success.
     pub async fn attach_filter_to_route(
         &self,
         token: &str,
+        team: &str,
         route_name: &str,
         filter_id: &str,
         order: Option<i64>,
     ) -> anyhow::Result<()> {
-        let url = format!("{}/api/v1/route-configs/{}/filters", self.base_url, route_name);
+        let url =
+            format!("{}/api/v1/teams/{}/route-configs/{}/filters", self.base_url, team, route_name);
         let body = json!({
             "filterId": filter_id,
             "order": order.unwrap_or(1),
@@ -988,14 +889,16 @@ impl ApiClient {
 
     /// Configure filter at route-config level.
     /// This enables the filter for all routes in the route config.
-    /// Endpoint: POST /api/v1/filters/{filter_id}/configurations
+    /// Endpoint: POST /api/v1/teams/{team}/filters/{filter_id}/configurations
     pub async fn configure_filter_at_route_config(
         &self,
         token: &str,
+        team: &str,
         filter_id: &str,
         route_config_name: &str,
     ) -> anyhow::Result<Value> {
-        let url = format!("{}/api/v1/filters/{}/configurations", self.base_url, filter_id);
+        let url =
+            format!("{}/api/v1/teams/{}/filters/{}/configurations", self.base_url, team, filter_id);
         let body = json!({
             "scopeType": "route-config",
             "scopeId": route_config_name
@@ -1021,16 +924,18 @@ impl ApiClient {
 
     /// Add a route-specific filter configuration override
     /// This allows customizing filter config for a specific scope (route/vhost/listener).
-    /// Endpoint: POST /api/v1/filters/{filter_id}/configurations
+    /// Endpoint: POST /api/v1/teams/{team}/filters/{filter_id}/configurations
     /// scope_id format for routes: "{route-config-name}/{vhost-name}/{route-name}"
     pub async fn add_route_filter_override(
         &self,
         token: &str,
+        team: &str,
         filter_id: &str,
         scope_id: &str,
         config: Value,
     ) -> anyhow::Result<Value> {
-        let url = format!("{}/api/v1/filters/{}/configurations", self.base_url, filter_id);
+        let url =
+            format!("{}/api/v1/teams/{}/filters/{}/configurations", self.base_url, team, filter_id);
         let body = json!({
             "scopeType": "route",
             "scopeId": scope_id,
@@ -1068,7 +973,7 @@ impl ApiClient {
         dataplane_id: &str,
     ) -> anyhow::Result<Value> {
         let url = format!(
-            "{}/api/v1/openapi/import?team={}&listener_mode=new&new_listener_name={}-listener&new_listener_port={}&dataplane_id={}",
+            "{}/api/v1/teams/{}/openapi/import?listener_mode=new&new_listener_name={}-listener&new_listener_port={}&dataplane_id={}",
             self.base_url, team, team, listener_port, dataplane_id
         );
 
@@ -1094,12 +999,9 @@ impl ApiClient {
     pub async fn list_clusters(
         &self,
         token: &str,
-        team: Option<&str>,
+        team: &str,
     ) -> anyhow::Result<Vec<ClusterResponse>> {
-        let url = match team {
-            Some(t) => format!("{}/api/v1/clusters?team={}", self.base_url, t),
-            None => format!("{}/api/v1/clusters", self.base_url),
-        };
+        let url = format!("{}/api/v1/teams/{}/clusters", self.base_url, team);
 
         let resp = self
             .client
@@ -1119,8 +1021,13 @@ impl ApiClient {
     }
 
     /// Get a filter by ID
-    pub async fn get_filter(&self, token: &str, filter_id: &str) -> anyhow::Result<FilterResponse> {
-        let url = format!("{}/api/v1/filters/{}", self.base_url, filter_id);
+    pub async fn get_filter(
+        &self,
+        token: &str,
+        team: &str,
+        filter_id: &str,
+    ) -> anyhow::Result<FilterResponse> {
+        let url = format!("{}/api/v1/teams/{}/filters/{}", self.base_url, team, filter_id);
 
         let resp = self
             .client
@@ -1140,8 +1047,13 @@ impl ApiClient {
     }
 
     /// Delete a filter by ID
-    pub async fn delete_filter(&self, token: &str, filter_id: &str) -> anyhow::Result<()> {
-        let url = format!("{}/api/v1/filters/{}", self.base_url, filter_id);
+    pub async fn delete_filter(
+        &self,
+        token: &str,
+        team: &str,
+        filter_id: &str,
+    ) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/teams/{}/filters/{}", self.base_url, team, filter_id);
 
         let resp = self
             .client
@@ -1447,7 +1359,7 @@ impl ApiClient {
 
         let resp = self
             .client
-            .put(&url)
+            .patch(&url)
             .header("Authorization", format!("Bearer {}", token))
             .json(&body)
             .send()
@@ -1599,16 +1511,13 @@ impl ApiClient {
     }
 
     /// Get current user's organization
-    pub async fn get_current_org(
-        &self,
-        session: &SessionInfo,
-    ) -> anyhow::Result<CurrentOrgResponse> {
+    pub async fn get_current_org(&self, token: &str) -> anyhow::Result<CurrentOrgResponse> {
         let url = format!("{}/api/v1/orgs/current", self.base_url);
 
         let resp = self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", session.session_token))
+            .header("Authorization", format!("Bearer {}", token))
             .send()
             .await?;
 
@@ -1685,6 +1594,66 @@ impl ApiClient {
         Ok((status, body))
     }
 
+    /// MCP JSON-RPC request with automatic session initialization.
+    ///
+    /// Sends an `initialize` request first to get an `MCP-Session-Id`, then
+    /// sends the actual method request with that session header.
+    pub async fn mcp_request(
+        &self,
+        token: &str,
+        method: &str,
+        params: Value,
+    ) -> anyhow::Result<(StatusCode, Value)> {
+        let url = format!("{}/api/v1/mcp", self.base_url);
+
+        // Step 1: Initialize session
+        let init_resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": "flowplane-e2e-test", "version": "1.0.0" }
+                }
+            }))
+            .send()
+            .await?;
+
+        let session_id = init_resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("initialize response missing MCP-Session-Id header"))?;
+
+        // Consume the init response body
+        let _init_body: Value = init_resp.json().await.unwrap_or(json!(null));
+
+        // Step 2: Send actual request with session ID
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("MCP-Session-Id", &session_id)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params,
+            }))
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(json!(null));
+        Ok((status, body))
+    }
+
     /// Generic DELETE request with token auth
     pub async fn delete(&self, token: &str, path: &str) -> anyhow::Result<StatusCode> {
         let url = format!("{}{}", self.base_url, path);
@@ -1745,7 +1714,7 @@ impl ApiClient {
         // If conflict (409), list teams and find by name
         // Note: GET /api/v1/admin/teams/{id} expects a UUID, not a name
         if status == StatusCode::CONFLICT {
-            let list_url = format!("{}/api/v1/admin/teams", self.base_url);
+            let list_url = format!("{}/api/v1/admin/teams?limit=500", self.base_url);
             let list_resp = self
                 .client
                 .get(&list_url)
@@ -1774,60 +1743,76 @@ impl ApiClient {
     }
 }
 
-/// Standard test credentials - used for all shared infrastructure tests
-pub const TEST_EMAIL: &str = "smoke@test.local";
-pub const TEST_PASSWORD: &str = "SmokeTest123!";
-pub const TEST_NAME: &str = "Smoke Test User";
+/// Ensure a user has org admin membership via direct DB insert.
+///
+/// The platform admin (admin:all) can create orgs and teams via admin endpoints,
+/// but cannot create tenant resources (dataplanes, clusters, etc.) because those
+/// require org-level membership which provides implicit team access.
+///
+/// This helper inserts an org membership directly into the DB (idempotent via
+/// ON CONFLICT DO NOTHING) so the platform admin can operate as org admin
+/// within tenant orgs created for E2E tests.
+async fn ensure_org_admin_via_db(db_url: &str, user_id: &str, org_id: &str) -> anyhow::Result<()> {
+    use sqlx::PgPool;
 
-/// Setup a basic dev context with bootstrap, login, and admin token.
+    let pool = PgPool::connect(db_url).await?;
+    sqlx::query(
+        "INSERT INTO organization_memberships (id, user_id, org_id, role, created_at)
+         VALUES (gen_random_uuid()::text, $1, $2, 'admin', now())
+         ON CONFLICT (user_id, org_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .execute(&pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Setup a basic dev context with Zitadel JWT authentication.
 /// This function is idempotent - safe to call multiple times with shared infrastructure.
 ///
 /// Each test gets unique team names based on the test_name to ensure isolation.
 ///
-/// The admin token created here has both `admin:all` (governance) and
-/// `org:e2e-tenant:admin` (tenant resource access) scopes, matching the
-/// security model where platform admin is governance-only.
+/// Obtains a superadmin JWT from Zitadel and uses it to create orgs, teams,
+/// and dataplanes via the CP REST API.
 pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Result<TestContext> {
-    use super::shared_infra::unique_team_name;
+    use super::shared_infra::{unique_team_name, E2eAuthMode, SharedInfrastructure};
+
+    // Get shared infrastructure
+    let infra = SharedInfrastructure::get_or_init().await?;
+
+    // Dev mode: use pre-seeded resources directly — no org/team/dataplane creation needed.
+    // Dev mode is single-tenant with a single user, so we skip all the Zitadel/multi-tenant setup.
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        let admin_token = infra.get_admin_token().await?;
+        return Ok(TestContext {
+            admin_token,
+            team_a_name: "default".to_string(),
+            team_a_id: "dev-default-team-id".to_string(),
+            team_a_dataplane_id: "dev-dataplane-id".to_string(),
+            team_b_name: "default".to_string(),
+            team_b_id: "dev-default-team-id".to_string(),
+            team_b_dataplane_id: "dev-dataplane-id".to_string(),
+            org_id: Some("dev-org-id".to_string()),
+            org_name: Some("dev-org".to_string()),
+        });
+    }
 
     // Generate unique team names for this test
     let team_a_name = unique_team_name(&format!("{}-team-a", test_name));
     let team_b_name = unique_team_name(&format!("{}-team-b", test_name));
 
-    // Check if bootstrap is needed
-    let needs_bootstrap = with_timeout(TestTimeout::quick("Check bootstrap status"), async {
-        api.needs_bootstrap().await
-    })
-    .await
-    .unwrap_or(true);
-
-    // Bootstrap only if needed (uses standard test credentials)
-    if needs_bootstrap {
-        let bootstrap = with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-            api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-        })
-        .await?;
-        assert!(bootstrap.setup_token.starts_with("fp_setup_"));
-    }
-
-    // Login with standard credentials
-    let (session, _login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login_full(TEST_EMAIL, TEST_PASSWORD).await
+    // Obtain admin token (mode-agnostic)
+    let admin_token = with_timeout(TestTimeout::default_with_label("Obtain admin token"), async {
+        infra.get_admin_token().await
     })
     .await?;
-
-    // Create governance-only token for org creation (admin:all is governance-only)
-    let gov_token =
-        with_timeout(TestTimeout::default_with_label("Create governance token"), async {
-            api.create_token(&session, "e2e-gov-token", vec!["admin:all".to_string()]).await
-        })
-        .await?;
-    assert!(gov_token.token.starts_with("fp_pat_"));
 
     // Create a tenant org for test resources (platform org is governance-only)
     let tenant_org = with_timeout(TestTimeout::default_with_label("Create tenant org"), async {
         api.create_organization_idempotent(
-            &gov_token.token,
+            &admin_token,
             "e2e-tenant",
             "E2E Tenant Org",
             Some("Tenant org for E2E dev context tests"),
@@ -1839,21 +1824,11 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     let org_id = tenant_org.id;
     let org_name = tenant_org.name;
 
-    // Create admin token with governance + org-admin scopes.
-    // admin:all grants governance (org/user/team management).
-    // org:e2e-tenant:admin grants tenant resource access (clusters, routes, etc).
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(
-            &session,
-            "e2e-admin-token",
-            vec!["admin:all".to_string(), format!("org:{}:admin", org_name)],
-        )
-        .await
-    })
-    .await?;
-
-    assert!(token_resp.token.starts_with("fp_pat_"));
-    let admin_token = token_resp.token;
+    // Ensure the superadmin is an org admin of the tenant org.
+    // Platform admin (admin:all) can create orgs/teams via admin endpoints but
+    // cannot create tenant resources (dataplanes, clusters) without org membership.
+    let session = api.get_auth_session(&admin_token).await?;
+    ensure_org_admin_via_db(&infra.db_url, &session.user_id, &org_id).await?;
 
     // Create Team A with unique name for this test
     let team_a = with_timeout(TestTimeout::default_with_label("Create Team A"), async {
@@ -1883,8 +1858,8 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     let dataplane_a = with_timeout(TestTimeout::default_with_label("Create Dataplane A"), async {
         api.create_dataplane_idempotent(
             &admin_token,
+            &team_a.name,
             &CreateDataplaneRequest {
-                team: team_a.name.clone(),
                 name: format!("{}-dataplane", team_a.name),
                 gateway_host: Some("127.0.0.1".to_string()),
                 description: Some(format!("Default dataplane for {}", team_a.name)),
@@ -1898,8 +1873,8 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     let dataplane_b = with_timeout(TestTimeout::default_with_label("Create Dataplane B"), async {
         api.create_dataplane_idempotent(
             &admin_token,
+            &team_b.name,
             &CreateDataplaneRequest {
-                team: team_b.name.clone(),
                 name: format!("{}-dataplane", team_b.name),
                 gateway_host: Some("127.0.0.1".to_string()),
                 description: Some(format!("Default dataplane for {}", team_b.name)),
@@ -1910,15 +1885,12 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
     .await?;
 
     Ok(TestContext {
-        admin_session: session,
         admin_token,
         team_a_name: team_a.name,
         team_a_id: team_a.id,
-        team_a_dev_token: None,
         team_a_dataplane_id: dataplane_a.id,
         team_b_name: team_b.name,
         team_b_id: team_b.id,
-        team_b_dev_token: None,
         team_b_dataplane_id: dataplane_b.id,
         org_id: Some(org_id),
         org_name: Some(org_name),
@@ -1935,52 +1907,50 @@ pub async fn setup_dev_context(api: &ApiClient, test_name: &str) -> anyhow::Resu
 /// - Test verifies traffic routing through Envoy
 /// - Test needs Envoy to receive xDS updates
 ///
-/// The admin token created here has both `admin:all` (governance) and
-/// `org:e2e-envoy:admin` (tenant resource access) scopes.
+/// Obtains a superadmin JWT from Zitadel for API operations.
 pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::Result<TestContext> {
-    use super::shared_infra::E2E_SHARED_TEAM;
+    use super::shared_infra::{E2eAuthMode, SharedInfrastructure, E2E_SHARED_TEAM};
+
+    // Get shared infrastructure
+    let infra = SharedInfrastructure::get_or_init().await?;
+
+    // Dev mode: use pre-seeded resources directly.
+    // In dev mode, Envoy is configured with team "default" (matching seed data),
+    // so we return the pre-seeded "default" team context.
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        let admin_token = infra.get_admin_token().await?;
+        return Ok(TestContext {
+            admin_token,
+            team_a_name: "default".to_string(),
+            team_a_id: "dev-default-team-id".to_string(),
+            team_a_dataplane_id: "dev-dataplane-id".to_string(),
+            team_b_name: "default".to_string(),
+            team_b_id: "dev-default-team-id".to_string(),
+            team_b_dataplane_id: "dev-dataplane-id".to_string(),
+            org_id: Some("dev-org-id".to_string()),
+            org_name: Some("dev-org".to_string()),
+        });
+    }
 
     // Use the shared team name that Envoy is configured for
     let team_name = E2E_SHARED_TEAM.to_string();
 
-    // Check if bootstrap is needed
-    let needs_bootstrap = with_timeout(TestTimeout::quick("Check bootstrap status"), async {
-        api.needs_bootstrap().await
-    })
-    .await
-    .unwrap_or(true);
-
-    // Bootstrap only if needed (uses standard test credentials)
-    if needs_bootstrap {
-        let bootstrap = with_timeout(TestTimeout::default_with_label("Bootstrap"), async {
-            api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME).await
-        })
-        .await?;
-        assert!(bootstrap.setup_token.starts_with("fp_setup_"));
-    }
-
-    // Login with standard credentials
-    let (session, _login_resp) = with_timeout(TestTimeout::default_with_label("Login"), async {
-        api.login_full(TEST_EMAIL, TEST_PASSWORD).await
+    // Obtain admin token (mode-agnostic)
+    let admin_token = with_timeout(TestTimeout::default_with_label("Obtain admin token"), async {
+        infra.get_admin_token().await
     })
     .await?;
 
-    // Create governance-only token for org creation
-    let gov_token =
-        with_timeout(TestTimeout::default_with_label("Create governance token"), async {
-            api.create_token(&session, "e2e-gov-token", vec!["admin:all".to_string()]).await
-        })
-        .await?;
-    assert!(gov_token.token.starts_with("fp_pat_"));
-
-    // Create a tenant org for Envoy test resources (platform org is governance-only)
+    // Create a tenant org for Envoy test resources (platform org is governance-only).
+    // Uses the same org as setup_dev_context so all E2E tests share one tenant org.
+    // This avoids multi-org issues with load_permissions returning only one org_id.
     let tenant_org =
         with_timeout(TestTimeout::default_with_label("Create envoy tenant org"), async {
             api.create_organization_idempotent(
-                &gov_token.token,
-                "e2e-envoy",
-                "E2E Envoy Org",
-                Some("Tenant org for E2E Envoy routing tests"),
+                &admin_token,
+                "e2e-tenant",
+                "E2E Tenant Org",
+                Some("Tenant org for E2E tests"),
             )
             .await
         })
@@ -1989,19 +1959,9 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
     let org_id = tenant_org.id;
     let org_name = tenant_org.name;
 
-    // Create admin token with governance + org-admin scopes for resource operations
-    let token_resp = with_timeout(TestTimeout::default_with_label("Create admin token"), async {
-        api.create_token(
-            &session,
-            "e2e-admin-token",
-            vec!["admin:all".to_string(), format!("org:{}:admin", org_name)],
-        )
-        .await
-    })
-    .await?;
-
-    assert!(token_resp.token.starts_with("fp_pat_"));
-    let admin_token = token_resp.token;
+    // Ensure the superadmin is an org admin of the tenant org (see setup_dev_context comment)
+    let session = api.get_auth_session(&admin_token).await?;
+    ensure_org_admin_via_db(&infra.db_url, &session.user_id, &org_id).await?;
 
     // Create shared team (idempotent)
     let team = with_timeout(TestTimeout::default_with_label("Create shared team"), async {
@@ -2020,8 +1980,8 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
         with_timeout(TestTimeout::default_with_label("Create shared dataplane"), async {
             api.create_dataplane_idempotent(
                 &admin_token,
+                &team.name,
                 &CreateDataplaneRequest {
-                    team: team.name.clone(),
                     name: format!("{}-dataplane", team.name),
                     gateway_host: Some("127.0.0.1".to_string()),
                     description: Some("Shared dataplane for E2E tests".to_string()),
@@ -2033,16 +1993,13 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
 
     // Return context with shared team in both A and B slots (for compatibility)
     Ok(TestContext {
-        admin_session: session,
         admin_token,
         team_a_name: team.name.clone(),
         team_a_id: team.id.clone(),
-        team_a_dev_token: None,
         team_a_dataplane_id: dataplane.id.clone(),
         // Use same team for B to simplify (tests needing isolation should use setup_dev_context)
         team_b_name: team.name,
         team_b_id: team.id,
-        team_b_dev_token: None,
         team_b_dataplane_id: dataplane.id,
         org_id: Some(org_id),
         org_name: Some(org_name),
@@ -2050,9 +2007,8 @@ pub async fn setup_envoy_context(api: &ApiClient, _test_name: &str) -> anyhow::R
 }
 
 /// Helper to create a simple cluster pointing to an endpoint
-pub fn simple_cluster(team: &str, name: &str, host: &str, port: u16) -> CreateClusterRequest {
+pub fn simple_cluster(name: &str, host: &str, port: u16) -> CreateClusterRequest {
     CreateClusterRequest {
-        team: team.to_string(),
         name: name.to_string(),
         service_name: None,
         endpoints: vec![ClusterEndpoint { host: host.to_string(), port }],
@@ -2070,14 +2026,12 @@ pub fn simple_cluster(team: &str, name: &str, host: &str, port: u16) -> CreateCl
 
 /// Helper to create a simple route with prefix match
 pub fn simple_route(
-    team: &str,
     name: &str,
     domain: &str,
     path_prefix: &str,
     cluster: &str,
 ) -> CreateRouteRequest {
     CreateRouteRequest {
-        team: team.to_string(),
         name: name.to_string(),
         virtual_hosts: vec![VirtualHost {
             name: format!("{}-vh", name),
@@ -2104,14 +2058,12 @@ pub fn simple_route(
 
 /// Helper to create a simple listener with HTTP connection manager
 pub fn simple_listener(
-    team: &str,
     name: &str,
     port: u16,
     route_config: &str,
     dataplane_id: &str,
 ) -> CreateListenerRequest {
     CreateListenerRequest {
-        team: team.to_string(),
         name: name.to_string(),
         address: "0.0.0.0".to_string(),
         port,
@@ -2140,8 +2092,7 @@ mod tests {
 
     #[test]
     fn test_simple_cluster_creation() {
-        let cluster = simple_cluster("engineering", "test-cluster", "127.0.0.1", 8080);
-        assert_eq!(cluster.team, "engineering");
+        let cluster = simple_cluster("test-cluster", "127.0.0.1", 8080);
         assert_eq!(cluster.name, "test-cluster");
         assert_eq!(cluster.endpoints.len(), 1);
         assert_eq!(cluster.endpoints[0].host, "127.0.0.1");
@@ -2150,18 +2101,15 @@ mod tests {
 
     #[test]
     fn test_simple_route_creation() {
-        let route =
-            simple_route("engineering", "test-route", "api.test.local", "/api", "test-cluster");
-        assert_eq!(route.team, "engineering");
+        let route = simple_route("test-route", "api.test.local", "/api", "test-cluster");
+        assert_eq!(route.name, "test-route");
         assert_eq!(route.virtual_hosts.len(), 1);
         assert_eq!(route.virtual_hosts[0].domains[0], "api.test.local");
     }
 
     #[test]
     fn test_simple_listener_creation() {
-        let listener_req =
-            simple_listener("engineering", "test-listener", 8080, "test-route", "dp-123");
-        assert_eq!(listener_req.team, "engineering");
+        let listener_req = simple_listener("test-listener", 8080, "test-route", "dp-123");
         assert_eq!(listener_req.name, "test-listener");
         assert_eq!(listener_req.port, 8080);
         assert_eq!(listener_req.address, "0.0.0.0");

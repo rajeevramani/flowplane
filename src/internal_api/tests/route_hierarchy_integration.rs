@@ -6,14 +6,13 @@
 //! - Cascade deletes
 //! - Cross-hierarchy operations
 
-use crate::config::SimpleXdsConfig;
 use crate::domain::{RouteConfigId, RouteMatchType};
 use crate::internal_api::{
     auth::InternalAuthContext, CreateRouteRequest, CreateVirtualHostRequest, ListRoutesRequest,
     ListVirtualHostsRequest, RouteOperations, UpdateRouteRequest, UpdateVirtualHostRequest,
     VirtualHostOperations,
 };
-use crate::storage::test_helpers::TestDatabase;
+use crate::storage::test_helpers::{create_test_xds_state, TestDatabase};
 use crate::storage::RouteConfigData;
 use crate::xds::XdsState;
 use serde_json::json;
@@ -24,10 +23,7 @@ use std::sync::Arc;
 // =============================================================================
 
 async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
-    let test_db = TestDatabase::new("internal_api_route_hierarchy").await;
-    let pool = test_db.pool.clone();
-    let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-    (test_db, state)
+    create_test_xds_state("internal_api_route_hierarchy").await
 }
 
 /// Helper to create a route config with cluster dependency
@@ -418,6 +414,7 @@ async fn test_route_update_path_match_type_action() {
         match_type: Some("exact".to_string()),
         rule_order: Some(20),
         action: None,
+        exposure: None,
     };
 
     let result =

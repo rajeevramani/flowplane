@@ -4,14 +4,14 @@
 //! virtual host and route levels within a route configuration.
 //!
 //! API Endpoints:
-//! - GET  /api/v1/route-configs/{route_config_name}/virtual-hosts - List virtual hosts
-//! - GET  /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters - List VH filters
-//! - POST /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters - Attach filter to VH
-//! - DELETE /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id} - Detach filter from VH
-//! - GET  /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes - List routes
-//! - GET  /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters - List route filters
-//! - POST /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters - Attach filter to route
-//! - DELETE /api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id} - Detach filter
+//! - GET  /api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts - List virtual hosts
+//! - GET  /api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters - List VH filters
+//! - POST /api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters - Attach filter to VH
+//! - DELETE /api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id} - Detach filter from VH
+//! - GET  /api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes - List routes
+//! - GET  /api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters - List route filters
+//! - POST /api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters - Attach filter to route
+//! - DELETE /api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id} - Detach filter
 
 mod types;
 
@@ -26,9 +26,14 @@ use tracing::{info, instrument};
 use utoipa;
 
 use crate::{
-    api::handlers::team_access::{get_effective_team_ids, team_repo_from_state},
-    api::{error::ApiError, routes::ApiState},
-    auth::authorization::require_resource_access,
+    api::handlers::team_access::{
+        get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
+        verify_team_access,
+    },
+    api::{
+        error::{ApiError, JsonBody},
+        routes::ApiState,
+    },
     auth::models::AuthContext,
     domain::FilterId,
     services::FilterService,
@@ -36,42 +41,6 @@ use crate::{
 };
 
 // === Helper Functions ===
-
-/// Verify that a route config belongs to one of the user's teams or is global.
-/// Returns the route config if authorized, otherwise returns NotFound error (to avoid leaking existence).
-async fn verify_route_config_access(
-    route_config: RouteConfigData,
-    team_scopes: &[String],
-) -> Result<RouteConfigData, ApiError> {
-    // Admin:all or resource-level scopes (empty team_scopes) can access everything
-    if team_scopes.is_empty() {
-        return Ok(route_config);
-    }
-
-    // Check if route config is global (team = NULL) or belongs to one of user's teams
-    match &route_config.team {
-        None => Ok(route_config), // Global route config, accessible to all
-        Some(route_team) => {
-            if team_scopes.contains(route_team) {
-                Ok(route_config)
-            } else {
-                // Record cross-team access attempt for security monitoring
-                if let Some(from_team) = team_scopes.first() {
-                    crate::observability::metrics::record_cross_team_access_attempt(
-                        from_team, route_team, "routes",
-                    )
-                    .await;
-                }
-
-                // Return 404 to avoid leaking existence of other teams' resources
-                Err(ApiError::NotFound(format!(
-                    "Route config with name '{}' not found",
-                    route_config.name
-                )))
-            }
-        }
-    }
-}
 
 /// Resolve a route config name to its data with team access verification
 async fn resolve_route_config_with_access(
@@ -91,7 +60,7 @@ async fn resolve_route_config_with_access(
     let team_repo = team_repo_from_state(state)?;
     let team_scopes = get_effective_team_ids(context, team_repo, context.org_id.as_ref()).await?;
 
-    verify_route_config_access(route_config, &team_scopes).await
+    verify_team_access(route_config, &team_scopes).await
 }
 
 /// Resolve a virtual host by route config name and vhost name with team access verification
@@ -140,8 +109,9 @@ async fn resolve_route(
 /// List all virtual hosts for a route config
 #[utoipa::path(
     get,
-    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_name" = String, Path, description = "Route config name"),
     ),
     responses(
@@ -151,13 +121,13 @@ async fn resolve_route(
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state, context), fields(route_config_name = %route_config_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, user_id = ?context.user_id))]
 pub async fn list_virtual_hosts_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(route_config_name): Path<String>,
+    Path((team, route_config_name)): Path<(String, String)>,
 ) -> Result<Json<ListVirtualHostsResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Team access verification happens in resolve_route_config_with_access
     let route_config =
@@ -198,8 +168,9 @@ pub async fn list_virtual_hosts_handler(
 /// List filters attached to a virtual host
 #[utoipa::path(
     get,
-    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_name" = String, Path, description = "Route config name"),
         ("vhost_name" = String, Path, description = "Virtual host name"),
     ),
@@ -210,13 +181,13 @@ pub async fn list_virtual_hosts_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
 pub async fn list_virtual_host_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_config_name, vhost_name)): Path<(String, String)>,
+    Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
 ) -> Result<Json<VirtualHostFiltersResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -239,8 +210,9 @@ pub async fn list_virtual_host_filters_handler(
 /// Attach a filter to a virtual host
 #[utoipa::path(
     post,
-    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_name" = String, Path, description = "Route config name"),
         ("vhost_name" = String, Path, description = "Virtual host name"),
     ),
@@ -253,14 +225,14 @@ pub async fn list_virtual_host_filters_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_virtual_host_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_config_name, vhost_name)): Path<(String, String)>,
-    Json(payload): Json<AttachFilterRequest>,
+    Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
+    JsonBody(payload): JsonBody<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "write", None)?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -287,8 +259,9 @@ pub async fn attach_filter_to_virtual_host_handler(
 /// Detach a filter from a virtual host
 #[utoipa::path(
     delete,
-    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_name" = String, Path, description = "Route config name"),
         ("vhost_name" = String, Path, description = "Virtual host name"),
         ("filter_id" = String, Path, description = "Filter ID"),
@@ -300,13 +273,13 @@ pub async fn attach_filter_to_virtual_host_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_virtual_host_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_config_name, vhost_name, filter_id)): Path<(String, String, String)>,
+    Path((team, route_config_name, vhost_name, filter_id)): Path<(String, String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "write", None)?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -335,8 +308,9 @@ pub async fn detach_filter_from_virtual_host_handler(
 /// List all routes for a virtual host
 #[utoipa::path(
     get,
-    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_name" = String, Path, description = "Route config name"),
         ("vhost_name" = String, Path, description = "Virtual host name"),
     ),
@@ -347,13 +321,13 @@ pub async fn detach_filter_from_virtual_host_handler(
     ),
     tag = "Routes"
 )]
-#[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, user_id = ?context.user_id))]
 pub async fn list_route_rules_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_config_name, vhost_name)): Path<(String, String)>,
+    Path((team, route_config_name, vhost_name)): Path<(String, String, String)>,
 ) -> Result<Json<ListRouteRulesResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Team access verification happens in resolve_virtual_host
     let virtual_host =
@@ -391,8 +365,9 @@ pub async fn list_route_rules_handler(
 /// List filters attached to a route
 #[utoipa::path(
     get,
-    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_name" = String, Path, description = "Route config name"),
         ("vhost_name" = String, Path, description = "Virtual host name"),
         ("route_name" = String, Path, description = "Route name"),
@@ -404,13 +379,13 @@ pub async fn list_route_rules_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, user_id = ?context.user_id))]
 pub async fn list_route_rule_filters_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_config_name, vhost_name, route_name)): Path<(String, String, String)>,
+    Path((team, route_config_name, vhost_name, route_name)): Path<(String, String, String, String)>,
 ) -> Result<Json<RouteRuleFiltersResponse>, ApiError> {
-    require_resource_access(&context, "routes", "read", None)?;
+    require_resource_access_resolved(&state, &context, "routes", "read", Some(&team)).await?;
 
     // Team access verification happens in resolve_route
     let route =
@@ -433,8 +408,9 @@ pub async fn list_route_rule_filters_handler(
 /// Attach a filter to a route
 #[utoipa::path(
     post,
-    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_name" = String, Path, description = "Route config name"),
         ("vhost_name" = String, Path, description = "Virtual host name"),
         ("route_name" = String, Path, description = "Route name"),
@@ -448,14 +424,14 @@ pub async fn list_route_rule_filters_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context, payload), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context, payload), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %payload.filter_id, user_id = ?context.user_id))]
 pub async fn attach_filter_to_route_rule_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_config_name, vhost_name, route_name)): Path<(String, String, String)>,
-    Json(payload): Json<AttachFilterRequest>,
+    Path((team, route_config_name, vhost_name, route_name)): Path<(String, String, String, String)>,
+    JsonBody(payload): JsonBody<AttachFilterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "write", None)?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Team access verification happens in resolve_route
     let route =
@@ -483,8 +459,9 @@ pub async fn attach_filter_to_route_rule_handler(
 /// Detach a filter from a route
 #[utoipa::path(
     delete,
-    path = "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
+    path = "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("route_config_name" = String, Path, description = "Route config name"),
         ("vhost_name" = String, Path, description = "Virtual host name"),
         ("route_name" = String, Path, description = "Route name"),
@@ -497,18 +474,19 @@ pub async fn attach_filter_to_route_rule_handler(
     ),
     tag = "Filters"
 )]
-#[instrument(skip(state, context), fields(route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
+#[instrument(skip(state, context), fields(team = %team, route_config_name = %route_config_name, vhost_name = %vhost_name, route_name = %route_name, filter_id = %filter_id, user_id = ?context.user_id))]
 pub async fn detach_filter_from_route_rule_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path((route_config_name, vhost_name, route_name, filter_id)): Path<(
+    Path((team, route_config_name, vhost_name, route_name, filter_id)): Path<(
+        String,
         String,
         String,
         String,
         String,
     )>,
 ) -> Result<StatusCode, ApiError> {
-    require_resource_access(&context, "routes", "write", None)?;
+    require_resource_access_resolved(&state, &context, "routes", "update", Some(&team)).await?;
 
     // Team access verification happens in resolve_route
     let route =

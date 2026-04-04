@@ -59,7 +59,7 @@ async fn test_600_create_filter() {
             api.create_filter(
                 &ctx.admin_token,
                 &ctx.team_a_name,
-                "security-headers",
+                "security-headers-t600",
                 "header_mutation",
                 filter_config,
             )
@@ -68,7 +68,7 @@ async fn test_600_create_filter() {
         .await
         .expect("Filter creation should succeed");
 
-    assert_eq!(filter.name, "security-headers");
+    assert_eq!(filter.name, "security-headers-t600");
     assert_eq!(filter.filter_type, "header_mutation");
     println!("✓ Header mutation filter created: {} (id={})", filter.name, filter.id);
 }
@@ -100,7 +100,8 @@ async fn test_610_verify_headers() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "header-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("header-backend", host, port),
         )
         .await
         .expect("Cluster creation should succeed");
@@ -109,13 +110,8 @@ async fn test_610_verify_headers() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "header-route",
-                "header.e2e.local",
-                "/testing/header",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("header-route", "header.e2e.local", "/testing/header", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -124,8 +120,8 @@ async fn test_610_verify_headers() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "header-listener",
                 harness.ports.listener,
                 &route.name,
@@ -156,7 +152,7 @@ async fn test_610_verify_headers() {
         .create_filter(
             &ctx.admin_token,
             &ctx.team_a_name,
-            "security-headers",
+            "security-headers-t610",
             "header_mutation",
             filter_config,
         )
@@ -165,7 +161,14 @@ async fn test_610_verify_headers() {
 
     // Install filter on listener
     let installation = with_timeout(TestTimeout::default_with_label("Install filter"), async {
-        api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100)).await
+        api.install_filter(
+            &ctx.admin_token,
+            &ctx.team_a_name,
+            &filter.id,
+            &listener.name,
+            Some(100),
+        )
+        .await
     })
     .await
     .expect("Filter installation should succeed");
@@ -177,7 +180,14 @@ async fn test_610_verify_headers() {
 
     // Attach filter to route
     with_timeout(TestTimeout::default_with_label("Attach filter to route"), async {
-        api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1)).await
+        api.attach_filter_to_route(
+            &ctx.admin_token,
+            &ctx.team_a_name,
+            &route.name,
+            &filter.id,
+            Some(1),
+        )
+        .await
     })
     .await
     .expect("Filter attachment to route should succeed");
@@ -253,7 +263,8 @@ async fn test_611_route_override() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "override-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("override-backend", host, port),
         )
         .await
         .expect("Cluster creation should succeed");
@@ -262,8 +273,8 @@ async fn test_611_route_override() {
     let route = api
         .create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "override-route",
                 "override.e2e.local",
                 "/testing/header-override",
@@ -277,8 +288,8 @@ async fn test_611_route_override() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "override-listener",
                 harness.ports.listener,
                 &route.name,
@@ -312,14 +323,20 @@ async fn test_611_route_override() {
         .expect("Filter creation should succeed");
 
     // Install filter on listener
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
     // Attach filter to route
-    api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1))
-        .await
-        .expect("Filter attachment to route should succeed");
+    api.attach_filter_to_route(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &route.name,
+        &filter.id,
+        Some(1),
+    )
+    .await
+    .expect("Filter attachment to route should succeed");
 
     println!("✓ Filter installed and attached to route");
 
@@ -348,8 +365,14 @@ async fn test_611_route_override() {
 
     let override_result =
         with_timeout(TestTimeout::default_with_label("Add route override"), async {
-            api.add_route_filter_override(&ctx.admin_token, &filter.id, &scope_id, override_config)
-                .await
+            api.add_route_filter_override(
+                &ctx.admin_token,
+                &ctx.team_a_name,
+                &filter.id,
+                &scope_id,
+                override_config,
+            )
+            .await
         })
         .await
         .expect("Route override should succeed");

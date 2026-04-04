@@ -1,15 +1,13 @@
 # Getting Started
 
-This guide walks you through setting up Flowplane in dev mode and exposing your first service through Envoy.
-
-> **Visual guides**: See the [Developer Workflow](developer-workflow.excalidraw) diagram for the 6-step development cycle, and the [Architecture](architecture.excalidraw) diagram for a component overview. Open `.excalidraw` files at [excalidraw.com](https://excalidraw.com).
+Expose a local service through Envoy with rate limiting in under 10 minutes.
 
 ## Prerequisites
 
-- **Docker** (Docker Desktop, OrbStack, Rancher Desktop, or Podman)
-- **Rust** (stable, 1.75+) with cargo
+- **Docker** (or Podman)
+- **Rust 1.92+** — install via [rustup.rs](https://rustup.rs/)
 
-## Install
+## 1. Install
 
 ```bash
 git clone https://github.com/rajeevramani/flowplane.git
@@ -17,44 +15,64 @@ cd flowplane
 cargo install --path . --locked
 ```
 
-This installs the `flowplane` CLI binary.
+This builds the `flowplane` CLI binary. The next step pulls Docker images automatically.
 
-## Boot the stack
+## 2. Boot the stack
 
 ```bash
 flowplane init --with-envoy --with-httpbin
 ```
 
-This starts PostgreSQL, the Flowplane control plane, Envoy, and httpbin in Docker containers. A dev token is generated and saved to `~/.flowplane/credentials` automatically.
+This starts four containers in dev mode — no login required:
 
-Services after boot:
+| Service    | Address                           |
+|------------|-----------------------------------|
+| API        | http://localhost:8080              |
+| Swagger UI | http://localhost:8080/swagger-ui/  |
+| httpbin    | http://localhost:8000              |
+| Envoy      | localhost:10000 (base)            |
 
-| Service | Address |
-|---|---|
-| Control plane API | http://localhost:8080 |
-| Swagger UI | http://localhost:8080/swagger-ui/ |
-| xDS server | localhost:18000 (gRPC) |
-| Envoy proxy | localhost:10000 (admin), ports 10001-10020 (listeners) |
-| httpbin | http://localhost:8000 |
+A dev token is generated and saved to `~/.flowplane/credentials`. All CLI commands use it automatically.
 
-> Envoy listeners use ports **10001-10020**. The `expose` command auto-assigns the next available port in this range.
+> ⚠️ If you previously ran `make up` (prod mode), remove the stale network first: `docker network rm flowplane-network`
 
-## Verify
+## 3. Verify the stack
 
 ```bash
 flowplane status
-curl http://localhost:8080/health
 ```
 
-`flowplane status` shows a system overview (control plane, Envoy, database). The `/health` endpoint returns `200 OK` when the control plane is ready.
+```
+Flowplane Status (team: default)
+----------------------------------------
+Listeners:  0
+Clusters:   0
+Filters:    0
+```
 
-## Expose a service
-
-The `expose` command creates all the gateway resources (cluster, route, listener) in one step:
+Confirm dev mode:
 
 ```bash
-flowplane expose http://httpbin:80 --name demo
+curl http://localhost:8080/api/v1/auth/mode
 ```
+
+```json
+{"auth_mode":"dev"}
+```
+
+## 4. Expose httpbin
+
+<table>
+<tr><th>CLI</th><th>MCP</th></tr>
+<tr>
+<td>
+
+```bash
+flowplane expose http://httpbin:80 \
+  --name demo
+```
+
+Output:
 
 ```
 Exposed 'demo' -> http://httpbin:80
@@ -64,11 +82,80 @@ Exposed 'demo' -> http://httpbin:80
   curl http://localhost:10001/
 ```
 
-This created a cluster pointing to `httpbin:80`, a route config forwarding `/` to that cluster, and a listener on port `10001`. The port is auto-assigned from the range 10001-10020.
+</td>
+<td>
 
-### Test it
+Three tool calls via `POST /api/v1/mcp`:
 
-Send a request through the Envoy gateway:
+**1. Create cluster:**
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_cluster",
+    "arguments": {
+      "name": "demo",
+      "serviceName": "demo-service",
+      "endpoints": [{"address": "httpbin", "port": 80}],
+      "team": "default"
+    }
+  }
+}
+```
+
+**2. Create route config:**
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_route_config",
+    "arguments": {
+      "name": "demo-routes",
+      "virtualHosts": [{
+        "name": "demo-vhost",
+        "domains": ["*"],
+        "routes": [{
+          "name": "catch-all",
+          "match": {"path": {"type": "prefix", "value": "/"}},
+          "action": {"type": "forward", "cluster": "demo"}
+        }]
+      }],
+      "team": "default"
+    }
+  }
+}
+```
+
+**3. Create listener** (get `dataplaneId` from `cp_list_dataplanes` first):
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_listener",
+    "arguments": {
+      "name": "demo-listener",
+      "address": "0.0.0.0",
+      "port": 10001,
+      "routeConfigName": "demo-routes",
+      "dataplaneId": "<from cp_list_dataplanes>",
+      "team": "default"
+    }
+  }
+}
+```
+
+</td>
+</tr>
+</table>
+
+> ⚠️ Use the Docker service name (`httpbin`), not `localhost`. Inside the Docker network, `localhost` refers to the container itself.
+
+> ⚠️ **MCP in dev mode:** Always include `"team": "default"` in every tool call. The dev auth context has no grants, so team resolution fails without it.
+
+## 5. Test with curl
 
 ```bash
 curl http://localhost:10001/get
@@ -83,146 +170,100 @@ curl http://localhost:10001/get
     "User-Agent": "curl/8.7.1",
     "X-Envoy-Expected-Rq-Timeout-Ms": "15000"
   },
-  "origin": "10.89.0.13",
+  "origin": "10.89.0.5",
   "url": "http://localhost:10001/get"
 }
 ```
 
 The `X-Envoy-Expected-Rq-Timeout-Ms` header confirms the request went through Envoy.
 
-Try other httpbin endpoints:
+> ⚠️ The port is auto-assigned from the 10001–10020 range. On a fresh stack, the first expose gets 10001. Always check the `expose` output for the actual port.
+
+## 6. Add a rate limit filter
+
+<table>
+<tr><th>CLI</th><th>MCP</th></tr>
+<tr>
+<td>
 
 ```bash
-curl http://localhost:10001/status/200    # Returns 200 OK
-curl http://localhost:10001/headers       # Echo request headers
-curl -X POST http://localhost:10001/post -d '{"key":"value"}'  # Echo POST body
-```
-
-### Check what's exposed
-
-```bash
-flowplane list
-```
-
-```
-Name                           Port     Protocol
--------------------------------------------------------
-demo                           10001    HTTP
-```
-
-```bash
-flowplane status
-```
-
-```
-Flowplane Status (team: default)
-----------------------------------------
-Listeners:  1
-Clusters:   1
-Filters:    0
-```
-
-### Expose options
-
-| Flag | Description |
-|---|---|
-| `--name <NAME>` | Service name (auto-generated from URL if omitted) |
-| `--path <PATH>` | Path prefix to route (repeatable, defaults to `/`) |
-| `--port <PORT>` | Port override (auto-assigned from 10001-10020 if omitted) |
-
-### Remove an exposed service
-
-```bash
-flowplane unexpose demo
-```
-
-```
-Removed exposed service 'demo'
-```
-
-This tears down the listener, route config, and cluster in one step.
-
-## Add a rate limit filter
-
-Flowplane filters let you add behavior to your gateway without changing upstream code. This section adds local rate limiting to the `demo` service.
-
-First, re-expose the service if you removed it:
-
-```bash
-flowplane expose http://httpbin:80 --name demo
-```
-
-### Create the filter
-
-Save this as `rate-limit-filter.json`:
-
-```json
+cat > /tmp/rl-filter.json <<'EOF'
 {
-  "name": "rate-limit",
+  "name": "demo-rate-limit",
   "filterType": "local_rate_limit",
   "config": {
     "type": "local_rate_limit",
     "config": {
-      "stat_prefix": "http_local_rate_limiter",
+      "stat_prefix": "demo_rl",
       "token_bucket": {
         "max_tokens": 3,
         "tokens_per_fill": 3,
         "fill_interval_ms": 60000
-      },
-      "filter_enabled": {
-        "numerator": 100,
-        "denominator": "hundred"
-      },
-      "filter_enforced": {
-        "numerator": 100,
-        "denominator": "hundred"
       }
     }
-  },
-  "team": "default"
+  }
 }
+EOF
+
+flowplane filter create -f /tmp/rl-filter.json
+flowplane filter attach demo-rate-limit \
+  --listener demo-listener --order 1
 ```
 
-Key fields:
-- `filterType` — the filter type (`local_rate_limit` for in-memory rate limiting)
-- `config` — nested structure with `type` and `config` (the inner config holds filter-specific settings)
-- `token_bucket` — allows 3 requests per 60 seconds, then rejects with 429
-- `filter_enabled` / `filter_enforced` — both set to 100% so every request is checked and enforced
+</td>
+<td>
 
-Create the filter:
-
-```bash
-flowplane filter create -f rate-limit-filter.json
-```
+**1. Create filter:**
 
 ```json
 {
-  "id": "e8169ce5-f561-4deb-ae77-86bf26d4a4f5",
-  "name": "rate-limit",
-  "filterType": "local_rate_limit",
-  "version": 1,
-  "team": "default",
-  "allowedAttachmentPoints": ["route", "listener"]
+  "method": "tools/call",
+  "params": {
+    "name": "cp_create_filter",
+    "arguments": {
+      "name": "demo-rate-limit",
+      "filterType": "local_rate_limit",
+      "configuration": {
+        "type": "local_rate_limit",
+        "config": {
+          "stat_prefix": "demo_rl",
+          "token_bucket": {
+            "max_tokens": 3,
+            "tokens_per_fill": 3,
+            "fill_interval_ms": 60000
+          }
+        }
+      },
+      "team": "default"
+    }
+  }
 }
 ```
 
-### Attach to the listener
+**2. Attach to listener:**
 
-Filters are not active until attached to a listener (or route):
-
-```bash
-flowplane filter attach rate-limit --listener demo-listener
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cp_attach_filter",
+    "arguments": {
+      "filter": "demo-rate-limit",
+      "listener": "demo-listener",
+      "order": 1,
+      "team": "default"
+    }
+  }
+}
 ```
 
-```
-Filter 'rate-limit' attached to listener 'demo-listener'
-```
+</td>
+</tr>
+</table>
 
-> The listener name follows the `expose` naming convention: `<name>-listener`. Since we used `--name demo`, the listener is `demo-listener`.
+> ⚠️ The filter `config` field uses nested `{type, config}` — not a flat structure. The inner `type` must match the `filterType` field.
 
-### Test rate limiting
-
-Send five requests in quick succession:
+## 7. Verify rate limiting
 
 ```bash
 for i in 1 2 3 4 5; do
@@ -238,154 +279,73 @@ Request 4: 429
 Request 5: 429
 ```
 
-The first three requests succeed (consuming all tokens). Requests 4 and 5 are rejected with `429 Too Many Requests` and the body `local_rate_limited`. The bucket refills after 60 seconds.
+The token bucket allows 3 requests per 60-second window. Requests 4 and 5 get `429 Too Many Requests`.
 
-### Verify filter status
-
-```bash
-flowplane filter list
-```
-
-```
-Name                           Type                 Team            Version    Attached  
-------------------------------------------------------------------------------------------
-rate-limit                     local_rate_limit     default         1          1
-```
-
-### Clean up the filter
-
-To remove rate limiting, detach the filter from the listener, then delete it:
+## 8. Explore
 
 ```bash
-flowplane filter detach rate-limit --listener demo-listener
-flowplane filter delete rate-limit --yes
+flowplane list                           # See exposed services
+flowplane status                         # System health overview
+flowplane doctor                         # Run diagnostic checks
 ```
 
-```
-Filter 'rate-limit' detached from listener 'demo-listener'
-Filter 'rate-limit' deleted successfully
-```
-
-## Explore
-
-A few commands to inspect and manage your running stack:
-
-### Status and diagnostics
-
-```bash
-flowplane status
-```
-
-```
-Flowplane Status (team: default)
-----------------------------------------
-Listeners:  1
-Clusters:   1
-Filters:    0
-```
-
-```bash
-flowplane doctor
-```
-
-```
-Flowplane Doctor
-----------------------------------------
-[ok]    Control plane health: ok
-[ok]    Envoy proxy: ready
-```
-
-### List exposed services
-
-```bash
-flowplane list
-```
-
-```
-Name                           Port     Protocol
--------------------------------------------------------
-demo                           10001    HTTP
-```
-
-### Swagger UI
-
-The control plane serves interactive API docs at:
-
-```
-http://localhost:8080/swagger-ui/
-```
-
-Open this in a browser to explore all REST endpoints, try requests, and view response schemas.
+Browse the full REST API at http://localhost:8080/swagger-ui/.
 
 ### MCP connection
 
-Flowplane exposes two MCP (Model Context Protocol) endpoints over Streamable HTTP:
-
-| Endpoint | URL | Purpose |
-|---|---|---|
-| Control plane | `http://localhost:8080/api/v1/mcp/cp` | Manage gateway resources (clusters, listeners, routes, filters) |
-| Gateway API | `http://localhost:8080/api/v1/mcp/api` | Proxy requests to upstream services |
-
-To connect from an MCP client (e.g., Claude Code), point it at the control plane endpoint with your auth token in the `Authorization` header.
-
-## Tear down
-
-Stop all services:
+Flowplane exposes 60+ MCP tools at `POST /api/v1/mcp`. To connect from Claude Code or another MCP client:
 
 ```bash
-flowplane down
+# Get your dev token
+flowplane auth token
 ```
 
+Required headers:
+
 ```
-Stopping services...
-Flowplane services stopped.
+Authorization: Bearer <token>
+MCP-Protocol-Version: 2025-11-25
 ```
 
-This stops and removes the containers but preserves your database volume. Your clusters, listeners, and filters are saved and will be restored on the next `flowplane init`.
+After the `initialize` handshake, include the `MCP-Session-Id` header from the response on all subsequent requests.
 
-To also delete the database and start fresh:
+## 9. Tear down
 
 ```bash
-flowplane down --volumes
+flowplane down             # Stop containers, keep data
+flowplane down --volumes   # Stop and delete all data
 ```
 
-```
-Stopping services...
-Flowplane services stopped.
-Volumes removed — database data has been deleted.
-```
+---
 
-## Production mode
+## Advanced: Production Mode
 
-Dev mode (`flowplane init`) uses a synthetic identity and bearer token — no external auth provider needed. Production mode adds Zitadel for real OIDC authentication, multi-user support, and team isolation.
-
-### Start in production mode
+Production mode adds Zitadel for multi-tenant authentication with OIDC.
 
 ```bash
-make up ENVOY=1 HTTPBIN=1
+make build                        # Build images (first time only)
+make up ENVOY=1 HTTPBIN=1         # Start full stack with Zitadel
+make seed                         # Create demo org and credentials
+make seed-info                    # Print login credentials
 ```
 
-This starts the same stack but with Zitadel for identity management. After boot, seed the demo data and log in:
+Default login: `demo@acme-corp.com` / `Flowplane1!`
 
 ```bash
-make seed
-flowplane auth login
+flowplane auth login              # Opens browser-based PKCE flow
 ```
 
-> **Note:** Production mode requires a running Zitadel instance. The `make up` target starts one via Docker. Setup details are in `scripts/setup-zitadel.sh`.
+| Setting      | Dev                  | Prod                                |
+|--------------|----------------------|-------------------------------------|
+| Auth         | Auto dev token       | Zitadel PKCE (`flowplane auth login`) |
+| xDS port     | 18000                | 50051                               |
+| Zitadel      | Not running          | localhost:8081                      |
+| Multi-tenant | Single `default` team | Multiple orgs and teams             |
 
-### Dev vs prod comparison
-
-| | Dev mode | Prod mode |
-|---|---|---|
-| **Start command** | `flowplane init --with-envoy` | `make up ENVOY=1` |
-| **Auth** | Bearer token (auto-generated) | Zitadel OIDC (PKCE) |
-| **Users** | Single synthetic user | Multi-user with roles |
-| **Teams** | `default` team | Multiple teams with isolation |
-| **xDS port** | 18000 | 50051 |
-| **Identity provider** | None | Zitadel (`localhost:8081`) |
+---
 
 ## Next steps
 
-- **[CLI Reference](cli-reference.md)** — complete command reference for all `flowplane` subcommands
-- **[Filters](filters.md)** — deep dive into all filter types with working examples
+- [CLI Reference](cli-reference.md) — every command, flag, and example
+- [Filters](filters.md) — rate limiting, JWT auth, CORS, and 11 more filter types
+- [MCP Server](mcp.md) — full tool catalog for AI-driven gateway management

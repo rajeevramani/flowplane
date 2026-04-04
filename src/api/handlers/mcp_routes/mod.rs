@@ -4,7 +4,7 @@
 
 mod types;
 
-use crate::api::error::ApiError;
+use crate::api::error::{ApiError, JsonBody};
 use crate::api::handlers::team_access::{
     get_db_pool, require_resource_access_resolved, resolve_team_name, TeamPath,
 };
@@ -56,15 +56,7 @@ pub async fn get_mcp_status_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<Json<McpStatusResponse>, ApiError> {
     // Verify team access
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "mcp", "read", Some(&team)).await?;
 
     // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
@@ -101,18 +93,10 @@ pub async fn enable_mcp_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
-    Json(body): Json<EnableMcpRequestBody>,
+    JsonBody(body): JsonBody<EnableMcpRequestBody>,
 ) -> Result<(StatusCode, Json<crate::api::handlers::mcp_tools::McpToolResponse>), ApiError> {
     // Verify team access
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "write",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "mcp", "create", Some(&team)).await?;
 
     // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
@@ -157,15 +141,7 @@ pub async fn disable_mcp_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<StatusCode, ApiError> {
     // Verify team access
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "write",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "mcp", "delete", Some(&team)).await?;
 
     // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
@@ -202,15 +178,7 @@ pub async fn refresh_mcp_schema_handler(
     Path(TeamRoutePath { team, route_id }): Path<TeamRoutePath>,
 ) -> Result<Json<RefreshSchemaResponse>, ApiError> {
     // Verify team access
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "write",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "mcp", "update", Some(&team)).await?;
 
     // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
@@ -244,18 +212,10 @@ pub async fn bulk_enable_mcp_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Json(body): Json<BulkMcpEnableRequest>,
+    JsonBody(body): JsonBody<BulkMcpEnableRequest>,
 ) -> Result<Json<BulkMcpEnableResponse>, ApiError> {
     // Verify team access
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "write",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "mcp", "create", Some(&team)).await?;
 
     // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
@@ -322,18 +282,10 @@ pub async fn bulk_disable_mcp_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Json(body): Json<BulkMcpDisableRequest>,
+    JsonBody(body): JsonBody<BulkMcpDisableRequest>,
 ) -> Result<Json<BulkMcpDisableResponse>, ApiError> {
     // Verify team access
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "mcp",
-        "write",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "mcp", "delete", Some(&team)).await?;
 
     // Resolve team name to UUID (route_configs.team stores UUIDs after FK migration)
     let team_id = resolve_team_name(&state, &team, context.org_id.as_ref()).await?;

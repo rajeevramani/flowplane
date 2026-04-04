@@ -15,7 +15,9 @@ use utoipa::ToSchema;
 
 use crate::{
     api::{
-        error::ApiError, handlers::team_access::require_resource_access_resolved, routes::ApiState,
+        error::{ApiError, JsonBody},
+        handlers::team_access::require_resource_access_resolved,
+        routes::ApiState,
     },
     auth::authorization::require_resource_access,
     auth::models::AuthContext,
@@ -324,15 +326,7 @@ pub async fn get_stats_overview_handler(
     Path(team): Path<String>,
 ) -> Result<Json<StatsOverviewResponse>, ApiError> {
     // Check permission for this team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "stats",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "stats", "read", Some(&team)).await?;
 
     let provider = create_stats_provider(&state).await?;
 
@@ -383,15 +377,7 @@ pub async fn get_stats_clusters_handler(
     Path(team): Path<String>,
 ) -> Result<Json<ClustersStatsResponse>, ApiError> {
     // Check permission for this team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "stats",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "stats", "read", Some(&team)).await?;
 
     let provider = create_stats_provider(&state).await?;
 
@@ -443,15 +429,7 @@ pub async fn get_stats_cluster_handler(
     Path((team, cluster)): Path<(String, String)>,
 ) -> Result<Json<ClusterStatsResponse>, ApiError> {
     // Check permission for this team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "stats",
-        "read",
-        Some(&team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    require_resource_access_resolved(&state, &context, "stats", "read", Some(&team)).await?;
 
     let provider = create_stats_provider(&state).await?;
 
@@ -583,10 +561,10 @@ pub async fn set_app_status_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     Path(app_id): Path<String>,
-    Json(body): Json<SetAppStatusRequest>,
+    JsonBody(body): JsonBody<SetAppStatusRequest>,
 ) -> Result<Json<AppStatusResponse>, ApiError> {
-    // Require admin access
-    require_resource_access(&context, "admin", "write", None)?;
+    // Require admin-apps:update access
+    require_resource_access(&context, "admin-apps", "update", None)?;
 
     let pool = state
         .xds_state

@@ -179,6 +179,7 @@ impl RouteHierarchySyncService {
                                 path_pattern: Some(path_pattern.clone()),
                                 match_type: Some(match_type),
                                 rule_order: Some(idx as i32),
+                                exposure: None, // sync does not modify exposure
                             },
                         )
                         .await?;

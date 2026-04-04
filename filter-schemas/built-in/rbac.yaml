@@ -17,6 +17,16 @@ capabilities:
 
 is_implemented: true
 
+instructions: |
+  MODES:
+  - ALLOW = safe-list (only matching traffic passes)
+  - DENY = block-list (matching traffic rejected)
+  - Shadow mode available for testing before enforcement
+
+  PER-ROUTE OVERRIDES (via typedPerFilterConfig on a route):
+  - { "disabled": true } — skip RBAC for this route
+  - Full config replacement
+
 config_schema:
   type: object
   properties:

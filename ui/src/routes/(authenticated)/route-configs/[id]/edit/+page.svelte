@@ -18,7 +18,6 @@
 
 	interface FormState {
 		name: string;
-		team: string;
 		virtualHosts: VirtualHostFormState[];
 	}
 
@@ -68,7 +67,6 @@
 	// Initialize empty form state
 	let formState = $state<FormState>({
 		name: '',
-		team: currentTeam,
 		virtualHosts: []
 	});
 
@@ -89,8 +87,8 @@
 
 		try {
 			const [config, clustersData] = await Promise.all([
-				apiClient.getRouteConfig(configId),
-				apiClient.listClusters()
+				apiClient.getRouteConfig(currentTeam, configId),
+				currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([])
 			]);
 
 			originalConfig = config;
@@ -121,8 +119,8 @@
 		try {
 			// Load config-level filters and all available filters in parallel
 			const [routeFiltersResponse, allFilters] = await Promise.all([
-				apiClient.listRouteConfigFilters(configId),
-				apiClient.listFilters()
+				apiClient.listRouteConfigFilters(currentTeam, configId),
+				apiClient.listFilters(currentTeam)
 			]);
 
 			attachedFilters = routeFiltersResponse.filters;
@@ -212,14 +210,14 @@
 		// Load filters for each virtual host
 		for (const vh of formState.virtualHosts) {
 			try {
-				const vhFiltersResponse = await apiClient.listVirtualHostFilters(configId, vh.name);
+				const vhFiltersResponse = await apiClient.listVirtualHostFilters(currentTeam, configId, vh.name);
 				newVhFiltersMap.set(vh.name, vhFiltersResponse.filters);
 
 				// Load filters for each route in this virtual host
 				const routeMap = new Map<string, FilterResponse[]>();
 				for (const route of vh.routes) {
 					try {
-						const routeFiltersResponse = await apiClient.listRouteHierarchyFilters(configId, vh.name, route.name);
+						const routeFiltersResponse = await apiClient.listRouteHierarchyFilters(currentTeam, configId, vh.name, route.name);
 						routeMap.set(route.name, routeFiltersResponse.filters);
 					} catch (e) {
 						console.debug(`No route filters for ${vh.name}/${route.name}:`, e);
@@ -243,7 +241,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.configureFilter(filterId, {
+			await apiClient.configureFilter(currentTeam, filterId, {
 				scopeType: 'route-config',
 				scopeId: configId
 			});
@@ -258,7 +256,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.removeFilterConfiguration(filterId, 'route-config', configId);
+			await apiClient.removeFilterConfiguration(currentTeam, filterId, 'route-config', configId);
 			await loadFilters();
 		} catch (e) {
 			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration';
@@ -285,7 +283,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.configureFilter(filterId, {
+			await apiClient.configureFilter(currentTeam, filterId, {
 				scopeType: 'virtual-host',
 				scopeId: `${configId}/${virtualHostName}`
 			});
@@ -300,7 +298,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.removeFilterConfiguration(filterId, 'virtual-host', `${configId}/${virtualHostName}`);
+			await apiClient.removeFilterConfiguration(currentTeam, filterId, 'virtual-host', `${configId}/${virtualHostName}`);
 			await loadHierarchicalFilters();
 		} catch (e) {
 			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration from virtual host';
@@ -328,7 +326,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.configureFilter(filterId, {
+			await apiClient.configureFilter(currentTeam, filterId, {
 				scopeType: 'route',
 				scopeId: `${configId}/${virtualHostName}/${routeName}`
 			});
@@ -343,7 +341,7 @@
 		if (!configId) return;
 
 		try {
-			await apiClient.removeFilterConfiguration(filterId, 'route', `${configId}/${virtualHostName}/${routeName}`);
+			await apiClient.removeFilterConfiguration(currentTeam, filterId, 'route', `${configId}/${virtualHostName}/${routeName}`);
 			await loadHierarchicalFilters();
 		} catch (e) {
 			filterError = e instanceof Error ? e.message : 'Failed to remove filter configuration from route';
@@ -408,7 +406,6 @@
 
 		return {
 			name: config.name || '',
-			team: config.team || currentTeam,
 			virtualHosts: virtualHosts.map((vh: any, vhIndex: number) => {
 				console.log(`Virtual Host ${vhIndex}:`, vh);
 
@@ -421,7 +418,7 @@
 						console.log('Route match:', route.match);
 						console.log('Route path:', route.match?.path);
 
-						const method = route.match?.headers?.find((h: any) => h.name === ':method')?.value || 'GET';
+						const method = route.match?.headers?.find((h: any) => h.name === ':method')?.value || '*';
 						const action = route.action || {};
 						const retryPolicy = action.retryPolicy;
 						const pathObj = route.match?.path;
@@ -465,7 +462,6 @@
 
 	function buildRouteConfigJSON(form: FormState): string {
 		const payload: any = {
-			team: form.team || currentTeam,
 			name: form.name || '',
 			virtualHosts: form.virtualHosts.map((vh) => ({
 				name: vh.name,
@@ -504,12 +500,7 @@
 							path: r.pathType === 'template'
 								? { type: r.pathType, template: r.path }
 								: { type: r.pathType, value: r.path },
-							headers: [
-								{
-									name: ':method',
-									value: r.method
-								}
-							]
+							headers: r.method && r.method !== '*' ? [{ name: ':method', value: r.method }] : []
 						},
 						action
 					};
@@ -575,13 +566,19 @@
 		try {
 			const payload = JSON.parse(jsonPayload);
 			console.log('Submitting payload:', payload);
-			await apiClient.updateRouteConfig(configId!, payload);
+			await apiClient.updateRouteConfig(currentTeam, configId!, payload);
 			goto('/route-configs');
 		} catch (e) {
 			console.error('Update failed:', e);
 			// Extract detailed error message if available
 			if (e && typeof e === 'object' && 'message' in e) {
-				error = (e as any).message;
+				const msg = (e as { message: string }).message;
+				// 409: exposure downgrade blocked by active agent grants
+				if (msg.includes('agent grants') || msg.includes('active grants')) {
+					error = 'Cannot change to internal — active agent grants exist. Revoke all grants on this route first.';
+				} else {
+					error = msg;
+				}
 			} else {
 				error = 'Failed to update configuration';
 			}

@@ -19,9 +19,7 @@ static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
 });
 
 /// Static regex for path parameter extraction
-static PATH_PARAM_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{([^}]+)\}").expect("Path parameter regex is valid at compile time")
-});
+static PATH_PARAM_REGEX: Lazy<Option<Regex>> = Lazy::new(|| Regex::new(r"\{([^}]+)\}").ok());
 
 /// Gateway executor for executing HTTP requests through Envoy
 pub struct GatewayExecutor;
@@ -176,7 +174,10 @@ impl GatewayExecutor {
         })?;
 
         // Substitute each path parameter using pre-compiled regex
-        for captures in PATH_PARAM_REGEX.captures_iter(path_pattern) {
+        let regex = PATH_PARAM_REGEX.as_ref().ok_or_else(|| {
+            McpError::InternalError("Path parameter regex failed to compile".to_string())
+        })?;
+        for captures in regex.captures_iter(path_pattern) {
             let param_name = &captures[1];
             let param_value = arguments_obj.get(param_name).ok_or_else(|| {
                 McpError::InvalidParams(format!("Missing required path parameter: {}", param_name))
@@ -217,8 +218,11 @@ impl GatewayExecutor {
         path_pattern: &str,
     ) -> Result<serde_json::Value, McpError> {
         // Extract path parameter names using pre-compiled regex
+        let regex = PATH_PARAM_REGEX.as_ref().ok_or_else(|| {
+            McpError::InternalError("Path parameter regex failed to compile".to_string())
+        })?;
         let path_params: Vec<String> =
-            PATH_PARAM_REGEX.captures_iter(path_pattern).map(|cap| cap[1].to_string()).collect();
+            regex.captures_iter(path_pattern).map(|cap| cap[1].to_string()).collect();
 
         // If no arguments or empty object, return empty object
         let Some(arguments_obj) = arguments.as_object() else {

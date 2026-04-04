@@ -27,6 +27,8 @@ struct InferredSchemaRow {
     pub request_schema: Option<String>,  // JSON Schema as string
     pub response_schema: Option<String>, // JSON Schema as string
     pub response_status_code: Option<i64>,
+    pub request_headers: Option<String>, // JSON array of {name, example}
+    pub response_headers: Option<String>, // JSON array of {name, example}
     pub sample_count: i64,
     pub confidence: f64,
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
@@ -46,6 +48,8 @@ pub struct InferredSchemaData {
     pub request_schema: Option<serde_json::Value>,
     pub response_schema: Option<serde_json::Value>,
     pub response_status_code: Option<i64>,
+    pub request_headers: Option<serde_json::Value>, // JSON array of {name, example}
+    pub response_headers: Option<serde_json::Value>, // JSON array of {name, example}
     pub sample_count: i64,
     pub confidence: f64,
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
@@ -68,6 +72,16 @@ impl TryFrom<InferredSchemaRow> for InferredSchemaData {
                 |e| FlowplaneError::validation(format!("Invalid response_schema JSON: {}", e)),
             )?;
 
+        let request_headers =
+            row.request_headers.as_ref().map(|s| serde_json::from_str(s)).transpose().map_err(
+                |e| FlowplaneError::validation(format!("Invalid request_headers JSON: {}", e)),
+            )?;
+
+        let response_headers =
+            row.response_headers.as_ref().map(|s| serde_json::from_str(s)).transpose().map_err(
+                |e| FlowplaneError::validation(format!("Invalid response_headers JSON: {}", e)),
+            )?;
+
         Ok(Self {
             id: row.id,
             team: row.team,
@@ -77,6 +91,8 @@ impl TryFrom<InferredSchemaRow> for InferredSchemaData {
             request_schema,
             response_schema,
             response_status_code: row.response_status_code,
+            request_headers,
+            response_headers,
             sample_count: row.sample_count,
             confidence: row.confidence,
             first_seen_at: row.first_seen_at,
@@ -105,6 +121,7 @@ impl InferredSchemaRepository {
         let row = sqlx::query_as::<sqlx::Postgres, InferredSchemaRow>(
             "SELECT id, team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
+                    request_headers, response_headers,
                     sample_count, confidence, first_seen_at, last_seen_at,
                     created_at, updated_at
              FROM inferred_schemas WHERE id = $1",
@@ -135,6 +152,7 @@ impl InferredSchemaRepository {
         let rows = sqlx::query_as::<sqlx::Postgres, InferredSchemaRow>(
             "SELECT id, team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
+                    request_headers, response_headers,
                     sample_count, confidence, first_seen_at, last_seen_at,
                     created_at, updated_at
              FROM inferred_schemas
@@ -182,6 +200,7 @@ impl InferredSchemaRepository {
         let rows = sqlx::query_as::<sqlx::Postgres, InferredSchemaRow>(
             "SELECT id, team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
+                    request_headers, response_headers,
                     sample_count, confidence, first_seen_at, last_seen_at,
                     created_at, updated_at
              FROM inferred_schemas
@@ -213,6 +232,7 @@ impl InferredSchemaRepository {
         let rows = sqlx::query_as::<sqlx::Postgres, InferredSchemaRow>(
             "SELECT id, team, session_id, http_method, path_pattern,
                     request_schema, response_schema, response_status_code,
+                    request_headers, response_headers,
                     sample_count, confidence, first_seen_at, last_seen_at,
                     created_at, updated_at
              FROM inferred_schemas

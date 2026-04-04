@@ -15,14 +15,13 @@ use validator::Validate;
 
 use crate::{
     api::{
-        error::ApiError,
+        error::{ApiError, JsonBody},
         handlers::team_access::{
             get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
             verify_team_access,
         },
         routes::ApiState,
     },
-    auth::authorization::{extract_team_scopes, has_admin_bypass, require_resource_access},
     auth::models::AuthContext,
     errors::Error,
     storage::repositories::{
@@ -36,7 +35,6 @@ use crate::{
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 #[schema(example = json!({
-    "team": "engineering",
     "routePattern": "^/api/v2/payments/.*",
     "clusterName": "payments-api-prod",
     "httpMethods": ["POST", "PUT"],
@@ -46,11 +44,6 @@ use crate::{
     "deploymentVersion": "v2.3.4"
 }))]
 pub struct CreateLearningSessionBody {
-    /// Team identifier for the learning session
-    #[validate(length(min = 1, max = 100))]
-    #[schema(example = "engineering")]
-    pub team: String,
-
     /// Route pattern (regex) to match for learning
     #[validate(length(min = 1, max = 500))]
     #[schema(example = "^/api/v2/payments/.*")]
@@ -156,14 +149,6 @@ fn session_response_from_data(
     }
 }
 
-/// Extract a single team from auth context for team-scoped operations.
-/// Returns BadRequest error if no team scope is available.
-fn require_single_team_scope(context: &AuthContext) -> Result<String, ApiError> {
-    extract_team_scopes(context).into_iter().next().ok_or_else(|| {
-        ApiError::BadRequest("Team scope required for learning sessions".to_string())
-    })
-}
-
 /// Valid HTTP methods for learning session filtering
 const VALID_HTTP_METHODS: &[&str] =
     &["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
@@ -190,7 +175,7 @@ fn validate_http_methods(methods: &Option<Vec<String>>) -> Result<(), ApiError> 
 
 #[utoipa::path(
     post,
-    path = "/api/v1/learning-sessions",
+    path = "/api/v1/teams/{team}/learning-sessions",
     request_body = CreateLearningSessionBody,
     responses(
         (status = 201, description = "Learning session created", body = LearningSessionResponse),
@@ -198,24 +183,21 @@ fn validate_http_methods(methods: &Option<Vec<String>>) -> Result<(), ApiError> 
         (status = 403, description = "Forbidden - insufficient permissions"),
         (status = 503, description = "Repository unavailable")
     ),
+    params(
+        ("team" = String, Path, description = "Team name")
+    ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state, payload), fields(route_pattern = %payload.route_pattern, user_id = ?context.user_id))]
+#[instrument(skip(state, payload), fields(team = %team, route_pattern = %payload.route_pattern, user_id = ?context.user_id))]
 pub async fn create_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Json(payload): Json<CreateLearningSessionBody>,
+    Path(team): Path<String>,
+    JsonBody(payload): JsonBody<CreateLearningSessionBody>,
 ) -> Result<(StatusCode, Json<LearningSessionResponse>), ApiError> {
-    // Authorization: require learning-sessions:write scope for the SPECIFIED team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "learning-sessions",
-        "write",
-        Some(&payload.team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    // Authorization: require learning-sessions:create scope for the team from path
+    require_resource_access_resolved(&state, &context, "learning-sessions", "create", Some(&team))
+        .await?;
 
     // Validate payload
     use validator::Validate;
@@ -231,8 +213,7 @@ pub async fn create_learning_session_handler(
 
     // Resolve team name → team ID (FK now references teams(id))
     let team_id =
-        super::team_access::resolve_team_name(&state, &payload.team, context.org_id.as_ref())
-            .await?;
+        super::team_access::resolve_team_name(&state, &team, context.org_id.as_ref()).await?;
 
     // Get repository
     let repo = state
@@ -257,7 +238,7 @@ pub async fn create_learning_session_handler(
     };
 
     let created = session_repo.create(create_request).await.map_err(|e| {
-        tracing::error!(error = %e, team = %payload.team, "Failed to create learning session");
+        tracing::error!(error = %e, team = %team, "Failed to create learning session");
         ApiError::Internal(format!("Failed to create learning session: {}", e))
     })?;
 
@@ -285,8 +266,9 @@ pub async fn create_learning_session_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/learning-sessions",
+    path = "/api/v1/teams/{team}/learning-sessions",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("status" = Option<String>, Query, description = "Filter by status"),
         ("limit" = Option<i32>, Query, description = "Limit results"),
         ("offset" = Option<i32>, Query, description = "Offset for pagination")
@@ -298,14 +280,18 @@ pub async fn create_learning_session_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(user_id = ?context.user_id, status = ?query.status))]
+#[instrument(skip(state), fields(team = %team, user_id = ?context.user_id, status = ?query.status))]
 pub async fn list_learning_sessions_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Query(query): Query<ListLearningSessionsQuery>,
 ) -> Result<Json<Vec<LearningSessionResponse>>, ApiError> {
-    // Authorization: require learning-sessions:read scope
-    require_resource_access(&context, "learning-sessions", "read", None)?;
+    // Authorization: require learning-sessions:read scope for the team from path
+    require_resource_access_resolved(&state, &context, "learning-sessions", "read", Some(&team))
+        .await?;
+
+    let team_name = team.clone();
 
     // Get repository
     let repo = state
@@ -324,35 +310,24 @@ pub async fn list_learning_sessions_handler(
         .transpose()
         .map_err(|e| ApiError::BadRequest(format!("Invalid status filter: {}", e)))?;
 
-    // List sessions based on authorization
-    // Admin users (with admin:all scope) can see all sessions across all teams
-    // Regular users can only see sessions for their team
-    let sessions = if has_admin_bypass(&context) {
-        tracing::info!(user_id = ?context.user_id, "Admin listing all learning sessions");
-        session_repo.list_all(status_filter, query.limit, query.offset).await.map_err(|e| {
-            tracing::error!(error = %e, "Failed to list all learning sessions");
+    // Resolve team name to UUID and list sessions
+    use crate::storage::repositories::TeamRepository as _;
+    let team_repo = team_repo_from_state(&state)?;
+    let team_ids = team_repo
+        .resolve_team_ids(context.org_id.as_ref(), std::slice::from_ref(&team_name))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
+    let team_id = team_ids
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team_name)))?;
+    let sessions = session_repo
+        .list_by_team(&team_id, status_filter, query.limit, query.offset)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, team = %team_name, "Failed to list learning sessions");
             ApiError::Internal(format!("Failed to list learning sessions: {}", e))
-        })?
-    } else {
-        // Extract team from auth context for non-admin users and resolve to UUID
-        let team_name = require_single_team_scope(&context)?;
-        use crate::storage::repositories::TeamRepository as _;
-        let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
-        let team_ids = team_repo
-            .resolve_team_ids(context.org_id.as_ref(), &[team_name])
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
-        let team = team_ids
-            .into_iter()
-            .next()
-            .ok_or_else(|| ApiError::NotFound("Team not found".to_string()))?;
-        session_repo.list_by_team(&team, status_filter, query.limit, query.offset).await.map_err(
-            |e| {
-                tracing::error!(error = %e, team = %team, "Failed to list learning sessions");
-                ApiError::Internal(format!("Failed to list learning sessions: {}", e))
-            },
-        )?
-    };
+        })?;
 
     let responses: Vec<LearningSessionResponse> =
         sessions.into_iter().map(session_response_from_data).collect();
@@ -362,8 +337,9 @@ pub async fn list_learning_sessions_handler(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/learning-sessions/{id}",
+    path = "/api/v1/teams/{team}/learning-sessions/{id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = String, Path, description = "Learning session ID")
     ),
     responses(
@@ -374,14 +350,15 @@ pub async fn list_learning_sessions_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(session_id = %id, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(team = %team, session_id = %id, user_id = ?context.user_id))]
 pub async fn get_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<String>,
+    Path((team, id)): Path<(String, String)>,
 ) -> Result<Json<LearningSessionResponse>, ApiError> {
-    // Authorization: require learning-sessions:read scope
-    require_resource_access(&context, "learning-sessions", "read", None)?;
+    // Authorization: require learning-sessions:read scope for the team from path
+    require_resource_access_resolved(&state, &context, "learning-sessions", "read", Some(&team))
+        .await?;
 
     // Get effective team scopes for access verification
     let team_repo = team_repo_from_state(&state)?;
@@ -417,8 +394,9 @@ pub async fn get_learning_session_handler(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/learning-sessions/{id}",
+    path = "/api/v1/teams/{team}/learning-sessions/{id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = String, Path, description = "Learning session ID")
     ),
     responses(
@@ -430,17 +408,18 @@ pub async fn get_learning_session_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(session_id = %id, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(team = %team, session_id = %id, user_id = ?context.user_id))]
 pub async fn delete_learning_session_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<String>,
+    Path((team, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    // Authorization: require learning-sessions:delete scope
+    // Authorization: require learning-sessions:delete scope for the team from path
     // Note: This uses the dedicated delete scope (not write) to follow principle of least privilege.
     // Users who should only create/modify sessions need write scope, but cannot delete unless
     // explicitly granted the delete scope.
-    require_resource_access(&context, "learning-sessions", "delete", None)?;
+    require_resource_access_resolved(&state, &context, "learning-sessions", "delete", Some(&team))
+        .await?;
 
     // Get effective team scopes for access verification
     let team_repo = team_repo_from_state(&state)?;
@@ -509,8 +488,8 @@ pub async fn delete_learning_session_handler(
     // This ensures Access Log Service is unregistered
     if let Some(learning_service) = state.xds_state.get_learning_session_service() {
         // If session is active, we need to unregister from Access Log Service
-        // The fail_session method handles this
-        learning_service.fail_session(&id, "Cancelled by user".to_string()).await.map_err(|e| {
+        // The cancel_session method handles this
+        learning_service.cancel_session(&id).await.map_err(|e| {
             tracing::error!(error = %e, session_id = %id, team = %session.team, "Failed to cancel learning session via service");
             ApiError::Internal(format!("Failed to cancel learning session: {}", e))
         })?;
@@ -757,7 +736,6 @@ mod tests {
         #[test]
         fn test_create_body_validation_valid() {
             let body = CreateLearningSessionBody {
-                team: "engineering".to_string(),
                 route_pattern: "^/api/.*".to_string(),
                 cluster_name: None,
                 http_methods: Some(vec!["GET".to_string(), "POST".to_string()]),
@@ -776,7 +754,6 @@ mod tests {
         #[test]
         fn test_create_body_validation_sample_count_too_low() {
             let body = CreateLearningSessionBody {
-                team: "engineering".to_string(),
                 route_pattern: "^/api/.*".to_string(),
                 cluster_name: None,
                 http_methods: None,
@@ -795,7 +772,6 @@ mod tests {
         #[test]
         fn test_create_body_validation_sample_count_too_high() {
             let body = CreateLearningSessionBody {
-                team: "engineering".to_string(),
                 route_pattern: "^/api/.*".to_string(),
                 cluster_name: None,
                 http_methods: None,
@@ -814,7 +790,6 @@ mod tests {
         #[test]
         fn test_create_body_validation_empty_route_pattern() {
             let body = CreateLearningSessionBody {
-                team: "engineering".to_string(),
                 route_pattern: "".to_string(), // Empty pattern
                 cluster_name: None,
                 http_methods: None,
@@ -834,7 +809,6 @@ mod tests {
         fn test_create_body_validation_boundary_values() {
             // Minimum valid sample count
             let body_min = CreateLearningSessionBody {
-                team: "engineering".to_string(),
                 route_pattern: "^/".to_string(),
                 cluster_name: None,
                 http_methods: None,
@@ -850,7 +824,6 @@ mod tests {
 
             // Maximum valid sample count
             let body_max = CreateLearningSessionBody {
-                team: "engineering".to_string(),
                 route_pattern: "^/".to_string(),
                 cluster_name: None,
                 http_methods: None,
@@ -862,25 +835,6 @@ mod tests {
             };
 
             assert!(body_max.validate().is_ok());
-        }
-
-        #[test]
-        fn test_create_body_validation_empty_team() {
-            let body = CreateLearningSessionBody {
-                team: "".to_string(), // Empty team
-                route_pattern: "^/api/.*".to_string(),
-                cluster_name: None,
-                http_methods: None,
-                target_sample_count: 100,
-                max_duration_seconds: None,
-                triggered_by: None,
-                deployment_version: None,
-                configuration_snapshot: None,
-            };
-
-            use validator::Validate;
-            let result = body.validate();
-            assert!(result.is_err());
         }
 
         #[test]

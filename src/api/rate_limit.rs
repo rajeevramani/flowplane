@@ -91,6 +91,18 @@ impl RateLimiter {
         Self::new(max_tokens, Duration::from_secs(3600))
     }
 
+    /// Create rate limiter for authentication attempts.
+    ///
+    /// - `FLOWPLANE_RATE_LIMIT_AUTH_PER_MINUTE`: Max auth attempts per minute per IP (default: 600)
+    pub fn auth_from_env() -> Self {
+        let max_tokens = std::env::var("FLOWPLANE_RATE_LIMIT_AUTH_PER_MINUTE")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(600);
+
+        Self::new(max_tokens, Duration::from_secs(60))
+    }
+
     /// Check if request is allowed under rate limit.
     ///
     /// # Arguments
@@ -205,5 +217,19 @@ mod tests {
         let retry_after = result.unwrap_err();
         // Should be between 1 and 3600 seconds
         assert!(retry_after > 0 && retry_after <= 3600, "retry_after should be reasonable");
+    }
+
+    #[tokio::test]
+    async fn test_auth_rate_limiter_isolates_ips() {
+        // Use a small limit for test speed
+        let limiter = RateLimiter::new(3, Duration::from_secs(60));
+
+        for _ in 0..3 {
+            assert!(limiter.check_rate_limit("192.168.1.1").await.is_ok());
+        }
+        // 4th from same IP should be blocked
+        assert!(limiter.check_rate_limit("192.168.1.1").await.is_err());
+        // Different IP should still pass
+        assert!(limiter.check_rate_limit("10.0.0.1").await.is_ok());
     }
 }

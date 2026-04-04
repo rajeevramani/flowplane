@@ -3,10 +3,8 @@
 //! This module provides configuration types for the Envoy OAuth2 filter,
 //! which enables OAuth2 authentication flows for HTTP requests.
 
-use crate::xds::filters::{any_from_message, invalid_config};
-use envoy_types::pb::envoy::config::core::v3::{
-    config_source::ConfigSourceSpecifier, AggregatedConfigSource, ConfigSource, HttpUri,
-};
+use crate::xds::filters::{any_from_message, build_sds_secret_config, invalid_config};
+use envoy_types::pb::envoy::config::core::v3::HttpUri;
 use envoy_types::pb::envoy::config::route::v3::{
     header_matcher::HeaderMatchSpecifier, HeaderMatcher as HeaderMatcherProto,
 };
@@ -15,24 +13,10 @@ use envoy_types::pb::envoy::extensions::filters::http::oauth2::v3::{
     o_auth2_credentials::TokenFormation, OAuth2, OAuth2Config as OAuth2ConfigProto,
     OAuth2Credentials,
 };
-use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::SdsSecretConfig;
 use envoy_types::pb::envoy::r#type::matcher::v3::{PathMatcher, RegexMatcher, StringMatcher};
 use envoy_types::pb::google::protobuf::Any as EnvoyAny;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
-
-/// Build an SDS secret config that uses ADS for secret discovery
-fn build_sds_secret_config(name: &str) -> SdsSecretConfig {
-    SdsSecretConfig {
-        name: name.to_string(),
-        sds_config: Some(ConfigSource {
-            config_source_specifier: Some(ConfigSourceSpecifier::Ads(
-                AggregatedConfigSource::default(),
-            )),
-            ..Default::default()
-        }),
-    }
-}
 
 /// Type URLs for OAuth2 filter configuration
 pub const OAUTH2_TYPE_URL: &str =

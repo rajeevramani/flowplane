@@ -16,15 +16,49 @@ use std::sync::{Arc, OnceLock};
 
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
+use testcontainers::GenericImage;
+use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
 use tracing::info;
 
-use super::api_client::{ApiClient, TEST_EMAIL, TEST_NAME, TEST_PASSWORD};
+use super::api_client::ApiClient;
 use super::control_plane::{ControlPlaneConfig, ControlPlaneHandle};
 use super::envoy::{EnvoyConfig, EnvoyHandle, EnvoyXdsTlsConfig};
 use super::mocks::MockServices;
 use super::timeout::{with_timeout, TestTimeout};
+use super::zitadel::{self, ZitadelTestConfig};
 use crate::tls::support::TestCertificateAuthority;
+
+// ---------------------------------------------------------------------------
+// E2E auth mode
+// ---------------------------------------------------------------------------
+
+/// E2E test auth mode — determines how SharedInfrastructure initializes auth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum E2eAuthMode {
+    /// Dev mode: no Zitadel, bearer token auth via FLOWPLANE_DEV_TOKEN
+    Dev,
+    /// Prod mode with real Zitadel container
+    Prod,
+}
+
+/// Auth configuration produced during initialization.
+#[derive(Debug, Clone)]
+pub enum E2eAuthConfig {
+    Dev { token: String },
+    Zitadel(ZitadelTestConfig),
+}
+
+/// Read `FLOWPLANE_E2E_AUTH_MODE` and return the corresponding enum variant.
+///
+/// - `"dev"` → `E2eAuthMode::Dev`
+/// - `"prod"` or unset → `E2eAuthMode::Prod`
+pub fn e2e_auth_mode() -> E2eAuthMode {
+    match std::env::var("FLOWPLANE_E2E_AUTH_MODE").as_deref() {
+        Ok("dev") => E2eAuthMode::Dev,
+        _ => E2eAuthMode::Prod,
+    }
+}
 
 /// Fixed ports for shared infrastructure
 pub const SHARED_API_PORT: u16 = 19080;
@@ -140,6 +174,9 @@ static INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 /// PostgreSQL container for shared DB - must live for entire test run
 static SHARED_PG_CONTAINER: OnceLock<ContainerAsync<Postgres>> = OnceLock::new();
 
+/// Zitadel container for shared auth - must live for entire test run
+static SHARED_ZITADEL_CONTAINER: OnceLock<ContainerAsync<GenericImage>> = OnceLock::new();
+
 /// Dedicated runtime for shared infrastructure - persists across all tests
 static SHARED_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -156,6 +193,18 @@ pub struct SharedInfrastructure {
     pub mocks: MockServices,
     /// Database URL
     pub db_url: String,
+    /// Zitadel configuration for OIDC token acquisition (kept for backward compat)
+    pub zitadel_config: ZitadelTestConfig,
+    /// Auth mode used for this shared instance
+    pub auth_mode: E2eAuthMode,
+    /// Auth token for tests to use (dev token or JWT)
+    pub auth_token: String,
+    /// Team name for test resources
+    pub team: String,
+    /// Organization name
+    pub org: String,
+    /// General auth config (replaces zitadel_config conceptually)
+    pub auth_config: E2eAuthConfig,
     /// mTLS Certificate Authority (if FLOWPLANE_E2E_MTLS=1 was set)
     ///
     /// When present, the CP is configured with xDS TLS and tests can
@@ -219,16 +268,19 @@ impl SharedInfrastructure {
         }
     }
 
-    /// Internal initialization - runs in the dedicated shared runtime
+    /// Internal initialization - runs in the dedicated shared runtime.
+    ///
+    /// Branches on `FLOWPLANE_E2E_AUTH_MODE`:
+    /// - `dev`  → skip Zitadel, use bearer dev token
+    /// - `prod` / unset → full Zitadel container (existing path)
     async fn initialize() -> anyhow::Result<SharedInfrastructure> {
-        info!("Initializing shared E2E infrastructure...");
+        let mode = e2e_auth_mode();
+        info!(?mode, "Initializing shared E2E infrastructure...");
 
         // Clean up any stale processes from previous test runs
-        // This prevents port conflicts and test hangs
         cleanup_stale_processes();
 
         // Install Rustls crypto provider (required for TLS to work)
-        // This must be done before any TLS operations
         use rustls::crypto::{ring, CryptoProvider};
         if CryptoProvider::get_default().is_none() {
             ring::default_provider()
@@ -236,6 +288,137 @@ impl SharedInfrastructure {
                 .expect("install ring crypto provider for E2E tests");
         }
 
+        match mode {
+            E2eAuthMode::Dev => Self::initialize_dev().await,
+            E2eAuthMode::Prod => Self::initialize_prod_zitadel().await,
+        }
+    }
+
+    /// Dev mode initialization: no Zitadel, bearer token auth.
+    async fn initialize_dev() -> anyhow::Result<SharedInfrastructure> {
+        info!("Dev mode: skipping Zitadel, using bearer token auth");
+
+        // Start PostgreSQL container
+        info!("Starting PostgreSQL container for shared E2E database...");
+        let container = Postgres::default()
+            .with_tag("17-alpine")
+            .start()
+            .await
+            .expect("Failed to start PostgreSQL container for shared E2E");
+
+        let pg_host = container
+            .get_host()
+            .await
+            .expect("Failed to get PostgreSQL container host")
+            .to_string();
+        let pg_port = container
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("Failed to get PostgreSQL container port");
+        let db_url = format!("postgresql://postgres:postgres@{}:{}/postgres", pg_host, pg_port);
+        info!(db_url = %db_url, "PostgreSQL container ready for shared E2E");
+
+        let _ = SHARED_PG_CONTAINER.set(container);
+
+        // Generate dev token and set env vars BEFORE starting CP
+        let dev_token = flowplane::auth::dev_token::generate_dev_token();
+        std::env::set_var("FLOWPLANE_AUTH_MODE", "dev");
+        std::env::set_var("FLOWPLANE_DEV_TOKEN", &dev_token);
+        std::env::set_var("FLOWPLANE_COOKIE_SECURE", "false");
+        std::env::set_var("FLOWPLANE_BASE_URL", format!("http://localhost:{}", SHARED_API_PORT));
+
+        // Start mock services
+        let mocks = MockServices::start_all().await;
+        info!(echo = %mocks.echo_endpoint(), "Mock services started");
+
+        // Start control plane (no mTLS in dev mode for simplicity)
+        let cp_config = ControlPlaneConfig::new(
+            db_url.clone(),
+            SHARED_API_PORT,
+            SHARED_XDS_PORT,
+            SHARED_LISTENER_PORT,
+        );
+
+        let cp = with_timeout(TestTimeout::startup("Starting shared control plane"), async {
+            ControlPlaneHandle::start(cp_config).await
+        })
+        .await?;
+
+        with_timeout(TestTimeout::startup("Shared control plane ready"), async {
+            cp.wait_ready().await
+        })
+        .await?;
+        info!(api = %cp.api_addr, xds = %cp.xds_addr, "Shared control plane ready (dev mode)");
+
+        // Seed dev resources (org, team, user, dataplane)
+        // The CP startup path seeds these when auth_mode=dev, but we also call
+        // seed_dev_resources explicitly via the DB pool to be sure.
+        {
+            use flowplane::storage::create_pool;
+            let db_cfg = flowplane::config::DatabaseConfig {
+                url: db_url.clone(),
+                auto_migrate: false, // CP already migrated
+                max_connections: 2,
+                min_connections: 1,
+                ..Default::default()
+            };
+            let pool = create_pool(&db_cfg).await?;
+            flowplane::startup::seed_dev_resources(&pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to seed dev resources: {}", e))?;
+            info!("Dev resources seeded");
+        }
+
+        // Start Envoy if available.
+        // Dev mode uses team "default" (matching seed_dev_resources) so Envoy
+        // can see resources created via the expose API under the default team.
+        let envoy = if EnvoyHandle::is_available() {
+            let envoy_config = EnvoyConfig::new(SHARED_ENVOY_ADMIN_PORT, SHARED_XDS_PORT)
+                .with_metadata(serde_json::json!({
+                    "team": "default"
+                }));
+
+            let envoy = EnvoyHandle::start(envoy_config)?;
+
+            with_timeout(TestTimeout::startup("Shared Envoy ready"), async {
+                envoy.wait_ready().await
+            })
+            .await?;
+            info!(admin_port = SHARED_ENVOY_ADMIN_PORT, "Shared Envoy ready");
+
+            Some(envoy)
+        } else {
+            info!("Envoy binary not found - tests will skip proxy verification");
+            None
+        };
+
+        // Dummy ZitadelTestConfig for backward compat (unused in dev mode)
+        let dummy_zitadel_config = ZitadelTestConfig {
+            base_url: String::new(),
+            admin_pat: String::new(),
+            project_id: String::new(),
+            spa_client_id: String::new(),
+        };
+
+        Ok(SharedInfrastructure {
+            cp,
+            envoy,
+            mocks,
+            db_url,
+            zitadel_config: dummy_zitadel_config,
+            auth_mode: E2eAuthMode::Dev,
+            auth_token: dev_token.clone(),
+            team: "default".to_string(),
+            org: "dev-org".to_string(),
+            auth_config: E2eAuthConfig::Dev { token: dev_token },
+            mtls_ca: None,
+            mtls_server_cert: None,
+            mtls_envoy_client_cert: None,
+        })
+    }
+
+    /// Prod initialization: full Zitadel container.
+    async fn initialize_prod_zitadel() -> anyhow::Result<SharedInfrastructure> {
         // Check if mTLS is requested via environment variable
         let enable_mtls = std::env::var("FLOWPLANE_E2E_MTLS").ok().as_deref() == Some("1");
 
@@ -244,13 +427,17 @@ impl SharedInfrastructure {
         }
 
         // Start PostgreSQL container for shared E2E database
+        // Use PG 17 to match docker-compose and satisfy Zitadel v4+ requirements
         info!("Starting PostgreSQL container for shared E2E database...");
         let container = Postgres::default()
+            .with_tag("17-alpine")
             .start()
             .await
             .expect("Failed to start PostgreSQL container for shared E2E");
 
-        let pg_host = container.get_host().await.expect("Failed to get PostgreSQL container host");
+        let pg_host_obj =
+            container.get_host().await.expect("Failed to get PostgreSQL container host");
+        let pg_host = pg_host_obj.to_string();
         let pg_port = container
             .get_host_port_ipv4(5432)
             .await
@@ -261,6 +448,29 @@ impl SharedInfrastructure {
         // Store container in static to keep it alive for entire test run
         let _ = SHARED_PG_CONTAINER.set(container);
 
+        // Start Zitadel container (shares the PostgreSQL instance via separate DB)
+        info!("Starting Zitadel container...");
+        let (zitadel_container, zitadel_port, machinekey_dir) =
+            zitadel::start_zitadel_container(&pg_host, pg_port).await?;
+        let zitadel_base_url = format!("http://localhost:{}", zitadel_port);
+
+        // Wait for Zitadel to be ready
+        zitadel::wait_for_zitadel_ready(&zitadel_base_url).await?;
+
+        // Read admin PAT from host-side machinekey directory
+        let admin_pat = zitadel::read_admin_pat(&machinekey_dir).await?;
+        zitadel::validate_pat(&zitadel_base_url, &admin_pat).await?;
+
+        // Bootstrap Zitadel (create project, SPA app, email action)
+        let zitadel_config =
+            zitadel::bootstrap_zitadel(&zitadel_base_url, &admin_pat, zitadel_port).await?;
+
+        // Set CP environment variables for Zitadel auth before starting CP
+        zitadel::set_cp_env_vars(&zitadel_config);
+
+        // Store Zitadel container in static to keep it alive
+        let _ = SHARED_ZITADEL_CONTAINER.set(zitadel_container);
+
         // Initialize mTLS CA if enabled
         let (mtls_ca, mtls_server_cert, xds_tls_config) = if enable_mtls {
             let ca = TestCertificateAuthority::new(
@@ -269,8 +479,6 @@ impl SharedInfrastructure {
             )?;
 
             // Issue server cert for CP xDS
-            // NOTE: server_cert must be stored in SharedInfrastructure to keep
-            // its TempDir alive - otherwise the cert files get deleted!
             let server_cert = ca.issue_server_cert(&["localhost"], time::Duration::days(1))?;
 
             let xds_tls = flowplane::config::XdsTlsConfig {
@@ -318,52 +526,55 @@ impl SharedInfrastructure {
         .await?;
         info!(api = %cp.api_addr, xds = %cp.xds_addr, mtls = enable_mtls, "Shared control plane ready");
 
-        // Bootstrap the system with standard test credentials
-        // This ensures all tests can rely on a bootstrapped system
+        // Wait for superadmin to be seeded (CP seeds it on startup)
         let api_url = format!("http://{}", cp.api_addr);
         let api = ApiClient::new(&api_url);
 
-        let needs_bootstrap = api.needs_bootstrap().await.unwrap_or(true);
-        if needs_bootstrap {
-            info!("Bootstrapping shared infrastructure...");
-            api.bootstrap(TEST_EMAIL, TEST_PASSWORD, TEST_NAME)
+        info!("Waiting for superadmin to be seeded by CP...");
+        let superadmin_token = {
+            let mut attempts = 0;
+            loop {
+                match zitadel::obtain_human_token(
+                    &zitadel_config,
+                    zitadel::SUPERADMIN_EMAIL,
+                    zitadel::SUPERADMIN_PASSWORD,
+                )
                 .await
-                .expect("Shared infrastructure bootstrap should succeed");
-            info!("Shared infrastructure bootstrap complete");
-        }
+                {
+                    Ok(token) => break token,
+                    Err(e) => {
+                        attempts += 1;
+                        if attempts >= 30 {
+                            anyhow::bail!(
+                                "Failed to obtain superadmin token after 30 attempts: {}",
+                                e
+                            );
+                        }
+                        if attempts % 5 == 0 {
+                            info!(attempt = attempts, "Superadmin not ready yet, retrying...");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        };
+        info!("Superadmin JWT token obtained");
 
         // Clean up stale dataplanes from previous test runs
-        // This ensures a clean slate for tests that create dataplanes
         info!("Cleaning up stale dataplanes from previous runs...");
-        let session =
-            api.login(TEST_EMAIL, TEST_PASSWORD).await.expect("Login should succeed for cleanup");
-        let token_resp = api
-            .create_token(&session, "cleanup-token", vec!["admin:all".to_string()])
-            .await
-            .expect("Token creation should succeed for cleanup");
-        let deleted = api.delete_all_dataplanes(&token_resp.token).await.unwrap_or(0);
+        let deleted = api.delete_all_dataplanes(&superadmin_token).await.unwrap_or(0);
         if deleted > 0 {
             info!(count = deleted, "Deleted stale dataplanes");
         }
 
         // Start Envoy if available
-        // Note: In shared mode, Envoy does NOT use mTLS client certs by default
-        // Tests that need mTLS should use isolated mode or the harness generates
-        // per-test client certs (but shared Envoy still connects without them)
         let (envoy, mtls_envoy_client_cert) = if EnvoyHandle::is_available() {
-            // Configure Envoy with team metadata for xDS authorization
-            // Tests that need Envoy routing must create resources under E2E_SHARED_TEAM
             let mut envoy_config = EnvoyConfig::new(SHARED_ENVOY_ADMIN_PORT, SHARED_XDS_PORT)
                 .with_metadata(serde_json::json!({
                     "team": E2E_SHARED_TEAM
                 }));
 
-            // If mTLS is enabled, configure Envoy with a default client cert
-            // This allows the shared Envoy to connect to the mTLS-enabled CP
-            // NOTE: client_cert must be stored in SharedInfrastructure to keep
-            // its TempDir alive - otherwise the cert files get deleted!
             let envoy_client_cert = if let Some(ref ca) = mtls_ca {
-                // Generate a shared Envoy client cert
                 let spiffe_uri = TestCertificateAuthority::build_spiffe_uri(
                     "flowplane.local",
                     E2E_SHARED_TEAM,
@@ -406,10 +617,95 @@ impl SharedInfrastructure {
             envoy,
             mocks,
             db_url,
+            auth_mode: E2eAuthMode::Prod,
+            auth_token: superadmin_token,
+            team: E2E_SHARED_TEAM.to_string(),
+            org: "platform".to_string(),
+            auth_config: E2eAuthConfig::Zitadel(zitadel_config.clone()),
+            zitadel_config,
             mtls_ca,
             mtls_server_cert,
             mtls_envoy_client_cert,
         })
+    }
+
+    /// Get a token for the admin/superuser persona.
+    /// Dev: returns the dev bearer token
+    /// Prod: calls obtain_human_token with superadmin creds
+    pub async fn get_admin_token(&self) -> anyhow::Result<String> {
+        match &self.auth_mode {
+            E2eAuthMode::Dev => Ok(self.auth_token.clone()),
+            E2eAuthMode::Prod => {
+                zitadel::obtain_human_token(
+                    &self.zitadel_config,
+                    zitadel::SUPERADMIN_EMAIL,
+                    zitadel::SUPERADMIN_PASSWORD,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Get a token for a specific user persona.
+    /// Dev: returns the default auth_token (single-user mode)
+    /// Prod: calls obtain_human_token with provided creds
+    pub async fn get_user_token(&self, email: &str, password: &str) -> anyhow::Result<String> {
+        match &self.auth_mode {
+            E2eAuthMode::Dev => Ok(self.auth_token.clone()),
+            E2eAuthMode::Prod => {
+                zitadel::obtain_human_token(&self.zitadel_config, email, password).await
+            }
+        }
+    }
+
+    /// Get a token for a machine/agent user.
+    /// Dev: returns the default auth_token
+    /// Prod: calls obtain_agent_token with client credentials
+    pub async fn get_agent_token(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> anyhow::Result<String> {
+        match &self.auth_mode {
+            E2eAuthMode::Dev => Ok(self.auth_token.clone()),
+            E2eAuthMode::Prod => {
+                zitadel::obtain_agent_token(&self.zitadel_config, client_id, client_secret).await
+            }
+        }
+    }
+
+    /// Create a test user in the auth provider.
+    /// Dev: no-op (returns a fake user ID)
+    /// Prod: calls create_human_user
+    pub async fn create_test_user(
+        &self,
+        email: &str,
+        first_name: &str,
+        last_name: &str,
+        password: &str,
+    ) -> anyhow::Result<String> {
+        match &self.auth_mode {
+            E2eAuthMode::Dev => {
+                // Return a fake user ID — user doesn't exist in auth provider
+                Ok(format!("mock-user-{}", email))
+            }
+            E2eAuthMode::Prod => {
+                zitadel::create_human_user(
+                    &self.zitadel_config.base_url,
+                    &self.zitadel_config.admin_pat,
+                    email,
+                    first_name,
+                    last_name,
+                    password,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Check if running in a mode that supports multi-user testing
+    pub fn supports_multi_user(&self) -> bool {
+        matches!(self.auth_mode, E2eAuthMode::Prod)
     }
 
     /// Get API URL

@@ -67,6 +67,14 @@ pub struct FilterSchemaDefinition {
     #[serde(default)]
     pub proto_mapping: HashMap<String, String>,
 
+    /// Agent instructions for contextual guidance.
+    ///
+    /// Returned by `cp_get_filter_type` to give agents Envoy-specific
+    /// semantics, prerequisites, and per-route override patterns.
+    /// Zero overhead for agents not querying filter types.
+    #[serde(default)]
+    pub instructions: Option<String>,
+
     /// UI hints for form generation
     #[serde(default)]
     pub ui_hints: Option<UiHints>,
@@ -641,6 +649,7 @@ mod tests {
             config_schema: serde_json::json!({"type": "object"}),
             per_route_config_schema: None,
             proto_mapping: HashMap::new(),
+            instructions: None,
             ui_hints: None,
             source: SchemaSource::Custom,
             is_implemented: true,
@@ -725,6 +734,7 @@ mod tests {
             config_schema: serde_json::json!({"type": "object"}),
             per_route_config_schema: None,
             proto_mapping: HashMap::new(),
+            instructions: None,
             ui_hints: None,
             source: SchemaSource::Custom,
             is_implemented: true,
@@ -765,6 +775,7 @@ mod tests {
             config_schema: serde_json::json!({"type": "object"}),
             per_route_config_schema: None,
             proto_mapping: HashMap::new(),
+            instructions: None,
             ui_hints: None,
             source: SchemaSource::Custom,
             is_implemented: true,
@@ -818,6 +829,7 @@ mod tests {
             config_schema: serde_json::json!({"type": "object"}),
             per_route_config_schema: None,
             proto_mapping: HashMap::new(),
+            instructions: None,
             ui_hints: None,
             source: SchemaSource::Custom,
             is_implemented: true,

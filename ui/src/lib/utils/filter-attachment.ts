@@ -17,6 +17,7 @@ const FILTER_ATTACHMENT_RULES: Record<FilterType, AttachmentPoint[]> = {
 	local_rate_limit: ['route', 'listener'],
 	rate_limit: ['route', 'listener'],
 	ext_authz: ['route', 'listener'],
+	compressor: ['route', 'listener'],
 	custom_response: ['route', 'listener'],
 	mcp: ['route', 'listener']
 };

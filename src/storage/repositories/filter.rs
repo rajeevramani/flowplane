@@ -903,39 +903,29 @@ impl FilterRepository {
         Ok(listener_ids.into_iter().map(ListenerId::from_string).collect())
     }
 
-    /// Count total attachments (routes + listeners) for a filter
-    /// Used to prevent deletion of attached filters
+    /// Count total attachments across all scopes for a filter
+    /// Used to prevent deletion of attached filters and for attachmentCount in responses
     #[instrument(skip(self), fields(filter_id = %filter_id), name = "db_count_filter_attachments")]
     pub async fn count_attachments(&self, filter_id: &FilterId) -> Result<i64> {
-        let route_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM route_filters WHERE filter_id = $1"
+        let count: i64 = sqlx::query_scalar(
+            "SELECT \
+                (SELECT COUNT(*) FROM route_config_filters WHERE filter_id = $1) + \
+                (SELECT COUNT(*) FROM virtual_host_filters WHERE filter_id = $1) + \
+                (SELECT COUNT(*) FROM route_filters WHERE filter_id = $1) + \
+                (SELECT COUNT(*) FROM listener_filters WHERE filter_id = $1)"
         )
         .bind(filter_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, filter_id = %filter_id, "Failed to count route attachments");
+            tracing::error!(error = %e, filter_id = %filter_id, "Failed to count filter attachments");
             FlowplaneError::Database {
                 source: e,
-                context: format!("Failed to count route attachments for filter: {}", filter_id.as_str()),
+                context: format!("Failed to count attachments for filter: {}", filter_id.as_str()),
             }
         })?;
 
-        let listener_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM listener_filters WHERE filter_id = $1"
-        )
-        .bind(filter_id.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, filter_id = %filter_id, "Failed to count listener attachments");
-            FlowplaneError::Database {
-                source: e,
-                context: format!("Failed to count listener attachments for filter: {}", filter_id.as_str()),
-            }
-        })?;
-
-        Ok(route_count + listener_count)
+        Ok(count)
     }
 
     /// Find all filters that reference a specific cluster in their configuration.

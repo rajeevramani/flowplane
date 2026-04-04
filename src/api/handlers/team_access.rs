@@ -9,6 +9,7 @@ use crate::api::routes::ApiState;
 use crate::auth::authorization::{extract_org_scopes, extract_team_scopes, has_admin_bypass};
 use crate::auth::models::AuthContext;
 use crate::domain::OrgId;
+use crate::internal_api::auth::InternalAuthContext;
 use crate::storage::repositories::TeamRepository;
 use serde::Deserialize;
 
@@ -135,10 +136,14 @@ pub async fn resolve_team_name(
         return Ok(team_name.to_string());
     }
     let team_repo = team_repo_from_state(state)?;
-    let ids = team_repo
-        .resolve_team_ids(org_id, &[team_name.to_string()])
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to resolve team: {}", e)))?;
+    let ids = team_repo.resolve_team_ids(org_id, &[team_name.to_string()]).await.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            ApiError::NotFound(format!("Team '{}' not found", team_name))
+        } else {
+            ApiError::Internal(format!("Failed to resolve team: {}", e))
+        }
+    })?;
     ids.into_iter()
         .next()
         .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team_name)))
@@ -182,8 +187,8 @@ pub async fn require_resource_access_resolved(
     resource: &str,
     action: &str,
     team: Option<&str>,
-    org_id: Option<&OrgId>,
 ) -> Result<(), ApiError> {
+    let org_id = context.org_id.as_ref();
     let resolved_team = match team {
         Some(t) => Some(resolve_team_id_to_name(state, t, org_id).await?),
         None => None,
@@ -199,12 +204,12 @@ pub async fn require_resource_access_resolved(
 
 /// Get the database pool from ApiState.
 pub fn get_db_pool(state: &ApiState) -> Result<std::sync::Arc<crate::storage::DbPool>, ApiError> {
-    let cluster_repo = state
+    let pool = state
         .xds_state
-        .cluster_repository
+        .pool
         .as_ref()
         .ok_or_else(|| ApiError::service_unavailable("Database not available"))?;
-    Ok(std::sync::Arc::new(cluster_repo.pool().clone()))
+    Ok(std::sync::Arc::new(pool.clone()))
 }
 
 /// Get team repository from ApiState.
@@ -216,6 +221,47 @@ pub fn team_repo_from_state(
         .team_repository
         .as_ref()
         .ok_or_else(|| ApiError::service_unavailable("Team repository unavailable"))
+}
+
+/// Build an InternalAuthContext from a REST request's AuthContext.
+///
+/// Combines three common steps into one call:
+/// 1. Get team repository from state
+/// 2. Build InternalAuthContext with org expansion
+/// 3. Resolve team names to UUIDs
+///
+/// This eliminates the repeated 3-line boilerplate across REST handlers.
+pub async fn resolve_rest_auth(
+    state: &ApiState,
+    context: &AuthContext,
+) -> Result<InternalAuthContext, ApiError> {
+    let team_repo = team_repo_from_state(state)?;
+    InternalAuthContext::from_rest_with_org(context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await
+        .map_err(ApiError::from)
+}
+
+/// Resolve REST auth context scoped to a specific team from the URL path.
+///
+/// Like `resolve_rest_auth`, but also resolves the URL-path team name to a UUID
+/// and sets `requested_team` on the context. This ensures `verify_team_access`
+/// will check that the fetched resource actually belongs to the requested team,
+/// preventing cross-team reads via unrelated URL paths.
+pub async fn resolve_rest_auth_for_team(
+    state: &ApiState,
+    context: &AuthContext,
+    url_team: &str,
+) -> Result<InternalAuthContext, ApiError> {
+    let team_repo = team_repo_from_state(state)?;
+    let team_id = resolve_team_name(state, url_team, context.org_id.as_ref()).await?;
+    let auth = InternalAuthContext::from_rest_with_org(context, team_repo)
+        .await
+        .resolve_teams(team_repo)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(auth.with_requested_team(team_id))
 }
 
 /// Get effective team scopes with org admin expansion.

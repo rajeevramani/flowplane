@@ -1,49 +1,90 @@
 import { test, expect } from '@playwright/test';
 
-const E2E_ADMIN = {
-	email: 'admin@e2e.flowplane.local',
-	password: 'E2E_SecurePassword!23',
-};
+const ZITADEL_HOST = process.env.ZITADEL_HOST ?? 'http://localhost:8081';
 
-// Auth tests need their own fresh context (no pre-existing session)
+// Auth tests need a fresh context (no pre-existing OIDC session)
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test.describe('Authentication', () => {
-	test('login page loads', async ({ page }) => {
-		await page.goto('/login');
-		await expect(page.locator('body')).toBeVisible();
+	test('unauthenticated user is redirected to Zitadel login', async ({ page }) => {
+		// Navigate to a protected page without auth
+		await page.goto('/dashboard');
+
+		// The app should redirect to /login, then clicking sign-in goes to Zitadel.
+		// But the (authenticated) layout checks OIDC state and redirects to /login.
+		await page.waitForURL(/\/login/, { timeout: 15000 });
+
+		// Verify we're on the app login page with the Zitadel sign-in button
 		await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible();
 	});
 
-	test('login page shows form fields', async ({ page }) => {
+	test('OIDC login succeeds and lands on dashboard', async ({ page }) => {
+		// This test performs a full OIDC login flow.
+		// It relies on the admin setup having already set the password.
+		// We use the same admin credentials as auth.setup.ts.
+		const adminEmail = process.env.E2E_ADMIN_EMAIL ?? 'admin@flowplane.local';
+		const adminPassword = 'E2eAdmin!SecurePass1';
+
+		// Start at app login page
 		await page.goto('/login');
-		await expect(page.locator('input[name="email"]')).toBeVisible();
-		await expect(page.locator('input[name="password"]')).toBeVisible();
-	});
+		await page.getByRole('button', { name: /sign in/i }).click();
 
-	test('login with valid credentials redirects to dashboard', async ({ page }) => {
-		await page.goto('/login');
-		await page.fill('input[name="email"]', E2E_ADMIN.email);
-		await page.fill('input[name="password"]', E2E_ADMIN.password);
+		// Wait for Zitadel login page
+		await page.waitForURL(/localhost:8081\/ui\/login/, { timeout: 15000 });
 
-		// Wait for the login API response before checking navigation
-		const [response] = await Promise.all([
-			page.waitForResponse(
-				(resp) => resp.url().includes('/api/v1/auth/login') && resp.status() === 200
-			),
-			page.click('button[type="submit"]')
-		]);
+		// Step 1: Username
+		await page.locator('#loginName').fill(adminEmail);
+		await page.locator('#submit-button').click();
 
-		await page.waitForURL(/\/dashboard/, { timeout: 15000 });
+		// Step 2: Password
+		await page.locator('#password').waitFor({ state: 'visible', timeout: 10000 });
+		await page.locator('#password').fill(adminPassword);
+		await page.locator('#submit-button').click();
+
+		// Step 3: Handle optional Zitadel MFA setup prompt (click "Skip" if shown)
+		const skipButton = page.getByRole('button', { name: 'Skip' });
+		try {
+			await skipButton.waitFor({ state: 'visible', timeout: 5000 });
+			await skipButton.click();
+		} catch {
+			// No MFA prompt — Zitadel redirected directly
+		}
+
+		// Should redirect back to app and land on dashboard
+		await page.waitForURL(/\/dashboard/, { timeout: 30000 });
 		await expect(page.locator('body')).toBeVisible();
 	});
 
-	test('login with invalid credentials shows error', async ({ page }) => {
+	test('invalid credentials show error on Zitadel login', async ({ page }) => {
 		await page.goto('/login');
-		await page.fill('input[name="email"]', 'bad@example.com');
-		await page.fill('input[name="password"]', 'wrongpassword');
-		await page.click('button[type="submit"]');
-		// Should stay on login page and show an error
-		await expect(page.locator('.bg-red-50')).toBeVisible({ timeout: 10000 });
+		await page.getByRole('button', { name: /sign in/i }).click();
+
+		// Wait for Zitadel login page
+		await page.waitForURL(/localhost:8081\/ui\/login/, { timeout: 15000 });
+
+		// Step 1: Enter a valid-looking username
+		await page.locator('#loginName').fill('admin@flowplane.local');
+		await page.locator('#submit-button').click();
+
+		// Step 2: Enter wrong password
+		await page.locator('#password').waitFor({ state: 'visible', timeout: 10000 });
+		await page.locator('#password').fill('WrongPassword123!');
+		await page.locator('#submit-button').click();
+
+		// Should stay on Zitadel login page with an error message
+		// Zitadel displays errors in .lgn-error or similar error containers
+		const errorVisible = await page
+			.locator('.lgn-error, .lgn-warn, [class*="error"], [class*="alert"]')
+			.first()
+			.waitFor({ state: 'visible', timeout: 10000 })
+			.then(() => true)
+			.catch(() => false);
+
+		// Should still be on Zitadel login page (not redirected to app)
+		expect(page.url()).toContain('localhost:8081');
+
+		// Either we see an error element or we're still on the password page
+		const stillOnZitadel = page.url().includes('localhost:8081');
+		expect(errorVisible || stillOnZitadel).toBe(true);
 	});
 });

@@ -7,14 +7,14 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    CreateListenerRequest as InternalCreateRequest, InternalAuthContext, ListListenersRequest,
-    ListenerOperations, UpdateListenerRequest as InternalUpdateRequest,
+    CreateListenerRequest as InternalCreateRequest, ListListenersRequest, ListenerOperations,
+    UpdateListenerRequest as InternalUpdateRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
-    build_delete_response, build_query_response, build_rich_create_response, build_update_response,
-    ResourceRef,
+    build_query_response, build_rich_create_response, build_rich_delete_response,
+    build_update_response, ResourceRef,
 };
 use crate::storage::DbPool;
 use crate::xds::filters::http::{HttpFilterConfigEntry, HttpFilterKind};
@@ -23,6 +23,9 @@ use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::instrument;
+
+// validate_team_in_org is shared — use super::validate_team_in_org
+use super::validate_team_in_org;
 
 /// Returns the MCP tool definition for listing listeners.
 ///
@@ -60,21 +63,7 @@ TRAFFIC FLOW:
 RELATED TOOLS: cp_get_listener (details), cp_create_listener (create), cp_list_route_configs (routes)"#,
         json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of listeners to return (default: 50, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of listeners to skip for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
+            "properties": super::pagination_schema("listeners")
         }),
     )
 }
@@ -174,7 +163,7 @@ EXAMPLE WITH ALL OPTIONS:
 
 ADVANCED: For custom filter chains (TLS, tracing, etc.), use filterChains parameter instead of routeConfigName.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires listeners:create scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -217,7 +206,7 @@ Authorization: Requires cp:write scope."#,
                                     "type": "object",
                                     "properties": {
                                         "name": { "type": "string" },
-                                        "filter_type": { "type": "object" }
+                                        "filterType": { "type": "object" }
                                     }
                                 }
                             }
@@ -271,7 +260,7 @@ route binding. Use filterChains for advanced configurations (TLS, tracing, etc.)
 
 TIP: Use cp_get_listener first to see current configuration.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires listeners:update scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -344,7 +333,7 @@ WORKFLOW TO FULLY REMOVE AN API:
 Required Parameters:
 - name: Name of the listener to delete
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires listeners:delete scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -457,10 +446,7 @@ pub async fn execute_list_listeners(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let list_req = ListListenersRequest {
         limit,
         offset,
@@ -511,7 +497,7 @@ pub async fn execute_list_listeners(
 
     tracing::info!(team = %team, listener_count = result.count, "Successfully listed listeners");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_get_listener tool.
@@ -537,10 +523,7 @@ pub async fn execute_get_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let listener = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for pretty output
@@ -566,7 +549,7 @@ pub async fn execute_get_listener(
 
     tracing::info!(team = %team, listener_name = %name, "Successfully retrieved listener");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_create_listener tool.
@@ -652,10 +635,7 @@ pub async fn execute_create_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let create_req = InternalCreateRequest {
         name: name.to_string(),
         address,
@@ -696,7 +676,7 @@ pub async fn execute_create_listener(
         "Successfully created listener via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_listener tool.
@@ -721,10 +701,7 @@ pub async fn execute_update_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Get existing listener to build config
     let existing = ops.get(name, &auth).await?;
@@ -808,7 +785,7 @@ pub async fn execute_update_listener(
         "Successfully updated listener via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_listener tool.
@@ -833,20 +810,19 @@ pub async fn execute_delete_listener(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     ops.delete(name, &auth).await?;
 
-    // 3. Format success response (minimal token-efficient format)
-    let output = build_delete_response();
+    // 3. Format response with next-step guidance
+    let mut output = build_rich_delete_response("listener", name, None);
+    output["next_step"] =
+        json!("Route config still exists — use cp_delete_route_config if removing the full API");
 
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(team = %team, listener_name = %name, "Successfully deleted listener via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_query_port tool.
@@ -864,6 +840,11 @@ pub async fn execute_query_port(
         args.get("port").and_then(|v| v.as_i64()).ok_or_else(|| {
             McpError::InvalidParams("Missing required parameter: port".to_string())
         })? as i32;
+
+    // Validate team belongs to caller's org
+    if let Some(oid) = org_id {
+        validate_team_in_org(db_pool, team, oid).await?;
+    }
 
     tracing::debug!(team = %team, port = %port, "Querying port availability");
 
@@ -914,7 +895,7 @@ pub async fn execute_query_port(
 
     tracing::info!(team = %team, port = %port, found = found, "Port query completed");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_get_listener_status tool.
@@ -940,10 +921,7 @@ pub async fn execute_get_listener_status(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let listener = ops.get(name, &auth).await?;
 
     // Query route config count
@@ -997,7 +975,7 @@ pub async fn execute_get_listener_status(
         "Successfully retrieved listener status"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]

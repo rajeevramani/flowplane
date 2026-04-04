@@ -101,12 +101,13 @@ impl VaultPkiBackend {
             }
         };
 
-        // Get Vault connection info
-        let vault_addr = std::env::var("VAULT_ADDR").map_err(|_| {
-            SecretsError::config_error(
-                "VAULT_ADDR environment variable required when PKI is enabled",
-            )
-        })?;
+        // Get Vault connection info — must be present and non-empty
+        let vault_addr =
+            std::env::var("VAULT_ADDR").ok().filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+                SecretsError::config_error(
+                    "VAULT_ADDR environment variable required when PKI is enabled",
+                )
+            })?;
 
         let vault_token = std::env::var("VAULT_TOKEN").ok();
         let vault_namespace = std::env::var("VAULT_NAMESPACE").ok();

@@ -50,7 +50,6 @@
 
 		try {
 			await apiClient.createDataplane(currentTeam, {
-				team: currentTeam,
 				name: formState.name,
 				gatewayHost: formState.gatewayHost || undefined,
 				description: formState.description || undefined

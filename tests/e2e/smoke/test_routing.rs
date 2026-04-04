@@ -25,6 +25,7 @@ use crate::common::{
     },
     filter_configs,
     harness::{TestHarness, TestHarnessConfig},
+    shared_infra::{E2eAuthMode, SharedInfrastructure},
     timeout::{with_timeout, TestTimeout},
 };
 
@@ -52,7 +53,8 @@ async fn smoke_test_basic_routing() {
     let cluster = with_timeout(TestTimeout::quick("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-backend", host, port),
         )
         .await
     })
@@ -67,13 +69,8 @@ async fn smoke_test_basic_routing() {
     let route = with_timeout(TestTimeout::quick("Create route"), async {
         api.create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "smoke-route",
-                "smoke.e2e.local",
-                "/smoke",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("smoke-route", "smoke.e2e.local", "/smoke", &cluster.name),
         )
         .await
     })
@@ -88,8 +85,8 @@ async fn smoke_test_basic_routing() {
     let listener = with_timeout(TestTimeout::quick("Create listener"), async {
         api.create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "smoke-listener",
                 harness.ports.listener,
                 &route.name,
@@ -147,7 +144,8 @@ async fn smoke_test_filter_attachment() {
     let cluster = with_timeout(TestTimeout::quick("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-filter-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-filter-backend", host, port),
         )
         .await
     })
@@ -162,8 +160,8 @@ async fn smoke_test_filter_attachment() {
     let route = with_timeout(TestTimeout::quick("Create route"), async {
         api.create_route(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_route(
-                &ctx.team_a_name,
                 "smoke-filter-route",
                 "smoke-filter.e2e.local",
                 "/smoke/filter",
@@ -183,8 +181,8 @@ async fn smoke_test_filter_attachment() {
     let listener = with_timeout(TestTimeout::quick("Create listener"), async {
         api.create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "smoke-filter-listener",
                 harness.ports.listener,
                 &route.name,
@@ -225,7 +223,8 @@ async fn smoke_test_filter_attachment() {
 
     // Install filter on listener
     with_timeout(TestTimeout::quick("Install filter"), async {
-        api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(1)).await
+        api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(1))
+            .await
     })
     .await
     .expect("Filter installation should succeed");
@@ -236,7 +235,14 @@ async fn smoke_test_filter_attachment() {
 
     // Attach filter to route
     with_timeout(TestTimeout::quick("Attach filter to route"), async {
-        api.attach_filter_to_route(&ctx.admin_token, &route.name, &filter.id, Some(1)).await
+        api.attach_filter_to_route(
+            &ctx.admin_token,
+            &ctx.team_a_name,
+            &route.name,
+            &filter.id,
+            Some(1),
+        )
+        .await
     })
     .await
     .expect("Filter attachment should succeed");
@@ -317,7 +323,8 @@ async fn smoke_test_xds_config() {
     let cluster = with_timeout(TestTimeout::quick("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-xds-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-xds-backend", host, port),
         )
         .await
     })
@@ -332,13 +339,8 @@ async fn smoke_test_xds_config() {
     let route = with_timeout(TestTimeout::quick("Create route"), async {
         api.create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "smoke-xds-route",
-                "smoke-xds.e2e.local",
-                "/smoke/xds",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("smoke-xds-route", "smoke-xds.e2e.local", "/smoke/xds", &cluster.name),
         )
         .await
     })
@@ -353,8 +355,8 @@ async fn smoke_test_xds_config() {
     let _listener = with_timeout(TestTimeout::quick("Create listener"), async {
         api.create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "smoke-xds-listener",
                 harness.ports.listener,
                 &route.name,
@@ -415,6 +417,12 @@ async fn smoke_test_xds_config() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn smoke_test_team_isolation() {
+    let infra = SharedInfrastructure::get_or_init().await.expect("infra");
+    if matches!(infra.auth_mode, E2eAuthMode::Dev) {
+        println!("SKIP: smoke_test_team_isolation requires multi-team isolation (prod mode only)");
+        return;
+    }
+
     let harness = TestHarness::start(TestHarnessConfig::new("smoke_test_team_isolation"))
         .await
         .expect("Failed to start test harness");
@@ -435,7 +443,8 @@ async fn smoke_test_team_isolation() {
     let cluster_a = with_timeout(TestTimeout::quick("Create Team A cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-iso-backend-a", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-iso-backend-a", host, port),
         )
         .await
     })
@@ -454,7 +463,8 @@ async fn smoke_test_team_isolation() {
     let cluster_b = with_timeout(TestTimeout::quick("Create Team B cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_b_name, "smoke-iso-backend-b", host, port),
+            &ctx.team_b_name,
+            &simple_cluster("smoke-iso-backend-b", host, port),
         )
         .await
     })
@@ -497,7 +507,8 @@ async fn smoke_test_crud_operations() {
     let cluster = with_timeout(TestTimeout::quick("Create cluster"), async {
         api.create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "smoke-crud-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("smoke-crud-backend", host, port),
         )
         .await
     })
@@ -510,7 +521,7 @@ async fn smoke_test_crud_operations() {
 
     // READ - List clusters and verify ours is there
     let clusters = with_timeout(TestTimeout::quick("List clusters"), async {
-        api.list_clusters(&ctx.admin_token, Some(&ctx.team_a_name)).await
+        api.list_clusters(&ctx.admin_token, &ctx.team_a_name).await
     })
     .await
     .expect("List clusters should succeed");
@@ -546,7 +557,7 @@ async fn smoke_test_crud_operations() {
 
     // READ - Get filter by ID
     let filter_read = with_timeout(TestTimeout::quick("Get filter"), async {
-        api.get_filter(&ctx.admin_token, &filter.id).await
+        api.get_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id).await
     })
     .await
     .expect("Get filter should succeed");
@@ -556,7 +567,7 @@ async fn smoke_test_crud_operations() {
 
     // DELETE - Delete the filter
     with_timeout(TestTimeout::quick("Delete filter"), async {
-        api.delete_filter(&ctx.admin_token, &filter.id).await
+        api.delete_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id).await
     })
     .await
     .expect("Delete filter should succeed");
@@ -567,7 +578,7 @@ async fn smoke_test_crud_operations() {
 
     // Verify filter is gone
     let filter_after_delete = with_timeout(TestTimeout::quick("Get deleted filter"), async {
-        api.get_filter(&ctx.admin_token, &filter.id).await
+        api.get_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id).await
     })
     .await;
 

@@ -4,7 +4,7 @@
 
 use crate::domain::OrgId;
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -179,7 +179,7 @@ pub async fn execute_list_filter_types(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get filter type operation
@@ -207,7 +207,7 @@ pub async fn execute_get_filter_type(
     })?;
 
     // Transform to JSON response
-    let result = json!({
+    let mut result = json!({
         "name": schema.name,
         "display_name": schema.display_name,
         "description": schema.description,
@@ -239,10 +239,15 @@ pub async fn execute_get_filter_type(
         ),
     });
 
+    // Include per-filter-type instructions if available
+    if let Some(instructions) = &schema.instructions {
+        result["instructions"] = json!(instructions);
+    }
+
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 #[cfg(test)]

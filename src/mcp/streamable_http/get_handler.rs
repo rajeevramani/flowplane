@@ -34,13 +34,8 @@ use crate::mcp::error::McpError;
 use crate::mcp::notifications::NotificationMessage;
 use crate::mcp::protocol::{error_codes, JsonRpcError, JsonRpcResponse};
 use crate::mcp::session::SessionId;
-use crate::mcp::transport_common::{
-    check_method_authorization, extract_mcp_headers, extract_team, get_db_pool,
-    validate_team_org_membership,
-};
+use crate::mcp::transport_common::{extract_mcp_headers, extract_teams};
 use crate::mcp::SharedConnectionManager;
-
-use super::McpScope;
 
 /// Event ID for SSE resumability (MCP 2025-11-25)
 ///
@@ -229,45 +224,9 @@ fn error_response(code: i32, message: String) -> axum::response::Response {
     (status, Json(body)).into_response()
 }
 
-/// GET /api/v1/mcp/cp
+/// GET /api/v1/mcp
 ///
-/// Open SSE stream for Control Plane notifications.
-///
-/// # Headers
-/// - `MCP-Session-Id`: Required - existing session ID
-///
-/// # Response Headers
-/// - `MCP-Session-Id`: Echo of session ID
-///
-/// # Events
-/// - `message`: JSON-RPC response messages
-/// - `progress`: Progress notifications for long-running operations
-/// - `log`: Log messages from the server
-/// - `ping`: Heartbeat events
-#[utoipa::path(
-    get,
-    path = "/api/v1/mcp/cp",
-    responses(
-        (status = 200, description = "SSE stream established"),
-        (status = 400, description = "Invalid or missing session"),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 429, description = "Connection limit exceeded")
-    ),
-    tag = "MCP Protocol"
-)]
-pub async fn get_handler_cp(
-    State(state): State<ApiState>,
-    Extension(context): Extension<AuthContext>,
-    headers: HeaderMap,
-    Query(query): Query<SseQuery>,
-) -> Result<impl IntoResponse, axum::response::Response> {
-    get_handler(McpScope::ControlPlane, state, context, headers, query).await
-}
-
-/// GET /api/v1/mcp/api
-///
-/// Open SSE stream for Gateway API notifications.
+/// Open SSE stream for server notifications.
 ///
 /// # Headers
 /// - `MCP-Session-Id`: Required - existing session ID
@@ -282,7 +241,7 @@ pub async fn get_handler_cp(
 /// - `ping`: Heartbeat events
 #[utoipa::path(
     get,
-    path = "/api/v1/mcp/api",
+    path = "/api/v1/mcp",
     responses(
         (status = 200, description = "SSE stream established"),
         (status = 400, description = "Invalid or missing session"),
@@ -292,26 +251,14 @@ pub async fn get_handler_cp(
     ),
     tag = "MCP Protocol"
 )]
-pub async fn get_handler_api(
+pub async fn get_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
     headers: HeaderMap,
-    Query(query): Query<SseQuery>,
-) -> Result<impl IntoResponse, axum::response::Response> {
-    get_handler(McpScope::GatewayApi, state, context, headers, query).await
-}
-
-/// Generic GET handler for SSE streaming
-async fn get_handler(
-    scope: McpScope,
-    state: ApiState,
-    context: AuthContext,
-    headers: HeaderMap,
-    query: SseQuery,
+    Query(_query): Query<SseQuery>,
 ) -> Result<impl IntoResponse, axum::response::Response> {
     let connection_manager = state.mcp_connection_manager.clone();
     let session_manager = state.mcp_session_manager.clone();
-    let scope_config = scope.scope_config();
 
     // Extract MCP headers
     let mcp_headers = extract_mcp_headers(&headers);
@@ -321,7 +268,6 @@ async fn get_handler(
         Some(id) => id.clone(),
         None => {
             warn!(
-                scope = ?scope,
                 token = %context.token_name,
                 "GET request missing MCP-Session-Id header"
             );
@@ -349,7 +295,6 @@ async fn get_handler(
     if !session_manager.exists(&session_id) {
         warn!(
             session_id = %session_id_str,
-            scope = ?scope,
             "GET request for non-existent session"
         );
         return Err(error_response(
@@ -358,57 +303,10 @@ async fn get_handler(
         ));
     }
 
-    // Extract team
-    let team = match extract_team(query.team.as_deref(), &context) {
-        Ok(t) => t,
-        Err(e) => {
-            error!(error = %e, "Failed to extract team for SSE");
-            return Err(error_response(error_codes::INVALID_REQUEST, e));
-        }
-    };
-
-    // Validate team belongs to caller's org (prevents cross-org team access via query param)
-    if let Some(ref org_id) = context.org_id {
-        if let Ok(db_pool) = get_db_pool(&state) {
-            if let Err(e) = validate_team_org_membership(&team, org_id, &db_pool).await {
-                error!(error = %e, team = %team, "Team org membership validation failed");
-                return Err(error_response(error_codes::INVALID_REQUEST, e));
-            }
-        }
-    }
-
-    // Resolve team name to UUID (mcp_tools.team stores UUIDs after FK migration)
-    let team = match get_db_pool(&state) {
-        Ok(db_pool) => match crate::mcp::transport_common::resolve_team_id(&team, &db_pool).await {
-            Ok(team_id) => team_id,
-            Err(e) => {
-                error!(error = %e, "Failed to resolve team name to UUID");
-                return Err(error_response(error_codes::INVALID_REQUEST, e));
-            }
-        },
-        Err(_) => team, // Fallback to name if DB unavailable
-    };
-
-    // Validate session ownership
-    if let Err(e) = session_manager.validate_session_ownership(&session_id, &team) {
-        warn!(
-            session_id = %session_id_str,
-            team = %team,
-            error = %e,
-            "Session ownership validation failed"
-        );
-        // Return 404 to avoid leaking info about other teams' sessions
-        return Err(error_response(
-            error_codes::INVALID_REQUEST,
-            "Session not found or expired".to_string(),
-        ));
-    }
-
-    // Check authorization
-    if let Err(e) = check_method_authorization("tools/list", &context, scope_config) {
-        error!(error = %e, "SSE authorization failed");
-        return Err(error_response(error_codes::INVALID_REQUEST, e));
-    }
+    // Extract all authorized teams from token scopes.
+    // Use first team for SSE connection registration (connection manager is single-team).
+    let teams = extract_teams(&context);
+    let team = teams.into_iter().next().unwrap_or_default();
 
     // Register SSE connection
     let (connection_id, receiver) = match connection_manager.register(team.clone()) {
@@ -492,17 +390,9 @@ async fn get_handler(
         session_id = %session_id_str,
         team = %team,
         token_name = %context.token_name,
-        scope = ?scope,
         replayed_count = replayed_messages.len(),
         "SSE connection established"
     );
-
-    // Create the endpoint URI that clients should use to POST messages
-    let endpoint_uri =
-        format!("{}?team={}&sessionId={}", scope.endpoint_path(), team, session_id_str);
-
-    // Create initial endpoint event (required by MCP spec)
-    let initial_event = Event::default().event("endpoint").data(endpoint_uri);
 
     // Get message buffer for this connection to track sequence
     let message_buffer = connection_manager
@@ -539,9 +429,8 @@ async fn get_handler(
         format_sse_event_with_id(&message, &event_id)
     });
 
-    // Combine streams: initial → replayed → live
-    let initial_stream = tokio_stream::once(Ok::<_, Infallible>(initial_event));
-    let combined_stream = initial_stream.chain(replayed_stream).chain(event_stream);
+    // Combine streams: replayed → live
+    let combined_stream = replayed_stream.chain(event_stream);
 
     // Wrap with cleanup stream to unregister connection when client disconnects
     let cleanup_stream = CleanupStream::new(

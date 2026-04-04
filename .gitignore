@@ -24,6 +24,7 @@ debug/
 *.key
 *.pem
 *.crt
+temp-enovy.yaml
 
 # Logs and runtime data
 *.log
@@ -36,12 +37,16 @@ logs/
 *.sqlite
 *.sqlite3
 
+# Agents
+agents/
+
 # Local development and temporary files
 .local/
 .tmp/
 .cache/
 .specify/
 .codex/
+ralph/
 
 # Documentation build artifacts
 book/
@@ -58,7 +63,9 @@ coverage/
 .claude/
 CLAUDE.md
 CLAUDE.md.backup
-
+CLAUDE.md.bak
+CLAUDE.md.bak2
+.claude-bk/
 Database
 data/*
 !data/logs/
@@ -90,9 +97,11 @@ ui/build/
 
 # Playwright test artifacts
 ui/playwright-report/
+ui/playwright/.auth/
 ui/test-results/
 ui/.netlify/
 ui/.vercel/
+.playwright-mcp
 # Environment variables
 # Editor directories and files
 .idea
@@ -116,6 +125,8 @@ AGENTS.md
 GEMINI.md
 
 examples/custom-filter/add-header/target
+
+.archive
 
 # Terraform
 **/.terraform/
@@ -142,5 +153,20 @@ __pycache__/
 venv/
 .venv/
 
+# Zitadel machine keys and credentials
+zitadel/machinekey/*.json
+zitadel/machinekey/*.txt
+poc/zitadel/machinekey/
+.env.zitadel
+ui/.env
+
+# Diagram artifacts
+*.excalidraw
+example-auth-flow.png
+phase-j-testing-strategy.png
+
 # Remove later
 deploy
+
+# Dolt database files (added by bd init)
+.dolt/

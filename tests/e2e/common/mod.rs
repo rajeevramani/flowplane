@@ -10,6 +10,7 @@
 //! - Type-safe filter configuration builders
 
 pub mod api_client;
+pub mod cli_runner;
 pub mod control_plane;
 pub mod envoy;
 pub mod filter_configs;
@@ -20,15 +21,17 @@ pub mod resource_setup;
 pub mod shared_infra;
 pub mod stats;
 pub mod timeout;
+pub mod zitadel;
 
 pub use api_client::*;
+pub use cli_runner::{CliOutput, CliRunner};
 pub use control_plane::ControlPlaneHandle;
 pub use envoy::EnvoyHandle;
-pub use harness::{TestHarness, TestHarnessConfig};
+pub use harness::{dev_harness, TestHarness, TestHarnessConfig};
 pub use mocks::MockServices;
 pub use ports::PortAllocator;
 pub use resource_setup::{
     ClusterConfig, FilterConfig, ListenerConfig, ResourceSetup, RouteConfig, TestResources,
 };
-pub use shared_infra::{SharedInfrastructure, SHARED_LISTENER_PORT};
+pub use shared_infra::{E2eAuthConfig, E2eAuthMode, SharedInfrastructure, SHARED_LISTENER_PORT};
 pub use timeout::{with_timeout, TestTimeout};

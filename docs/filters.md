@@ -1,239 +1,364 @@
 # Filters
 
-Filters add processing logic to traffic flowing through Envoy. Flowplane manages the full lifecycle: create a filter, attach it to a listener, verify it works, then detach and delete when done.
+Add rate limiting, authentication, CORS, header manipulation, and more to your gateway. Filters are Envoy HTTP filter configurations managed through Flowplane — define them once and attach them to listeners or route configs.
 
-## Workflow
+For initial setup, see [Getting Started](getting-started.md). For CLI flag details, see [CLI Reference](cli-reference.md).
 
-```
-create  -->  attach  -->  verify  -->  detach  -->  delete
-```
+## How Filters Work
 
-1. **Create** a filter with its configuration
-2. **Attach** it to a listener (traffic starts flowing through it immediately)
-3. **Verify** the behavior with a test request
-4. **Detach** from the listener when done
-5. **Delete** the filter resource
+1. **Create** a filter definition with a type-specific configuration
+2. **Attach** the filter to a listener (applies to all traffic on that port) or a route config (applies to routes within that config)
+3. **Verify** the attachment took effect
 
-A filter must be detached from all listeners before it can be deleted. Attempting to delete an attached filter returns `409 Conflict`:
+Filters execute in order within the listener's filter chain. The Router filter is always auto-appended by Flowplane as the final filter — never add it manually.
 
-```
-$ flowplane filter delete my-filter -y
-Error: Cannot delete filter 'my-filter': Resource conflict: Filter is attached to
-1 listener(s). Detach before deleting.
-```
+## Filter Types
 
-## Filter types
+| Filter | Type Key | Envoy Filter | Per-Route | Description |
+|--------|----------|-------------|-----------|-------------|
+| Local Rate Limit | `local_rate_limit` | `envoy.filters.http.local_ratelimit` | Yes | Per-instance token bucket rate limiting |
+| Rate Limit | `rate_limit` | `envoy.filters.http.ratelimit` | Yes | Distributed rate limiting via external service |
+| Rate Limit Quota | `rate_limit_quota` | `envoy.filters.http.rate_limit_quota` | Yes | Quota-based rate limiting (RLQS) |
+| JWT Auth | `jwt_auth` | `envoy.filters.http.jwt_authn` | Yes | Validate JWTs against JWKS endpoints |
+| OAuth2 | `oauth2` | `envoy.filters.http.oauth2` | No | OAuth 2.0 authorization code flow |
+| Ext Auth | `ext_authz` | `envoy.filters.http.ext_authz` | Yes | Delegate auth to external service |
+| RBAC | `rbac` | `envoy.filters.http.rbac` | Yes | Role-based access control policies |
+| CORS | `cors` | `envoy.filters.http.cors` | Yes | Cross-origin resource sharing |
+| Header Mutation | `header_mutation` | `envoy.filters.http.header_mutation` | Yes | Add, remove, or modify headers |
+| Custom Response | `custom_response` | `envoy.filters.http.custom_response` | Yes | Override responses for specific status codes |
+| Health Check | `health_check` | `envoy.filters.http.health_check` | No | Respond to health probes at the proxy |
+| Credential Injector | `credential_injector` | `envoy.filters.http.credential_injector` | No | Inject credentials into upstream requests via SDS |
+| Ext Proc | `ext_proc` | `envoy.filters.http.ext_proc` | No | External request/response processing via gRPC |
+| Compressor | `compressor` | `envoy.filters.http.compressor` | Yes | Compress responses (gzip, brotli) |
 
-All filter types from `src/domain/filter.rs`. The `filterType` value in JSON uses snake_case.
+**Per-Route** indicates whether the filter supports per-route overrides via `typedPerFilterConfig` (see [Per-Route Overrides](#per-route-overrides)).
 
-| Type | Description | Implemented | Per-route behavior |
-|------|-------------|:-----------:|-------------------|
-| `header_mutation` | Add, modify, or remove HTTP headers | Yes | Full config override |
-| `jwt_auth` | JSON Web Token authentication | Yes | Reference only |
-| `cors` | Cross-Origin Resource Sharing policy | Yes | Full config override |
-| `compressor` | Response compression (gzip) | Yes | Disable only |
-| `local_rate_limit` | Local (in-memory) rate limiting | Yes | Full config override |
-| `rate_limit` | External/distributed rate limiting (requires gRPC service) | No | Full config override |
-| `ext_authz` | External authorization service | Yes | Full config override |
-| `rbac` | Role-based access control | Yes | Full config override |
-| `oauth2` | OAuth2 authentication | Yes | Not supported |
-| `custom_response` | Modify responses based on status codes | Yes | Full config override |
-| `mcp` | Model Context Protocol for AI/LLM gateway traffic | Yes | Disable only |
+## Config Structure
 
-> `rate_limit` (external/distributed) is defined but **not implemented**. Use `local_rate_limit` for in-memory rate limiting.
-
-## Config structure
-
-Every filter uses a nested config format. The outer object has three required fields:
+All filter JSON uses a nested `config.type` + `config.config` structure:
 
 ```json
 {
   "name": "my-filter",
-  "filterType": "<type>",
+  "filterType": "<type_key>",
   "config": {
-    "type": "<type>",
+    "type": "<type_key>",
     "config": {
-      ...filter-specific settings...
+      ... type-specific fields ...
     }
   }
 }
 ```
 
-- **`filterType`** (top-level): the filter type as a string (e.g., `"header_mutation"`)
-- **`config.type`**: must match `filterType`
-- **`config.config`**: the filter-specific configuration object
+The inner `type` must match the `filterType` field. This structure applies to CLI JSON files (`-f filter.json`). For MCP, the argument name is `configuration` instead of `config` — see the MCP column in the examples below.
 
-Top-level fields use **camelCase** (`filterType`, not `filter_type`). Inner config fields use the naming convention of each filter type (usually snake_case).
+## Workflow: Create, Attach, Verify
 
-### Example: header_mutation
+<table>
+<tr><th>CLI</th><th>MCP</th></tr>
+<tr>
+<td>
 
-Save this as `header-filter.json`:
+```bash
+# 1. Create
+flowplane filter create -f filter.json
+
+# 2. Attach to a listener
+flowplane filter attach <name> \
+  --listener <listener> --order <n>
+
+# 3. Verify
+flowplane filter get <name>
+# Check listenerInstallations in output
+```
+
+</td>
+<td>
 
 ```json
-{
-  "name": "add-headers",
-  "filterType": "header_mutation",
-  "config": {
-    "type": "header_mutation",
-    "config": {
-      "request_headers_to_add": [
-        {"key": "X-Gateway", "value": "flowplane", "append": false}
-      ]
-    }
+// 1. Create
+{"method": "tools/call", "params": {
+  "name": "cp_create_filter",
+  "arguments": {
+    "name": "my-filter",
+    "filterType": "local_rate_limit",
+    "configuration": {
+      "type": "local_rate_limit",
+      "config": { ... }
+    },
+    "team": "default"
   }
-}
+}}
+
+// 2. Attach
+{"method": "tools/call", "params": {
+  "name": "cp_attach_filter",
+  "arguments": {
+    "filter": "my-filter",
+    "listener": "my-listener",
+    "order": 10,
+    "team": "default"
+  }
+}}
+
+// 3. Verify
+{"method": "tools/call", "params": {
+  "name": "cp_get_filter",
+  "arguments": {
+    "name": "my-filter",
+    "team": "default"
+  }
+}}
 ```
 
-```
-$ flowplane filter create -f header-filter.json
-{
-  "id": "a32152e4-...",
-  "name": "add-headers",
-  "filterType": "header_mutation",
-  "version": 1,
-  "source": "native_api",
-  "team": "default",
-  ...
-  "allowedAttachmentPoints": ["route", "listener"]
-}
-```
+</td>
+</tr>
+</table>
 
-## Attachment
+> ⚠️ **MCP in dev mode:** Always include `"team": "default"` in every tool call.
 
-Filters attach to **listeners** via `filter attach`. The `--order` flag controls execution order when multiple filters are attached (lower numbers execute first).
+> ⚠️ **MCP argument name:** The MCP tool `cp_create_filter` uses `configuration` (not `config`) as the argument key. The CLI JSON file uses `config`.
 
-```
-$ flowplane filter attach add-headers --listener demo-listener
-Filter 'add-headers' attached to listener 'demo-listener'
+## Attachment Levels
+
+### Listener-level
+
+Applies to **all traffic** on that listener's port.
+
+```bash
+flowplane filter attach my-filter --listener my-listener --order 10
 ```
 
-Verify the filter is working:
+### Route-config-level
 
+Applies to routes within a specific route configuration. Available via MCP only:
+
+```json
+{"method": "tools/call", "params": {
+  "name": "cp_attach_filter",
+  "arguments": {
+    "filter": "my-filter",
+    "route_config": "my-route-config",
+    "team": "default"
+  }
+}}
 ```
-$ curl -s http://localhost:10001/headers | python3 -m json.tool
-{
-    "headers": {
-        "Accept": "*/*",
-        "Host": "localhost:10001",
-        "User-Agent": "curl/8.7.1",
-        "X-Envoy-Expected-Rq-Timeout-Ms": "15000",
-        "X-Gateway": "flowplane"
-    }
-}
-```
 
-## Per-route overrides
+Use listener-level for policies that should apply to everything on a port (rate limiting, CORS). Use route-config-level to scope a filter to specific routes.
 
-Filters attached at the listener level apply to all traffic. To customize behavior per route, use `typedPerFilterConfig` in the route definition. The level of customization depends on the filter type:
+## Execution Order
 
-| Per-route behavior | What you can do | Filter types |
-|-------------------|-----------------|--------------|
-| **Full config** | Override the entire filter config per route | header_mutation, cors, local_rate_limit, ext_authz, rbac, custom_response |
-| **Reference only** | Reference a named config from the listener-level filter | jwt_auth |
-| **Disable only** | Disable the filter for specific routes | compressor, mcp |
-| **Not supported** | No per-route customization | oauth2 |
+The `--order` value controls where the filter sits in the chain. Lower numbers execute first.
 
-Per-route overrides are set in the route's `typedPerFilterConfig` field when creating or updating a route config via the API or MCP tools:
+| Order | Filter | Reason |
+|-------|--------|--------|
+| 1 | CORS | Handle preflight before auth |
+| 2 | JWT Auth / Ext Auth | Validate identity early |
+| 3 | RBAC | Enforce access policies |
+| 5 | Rate Limit | Don't waste tokens on unauthenticated requests |
+| 10 | Header Mutation | Modify headers for upstream |
+| — | Router | Auto-appended by Flowplane |
+
+> ⚠️ Order values must be unique per listener. Use gaps (1, 5, 10, 20) so you can insert filters later without reordering.
+
+## Per-Route Overrides
+
+Filters marked **Per-Route: Yes** can be customized or disabled on individual routes or virtual hosts using `typedPerFilterConfig`. The key is the **Envoy filter name** (not the Flowplane type key).
+
+### Override config for a route
+
+Add `typedPerFilterConfig` to a route in your route config JSON:
 
 ```json
 {
-  "routes": [{
-    "name": "api-route",
-    "match": {"path": {"type": "prefix", "value": "/api"}},
-    "action": {"type": "forward", "cluster": "backend"},
-    "typedPerFilterConfig": {
-      "envoy.filters.http.local_ratelimit": {
-        "stat_prefix": "api_rate_limit",
-        "token_bucket": {
-          "max_tokens": 100,
-          "tokens_per_fill": 100,
-          "fill_interval_ms": 1000
-        },
-        "filter_enabled": {"numerator": 100, "denominator": "hundred"},
-        "filter_enforced": {"numerator": 100, "denominator": "hundred"}
+  "name": "api-route",
+  "match": { "path": { "type": "prefix", "value": "/api" } },
+  "action": { "type": "forward", "cluster": "my-backend" },
+  "typedPerFilterConfig": {
+    "envoy.filters.http.local_ratelimit": {
+      "stat_prefix": "api_rl",
+      "token_bucket": {
+        "max_tokens": 50,
+        "tokens_per_fill": 50,
+        "fill_interval_ms": 1000
       }
     }
+  }
+}
+```
+
+This replaces the listener-level rate limit for requests matching `/api`.
+
+### Disable a filter for a route
+
+To skip a filter entirely on a specific route:
+
+```json
+{
+  "name": "health-route",
+  "match": { "path": { "type": "exact", "value": "/healthz" } },
+  "action": { "type": "forward", "cluster": "my-backend" },
+  "typedPerFilterConfig": {
+    "envoy.filters.http.jwt_authn": {
+      "disabled": true
+    }
+  }
+}
+```
+
+> ⚠️ **`disabled: true` vs `allow_missing`**: `disabled: true` skips the filter entirely — it never executes. `"requirement_name": "allow_missing"` still runs the JWT filter but accepts requests without tokens. Use `disabled` for fully public endpoints; use `allow_missing` for endpoints that optionally accept tokens.
+
+### Exempt a sub-path
+
+To protect a broad prefix but exempt a specific sub-path, add a more-specific route **before** the broader one. Envoy uses first-match routing — order in the `routes` array matters.
+
+```json
+{
+  "name": "my-routes",
+  "virtualHosts": [{
+    "name": "default",
+    "domains": ["*"],
+    "routes": [
+      {
+        "name": "health-exempt",
+        "match": { "path": { "type": "exact", "value": "/healthz" } },
+        "action": { "type": "forward", "cluster": "my-backend" },
+        "typedPerFilterConfig": {
+          "envoy.filters.http.jwt_authn": { "disabled": true }
+        }
+      },
+      {
+        "name": "api-protected",
+        "match": { "path": { "type": "prefix", "value": "/" } },
+        "action": { "type": "forward", "cluster": "my-backend" }
+      }
+    ]
   }]
 }
 ```
 
-The key in `typedPerFilterConfig` is the Envoy HTTP filter name (e.g., `envoy.filters.http.local_ratelimit`), not the Flowplane filter type name.
+> ⚠️ `flowplane route update` performs a **full replacement** of the `virtualHosts` array. Always fetch the existing config with `flowplane route get` first, then include all routes plus your changes.
 
-## Detach and delete
+### REST API for per-route overrides
 
-To remove a filter, always detach first:
-
-```
-$ flowplane filter detach add-headers --listener demo-listener
-Filter 'add-headers' detached from listener 'demo-listener'
-
-$ flowplane filter delete add-headers -y
-Filter 'add-headers' deleted successfully
-```
-
-If you try to delete without detaching:
+Override or disable a filter on a route via the REST API:
 
 ```
-$ flowplane filter delete add-headers -y
-Error: Cannot delete filter 'add-headers': Resource conflict: Filter is attached to
-1 listener(s). Detach before deleting.
+POST /api/v1/filters/{filterId}/configurations
 ```
+
+**Override:**
+```json
+{
+  "scopeType": "route",
+  "scopeId": "route-config-name/vhost-name/route-name",
+  "settings": {
+    "behavior": "override",
+    "config": { ... filter-specific config ... }
+  }
+}
+```
+
+**Disable:**
+```json
+{
+  "scopeType": "route",
+  "scopeId": "route-config-name/vhost-name/route-name",
+  "settings": {
+    "behavior": "disable"
+  }
+}
+```
+
+The `scopeId` format for routes is `{route-config-name}/{vhost-name}/{route-name}`. For route-config-level scope, use `"scopeType": "route-config"` and `"scopeId": "my-route-config"`.
 
 ---
 
-## Traffic management filters
+## Example 1: Local Rate Limiting
 
-### local_rate_limit
+Limit httpbin to 3 requests per minute.
 
-Local (in-memory) rate limiting. Tokens are tracked per Envoy instance — not shared across instances. Use this for single-instance deployments or as a per-node safety net.
+<table>
+<tr><th>CLI</th><th>MCP</th></tr>
+<tr>
+<td>
 
-> The external `rate_limit` type (distributed rate limiting via a gRPC service) is defined but **not implemented**. The API rejects it with `400 Bad Request: Filter type 'rate_limit' is not yet fully supported`.
-
-**Required fields:** `stat_prefix`, `token_bucket`
-
-Save as `rate-limit.json`:
+**filter.json:**
 
 ```json
 {
-  "name": "demo-rate-limit",
+  "name": "httpbin-rate-limit",
   "filterType": "local_rate_limit",
   "config": {
     "type": "local_rate_limit",
     "config": {
-      "stat_prefix": "demo_rate_limit",
+      "stat_prefix": "httpbin_rl",
       "token_bucket": {
         "max_tokens": 3,
         "tokens_per_fill": 3,
         "fill_interval_ms": 60000
-      },
-      "filter_enabled": {"numerator": 100, "denominator": "hundred"},
-      "filter_enforced": {"numerator": 100, "denominator": "hundred"}
+      }
     }
   }
 }
 ```
 
-```
-$ flowplane filter create -f rate-limit.json
-{
-  "id": "e4ba4636-...",
-  "name": "demo-rate-limit",
-  "filterType": "local_rate_limit",
-  "version": 1,
-  "source": "native_api",
-  "team": "default",
-  ...
-  "allowedAttachmentPoints": ["route", "listener"]
-}
-
-$ flowplane filter attach demo-rate-limit --listener demo-listener
-Filter 'demo-rate-limit' attached to listener 'demo-listener'
+```bash
+flowplane filter create -f filter.json
+flowplane filter attach httpbin-rate-limit \
+  --listener httpbin-listener --order 1
 ```
 
-Verify — 3 tokens per 60 seconds means the 4th request gets rejected:
+</td>
+<td>
+
+```json
+// Create
+{"method": "tools/call", "params": {
+  "name": "cp_create_filter",
+  "arguments": {
+    "name": "httpbin-rate-limit",
+    "filterType": "local_rate_limit",
+    "configuration": {
+      "type": "local_rate_limit",
+      "config": {
+        "stat_prefix": "httpbin_rl",
+        "token_bucket": {
+          "max_tokens": 3,
+          "tokens_per_fill": 3,
+          "fill_interval_ms": 60000
+        }
+      }
+    },
+    "team": "default"
+  }
+}}
+
+// Attach
+{"method": "tools/call", "params": {
+  "name": "cp_attach_filter",
+  "arguments": {
+    "filter": "httpbin-rate-limit",
+    "listener": "httpbin-listener",
+    "order": 1,
+    "team": "default"
+  }
+}}
+```
+
+</td>
+</tr>
+</table>
+
+**Test:**
+
+```bash
+for i in 1 2 3 4 5; do
+  echo "Request $i: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:10001/get)"
+done
+```
 
 ```
-$ for i in 1 2 3 4 5; do curl -s -o /dev/null -w "Request $i: %{http_code}\n" http://localhost:10001/get; done
 Request 1: 200
 Request 2: 200
 Request 3: 200
@@ -241,406 +366,395 @@ Request 4: 429
 Request 5: 429
 ```
 
-The 429 response body is `local_rate_limited` (plain text, not JSON).
+The token bucket allows 3 requests per 60-second window. Requests 4 and 5 get `429 Too Many Requests`.
 
-**Config fields:**
+**Token bucket fields:**
 
-| Field | Type | Required | Description |
-|-------|------|:--------:|-------------|
-| `stat_prefix` | string | Yes | Prefix for rate limit stats |
-| `token_bucket.max_tokens` | u32 | Yes | Maximum tokens in the bucket |
-| `token_bucket.tokens_per_fill` | u32 | No | Tokens added per refill (defaults to `max_tokens`) |
-| `token_bucket.fill_interval_ms` | u64 | Yes | Refill interval in milliseconds (must be > 0) |
-| `filter_enabled` | object | No | Fraction of requests where filter runs (defaults to 100%) |
-| `filter_enforced` | object | No | Fraction of enabled requests where limit is enforced (defaults to 100%) |
-| `status_code` | u16 | No | HTTP status when rate limited (default 429, range 400-599) |
-| `per_downstream_connection` | bool | No | Track tokens per connection instead of globally |
-| `rate_limited_as_resource_exhausted` | bool | No | Return gRPC RESOURCE_EXHAUSTED instead of UNAVAILABLE |
+| Field | Description |
+|---|---|
+| `max_tokens` | Maximum tokens in the bucket |
+| `tokens_per_fill` | Tokens added per fill interval |
+| `fill_interval_ms` | Refill interval in milliseconds |
+| `stat_prefix` | Required. Namespace for rate limit metrics |
 
-**`filter_enabled` and `filter_enforced`** both default to 100% if omitted. The `denominator` field accepts `hundred`, `ten_thousand`, or `million` (snake_case).
-
----
-
-### cors
-
-Cross-Origin Resource Sharing policy. Controls which origins, methods, and headers are allowed for cross-origin requests.
-
-**Required fields:** `policy.allow_origin` (at least one matcher)
-
-Save as `cors.json`:
-
-```json
-{
-  "name": "demo-cors",
-  "filterType": "cors",
-  "config": {
-    "type": "cors",
-    "config": {
-      "policy": {
-        "allow_origin": [
-          {"type": "exact", "value": "https://example.com"}
-        ],
-        "allow_methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "expose_headers": ["X-Request-Id"],
-        "max_age": 3600,
-        "allow_credentials": true,
-        "filter_enabled": {"numerator": 100, "denominator": "hundred"}
-      }
-    }
-  }
-}
-```
-
-```
-$ flowplane filter create -f cors.json
-{
-  "id": "8cdb6c06-...",
-  "name": "demo-cors",
-  "filterType": "cors",
-  "version": 1,
-  "source": "native_api",
-  "team": "default",
-  ...
-  "allowedAttachmentPoints": ["route", "listener"]
-}
-
-$ flowplane filter attach demo-cors --listener demo-listener
-Filter 'demo-cors' attached to listener 'demo-listener'
-```
-
-Verify with a CORS preflight request from a matching origin:
-
-```
-$ curl -s -D - -o /dev/null \
-    -X OPTIONS \
-    -H "Origin: https://example.com" \
-    -H "Access-Control-Request-Method: POST" \
-    -H "Access-Control-Request-Headers: Content-Type" \
-    http://localhost:10001/get
-HTTP/1.1 200 OK
-access-control-allow-origin: https://example.com
-access-control-allow-credentials: true
-access-control-allow-methods: GET, POST, PUT, DELETE, PATCH, OPTIONS
-access-control-max-age: 3600
-access-control-allow-headers: Content-Type
-...
-```
-
-On a regular GET with the matching origin:
-
-```
-$ curl -s -D - -o /dev/null -H "Origin: https://example.com" http://localhost:10001/get
-HTTP/1.1 200 OK
-access-control-allow-origin: https://example.com
-access-control-allow-credentials: true
-...
-```
-
-**Origin matcher types:**
-
-| Type | Description | Example |
-|------|-------------|---------|
-| `exact` | Exact string match | `{"type": "exact", "value": "https://example.com"}` |
-| `prefix` | Prefix match | `{"type": "prefix", "value": "https://"}` |
-| `suffix` | Suffix match | `{"type": "suffix", "value": ".example.com"}` |
-| `contains` | Substring match | `{"type": "contains", "value": "example"}` |
-| `regex` | RE2 regex match | `{"type": "regex", "value": "https://.*\\.example\\.com"}` |
-
-**Policy fields:**
-
-| Field | Type | Required | Description |
-|-------|------|:--------:|-------------|
-| `allow_origin` | array | Yes | Origin matchers (at least one required) |
-| `allow_methods` | array | No | Allowed HTTP methods (e.g., `["GET", "POST"]`) |
-| `allow_headers` | array | No | Allowed request headers |
-| `expose_headers` | array | No | Response headers exposed to clients |
-| `max_age` | u64 | No | Preflight cache duration in seconds |
-| `allow_credentials` | bool | No | Allow credentials (cannot be `true` with wildcard `*` origin) |
-| `filter_enabled` | object | No | Fraction of requests where CORS policy is enforced |
-| `shadow_enabled` | object | No | Fraction of requests where policy is evaluated but not enforced |
-| `allow_private_network_access` | bool | No | Allow requests from private networks |
-| `forward_not_matching_preflights` | bool | No | Forward unmatched preflights to upstream |
-
-**Validation rules:**
-- `allow_origin` must not be empty
-- `allow_credentials: true` cannot be combined with a wildcard (`*`) exact origin
-- Method names must be valid HTTP methods (or `*`)
-- Header names must be valid HTTP header names (or `*`)
-
----
-
-### compressor
-
-Response compression using gzip. Compresses responses that match the configured content types and exceed the minimum content length.
-
-> **Known issue:** Attaching the compressor filter causes an Envoy NACK due to an empty `RuntimeKey` in the generated xDS config. The filter creates successfully in Flowplane but Envoy rejects the listener update. This will be fixed in a future release.
-
-Save as `compressor.json`:
-
-```json
-{
-  "name": "demo-gzip",
-  "filterType": "compressor",
-  "config": {
-    "type": "compressor",
-    "config": {
-      "response_direction_config": {
-        "common_config": {
-          "min_content_length": 256,
-          "content_type": ["application/json", "text/html"]
-        }
-      },
-      "compressor_library": {
-        "type": "gzip",
-        "compression_level": "default_compression"
-      }
-    }
-  }
-}
-```
-
-```
-$ flowplane filter create -f compressor.json
-{
-  "id": "02af0e00-...",
-  "name": "demo-gzip",
-  "filterType": "compressor",
-  "version": 1,
-  "source": "native_api",
-  "team": "default",
-  ...
-  "allowedAttachmentPoints": ["route", "listener"]
-}
-```
-
-**Compressor library — gzip fields:**
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `memory_level` | u32 | — | Memory level 1-9 (higher = faster, more memory) |
-| `window_bits` | u32 | — | Window bits 9-15 (higher = better compression) |
-| `compression_level` | string | `best_speed` | `best_speed`, `best_compression`, or `default_compression` |
-| `compression_strategy` | string | `default_strategy` | `default_strategy`, `filtered`, `huffman_only`, `rle`, or `fixed` |
-| `chunk_size` | u32 | — | Internal compression chunk buffer size in bytes |
-
-**Common config fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `min_content_length` | u32 | Minimum response size in bytes to trigger compression |
-| `content_type` | array | Content types to compress (e.g., `["application/json"]`) |
-| `disable_on_etag_header` | bool | Skip compression when response has ETag |
-| `remove_accept_encoding_header` | bool | Remove Accept-Encoding after compression decision |
-
-**Per-route:** The compressor supports `disable_only` per-route behavior — you can disable compression for specific routes but cannot override the full config.
-
----
-
-## JWT Authentication (`jwt_auth`)
-
-Validates JSON Web Tokens on incoming requests. Supports local JWKS (inline keys) and remote JWKS (fetched from a URL). Rejects requests with missing or invalid tokens.
-
-**Create:**
+**Clean up:**
 
 ```bash
-flowplane filter create --file jwt-auth-filter.json
+flowplane filter detach httpbin-rate-limit --listener httpbin-listener
+flowplane filter delete httpbin-rate-limit --yes
 ```
+
+---
+
+## Example 2: JWT Authentication
+
+Protect API routes with JWT validation. Requests without a valid token are rejected with 401.
+
+<table>
+<tr><th>CLI</th><th>MCP</th></tr>
+<tr>
+<td>
+
+**jwt-filter.json:**
 
 ```json
 {
-  "name": "my-jwt-auth",
+  "name": "api-jwt-auth",
   "filterType": "jwt_auth",
   "config": {
     "type": "jwt_auth",
     "config": {
       "providers": {
         "my-provider": {
-          "issuer": "https://accounts.example.com",
+          "issuer": "https://auth.example.com",
           "audiences": ["my-api"],
-          "forward": true,
-          "from_headers": [
-            {"name": "Authorization", "value_prefix": "Bearer "}
-          ],
           "jwks": {
-            "type": "local",
-            "inline_string": "{\"keys\":[{\"kty\":\"RSA\",\"alg\":\"RS256\",\"use\":\"sig\",\"kid\":\"key-1\",\"n\":\"...\",\"e\":\"AQAB\"}]}"
-          }
+            "type": "remote",
+            "http_uri": {
+              "uri": "https://auth.example.com/.well-known/jwks.json",
+              "cluster": "auth-jwks-cluster",
+              "timeout_ms": 5000
+            },
+            "cache_duration_seconds": 300
+          },
+          "fromHeaders": [
+            { "name": "Authorization", "value_prefix": "Bearer " }
+          ],
+          "forward": true
         }
       },
-      "rules": [
-        {
-          "match": {"path": {"Prefix": "/"}},
-          "requires": {
-            "type": "provider_name",
-            "provider_name": "my-provider"
-          }
-        }
-      ]
+      "bypass_cors_preflight": true
     }
   }
 }
 ```
 
-The `inline_string` value must be a valid JWKS JSON string with at least one valid public key. Envoy validates the keys at config load time — an empty keyset or invalid key data causes a NACK.
-
-**Attach and verify:**
-
-```
-$ flowplane filter attach my-jwt-auth --listener demo-listener
-Filter 'my-jwt-auth' attached to listener 'demo-listener'
-
-$ curl -s http://localhost:10001/get
-Jwt is missing
-
-$ curl -s -w "\n%{http_code}\n" http://localhost:10001/get
-Jwt is missing
-401
-
-$ curl -s -w "\n%{http_code}\n" -H "Authorization: Bearer not-a-real-jwt" http://localhost:10001/get
-Jwt is not in the form of Header.Payload.Signature with two dots and 3 sections
-401
+```bash
+flowplane filter create -f jwt-filter.json
+flowplane filter attach api-jwt-auth \
+  --listener httpbin-listener --order 2
 ```
 
-Requests without a valid JWT get `401` with a plain-text error body.
+</td>
+<td>
 
-**Provider fields:**
+```json
+// Create
+{"method": "tools/call", "params": {
+  "name": "cp_create_filter",
+  "arguments": {
+    "name": "api-jwt-auth",
+    "filterType": "jwt_auth",
+    "configuration": {
+      "type": "jwt_auth",
+      "config": {
+        "providers": {
+          "my-provider": {
+            "issuer": "https://auth.example.com",
+            "audiences": ["my-api"],
+            "jwks": {
+              "type": "remote",
+              "http_uri": {
+                "uri": "https://auth.example.com/.well-known/jwks.json",
+                "cluster": "auth-jwks-cluster",
+                "timeout_ms": 5000
+              },
+              "cache_duration_seconds": 300
+            },
+            "fromHeaders": [
+              {"name": "Authorization", "value_prefix": "Bearer "}
+            ],
+            "forward": true
+          }
+        },
+        "bypass_cors_preflight": true
+      }
+    },
+    "team": "default"
+  }
+}}
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `issuer` | string | — | Expected `iss` claim value |
-| `audiences` | array | — | Accepted `aud` claim values |
-| `forward` | bool | `false` | Forward JWT to upstream after verification |
-| `from_headers` | array | `[{name: "Authorization", value_prefix: "Bearer "}]` | Headers to extract JWT from |
-| `from_params` | array | — | Query parameters to extract JWT from |
-| `from_cookies` | array | — | Cookies to extract JWT from |
-| `forward_payload_header` | string | — | Header to forward decoded JWT payload in (base64url) |
-| `payload_in_metadata` | string | — | Metadata key for JWT payload (for use by other filters) |
-| `claim_to_headers` | array | — | Map JWT claims to request headers (`header_name`, `claim_name`) |
-| `clock_skew_seconds` | u32 | `60` | Tolerance for `exp`/`nbf` validation |
-| `require_expiration` | bool | `false` | Reject tokens without `exp` claim |
-| `max_lifetime_seconds` | u64 | — | Maximum allowed token lifetime |
+// Attach
+{"method": "tools/call", "params": {
+  "name": "cp_attach_filter",
+  "arguments": {
+    "filter": "api-jwt-auth",
+    "listener": "httpbin-listener",
+    "order": 2,
+    "team": "default"
+  }
+}}
+```
 
-**JWKS source options:**
+</td>
+</tr>
+</table>
 
-| Type | Fields | Description |
-|------|--------|-------------|
-| `local` | `inline_string` | Inline JWKS JSON string |
-| `remote` | `http_uri.uri`, `http_uri.cluster`, `http_uri.timeout_ms` | Fetch JWKS from a URL via an Envoy cluster |
+> ⚠️ **JWT without `rules` does not enforce authentication.** A JWT filter without rules lets all traffic through unauthenticated. Add rules to specify which paths require tokens:
+>
+> ```json
+> "rules": [{
+>   "match": { "path": { "Prefix": "/api" } },
+>   "requires": { "type": "provider_name", "provider_name": "my-provider" }
+> }]
+> ```
 
-Remote JWKS example:
+> ⚠️ **Remote JWKS requires a reachable cluster.** The `cluster` field in `http_uri` must reference an existing Envoy cluster that can reach the JWKS endpoint. In a dev environment without a real auth provider, the filter will create successfully but JWKS fetch will fail at runtime.
+
+**JWT with SDS (secrets):** For JWKS delivered via SDS instead of HTTP fetch, replace the `jwks` block:
 
 ```json
 "jwks": {
-  "type": "remote",
-  "http_uri": {
-    "uri": "https://accounts.example.com/.well-known/jwks.json",
-    "cluster": "jwks-cluster",
-    "timeout_ms": 1000
-  },
-  "cache_duration_seconds": 600
+  "type": "sds",
+  "name": "my-jwks-secret"
 }
 ```
 
-When using remote JWKS, the `cluster` must be a valid Envoy cluster name created via `flowplane cluster create`.
+Create the secret first using the REST API or MCP `cp_create_secret` tool. See the secrets skill for details.
 
-**Requirement types:**
+---
 
-| Type | Fields | Description |
-|------|--------|-------------|
-| `provider_name` | `provider_name` | Require JWT from a named provider |
-| `provider_with_audiences` | `provider_name`, `audiences` | Require JWT with specific audiences |
-| `requires_any` | `requirements` | Logical OR of nested requirements |
-| `requires_all` | `requirements` | Logical AND of nested requirements |
-| `allow_missing` | — | Allow missing JWT but reject invalid ones |
-| `allow_missing_or_failed` | — | Allow both missing and invalid JWTs |
+## Example 3: CORS
 
-**Per-route:** The `jwt_auth` filter supports `reference_only` per-route behavior — you can reference a named requirement from the top-level `requirement_map` or disable JWT checks for specific routes:
+Allow cross-origin requests from a specific frontend domain.
+
+<table>
+<tr><th>CLI</th><th>MCP</th></tr>
+<tr>
+<td>
+
+**cors-filter.json:**
 
 ```json
-{"disabled": true}
+{
+  "name": "api-cors",
+  "filterType": "cors",
+  "config": {
+    "type": "cors",
+    "config": {
+      "policy": {
+        "allow_origin": [
+          { "type": "exact", "value": "https://app.example.com" }
+        ],
+        "allow_methods": [
+          "GET", "POST", "PUT", "DELETE", "OPTIONS"
+        ],
+        "allow_headers": [
+          "Authorization", "Content-Type"
+        ],
+        "expose_headers": ["X-Request-Id"],
+        "max_age": 86400,
+        "allow_credentials": true
+      }
+    }
+  }
+}
 ```
 
+```bash
+flowplane filter create -f cors-filter.json
+flowplane filter attach api-cors \
+  --listener httpbin-listener --order 1
+```
+
+</td>
+<td>
+
 ```json
-{"requirement_name": "my-named-requirement"}
+// Create
+{"method": "tools/call", "params": {
+  "name": "cp_create_filter",
+  "arguments": {
+    "name": "api-cors",
+    "filterType": "cors",
+    "configuration": {
+      "type": "cors",
+      "config": {
+        "policy": {
+          "allow_origin": [
+            {"type": "exact", "value": "https://app.example.com"}
+          ],
+          "allow_methods": [
+            "GET", "POST", "PUT", "DELETE", "OPTIONS"
+          ],
+          "allow_headers": [
+            "Authorization", "Content-Type"
+          ],
+          "expose_headers": ["X-Request-Id"],
+          "max_age": 86400,
+          "allow_credentials": true
+        }
+      }
+    },
+    "team": "default"
+  }
+}}
+
+// Attach (before auth filters)
+{"method": "tools/call", "params": {
+  "name": "cp_attach_filter",
+  "arguments": {
+    "filter": "api-cors",
+    "listener": "httpbin-listener",
+    "order": 1,
+    "team": "default"
+  }
+}}
+```
+
+</td>
+</tr>
+</table>
+
+**Test preflight:**
+
+```bash
+curl -s -D - -o /dev/null \
+  -H "Origin: https://app.example.com" \
+  -H "Access-Control-Request-Method: POST" \
+  -X OPTIONS http://localhost:10001/get
+```
+
+Expected response headers:
+
+```
+access-control-allow-origin: https://app.example.com
+access-control-allow-methods: GET, POST, PUT, DELETE, PATCH, OPTIONS
+access-control-max-age: 3600
+access-control-allow-credentials: true
+```
+
+> ⚠️ Envoy may add methods (e.g., `PATCH`) and cap `max_age` at 3600 regardless of the configured value.
+
+**Test with disallowed origin:**
+
+```bash
+curl -s -D - -o /dev/null \
+  -H "Origin: https://evil.example.com" \
+  http://localhost:10001/get
+```
+
+> ⚠️ Some upstream services (like httpbin) add their own CORS headers, which pass through Envoy unmodified. The Envoy CORS filter controls its own headers but does not strip upstream CORS headers for non-matching origins.
+
+**Origin matcher types:**
+
+| Type | Example | Matches |
+|---|---|---|
+| `exact` | `https://app.example.com` | Exact string match |
+| `prefix` | `https://app.` | Starts with prefix |
+| `suffix` | `.example.com` | Ends with suffix |
+| `contains` | `example` | Contains substring |
+| `regex` | `https://.*\\.example\\.com` | RE2 regex match |
+
+**Clean up:**
+
+```bash
+flowplane filter detach api-cors --listener httpbin-listener
+flowplane filter delete api-cors --yes
 ```
 
 ---
 
-## External Authorization (`ext_authz`)
+## Additional Filter Configs
 
-Delegates authorization decisions to an external gRPC or HTTP service. If the authz service denies the request (or is unreachable with `failure_mode_allow: false`), the request is rejected.
+<details>
+<summary>Header Mutation</summary>
 
-**Create (gRPC mode):**
-
-```bash
-flowplane filter create --file ext-authz-grpc.json
-```
+Add, remove, or modify request and response headers.
 
 ```json
 {
-  "name": "my-ext-authz",
-  "filterType": "ext_authz",
+  "name": "security-headers",
+  "filterType": "header_mutation",
   "config": {
-    "type": "ext_authz",
+    "type": "header_mutation",
     "config": {
-      "service": {
-        "type": "grpc",
-        "target_uri": "ext-authz-cluster",
-        "timeout_ms": 500
-      },
-      "failure_mode_allow": false,
-      "stat_prefix": "ext_authz"
+      "request_headers_to_add": [
+        { "key": "X-Request-Id", "value": "generated", "append": false }
+      ],
+      "request_headers_to_remove": [],
+      "response_headers_to_add": [
+        { "key": "X-Content-Type-Options", "value": "nosniff", "append": false },
+        { "key": "X-Frame-Options", "value": "DENY", "append": false }
+      ],
+      "response_headers_to_remove": ["X-Powered-By"]
     }
   }
 }
 ```
 
-The `target_uri` in gRPC mode is an Envoy cluster name (not a URL). Create the cluster first with `flowplane cluster create`.
+</details>
 
-```
-$ flowplane filter create --file ext-authz-grpc.json
-{
-  "id": "...",
-  "name": "my-ext-authz",
-  "filterType": "ext_authz",
-  ...
-  "config": {
-    "config": {
-      "service": {
-        "type": "grpc",
-        "target_uri": "ext-authz-cluster",
-        "timeout_ms": 500,
-        "initial_metadata": []
-      },
-      "failure_mode_allow": false,
-      "stat_prefix": "ext_authz",
-      ...
-    },
-    "type": "ext_authz"
-  },
-  "allowedAttachmentPoints": ["route", "listener"]
-}
-```
+<details>
+<summary>Custom Response</summary>
 
-**Attach and verify:**
-
-```
-$ flowplane filter attach my-ext-authz --listener demo-listener
-Filter 'my-ext-authz' attached to listener 'demo-listener'
-
-$ curl -s -w "\n%{http_code}\n" http://localhost:10001/get
-
-403
-```
-
-With `failure_mode_allow: false`, requests return `403` when the authz service is unreachable. Set to `true` to allow requests through when the authz service is down.
-
-**Create (HTTP mode):**
+Return custom responses for specific status codes.
 
 ```json
 {
-  "name": "my-ext-authz-http",
+  "name": "custom-errors",
+  "filterType": "custom_response",
+  "config": {
+    "type": "custom_response",
+    "config": {
+      "matchers": [{
+        "status_code": { "type": "range", "min": 500, "max": 599 },
+        "response": {
+          "status_code": 500,
+          "body": "{\"error\": \"Internal server error\"}",
+          "headers": { "content-type": "application/json" }
+        }
+      }]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Compressor (gzip)</summary>
+
+Compress responses for supported content types.
+
+```json
+{
+  "name": "gzip-compress",
+  "filterType": "compressor",
+  "config": {
+    "type": "compressor",
+    "config": {
+      "response_direction_config": {
+        "common_config": {
+          "min_content_length": 100,
+          "content_type": ["application/json", "text/html", "text/plain"],
+          "disable_on_etag_header": false,
+          "remove_accept_encoding_header": false
+        }
+      },
+      "compressor_library": {
+        "type": "gzip",
+        "compression_level": "best_speed",
+        "compression_strategy": "default_strategy",
+        "memory_level": 5,
+        "window_bits": 12,
+        "chunk_size": 4096
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Ext Authz (HTTP)</summary>
+
+Delegate authorization to an external HTTP service.
+
+```json
+{
+  "name": "ext-auth",
   "filterType": "ext_authz",
   "config": {
     "type": "ext_authz",
@@ -648,587 +762,105 @@ With `failure_mode_allow: false`, requests return `403` when the authz service i
       "service": {
         "type": "http",
         "server_uri": {
-          "uri": "http://authz-service:8080/check",
-          "cluster": "authz-http-cluster",
-          "timeout_ms": 300
+          "uri": "http://authz-service-cluster",
+          "cluster": "authz-service-cluster",
+          "timeout_ms": 500
         },
-        "path_prefix": "/authz",
+        "path_prefix": "/auth",
         "authorization_request": {
-          "allowed_headers": ["authorization", "x-request-id"]
+          "allowed_headers": ["authorization", "x-request-id"],
+          "headers_to_add": []
         }
       },
-      "failure_mode_allow": true,
-      "clear_route_cache": true
+      "failure_mode_allow": false,
+      "clear_route_cache": false,
+      "stat_prefix": "ext_authz",
+      "status_on_error": 403
     }
   }
 }
 ```
 
-**Config fields:**
+</details>
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `service` | object | — | Tagged union: `{"type": "grpc", ...}` or `{"type": "http", ...}` |
-| `failure_mode_allow` | bool | `false` | Allow requests when authz service is unavailable |
-| `with_request_body` | object | — | Buffer request body: `max_request_bytes`, `allow_partial_message`, `pack_as_bytes` |
-| `clear_route_cache` | bool | `false` | Clear route cache after successful authorization |
-| `status_on_error` | u32 | — | HTTP status code on authz error (default: 403) |
-| `stat_prefix` | string | — | Statistics prefix for metrics |
-| `include_peer_certificate` | bool | `false` | Include client certificate in authz request |
+<details>
+<summary>OAuth2</summary>
 
-**gRPC service fields:**
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `target_uri` | string | — | Envoy cluster name for the gRPC authz service |
-| `timeout_ms` | u64 | `200` | gRPC call timeout in milliseconds |
-| `initial_metadata` | array | — | Metadata headers: `[{"key": "...", "value": "..."}]` |
-
-**HTTP service fields:**
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `server_uri.uri` | string | — | URL of the HTTP authz service |
-| `server_uri.cluster` | string | — | Envoy cluster name for the HTTP authz service |
-| `server_uri.timeout_ms` | u64 | `200` | HTTP call timeout in milliseconds |
-| `path_prefix` | string | — | Path prefix for authorization requests |
-| `authorization_request.allowed_headers` | array | — | Original request headers to include in authz request |
-| `authorization_response.allowed_upstream_headers` | array | — | Authz response headers to add to upstream request |
-| `authorization_response.allowed_client_headers` | array | — | Authz response headers to add to client response on denial |
-
-**Per-route:** The `ext_authz` filter supports `full_config_override` per-route behavior — you can disable authz or pass context extensions:
-
-```json
-{"disabled": true}
-```
+Full OAuth2 authorization code flow. Requires a secret for the client credential — create it first via the REST API or MCP `cp_create_secret`.
 
 ```json
 {
-  "context_extensions": {"route-type": "public"},
-  "disable_request_body_buffering": true
-}
-```
-
----
-
-## Role-Based Access Control (`rbac`)
-
-Enforces access control based on policies that combine permissions (what actions) with principals (who). Supports allow, deny, and log (shadow) modes.
-
-**Create (allow GET only):**
-
-```bash
-flowplane filter create --file rbac-filter.json
-```
-
-```json
-{
-  "name": "my-rbac",
-  "filterType": "rbac",
-  "config": {
-    "type": "rbac",
-    "config": {
-      "rules": {
-        "action": "allow",
-        "policies": {
-          "allow-get-only": {
-            "permissions": [
-              {"type": "header", "name": ":method", "exact_match": "GET"}
-            ],
-            "principals": [
-              {"type": "any", "any": true}
-            ]
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-**Attach and verify:**
-
-```
-$ flowplane filter attach my-rbac --listener demo-listener
-Filter 'my-rbac' attached to listener 'demo-listener'
-
-$ curl -s -w "\n%{http_code}\n" http://localhost:10001/get
-{
-  "args": {},
-  "headers": { ... },
-  ...
-}
-200
-
-$ curl -s -w "\n%{http_code}\n" -X POST http://localhost:10001/post
-RBAC: access denied
-403
-```
-
-GET requests are allowed; all other methods are denied with `403`.
-
-**Create (deny by source IP):**
-
-```json
-{
-  "name": "deny-internal",
-  "filterType": "rbac",
-  "config": {
-    "type": "rbac",
-    "config": {
-      "rules": {
-        "action": "deny",
-        "policies": {
-          "deny-internal-net": {
-            "permissions": [
-              {"type": "any", "any": true}
-            ],
-            "principals": [
-              {"type": "source_ip", "address_prefix": "10.0.0.0", "prefix_len": 8}
-            ]
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-**Actions:**
-
-| Action | Description |
-|--------|-------------|
-| `allow` | Allow requests matching any policy; deny all others |
-| `deny` | Deny requests matching any policy; allow all others |
-| `log` | Shadow mode — log matches without enforcing (for testing policies) |
-
-**Permission types (tagged union, `"type"` field selects variant):**
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `any` | `any: true` | Match all requests |
-| `header` | `name`, `exact_match`/`prefix_match`/`suffix_match`/`present_match` | Match by request header |
-| `url_path` | `path`, `ignore_case` | Match by URL path |
-| `destination_port` | `port` | Match by destination port |
-| `and_rules` | `rules: [...]` | Logical AND of nested permissions |
-| `or_rules` | `rules: [...]` | Logical OR of nested permissions |
-| `not_rule` | `rule: {...}` | Logical NOT of a permission |
-
-**Principal types (tagged union, `"type"` field selects variant):**
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `any` | `any: true` | Match any requester |
-| `authenticated` | `principal_name` | Match authenticated principals |
-| `source_ip` | `address_prefix`, `prefix_len` | Match by source IP CIDR |
-| `direct_remote_ip` | `address_prefix`, `prefix_len` | Match by direct remote IP CIDR |
-| `header` | `name`, `exact_match`/`prefix_match` | Match by request header value |
-| `and_ids` | `ids: [...]` | Logical AND of nested principals |
-| `or_ids` | `ids: [...]` | Logical OR of nested principals |
-| `not_id` | `id: {...}` | Logical NOT of a principal |
-
-**Shadow rules:** Use `shadow_rules` instead of `rules` to log policy matches without enforcement. Useful for testing new policies before enforcing them:
-
-```json
-{
-  "rules": {
-    "action": "allow",
-    "policies": { "allow-all": { "permissions": [{"type": "any", "any": true}], "principals": [{"type": "any", "any": true}] } }
-  },
-  "shadow_rules": {
-    "action": "deny",
-    "policies": { "proposed-deny": { "permissions": [...], "principals": [...] } }
-  },
-  "track_per_rule_stats": true
-}
-```
-
-**Per-route:** The `rbac` filter supports `full_config_override` per-route behavior — you can disable RBAC or provide override rules:
-
-```json
-{"disabled": true}
-```
-
-```json
-{
-  "rbac": {
-    "action": "allow",
-    "policies": {
-      "route-specific-policy": {
-        "permissions": [{"type": "any", "any": true}],
-        "principals": [{"type": "header", "name": "x-admin", "exact_match": "true"}]
-      }
-    }
-  }
-}
-```
-
----
-
-## credential_injector
-
-> **Not a Flowplane FilterType.** The `credential_injector` exists as an XDS module (`src/xds/filters/http/credential_injector.rs`) but is not registered in the `FilterType` enum in `src/domain/filter.rs`. Attempting to create one returns:
->
-> ```
-> Error: Unknown filter type 'credential_injector'. Available built-in types:
-> header_mutation, jwt_auth, local_rate_limit, custom_response, mcp, cors,
-> compressor, ext_authz, rbac, oauth2
-> ```
->
-> If you need to inject credentials (e.g., API keys) into upstream requests, use the `header_mutation` filter to add the required headers.
-
----
-
-## Utility and observability filters
-
-### header_mutation
-
-Add, modify, or remove HTTP headers on requests and responses. This filter does not require listener-level config — it works with an empty config — and supports full per-route override.
-
-**Config fields:**
-
-| Field | Type | Description |
-|---|---|---|
-| `request_headers_to_add` | array | Headers to add/overwrite on requests. Each entry: `{key, value, append}` |
-| `request_headers_to_remove` | array | Header names to strip from requests |
-| `response_headers_to_add` | array | Headers to add/overwrite on responses. Each entry: `{key, value, append}` |
-| `response_headers_to_remove` | array | Header names to strip from responses |
-
-Each header entry has:
-- `key` — header name (required, cannot be empty)
-- `value` — header value
-- `append` — `false` (default) overwrites existing header; `true` appends a second value
-
-**Create:**
-
-Save to `header-mutation.json`:
-
-```json
-{
-  "name": "add-custom-headers",
-  "filterType": "header_mutation",
-  "config": {
-    "type": "header_mutation",
-    "config": {
-      "request_headers_to_add": [
-        {"key": "x-custom-header", "value": "hello-from-flowplane", "append": false}
-      ],
-      "response_headers_to_add": [
-        {"key": "x-powered-by", "value": "flowplane", "append": false}
-      ],
-      "response_headers_to_remove": ["server"]
-    }
-  }
-}
-```
-
-```
-$ flowplane filter create --file header-mutation.json
-{
-  "id": "b4a9ffe5-...",
-  "name": "add-custom-headers",
-  "filterType": "header_mutation",
-  ...
-}
-```
-
-**Attach and verify:**
-
-```
-$ flowplane filter attach add-custom-headers --listener demo-listener
-Filter 'add-custom-headers' attached to listener 'demo-listener'
-```
-
-Request headers — httpbin echoes them back:
-
-```
-$ curl -s http://localhost:10001/get
-{
-  "headers": {
-    "X-Custom-Header": "hello-from-flowplane",
-    ...
-  }
-}
-```
-
-Response headers:
-
-```
-$ curl -sI http://localhost:10001/get
-HTTP/1.1 200 OK
-x-powered-by: flowplane
-...
-```
-
-> **Note:** `response_headers_to_remove: ["server"]` may not remove the `server: envoy` header because Envoy adds it after filter processing. Use the `envoy.reloadable_features.enable_connect_udp_support` bootstrap flag or Envoy's `server_header_transformation` setting to control the server header.
-
-**Per-route:** Supports `full_config` override — you can set different headers per route via `typedPerFilterConfig` with key `envoy.filters.http.header_mutation`.
-
----
-
-### custom_response
-
-Replace error responses with custom content based on status code matching. Useful for returning JSON error bodies instead of default HTML, or for branding error pages.
-
-**Config fields:**
-
-| Field | Type | Description |
-|---|---|---|
-| `matchers` | array | List of status code matcher rules (preferred) |
-| `custom_response_matcher` | object | Legacy base64 protobuf matcher (not recommended) |
-
-Each matcher rule has:
-- `status_code` — one of:
-  - `{"type": "exact", "code": 503}` — match a single status code
-  - `{"type": "range", "min": 500, "max": 599}` — match a range
-  - `{"type": "list", "codes": [502, 503, 504]}` — match specific codes
-- `response` — the replacement response:
-  - `status_code` (optional) — override status code
-  - `body` (optional) — response body string
-  - `headers` — map of headers to add (e.g., `{"content-type": "application/json"}`)
-
-**Create:**
-
-Save to `custom-response.json`:
-
-```json
-{
-  "name": "json-error-pages",
-  "filterType": "custom_response",
-  "config": {
-    "type": "custom_response",
-    "config": {
-      "matchers": [
-        {
-          "status_code": {"type": "exact", "code": 503},
-          "response": {
-            "status_code": 503,
-            "body": "{\"error\": \"Service temporarily unavailable\", \"status_code\": 503}",
-            "headers": {"content-type": "application/json"}
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-```
-$ flowplane filter create --file custom-response.json
-{
-  "id": "9edc7221-...",
-  "name": "json-error-pages",
-  "filterType": "custom_response",
-  ...
-}
-```
-
-**Attach and verify:**
-
-```
-$ flowplane filter attach json-error-pages --listener demo-listener
-Filter 'json-error-pages' attached to listener 'demo-listener'
-```
-
-Normal traffic is unaffected:
-
-```
-$ curl -s http://localhost:10001/get | head -3
-{
-  "args": {},
-  "headers": {
-```
-
-A 503 response gets replaced with the custom JSON body:
-
-```
-$ curl -s http://localhost:10001/status/503
-{"error": "Service temporarily unavailable", "status_code": 503}
-
-$ curl -sI http://localhost:10001/status/503
-HTTP/1.1 503 Service Unavailable
-content-type: application/json
-content-length: 64
-```
-
-**Per-route:** Supports `full_config` override — you can set different custom responses per route.
-
----
-
-### mcp
-
-Model Context Protocol filter for AI/LLM gateway traffic. Inspects HTTP traffic for MCP protocol compliance (JSON-RPC 2.0 over POST, SSE streaming).
-
-**Config fields:**
-
-| Field | Type | Description |
-|---|---|---|
-| `traffic_mode` | string | `pass_through` (default) — proxy all traffic normally. `reject_no_mcp` — reject non-MCP requests |
-
-**Create (pass-through mode):**
-
-Save to `mcp-filter.json`:
-
-```json
-{
-  "name": "mcp-gateway",
-  "filterType": "mcp",
-  "config": {
-    "type": "mcp",
-    "config": {
-      "traffic_mode": "pass_through"
-    }
-  }
-}
-```
-
-```
-$ flowplane filter create --file mcp-filter.json
-{
-  "id": "a87b04bf-...",
-  "name": "mcp-gateway",
-  "filterType": "mcp",
-  ...
-}
-```
-
-**Create (reject mode):**
-
-```json
-{
-  "name": "mcp-strict",
-  "filterType": "mcp",
-  "config": {
-    "type": "mcp",
-    "config": {
-      "traffic_mode": "reject_no_mcp"
-    }
-  }
-}
-```
-
-In `reject_no_mcp` mode, only valid MCP requests are allowed:
-- POST with JSON-RPC 2.0 messages
-- GET with `Accept: text/event-stream` (SSE)
-
-> **Note:** The `reject_no_mcp` mode requires the custom `envoy.filters.http.mcp` extension to be compiled into Envoy. The standard dev-mode Envoy image may not include this extension — in that case both modes behave as pass-through.
-
-**Attach and verify:**
-
-```
-$ flowplane filter attach mcp-gateway --listener demo-listener
-Filter 'mcp-gateway' attached to listener 'demo-listener'
-
-$ curl -s http://localhost:10001/get | head -3
-{
-  "args": {},
-  "headers": {
-```
-
-**Per-route:** Supports `disable_only` — can disable MCP filtering for specific routes, but cannot override the config.
-
----
-
-### oauth2
-
-OAuth2 authentication filter. Redirects unauthenticated users to an OAuth2 provider and manages token cookies. This is a **listener-only** filter — Envoy does not support per-route configuration for OAuth2.
-
-**Config fields:**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `token_endpoint.uri` | string | yes | Token endpoint URL |
-| `token_endpoint.cluster` | string | yes | Envoy cluster for token endpoint |
-| `token_endpoint.timeout_ms` | number | no | Timeout in ms (default: 5000) |
-| `authorization_endpoint` | string | yes | Authorization endpoint URL |
-| `credentials.client_id` | string | yes | OAuth2 client ID |
-| `credentials.token_secret` | object | no | SDS secret config `{name}` for client secret |
-| `credentials.cookie_domain` | string | no | Domain for OAuth cookies |
-| `redirect_uri` | string | yes | Callback URL (must match provider config) |
-| `redirect_path` | string | no | Callback path (default: `/oauth2/callback`) |
-| `signout_path` | string | no | Sign-out path (clears cookies) |
-| `auth_scopes` | array | no | Scopes to request (default: `["openid", "profile", "email"]`) |
-| `auth_type` | string | no | `url_encoded_body` (default) or `basic_auth` |
-| `forward_bearer_token` | bool | no | Forward token to upstream (default: true) |
-| `preserve_authorization_header` | bool | no | Keep existing auth header (default: false) |
-| `use_refresh_token` | bool | no | Auto-renew tokens (default: false) |
-| `pass_through_matcher` | array | no | Paths to bypass OAuth2 (see below) |
-
-**Pass-through matchers** — the only way to make specific routes public (since OAuth2 has no per-route config):
-
-| Field | Description |
-|---|---|
-| `path_exact` | Exact path match (e.g., `/healthz`) |
-| `path_prefix` | Path prefix match (e.g., `/api/public/`) |
-| `path_regex` | Regex path match (e.g., `^/static/.*`) |
-| `header_name` + `header_value` | Custom header match |
-
-**Create:**
-
-Save to `oauth2-filter.json`:
-
-```json
-{
-  "name": "oauth2-auth",
+  "name": "oauth2-flow",
   "filterType": "oauth2",
   "config": {
     "type": "oauth2",
     "config": {
       "token_endpoint": {
         "uri": "https://auth.example.com/oauth/token",
-        "cluster": "auth-cluster",
+        "cluster": "oauth2-auth-cluster",
         "timeout_ms": 5000
       },
-      "authorization_endpoint": "https://auth.example.com/oauth/authorize",
+      "authorization_endpoint": "https://auth.example.com/authorize",
       "credentials": {
-        "client_id": "my-client-id",
-        "token_secret": {"name": "oauth2-token-secret"}
+        "client_id": "my-app",
+        "token_secret": { "type": "sds", "name": "oauth2-client-secret" }
       },
-      "redirect_uri": "https://app.example.com/oauth2/callback",
-      "redirect_path": "/oauth2/callback",
+      "redirect_uri": "https://app.example.com/callback",
+      "redirect_path": "/callback",
+      "signout_path": "/logout",
       "auth_scopes": ["openid", "profile", "email"],
+      "auth_type": "url_encoded_body",
       "forward_bearer_token": true,
-      "pass_through_matcher": [
-        {"path_exact": "/healthz"},
-        {"path_prefix": "/api/public/"}
-      ]
+      "use_refresh_token": true,
+      "default_expires_in_seconds": 3600,
+      "stat_prefix": "oauth2_filter"
     }
   }
 }
 ```
 
-```
-$ flowplane filter create --file oauth2-filter.json
-{
-  "id": "5721d9bd-...",
-  "name": "oauth2-auth",
-  "filterType": "oauth2",
-  "allowedAttachmentPoints": ["listener"],
-  ...
-}
+The `token_secret` references a Flowplane secret by name. Create the secret first:
+
+```bash
+flowplane secret create --name oauth2-client-secret --type generic_secret \
+  --config '{"type":"generic_secret","secret":"<base64-encoded-client-secret>"}'
 ```
 
-Note `allowedAttachmentPoints: ["listener"]` — OAuth2 cannot be attached to routes.
+</details>
 
-**Attach:**
+---
 
-```
-$ flowplane filter attach --listener my-listener oauth2-auth
-Filter 'oauth2-auth' attached to listener 'my-listener'
-```
+## Secrets Integration
 
-**Prerequisites for OAuth2 to work:**
+Filters that need credentials can reference Flowplane secrets by name. The secret must exist before creating the filter.
 
-1. **Auth cluster** — the `token_endpoint.cluster` must reference an existing Flowplane cluster pointing to your OAuth provider
-2. **Client secret** — create an SDS secret named `oauth2-token-secret` with the client secret value
-3. **HMAC secret** — the filter automatically references an SDS secret named `hmac-secret` for cookie signing
+| Filter | Secret Field | Secret Type |
+|---|---|---|
+| OAuth2 | `credentials.token_secret.name` | `generic_secret` |
+| JWT Auth | `jwks` (SDS variant) | `generic_secret` |
+| Ext Authz | `auth_secret.name` / `tls_secret.name` | `generic_secret` / `tls_certificate` |
+| Credential Injector | `secret_ref.name` | `generic_secret` |
 
-```
-flowplane secret create --name oauth2-token-secret --type generic_secret \
-  --config '{"type": "generic_secret", "secret": "your-client-secret-here"}'
+Secrets are encrypted at rest (AES-256-GCM) and delivered to Envoy via SDS. Rotation is automatic — update the secret and Envoy receives the new value without restart.
 
-flowplane secret create --name hmac-secret --type generic_secret \
-  --config '{"type": "generic_secret", "secret": "random-32-byte-hmac-key-here"}'
-```
+---
 
-> **Per-route:** Not supported. Envoy rejects `typedPerFilterConfig` for `envoy.filters.http.oauth2` with: "The filter envoy.filters.http.oauth2 doesn't support virtual host or route specific configurations". Use `pass_through_matcher` to bypass OAuth2 for specific paths.
+## Gotchas
+
+> ⚠️ **Router is auto-appended.** Never create or attach a Router filter. Flowplane adds it as the last filter in every chain.
+
+> ⚠️ **JWT without rules = no enforcement.** A `jwt_auth` filter without `rules` lets all traffic through unauthenticated. Always include at least one rule.
+
+> ⚠️ **Config nesting.** Filter JSON uses `"config": {"type": "...", "config": {...}}` — not a flat structure. MCP uses `"configuration"` as the argument key instead of `"config"`.
+
+> ⚠️ **`filter_enabled` defaults.** Envoy's `filter_enabled` defaults to 0% for some filter types. Flowplane sets sensible defaults, but if passing raw config, verify `filter_enabled` is set.
+
+> ⚠️ **Order must be unique.** Two filters cannot share the same order value on one listener. The second attachment will fail.
+
+> ⚠️ **Auth filters need reachable clusters.** JWT remote JWKS, ext_authz, and OAuth2 all reference upstream clusters. Those clusters must exist and be deliverable via CDS. A CDS NACK from any bad cluster blocks all cluster updates — including auth-related ones.
+
+> ⚠️ **Route config update is full replacement.** When modifying routes to add `typedPerFilterConfig`, fetch existing config first with `flowplane route get`. The update replaces the entire `virtualHosts` array.
+
+---
+
+See also: [Getting Started](getting-started.md) | [CLI Reference](cli-reference.md)

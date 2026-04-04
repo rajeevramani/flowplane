@@ -4,6 +4,8 @@
 //! WITHOUT storing the actual data. Only metadata about types, formats,
 //! and constraints are retained.
 
+use lazy_static::lazy_static;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -11,6 +13,19 @@ use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
 use crate::errors::{Error, Result};
+
+lazy_static! {
+    static ref UUID_PATTERN: Regex = Regex::new(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
+    .expect("UUID regex is a valid compile-time constant");
+    static ref DATETIME_PATTERN: Regex = Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+        .expect("DateTime regex is a valid compile-time constant");
+    static ref DATE_PATTERN: Regex =
+        Regex::new(r"^\d{4}-\d{2}-\d{2}$").expect("Date regex is a valid compile-time constant");
+    static ref IPV4_PATTERN: Regex = Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$")
+        .expect("IPv4 regex is a valid compile-time constant");
+}
 
 /// Inferred schema type
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,7 +82,11 @@ impl SchemaType {
         }
 
         if types.len() == 1 {
-            types.into_iter().next().unwrap()
+            // SAFETY: len() == 1 guarantees next() returns Some
+            match types.into_iter().next() {
+                Some(t) => t,
+                None => SchemaType::String, // unreachable, but avoids unwrap
+            }
         } else {
             let mut sorted_types: Vec<_> = types.into_iter().collect();
             sorted_types.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
@@ -332,8 +351,10 @@ impl InferredSchema {
     ///
     /// Returns a serde_json::Value that conforms to JSON Schema Draft 2020-12
     /// with custom extensions for confidence and sample count.
-    pub fn to_json_schema(&self) -> serde_json::Value {
-        let mut schema = serde_json::to_value(self).expect("Failed to serialize schema");
+    pub fn to_json_schema(&self) -> Result<serde_json::Value> {
+        let mut schema = serde_json::to_value(self).map_err(|e| {
+            Error::serialization(e, "Failed to serialize InferredSchema to JSON Schema")
+        })?;
 
         // Add $schema field for JSON Schema Draft 2020-12
         if let serde_json::Value::Object(ref mut map) = schema {
@@ -345,7 +366,7 @@ impl InferredSchema {
             );
         }
 
-        schema
+        Ok(schema)
     }
 }
 
@@ -506,14 +527,9 @@ impl SchemaInferenceEngine {
         }
 
         // UUID: 8-4-4-4-12 hex pattern
-        if s.len() == 36 && s.chars().filter(|&c| c == '-').count() == 4 {
-            let uuid_pattern = regex::Regex::new(
-                r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-            )
-            .unwrap();
-            if uuid_pattern.is_match(s) {
-                return StringFormat::Uuid;
-            }
+        if s.len() == 36 && s.chars().filter(|&c| c == '-').count() == 4 && UUID_PATTERN.is_match(s)
+        {
+            return StringFormat::Uuid;
         }
 
         // URI: starts with http:// or https://
@@ -522,25 +538,20 @@ impl SchemaInferenceEngine {
         }
 
         // ISO 8601 DateTime
-        if s.contains('T') && (s.contains('Z') || s.contains('+') || s.contains('-')) {
-            let datetime_pattern =
-                regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}").unwrap();
-            if datetime_pattern.is_match(s) {
-                return StringFormat::DateTime;
-            }
+        if s.contains('T')
+            && (s.contains('Z') || s.contains('+') || s.contains('-'))
+            && DATETIME_PATTERN.is_match(s)
+        {
+            return StringFormat::DateTime;
         }
 
         // ISO 8601 Date
-        if s.len() == 10 {
-            let date_pattern = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap();
-            if date_pattern.is_match(s) {
-                return StringFormat::Date;
-            }
+        if s.len() == 10 && DATE_PATTERN.is_match(s) {
+            return StringFormat::Date;
         }
 
         // IPv4
-        let ipv4_pattern = regex::Regex::new(r"^(\d{1,3}\.){3}\d{1,3}$").unwrap();
-        if ipv4_pattern.is_match(s) {
+        if IPV4_PATTERN.is_match(s) {
             return StringFormat::Ipv4;
         }
 
@@ -931,7 +942,7 @@ mod tests {
         });
 
         let schema = engine.infer_from_value(&json).unwrap();
-        let json_schema = schema.to_json_schema();
+        let json_schema = schema.to_json_schema().unwrap();
 
         // Verify $schema field exists
         assert_eq!(json_schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
@@ -956,7 +967,7 @@ mod tests {
         });
 
         let schema = engine.infer_from_value(&json).unwrap();
-        let json_schema = schema.to_json_schema();
+        let json_schema = schema.to_json_schema().unwrap();
 
         // Verify custom extensions (sample_count, presence_count, confidence) are included
         assert!(json_schema["sample_count"].is_number());
@@ -987,7 +998,7 @@ mod tests {
         });
 
         let schema = engine.infer_from_value(&json).unwrap();
-        let json_schema = schema.to_json_schema();
+        let json_schema = schema.to_json_schema().unwrap();
 
         // Root level
         assert_eq!(json_schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
@@ -1029,7 +1040,7 @@ mod tests {
         });
 
         let schema = engine.infer_from_value(&json).unwrap();
-        let json_schema = schema.to_json_schema();
+        let json_schema = schema.to_json_schema().unwrap();
 
         // Should be valid JSON
         let json_str = serde_json::to_string_pretty(&json_schema).unwrap();
@@ -1055,7 +1066,7 @@ mod tests {
         let schema2 = engine.infer_from_value(&json2).unwrap();
         schema.merge(&schema2);
 
-        let json_schema = schema.to_json_schema();
+        let json_schema = schema.to_json_schema().unwrap();
 
         // Check that numeric_constraints are NOT in the output (avoiding overfitting)
         let value_schema = &json_schema["properties"]["value"];
@@ -1079,7 +1090,7 @@ mod tests {
         });
 
         let schema = engine.infer_from_value(&json).unwrap();
-        let json_schema = schema.to_json_schema();
+        let json_schema = schema.to_json_schema().unwrap();
 
         // Should have $schema
         assert_eq!(json_schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
@@ -1104,7 +1115,7 @@ mod tests {
         });
 
         let schema = engine.infer_from_value(&sensitive_json).unwrap();
-        let json_schema = schema.to_json_schema();
+        let json_schema = schema.to_json_schema().unwrap();
 
         // Schema should NOT contain any actual values
         let schema_str = serde_json::to_string(&json_schema).unwrap();

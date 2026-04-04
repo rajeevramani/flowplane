@@ -23,24 +23,11 @@ config_schema:
     traffic_mode:
       type: string
       title: Traffic Mode
-      description: How to handle MCP traffic
+      description: How to handle non-MCP traffic. pass_through allows all traffic; reject_no_mcp rejects requests that don't follow MCP spec.
       enum:
         - pass_through
-        - json_rpc
-        - sse_stream
-        - auto_detect
+        - reject_no_mcp
       default: pass_through
-    allowed_methods:
-      type: array
-      title: Allowed Methods
-      description: List of MCP methods to allow (empty means all allowed)
-      items:
-        type: string
-        title: Method Name
-    stat_prefix:
-      type: string
-      title: Stats Prefix
-      description: Prefix for MCP filter metrics
 
 per_route_config_schema:
   type: object
@@ -55,7 +42,5 @@ ui_hints:
     - name: Configuration
       fields:
         - traffic_mode
-        - allowed_methods
-        - stat_prefix
       collapsible: false
       collapsed_by_default: false

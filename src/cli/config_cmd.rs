@@ -34,12 +34,12 @@ pub enum ConfigCommands {
 
     /// Set a configuration value
     #[command(
-        long_about = "Set a configuration value in ~/.flowplane/config.toml.\n\nSupported keys:\n  - token: Your Flowplane API authentication token\n  - base_url: The base URL for the Flowplane API (e.g., https://api.flowplane.io)\n  - timeout: Request timeout in seconds (default: 30)",
-        after_help = "EXAMPLES:\n    # Set authentication token\n    flowplane-cli config set token fp_your_token_here\n\n    # Set API base URL\n    flowplane-cli config set base_url https://api.example.com\n\n    # Set request timeout\n    flowplane-cli config set timeout 60"
+        long_about = "Set a configuration value in ~/.flowplane/config.toml.\n\nSupported keys:\n  - token: Your Flowplane API authentication token\n  - base_url: The base URL for the Flowplane API (e.g., https://api.flowplane.io)\n  - timeout: Request timeout in seconds (default: 30)\n  - team: Default team context\n  - org: Default organization context",
+        after_help = "EXAMPLES:\n    # Set authentication token\n    flowplane-cli config set token fp_your_token_here\n\n    # Set API base URL\n    flowplane-cli config set base_url https://api.example.com\n\n    # Set request timeout\n    flowplane-cli config set timeout 60\n\n    # Set default team\n    flowplane-cli config set team engineering\n\n    # Set default organization\n    flowplane-cli config set org acme-corp"
     )]
     Set {
-        /// Configuration key (token, base_url, or timeout)
-        #[arg(value_name = "KEY", value_parser = ["token", "base_url", "timeout"])]
+        /// Configuration key
+        #[arg(value_name = "KEY", value_parser = ["token", "base_url", "timeout", "team", "org", "oidc_issuer", "oidc_client_id", "callback_url"])]
         key: String,
 
         /// Configuration value
@@ -85,6 +85,8 @@ async fn init_config(force: bool) -> Result<()> {
     println!("  flowplane-cli config set token <your-token>");
     println!("  flowplane-cli config set base_url <api-url>");
     println!("  flowplane-cli config set timeout <seconds>");
+    println!("  flowplane-cli config set team <team-name>");
+    println!("  flowplane-cli config set org <org-name>");
 
     Ok(())
 }
@@ -127,9 +129,29 @@ async fn set_config(key: &str, value: &str) -> Result<()> {
             config.timeout = Some(timeout);
             println!("✅ Timeout set to: {} seconds", timeout);
         }
+        "team" => {
+            config.team = Some(value.to_string());
+            println!("✅ Team set to: {}", value);
+        }
+        "org" => {
+            config.org = Some(value.to_string());
+            println!("✅ Organization set to: {}", value);
+        }
+        "oidc_issuer" => {
+            config.oidc_issuer = Some(value.to_string());
+            println!("✅ OIDC issuer set to: {}", value);
+        }
+        "oidc_client_id" => {
+            config.oidc_client_id = Some(value.to_string());
+            println!("✅ OIDC client ID set to: {}", value);
+        }
+        "callback_url" => {
+            config.callback_url = Some(value.to_string());
+            println!("✅ Callback URL set to: {}", value);
+        }
         _ => {
             anyhow::bail!(
-                "Unknown configuration key: '{}'. Valid keys: token, base_url, timeout",
+                "Unknown configuration key: '{}'. Valid keys: token, base_url, timeout, team, org, oidc_issuer, oidc_client_id, callback_url",
                 key
             );
         }
@@ -149,6 +171,19 @@ async fn show_config_path() -> Result<()> {
     Ok(())
 }
 
+/// Validate a configuration key is in the allowed set.
+/// Returns an error for unknown keys.
+pub fn validate_config_key(key: &str) -> Result<()> {
+    match key {
+        "token" | "base_url" | "timeout" | "team" | "org" | "oidc_issuer" | "oidc_client_id"
+        | "callback_url" => Ok(()),
+        _ => anyhow::bail!(
+            "Unknown configuration key: '{}'. Valid keys: token, base_url, timeout, team, org, oidc_issuer, oidc_client_id, callback_url",
+            key
+        ),
+    }
+}
+
 fn print_config_table(config: &CliConfig) {
     println!();
     println!("{:<15} {:<50}", "Key", "Value");
@@ -161,6 +196,8 @@ fn print_config_table(config: &CliConfig) {
         "timeout",
         config.timeout.map(|t| format!("{} seconds", t)).unwrap_or_else(|| "<not set>".to_string())
     );
+    println!("{:<15} {}", "team", config.team.as_deref().unwrap_or("<not set>"));
+    println!("{:<15} {}", "org", config.org.as_deref().unwrap_or("<not set>"));
 
     println!();
     println!(

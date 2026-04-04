@@ -147,9 +147,9 @@
 
 	async function loadGroupedView() {
 		const [routesData, clustersData, listenersData, importsData] = await Promise.all([
-			apiClient.listRouteConfigs(),
-			apiClient.listClusters(),
-			apiClient.listListeners(),
+			currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([]),
+			currentTeam ? apiClient.listClusters(currentTeam) : Promise.resolve([]),
+			currentTeam ? apiClient.listListeners(currentTeam) : Promise.resolve([]),
 			currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([])
 		]);
 
@@ -207,7 +207,7 @@
 			for (let i = 0; i < routes.length; i += batchSize) {
 				const batch = routes.slice(i, i + batchSize);
 				const results = await Promise.allSettled(
-					batch.map((route) => apiClient.listRouteConfigFilters(route.name))
+					batch.map((route) => apiClient.listRouteConfigFilters(currentTeam, route.name))
 				);
 
 				results.forEach((result, index) => {
@@ -389,7 +389,7 @@
 		}
 
 		try {
-			await apiClient.deleteRouteConfig(config.name);
+			await apiClient.deleteRouteConfig(currentTeam, config.name);
 			await loadData();
 		} catch (err: unknown) {
 			error = err instanceof Error ? err.message : 'Failed to delete configuration';
@@ -407,7 +407,7 @@
 		}
 
 		try {
-			await apiClient.deleteRouteConfig(configName);
+			await apiClient.deleteRouteConfig(currentTeam, configName);
 			await loadData();
 		} catch (err: unknown) {
 			error = err instanceof Error ? err.message : 'Failed to delete configuration';
@@ -437,7 +437,7 @@
 			// Load virtual hosts if not already loaded
 			if (!virtualHostsMap.has(configName)) {
 				try {
-					const vhosts = await apiClient.listVirtualHosts(configName);
+					const vhosts = await apiClient.listVirtualHosts(currentTeam, configName);
 					virtualHostsMap.set(configName, vhosts);
 					virtualHostsMap = new Map(virtualHostsMap);
 				} catch (err) {
@@ -457,7 +457,7 @@
 			routesMap = new Map(routesMap);
 		} else {
 			try {
-				const routes = await apiClient.listRoutesInVirtualHost(configName, vhName);
+				const routes = await apiClient.listRoutesInVirtualHost(currentTeam, configName, vhName);
 				routesMap.set(key, routes);
 				routesMap = new Map(routesMap);
 			} catch (err) {

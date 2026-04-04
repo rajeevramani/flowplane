@@ -305,7 +305,7 @@ impl ClusterService {
     /// Sync cluster endpoint records from the cluster's stored configuration.
     /// This is best-effort: failures are logged but don't block the cluster operation.
     async fn sync_cluster_endpoints(&self, cluster: &ClusterData) {
-        let pool = match self.xds_state.cluster_repository.as_ref().map(|r| r.pool().clone()) {
+        let pool = match self.xds_state.pool.clone() {
             Some(pool) => pool,
             None => return,
         };
@@ -336,7 +336,7 @@ impl ClusterService {
     /// Clear cluster endpoint records before deletion.
     /// Best-effort: failures are logged but don't block the delete operation.
     async fn clear_cluster_endpoints(&self, cluster_id: &crate::domain::ClusterId) {
-        let pool = match self.xds_state.cluster_repository.as_ref().map(|r| r.pool().clone()) {
+        let pool = match self.xds_state.pool.clone() {
             Some(pool) => pool,
             None => return,
         };
