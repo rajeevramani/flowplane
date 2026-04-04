@@ -316,7 +316,7 @@ mod tests {
             _expected_type: crate::domain::SecretType,
         ) -> crate::errors::Result<SecretSpec> {
             Ok(SecretSpec::GenericSecret(GenericSecretSpec {
-                secret: "bW9jay1zZWNyZXQ=".to_string(),
+                secret: "bW9jay1zZWNyZXQ=".to_string(), // pragma: allowlist secret
             }))
         }
 

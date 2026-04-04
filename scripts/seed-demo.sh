@@ -32,7 +32,7 @@ TEAM_NAME="engineering"
 HUMAN_USERNAME="demo@acme-corp.com"
 HUMAN_FIRST="Demo"
 HUMAN_LAST="User"
-HUMAN_PASSWORD="Flowplane1!"
+HUMAN_PASSWORD="${FLOWPLANE_DEMO_PASSWORD:-Flowplane1!}"  # pragma: allowlist secret
 
 # Superadmin email (must match docker-compose.yml FLOWPLANE_SUPERADMIN_EMAIL)
 SUPERADMIN_EMAIL="${FLOWPLANE_SUPERADMIN_EMAIL:-admin@flowplane.local}"

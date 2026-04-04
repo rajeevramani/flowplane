@@ -28,7 +28,7 @@ use tower::ServiceExt;
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEV_TOKEN: &str = "test-dev-token-adversarial";
+const DEV_TOKEN: &str = "test-dev-token-adversarial"; // pragma: allowlist secret — fake test token
 
 // ---------------------------------------------------------------------------
 // Helpers

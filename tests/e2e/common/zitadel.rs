@@ -34,11 +34,11 @@ const ZITADEL_MASTER_KEY: &str = "3nG1pz-cttTXaQapJLoDNSkiOQX4vPvK";
 
 /// Default admin credentials created by Zitadel's start-from-init
 const _ZITADEL_ADMIN_EMAIL: &str = "zitadel-admin@zitadel.localhost";
-const ZITADEL_ADMIN_PASSWORD: &str = "Password1!";
+const ZITADEL_ADMIN_PASSWORD: &str = "Password1!"; // pragma: allowlist secret — dev-only default
 
 /// Test superadmin credentials
 pub const SUPERADMIN_EMAIL: &str = "admin@flowplane.local";
-pub const SUPERADMIN_PASSWORD: &str = "Flowplane1!";
+pub const SUPERADMIN_PASSWORD: &str = "Flowplane1!"; // pragma: allowlist secret — dev-only default
 
 /// Start a Zitadel container that shares the given PostgreSQL instance.
 ///

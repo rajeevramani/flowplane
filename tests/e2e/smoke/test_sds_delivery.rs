@@ -83,7 +83,7 @@ async fn dev_sds_secret_delivery() {
     let api_url = harness.api_url();
     let secret_name = "sds-e2e-test-secret";
     use base64::Engine;
-    let secret_value = base64::engine::general_purpose::STANDARD.encode("sds-test-value-12345");
+    let secret_value = base64::engine::general_purpose::STANDARD.encode("sds-test-value-12345"); // pragma: allowlist secret
 
     // Step 1: Create a secret
     let secret_json = with_timeout(

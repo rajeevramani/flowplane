@@ -9,7 +9,7 @@
 #   - UI:       http://localhost:8080/
 #   - Swagger:  http://localhost:8080/swagger-ui/
 #   - xDS:      localhost:50051
-#   - Zitadel:  http://localhost:8081 (admin: zitadel-admin@zitadel.localhost / Password1!)
+#   - Zitadel:  http://localhost:8081 (admin: zitadel-admin@zitadel.localhost / see ZITADEL_ADMIN_PASSWORD)
 #
 # Zitadel:
 #   On first run, Zitadel auto-creates an admin user and a machine service
@@ -22,9 +22,9 @@ services:
     image: postgres:17-alpine
     container_name: flowplane-postgres
     environment:
-      POSTGRES_USER: flowplane
-      POSTGRES_PASSWORD: flowplane
-      POSTGRES_DB: flowplane
+      POSTGRES_USER: ${FLOWPLANE_DB_USER:-flowplane}
+      POSTGRES_PASSWORD: ${FLOWPLANE_DB_PASSWORD:-flowplane}  # pragma: allowlist secret
+      POSTGRES_DB: ${FLOWPLANE_DB_NAME:-flowplane}
     ports:
       - "5432:5432"
     volumes:
@@ -44,9 +44,9 @@ services:
     image: postgres:17-alpine
     container_name: flowplane-zitadel-db
     environment:
-      POSTGRES_USER: zitadel
-      POSTGRES_PASSWORD: zitadel
-      POSTGRES_DB: zitadel
+      POSTGRES_USER: ${ZITADEL_DB_USER:-zitadel}
+      POSTGRES_PASSWORD: ${ZITADEL_DB_PASSWORD:-zitadel}  # pragma: allowlist secret
+      POSTGRES_DB: ${ZITADEL_DB_NAME:-zitadel}
     ports:
       - "5434:5432"
     volumes:
@@ -72,10 +72,10 @@ services:
       ZITADEL_DATABASE_POSTGRES_PORT: 5432
       ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
       ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
-      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${ZITADEL_DB_PASSWORD:-zitadel}  # pragma: allowlist secret
       ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
       ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: zitadel
-      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: zitadel
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${ZITADEL_DB_PASSWORD:-zitadel}  # pragma: allowlist secret
       ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
       ZITADEL_EXTERNALDOMAIN: localhost
       ZITADEL_EXTERNALPORT: 8081
@@ -89,7 +89,7 @@ services:
       ZITADEL_QUOTAS_ACCESS_ENABLED: "false"
       # First instance admin user
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: zitadel-admin
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: Password1!
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD:-Password1!}  # pragma: allowlist secret
       # Auto-create a machine user with PAT for service-to-service auth
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: zitadel-admin-sa
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Admin Service Account

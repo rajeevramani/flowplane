@@ -189,7 +189,7 @@ mod tests {
         let json = json!({
             "configuration": {
                 "type": "generic_secret",
-                "secret": "bmV3LXNlY3JldA=="
+                "secret": "bmV3LXNlY3JldA==" // pragma: allowlist secret
             },
             "expiresAt": "2026-12-31T23:59:59Z"
         });
@@ -204,7 +204,7 @@ mod tests {
         let json = json!({
             "configuration": {
                 "type": "generic_secret",
-                "secret": "bmV3LXNlY3JldA=="
+                "secret": "bmV3LXNlY3JldA==" // pragma: allowlist secret
             }
         });
 
@@ -227,7 +227,7 @@ mod tests {
     fn test_rotate_request_camel_case_field_names() {
         // Verify camelCase serialization
         let json = json!({
-            "configuration": { "type": "generic_secret", "secret": "dGVzdA==" },
+            "configuration": { "type": "generic_secret", "secret": "dGVzdA==" }, // pragma: allowlist secret
             "expiresAt": "2026-06-15T12:00:00Z"
         });
 
