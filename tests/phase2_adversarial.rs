@@ -156,10 +156,9 @@ async fn cluster_create_empty_name_returns_400() {
     );
 }
 
-/// Create cluster with name containing spaces → server accepts (no name character validation).
+/// Create cluster with name containing spaces → 400 Bad Request.
 ///
-/// The cluster handler validates name length (1-50) but does not reject spaces.
-/// Tightened: assert exactly CREATED since the server has no character-set validation.
+/// Resource names must be alphanumeric with hyphens only (validated by validate_resource_name).
 #[tokio::test]
 async fn cluster_create_name_with_spaces_returns_error() {
     let db = TestDatabase::new("adv_cluster_spaces").await;
@@ -172,12 +171,7 @@ async fn cluster_create_name_with_spaces_returns_error() {
     });
     let req = authed_json(Method::POST, "/api/v1/teams/default/clusters", body);
     let resp = app.oneshot(req).await.unwrap();
-    // Server has no character-set validation on cluster names — only length(1..=50).
-    assert_eq!(
-        resp.status(),
-        StatusCode::CREATED,
-        "server accepts names with spaces (no character validation exists)",
-    );
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "names with spaces should be rejected",);
 }
 
 /// Create cluster with special characters in name → should reject or sanitize.
