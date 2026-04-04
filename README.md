@@ -71,13 +71,21 @@ See [Production Quickstart](docs/quickstart.md) for details.
 
 This repo ships with [Claude Code](https://claude.ai/code) skills in `.claude/skills/` that give AI assistants deep context about the codebase. They load automatically when Claude Code detects a matching task.
 
+**For agents operating the gateway** (deploy, configure, diagnose via MCP):
+
+| Skill | Covers |
+|-------|--------|
+| `flowplane-api` | 68 MCP tools, learning sessions, filter attach/detach, routing workflows |
+| `flowplane-ops` | Boot recipes, 6 diagnostic MCP tools, troubleshooting playbooks |
+| `flowplane-secrets` | SDS secrets, encryption keys, filter integration |
+| `create-filter-test` | Generate test fixtures for filter configurations |
+
+**For developers working on the codebase:**
+
 | Skill | Covers |
 |-------|--------|
 | `flowplane-dev` | Architecture, domain model, auth modes, boot lifecycle, filter system |
 | `flowplane-cli` | CLI command reference with flags, syntax, and examples |
-| `flowplane-api` | MCP tools (68), learning sessions, filter workflows |
-| `flowplane-ops` | Boot recipes, diagnostics, troubleshooting playbooks |
-| `flowplane-secrets` | SDS secrets, encryption keys, filter integration |
 | `flowplane-testing` | Test layers, E2E framework, anti-patterns |
 
 Skills are tracked in git so they stay in sync with the code. The `.claude/` directory is otherwise gitignored (settings, memory, and tasks remain private).
