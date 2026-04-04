@@ -67,6 +67,21 @@ flowplane auth login          # OIDC login
 
 See [Production Quickstart](docs/quickstart.md) for details.
 
+## Claude Code Skills
+
+This repo ships with [Claude Code](https://claude.ai/code) skills in `.claude/skills/` that give AI assistants deep context about the codebase. They load automatically when Claude Code detects a matching task.
+
+| Skill | Covers |
+|-------|--------|
+| `flowplane-dev` | Architecture, domain model, auth modes, boot lifecycle, filter system |
+| `flowplane-cli` | CLI command reference with flags, syntax, and examples |
+| `flowplane-api` | MCP tools (68), learning sessions, filter workflows |
+| `flowplane-ops` | Boot recipes, diagnostics, troubleshooting playbooks |
+| `flowplane-secrets` | SDS secrets, encryption keys, filter integration |
+| `flowplane-testing` | Test layers, E2E framework, anti-patterns |
+
+Skills are tracked in git so they stay in sync with the code. The `.claude/` directory is otherwise gitignored (settings, memory, and tasks remain private).
+
 ## Requirements
 
 - Docker or Podman
