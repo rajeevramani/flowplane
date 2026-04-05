@@ -62,11 +62,6 @@ pub async fn validate_create_filter_request(
         return Err(ApiError::validation("Filter name must be 255 characters or less"));
     }
 
-    // Validate team is not empty
-    if payload.team.trim().is_empty() {
-        return Err(ApiError::validation("Team name cannot be empty"));
-    }
-
     // Check if this is a known filter type (built-in or from schema registry)
     let is_valid = if let Some(registry) = schema_registry {
         let reg = registry.read().await;
@@ -97,7 +92,9 @@ pub async fn validate_create_filter_request(
     // Validate cluster_config if provided
     if let Some(ref cluster_config) = payload.cluster_config {
         // Validate cluster config
-        cluster_config.validate().map_err(ApiError::validation)?;
+        cluster_config
+            .validate()
+            .map_err(|e| ApiError::BadRequest(format!("Validation failed: {}", e)))?;
 
         // Warn if cluster_config is provided for a filter type that doesn't need it
         if !filter_type_requires_cluster(&payload.filter_type) {

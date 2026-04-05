@@ -55,31 +55,39 @@ impl AggregatedSchemaOperations {
         })?;
 
         // Determine which team to query.
-        // Admin (is_admin) does NOT bypass team checks — admin:all is governance-only.
-        // Users need explicit team memberships to list tenant resources.
-        let team = auth
-            .allowed_teams
-            .first()
-            .ok_or_else(|| InternalError::forbidden("No team access for listing schemas"))?;
-
-        // Call appropriate repository method based on filters
-        let schemas = if req.latest_only.unwrap_or(false) {
-            // Use list_latest_by_team to get only the latest version of each endpoint
-            repository.list_latest_by_team(team).await.map_err(InternalError::from)?
-        } else if req.path.is_some() || req.http_method.is_some() || req.min_confidence.is_some() {
-            // Use filtered query
-            repository
-                .list_filtered(
-                    team,
-                    req.path.as_deref(),
-                    req.http_method.as_deref(),
-                    req.min_confidence,
-                )
-                .await
-                .map_err(InternalError::from)?
+        // Admin bypasses team checks (dev mode / governance) and sees all schemas.
+        // Non-admin users need explicit team memberships to list tenant resources.
+        let schemas = if auth.is_admin {
+            // Admin can see all schemas across teams
+            repository.list_all().await.map_err(InternalError::from)?
         } else {
-            // No filters, get all schemas for the team
-            repository.list_by_team(team).await.map_err(InternalError::from)?
+            let team = auth
+                .allowed_teams
+                .first()
+                .ok_or_else(|| InternalError::forbidden("No team access for listing schemas"))?;
+
+            // Call appropriate repository method based on filters
+            if req.latest_only.unwrap_or(false) {
+                // Use list_latest_by_team to get only the latest version of each endpoint
+                repository.list_latest_by_team(team).await.map_err(InternalError::from)?
+            } else if req.path.is_some()
+                || req.http_method.is_some()
+                || req.min_confidence.is_some()
+            {
+                // Use filtered query
+                repository
+                    .list_filtered(
+                        team,
+                        req.path.as_deref(),
+                        req.http_method.as_deref(),
+                        req.min_confidence,
+                    )
+                    .await
+                    .map_err(InternalError::from)?
+            } else {
+                // No filters, get all schemas for the team
+                repository.list_by_team(team).await.map_err(InternalError::from)?
+            }
         };
 
         // Apply pagination
@@ -91,8 +99,14 @@ impl AggregatedSchemaOperations {
 
         let count = paginated_schemas.len();
 
+        let team_label = if auth.is_admin {
+            "admin (all teams)".to_string()
+        } else {
+            auth.allowed_teams.first().map(|t| t.to_string()).unwrap_or_default()
+        };
+
         info!(
-            team = %team,
+            team = %team_label,
             count = count,
             limit = ?req.limit,
             offset = offset,
@@ -195,11 +209,10 @@ impl AggregatedSchemaOperations {
 mod tests {
     use super::*;
     use crate::auth::team::CreateTeamRequest;
-    use crate::config::SimpleXdsConfig;
     use crate::domain::OrgId;
     use crate::storage::repositories::aggregated_schema::CreateAggregatedSchemaRequest;
     use crate::storage::repositories::{SqlxTeamRepository, TeamRepository};
-    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID};
+    use crate::storage::test_helpers::{create_test_xds_state, TestDatabase, TEAM_A_ID, TEAM_B_ID};
     use crate::storage::DbPool;
 
     struct TestSetup {
@@ -209,14 +222,10 @@ mod tests {
     }
 
     async fn setup_state() -> TestSetup {
-        let test_db = TestDatabase::new("internal_api_schemas").await;
+        let (test_db, state) = create_test_xds_state("internal_api_schemas").await;
         let pool = test_db.pool.clone();
 
-        TestSetup {
-            state: Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool.clone())),
-            pool,
-            _db: test_db,
-        }
+        TestSetup { state, pool, _db: test_db }
     }
 
     async fn create_team(pool: &DbPool, name: &str) {
@@ -459,17 +468,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_requires_team_membership() {
+    async fn test_list_admin_sees_all_schemas() {
         let setup = setup_state().await;
-        let ops = AggregatedSchemaOperations::new(setup.state);
+        create_team(&setup.pool, "team-a").await;
+        create_team(&setup.pool, "team-b").await;
+        let ops = AggregatedSchemaOperations::new(setup.state.clone());
 
-        // Admin context has no team memberships — admin:all is governance-only
-        // and does NOT grant access to tenant resources like schemas.
+        // Create schemas for different teams
+        create_test_schema(&setup.state, TEAM_A_ID, "/users", "GET").await;
+        create_test_schema(&setup.state, TEAM_B_ID, "/products", "GET").await;
+
+        // Admin can see all schemas across teams
         let auth = InternalAuthContext::admin();
         let req = ListSchemasRequest::default();
         let result = ops.list(req, &auth).await;
 
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), InternalError::Forbidden { .. }));
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response.count >= 2);
     }
 }

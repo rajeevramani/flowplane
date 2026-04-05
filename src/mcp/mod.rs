@@ -1,8 +1,7 @@
 //! MCP (Model Context Protocol) Server Implementation
 //!
-//! Provides stdio-based and HTTP-based MCP server for Flowplane control plane operations.
+//! Provides HTTP-based MCP server for Flowplane control plane and gateway operations.
 
-pub mod api_handler;
 pub mod cancellation;
 pub mod connection;
 pub mod connections_api;
@@ -25,7 +24,6 @@ pub mod tool_registry;
 pub mod tools;
 pub mod transport_common;
 
-pub use api_handler::McpApiHandler;
 pub use cancellation::{
     create_cancellation_manager, CancellationManager, SharedCancellationManager,
 };
@@ -49,20 +47,14 @@ pub use security::{
     get_default_origin_allowlist, load_origin_allowlist_from_env, validate_origin_header,
     validate_session_id_format,
 };
-// McpStdioServer removed — MCP is served via HTTP at /api/v1/mcp/cp
+// McpStdioServer removed — MCP is served via HTTP at /api/v1/mcp
 pub use session::{
     create_session_manager, create_session_manager_with_ttl, McpSession, SessionId, SessionManager,
     SharedSessionManager,
 };
-pub use streamable_http::{
-    delete_handler_api, delete_handler_cp, get_handler_api, get_handler_cp, post_handler_api,
-    post_handler_cp, McpScope,
-};
-pub use tool_registry::{
-    check_scope_grants_authorization, get_tool_authorization, ToolAuthorization,
-};
+pub use streamable_http::{delete_handler, get_handler, post_handler};
+pub use tool_registry::{get_tool_authorization, ToolAuthorization};
 pub use transport_common::{
-    check_method_authorization, determine_response_mode, error_response_json, extract_mcp_headers,
-    extract_team, get_db_pool, validate_protocol_version, McpHeaders, ResponseMode, ScopeConfig,
-    API_SCOPES, CP_SCOPES,
+    determine_response_mode, error_response_json, extract_mcp_headers, get_db_pool,
+    validate_protocol_version, McpHeaders, ResponseMode,
 };

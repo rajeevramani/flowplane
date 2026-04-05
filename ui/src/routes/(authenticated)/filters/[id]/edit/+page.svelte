@@ -4,10 +4,22 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { ArrowLeft, Loader2, Server, Sliders, ExternalLink } from 'lucide-svelte';
-	import type { FilterResponse, FilterConfig, FilterTypeInfo, FilterStatusResponse } from '$lib/api/types';
+	import type { FilterResponse, FilterConfig, FilterTypeInfo, FilterStatusResponse, CorsConfig, RateLimitConfig, CompressorConfig, ExtAuthzConfig, RbacConfig, OAuth2Config } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import DynamicFilterForm from '$lib/components/filters/DynamicFilterForm.svelte';
+	import CorsConfigForm from '$lib/components/filters/CorsConfigForm.svelte';
+	import RateLimitConfigForm from '$lib/components/filters/RateLimitConfigForm.svelte';
+	import CompressorConfigForm from '$lib/components/filters/CompressorConfigForm.svelte';
+	import ExtAuthzConfigForm from '$lib/components/filters/ExtAuthzConfigForm.svelte';
+	import RbacConfigForm from '$lib/components/filters/RbacConfigForm.svelte';
+	import OAuth2ConfigForm from '$lib/components/filters/OAuth2ConfigForm.svelte';
+	import { selectedTeam } from '$lib/stores/team';
+
+	let currentTeam = $state<string>('');
+	selectedTeam.subscribe((value) => {
+		currentTeam = value;
+	});
 
 	// Page state
 	let isLoading = $state(true);
@@ -39,7 +51,7 @@
 		error = null;
 
 		try {
-			const data = await apiClient.getFilter(getFilterId());
+			const data = await apiClient.getFilter(currentTeam, getFilterId());
 			filter = data;
 
 			// Populate form fields
@@ -55,7 +67,7 @@
 
 			// Load filter status (installations + configurations)
 			try {
-				filterStatus = await apiClient.getFilterStatus(getFilterId());
+				filterStatus = await apiClient.getFilterStatus(currentTeam, getFilterId());
 			} catch (e) {
 				console.warn('Could not load filter status:', e);
 			}
@@ -114,7 +126,7 @@
 
 		isSubmitting = true;
 		try {
-			await apiClient.updateFilter(getFilterId(), {
+			await apiClient.updateFilter(currentTeam, getFilterId(), {
 				name: filterName.trim(),
 				description: filterDescription.trim() || undefined,
 				config: buildFilterConfig()
@@ -133,7 +145,7 @@
 			return;
 		}
 		try {
-			await apiClient.deleteFilter(getFilterId());
+			await apiClient.deleteFilter(currentTeam, getFilterId());
 			goto('/filters');
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to delete filter';
@@ -347,7 +359,37 @@
 				{filterTypeInfo?.displayName || formatFilterType(filter.filterType)} Configuration
 			</h2>
 
-			{#if filterTypeInfo}
+			{#if filter && filter.filterType === 'cors'}
+				<CorsConfigForm
+					config={dynamicConfig as unknown as CorsConfig}
+					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+				/>
+			{:else if filter && filter.filterType === 'rate_limit'}
+				<RateLimitConfigForm
+					config={dynamicConfig as unknown as RateLimitConfig}
+					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+				/>
+			{:else if filter && filter.filterType === 'compressor'}
+				<CompressorConfigForm
+					config={dynamicConfig as unknown as CompressorConfig}
+					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+				/>
+			{:else if filter && filter.filterType === 'ext_authz'}
+				<ExtAuthzConfigForm
+					config={dynamicConfig as unknown as ExtAuthzConfig}
+					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+				/>
+			{:else if filter && filter.filterType === 'rbac'}
+				<RbacConfigForm
+					config={dynamicConfig as unknown as RbacConfig}
+					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+				/>
+			{:else if filter && filter.filterType === 'oauth2'}
+				<OAuth2ConfigForm
+					config={dynamicConfig as unknown as OAuth2Config}
+					onConfigChange={(c) => handleDynamicConfigChange(c as unknown as Record<string, unknown>)}
+				/>
+			{:else if filterTypeInfo}
 				<DynamicFilterForm
 					filterType={filterTypeInfo}
 					config={dynamicConfig}

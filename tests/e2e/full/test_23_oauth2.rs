@@ -122,7 +122,8 @@ async fn test_101_setup_oauth2() {
         with_timeout(TestTimeout::default_with_label("Create OAuth2 auth cluster"), async {
             api.create_cluster(
                 &ctx.admin_token,
-                &simple_cluster(&ctx.team_a_name, "oauth2-auth-cluster", auth_host, auth_port),
+                &ctx.team_a_name,
+                &simple_cluster("oauth2-auth-cluster", auth_host, auth_port),
             )
             .await
         })
@@ -135,7 +136,8 @@ async fn test_101_setup_oauth2() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "oauth2-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("oauth2-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -146,13 +148,8 @@ async fn test_101_setup_oauth2() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "oauth2-route",
-                "oauth2.e2e.local",
-                "/testing",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("oauth2-route", "oauth2.e2e.local", "/testing", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -163,8 +160,8 @@ async fn test_101_setup_oauth2() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "oauth2-listener",
                 harness.ports.listener,
                 &route.name,
@@ -232,7 +229,14 @@ async fn test_101_setup_oauth2() {
             // Install filter on listener
             let installation =
                 with_timeout(TestTimeout::default_with_label("Install OAuth2 filter"), async {
-                    api.install_filter(&ctx.admin_token, &f.id, &listener.name, Some(100)).await
+                    api.install_filter(
+                        &ctx.admin_token,
+                        &ctx.team_a_name,
+                        &f.id,
+                        &listener.name,
+                        Some(100),
+                    )
+                    .await
                 })
                 .await
                 .expect("Filter installation should succeed");

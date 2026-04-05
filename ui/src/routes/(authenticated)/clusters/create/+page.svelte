@@ -21,7 +21,6 @@
 
 	interface FormState {
 		name: string;
-		team: string;
 		serviceName: string;
 		endpoints: EndpointFormState[];
 		lbPolicy: string;
@@ -48,7 +47,6 @@
 	// Initialize form state
 	let formState = $state<FormState>({
 		name: '',
-		team: currentTeam,
 		serviceName: '',
 		endpoints: [
 			{
@@ -68,8 +66,7 @@
 	let jsonPayload = $derived(buildClusterJSON(formState));
 
 	function buildClusterJSON(form: FormState): string {
-		const payload: any = {
-			team: form.team || currentTeam,
+		const payload: Record<string, unknown> = {
 			name: form.name || '',
 			serviceName: form.serviceName || '',
 			endpoints: form.endpoints
@@ -162,7 +159,7 @@
 		try {
 			const payload = JSON.parse(jsonPayload);
 			console.log('Creating cluster:', payload);
-			await apiClient.createCluster(payload);
+			await apiClient.createCluster(currentTeam, payload);
 			goto('/clusters');
 		} catch (e) {
 			console.error('Create failed:', e);

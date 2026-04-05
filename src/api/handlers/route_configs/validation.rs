@@ -36,7 +36,7 @@ pub(super) fn route_config_response_from_data(
 
     // Prefer resolved team name over UUID, fall back to UUID if name not resolved
     let team = data.team_name.or(data.team).unwrap_or_default();
-    let config = RouteConfigDefinition::from_xds_config(&xds_config, team.clone());
+    let config = RouteConfigDefinition::from_xds_config(&xds_config);
 
     Ok(RouteConfigResponse {
         name: data.name,

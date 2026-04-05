@@ -17,7 +17,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import SessionStatusBadge from '$lib/components/learning/SessionStatusBadge.svelte';
 	import SessionProgressBar from '$lib/components/learning/SessionProgressBar.svelte';
-	import { canWriteLearningSessions, canDeleteLearningSessions } from '$lib/utils/permissions';
+	import { canCreateLearningSessions, canDeleteLearningSessions } from '$lib/utils/permissions';
 	import { handleApiError } from '$lib/utils/errorHandling';
 
 	let isLoading = $state(true);
@@ -64,10 +64,9 @@
 
 		try {
 			const query: import('$lib/api/types').ListLearningSessionsQuery = {
-				team: currentTeam || undefined,
 				status: statusFilter || undefined,
 			};
-			sessions = await apiClient.listLearningSessions(query);
+			sessions = currentTeam ? await apiClient.listLearningSessions(currentTeam, query) : [];
 
 			// Auto-enable polling if there are active sessions
 			const hasActiveSessions = sessions.some(
@@ -92,10 +91,9 @@
 		pollingInterval = setInterval(async () => {
 			try {
 				const query: import('$lib/api/types').ListLearningSessionsQuery = {
-					team: currentTeam || undefined,
 					status: statusFilter || undefined,
 				};
-				sessions = await apiClient.listLearningSessions(query);
+				sessions = currentTeam ? await apiClient.listLearningSessions(currentTeam, query) : [];
 
 				// Stop polling if no more active sessions
 				const hasActiveSessions = sessions.some(
@@ -167,7 +165,7 @@
 
 		actionError = null;
 		try {
-			await apiClient.cancelLearningSession(session.id);
+			await apiClient.cancelLearningSession(session.team, session.id);
 			await loadData();
 		} catch (err) {
 			const apiError = handleApiError(err, 'cancel learning session');
@@ -224,7 +222,7 @@
 
 	<!-- Action Buttons -->
 	<div class="mb-6 flex items-center gap-4">
-		{#if sessionInfo && canWriteLearningSessions(sessionInfo)}
+		{#if sessionInfo && canCreateLearningSessions(sessionInfo)}
 			<Button onclick={handleCreate} variant="primary">
 				<Plus class="h-4 w-4 mr-2" />
 				Create Session
@@ -345,7 +343,7 @@
 					? 'No sessions match your filters.'
 					: 'Create a learning session to start capturing API traffic.'}
 			</p>
-			{#if !searchQuery && !statusFilter && sessionInfo && canWriteLearningSessions(sessionInfo)}
+			{#if !searchQuery && !statusFilter && sessionInfo && canCreateLearningSessions(sessionInfo)}
 				<Button onclick={handleCreate} variant="primary">
 					<Plus class="h-4 w-4 mr-2" />
 					Create Session

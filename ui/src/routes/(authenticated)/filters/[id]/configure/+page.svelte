@@ -2,7 +2,9 @@
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
+	import { selectedTeam } from '$lib/stores/team';
 	import { ArrowLeft, Sliders, Check, Info, AlertTriangle, ChevronDown, ChevronRight, Settings } from 'lucide-svelte';
 	import type {
 		FilterResponse,
@@ -72,7 +74,8 @@
 
 		try {
 			// Load filter details
-			filter = await apiClient.getFilter(filterId);
+			const team = get(selectedTeam);
+			filter = await apiClient.getFilter(team, filterId);
 
 			// Load filter type info for per-route behavior and schema
 			if (filter) {
@@ -80,14 +83,14 @@
 			}
 
 			// Load all route configs
-			routeConfigs = await apiClient.listRouteConfigs();
+			routeConfigs = team ? await apiClient.listRouteConfigs(team) : [];
 
 			// Load current configurations
-			const configsResponse = await apiClient.listFilterConfigurations(filterId);
+			const configsResponse = await apiClient.listFilterConfigurations(team, filterId);
 			currentConfigurations = configsResponse.configurations;
 
 			// Load current installations (to show warning if not installed)
-			const installsResponse = await apiClient.listFilterInstallations(filterId);
+			const installsResponse = await apiClient.listFilterInstallations(team, filterId);
 			currentInstallations = installsResponse.installations;
 
 			// Initialize selection state and settings from current configurations
@@ -117,7 +120,8 @@
 		if (virtualHostsMap.has(routeConfigName)) return;
 
 		try {
-			const vhosts = await apiClient.listVirtualHosts(routeConfigName);
+			const team = get(selectedTeam);
+			const vhosts = team ? await apiClient.listVirtualHosts(team, routeConfigName) : [];
 			const newMap = new Map(virtualHostsMap);
 			newMap.set(routeConfigName, vhosts);
 			virtualHostsMap = newMap;
@@ -131,7 +135,9 @@
 		if (routesMap.has(key)) return;
 
 		try {
-			const routes = await apiClient.listRoutesInVirtualHost(routeConfigName, vhostName);
+			const team = get(selectedTeam);
+			if (!team) return;
+			const routes = await apiClient.listRoutesInVirtualHost(team, routeConfigName, vhostName);
 			const newMap = new Map(routesMap);
 			newMap.set(key, routes);
 			routesMap = newMap;
@@ -263,16 +269,17 @@
 			}
 
 			// Perform removals
+			const team = get(selectedTeam);
 			for (const key of toRemove) {
 				const [scopeType, scopeId] = key.split(':') as [ScopeType, string];
-				await apiClient.removeFilterConfiguration(filterId, scopeType, scopeId);
+				await apiClient.removeFilterConfiguration(team, filterId, scopeType, scopeId);
 			}
 
 			// Perform new configurations
 			for (const key of toConfigure) {
 				const [scopeType, scopeId] = key.split(':') as [ScopeType, string];
 				const settings = scopeSettings.get(key) ?? undefined;
-				await apiClient.configureFilter(filterId, {
+				await apiClient.configureFilter(team, filterId, {
 					scopeType,
 					scopeId,
 					settings
@@ -282,9 +289,9 @@
 			// Perform updates (remove and re-add with new settings)
 			for (const key of toUpdate) {
 				const [scopeType, scopeId] = key.split(':') as [ScopeType, string];
-				await apiClient.removeFilterConfiguration(filterId, scopeType, scopeId);
+				await apiClient.removeFilterConfiguration(team, filterId, scopeType, scopeId);
 				const settings = scopeSettings.get(key) ?? undefined;
-				await apiClient.configureFilter(filterId, {
+				await apiClient.configureFilter(team, filterId, {
 					scopeType,
 					scopeId,
 					settings

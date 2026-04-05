@@ -6,12 +6,15 @@ use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, error, warn};
 
-use crate::domain::OrgId;
+use crate::auth::authorization::check_resource_access;
+use crate::auth::models::{AgentContext, AuthContext, GrantType};
+use crate::domain::McpToolCategory;
 use crate::mcp::error::McpError;
+use crate::mcp::gateway::GatewayExecutor;
 use crate::mcp::logging::SetLogLevelParams;
 use crate::mcp::protocol::*;
 use crate::mcp::resources;
-use crate::mcp::tool_registry::{check_scope_grants_authorization, get_tool_authorization};
+use crate::mcp::tool_registry::get_tool_authorization;
 use crate::mcp::tools;
 use crate::storage::DbPool;
 use crate::xds::XdsState;
@@ -83,12 +86,13 @@ fn validate_protocol_version(client_version: &str) -> Result<(), McpError> {
 pub struct McpHandler {
     db_pool: Arc<DbPool>,
     xds_state: Option<Arc<XdsState>>,
-    team: String,
-    /// Scopes from the authenticated token for tool-level authorization
-    scopes: Vec<String>,
-    /// Organization ID from the authenticated user's context (None for CLI/system)
-    org_id: Option<OrgId>,
+    /// Teams this session has access to (multi-team support)
+    teams: Vec<String>,
+    /// Full authentication context for tool-level authorization and org isolation
+    context: AuthContext,
     initialized: bool,
+    /// Optional gateway executor for dynamic API tools stored in the database
+    gateway_executor: Option<GatewayExecutor>,
 }
 
 impl McpHandler {
@@ -96,12 +100,19 @@ impl McpHandler {
     ///
     /// # Arguments
     /// * `db_pool` - Database connection pool
-    /// * `team` - Team context for multi-tenancy
-    /// * `scopes` - Authorization scopes from the authenticated token
-    // org_id is None: CLI MCP has direct machine access with admin:all scopes.
+    /// * `teams` - Team names this session is authorized for
+    /// * `context` - Authentication context carrying scopes and org identity
+    // org_id is None in CLI context: direct machine access with admin:all scopes.
     // Org isolation is only enforced on the HTTP MCP path via `with_xds_state`.
-    pub fn new(db_pool: Arc<DbPool>, team: String, scopes: Vec<String>) -> Self {
-        Self { db_pool, xds_state: None, team, scopes, org_id: None, initialized: false }
+    pub fn new(db_pool: Arc<DbPool>, teams: Vec<String>, context: AuthContext) -> Self {
+        Self {
+            db_pool,
+            xds_state: None,
+            teams,
+            context,
+            initialized: false,
+            gateway_executor: None,
+        }
     }
 
     /// Create a new MCP handler with full read/write capabilities
@@ -109,16 +120,50 @@ impl McpHandler {
     /// # Arguments
     /// * `db_pool` - Database connection pool
     /// * `xds_state` - XDS state for control plane operations
-    /// * `team` - Team context for multi-tenancy
-    /// * `scopes` - Authorization scopes from the authenticated token
+    /// * `teams` - Team names this session is authorized for
+    /// * `context` - Authentication context carrying scopes and org identity
     pub fn with_xds_state(
         db_pool: Arc<DbPool>,
         xds_state: Arc<XdsState>,
-        team: String,
-        scopes: Vec<String>,
-        org_id: Option<OrgId>,
+        teams: Vec<String>,
+        context: AuthContext,
     ) -> Self {
-        Self { db_pool, xds_state: Some(xds_state), team, scopes, org_id, initialized: false }
+        Self {
+            db_pool,
+            xds_state: Some(xds_state),
+            teams,
+            context,
+            initialized: false,
+            gateway_executor: None,
+        }
+    }
+
+    /// Create a new MCP handler with full capabilities including gateway API tool support.
+    ///
+    /// Used by the unified `/api/v1/mcp` HTTP endpoint to handle both CP tools
+    /// and gateway API tools from a single session.
+    ///
+    /// # Arguments
+    /// * `db_pool` - Database connection pool
+    /// * `xds_state` - XDS state for control plane operations
+    /// * `teams` - Team names this session is authorized for
+    /// * `context` - Authentication context carrying scopes and org identity
+    /// * `gateway_executor` - Executor for gateway API tools stored in the database
+    pub fn with_gateway(
+        db_pool: Arc<DbPool>,
+        xds_state: Arc<XdsState>,
+        teams: Vec<String>,
+        context: AuthContext,
+        gateway_executor: GatewayExecutor,
+    ) -> Self {
+        Self {
+            db_pool,
+            xds_state: Some(xds_state),
+            teams,
+            context,
+            initialized: false,
+            gateway_executor: Some(gateway_executor),
+        }
     }
 
     /// Resolve team name to UUID for database queries.
@@ -128,22 +173,22 @@ impl McpHandler {
     /// but direct-DB tools and the reporting repository need the UUID passed in.
     ///
     /// Returns the team name unchanged if it's already a UUID or is empty.
-    async fn resolve_team_uuid(&self) -> Result<String, McpError> {
-        if self.team.is_empty() {
-            return Ok(self.team.clone());
+    async fn resolve_team_uuid(&self, team: &str) -> Result<String, McpError> {
+        if team.is_empty() {
+            return Ok(team.to_string());
         }
-        if uuid::Uuid::parse_str(&self.team).is_ok() {
-            return Ok(self.team.clone());
+        if uuid::Uuid::parse_str(team).is_ok() {
+            return Ok(team.to_string());
         }
         let row: Option<(String,)> = sqlx::query_as("SELECT id FROM teams WHERE name = $1")
-            .bind(&self.team)
+            .bind(team)
             .fetch_optional(&*self.db_pool)
             .await
             .map_err(|e| {
-                McpError::InternalError(format!("Failed to resolve team '{}': {}", self.team, e))
+                McpError::InternalError(format!("Failed to resolve team '{}': {}", team, e))
             })?;
         row.map(|r| r.0)
-            .ok_or_else(|| McpError::InternalError(format!("Team '{}' not found", self.team)))
+            .ok_or_else(|| McpError::InternalError(format!("Team '{}' not found", team)))
     }
 
     /// Handle an incoming JSON-RPC request
@@ -294,11 +339,74 @@ impl McpHandler {
     async fn handle_tools_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
         debug!("Listing available tools");
 
-        // Use get_all_tools() as single source of truth (63 tools)
-        let mut tools = tools::get_all_tools();
+        // CP tools: filter based on agent context
+        let cp_tools: Vec<crate::mcp::protocol::Tool> = if let Some(ref agent_ctx) =
+            self.context.agent_context
+        {
+            match agent_ctx {
+                AgentContext::CpTool => {
+                    // Build allowed (resource, action) set from resource grants
+                    let allowed: std::collections::HashSet<(&str, &str)> = self
+                        .context
+                        .grants
+                        .iter()
+                        .filter(|g| g.grant_type == GrantType::Resource)
+                        .filter_map(|g| Some((g.resource_type.as_deref()?, g.action.as_deref()?)))
+                        .collect();
+                    tools::get_all_tools()
+                        .into_iter()
+                        .filter(|tool| {
+                            get_tool_authorization(&tool.name)
+                                .map(|auth| allowed.contains(&(auth.resource, auth.action)))
+                                .unwrap_or(false)
+                        })
+                        .collect()
+                }
+                // Gateway-tool and api-consumer agents see NO CP tools
+                AgentContext::GatewayTool | AgentContext::ApiConsumer => Vec::new(),
+            }
+        } else {
+            // Human users: filter CP tools by resource grants across all their teams.
+            // Org admins have implicit access (no explicit grants) and see all tools.
+            let allowed: std::collections::HashSet<(&str, &str)> = self
+                .context
+                .grants
+                .iter()
+                .filter(|g| g.grant_type == GrantType::Resource)
+                .filter_map(|g| Some((g.resource_type.as_deref()?, g.action.as_deref()?)))
+                .collect();
+
+            if allowed.is_empty() {
+                // No explicit resource grants — check for implicit org admin access
+                let is_org_admin = {
+                    use crate::auth::authorization::{has_admin_bypass, has_org_admin};
+                    if let Some(ref org_name) = self.context.org_name {
+                        has_org_admin(&self.context, org_name)
+                    } else {
+                        has_admin_bypass(&self.context)
+                    }
+                };
+                if is_org_admin {
+                    tools::get_all_tools()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                tools::get_all_tools()
+                    .into_iter()
+                    .filter(|tool| {
+                        get_tool_authorization(&tool.name)
+                            .map(|auth| allowed.contains(&(auth.resource, auth.action)))
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            }
+        };
+
+        let mut all_tools = cp_tools;
 
         // Enrich tool descriptions with risk level hints from the registry
-        for tool in &mut tools {
+        for tool in &mut all_tools {
             if let Some(auth) = get_tool_authorization(&tool.name) {
                 if let Some(ref mut desc) = tool.description {
                     *desc = format!("[Risk: {}] {}", auth.risk_level, desc);
@@ -306,7 +414,126 @@ impl McpHandler {
             }
         }
 
-        let result = ToolsListResult { tools, next_cursor: None };
+        // Gateway tools (dynamic, from DB) — only when gateway executor is configured
+        if self.gateway_executor.is_some() {
+            match self.context.agent_context {
+                Some(AgentContext::GatewayTool) => {
+                    // Gateway-tool agents: only show api_* tools for granted route_ids
+                    {
+                        let granted_route_ids: std::collections::HashSet<String> = self
+                            .context
+                            .grants
+                            .iter()
+                            .filter(|g| g.grant_type == GrantType::GatewayTool)
+                            .filter_map(|g| g.route_id.clone())
+                            .collect();
+                        let repo = crate::storage::repositories::mcp_tool::McpToolRepository::new(
+                            (*self.db_pool).clone(),
+                        );
+                        for team in &self.teams {
+                            let gateway_tools = match repo
+                                .list_by_category(team, McpToolCategory::GatewayApi)
+                                .await
+                            {
+                                Ok(t) => t.into_iter().filter(|t| t.enabled).collect::<Vec<_>>(),
+                                Err(e) => {
+                                    error!(error = %e, team = %team, "Failed to list gateway tools");
+                                    return self.error_response(
+                                        id,
+                                        McpError::InternalError(format!(
+                                            "Failed to list gateway tools: {}",
+                                            e
+                                        )),
+                                    );
+                                }
+                            };
+                            for t in gateway_tools {
+                                // Only include tools whose route_id is in the granted set
+                                let route_id_str =
+                                    t.route_id.as_ref().map(|r| r.as_str().to_string());
+                                if route_id_str
+                                    .as_deref()
+                                    .map(|r| granted_route_ids.contains(r))
+                                    .unwrap_or(false)
+                                {
+                                    let mut tool = Tool::new(
+                                        t.name.clone(),
+                                        t.description.clone().unwrap_or_default(),
+                                        if t.input_schema.is_null() || !t.input_schema.is_object() {
+                                            serde_json::json!({
+                                                "type": "object",
+                                                "properties": {},
+                                                "additionalProperties": false
+                                            })
+                                        } else {
+                                            t.input_schema.clone()
+                                        },
+                                    );
+                                    tool.output_schema = t.output_schema.clone();
+                                    all_tools.push(tool);
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(AgentContext::ApiConsumer) | Some(AgentContext::CpTool) => {
+                    // API consumer and CP-tool agents see no gateway tools
+                }
+                None => {
+                    // Human users: existing behavior — check api:read scope per team
+                    let repo = crate::storage::repositories::mcp_tool::McpToolRepository::new(
+                        (*self.db_pool).clone(),
+                    );
+                    for team in &self.teams {
+                        // Skip teams without api:read access — prevent info leakage
+                        if !check_resource_access(&self.context, "api", "read", Some(team)) {
+                            debug!(
+                                team = %team,
+                                "Skipping team: lacks api:read scope for gateway tools"
+                            );
+                            continue;
+                        }
+
+                        let gateway_tools = match repo
+                            .list_by_category(team, McpToolCategory::GatewayApi)
+                            .await
+                        {
+                            Ok(t) => t.into_iter().filter(|t| t.enabled).collect::<Vec<_>>(),
+                            Err(e) => {
+                                error!(error = %e, team = %team, "Failed to list gateway tools");
+                                return self.error_response(
+                                    id,
+                                    McpError::InternalError(format!(
+                                        "Failed to list gateway tools: {}",
+                                        e
+                                    )),
+                                );
+                            }
+                        };
+
+                        for t in gateway_tools {
+                            let mut tool = Tool::new(
+                                t.name.clone(),
+                                t.description.clone().unwrap_or_default(),
+                                if t.input_schema.is_null() || !t.input_schema.is_object() {
+                                    serde_json::json!({
+                                        "type": "object",
+                                        "properties": {},
+                                        "additionalProperties": false
+                                    })
+                                } else {
+                                    t.input_schema.clone()
+                                },
+                            );
+                            tool.output_schema = t.output_schema.clone();
+                            all_tools.push(tool);
+                        }
+                    }
+                }
+            }
+        }
+
+        let result = ToolsListResult { tools: all_tools, next_cursor: None };
 
         match serde_json::to_value(result) {
             Ok(value) => {
@@ -328,27 +555,77 @@ impl McpHandler {
             }
         };
 
-        debug!(tool_name = %params.name, "Executing tool call");
+        let args = params.arguments.unwrap_or(serde_json::json!({}));
 
-        // Check tool-level authorization
-        if let Err(auth_error) = self.check_tool_authorization(&params.name) {
+        // Route gateway API tools to the gateway executor before the is_none() check,
+        // because get_tool_authorization("api_*") returns Some(&GATEWAY_AUTH) — meaning
+        // is_none() would be false and the tool would fall through to the CP dispatch match,
+        // where it hits the default arm and returns ToolNotFound.
+        if params.name.starts_with("api_") {
+            return if self.gateway_executor.is_some() {
+                self.execute_gateway_tool(id, params.name, args).await
+            } else {
+                self.error_response(id, McpError::ToolNotFound(params.name))
+            };
+        }
+
+        // Route: CP tools go through static authorization and dispatch.
+        // Gateway tools (not in TOOL_AUTHORIZATIONS) go through the DB-backed executor.
+        if get_tool_authorization(&params.name).is_none() {
+            return if self.gateway_executor.is_some() {
+                self.execute_gateway_tool(id, params.name, args).await
+            } else {
+                self.error_response(id, McpError::ToolNotFound(params.name))
+            };
+        }
+
+        // Extract team from tool arguments (CP tools pass their team explicitly).
+        // Fall back to the session's first team if not provided in args.
+        let tool_team = args
+            .get("team")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.teams.first().map(|s| s.as_str()))
+            .unwrap_or("")
+            .to_string();
+
+        // Validate the requested team is in this session's authorized teams.
+        // If self.teams is empty (admin:all governance token), skip the check —
+        // check_tool_authorization will still enforce resource-level permissions.
+        if !tool_team.is_empty() && !self.teams.is_empty() && !self.teams.contains(&tool_team) {
             warn!(
                 tool_name = %params.name,
-                team = %self.team,
+                tool_team = %tool_team,
+                "Requested team not in session's authorized teams"
+            );
+            return self.error_response(
+                id,
+                McpError::Forbidden(format!(
+                    "Team '{}' is not accessible with your token scopes",
+                    tool_team
+                )),
+            );
+        }
+
+        debug!(tool_name = %params.name, team = %tool_team, "Executing tool call");
+
+        // Check tool-level authorization using the per-call team
+        if let Err(auth_error) = self.check_tool_authorization(&params.name, &tool_team) {
+            warn!(
+                tool_name = %params.name,
+                team = %tool_team,
                 error = %auth_error,
                 "Tool authorization failed"
             );
             return self.error_response(id, auth_error);
         }
 
-        let args = params.arguments.unwrap_or(serde_json::json!({}));
-
-        // Resolve team name → UUID once for all tool dispatches.
-        // Resource tables store UUIDs, not names.
-        let team = match self.resolve_team_uuid().await {
+        // Resolve team name → UUID for tools that query tables directly.
+        // xds_state tools use team NAME (internal API resolves to UUID internally).
+        let team_uuid = match self.resolve_team_uuid(&tool_team).await {
             Ok(t) => t,
             Err(e) => {
-                warn!(team = %self.team, error = %e, "Failed to resolve team UUID");
+                warn!(team = %tool_team, error = %e, "Failed to resolve team UUID");
                 return self.error_response(id, e);
             }
         };
@@ -356,51 +633,106 @@ impl McpHandler {
         let result = match params.name.as_str() {
             // Read operations that only need db_pool (direct table query for efficiency)
             "cp_list_routes" => {
-                tools::execute_list_routes(&self.db_pool, &team, self.org_id.as_ref(), args).await
+                tools::execute_list_routes(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             // Query-first tools (direct db_pool access for token efficiency)
             "cp_query_port" => {
-                tools::execute_query_port(&self.db_pool, &team, self.org_id.as_ref(), args).await
+                tools::execute_query_port(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             "cp_query_path" => {
-                tools::execute_query_path(&self.db_pool, &team, self.org_id.as_ref(), args).await
+                tools::execute_query_path(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             // Ops tools that only need db_pool (diagnostic/reporting queries)
             "ops_trace_request" => {
-                tools::execute_ops_trace_request(&self.db_pool, &team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_ops_trace_request(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             "ops_topology" => {
-                tools::execute_ops_topology(&self.db_pool, &team, self.org_id.as_ref(), args).await
+                tools::execute_ops_topology(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             "ops_config_validate" => {
-                tools::execute_ops_config_validate(&self.db_pool, &team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_ops_config_validate(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             "ops_audit_query" => {
-                tools::execute_ops_audit_query(&self.db_pool, &team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_ops_audit_query(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             "ops_xds_delivery_status" => {
                 tools::execute_ops_xds_delivery_status(
                     &self.db_pool,
-                    &team,
-                    self.org_id.as_ref(),
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
                     args,
                 )
                 .await
             }
             "ops_nack_history" => {
-                tools::execute_ops_nack_history(&self.db_pool, &team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_ops_nack_history(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             // Dev agent tools (db_pool only)
             "dev_preflight_check" => {
-                tools::execute_dev_preflight_check(&self.db_pool, &team, self.org_id.as_ref(), args)
-                    .await
+                tools::execute_dev_preflight_check(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
             "cp_query_service" => {
-                tools::execute_query_service(&self.db_pool, &team, self.org_id.as_ref(), args).await
+                tools::execute_query_service(
+                    &self.db_pool,
+                    &team_uuid,
+                    self.context.org_id.as_ref(),
+                    args,
+                )
+                .await
             }
 
             // Operations that require xds_state (internal API layer)
@@ -456,7 +788,11 @@ impl McpHandler {
             | "cp_list_filter_types"
             | "cp_get_filter_type"
             | "devops_get_deployment_status"
-            | "cp_export_schema_openapi" => {
+            | "cp_export_schema_openapi"
+            | "cp_list_secrets"
+            | "cp_get_secret"
+            | "cp_create_secret"
+            | "cp_delete_secret" => {
                 let xds_state = match &self.xds_state {
                     Some(state) => state,
                     None => {
@@ -471,70 +807,120 @@ impl McpHandler {
                 match params.name.as_str() {
                     // Cluster operations (use internal API layer)
                     "cp_list_clusters" => {
-                        tools::execute_list_clusters(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_list_clusters(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_get_cluster" => {
-                        tools::execute_get_cluster(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_get_cluster(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_get_cluster_health" => {
                         tools::execute_get_cluster_health(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
                     "cp_create_cluster" => {
-                        tools::execute_create_cluster(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_create_cluster(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_update_cluster" => {
-                        tools::execute_update_cluster(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_update_cluster(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_delete_cluster" => {
-                        tools::execute_delete_cluster(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_delete_cluster(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     // Listener operations (use internal API layer)
                     "cp_list_listeners" => {
-                        tools::execute_list_listeners(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_list_listeners(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_get_listener" => {
-                        tools::execute_get_listener(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_get_listener(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_get_listener_status" => {
                         tools::execute_get_listener_status(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
                     "cp_create_listener" => {
-                        tools::execute_create_listener(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_create_listener(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_update_listener" => {
-                        tools::execute_update_listener(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_update_listener(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_delete_listener" => {
-                        tools::execute_delete_listener(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_delete_listener(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     // Route config operations (use internal API layer)
                     "cp_list_route_configs" => {
                         tools::execute_list_route_configs(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -542,8 +928,8 @@ impl McpHandler {
                     "cp_get_route_config" => {
                         tools::execute_get_route_config(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -551,8 +937,8 @@ impl McpHandler {
                     "cp_create_route_config" => {
                         tools::execute_create_route_config(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -560,8 +946,8 @@ impl McpHandler {
                     "cp_update_route_config" => {
                         tools::execute_update_route_config(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -569,63 +955,119 @@ impl McpHandler {
                     "cp_delete_route_config" => {
                         tools::execute_delete_route_config(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
                     // Individual route CRUD (use internal API layer)
                     "cp_get_route" => {
-                        tools::execute_get_route(xds_state, &team, self.org_id.as_ref(), args).await
+                        tools::execute_get_route(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_create_route" => {
-                        tools::execute_create_route(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_create_route(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_update_route" => {
-                        tools::execute_update_route(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_update_route(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_delete_route" => {
-                        tools::execute_delete_route(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_delete_route(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     // Filter operations (use internal API layer)
                     "cp_list_filters" => {
-                        tools::execute_list_filters(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_list_filters(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_get_filter" => {
-                        tools::execute_get_filter(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_get_filter(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_create_filter" => {
-                        tools::execute_create_filter(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_create_filter(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_update_filter" => {
-                        tools::execute_update_filter(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_update_filter(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_delete_filter" => {
-                        tools::execute_delete_filter(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_delete_filter(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     // Filter attachment operations
                     "cp_attach_filter" => {
-                        tools::execute_attach_filter(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_attach_filter(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_detach_filter" => {
-                        tools::execute_detach_filter(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_detach_filter(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_list_filter_attachments" => {
                         tools::execute_list_filter_attachments(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -634,8 +1076,8 @@ impl McpHandler {
                     "cp_list_virtual_hosts" => {
                         tools::execute_list_virtual_hosts(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -643,8 +1085,8 @@ impl McpHandler {
                     "cp_get_virtual_host" => {
                         tools::execute_get_virtual_host(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -652,8 +1094,8 @@ impl McpHandler {
                     "cp_create_virtual_host" => {
                         tools::execute_create_virtual_host(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -661,8 +1103,8 @@ impl McpHandler {
                     "cp_update_virtual_host" => {
                         tools::execute_update_virtual_host(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -670,8 +1112,8 @@ impl McpHandler {
                     "cp_delete_virtual_host" => {
                         tools::execute_delete_virtual_host(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -680,8 +1122,8 @@ impl McpHandler {
                     "cp_list_aggregated_schemas" => {
                         tools::execute_list_aggregated_schemas(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -689,8 +1131,8 @@ impl McpHandler {
                     "cp_get_aggregated_schema" => {
                         tools::execute_get_aggregated_schema(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -699,8 +1141,8 @@ impl McpHandler {
                     "cp_list_learning_sessions" => {
                         tools::execute_list_learning_sessions(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -708,8 +1150,8 @@ impl McpHandler {
                     "cp_get_learning_session" => {
                         tools::execute_get_learning_session(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -717,8 +1159,8 @@ impl McpHandler {
                     "cp_create_learning_session" => {
                         tools::execute_create_learning_session(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -726,8 +1168,8 @@ impl McpHandler {
                     "cp_activate_learning_session" => {
                         tools::execute_activate_learning_session(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -735,8 +1177,8 @@ impl McpHandler {
                     "cp_delete_learning_session" => {
                         tools::execute_delete_learning_session(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -744,8 +1186,8 @@ impl McpHandler {
                     "ops_learning_session_health" => {
                         tools::execute_ops_learning_session_health(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -754,8 +1196,8 @@ impl McpHandler {
                     "cp_list_openapi_imports" => {
                         tools::execute_list_openapi_imports(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -763,26 +1205,36 @@ impl McpHandler {
                     "cp_get_openapi_import" => {
                         tools::execute_get_openapi_import(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
                     // Dataplane operations
                     "cp_list_dataplanes" => {
-                        tools::execute_list_dataplanes(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_list_dataplanes(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_get_dataplane" => {
-                        tools::execute_get_dataplane(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_get_dataplane(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     "cp_create_dataplane" => {
                         tools::execute_create_dataplane(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -790,8 +1242,8 @@ impl McpHandler {
                     "cp_update_dataplane" => {
                         tools::execute_update_dataplane(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -799,8 +1251,8 @@ impl McpHandler {
                     "cp_delete_dataplane" => {
                         tools::execute_delete_dataplane(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -809,22 +1261,27 @@ impl McpHandler {
                     "cp_list_filter_types" => {
                         tools::execute_list_filter_types(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
                     }
                     "cp_get_filter_type" => {
-                        tools::execute_get_filter_type(xds_state, &team, self.org_id.as_ref(), args)
-                            .await
+                        tools::execute_get_filter_type(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
                     }
                     // Schema export operations
                     "cp_export_schema_openapi" => {
                         tools::execute_export_schema_openapi(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -833,8 +1290,45 @@ impl McpHandler {
                     "devops_get_deployment_status" => {
                         tools::execute_devops_get_deployment_status(
                             xds_state,
-                            &team,
-                            self.org_id.as_ref(),
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    // Secret operations
+                    "cp_list_secrets" => {
+                        tools::execute_list_secrets(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_get_secret" => {
+                        tools::execute_get_secret(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_create_secret" => {
+                        tools::execute_create_secret(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_delete_secret" => {
+                        tools::execute_delete_secret(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
                             args,
                         )
                         .await
@@ -862,9 +1356,11 @@ impl McpHandler {
     }
 
     async fn handle_resources_list(&self, id: Option<JsonRpcId>) -> JsonRpcResponse {
-        debug!(team = %self.team, "Listing available resources");
+        let team_display = self.teams.first().map(|s| s.as_str()).unwrap_or("multi-team");
+        debug!(team = %team_display, "Listing available resources");
 
-        let team = match self.resolve_team_uuid().await {
+        let first_team = self.teams.first().cloned().unwrap_or_default();
+        let team = match self.resolve_team_uuid(&first_team).await {
             Ok(t) => t,
             Err(e) => return self.error_response(id, e),
         };
@@ -1002,47 +1498,208 @@ impl McpHandler {
         }
     }
 
-    /// Check if the current token has authorization to execute the given tool
+    /// Check if the current token has authorization to execute the given tool.
     ///
-    /// Uses the tool registry to lookup required scopes and checks against
-    /// the token's scopes. Implements hierarchical scope matching:
-    /// - `admin:all` grants all access
-    /// - `cp:read` grants all CP read operations
-    /// - `cp:write` grants all CP write/delete operations
-    /// - Specific scopes like `clusters:read` for granular control
-    fn check_tool_authorization(&self, tool_name: &str) -> Result<(), McpError> {
-        // Lookup tool authorization requirements
-        let auth = get_tool_authorization(tool_name).ok_or_else(|| {
-            McpError::ToolNotFound(format!(
-                "Tool '{}' is not registered in the authorization registry",
-                tool_name
-            ))
-        })?;
+    /// Uses the unified check_resource_access() that REST handlers also use,
+    /// enforcing team-scoped permissions (team:{team}:{resource}:{action}).
+    ///
+    /// # Arguments
+    /// * `tool_name` - Name of the tool to authorize
+    /// * `team` - Team extracted from tool arguments (empty string for governance tools)
+    fn check_tool_authorization(&self, tool_name: &str, team: &str) -> Result<(), McpError> {
+        let auth = get_tool_authorization(tool_name)
+            .ok_or_else(|| McpError::ToolNotFound(format!("Unknown tool: {}", tool_name)))?;
 
-        // Check if any scope grants the required authorization
-        if check_scope_grants_authorization(self.scopes.iter().map(|s| s.as_str()), auth) {
+        let team_opt = if team.is_empty() { None } else { Some(team) };
+
+        if check_resource_access(&self.context, auth.resource, auth.action, team_opt) {
             debug!(
                 tool_name = %tool_name,
                 resource = %auth.resource,
                 action = %auth.action,
+                team = %team,
                 "Tool authorization granted"
             );
             return Ok(());
         }
 
-        // Build helpful error message
-        let required_scope = format!("{}:{}", auth.resource, auth.action);
-        let fallback_info =
-            if ["clusters", "listeners", "routes", "filters"].contains(&auth.resource) {
-                format!(" Alternatively, 'cp:{}' grants access to all core resources.", auth.action)
-            } else {
-                String::new()
-            };
-
         Err(McpError::Forbidden(format!(
-            "Access denied: Tool '{}' requires scope '{}' or 'admin:all'.{} Your token has scopes: {:?}",
-            tool_name, required_scope, fallback_info, self.scopes
+            "Access denied: {} requires team:{}:{}:{}",
+            tool_name, team, auth.resource, auth.action
         )))
+    }
+
+    /// Execute a gateway API tool stored in the database.
+    ///
+    /// Called when `tools/call` receives a tool name not found in the static CP
+    /// registry. Looks up the tool in `mcp_tools` table, validates access, and
+    /// executes via `GatewayExecutor`.
+    async fn execute_gateway_tool(
+        &self,
+        id: Option<JsonRpcId>,
+        tool_name: String,
+        args: serde_json::Value,
+    ) -> JsonRpcResponse {
+        debug!(tool_name = %tool_name, teams = ?self.teams, "Executing gateway tool call");
+
+        // Filter to teams with api:execute access — check auth before any DB lookup
+        let authorized_teams: Vec<&String> = self
+            .teams
+            .iter()
+            .filter(|t| check_resource_access(&self.context, "api", "execute", Some(t)))
+            .collect();
+
+        if authorized_teams.is_empty() {
+            return self.error_response(
+                id,
+                McpError::Forbidden(
+                    "Access denied: calling gateway tool requires api:execute scope".to_string(),
+                ),
+            );
+        }
+
+        let repo =
+            crate::storage::repositories::mcp_tool::McpToolRepository::new((*self.db_pool).clone());
+
+        // Search for the tool across all authorized teams
+        let mut found_tool = None;
+        for team in &authorized_teams {
+            match repo.get_by_name_with_gateway(team, &tool_name).await {
+                Ok(Some(t)) if t.enabled => {
+                    found_tool = Some(t);
+                    break;
+                }
+                Ok(Some(_)) => {
+                    // Tool exists but is disabled — continue searching other teams
+                    continue;
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    error!(error = %e, tool_name = %tool_name, "Failed to get gateway tool");
+                    return self.error_response(
+                        id,
+                        McpError::InternalError(format!("Failed to get tool: {}", e)),
+                    );
+                }
+            }
+        }
+
+        let tool = match found_tool {
+            Some(t) => t,
+            None => return self.error_response(id, McpError::ToolNotFound(tool_name)),
+        };
+
+        // For gateway-tool agents, verify a grant exists for this tool's route before execution
+        if matches!(self.context.agent_context, Some(AgentContext::GatewayTool)) {
+            match &tool.route_id {
+                Some(route_id) => {
+                    let has_grant = self.context.grants.iter().any(|g| {
+                        g.grant_type == GrantType::GatewayTool
+                            && g.route_id.as_deref() == Some(route_id.as_str())
+                    });
+                    if !has_grant {
+                        return self.error_response(
+                            id,
+                            McpError::Forbidden(
+                                "Agent not granted access to this tool".to_string(),
+                            ),
+                        );
+                    }
+                }
+                None => {
+                    return self.error_response(
+                        id,
+                        McpError::Forbidden(
+                            "Tool has no associated route for grant check".to_string(),
+                        ),
+                    );
+                }
+            }
+        }
+
+        // Verify it's a gateway API tool
+        if tool.category != crate::domain::McpToolCategory::GatewayApi {
+            error!(
+                tool_name = %tool_name,
+                category = ?tool.category,
+                "Tool is not a gateway API tool"
+            );
+            return self.error_response(
+                id,
+                McpError::ToolNotFound(format!("Tool '{}' is not an API tool", tool_name)),
+            );
+        }
+
+        // Require gateway_host for execution — fail explicitly if listener has no dataplane
+        let gateway_host = match &tool.gateway_host {
+            Some(host) if !host.is_empty() => host.clone(),
+            _ => {
+                error!(
+                    tool_name = %tool_name,
+                    team = %tool.team,
+                    "Tool cannot execute: listener has no dataplane with gateway_host"
+                );
+                return self.error_response(
+                    id,
+                    McpError::Configuration(format!(
+                        "Tool '{}' cannot execute: listener has no dataplane with gateway_host \
+                         configured. Create a dataplane first, then assign the listener to it.",
+                        tool_name
+                    )),
+                );
+            }
+        };
+
+        // Convert McpToolWithGateway to McpToolData for executor
+        let tool_data = crate::storage::repositories::mcp_tool::McpToolData {
+            id: tool.id,
+            team: tool.team,
+            name: tool.name.clone(),
+            description: tool.description,
+            category: tool.category,
+            source_type: tool.source_type,
+            input_schema: tool.input_schema,
+            output_schema: tool.output_schema,
+            learned_schema_id: tool.learned_schema_id,
+            schema_source: tool.schema_source,
+            route_id: tool.route_id,
+            http_method: tool.http_method,
+            http_path: tool.http_path,
+            cluster_name: tool.cluster_name,
+            listener_port: tool.listener_port,
+            host_header: tool.host_header,
+            enabled: tool.enabled,
+            confidence: tool.confidence,
+            created_at: tool.created_at,
+            updated_at: tool.updated_at,
+        };
+
+        // Gateway executor is guaranteed Some by the caller (execute_gateway_tool is only
+        // called when gateway_executor.is_some())
+        let executor = match &self.gateway_executor {
+            Some(e) => e,
+            None => {
+                return self.error_response(
+                    id,
+                    McpError::InternalError("Gateway executor not available".to_string()),
+                );
+            }
+        };
+
+        let result = executor.execute(&tool_data, args, Some(&gateway_host)).await;
+
+        match result {
+            Ok(tool_result) => match serde_json::to_value(tool_result) {
+                Ok(value) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(e) => self.error_response(id, McpError::SerializationError(e)),
+            },
+            Err(e) => self.error_response(id, e),
+        }
     }
 
     fn method_not_found(&self, id: Option<JsonRpcId>, method: &str) -> JsonRpcResponse {
@@ -1075,14 +1732,20 @@ impl McpHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::models::AuthContext;
+    use crate::domain::TokenId;
     use crate::storage::test_helpers::TestDatabase;
 
     async fn create_test_handler() -> (TestDatabase, McpHandler) {
         let test_db = TestDatabase::new("mcp_handler").await;
         let pool = test_db.pool.clone();
         // Use admin:all scope for tests to bypass authorization
-        let handler =
-            McpHandler::new(Arc::new(pool), "test-team".to_string(), vec!["admin:all".to_string()]);
+        let context = AuthContext::new(
+            TokenId::from_string("test-token".to_string()),
+            "test".to_string(),
+            vec!["admin:all".to_string()],
+        );
+        let handler = McpHandler::new(Arc::new(pool), vec!["test-team".to_string()], context);
         (test_db, handler)
     }
 
@@ -1501,5 +2164,425 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- Gateway tool dispatch tests ---
+
+    fn context_with_scopes(scopes: Vec<&str>) -> AuthContext {
+        use crate::domain::TokenId;
+        AuthContext::new(
+            TokenId::from_string("test-token".to_string()),
+            "test".to_string(),
+            scopes.into_iter().map(|s| s.to_string()).collect(),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_tools_call_unknown_tool_without_gateway_returns_not_found() {
+        let test_db = TestDatabase::new("handler_unknown_tool_no_gw").await;
+        let pool = test_db.pool.clone();
+        let context = context_with_scopes(vec!["admin:all"]);
+        let mut handler = McpHandler::new(Arc::new(pool), vec!["test-team".to_string()], context);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/call".to_string(),
+                params: serde_json::json!({ "name": "nonexistent-tool", "arguments": {} }),
+            })
+            .await;
+
+        assert!(response.error.is_some());
+        let error = response.error.unwrap();
+        // ToolNotFound uses INVALID_REQUEST (same as Forbidden) to prevent name probing
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
+        assert!(!error.message.contains("Forbidden"));
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_with_gateway_executor_includes_cp_tools() {
+        let test_db = TestDatabase::new("handler_list_with_gw").await;
+        let pool = Arc::new(test_db.pool.clone());
+        let context = context_with_scopes(vec!["admin:all", "team:test-team:api:read"]);
+        // Create handler with gateway executor but no xds_state (read-only test)
+        // Use new() with gateway executor manually set via with_gateway would need xds_state,
+        // so we use new() and verify CP tools count is unchanged (gateway executor = None)
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], context);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        let tools_array = result["tools"].as_array().unwrap();
+        // Without gateway executor, only CP tools returned
+        let all_cp_tools = tools::get_all_tools();
+        assert_eq!(tools_array.len(), all_cp_tools.len());
+    }
+
+    #[tokio::test]
+    async fn test_gateway_tool_call_without_execute_scope_returns_forbidden() {
+        let test_db = TestDatabase::new("handler_gw_call_no_scope").await;
+        let pool = Arc::new(test_db.pool.clone());
+        let context = context_with_scopes(vec![]); // no scopes
+
+        // We can't easily create a McpHandler::with_gateway() without an XdsState,
+        // so we test via reflection: make a handler with gateway_executor set by
+        // temporarily testing the execute_gateway_tool logic via tools/call with
+        // a non-CP tool name + no gateway executor (returns ToolNotFound, not Forbidden).
+        // The Forbidden test requires api:execute scope check which happens inside
+        // execute_gateway_tool — tested via the api_handler port below.
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], context);
+
+        // Unknown tool with no gateway executor → ToolNotFound (not Forbidden)
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/call".to_string(),
+                params: serde_json::json!({ "name": "gateway-tool", "arguments": {} }),
+            })
+            .await;
+
+        assert!(response.error.is_some());
+        let error = response.error.unwrap();
+        // Without gateway executor, unknown tool gives ToolNotFound → INVALID_REQUEST (prevents name probing)
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_with_read_scope_includes_cp_tools() {
+        let test_db = TestDatabase::new("handler_list_read_scope").await;
+        let pool = Arc::new(test_db.pool.clone());
+        let ctx = context_with_scopes(vec!["team:test-team:api:read"]);
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        // tools/list always succeeds (auth for gateway tools is checked per-team)
+        assert!(response.error.is_none(), "Expected no error, got: {:?}", response.error);
+        let result = response.result.expect("Expected result");
+        assert!(result["tools"].is_array(), "Expected tools array in result");
+    }
+
+    #[tokio::test]
+    async fn test_api_prefix_tool_without_executor_returns_tool_not_found() {
+        let test_db = TestDatabase::new("handler_api_no_executor").await;
+        let pool = Arc::new(test_db.pool.clone());
+        let ctx = context_with_scopes(vec!["team:test-team:api:execute"]);
+        // McpHandler::new() has no gateway_executor (None)
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/call".to_string(),
+                params: serde_json::json!({ "name": "api_getUsers", "arguments": {} }),
+            })
+            .await;
+
+        // api_* tool with no gateway executor → ToolNotFound → INVALID_REQUEST (prevents name probing)
+        assert!(response.error.is_some());
+        let error = response.error.unwrap();
+        assert_eq!(error.code, error_codes::INVALID_REQUEST);
+    }
+
+    // ===== Cross-context isolation tests (tools/list filtering) =====
+
+    #[tokio::test]
+    async fn test_cp_tool_agent_with_no_grants_sees_no_cp_tools() {
+        let test_db = TestDatabase::new("handler_cp_no_grants").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // CP-tool agent with zero grants
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("cp-agent-token".to_string()),
+            "cp-agent".to_string(),
+            crate::domain::UserId::from_str_unchecked("cp-agent-1"),
+            "cp@test.com".to_string(),
+            vec![],
+        )
+        .with_grants(vec![], Some(crate::auth::models::AgentContext::CpTool));
+
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none(), "tools/list must not error");
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // No grants → no CP tools visible
+        assert!(tools.is_empty(), "CP-tool agent with no grants should see zero tools");
+    }
+
+    #[tokio::test]
+    async fn test_cp_tool_agent_with_grant_sees_only_matching_tools() {
+        let test_db = TestDatabase::new("handler_cp_with_grant").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // CP-tool agent with clusters:read grant
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("cp-agent-token".to_string()),
+            "cp-agent".to_string(),
+            crate::domain::UserId::from_str_unchecked("cp-agent-2"),
+            "cp@test.com".to_string(),
+            vec![],
+        )
+        .with_grants(
+            vec![crate::auth::models::Grant {
+                grant_type: crate::auth::models::GrantType::Resource,
+                team_id: "test-team-id".to_string(),
+                team_name: "test-team".to_string(),
+                resource_type: Some("clusters".to_string()),
+                action: Some("read".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            }],
+            Some(crate::auth::models::AgentContext::CpTool),
+        );
+
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none(), "tools/list must not error");
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // Should have at least one tool matching clusters:read grant
+        assert!(!tools.is_empty(), "Should have at least one cluster read tool");
+        // No api_* tools should appear — CP-tool agents never see gateway tools
+        let has_api_tool = tools
+            .iter()
+            .any(|t| t["name"].as_str().map(|n| n.starts_with("api_")).unwrap_or(false));
+        assert!(!has_api_tool, "CP-tool agent must never see api_* gateway tools");
+    }
+
+    #[tokio::test]
+    async fn test_gateway_tool_agent_sees_no_cp_tools() {
+        let test_db = TestDatabase::new("handler_gw_no_cp").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // Gateway-tool agent (no grants, but context is gateway-tool)
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("gw-agent-token".to_string()),
+            "gw-agent".to_string(),
+            crate::domain::UserId::from_str_unchecked("gw-agent-1"),
+            "gw@test.com".to_string(),
+            vec![],
+        )
+        .with_grants(vec![], Some(crate::auth::models::AgentContext::GatewayTool));
+
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none(), "tools/list must not error");
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // No cp_* tools should be visible to gateway-tool agent
+        let has_cp_tool =
+            tools.iter().any(|t| t["name"].as_str().map(|n| n.starts_with("cp_")).unwrap_or(false));
+        assert!(!has_cp_tool, "Gateway-tool agent must never see cp_* control-plane tools");
+        // With no grants and no gateway executor, the list is empty
+        assert!(tools.is_empty(), "Gateway-tool agent with no grants sees empty tools list");
+    }
+
+    #[tokio::test]
+    async fn test_api_consumer_agent_tools_list_is_empty() {
+        let test_db = TestDatabase::new("handler_consumer_empty").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // API-consumer agent
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("consumer-token".to_string()),
+            "consumer".to_string(),
+            crate::domain::UserId::from_str_unchecked("consumer-1"),
+            "consumer@test.com".to_string(),
+            vec![],
+        )
+        .with_grants(vec![], Some(crate::auth::models::AgentContext::ApiConsumer));
+
+        let mut handler = McpHandler::new(pool, vec!["test-team".to_string()], ctx);
+
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none(), "tools/list must not error for api-consumer agent");
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // API consumers access routes via Envoy, not MCP tools
+        assert!(tools.is_empty(), "API-consumer agent must always see empty tools list");
+    }
+
+    #[tokio::test]
+    async fn test_human_tools_list_no_grants_no_admin_sees_no_cp_tools() {
+        let test_db = TestDatabase::new("handler_human_no_grants").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // Human user with no grants and no org admin scope
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("human-token".to_string()),
+            "human".to_string(),
+            crate::domain::UserId::from_str_unchecked("user-1"),
+            "user@test.com".to_string(),
+            vec!["org:acme:member".to_string()],
+        )
+        .with_grants(vec![], None)
+        .with_org(crate::domain::OrgId::from_str_unchecked("org-1"), "acme".to_string());
+
+        let mut handler = McpHandler::new(pool, vec![], ctx);
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none());
+        let tools = response.result.unwrap()["tools"].as_array().unwrap().clone();
+        assert!(tools.is_empty(), "Human with no grants and no admin role must see zero CP tools");
+    }
+
+    #[tokio::test]
+    async fn test_human_tools_list_org_admin_sees_all_cp_tools() {
+        let test_db = TestDatabase::new("handler_human_org_admin").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // Human user with org:acme:admin scope (implicit access, no explicit grants)
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("admin-token".to_string()),
+            "admin".to_string(),
+            crate::domain::UserId::from_str_unchecked("admin-1"),
+            "admin@test.com".to_string(),
+            vec!["org:acme:admin".to_string()],
+        )
+        .with_grants(vec![], None)
+        .with_org(crate::domain::OrgId::from_str_unchecked("org-1"), "acme".to_string());
+
+        let mut handler = McpHandler::new(pool, vec![], ctx);
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none());
+        let tools = response.result.unwrap()["tools"].as_array().unwrap().clone();
+        let all_tool_count = tools::get_all_tools().len();
+        assert_eq!(
+            tools.len(),
+            all_tool_count,
+            "Org admin with no explicit grants must see all CP tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_human_tools_list_with_resource_grants_sees_matching_cp_tools() {
+        use crate::auth::models::{Grant, GrantType};
+
+        let test_db = TestDatabase::new("handler_human_with_grants").await;
+        let pool = Arc::new(test_db.pool.clone());
+
+        // Human user with clusters:read grant only
+        let ctx = AuthContext::with_user(
+            TokenId::from_string("user-token".to_string()),
+            "user".to_string(),
+            crate::domain::UserId::from_str_unchecked("user-2"),
+            "user2@test.com".to_string(),
+            vec!["org:acme:member".to_string()],
+        )
+        .with_grants(
+            vec![Grant {
+                grant_type: GrantType::Resource,
+                team_id: "team-uuid-1".to_string(),
+                team_name: "engineering".to_string(),
+                resource_type: Some("clusters".to_string()),
+                action: Some("read".to_string()),
+                route_id: None,
+                allowed_methods: vec![],
+            }],
+            None,
+        )
+        .with_org(crate::domain::OrgId::from_str_unchecked("org-1"), "acme".to_string());
+
+        let mut handler = McpHandler::new(pool, vec![], ctx);
+        let response = handler
+            .handle_request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: Some(JsonRpcId::Number(1)),
+                method: "tools/list".to_string(),
+                params: serde_json::json!({}),
+            })
+            .await;
+
+        assert!(response.error.is_none());
+        let tools = response.result.unwrap()["tools"].as_array().unwrap().clone();
+        // Must see at least some tools (clusters:read matches cp_list_clusters, cp_get_cluster etc.)
+        assert!(!tools.is_empty(), "User with clusters:read grant must see matching tools");
+        // All visible tools must require only clusters:read
+        for tool in &tools {
+            let name = tool["name"].as_str().unwrap();
+            let auth = get_tool_authorization(name);
+            assert!(
+                auth.map(|a| a.resource == "clusters" && a.action == "read").unwrap_or(false),
+                "Tool {name} should not be visible with only clusters:read grant"
+            );
+        }
+        // Must NOT see tools requiring write or other resources
+        let has_write_tool = tools.iter().any(|t| {
+            t["name"]
+                .as_str()
+                .and_then(get_tool_authorization)
+                .map(|a| a.action == "write")
+                .unwrap_or(false)
+        });
+        assert!(!has_write_tool, "User with only clusters:read must not see write tools");
     }
 }

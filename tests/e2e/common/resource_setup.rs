@@ -281,7 +281,6 @@ impl<'a> ResourceSetup<'a> {
         // Create cluster first
         if let Some(cluster_config) = self.cluster {
             let cluster_req = CreateClusterRequest {
-                team: self.team.to_string(),
                 name: cluster_config.name.clone(),
                 service_name: None,
                 endpoints: vec![ClusterEndpoint {
@@ -301,7 +300,7 @@ impl<'a> ResourceSetup<'a> {
 
             let cluster = with_timeout(
                 TestTimeout::default_with_label(format!("Create cluster {}", cluster_req.name)),
-                async { self.api.create_cluster(self.token, &cluster_req).await },
+                async { self.api.create_cluster(self.token, self.team, &cluster_req).await },
             )
             .await?;
 
@@ -321,7 +320,7 @@ impl<'a> ResourceSetup<'a> {
 
             let route = with_timeout(
                 TestTimeout::default_with_label(format!("Create route {}", route_req.name)),
-                async { self.api.create_route(self.token, &route_req).await },
+                async { self.api.create_route(self.token, self.team, &route_req).await },
             )
             .await?;
 
@@ -338,7 +337,6 @@ impl<'a> ResourceSetup<'a> {
             }
 
             let listener_req = CreateListenerRequest {
-                team: self.team.to_string(),
                 name: listener_config.name,
                 address: "0.0.0.0".to_string(),
                 port: listener_config.port,
@@ -362,7 +360,7 @@ impl<'a> ResourceSetup<'a> {
 
             let listener = with_timeout(
                 TestTimeout::default_with_label(format!("Create listener {}", listener_req.name)),
-                async { self.api.create_listener(self.token, &listener_req).await },
+                async { self.api.create_listener(self.token, self.team, &listener_req).await },
             )
             .await?;
 
@@ -398,6 +396,7 @@ impl<'a> ResourceSetup<'a> {
                         self.api
                             .install_filter(
                                 self.token,
+                                self.team,
                                 &filter.id,
                                 &listener.name,
                                 filter_config.priority.map(|p| p as i64),
@@ -418,9 +417,8 @@ impl<'a> ResourceSetup<'a> {
 }
 
 /// Build a route request with optional retry policy and prefix rewrite
-fn build_route_request(team: &str, config: &RouteConfig) -> CreateRouteRequest {
+fn build_route_request(_team: &str, config: &RouteConfig) -> CreateRouteRequest {
     CreateRouteRequest {
-        team: team.to_string(),
         name: config.name.clone(),
         virtual_hosts: vec![VirtualHost {
             name: format!("{}-vh", config.name),

@@ -448,6 +448,70 @@ impl LearningSessionService {
         Ok(failed)
     }
 
+    /// Cancel a learning session (user-initiated cancellation)
+    ///
+    /// Similar to fail_session but sets status to Cancelled instead of Failed.
+    pub async fn cancel_session(&self, session_id: &str) -> Result<LearningSessionData> {
+        let update_request = UpdateLearningSessionRequest {
+            status: Some(LearningSessionStatus::Cancelled),
+            started_at: None,
+            ends_at: None,
+            completed_at: Some(chrono::Utc::now()),
+            current_sample_count: None,
+            error_message: Some("Cancelled by user".to_string()),
+        };
+
+        let cancelled = self.repository.update(session_id, update_request).await?;
+
+        // Unregister from Access Log Service
+        if let Some(access_log_service) = &self.access_log_service {
+            access_log_service.remove_session(session_id).await;
+        }
+
+        // Unregister from ExtProc Service
+        if let Some(ext_proc_service) = &self.ext_proc_service {
+            ext_proc_service.remove_session(session_id).await;
+        }
+
+        // Trigger LDS update to remove access log configuration
+        if let Some(weak_state) = &self.xds_state {
+            if let Some(xds_state) = weak_state.upgrade() {
+                if let Err(e) = xds_state.refresh_listeners_from_repository().await {
+                    error!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to refresh listeners after session cancellation"
+                    );
+                } else {
+                    info!(
+                        session_id = %session_id,
+                        "Triggered LDS update to remove access log configuration after cancellation"
+                    );
+                }
+            }
+        }
+
+        info!(
+            session_id = %session_id,
+            "Session cancelled by user"
+        );
+
+        // Publish webhook event if webhook service is available
+        if let Some(webhook_service) = &self.webhook_service {
+            let event = LearningSessionWebhookEvent::failed(
+                cancelled.id.clone(),
+                cancelled.team.clone(),
+                cancelled.route_pattern.clone(),
+                "Cancelled by user".to_string(),
+                cancelled.current_sample_count,
+                cancelled.target_sample_count,
+            );
+            webhook_service.publish_event(event).await;
+        }
+
+        Ok(cancelled)
+    }
+
     /// Get all active learning sessions
     ///
     /// This is used by XdsState to inject access log configuration

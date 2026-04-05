@@ -5,13 +5,11 @@ use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 /// Request body for creating a new dataplane
+///
+/// Team is derived from the URL path (`/teams/{team}/dataplanes`), not from the body.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateDataplaneBody {
-    /// Team name for the dataplane
-    #[validate(length(min = 1, max = 100))]
-    pub team: String,
-
     /// Unique name for the dataplane within the team
     #[validate(length(min = 1, max = 100))]
     pub name: String,

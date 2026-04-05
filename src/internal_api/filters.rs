@@ -549,16 +549,14 @@ impl FilterOperations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SimpleXdsConfig;
     use crate::domain::FilterConfig;
-    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
+    use crate::storage::test_helpers::{
+        create_test_xds_state, TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID,
+    };
     use crate::xds::filters::http::cors::{CorsConfig, CorsPolicyConfig};
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
-        let test_db = TestDatabase::new("internal_api_filters").await;
-        let pool = test_db.pool.clone();
-        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-        (test_db, state)
+        create_test_xds_state("internal_api_filters").await
     }
 
     fn sample_cors_config() -> FilterConfig {

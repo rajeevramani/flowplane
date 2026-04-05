@@ -3,5 +3,6 @@
 #![allow(clippy::duplicate_mod)]
 
 mod test_cross_org_access;
+mod test_grant_enforcement;
 mod test_org_isolation;
 mod test_team_isolation;

@@ -3,16 +3,15 @@
 //! Control Plane tools for discovering and inspecting API schemas learned through traffic analysis.
 
 use crate::domain::OrgId;
-use crate::internal_api::{AggregatedSchemaOperations, InternalAuthContext, ListSchemasRequest};
+use crate::internal_api::{AggregatedSchemaOperations, ListSchemasRequest};
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::instrument;
 
-// validate_team_in_org is shared — use super::validate_team_in_org
-use super::validate_team_in_org;
+// validate_team_in_org removed — resolve_mcp_auth handles team validation
 
 /// Tool definition for listing aggregated schemas
 pub fn cp_list_aggregated_schemas_tool() -> Tool {
@@ -56,43 +55,32 @@ CONFIDENCE SCORES:
 - Below 0.5: Low confidence, recently observed or inconsistent
 
 RELATED TOOLS: cp_get_aggregated_schema (get specific schema by ID)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Search pattern for API path (e.g., '/api/users' or '/v1/')"
-                },
-                "http_method": {
-                    "type": "string",
-                    "description": "Filter by HTTP method",
-                    "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
-                },
-                "min_confidence": {
-                    "type": "number",
-                    "description": "Minimum confidence score (0.0 to 1.0). Higher values indicate more reliable schemas.",
-                    "minimum": 0.0,
-                    "maximum": 1.0
-                },
-                "latest_only": {
-                    "type": "boolean",
-                    "description": "If true, only return the latest version of each endpoint (default: true)"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of schemas to return (1-1000, default: 100)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 100
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Offset for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("schemas");
+            props["path"] = json!({
+                "type": "string",
+                "description": "Search pattern for API path (e.g., '/api/users' or '/v1/')"
+            });
+            props["httpMethod"] = json!({
+                "type": "string",
+                "description": "Filter by HTTP method",
+                "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+            });
+            props["minConfidence"] = json!({
+                "type": "number",
+                "description": "Minimum confidence score (0.0 to 1.0). Higher values indicate more reliable schemas.",
+                "minimum": 0.0,
+                "maximum": 1.0
+            });
+            props["latestOnly"] = json!({
+                "type": "boolean",
+                "description": "If true, only return the latest version of each endpoint (default: true)"
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -184,7 +172,7 @@ Authorization: Requires aggregated-schemas:read scope."#,
         json!({
             "type": "object",
             "properties": {
-                "schema_ids": {
+                "schemaIds": {
                     "type": "array",
                     "description": "Array of schema IDs to include in the export",
                     "items": { "type": "integer" },
@@ -202,13 +190,13 @@ Authorization: Requires aggregated-schemas:read scope."#,
                     "type": "string",
                     "description": "Description for the API"
                 },
-                "include_metadata": {
+                "includeMetadata": {
                     "type": "boolean",
                     "description": "Include Flowplane extensions (x-flowplane-*). Default: false",
                     "default": false
                 }
             },
-            "required": ["schema_ids"]
+            "required": ["schemaIds"]
         }),
     )
 }
@@ -221,21 +209,15 @@ pub async fn execute_export_schema_openapi(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    // Validate team belongs to caller's org
-    if let Some(oid) = org_id {
-        let pool = xds_state
-            .cluster_repository
-            .as_ref()
-            .ok_or_else(|| McpError::InternalError("Database not available".to_string()))?
-            .pool();
-        validate_team_in_org(pool, team, oid).await?;
-    }
+    // Team validation is handled by resolve_mcp_auth below (resolves name → UUID
+    // and validates org membership). The previous validate_team_in_org call here
+    // was passing team name to a function expecting UUID, causing failures.
 
     let schema_ids: Vec<i64> = args
-        .get("schema_ids")
+        .get("schemaIds")
         .and_then(|v| v.as_array())
         .ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: schema_ids".to_string())
+            McpError::InvalidParams("Missing required parameter: schemaIds".to_string())
         })?
         .iter()
         .filter_map(|v| v.as_i64())
@@ -248,17 +230,14 @@ pub async fn execute_export_schema_openapi(
     let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("Flowplane API").to_string();
     let version = args.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0").to_string();
     let description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let include_metadata = args.get("include_metadata").and_then(|v| v.as_bool()).unwrap_or(false);
+    let include_metadata = args.get("includeMetadata").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // Verify auth context
     let team_repo = xds_state
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // Fetch schemas via internal API
     let ops = AggregatedSchemaOperations::new(xds_state.clone());
@@ -311,7 +290,7 @@ pub async fn execute_export_schema_openapi(
     }
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute list aggregated schemas operation using the internal API layer.
@@ -323,9 +302,9 @@ pub async fn execute_list_aggregated_schemas(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     let path = args.get("path").and_then(|v| v.as_str()).map(String::from);
-    let http_method = args.get("http_method").and_then(|v| v.as_str()).map(String::from);
-    let min_confidence = args.get("min_confidence").and_then(|v| v.as_f64());
-    let latest_only = args.get("latest_only").and_then(|v| v.as_bool());
+    let http_method = args.get("httpMethod").and_then(|v| v.as_str()).map(String::from);
+    let min_confidence = args.get("minConfidence").and_then(|v| v.as_f64());
+    let latest_only = args.get("latestOnly").and_then(|v| v.as_bool());
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
     let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32);
 
@@ -335,10 +314,7 @@ pub async fn execute_list_aggregated_schemas(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = ListSchemasRequest { path, http_method, min_confidence, latest_only, limit, offset };
 
@@ -380,7 +356,7 @@ pub async fn execute_list_aggregated_schemas(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get aggregated schema operation using the internal API layer.
@@ -402,10 +378,7 @@ pub async fn execute_get_aggregated_schema(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let schema = ops.get(id, &auth).await?;
 
@@ -445,7 +418,7 @@ pub async fn execute_get_aggregated_schema(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 #[cfg(test)]
@@ -463,9 +436,9 @@ mod tests {
         // Verify input schema has expected properties
         let properties = &tool.input_schema["properties"];
         assert!(properties.get("path").is_some());
-        assert!(properties.get("http_method").is_some());
-        assert!(properties.get("min_confidence").is_some());
-        assert!(properties.get("latest_only").is_some());
+        assert!(properties.get("httpMethod").is_some());
+        assert!(properties.get("minConfidence").is_some());
+        assert!(properties.get("latestOnly").is_some());
 
         // Verify no required parameters
         assert!(
@@ -505,7 +478,7 @@ mod tests {
     fn test_list_tool_has_http_method_enum() {
         let tool = cp_list_aggregated_schemas_tool();
         let properties = &tool.input_schema["properties"];
-        let http_method = properties.get("http_method").unwrap();
+        let http_method = properties.get("httpMethod").unwrap();
 
         let enum_values = http_method["enum"].as_array().unwrap();
         assert!(enum_values.contains(&json!("GET")));
@@ -524,12 +497,12 @@ mod tests {
 
         let schema = &tool.input_schema;
         assert_eq!(schema["type"], "object");
-        assert!(schema["properties"]["schema_ids"].is_object());
+        assert!(schema["properties"]["schemaIds"].is_object());
         assert!(schema["properties"]["title"].is_object());
         assert!(schema["properties"]["version"].is_object());
-        assert!(schema["properties"]["include_metadata"].is_object());
+        assert!(schema["properties"]["includeMetadata"].is_object());
 
         let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("schema_ids")));
+        assert!(required.contains(&json!("schemaIds")));
     }
 }

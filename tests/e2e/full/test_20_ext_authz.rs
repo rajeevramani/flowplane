@@ -67,7 +67,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "debug-backend", echo_host, echo_port),
+            &ctx.team_a_name,
+            &simple_cluster("debug-backend", echo_host, echo_port),
         )
         .await
         .expect("Cluster creation should succeed");
@@ -79,13 +80,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "debug-route",
-                "debug.e2e.local",
-                "/testing/debug",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("debug-route", "debug.e2e.local", "/testing/debug", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -97,8 +93,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "debug-listener",
                 harness.ports.listener,
                 &route.name,
@@ -224,7 +220,8 @@ async fn test_098_debug_ext_authz_step_by_step() {
     let authz_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "debug-authz-cluster", authz_host, authz_port),
+            &ctx.team_a_name,
+            &simple_cluster("debug-authz-cluster", authz_host, authz_port),
         )
         .await
         .expect("Authz cluster creation should succeed");
@@ -291,7 +288,7 @@ async fn test_098_debug_ext_authz_step_by_step() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Install filter on listener
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
     println!("✓ Filter installed on listener: {}", listener.name);
@@ -300,9 +297,14 @@ async fn test_098_debug_ext_authz_step_by_step() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Configure at route-config level
-    api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name)
-        .await
-        .expect("Filter route-config configuration should succeed");
+    api.configure_filter_at_route_config(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &filter.id,
+        &route.name,
+    )
+    .await
+    .expect("Filter route-config configuration should succeed");
     println!("✓ Filter configured at route-config level: {}", route.name);
 
     // Wait for xDS propagation
@@ -462,7 +464,8 @@ async fn test_100_setup_ext_authz() {
         with_timeout(TestTimeout::default_with_label("Create authz cluster"), async {
             api.create_cluster(
                 &ctx.admin_token,
-                &simple_cluster(&ctx.team_a_name, "authz-cluster", authz_host, authz_port),
+                &ctx.team_a_name,
+                &simple_cluster("authz-cluster", authz_host, authz_port),
             )
             .await
         })
@@ -480,7 +483,8 @@ async fn test_100_setup_ext_authz() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "authz-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("authz-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -491,13 +495,8 @@ async fn test_100_setup_ext_authz() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "authz-route",
-                "authz.e2e.local",
-                "/testing/authz-setup",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("authz-route", "authz.e2e.local", "/testing/authz-setup", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -508,8 +507,8 @@ async fn test_100_setup_ext_authz() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "authz-listener",
                 harness.ports.listener,
                 &route.name,
@@ -547,7 +546,14 @@ async fn test_100_setup_ext_authz() {
 
     // Install filter on listener
     let installation = with_timeout(TestTimeout::default_with_label("Install filter"), async {
-        api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100)).await
+        api.install_filter(
+            &ctx.admin_token,
+            &ctx.team_a_name,
+            &filter.id,
+            &listener.name,
+            Some(100),
+        )
+        .await
     })
     .await
     .expect("Filter installation should succeed");
@@ -558,9 +564,14 @@ async fn test_100_setup_ext_authz() {
     );
 
     // Configure filter at route-config level (required for ext_authz to be active)
-    api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name)
-        .await
-        .expect("Filter route-config configuration should succeed");
+    api.configure_filter_at_route_config(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &filter.id,
+        &route.name,
+    )
+    .await
+    .expect("Filter route-config configuration should succeed");
 
     println!("✓ Filter configured at route-config level: {}", route.name);
 
@@ -600,7 +611,8 @@ async fn test_101_authz_allow() {
     let authz_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "allow-authz-cluster", authz_host, authz_port),
+            &ctx.team_a_name,
+            &simple_cluster("allow-authz-cluster", authz_host, authz_port),
         )
         .await
         .expect("Authz cluster creation should succeed");
@@ -612,7 +624,8 @@ async fn test_101_authz_allow() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "allow-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("allow-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -620,13 +633,8 @@ async fn test_101_authz_allow() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "allow-route",
-                "allow.e2e.local",
-                "/testing/authz-allow",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("allow-route", "allow.e2e.local", "/testing/authz-allow", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -634,8 +642,8 @@ async fn test_101_authz_allow() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "allow-listener",
                 harness.ports.listener,
                 &route.name,
@@ -666,16 +674,21 @@ async fn test_101_authz_allow() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
     println!("✓ Filter installed on listener: {}", listener.name);
 
     // Configure filter at route-config level (required for ext_authz to be active)
-    api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name)
-        .await
-        .expect("Filter route-config configuration should succeed");
+    api.configure_filter_at_route_config(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &filter.id,
+        &route.name,
+    )
+    .await
+    .expect("Filter route-config configuration should succeed");
 
     println!("✓ Filter configured at route-config level: {}", route.name);
 
@@ -814,7 +827,8 @@ async fn test_102_authz_deny() {
     let authz_cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "deny-authz-cluster", authz_host, authz_port),
+            &ctx.team_a_name,
+            &simple_cluster("deny-authz-cluster", authz_host, authz_port),
         )
         .await
         .expect("Authz cluster creation should succeed");
@@ -826,7 +840,8 @@ async fn test_102_authz_deny() {
     let cluster = api
         .create_cluster(
             &ctx.admin_token,
-            &simple_cluster(&ctx.team_a_name, "deny-backend", host, port),
+            &ctx.team_a_name,
+            &simple_cluster("deny-backend", host, port),
         )
         .await
         .expect("Backend cluster creation should succeed");
@@ -834,13 +849,8 @@ async fn test_102_authz_deny() {
     let route = api
         .create_route(
             &ctx.admin_token,
-            &simple_route(
-                &ctx.team_a_name,
-                "deny-route",
-                "deny.e2e.local",
-                "/testing/authz-deny",
-                &cluster.name,
-            ),
+            &ctx.team_a_name,
+            &simple_route("deny-route", "deny.e2e.local", "/testing/authz-deny", &cluster.name),
         )
         .await
         .expect("Route creation should succeed");
@@ -848,8 +858,8 @@ async fn test_102_authz_deny() {
     let listener = api
         .create_listener(
             &ctx.admin_token,
+            &ctx.team_a_name,
             &simple_listener(
-                &ctx.team_a_name,
                 "deny-listener",
                 harness.ports.listener,
                 &route.name,
@@ -873,16 +883,21 @@ async fn test_102_authz_deny() {
         .await
         .expect("Filter creation should succeed");
 
-    api.install_filter(&ctx.admin_token, &filter.id, &listener.name, Some(100))
+    api.install_filter(&ctx.admin_token, &ctx.team_a_name, &filter.id, &listener.name, Some(100))
         .await
         .expect("Filter installation should succeed");
 
     println!("✓ Filter installed on listener: {}", listener.name);
 
     // Configure filter at route-config level (required for ext_authz to be active)
-    api.configure_filter_at_route_config(&ctx.admin_token, &filter.id, &route.name)
-        .await
-        .expect("Filter route-config configuration should succeed");
+    api.configure_filter_at_route_config(
+        &ctx.admin_token,
+        &ctx.team_a_name,
+        &filter.id,
+        &route.name,
+    )
+    .await
+    .expect("Filter route-config configuration should succeed");
 
     println!("✓ Filter configured at route-config level: {}", route.name);
 

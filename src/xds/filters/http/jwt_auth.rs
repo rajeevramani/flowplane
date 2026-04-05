@@ -2,6 +2,9 @@
 
 use crate::xds::filters::{any_from_message, invalid_config, Base64Bytes};
 use envoy_types::pb::envoy::config::core::v3::{
+    config_source::ConfigSourceSpecifier, AggregatedConfigSource, ConfigSource,
+};
+use envoy_types::pb::envoy::config::core::v3::{
     data_source, BackoffStrategy, DataSource, HttpUri, RetryPolicy,
 };
 use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::requirement_rule::RequirementType;
@@ -11,6 +14,7 @@ use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::{
     JwtRequirementAndList, JwtRequirementOrList, PerRouteConfig, ProviderWithAudiences,
     RequirementRule,
 };
+use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::SdsSecretConfig;
 use envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher;
 use envoy_types::pb::google::protobuf::{
     Any as EnvoyAny, Duration as ProtoDuration, Empty, UInt32Value,
@@ -18,6 +22,28 @@ use envoy_types::pb::google::protobuf::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
+
+/// Build an SDS secret config that uses ADS for secret discovery
+fn build_sds_secret_config(name: &str) -> SdsSecretConfig {
+    SdsSecretConfig {
+        name: name.to_string(),
+        sds_config: Some(ConfigSource {
+            config_source_specifier: Some(ConfigSourceSpecifier::Ads(
+                AggregatedConfigSource::default(),
+            )),
+            ..Default::default()
+        }),
+    }
+}
+
+/// Secret reference for SDS-based JWKS key delivery.
+/// When configured, the JWKS content is fetched via the control plane's
+/// Secret Discovery Service instead of remote HTTP or inline data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct JwksSecretConfig {
+    /// Name of the SDS secret containing the JWKS key material
+    pub name: String,
+}
 
 /// Top-level JWT authentication filter configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
@@ -362,6 +388,16 @@ pub struct JwtProviderConfig {
 }
 
 impl JwtProviderConfig {
+    /// Returns the SDS secret config for the JWKS key material, if configured.
+    /// The xDS snapshot builder uses this to register the secret resource with the
+    /// SDS server so that JWKS content is delivered via ADS.
+    pub fn jwks_sds_config(&self) -> Option<SdsSecretConfig> {
+        match &self.jwks {
+            JwtJwksSourceConfig::Sds(secret) => Some(build_sds_secret_config(&secret.name)),
+            _ => None,
+        }
+    }
+
     fn to_proto(&self) -> Result<JwtProvider, crate::Error> {
         for header in &self.from_headers {
             if header.name.trim().is_empty() {
@@ -471,6 +507,20 @@ impl JwtProviderConfig {
                     ),
                 );
             }
+            JwtJwksSourceConfig::Sds(secret) => {
+                // SDS-based JWKS: Envoy's jwt_authn filter doesn't have a native SDS
+                // JWKS specifier. The control plane's SDS server delivers the JWKS content
+                // as a generic secret. On the Envoy proto side we leave jwks_source_specifier
+                // unset — the SDS server will populate the JWKS via the secret resource
+                // identified by `jwks_sds_config()`. The xDS snapshot builder is
+                // responsible for wiring the SDS secret into the listener configuration.
+                if secret.name.trim().is_empty() {
+                    return Err(invalid_config(
+                        "JwtAuthentication SDS jwks_secret.name cannot be empty",
+                    ));
+                }
+                // Leave jwks_source_specifier as None — the control plane handles delivery
+            }
         }
 
         if let Some(cache) = &self.jwt_cache_config {
@@ -534,6 +584,10 @@ pub struct JwtClaimToHeaderConfig {
 pub enum JwtJwksSourceConfig {
     Remote(RemoteJwksConfig),
     Local(LocalJwksConfig),
+    /// SDS-based JWKS key delivery via the control plane's Secret Discovery Service.
+    /// When selected, the JWKS content is fetched from the secrets system (Vault, etc.)
+    /// and delivered to Envoy as a local JWKS data source.
+    Sds(JwksSecretConfig),
 }
 
 impl Default for JwtJwksSourceConfig {
@@ -1051,5 +1105,126 @@ mod tests {
             proto.requirement_specifier,
             Some(per_route_config::RequirementSpecifier::Disabled(true))
         ));
+    }
+
+    #[test]
+    fn sds_jwks_provider_builds_proto_without_source_specifier() {
+        let provider = JwtProviderConfig {
+            issuer: Some("https://issuer.example.com".into()),
+            audiences: vec!["aud1".into()],
+            jwks: JwtJwksSourceConfig::Sds(JwksSecretConfig { name: "my-jwks-secret".into() }),
+            ..Default::default()
+        };
+
+        let proto = provider.to_proto().expect("to_proto");
+        // SDS-based JWKS leaves the source specifier unset; the control plane
+        // delivers the key material via the SDS server.
+        assert!(
+            proto.jwks_source_specifier.is_none(),
+            "SDS provider should not set jwks_source_specifier"
+        );
+        assert_eq!(proto.issuer, "https://issuer.example.com");
+    }
+
+    #[test]
+    fn sds_jwks_returns_sds_config() {
+        let provider = JwtProviderConfig {
+            jwks: JwtJwksSourceConfig::Sds(JwksSecretConfig { name: "my-jwks-secret".into() }),
+            ..Default::default()
+        };
+
+        let sds = provider.jwks_sds_config().expect("should return SDS config");
+        assert_eq!(sds.name, "my-jwks-secret");
+        assert!(sds.sds_config.is_some(), "SDS config should use ADS");
+    }
+
+    #[test]
+    fn remote_jwks_returns_no_sds_config() {
+        let provider = sample_provider();
+        assert!(provider.jwks_sds_config().is_none(), "remote JWKS should not return SDS config");
+    }
+
+    #[test]
+    fn local_jwks_returns_no_sds_config() {
+        let provider = JwtProviderConfig {
+            jwks: JwtJwksSourceConfig::Local(LocalJwksConfig {
+                inline_string: Some(r#"{"keys":[]}"#.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(provider.jwks_sds_config().is_none(), "local JWKS should not return SDS config");
+    }
+
+    #[test]
+    fn sds_jwks_empty_name_fails_validation() {
+        let provider = JwtProviderConfig {
+            jwks: JwtJwksSourceConfig::Sds(JwksSecretConfig { name: String::new() }),
+            ..Default::default()
+        };
+
+        let err = provider.to_proto().unwrap_err();
+        assert!(
+            err.to_string().contains("jwks_secret.name"),
+            "error should mention jwks_secret.name: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn sds_jwks_whitespace_name_fails_validation() {
+        let provider = JwtProviderConfig {
+            jwks: JwtJwksSourceConfig::Sds(JwksSecretConfig { name: "   ".into() }),
+            ..Default::default()
+        };
+
+        let err = provider.to_proto().unwrap_err();
+        assert!(err.to_string().contains("jwks_secret.name"));
+    }
+
+    #[test]
+    fn sds_jwks_full_config_builds_any() {
+        let config = JwtAuthenticationConfig {
+            rules: vec![],
+            requirement_map: HashMap::new(),
+            providers: HashMap::from([(
+                "sds-provider".into(),
+                JwtProviderConfig {
+                    issuer: Some("https://auth.example.com".into()),
+                    audiences: vec!["api".into()],
+                    jwks: JwtJwksSourceConfig::Sds(JwksSecretConfig {
+                        name: "jwks-from-vault".into(),
+                    }),
+                    ..Default::default()
+                },
+            )]),
+            filter_state_rules: None,
+            bypass_cors_preflight: None,
+            strip_failure_response: None,
+            stat_prefix: None,
+        };
+
+        let any = config.to_any().expect("to_any should succeed");
+        assert_eq!(
+            any.type_url,
+            "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication"
+        );
+        assert!(!any.value.is_empty());
+    }
+
+    #[test]
+    fn sds_jwks_deserializes_from_json() {
+        let json = r#"{
+            "type": "sds",
+            "name": "my-jwks-secret"
+        }"#;
+
+        let config: JwtJwksSourceConfig = serde_json::from_str(json).expect("deserialize");
+        match &config {
+            JwtJwksSourceConfig::Sds(secret) => {
+                assert_eq!(secret.name, "my-jwks-secret");
+            }
+            other => panic!("expected Sds variant, got {:?}", other),
+        }
     }
 }

@@ -5,11 +5,10 @@
 use crate::domain::OrgId;
 use crate::internal_api::routes::transform_path;
 use crate::internal_api::{
-    CreateFilterRequest, FilterOperations, InternalAuthContext, ListFiltersRequest,
-    UpdateFilterRequest,
+    CreateFilterRequest, FilterOperations, ListFiltersRequest, UpdateFilterRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_delete_response, build_rich_create_response, build_rich_delete_response,
     build_update_response,
@@ -53,29 +52,18 @@ FILTER TYPES:
 RETURNS: Array of filter objects with name, filter_type, configuration, and metadata.
 
 RELATED TOOLS: cp_get_filter (details), cp_create_filter (create new)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "filter_type": {
-                    "type": "string",
-                    "description": "Filter by filter type (e.g., jwt_auth, oauth2, cors, rate_limit)",
-                    "enum": ["jwt_auth", "oauth2", "local_rate_limit", "cors", "header_mutation", "ext_authz", "rbac", "custom_response", "compressor", "mcp"]
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of filters to return (1-1000, default: 100)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 100
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Offset for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("filters");
+            props["filterType"] = json!({
+                "type": "string",
+                "description": "Filter by filter type (e.g., jwt_auth, oauth2, cors, rate_limit)",
+                "enum": ["jwt_auth", "oauth2", "local_rate_limit", "cors", "header_mutation", "ext_authz", "rbac", "custom_response", "compressor", "mcp"]
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -133,7 +121,7 @@ pub async fn execute_list_filters(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    let filter_type = args["filter_type"].as_str().map(|s| s.to_string());
+    let filter_type = args["filterType"].as_str().map(|s| s.to_string());
     let limit = args.get("limit").and_then(|v| v.as_i64()).map(|v| v as i32);
     let offset = args.get("offset").and_then(|v| v.as_i64()).map(|v| v as i32);
 
@@ -143,10 +131,7 @@ pub async fn execute_list_filters(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = ListFiltersRequest { filter_type, limit, offset, include_defaults: true };
 
@@ -178,7 +163,7 @@ pub async fn execute_list_filters(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get filter operation using the internal API layer.
@@ -199,10 +184,7 @@ pub async fn execute_get_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let filter_with_installations = ops.get_with_installations(name, &auth).await?;
     let filter = &filter_with_installations.filter;
@@ -237,7 +219,7 @@ pub async fn execute_get_filter(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 // =============================================================================
@@ -318,7 +300,7 @@ ext_authz - External Authorization:
   }
 }
 
-Authorization: Requires cp:write scope.
+Authorization: Requires filters:create scope.
 "#,
         json!({
             "type": "object",
@@ -375,7 +357,7 @@ Optional Parameters:
 
 TIP: Use cp_get_filter first to see current configuration and installations.
 
-Authorization: Requires cp:write scope.
+Authorization: Requires filters:update scope.
 "#,
         json!({
             "type": "object",
@@ -426,7 +408,7 @@ WORKFLOW TO DELETE AN ATTACHED FILTER:
 Required Parameters:
 - name: Name of the filter to delete
 
-Authorization: Requires cp:write scope.
+Authorization: Requires filters:delete scope.
 "#,
         json!({
             "type": "object",
@@ -505,13 +487,12 @@ pub async fn execute_create_filter(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let filter_type = args
-        .get("filterType")
-        .or_else(|| args.get("filter_type"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: filterType".to_string())
-        })?;
+    crate::validation::validate_resource_name(name)
+        .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
+    let filter_type = args.get("filterType").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: filterType".to_string())
+    })?;
 
     let configuration = args.get("configuration").ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: configuration".to_string())
@@ -555,10 +536,7 @@ pub async fn execute_create_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateFilterRequest {
         name: name.to_string(),
@@ -592,7 +570,7 @@ pub async fn execute_create_filter(
         "Successfully created filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_filter tool using the internal API layer.
@@ -621,17 +599,10 @@ pub async fn execute_update_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Parse optional updates (auto-wrap config if needed)
-    let new_name = args
-        .get("newName")
-        .or_else(|| args.get("new_name"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let new_name = args.get("newName").and_then(|v| v.as_str()).map(|s| s.to_string());
     let new_description = args.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
     let new_config = if let Some(config_json) = args.get("configuration") {
         // Look up existing filter to get its type for auto-wrapping
@@ -674,7 +645,7 @@ pub async fn execute_update_filter(
         "Successfully updated filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_filter tool using the internal API layer.
@@ -703,10 +674,7 @@ pub async fn execute_delete_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(name, &auth).await?;
 
@@ -721,7 +689,7 @@ pub async fn execute_delete_filter(
         "Successfully deleted filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -776,7 +744,7 @@ EXAMPLE (attach to route config with settings override):
   "settings": {"max_requests": 1000}
 }
 
-Authorization: Requires filters:write or cp:write scope.
+Authorization: Requires filters:update scope.
 "#,
         json!({
             "type": "object",
@@ -789,7 +757,7 @@ Authorization: Requires filters:write or cp:write scope.
                     "type": "string",
                     "description": "Name of the listener to attach to (for listener-level attachment)"
                 },
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Name of the route configuration to attach to (for route-config-level attachment)"
                 },
@@ -840,7 +808,7 @@ EXAMPLE:
   "listener": "main-listener"
 }
 
-Authorization: Requires filters:write or cp:write scope.
+Authorization: Requires filters:update scope.
 "#,
         json!({
             "type": "object",
@@ -853,7 +821,7 @@ Authorization: Requires filters:write or cp:write scope.
                     "type": "string",
                     "description": "Name of the listener to detach from"
                 },
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Name of the route configuration to detach from"
                 }
@@ -924,14 +892,14 @@ pub async fn execute_attach_filter(
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
 
     let listener = args.get("listener").and_then(|v| v.as_str());
-    let route_config = args.get("route_config").and_then(|v| v.as_str());
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str());
     let order = args.get("order").and_then(|v| v.as_i64());
     let settings = args.get("settings").cloned();
 
     // 2. Validate exactly one target is specified
     if listener.is_none() && route_config.is_none() {
         return Err(McpError::InvalidParams(
-            "Must specify either 'listener' or 'route_config' as attachment target".to_string(),
+            "Must specify either 'listener' or 'routeConfig' as attachment target".to_string(),
         ));
     }
     if listener.is_some() && route_config.is_some() {
@@ -945,10 +913,7 @@ pub async fn execute_attach_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Execute appropriate attachment
     let (target_type, target_name) = if let Some(listener_name) = listener {
@@ -1001,7 +966,7 @@ pub async fn execute_attach_filter(
         "Successfully attached filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_detach_filter tool.
@@ -1019,12 +984,12 @@ pub async fn execute_detach_filter(
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: filter".to_string()))?;
 
     let listener = args.get("listener").and_then(|v| v.as_str());
-    let route_config = args.get("route_config").and_then(|v| v.as_str());
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str());
 
     // 2. Validate exactly one target is specified
     if listener.is_none() && route_config.is_none() {
         return Err(McpError::InvalidParams(
-            "Must specify either 'listener' or 'route_config' as detachment target".to_string(),
+            "Must specify either 'listener' or 'routeConfig' as detachment target".to_string(),
         ));
     }
     if listener.is_some() && route_config.is_some() {
@@ -1038,10 +1003,7 @@ pub async fn execute_detach_filter(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // 3. Execute appropriate detachment
     let (target_type, target_name) = if let Some(listener_name) = listener {
@@ -1081,7 +1043,7 @@ pub async fn execute_detach_filter(
         "Successfully detached filter via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_list_filter_attachments tool.
@@ -1110,10 +1072,7 @@ pub async fn execute_list_filter_attachments(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let filter_with_installations = ops.get_with_installations(filter, &auth).await?;
     let filter_data = &filter_with_installations.filter;
@@ -1157,7 +1116,7 @@ pub async fn execute_list_filter_attachments(
         "Successfully listed filter attachments via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]

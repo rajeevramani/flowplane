@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { apiClient } from '$lib/api/client';
 	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
 	import { Plus, Edit, Trash2, Download, Eye, Puzzle, HardDrive, Database } from 'lucide-svelte';
 	import type { CustomWasmFilterResponse, FilterResponse } from '$lib/api/types';
 	import { selectedTeam } from '$lib/stores/team';
@@ -26,16 +25,14 @@
 
 	// Subscribe to team changes
 	selectedTeam.subscribe((value) => {
-		if (currentTeam && currentTeam !== value) {
-			currentTeam = value;
-			loadData();
-		} else {
-			currentTeam = value;
-		}
+		currentTeam = value;
 	});
 
-	onMount(async () => {
-		await loadData();
+	// Re-fire loadData whenever currentTeam becomes available or changes
+	$effect(() => {
+		if (currentTeam) {
+			loadData();
+		}
 	});
 
 	async function loadData() {
@@ -50,7 +47,7 @@
 			customFilters = response.items;
 
 			// Load filter instances to count usage
-			const filters = await apiClient.listFilters();
+			const filters = await apiClient.listFilters(currentTeam);
 			filterInstances = filters;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load custom filters';

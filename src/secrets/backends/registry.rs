@@ -291,7 +291,47 @@ impl Clone for SecretBackendRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{GenericSecretSpec, SecretSpec};
     use crate::secrets::backends::certificates::MockCertificateBackend;
+
+    /// Mock secret backend for testing registry wiring
+    #[derive(Debug)]
+    struct MockSecretBackend {
+        backend_type: SecretBackendType,
+        /// If true, validate_reference returns Ok(true); if false, Ok(false)
+        reference_exists: bool,
+    }
+
+    impl MockSecretBackend {
+        fn new(backend_type: SecretBackendType, reference_exists: bool) -> Self {
+            Self { backend_type, reference_exists }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SecretBackend for MockSecretBackend {
+        async fn fetch_secret(
+            &self,
+            _reference: &str,
+            _expected_type: crate::domain::SecretType,
+        ) -> crate::errors::Result<SecretSpec> {
+            Ok(SecretSpec::GenericSecret(GenericSecretSpec {
+                secret: "bW9jay1zZWNyZXQ=".to_string(), // pragma: allowlist secret
+            }))
+        }
+
+        async fn validate_reference(&self, _reference: &str) -> crate::errors::Result<bool> {
+            Ok(self.reference_exists)
+        }
+
+        fn backend_type(&self) -> SecretBackendType {
+            self.backend_type
+        }
+
+        async fn health_check(&self) -> crate::errors::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn test_registry_creation() {
@@ -368,5 +408,198 @@ mod tests {
         let cloned = registry.clone();
         assert!(cloned.has_certificate_backend());
         assert_eq!(cloned.certificate_backend_type(), Some(CertificateBackendType::Mock));
+    }
+
+    #[test]
+    fn test_register_secret_backend() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        assert!(!registry.has_backend(SecretBackendType::Vault));
+
+        let mock = Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true));
+        registry.register(mock);
+
+        assert!(registry.has_backend(SecretBackendType::Vault));
+        assert!(!registry.has_backend(SecretBackendType::AwsSecretsManager));
+        assert_eq!(registry.registered_backends(), vec![SecretBackendType::Vault]);
+    }
+
+    #[test]
+    fn test_register_multiple_backends() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true)));
+        registry
+            .register(Arc::new(MockSecretBackend::new(SecretBackendType::AwsSecretsManager, true)));
+
+        assert!(registry.has_backend(SecretBackendType::Vault));
+        assert!(registry.has_backend(SecretBackendType::AwsSecretsManager));
+        assert!(!registry.has_backend(SecretBackendType::GcpSecretManager));
+        assert_eq!(registry.registered_backends().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_secret_from_registered_backend() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true)));
+
+        let spec = registry
+            .fetch_secret(
+                SecretBackendType::Vault,
+                "secret/my-secret",
+                crate::domain::SecretType::GenericSecret,
+            )
+            .await;
+
+        assert!(spec.is_ok());
+        assert!(matches!(spec.unwrap(), SecretSpec::GenericSecret(_)));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_secret_from_unregistered_backend_errors() {
+        let registry = SecretBackendRegistry::with_default_cache();
+
+        let result = registry
+            .fetch_secret(
+                SecretBackendType::Vault,
+                "secret/my-secret",
+                crate::domain::SecretType::GenericSecret,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not registered"),
+            "Error should mention backend not registered: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_reference_existing() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true)));
+
+        let result = registry.validate_reference(SecretBackendType::Vault, "secret/exists").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_validate_reference_missing() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, false)));
+
+        let result = registry.validate_reference(SecretBackendType::Vault, "secret/missing").await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_validate_reference_unregistered_backend_errors() {
+        let registry = SecretBackendRegistry::with_default_cache();
+
+        let result =
+            registry.validate_reference(SecretBackendType::GcpSecretManager, "some/ref").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_secret_caches_result() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true)));
+
+        // First fetch
+        let _ = registry
+            .fetch_secret(
+                SecretBackendType::Vault,
+                "secret/cached",
+                crate::domain::SecretType::GenericSecret,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(registry.cache_size().await, 1);
+
+        // Second fetch should hit cache (same key)
+        let _ = registry
+            .fetch_secret(
+                SecretBackendType::Vault,
+                "secret/cached",
+                crate::domain::SecretType::GenericSecret,
+            )
+            .await
+            .unwrap();
+
+        // Cache size still 1 (not 2)
+        assert_eq!(registry.cache_size().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_health_check_registered_backend() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true)));
+
+        let result = registry.health_check(SecretBackendType::Vault).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_all() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true)));
+        registry
+            .register(Arc::new(MockSecretBackend::new(SecretBackendType::AwsSecretsManager, true)));
+
+        let results = registry.health_check_all().await;
+        assert_eq!(results.len(), 2);
+        assert!(results[&SecretBackendType::Vault].is_ok());
+        assert!(results[&SecretBackendType::AwsSecretsManager].is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_cache() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true)));
+
+        // Populate cache
+        let _ = registry
+            .fetch_secret(
+                SecretBackendType::Vault,
+                "secret/to-invalidate",
+                crate::domain::SecretType::GenericSecret,
+            )
+            .await
+            .unwrap();
+        assert_eq!(registry.cache_size().await, 1);
+
+        // Invalidate
+        registry.invalidate_reference("secret/to-invalidate").await;
+        assert_eq!(registry.cache_size().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_clear_cache() {
+        let mut registry = SecretBackendRegistry::with_default_cache();
+        registry.register(Arc::new(MockSecretBackend::new(SecretBackendType::Vault, true)));
+
+        // Populate
+        let _ = registry
+            .fetch_secret(
+                SecretBackendType::Vault,
+                "secret/a",
+                crate::domain::SecretType::GenericSecret,
+            )
+            .await;
+        let _ = registry
+            .fetch_secret(
+                SecretBackendType::Vault,
+                "secret/b",
+                crate::domain::SecretType::GenericSecret,
+            )
+            .await;
+        assert_eq!(registry.cache_size().await, 2);
+
+        registry.clear_cache().await;
+        assert_eq!(registry.cache_size().await, 0);
     }
 }

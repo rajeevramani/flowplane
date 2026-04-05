@@ -76,6 +76,17 @@ pub struct UpdateSecretRequest {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Request to rotate a secret (replaces configuration with new values, bumps version)
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RotateSecretRequest {
+    /// New secret configuration (same shape as create, replaces existing)
+    pub configuration: serde_json::Value,
+
+    /// Optional new expiration time (ISO 8601 format)
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Secret metadata response (never includes decrypted secret values)
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -163,8 +174,66 @@ pub struct ListSecretsQuery {
 
 /// Path parameters for team-scoped secret operations
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TeamSecretPath {
     pub team: String,
     pub secret_id: SecretId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_rotate_request_deserialization() {
+        let json = json!({
+            "configuration": {
+                "type": "generic_secret",
+                "secret": "bmV3LXNlY3JldA==" // pragma: allowlist secret
+            },
+            "expiresAt": "2026-12-31T23:59:59Z"
+        });
+
+        let req: RotateSecretRequest = serde_json::from_value(json).unwrap();
+        assert!(req.configuration.is_object());
+        assert!(req.expires_at.is_some());
+    }
+
+    #[test]
+    fn test_rotate_request_without_expires_at() {
+        let json = json!({
+            "configuration": {
+                "type": "generic_secret",
+                "secret": "bmV3LXNlY3JldA==" // pragma: allowlist secret
+            }
+        });
+
+        let req: RotateSecretRequest = serde_json::from_value(json).unwrap();
+        assert!(req.configuration.is_object());
+        assert!(req.expires_at.is_none());
+    }
+
+    #[test]
+    fn test_rotate_request_missing_configuration_fails() {
+        let json = json!({
+            "expiresAt": "2026-12-31T23:59:59Z"
+        });
+
+        let result = serde_json::from_value::<RotateSecretRequest>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rotate_request_camel_case_field_names() {
+        // Verify camelCase serialization
+        let json = json!({
+            "configuration": { "type": "generic_secret", "secret": "dGVzdA==" }, // pragma: allowlist secret
+            "expiresAt": "2026-06-15T12:00:00Z"
+        });
+
+        let req: RotateSecretRequest = serde_json::from_value(json).unwrap();
+        let serialized = serde_json::to_value(&req).unwrap();
+        assert!(serialized.get("expiresAt").is_some());
+        assert!(serialized.get("expires_at").is_none());
+    }
 }

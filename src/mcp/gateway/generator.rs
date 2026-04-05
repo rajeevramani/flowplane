@@ -262,6 +262,7 @@ mod tests {
             path_pattern: path_pattern.to_string(),
             match_type: RouteMatchType::Prefix,
             rule_order: 1,
+            exposure: "internal".to_string(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

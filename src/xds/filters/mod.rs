@@ -53,6 +53,10 @@ pub mod injection;
 
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine;
+use envoy_types::pb::envoy::config::core::v3::{
+    config_source::ConfigSourceSpecifier, AggregatedConfigSource, ConfigSource,
+};
+use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::SdsSecretConfig;
 use envoy_types::pb::google::protobuf::Any;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -118,6 +122,22 @@ impl TypedConfig {
     /// Converts to Envoy `Any` structure for xDS protocol.
     pub fn to_any(&self) -> Any {
         Any { type_url: self.type_url.clone(), value: self.value.0.clone() }
+    }
+}
+
+/// Build an SDS secret config that uses ADS for secret discovery.
+///
+/// This creates an `SdsSecretConfig` pointing at the Aggregated Discovery Service,
+/// which is the standard mechanism for Envoy to fetch secrets from the control plane.
+pub fn build_sds_secret_config(name: &str) -> SdsSecretConfig {
+    SdsSecretConfig {
+        name: name.to_string(),
+        sds_config: Some(ConfigSource {
+            config_source_specifier: Some(ConfigSourceSpecifier::Ads(
+                AggregatedConfigSource::default(),
+            )),
+            ..Default::default()
+        }),
     }
 }
 

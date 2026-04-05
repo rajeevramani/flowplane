@@ -50,7 +50,10 @@ export async function getSingleRouteForEdit(routeId: string): Promise<SingleRout
 	}
 
 	// Load the full route config
-	const config = await apiClient.getRouteConfig(routeView.routeConfigName);
+	if (!routeView.team) {
+		throw new Error(`Route ${routeId} has no team assigned`);
+	}
+	const config = await apiClient.getRouteConfig(routeView.team, routeView.routeConfigName);
 
 	// Find the virtual host and route within the config
 	let virtualHost: VirtualHostDefinition | null = null;
@@ -95,17 +98,17 @@ export async function getSingleRouteForEdit(routeId: string): Promise<SingleRout
  * This modifies only the specified route and preserves all other routes.
  */
 export async function updateSingleRoute(
+	team: string,
 	configName: string,
 	virtualHostIndex: number,
 	routeIndex: number,
 	updatedRoute: RouteRuleDefinition
 ): Promise<RouteResponse> {
 	// First, get the current full config
-	const currentConfig = await apiClient.getRouteConfig(configName);
+	const currentConfig = await apiClient.getRouteConfig(team, configName);
 
 	// Clone the config to avoid mutation
 	const updatedConfig: UpdateRouteBody = {
-		team: currentConfig.team,
 		name: currentConfig.name,
 		virtualHosts: JSON.parse(JSON.stringify(currentConfig.config.virtualHosts))
 	};
@@ -114,7 +117,7 @@ export async function updateSingleRoute(
 	updatedConfig.virtualHosts[virtualHostIndex].routes[routeIndex] = updatedRoute;
 
 	// Send the update request
-	return apiClient.updateRouteConfig(configName, updatedConfig);
+	return apiClient.updateRouteConfig(team, configName, updatedConfig);
 }
 
 /**
@@ -122,16 +125,16 @@ export async function updateSingleRoute(
  * This removes only the specified route and preserves all other routes.
  */
 export async function deleteSingleRoute(
+	team: string,
 	configName: string,
 	virtualHostIndex: number,
 	routeIndex: number
 ): Promise<RouteResponse> {
 	// Get the current full config
-	const currentConfig = await apiClient.getRouteConfig(configName);
+	const currentConfig = await apiClient.getRouteConfig(team, configName);
 
 	// Clone the config
 	const updatedConfig: UpdateRouteBody = {
-		team: currentConfig.team,
 		name: currentConfig.name,
 		virtualHosts: JSON.parse(JSON.stringify(currentConfig.config.virtualHosts))
 	};
@@ -140,7 +143,7 @@ export async function deleteSingleRoute(
 	updatedConfig.virtualHosts[virtualHostIndex].routes.splice(routeIndex, 1);
 
 	// Send the update request
-	return apiClient.updateRouteConfig(configName, updatedConfig);
+	return apiClient.updateRouteConfig(team, configName, updatedConfig);
 }
 
 /**
@@ -178,12 +181,13 @@ export async function disableMcpForRoute(
  * Get filters attached to a specific route.
  */
 export async function getRouteFilters(
+	team: string,
 	configName: string,
 	virtualHostName: string,
 	routeName: string
 ): Promise<FilterResponse[]> {
 	const response = await apiClient.get<{ filters: FilterResponse[] }>(
-		`/api/v1/route-configs/${configName}/virtual-hosts/${virtualHostName}/routes/${routeName}/filters`
+		`/api/v1/teams/${encodeURIComponent(team)}/route-configs/${encodeURIComponent(configName)}/virtual-hosts/${encodeURIComponent(virtualHostName)}/routes/${encodeURIComponent(routeName)}/filters`
 	);
 	return response.filters;
 }

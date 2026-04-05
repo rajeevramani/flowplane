@@ -22,3 +22,4 @@ pub mod test_22_wasm;
 pub mod test_23_oauth2;
 pub mod test_24_mtls;
 pub mod test_25_organizations;
+pub mod test_26_grant_enforcement;

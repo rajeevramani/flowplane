@@ -49,8 +49,8 @@
 
 		try {
 			const [listenersData, routesData, importsData, dataplanesData] = await Promise.all([
-				apiClient.listListeners(),
-				apiClient.listRouteConfigs(),
+				currentTeam ? apiClient.listListeners(currentTeam) : Promise.resolve([]),
+				currentTeam ? apiClient.listRouteConfigs(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listImports(currentTeam) : Promise.resolve([]),
 				currentTeam ? apiClient.listDataplanes(currentTeam) : Promise.resolve([])
 			]);
@@ -84,31 +84,30 @@
 		return routes.filter((r) => routeNames.has(r.name));
 	}
 
-	// Calculate stats
-	let stats = $derived({
-		totalListeners: listeners.length,
-		httpListeners: listeners.filter(l => (l.protocol || 'HTTP') === 'HTTP').length,
-		httpsListeners: listeners.filter(l => {
-			const config = l.config || {};
-			return config.filter_chains?.some(
-				(fc: { tls_context?: unknown }) => fc.tls_context
-			);
-		}).length,
-		totalRoutes: listeners.reduce((sum, listener) => {
-			return sum + getRoutesForListener(listener).length;
-		}, 0)
-	});
-
-	// Filter listeners
+	// Filter listeners (already team-scoped from API)
 	let filteredListeners = $derived(
 		listeners
-			.filter(listener => listener.team === currentTeam)
 			.filter(listener =>
 				!searchQuery ||
 				listener.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
 				listener.address.toLowerCase().includes(searchQuery.toLowerCase())
 			)
 	);
+
+	// Calculate stats from filtered (current team) listeners
+	let stats = $derived({
+		totalListeners: filteredListeners.length,
+		httpListeners: filteredListeners.filter(l => (l.protocol || 'HTTP') === 'HTTP').length,
+		httpsListeners: filteredListeners.filter(l => {
+			const config = l.config || {};
+			return config.filter_chains?.some(
+				(fc: { tls_context?: unknown }) => fc.tls_context
+			);
+		}).length,
+		totalRoutes: filteredListeners.reduce((sum, listener) => {
+			return sum + getRoutesForListener(listener).length;
+		}, 0)
+	});
 
 	// Get listener features
 	function getListenerFeatures(listener: ListenerResponse) {
@@ -172,7 +171,7 @@
 		}
 
 		try {
-			await apiClient.deleteListener(listener.name);
+			await apiClient.deleteListener(currentTeam, listener.name);
 			await loadData();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete listener';

@@ -1,0 +1,257 @@
+{
+  "project": "Flowplane",
+  "branchName": "ralph/v020-docs-rewrite",
+  "description": "V0.2.0 Developer Documentation Rewrite — replace all outdated docs with three fresh, tested, developer-first docs written from source code",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Delete outdated docs",
+      "description": "As a maintainer, I want to remove all outdated documentation so that new docs start from a clean slate.",
+      "acceptanceCriteria": [
+        "All files in docs/ are deleted (including subdirectories: deployment/, filters/, images/, learning-manual/)",
+        "docs/ directory exists but is empty (ready for new content)",
+        "No broken internal links remain in CLAUDE.md or other project files referencing deleted docs"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "docs/quickstart.md was already deleted before this PRD started. Verified no stale references."
+    },
+    {
+      "id": "US-002",
+      "title": "Write getting-started.md — Prerequisites through Boot",
+      "description": "As a new developer, I want clear setup instructions so that I can get Flowplane running from scratch.",
+      "acceptanceCriteria": [
+        "docs/getting-started.md exists with sections: Prerequisites, Install, Boot the stack, Verify",
+        "Prerequisites lists Docker and Rust with version requirements (verified against source)",
+        "Install command (git clone + cargo install --path . --locked) is tested and output captured",
+        "Boot command (flowplane init --with-envoy --with-httpbin) is tested and output captured",
+        "Verify steps (flowplane status, health check curl) are tested and output captured",
+        "Port range verified against source code (expected 10001-10020)"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Port range 10001-10020 confirmed from docker-compose-envoy.yml."
+    },
+    {
+      "id": "US-003",
+      "title": "Write getting-started.md — Expose and Test",
+      "description": "As a new developer, I want to expose httpbin through the gateway and test it so that I see Flowplane working end-to-end.",
+      "acceptanceCriteria": [
+        "Expose section appended to docs/getting-started.md after the Verify section",
+        "Uses CLI only — no MCP column or MCP examples",
+        "flowplane expose command tested against the live dev stack, real output captured",
+        "Curl test through the gateway (port 10001-10020) works and output captured",
+        "Read src/cli/expose.rs and src/domain/ to document accurate behavior and flags",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Completed 2026-04-03. expose source on release/v0.2.0 branch (src/cli/expose.rs). Docker stack must be built from release/v0.2.0 for expose API to work."
+    },
+    {
+      "id": "US-004",
+      "title": "Write getting-started.md — Add a Rate Limit Filter",
+      "description": "As a new developer, I want to add rate limiting to my exposed API so that I understand Flowplane's filter system.",
+      "acceptanceCriteria": [
+        "Rate limit section appended to docs/getting-started.md after Expose section",
+        "Filter create command uses correct nested config structure ({type, config}) verified against source (src/domain/filter.rs)",
+        "Filter create and filter attach commands tested against live stack, real output captured",
+        "Rate limiting verification tested — show 200/200/200/429/429 curl pattern with real output",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Filter type is local_rate_limit (external rate_limit not implemented). JSON uses camelCase filterType and nested config.type + config.config structure."
+    },
+    {
+      "id": "US-005",
+      "title": "Write getting-started.md — Explore, Tear Down, and Prod Mode",
+      "description": "As a new developer, I want to know what else I can do and how to clean up, plus a brief intro to production mode.",
+      "acceptanceCriteria": [
+        "Explore section appended to docs/getting-started.md: list, status, doctor, swagger-ui, MCP connection info",
+        "Tear down command (flowplane down) tested and output captured",
+        "Prod mode section is brief: make up ENVOY=1 HTTPBIN=1, seed, auth login, dev/prod comparison table",
+        "Prod mode clearly marked as untestable without Zitadel (if applicable)",
+        "Next steps section links to cli-reference.md, filters.md",
+        "Explore and tear down commands tested against live stack",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Explore commands (status, doctor, list, swagger-ui, MCP endpoints) tested against live stack. Tear down (down, down --volumes) tested. Prod mode section documents make up ENVOY=1, seed, auth login, and dev/prod comparison table."
+    },
+    {
+      "id": "US-006",
+      "title": "Write cli-reference.md — Stack Management and Global Flags",
+      "description": "As a developer, I want a CLI reference for stack management commands so that I can operate Flowplane confidently.",
+      "acceptanceCriteria": [
+        "docs/cli-reference.md created with global flags section at the top",
+        "Stack management commands documented: init, down, serve, status, doctor, list",
+        "Each command's flags and arguments verified by reading src/cli/ source files",
+        "Every example command tested against the live stack with real output captured",
+        "after_long_help output included for key commands if present in source",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Stack management commands (init, down, serve, status, doctor, list, logs, database) documented with flags from source and real output from live stack."
+    },
+    {
+      "id": "US-007",
+      "title": "Write cli-reference.md — Expose, Unexpose, and Resource CRUD",
+      "description": "As a developer, I want accurate reference docs for resource management commands.",
+      "acceptanceCriteria": [
+        "Expose/unexpose section appended to docs/cli-reference.md with 409 conflict behavior and validation errors",
+        "Resource CRUD documented: cluster, listener, route-config, filter (create, list, show, update, delete)",
+        "Filter attach/detach documented with examples",
+        "Every JSON payload example tested against the live stack with real output captured",
+        "Input validation rules noted: valid names, positive ports, valid upstream URLs",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Expose/unexpose, cluster, route, listener, filter CRUD all documented with tested output. Filter JSON uses nested config.type + config.config structure with snake_case denominators. Listener create requires dataplaneId (dev-dataplane-id in dev mode). Filter must be detached before delete (409 conflict)."
+    },
+    {
+      "id": "US-008",
+      "title": "Write cli-reference.md — Import OpenAPI and Learning Sessions",
+      "description": "As a developer, I want reference docs for import and learning session commands.",
+      "acceptanceCriteria": [
+        "Import OpenAPI section appended to docs/cli-reference.md with flags and examples",
+        "Learning sessions section documented: start, stop, status, list",
+        "Every example tested against the live stack with real output captured",
+        "Read src/cli/ source files for accurate flags and arguments",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Import OpenAPI (import openapi) and learning sessions (learn start/list/get/cancel) documented with all flags from source and real output from live stack. These are CLI commands (not MCP-only) available in the release/v0.2.0 binary."
+    },
+    {
+      "id": "US-009",
+      "title": "Write cli-reference.md — Secrets, Auth, and Config",
+      "description": "As a developer, I want reference docs for secrets, auth, and config CLI commands.",
+      "acceptanceCriteria": [
+        "Secrets section appended to docs/cli-reference.md — secret create --config uses correct syntax (no redundant type field)",
+        "Auth commands documented: login, logout, whoami, token — note that whoami shows email/name in prod mode",
+        "Config commands documented: show, path, set",
+        "Every example tested against the live stack with real output captured",
+        "Read src/cli/ source for accurate flags",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Secrets CRUD (create/list/get/delete), auth commands (login/token/whoami/logout), and config commands (init/show/set/path) documented with flags from source and real output from live stack. Secret create requires explicit type field in --config JSON (not auto-injected by live binary). Token resolution order documented (5-level priority chain). Dev mode auth login shows existing token; prod mode opens browser for OIDC PKCE."
+    },
+    {
+      "id": "US-010",
+      "title": "Write filters.md — Overview, Types Table, and Config Structure",
+      "description": "As a developer, I want to understand how filters work and see all available types at a glance.",
+      "acceptanceCriteria": [
+        "docs/filters.md created with overview section: create -> attach -> verify workflow",
+        "Filter types table lists ALL filter types read from src/domain/filter.rs (not from memory)",
+        "Config structure section explains nested {type, config} format with example",
+        "Per-route overrides documented with example",
+        "Detach and delete workflow documented with tested commands",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Replaced outdated filters.md with accurate content from src/domain/filter.rs. 11 filter types documented (rate_limit marked not implemented). Removed phantom filter types (rate_limit_quota, health_check, credential_injector, ext_proc, router) that were in the old doc but not in source. Nested config structure documented with tested header_mutation example. Per-route override table covers all four behaviors (full config, reference only, disable only, not supported). Detach-before-delete workflow tested with 409 error output."
+    },
+    {
+      "id": "US-011",
+      "title": "Write filters.md — Traffic filters (rate_limit, router, cors, compressor)",
+      "description": "As a developer, I want working examples for traffic management filters.",
+      "acceptanceCriteria": [
+        "One section per filter appended to docs/filters.md: rate_limit, router, cors, compressor",
+        "Each filter has a working JSON create example tested against the live stack",
+        "Real output captured for each create and attach command",
+        "Source code for each filter type read before writing the example",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Documented local_rate_limit (working), cors (working), compressor (creates but Envoy NACKs on attach due to empty RuntimeKey bug). rate_limit (external) rejected by API as not implemented. router is not a FilterType (phantom from old docs)."
+    },
+    {
+      "id": "US-012",
+      "title": "Write filters.md — Auth and security filters (jwt_authn, ext_authz, rbac, credential_injector)",
+      "description": "As a developer, I want working examples for auth and security filters.",
+      "acceptanceCriteria": [
+        "One section per filter appended to docs/filters.md: jwt_authn, ext_authz, rbac, credential_injector",
+        "credential_injector example includes secret creation (SDS) and full test flow",
+        "Each filter has a working JSON create example tested against the live stack",
+        "Real output captured for each create and attach command",
+        "Source code for each filter type read before writing the example",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Documented jwt_auth (working, local JWKS requires valid keys or Envoy NACKs), ext_authz (gRPC and HTTP modes, both create successfully, gRPC tested with attach), rbac (allow/deny/log modes, tested GET-only policy with 403 on POST). credential_injector is NOT a FilterType (XDS module exists but not in enum) — documented as unavailable with workaround."
+    },
+    {
+      "id": "US-013",
+      "title": "Write filters.md — Remaining filters (header_mutation, health_check, lua, tap, ext_proc, wasm, gzip, bandwidth_limit)",
+      "description": "As a developer, I want working examples for all remaining filter types.",
+      "acceptanceCriteria": [
+        "One section per remaining filter type appended to docs/filters.md",
+        "Verify the complete filter list from src/domain/filter.rs — include any filters not covered by US-011/US-012",
+        "Each filter has a working JSON create example tested against the live stack",
+        "Real output captured for each create and attach command",
+        "Source code for each filter type read before writing the example",
+        "No guessed or fabricated output",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Documented header_mutation (working, request/response headers verified), custom_response (working, 503→JSON replacement verified), mcp (pass_through working, reject_no_mcp requires custom Envoy extension), oauth2 (creates/attaches, listener-only, requires auth-cluster + SDS secrets). All 11 FilterType enum members now have dedicated sections. credential_injector documented as not a FilterType."
+    },
+    {
+      "id": "US-014",
+      "title": "Correct skills that contradict source code",
+      "description": "As a maintainer, I want skills to match reality so that future AI assistance is accurate.",
+      "acceptanceCriteria": [
+        "Review all contradictions discovered during doc writing (check progress.txt notes)",
+        "Update any skill files (.claude/skills/) where content contradicts source code",
+        "Log each correction with the file path and what was wrong vs what is correct",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Fixed 7 skill files: filter-types.md (full rewrite — removed phantom types, added gotchas), filters-quick-ref.md (full rewrite — removed phantom types, added status column), domain-model.md (15→11 filter count), commands.md (jwt_authn→jwt_auth, removed credential_injector), flowplane-dev SKILL.md (jwt_authn→jwt_auth, removed phantoms from category tables), flowplane-api SKILL.md (marked phantom types in filter table), flowplane-secrets SKILL.md (noted credential_injector not a FilterType)."
+    },
+    {
+      "id": "US-015",
+      "title": "Final end-to-end verification walkthrough",
+      "description": "As a maintainer, I want confidence that the docs work as a complete sequence for a new user.",
+      "acceptanceCriteria": [
+        "Tear down existing stack: flowplane down --volumes",
+        "Follow getting-started.md from step 1 as a brand new user",
+        "Every command runs successfully in sequence — no step fails",
+        "Continue through cli-reference.md testing every example",
+        "Continue through filters.md testing every example",
+        "Any failures found are fixed in the docs",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": true,
+      "notes": "Completed 2026-04-03. Full end-to-end walkthrough: down --volumes, init, expose, rate-limit, all CRUD resources, all filter types, secrets, auth, config, learning sessions. Fixed 3 inconsistent listener names in filters.md (test-filters-listener -> demo-listener) and normalized argument order in attach commands. All commands pass in sequence."
+    },
+    {
+      "id": "US-016",
+      "title": "Create Excalidraw diagrams (stretch)",
+      "description": "As a new developer, I want visual diagrams showing the developer workflow and architecture.",
+      "acceptanceCriteria": [
+        "docs/developer-workflow.excalidraw created — 6-step developer journey cycle with dashed green annotation arrow",
+        "docs/architecture.excalidraw created — left-to-right component diagram (Developer -> Control Plane -> Envoy -> Upstream)",
+        "Hand-drawn style (roughness: 1), color scheme per prompt spec",
+        "Diagrams referenced in getting-started.md with markdown image syntax or excalidraw.com note",
+        "Created using Excalidraw MCP tools (read_me then create_view)"
+      ],
+      "priority": 16,
+      "passes": true,
+      "notes": "Completed 2026-04-04. Created developer-workflow.excalidraw (6-step cycle: Boot, Expose, Filter, Test, Iterate, Production with dashed green iterate/repeat arrows) and architecture.excalidraw (4-zone left-to-right: Developer -> Control Plane -> Data Plane -> Upstream). Both use hand-drawn style (roughness:1), color-coded zones, and were created via Excalidraw MCP tools. Referenced in getting-started.md with excalidraw.com note."
+    }
+  ]
+}

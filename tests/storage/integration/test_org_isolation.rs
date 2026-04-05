@@ -5,7 +5,6 @@
 //! Verifies that organizations provide proper tenant boundaries: teams, members,
 //! and resources belonging to one org are not visible to another.
 
-use flowplane::auth::hashing;
 use flowplane::auth::organization::{CreateOrganizationRequest, OrgRole};
 use flowplane::auth::team::CreateTeamRequest;
 use flowplane::auth::user::{NewUser, UserStatus};
@@ -37,11 +36,11 @@ async fn create_org(pool: &DbPool, name: &str) -> OrgId {
     org.id
 }
 
-/// Helper: create a user belonging to an org.
-async fn create_user(pool: &DbPool, email: &str, org_id: OrgId) -> UserId {
+/// Helper: create a user.
+async fn create_user(pool: &DbPool, email: &str) -> UserId {
     let user_repo = SqlxUserRepository::new(pool.clone());
     let user_id = UserId::new();
-    let password_hash = hashing::hash_password("TestPass123!").expect("hash password");
+    let password_hash = "dummy-hash-zitadel-handles-auth".to_string();
     user_repo
         .create_user(NewUser {
             id: user_id.clone(),
@@ -50,7 +49,6 @@ async fn create_user(pool: &DbPool, email: &str, org_id: OrgId) -> UserId {
             name: email.split('@').next().unwrap_or("user").to_string(),
             status: UserStatus::Active,
             is_admin: false,
-            org_id,
         })
         .await
         .unwrap_or_else(|e| panic!("Failed to create user '{}': {}", email, e));
@@ -209,8 +207,8 @@ async fn org_member_isolation() {
     let org_b_id = create_org(&pool, "org-members-b").await;
 
     // Create users
-    let user_a = create_user(&pool, "alice@org-a.com", org_a_id.clone()).await;
-    let user_b = create_user(&pool, "bob@org-b.com", org_b_id.clone()).await;
+    let user_a = create_user(&pool, "alice@org-a.com").await;
+    let user_b = create_user(&pool, "bob@org-b.com").await;
 
     // Create memberships
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
@@ -242,49 +240,6 @@ async fn org_member_isolation() {
 }
 
 // ---------------------------------------------------------------------------
-// Test: User org_id assignment via update_user_org
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn user_org_assignment() {
-    let test_db = TestDatabase::new("user_org_assignment").await;
-    let pool = test_db.pool().clone();
-
-    let org_id_initial = create_org(&pool, "org-assign-initial").await;
-    let org_id_target = create_org(&pool, "org-assign-target").await;
-
-    // Create user with initial org
-    let user_repo = SqlxUserRepository::new(pool.clone());
-    let user_id = UserId::new();
-    let password_hash = hashing::hash_password("TestPass123!").expect("hash password");
-    let user = user_repo
-        .create_user(NewUser {
-            id: user_id.clone(),
-            email: "reassign@test.com".to_string(),
-            password_hash,
-            name: "Reassign User".to_string(),
-            status: UserStatus::Active,
-            is_admin: false,
-            org_id: org_id_initial.clone(),
-        })
-        .await
-        .expect("create user");
-
-    assert_eq!(user.org_id.as_str(), org_id_initial.as_str(), "User should start in initial org");
-
-    // Reassign user to target org
-    user_repo.update_user_org(&user_id, &org_id_target).await.expect("reassign user to org");
-
-    // Verify the assignment persists
-    let fetched = user_repo.get_user(&user_id).await.expect("get user").expect("user exists");
-    assert_eq!(
-        fetched.org_id.as_str(),
-        org_id_target.as_str(),
-        "User org reassignment should persist"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Test: Org with members cannot be deleted (FK on memberships)
 // ---------------------------------------------------------------------------
 
@@ -296,22 +251,37 @@ async fn org_deletion_with_members_rejected() {
     let org_id = create_org(&pool, "org-with-members").await;
 
     // Create a user and membership
-    let user_id = create_user(&pool, "member@org.com", org_id.clone()).await;
+    let user_id = create_user(&pool, "member@org.com").await;
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
     membership_repo
         .create_membership(&user_id, &org_id, OrgRole::Member)
         .await
         .expect("create membership");
 
-    // Attempt to delete the org - should fail
+    // Create a team in this org — teams have ON DELETE RESTRICT, so this blocks deletion.
+    // (Memberships use ON DELETE CASCADE, which wouldn't block.)
+    let team_repo = SqlxTeamRepository::new(pool.clone());
+    team_repo
+        .create_team(CreateTeamRequest {
+            name: "blocking-team".to_string(),
+            display_name: "Blocking Team".to_string(),
+            description: None,
+            owner_user_id: None,
+            org_id: org_id.clone(),
+            settings: None,
+        })
+        .await
+        .expect("create team");
+
+    // Attempt to delete the org - should fail due to teams FK RESTRICT
     let org_repo = SqlxOrganizationRepository::new(pool.clone());
     let result = org_repo.delete_organization(&org_id).await;
 
-    assert!(result.is_err(), "Deleting org with active members should fail");
+    assert!(result.is_err(), "Deleting org with active teams/members should fail");
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("Cannot delete organization") || err_msg.contains("members"),
-        "Error should mention members constraint, got: {}",
+        "Error should mention constraint, got: {}",
         err_msg
     );
 }
@@ -352,7 +322,7 @@ async fn user_memberships_listed_correctly() {
     let org_a_id = create_org(&pool, "multi-org-a").await;
     let org_b_id = create_org(&pool, "multi-org-b").await;
 
-    let user_id = create_user(&pool, "multi-org-user@test.com", org_a_id.clone()).await;
+    let user_id = create_user(&pool, "multi-org-user@test.com").await;
 
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
 
@@ -384,7 +354,7 @@ async fn cannot_delete_last_owner() {
     let pool = test_db.pool().clone();
 
     let org_id = create_org(&pool, "owner-protect-org").await;
-    let user_id = create_user(&pool, "sole-owner@test.com", org_id.clone()).await;
+    let user_id = create_user(&pool, "sole-owner@test.com").await;
 
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
     membership_repo
@@ -667,7 +637,7 @@ async fn cannot_downgrade_last_owner() {
     let pool = test_db.pool().clone();
 
     let org_id = create_org(&pool, "owner-downgrade-org").await;
-    let user_id = create_user(&pool, "sole-owner-dg@test.com", org_id.clone()).await;
+    let user_id = create_user(&pool, "sole-owner-dg@test.com").await;
 
     let membership_repo = SqlxOrgMembershipRepository::new(pool.clone());
     membership_repo
@@ -676,7 +646,10 @@ async fn cannot_downgrade_last_owner() {
         .expect("create owner membership");
 
     // Attempt to downgrade the sole owner to member
-    let result = membership_repo.update_membership_role(&user_id, &org_id, OrgRole::Member).await;
+    let member_pairs: Vec<(&str, &str)> = vec![("clusters", "read"), ("routes", "read")];
+    let result = membership_repo
+        .update_membership_role(&user_id, &org_id, OrgRole::Member, &member_pairs, user_id.as_str())
+        .await;
     assert!(result.is_err(), "Should not be able to downgrade the last owner");
     let err_msg = result.unwrap_err().to_string();
     assert!(err_msg.contains("last owner"), "Error should mention last owner, got: {}", err_msg);
@@ -770,13 +743,21 @@ async fn cross_team_access_within_same_org_denied() {
     let x_names: Vec<&str> = x_results.iter().map(|c| c.name.as_str()).collect();
     assert!(!x_names.contains(&"y-cluster"), "Team-x should NOT see team-y cluster in same org");
 
-    // Authorization check: user with team-x scope cannot access team-y resources
-    let team_x_user = AuthContext::new(
-        TokenId::from_str_unchecked("team-x-user"),
-        "team-x-user".into(),
-        vec!["team:team-x:clusters:read".into()],
-    )
-    .with_org(org_id.clone(), "single-org".to_string());
+    // Authorization check: user with team-x grant cannot access team-y resources
+    use flowplane::auth::models::{Grant, GrantType};
+
+    let mut team_x_user =
+        AuthContext::new(TokenId::from_str_unchecked("team-x-user"), "team-x-user".into(), vec![])
+            .with_org(org_id.clone(), "single-org".to_string());
+    team_x_user.grants = vec![Grant {
+        grant_type: GrantType::Resource,
+        team_id: team_x_id.clone(),
+        team_name: "team-x".into(),
+        resource_type: Some("clusters".into()),
+        action: Some("read".into()),
+        route_id: None,
+        allowed_methods: vec![],
+    }];
 
     assert!(
         check_resource_access(&team_x_user, "clusters", "read", Some("team-x")),

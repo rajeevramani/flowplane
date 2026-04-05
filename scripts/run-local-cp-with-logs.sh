@@ -44,6 +44,4 @@ cargo clean
   FLOWPLANE_API_PORT=8080 \
   FLOWPLANE_XDS_PORT=18000 \
   FLOWPLANE_SECRET_ENCRYPTION_KEY="${ENCRYPTION_KEY}" \
-  FLOWPLANE_VAULT_ADDR=http://localhost:8200 \
-  FLOWPLANE_VAULT_TOKEN=flowplane-dev-token \
   cargo run --bin flowplane 2>&1 | tee "${LOG_FILE}"

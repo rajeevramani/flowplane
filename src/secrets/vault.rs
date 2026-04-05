@@ -526,8 +526,10 @@ impl VaultSecretsClient {
     ///
     /// - [`SecretsError::ConfigError`] if required env vars are missing
     pub async fn from_env() -> Result<Self> {
-        let address = std::env::var("VAULT_ADDR")
-            .map_err(|_| SecretsError::config_error("VAULT_ADDR environment variable not set"))?;
+        let address =
+            std::env::var("VAULT_ADDR").ok().filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+                SecretsError::config_error("VAULT_ADDR environment variable not set or empty")
+            })?;
 
         let token = std::env::var("VAULT_TOKEN").ok();
         let namespace = std::env::var("VAULT_NAMESPACE").ok();

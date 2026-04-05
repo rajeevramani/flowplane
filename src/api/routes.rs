@@ -10,15 +10,12 @@ use axum::{
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::auth::{
-    auth_service::AuthService,
-    middleware::{authenticate, ensure_dynamic_scopes},
-    session::SessionService,
+use crate::auth::middleware::{
+    authenticate, dev_authenticate, ensure_dynamic_scopes, DevAuthState,
 };
 use crate::domain::SharedFilterSchemaRegistry;
 use crate::observability::trace_http_requests;
 use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
-use crate::storage::repository::AuditLogRepository;
 use crate::xds::XdsState;
 
 use super::{
@@ -35,211 +32,51 @@ use super::{
     },
     handlers::secrets::{
         create_secret_handler, create_secret_reference_handler, delete_secret_handler,
-        get_secret_handler,
+        get_secret_handler, rotate_secret_handler,
     },
     handlers::{
-        // Invitation handlers
-        accept_invitation_handler,
-        add_team_member,
-        add_team_membership,
-        admin_add_org_member,
-        admin_create_organization,
-        admin_create_team,
-        admin_delete_organization,
-        admin_delete_team,
-        admin_get_organization,
-        admin_get_team,
-        admin_list_org_members,
-        admin_list_organizations,
-        admin_list_teams,
-        admin_remove_org_member,
-        admin_resource_summary_handler,
-        admin_update_org_member_role,
-        admin_update_organization,
-        admin_update_team,
-        apply_learned_schema_handler,
-        attach_filter_handler,
-        attach_filter_to_listener_handler,
-        attach_filter_to_route_rule_handler,
-        attach_filter_to_virtual_host_handler,
-        bootstrap_initialize_handler,
-        bootstrap_status_handler,
-        bulk_disable_mcp_handler,
-        bulk_enable_mcp_handler,
-        change_password_handler,
-        check_learned_schema_handler,
-        compare_aggregated_schemas_handler,
-        // Install/Configure redesign handlers
-        configure_filter_handler,
-        create_cluster_handler,
-        create_filter_handler,
-        create_invitation_handler,
-        create_learning_session_handler,
-        create_listener_handler,
-        create_org_team,
-        create_route_config_handler,
-        create_session_handler,
-        create_token_handler,
-        create_user,
-        delete_cluster_handler,
-        delete_filter_handler,
-        delete_learning_session_handler,
-        delete_listener_handler,
-        delete_org_team,
-        delete_route_config_handler,
-        delete_user,
-        detach_filter_from_listener_handler,
-        detach_filter_from_route_rule_handler,
-        detach_filter_from_virtual_host_handler,
-        detach_filter_handler,
-        disable_mcp_handler,
-        enable_mcp_handler,
-        export_aggregated_schema_handler,
-        export_multiple_schemas_handler,
-        generate_certificate_handler,
-        get_aggregated_schema_handler,
-        get_app_handler,
-        get_certificate_handler,
-        get_cluster_handler,
-        get_current_org,
-        get_filter_handler,
-        get_filter_status_handler,
-        get_filter_type_handler,
-        get_learning_session_handler,
-        get_listener_handler,
-        get_mcp_status_handler,
-        // MCP tools and route enablement handlers
-        get_mcp_tool_handler,
-        get_mtls_status_handler,
-        get_route_config_handler,
-        get_route_stats_handler,
-        get_session_info_handler,
-        get_stats_cluster_handler,
-        get_stats_clusters_handler,
-        get_stats_enabled_handler,
-        get_stats_overview_handler,
-        get_token_handler,
-        get_user,
-        health_handler,
-        install_filter_handler,
-        list_aggregated_schemas_handler,
-        list_all_scopes_handler,
-        list_apps_handler,
-        list_audit_logs,
-        list_certificates_handler,
-        list_clusters_handler,
-        list_filter_configurations_handler,
-        list_filter_installations_handler,
-        list_filter_types_handler,
-        list_filters_handler,
-        list_invitations_handler,
-        list_learning_sessions_handler,
-        list_listener_filters_handler,
-        list_listeners_handler,
-        list_mcp_tools_handler,
-        list_org_teams,
-        list_route_configs_handler,
-        list_route_filters_handler,
-        list_route_flows_handler,
-        list_route_rule_filters_handler,
-        list_route_rules_handler,
-        list_route_views_handler,
-        list_scopes_handler,
-        list_secrets_handler,
-        list_team_members,
-        list_teams_handler,
-        list_tokens_handler,
-        list_user_teams,
-        list_users,
-        list_virtual_host_filters_handler,
-        list_virtual_hosts_handler,
-        login_handler,
-        logout_handler,
-        refresh_mcp_schema_handler,
-        refresh_session_handler,
-        reload_filter_schemas_handler,
-        remove_filter_configuration_handler,
-        remove_team_member,
-        remove_team_membership,
-        revoke_certificate_handler,
-        revoke_invitation_handler,
-        revoke_token_handler,
-        rotate_token_handler,
-        set_app_status_handler,
-        uninstall_filter_handler,
-        update_cluster_handler,
-        update_filter_handler,
-        update_listener_handler,
-        update_mcp_tool_handler,
-        update_org_team,
-        update_route_config_handler,
-        update_secret_handler,
-        update_team_member_scopes,
-        update_team_membership_scopes,
-        update_token_handler,
-        update_user,
-        validate_invitation_handler,
+        add_team_member, admin_add_org_member, admin_create_organization, admin_create_team,
+        admin_delete_organization, admin_delete_team, admin_get_organization, admin_get_team,
+        admin_invite_org_member, admin_list_org_members, admin_list_organizations,
+        admin_list_teams, admin_remove_org_member, admin_resource_summary_handler,
+        admin_update_org_member_role, admin_update_organization, admin_update_team,
+        apply_learned_schema_handler, attach_filter_handler, attach_filter_to_listener_handler,
+        attach_filter_to_route_rule_handler, attach_filter_to_virtual_host_handler,
+        auth_mode_handler, auth_session_handler, bootstrap_initialize_handler,
+        bootstrap_status_handler, bulk_disable_mcp_handler, bulk_enable_mcp_handler,
+        check_learned_schema_handler, compare_aggregated_schemas_handler, configure_filter_handler,
+        create_cluster_handler, create_filter_handler, create_learning_session_handler,
+        create_listener_handler, create_org_agent, create_org_team, create_principal_grant,
+        create_route_config_handler, dcr_register_handler, delete_cluster_handler,
+        delete_filter_handler, delete_learning_session_handler, delete_listener_handler,
+        delete_org_agent, delete_org_team, delete_principal_grant, delete_route_config_handler,
+        detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
+        detach_filter_from_virtual_host_handler, detach_filter_handler, disable_mcp_handler,
+        enable_mcp_handler, export_aggregated_schema_handler, export_multiple_schemas_handler,
+        expose_handler, generate_certificate_handler, get_aggregated_schema_handler,
+        get_app_handler, get_certificate_handler, get_cluster_handler, get_current_org,
+        get_filter_handler, get_filter_status_handler, get_filter_type_handler,
+        get_learning_session_handler, get_listener_handler, get_mcp_status_handler,
+        get_mcp_tool_handler, get_mtls_status_handler, get_route_config_handler,
+        get_route_stats_handler, get_stats_cluster_handler, get_stats_clusters_handler,
+        get_stats_enabled_handler, get_stats_overview_handler, health_handler,
+        install_filter_handler, list_aggregated_schemas_handler, list_all_scopes_handler,
+        list_apps_handler, list_audit_logs, list_certificates_handler, list_clusters_handler,
+        list_filter_configurations_handler, list_filter_installations_handler,
+        list_filter_types_handler, list_filters_handler, list_learning_sessions_handler,
+        list_listener_filters_handler, list_listeners_handler, list_mcp_tools_handler,
+        list_org_agents, list_org_teams, list_principal_grants, list_route_configs_handler,
+        list_route_filters_handler, list_route_flows_handler, list_route_rule_filters_handler,
+        list_route_rules_handler, list_route_views_handler, list_scopes_handler,
+        list_secrets_handler, list_team_members, list_teams_handler,
+        list_virtual_host_filters_handler, list_virtual_hosts_handler, refresh_mcp_schema_handler,
+        reload_filter_schemas_handler, remove_filter_configuration_handler, remove_team_member,
+        revoke_certificate_handler, set_app_status_handler, unexpose_handler,
+        uninstall_filter_handler, update_cluster_handler, update_filter_handler,
+        update_listener_handler, update_mcp_tool_handler, update_org_team,
+        update_route_config_handler, update_secret_handler,
     },
 };
-
-/// Rate limiters for authentication endpoints.
-#[derive(Clone)]
-pub struct AuthRateLimiters {
-    /// 20/hour per IP — invitation creation
-    pub invite_create: Arc<super::rate_limit::RateLimiter>,
-    /// 10/min per IP — invitation token validation
-    pub invite_validate: Arc<super::rate_limit::RateLimiter>,
-    /// 5/min per IP — invitation acceptance (registration)
-    pub invite_accept: Arc<super::rate_limit::RateLimiter>,
-    /// 10/min per IP — login attempts
-    pub login: Arc<super::rate_limit::RateLimiter>,
-}
-
-impl AuthRateLimiters {
-    pub fn from_env() -> Self {
-        let invite_create_per_hour: u32 =
-            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_CREATE_PER_HOUR")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(20);
-
-        let invite_validate_per_min: u32 =
-            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_VALIDATE_PER_MIN")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10);
-
-        let invite_accept_per_min: u32 =
-            std::env::var("FLOWPLANE_RATE_LIMIT_INVITE_ACCEPT_PER_MIN")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5);
-
-        let login_per_min: u32 = std::env::var("FLOWPLANE_RATE_LIMIT_LOGIN_PER_MIN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(10);
-
-        Self {
-            invite_create: Arc::new(super::rate_limit::RateLimiter::new(
-                invite_create_per_hour,
-                std::time::Duration::from_secs(3600),
-            )),
-            invite_validate: Arc::new(super::rate_limit::RateLimiter::new(
-                invite_validate_per_min,
-                std::time::Duration::from_secs(60),
-            )),
-            invite_accept: Arc::new(super::rate_limit::RateLimiter::new(
-                invite_accept_per_min,
-                std::time::Duration::from_secs(60),
-            )),
-            login: Arc::new(super::rate_limit::RateLimiter::new(
-                login_per_min,
-                std::time::Duration::from_secs(60),
-            )),
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -252,8 +89,12 @@ pub struct ApiState {
     pub certificate_rate_limiter: Arc<super::rate_limit::RateLimiter>,
     /// Authentication configuration (cookie_secure, invite settings, proxy config)
     pub auth_config: Arc<crate::config::AuthConfig>,
-    /// Rate limiters for auth endpoints (login, invitation create/validate/accept)
-    pub auth_rate_limiters: Arc<AuthRateLimiters>,
+    /// Zitadel Management API client for user provisioning (invite flow).
+    /// `None` when `FLOWPLANE_ZITADEL_ADMIN_PAT` is not configured.
+    pub zitadel_admin: Option<Arc<crate::auth::zitadel_admin::ZitadelAdminClient>>,
+    /// Permission cache shared with auth middleware for cache invalidation
+    /// after membership mutations.
+    pub permission_cache: Option<Arc<crate::auth::cache::PermissionCache>>,
 }
 
 /// Get the UI static files directory path from environment or default
@@ -270,14 +111,40 @@ fn get_ui_static_dir() -> Option<PathBuf> {
     }
 }
 
+/// Describes the type of localhost warning for CORS origins, if any.
+#[derive(Debug, PartialEq)]
+enum CorsLocalhostWarning {
+    /// No localhost origins detected
+    None,
+    /// Localhost origins from default (FLOWPLANE_UI_ORIGIN not set)
+    DefaultsInUse,
+    /// Localhost origins explicitly configured via FLOWPLANE_UI_ORIGIN
+    ExplicitLocalhost,
+}
+
+/// Check if any CORS origins reference localhost and whether defaults are in use.
+fn check_cors_localhost(origins: &[String], using_defaults: bool) -> CorsLocalhostWarning {
+    let has_localhost = origins.iter().any(|o| o.contains("localhost") || o.contains("127.0.0.1"));
+
+    if has_localhost && using_defaults {
+        CorsLocalhostWarning::DefaultsInUse
+    } else if has_localhost {
+        CorsLocalhostWarning::ExplicitLocalhost
+    } else {
+        CorsLocalhostWarning::None
+    }
+}
+
 /// Build CORS layer from environment configuration
 /// Supports multiple origins via comma-separated FLOWPLANE_UI_ORIGIN
 /// Example: FLOWPLANE_UI_ORIGIN=http://localhost:3000,http://localhost:6274
 fn build_cors_layer() -> CorsLayer {
     // Read allowed origins from environment variable
     // Default includes localhost:3000 (UI) and localhost:6274 (MCP Inspector)
-    let allowed_origins_str = std::env::var("FLOWPLANE_UI_ORIGIN")
-        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:6274".to_string());
+    let env_value = std::env::var("FLOWPLANE_UI_ORIGIN");
+    let using_defaults = env_value.is_err();
+    let allowed_origins_str =
+        env_value.unwrap_or_else(|_| "http://localhost:3000,http://localhost:6274".to_string());
 
     // Parse comma-separated origins into a list
     let allowed_origins: Vec<String> = allowed_origins_str
@@ -285,6 +152,25 @@ fn build_cors_layer() -> CorsLayer {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+
+    // Warn if any origins reference localhost — not suitable for production
+    match check_cors_localhost(&allowed_origins, using_defaults) {
+        CorsLocalhostWarning::DefaultsInUse => {
+            tracing::warn!(
+                allowed_origins = ?allowed_origins,
+                "CORS using default localhost origins — FLOWPLANE_UI_ORIGIN is not set. \
+                 This is not suitable for production. Set FLOWPLANE_UI_ORIGIN to your production UI URL."
+            );
+        }
+        CorsLocalhostWarning::ExplicitLocalhost => {
+            tracing::warn!(
+                allowed_origins = ?allowed_origins,
+                "CORS allowed origins contain localhost/127.0.0.1 addresses. \
+                 This should not be used in production."
+            );
+        }
+        CorsLocalhostWarning::None => {}
+    }
 
     tracing::info!(
         allowed_origins = ?allowed_origins,
@@ -361,8 +247,60 @@ pub fn build_router_with_registry(
         }
     }
 
-    // Create auth rate limiters from environment
-    let auth_rate_limiters = Arc::new(AuthRateLimiters::from_env());
+    // Early return: if no cluster repository is configured, only serve docs
+    if state.cluster_repository.is_none() {
+        return docs::docs_router();
+    }
+
+    // Create permission cache (shared between middleware and handlers for cache invalidation)
+    let permission_cache = Arc::new(crate::auth::cache::PermissionCache::from_env());
+
+    // Create Zitadel admin client for user provisioning (invite endpoint)
+    let zitadel_admin = crate::auth::zitadel_admin::ZitadelAdminClient::from_env().map(Arc::new);
+
+    let auth_mode = std::env::var("FLOWPLANE_AUTH_MODE").unwrap_or_default();
+
+    let (auth_layer, api_permission_cache) =
+        if auth_mode == "dev" {
+            let dev_state = DevAuthState::from_env();
+            tracing::info!("Dev mode authentication enabled");
+            (
+                tower::util::Either::Left(tower::util::Either::Left(
+                    middleware::from_fn_with_state(dev_state, dev_authenticate),
+                )),
+                None,
+            )
+        } else {
+            match crate::auth::zitadel::ZitadelConfig::from_env() {
+                Some(zitadel_config) => {
+                    tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
+                    let pool = state.pool.clone().expect(
+                        "DB pool required for Zitadel auth middleware — start with --database",
+                    );
+                    let auth_rate_limiter =
+                        Arc::new(crate::api::rate_limit::RateLimiter::auth_from_env());
+                    let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
+                        jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
+                        config: std::sync::Arc::new(zitadel_config),
+                        pool,
+                        permission_cache: permission_cache.clone(),
+                        auth_rate_limiter,
+                    };
+                    (
+                        tower::util::Either::Left(tower::util::Either::Right(
+                            middleware::from_fn_with_state(zitadel_state, authenticate),
+                        )),
+                        Some(permission_cache),
+                    )
+                }
+                None => {
+                    tracing::warn!(
+                    "Zitadel not configured — starting in degraded mode (auth endpoints return 503)"
+                );
+                    (tower::util::Either::Right(middleware::from_fn(reject_all_auth)), None)
+                }
+            }
+        };
 
     let api_state = ApiState {
         xds_state: state.clone(),
@@ -372,55 +310,8 @@ pub fn build_router_with_registry(
         mcp_session_manager,
         certificate_rate_limiter,
         auth_config,
-        auth_rate_limiters,
-    };
-
-    let cluster_repo = match &state.cluster_repository {
-        Some(repo) => repo.clone(),
-        None => return docs::docs_router(),
-    };
-
-    // Spawn background task to expire stale invitations hourly
-    {
-        let pool = cluster_repo.pool().clone();
-        let invitation_repo = crate::storage::repositories::SqlxInvitationRepository::new(pool);
-        tokio::spawn(async move {
-            use crate::storage::repositories::InvitationRepository;
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        match invitation_repo.expire_stale_invitations().await {
-                            Ok(count) => {
-                                if count > 0 {
-                                    tracing::info!(expired = count, "expired stale invitations");
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to expire stale invitations");
-                            }
-                        }
-                    }
-                    _ = tokio::signal::ctrl_c() => {
-                        tracing::info!("invitation expiry task shutting down");
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    let auth_layer = {
-        let pool = cluster_repo.pool().clone();
-        let audit_repository = Arc::new(AuditLogRepository::new(pool.clone()));
-        let auth_service = Arc::new(AuthService::with_sqlx(pool.clone(), audit_repository.clone()));
-        let token_repo =
-            Arc::new(crate::storage::repository::SqlxTokenRepository::new(pool.clone()));
-        let session_service = Arc::new(SessionService::new(token_repo, audit_repository));
-
-        // Create a tuple state with auth services + pool for org context resolution
-        let auth_state = (auth_service, session_service, pool);
-        middleware::from_fn_with_state(auth_state, authenticate)
+        zitadel_admin,
+        permission_cache: api_permission_cache,
     };
 
     let dynamic_scope_layer = middleware::from_fn(ensure_dynamic_scopes);
@@ -429,105 +320,110 @@ pub fn build_router_with_registry(
     // This creates spans for all HTTP requests with method, path, status, and latency
     let trace_layer = middleware::from_fn(trace_http_requests);
 
+    // Path parameter naming convention:
+    //   {team}              - team name or UUID (dual-lookup via resolve_team_name)
+    //   {name}              - human-readable unique name (clusters, route configs, listeners, dataplanes)
+    //   {id}                - UUID primary key (filters, secrets, certs, learning sessions, schemas)
+    //   {<resource>_name}   - name of a parent resource in nested paths (route_config_name, vhost_name)
+    //   {<resource>_id}     - UUID of a parent resource in nested paths (filter_id, principal_id)
+    //   {org_name}          - organization name
+    //   {agent_name}        - agent name
+    //
+    // RPC-style action sub-paths (e.g., /revoke, /export, /import, /invite, /download)
+    // are used intentionally for state transitions and operations that don't map to CRUD.
+    //
+    // Path structure by scope:
+    //   /api/v1/teams/{team}/...   - team-scoped resource CRUD (most endpoints)
+    //   /api/v1/orgs/{org_name}/.. - org-scoped user-facing endpoints (teams, agents, grants)
+    //   /api/v1/admin/...          - platform admin endpoints (org/team management, audit)
     let secured_api = Router::new()
-        // Password change endpoint (authenticated users only)
-        .route("/api/v1/auth/change-password", post(change_password_handler))
-        // Session refresh endpoint (recompute scopes from current memberships)
-        .route("/api/v1/auth/sessions/refresh", post(refresh_session_handler))
-        // Token management endpoints
-        .route("/api/v1/tokens", get(list_tokens_handler))
-        .route("/api/v1/tokens", post(create_token_handler))
-        .route("/api/v1/tokens/{id}", get(get_token_handler))
-        .route("/api/v1/tokens/{id}", patch(update_token_handler))
-        .route("/api/v1/tokens/{id}", delete(revoke_token_handler))
-        .route("/api/v1/tokens/{id}/rotate", post(rotate_token_handler))
-        // Cluster endpoints
-        .route("/api/v1/clusters", get(list_clusters_handler))
-        .route("/api/v1/clusters", post(create_cluster_handler))
-        .route("/api/v1/clusters/{name}", get(get_cluster_handler))
-        .route("/api/v1/clusters/{name}", put(update_cluster_handler))
-        .route("/api/v1/clusters/{name}", delete(delete_cluster_handler))
-        // Route config endpoints
-        .route("/api/v1/route-configs", get(list_route_configs_handler))
-        .route("/api/v1/route-configs", post(create_route_config_handler))
-        .route("/api/v1/route-configs/{name}", get(get_route_config_handler))
-        .route("/api/v1/route-configs/{name}", put(update_route_config_handler))
-        .route("/api/v1/route-configs/{name}", delete(delete_route_config_handler))
+        // Cluster endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/clusters", get(list_clusters_handler))
+        .route("/api/v1/teams/{team}/clusters", post(create_cluster_handler))
+        .route("/api/v1/teams/{team}/clusters/{name}", get(get_cluster_handler))
+        .route("/api/v1/teams/{team}/clusters/{name}", put(update_cluster_handler))
+        .route("/api/v1/teams/{team}/clusters/{name}", delete(delete_cluster_handler))
+        // Route config endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/route-configs", get(list_route_configs_handler))
+        .route("/api/v1/teams/{team}/route-configs", post(create_route_config_handler))
+        .route("/api/v1/teams/{team}/route-configs/{name}", get(get_route_config_handler))
+        .route("/api/v1/teams/{team}/route-configs/{name}", put(update_route_config_handler))
+        .route("/api/v1/teams/{team}/route-configs/{name}", delete(delete_route_config_handler))
         // Route views endpoints (UI flattened view)
         .route("/api/v1/route-views", get(list_route_views_handler))
         .route("/api/v1/route-views/stats", get(get_route_stats_handler))
-        // Filter endpoints
-        .route("/api/v1/filters", get(list_filters_handler))
-        .route("/api/v1/filters", post(create_filter_handler))
-        .route("/api/v1/filters/{id}", get(get_filter_handler))
-        .route("/api/v1/filters/{id}", put(update_filter_handler))
-        .route("/api/v1/filters/{id}", delete(delete_filter_handler))
-        // Filter Install/Configure endpoints (redesign)
-        .route("/api/v1/filters/{filter_id}/status", get(get_filter_status_handler))
-        .route("/api/v1/filters/{filter_id}/installations", get(list_filter_installations_handler))
-        .route("/api/v1/filters/{filter_id}/installations", post(install_filter_handler))
-        .route("/api/v1/filters/{filter_id}/installations/{listener_id}", delete(uninstall_filter_handler))
-        .route("/api/v1/filters/{filter_id}/configurations", get(list_filter_configurations_handler))
-        .route("/api/v1/filters/{filter_id}/configurations", post(configure_filter_handler))
+        // Filter endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/filters", get(list_filters_handler))
+        .route("/api/v1/teams/{team}/filters", post(create_filter_handler))
+        .route("/api/v1/teams/{team}/filters/{id}", get(get_filter_handler))
+        .route("/api/v1/teams/{team}/filters/{id}", patch(update_filter_handler))
+        .route("/api/v1/teams/{team}/filters/{id}", delete(delete_filter_handler))
+        // Filter Install/Configure endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/filters/{filter_id}/status", get(get_filter_status_handler))
+        .route("/api/v1/teams/{team}/filters/{filter_id}/installations", get(list_filter_installations_handler))
+        .route("/api/v1/teams/{team}/filters/{filter_id}/installations", post(install_filter_handler))
+        .route("/api/v1/teams/{team}/filters/{filter_id}/installations/{listener_id}", delete(uninstall_filter_handler))
+        .route("/api/v1/teams/{team}/filters/{filter_id}/configurations", get(list_filter_configurations_handler))
+        .route("/api/v1/teams/{team}/filters/{filter_id}/configurations", post(configure_filter_handler))
         .route(
-            "/api/v1/filters/{filter_id}/configurations/{scope_type}/{scope_id}",
+            "/api/v1/teams/{team}/filters/{filter_id}/configurations/{scope_type}/{scope_id}",
             delete(remove_filter_configuration_handler),
         )
         // Filter types endpoints (dynamic filter framework)
         .route("/api/v1/filter-types", get(list_filter_types_handler))
         .route("/api/v1/filter-types/{filter_type}", get(get_filter_type_handler))
-        // Route config filter attachment endpoints
-        .route("/api/v1/route-configs/{route_config_id}/filters", get(list_route_filters_handler))
-        .route("/api/v1/route-configs/{route_config_id}/filters", post(attach_filter_handler))
-        .route("/api/v1/route-configs/{route_config_id}/filters/{filter_id}", delete(detach_filter_handler))
-        // Hierarchical filter attachment endpoints - Virtual Hosts
+        // Route config filter attachment endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/route-configs/{route_config_name}/filters", get(list_route_filters_handler))
+        .route("/api/v1/teams/{team}/route-configs/{route_config_name}/filters", post(attach_filter_handler))
+        .route("/api/v1/teams/{team}/route-configs/{route_config_name}/filters/{filter_id}", delete(detach_filter_handler))
+        // Hierarchical filter attachment endpoints - Virtual Hosts (team-scoped)
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts",
             get(list_virtual_hosts_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
             get(list_virtual_host_filters_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters",
             post(attach_filter_to_virtual_host_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/filters/{filter_id}",
             delete(detach_filter_from_virtual_host_handler),
         )
-        // Hierarchical filter attachment endpoints - Routes
+        // Hierarchical filter attachment endpoints - Routes (team-scoped)
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes",
             get(list_route_rules_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
             get(list_route_rule_filters_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters",
             post(attach_filter_to_route_rule_handler),
         )
         .route(
-            "/api/v1/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
+            "/api/v1/teams/{team}/route-configs/{route_config_name}/virtual-hosts/{vhost_name}/routes/{route_name}/filters/{filter_id}",
             delete(detach_filter_from_route_rule_handler),
         )
-        // Listener-Filter attachment endpoints
-        .route("/api/v1/listeners/{listener_id}/filters", get(list_listener_filters_handler))
-        .route("/api/v1/listeners/{listener_id}/filters", post(attach_filter_to_listener_handler))
+        // Listener-Filter attachment endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/listeners/{listener_name}/filters", get(list_listener_filters_handler))
+        .route("/api/v1/teams/{team}/listeners/{listener_name}/filters", post(attach_filter_to_listener_handler))
         .route(
-            "/api/v1/listeners/{listener_id}/filters/{filter_id}",
+            "/api/v1/teams/{team}/listeners/{listener_name}/filters/{filter_id}",
             delete(detach_filter_from_listener_handler),
         )
-        // OpenAPI import endpoints
+        // OpenAPI import endpoints (team-scoped)
         .route(
-            "/api/v1/openapi/import",
+            "/api/v1/teams/{team}/openapi/import",
             post(super::handlers::openapi_import::import_openapi_handler),
         )
         .route(
-            "/api/v1/openapi/imports",
+            "/api/v1/teams/{team}/openapi/imports",
             get(super::handlers::openapi_import::list_imports_handler),
         )
         .route(
@@ -552,82 +448,91 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/secrets", post(create_secret_handler))
         .route("/api/v1/teams/{team}/secrets/reference", post(create_secret_reference_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", get(get_secret_handler))
-        .route("/api/v1/teams/{team}/secrets/{secret_id}", put(update_secret_handler))
+        .route("/api/v1/teams/{team}/secrets/{secret_id}", patch(update_secret_handler))
         .route("/api/v1/teams/{team}/secrets/{secret_id}", delete(delete_secret_handler))
+        .route("/api/v1/teams/{team}/secrets/{secret_id}/rotate", post(rotate_secret_handler))
         // Custom WASM filter endpoints
         .route("/api/v1/teams/{team}/custom-filters", get(list_custom_wasm_filters_handler))
         .route("/api/v1/teams/{team}/custom-filters", post(create_custom_wasm_filter_handler))
         .route("/api/v1/teams/{team}/custom-filters/{id}", get(get_custom_wasm_filter_handler))
-        .route("/api/v1/teams/{team}/custom-filters/{id}", put(update_custom_wasm_filter_handler))
+        .route("/api/v1/teams/{team}/custom-filters/{id}", patch(update_custom_wasm_filter_handler))
         .route("/api/v1/teams/{team}/custom-filters/{id}", delete(delete_custom_wasm_filter_handler))
         .route("/api/v1/teams/{team}/custom-filters/{id}/download", get(download_wasm_binary_handler))
-        // Listener endpoints
-        .route("/api/v1/listeners", get(list_listeners_handler))
-        .route("/api/v1/listeners", post(create_listener_handler))
-        .route("/api/v1/listeners/{name}", get(get_listener_handler))
-        .route("/api/v1/listeners/{name}", put(update_listener_handler))
-        .route("/api/v1/listeners/{name}", delete(delete_listener_handler))
-        // Learning session endpoints (team-scoped like other resources)
-        .route("/api/v1/learning-sessions", get(list_learning_sessions_handler))
-        .route("/api/v1/learning-sessions", post(create_learning_session_handler))
-        .route("/api/v1/learning-sessions/{id}", get(get_learning_session_handler))
-        .route("/api/v1/learning-sessions/{id}", delete(delete_learning_session_handler))
+        // Listener endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/listeners", get(list_listeners_handler))
+        .route("/api/v1/teams/{team}/listeners", post(create_listener_handler))
+        .route("/api/v1/teams/{team}/listeners/{name}", get(get_listener_handler))
+        .route("/api/v1/teams/{team}/listeners/{name}", put(update_listener_handler))
+        .route("/api/v1/teams/{team}/listeners/{name}", delete(delete_listener_handler))
+        // Expose/Unexpose endpoints (simplified service exposure)
+        .route("/api/v1/teams/{team}/expose", post(expose_handler))
+        .route("/api/v1/teams/{team}/expose/{name}", delete(unexpose_handler))
+        // Learning session endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/learning-sessions", get(list_learning_sessions_handler))
+        .route("/api/v1/teams/{team}/learning-sessions", post(create_learning_session_handler))
+        .route("/api/v1/teams/{team}/learning-sessions/{id}", get(get_learning_session_handler))
+        .route("/api/v1/teams/{team}/learning-sessions/{id}", delete(delete_learning_session_handler))
         // Dataplane endpoints (team-scoped Envoy instances with gateway_host)
         .route("/api/v1/dataplanes", get(list_all_dataplanes_handler))
         .route("/api/v1/teams/{team}/dataplanes", get(list_dataplanes_handler))
         .route("/api/v1/teams/{team}/dataplanes", post(create_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}", get(get_dataplane_handler))
-        .route("/api/v1/teams/{team}/dataplanes/{name}", put(update_dataplane_handler))
+        .route("/api/v1/teams/{team}/dataplanes/{name}", patch(update_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}", delete(delete_dataplane_handler))
         .route("/api/v1/teams/{team}/dataplanes/{name}/envoy-config", get(generate_envoy_config_handler))
         // Aggregated schema endpoints (API catalog)
-        .route("/api/v1/aggregated-schemas", get(list_aggregated_schemas_handler))
-        .route("/api/v1/aggregated-schemas/{id}", get(get_aggregated_schema_handler))
-        .route("/api/v1/aggregated-schemas/{id}/compare", get(compare_aggregated_schemas_handler))
-        .route("/api/v1/aggregated-schemas/{id}/export", get(export_aggregated_schema_handler))
-        .route("/api/v1/aggregated-schemas/export", post(export_multiple_schemas_handler))
+        .route("/api/v1/teams/{team}/aggregated-schemas", get(list_aggregated_schemas_handler))
+        .route("/api/v1/teams/{team}/aggregated-schemas/{id}", get(get_aggregated_schema_handler))
+        .route("/api/v1/teams/{team}/aggregated-schemas/{id}/compare", get(compare_aggregated_schemas_handler))
+        .route("/api/v1/teams/{team}/aggregated-schemas/{id}/export", get(export_aggregated_schema_handler))
+        .route("/api/v1/teams/{team}/aggregated-schemas/export", post(export_multiple_schemas_handler))
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
-        // User management endpoints (admin only)
-        .route("/api/v1/users", get(list_users))
-        .route("/api/v1/users", post(create_user))
-        .route("/api/v1/users/{id}", get(get_user))
-        .route("/api/v1/users/{id}", put(update_user))
-        .route("/api/v1/users/{id}", delete(delete_user))
-        .route("/api/v1/users/{id}/teams", get(list_user_teams))
-        .route("/api/v1/users/{id}/teams", post(add_team_membership))
-        .route("/api/v1/users/{id}/teams/{team}", delete(remove_team_membership))
-        .route("/api/v1/users/{id}/teams/{team}", put(update_team_membership_scopes))
+        // Auth session endpoint (any authenticated user — returns DB-sourced permissions)
+        .route("/api/v1/auth/session", get(auth_session_handler))
         // Admin team management endpoints (admin only)
         .route("/api/v1/admin/teams", get(admin_list_teams))
         .route("/api/v1/admin/teams", post(admin_create_team))
         .route("/api/v1/admin/teams/{id}", get(admin_get_team))
-        .route("/api/v1/admin/teams/{id}", put(admin_update_team))
+        .route("/api/v1/admin/teams/{id}", patch(admin_update_team))
         .route("/api/v1/admin/teams/{id}", delete(admin_delete_team))
         // Org-scoped endpoints (authenticated users)
         .route("/api/v1/orgs/current", get(get_current_org))
         .route("/api/v1/orgs/{org_name}/teams", get(list_org_teams))
         .route("/api/v1/orgs/{org_name}/teams", post(create_org_team))
-        .route("/api/v1/orgs/{org_name}/teams/{team_name}", put(update_org_team).delete(delete_org_team))
+        .route("/api/v1/orgs/{org_name}/teams/{team_name}", patch(update_org_team).delete(delete_org_team))
         .route("/api/v1/orgs/{org_name}/teams/{team_name}/members", get(list_team_members).post(add_team_member))
         .route(
             "/api/v1/orgs/{org_name}/teams/{team_name}/members/{user_id}",
-            put(update_team_member_scopes).delete(remove_team_member),
+            delete(remove_team_member),
+        )
+        .route(
+            "/api/v1/orgs/{org_name}/agents",
+            get(list_org_agents).post(create_org_agent),
+        )
+        .route(
+            "/api/v1/orgs/{org_name}/agents/{agent_name}",
+            delete(delete_org_agent),
+        )
+        .route(
+            "/api/v1/orgs/{org_name}/principals/{principal_id}/grants",
+            get(list_principal_grants).post(create_principal_grant),
+        )
+        .route(
+            "/api/v1/orgs/{org_name}/principals/{principal_id}/grants/{grant_id}",
+            delete(delete_principal_grant),
         )
         // Admin organization management endpoints
         .route("/api/v1/admin/organizations", get(admin_list_organizations))
         .route("/api/v1/admin/organizations", post(admin_create_organization))
         .route("/api/v1/admin/organizations/{id}", get(admin_get_organization))
-        .route("/api/v1/admin/organizations/{id}", put(admin_update_organization))
+        .route("/api/v1/admin/organizations/{id}", patch(admin_update_organization))
         .route("/api/v1/admin/organizations/{id}", delete(admin_delete_organization))
         .route("/api/v1/admin/organizations/{id}/members", get(admin_list_org_members))
         .route("/api/v1/admin/organizations/{id}/members", post(admin_add_org_member))
         .route("/api/v1/admin/organizations/{id}/members/{user_id}", put(admin_update_org_member_role))
         .route("/api/v1/admin/organizations/{id}/members/{user_id}", delete(admin_remove_org_member))
-        // Invitation management (org admin)
-        .route("/api/v1/orgs/{org_name}/invitations", get(list_invitations_handler))
-        .route("/api/v1/orgs/{org_name}/invitations", post(create_invitation_handler))
-        .route("/api/v1/orgs/{org_name}/invitations/{id}", delete(revoke_invitation_handler))
+        .route("/api/v1/admin/organizations/{id}/invite", post(admin_invite_org_member))
         // Admin resource summary (platform admin dashboard)
         .route("/api/v1/admin/resources/summary", get(admin_resource_summary_handler))
         // Audit log endpoints (admin only)
@@ -645,21 +550,14 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/stats/overview", get(get_stats_overview_handler))
         .route("/api/v1/teams/{team}/stats/clusters", get(get_stats_clusters_handler))
         .route("/api/v1/teams/{team}/stats/clusters/{cluster}", get(get_stats_cluster_handler))
-        // MCP protocol endpoints - Control Plane tools (Streamable HTTP 2025-03-26)
+        // MCP protocol endpoint - unified CP and Gateway API tools (Streamable HTTP 2025-11-25)
         .route(
-            "/api/v1/mcp/cp",
-            post(crate::mcp::post_handler_cp)
-                .get(crate::mcp::get_handler_cp)
-                .delete(crate::mcp::delete_handler_cp),
+            "/api/v1/mcp",
+            post(crate::mcp::post_handler)
+                .get(crate::mcp::get_handler)
+                .delete(crate::mcp::delete_handler),
         )
-        .route("/api/v1/mcp/cp/connections", get(crate::mcp::list_connections_handler))
-        // MCP protocol endpoints - API tools (Streamable HTTP 2025-03-26)
-        .route(
-            "/api/v1/mcp/api",
-            post(crate::mcp::post_handler_api)
-                .get(crate::mcp::get_handler_api)
-                .delete(crate::mcp::delete_handler_api),
-        )
+        .route("/api/v1/mcp/connections", get(crate::mcp::list_connections_handler))
         // MCP tools management endpoints
         .route("/api/v1/teams/{team}/mcp/tools", get(list_mcp_tools_handler))
         .route("/api/v1/teams/{team}/mcp/tools/{name}", get(get_mcp_tool_handler))
@@ -675,6 +573,8 @@ pub fn build_router_with_registry(
         // MCP learned schema operations
         .route("/api/v1/teams/{team}/mcp/routes/{route_id}/learned-schema", get(check_learned_schema_handler))
         .route("/api/v1/teams/{team}/mcp/routes/{route_id}/apply-learned", post(apply_learned_schema_handler))
+        // DCR endpoint (authenticated — org admin required, merged into secured router)
+        .route("/api/v1/oauth/register", post(dcr_register_handler))
         .with_state(api_state.clone())
         .layer(trace_layer) // Add OpenTelemetry HTTP tracing BEFORE auth layers
         .layer(dynamic_scope_layer)
@@ -683,26 +583,53 @@ pub fn build_router_with_registry(
     // Public endpoints (no authentication required)
     let public_api = Router::new()
         .route("/health", get(health_handler))
+        .route("/api/v1/auth/mode", get(auth_mode_handler))
         .route("/api/v1/bootstrap/status", get(bootstrap_status_handler))
         .route("/api/v1/bootstrap/initialize", post(bootstrap_initialize_handler))
-        .route("/api/v1/auth/login", post(login_handler))
-        .route("/api/v1/auth/sessions", post(create_session_handler))
-        .route("/api/v1/auth/sessions/me", get(get_session_info_handler))
-        .route("/api/v1/auth/sessions/logout", post(logout_handler))
         // Scopes endpoint (public - needed for token creation UI)
         .route("/api/v1/scopes", get(list_scopes_handler))
-        // Invitation public endpoints (registration flow)
-        .route("/api/v1/invitations/validate", get(validate_invitation_handler))
-        .route("/api/v1/invitations/accept", post(accept_invitation_handler))
         .with_state(api_state.clone());
+
+    // OAuth metadata endpoint (public, points to Zitadel)
+    let metadata_router =
+        if let Some(meta_state) = super::handlers::oauth::OAuthMetadataState::from_env() {
+            tracing::info!("OAuth metadata enabled at /.well-known/openid-configuration");
+            Router::new()
+                .route(
+                    "/.well-known/openid-configuration",
+                    get(super::handlers::oauth::openid_configuration_handler),
+                )
+                .with_state(meta_state)
+        } else {
+            Router::new()
+        };
+
+    // Auth config endpoint (public, returns OIDC config for SPA runtime initialization)
+    let auth_config_router =
+        if let Some(auth_config_state) = super::handlers::oauth::AuthConfigState::from_env() {
+            tracing::info!("Auth config enabled at GET /api/v1/auth/config");
+            Router::new()
+                .route("/api/v1/auth/config", get(super::handlers::oauth::auth_config_handler))
+                .with_state(auth_config_state)
+        } else {
+            tracing::info!("Auth config disabled (FLOWPLANE_ZITADEL_SPA_CLIENT_ID not set)");
+            Router::new()
+        };
 
     // Build CORS layer for UI integration
     let cors_layer = build_cors_layer();
 
     // Build the API router with CORS
-    let api_router = secured_api.merge(public_api).merge(docs::docs_router()).layer(cors_layer);
+    let api_router = secured_api
+        .merge(public_api)
+        .merge(metadata_router)
+        .merge(auth_config_router)
+        .merge(docs::docs_router())
+        .layer(cors_layer);
 
-    // Check if UI static files directory exists and add fallback service
+    // Check if UI static files directory exists and add fallback service.
+    // Use a custom fallback that returns JSON 404 for /api/ paths and
+    // serves the SvelteKit SPA for everything else.
     if let Some(ui_dir) = get_ui_static_dir() {
         let index_file = ui_dir.join("index.html");
         let serve_dir = ServeDir::new(&ui_dir).not_found_service(ServeFile::new(&index_file));
@@ -710,10 +637,50 @@ pub fn build_router_with_registry(
         tracing::info!("Serving UI from {:?}", ui_dir);
 
         // API routes take precedence, then fall back to static files
-        api_router.fallback_service(serve_dir)
+        // But intercept /api/ paths to return JSON 404 instead of HTML
+        api_router.fallback_service(
+            axum::Router::new()
+                .route(
+                    "/api/{*path}",
+                    axum::routing::any(|| async {
+                        (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(serde_json::json!({
+                                "error": "not_found",
+                                "message": "API endpoint not found"
+                            })),
+                        )
+                    }),
+                )
+                .fallback_service(serve_dir),
+        )
     } else {
-        api_router
+        // No UI build — still return JSON for unknown /api/ paths
+        api_router.fallback(|| async {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({
+                    "error": "not_found",
+                    "message": "API endpoint not found"
+                })),
+            )
+        })
     }
+}
+
+/// Reject-all auth middleware for degraded mode (Zitadel not configured).
+/// Returns 503 Service Unavailable for all authenticated endpoints.
+async fn reject_all_auth(
+    _req: axum::extract::Request,
+    _next: middleware::Next,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({"error": "Auth not configured — run setup-zitadel"})),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -763,5 +730,38 @@ mod tests {
 
         // Clean up
         std::env::remove_var("FLOWPLANE_UI_ORIGIN");
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_defaults_in_use() {
+        let origins =
+            vec!["http://localhost:3000".to_string(), "http://localhost:6274".to_string()];
+        assert_eq!(check_cors_localhost(&origins, true), CorsLocalhostWarning::DefaultsInUse);
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_explicit_localhost() {
+        let origins =
+            vec!["http://localhost:3000".to_string(), "https://app.example.com".to_string()];
+        assert_eq!(check_cors_localhost(&origins, false), CorsLocalhostWarning::ExplicitLocalhost);
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_127_0_0_1() {
+        let origins = vec!["http://127.0.0.1:8080".to_string()];
+        assert_eq!(check_cors_localhost(&origins, false), CorsLocalhostWarning::ExplicitLocalhost);
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_none_for_production_origins() {
+        let origins =
+            vec!["https://app.example.com".to_string(), "https://admin.example.com".to_string()];
+        assert_eq!(check_cors_localhost(&origins, false), CorsLocalhostWarning::None);
+    }
+
+    #[test]
+    fn test_cors_localhost_warning_empty_origins() {
+        let origins: Vec<String> = vec![];
+        assert_eq!(check_cors_localhost(&origins, true), CorsLocalhostWarning::None);
     }
 }

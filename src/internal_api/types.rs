@@ -398,6 +398,8 @@ pub struct UpdateRouteRequest {
     pub rule_order: Option<i32>,
     /// New action (optional)
     pub action: Option<serde_json::Value>,
+    /// Route visibility: "internal" (default) or "external" for agent access
+    pub exposure: Option<String>,
 }
 
 // =============================================================================
@@ -477,6 +479,15 @@ pub struct ListDataplanesInternalRequest {
     pub limit: Option<i32>,
     /// Offset for pagination
     pub offset: Option<i32>,
+}
+
+/// Response for listing dataplanes
+#[derive(Debug)]
+pub struct ListDataplanesResponse {
+    /// List of dataplanes
+    pub dataplanes: Vec<crate::storage::repositories::DataplaneData>,
+    /// Total count of dataplanes matching the query (before pagination)
+    pub count: i64,
 }
 
 /// Request to create a new dataplane

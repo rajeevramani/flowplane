@@ -8,11 +8,11 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    ClusterOperations, CreateClusterRequest as InternalCreateRequest, InternalAuthContext,
-    ListClustersRequest, UpdateClusterRequest as InternalUpdateRequest,
+    ClusterOperations, CreateClusterRequest as InternalCreateRequest, ListClustersRequest,
+    UpdateClusterRequest as InternalUpdateRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_query_response, build_rich_create_response, build_rich_delete_response,
     build_update_response, ResourceRef,
@@ -48,21 +48,7 @@ WORKFLOW CONTEXT:
 
 RELATED TOOLS: cp_get_cluster (details), cp_create_cluster (create), cp_list_route_configs (routes using clusters)"#.to_string(), json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of clusters to return (default: 50, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of clusters to skip for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
+            "properties": super::pagination_schema("clusters")
         }))
 }
 
@@ -239,7 +225,7 @@ pub async fn execute_query_service(
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_list_clusters tool.
@@ -263,10 +249,7 @@ pub async fn execute_list_clusters(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let list_req = ListClustersRequest {
         limit,
         offset,
@@ -315,7 +298,7 @@ pub async fn execute_list_clusters(
 
     tracing::info!(team = %team, cluster_count = result.count, "Successfully listed clusters");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_get_cluster tool.
@@ -341,10 +324,7 @@ pub async fn execute_get_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let cluster = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for pretty output
@@ -368,7 +348,7 @@ pub async fn execute_get_cluster(
 
     tracing::info!(team = %team, cluster_name = %name, "Successfully retrieved cluster");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Returns the MCP tool definition for creating a cluster.
@@ -439,7 +419,7 @@ Example:
   }
 }
 
-Authorization: Requires cp:write scope.
+Authorization: Requires clusters:create scope.
 "#
         .to_string(),
         json!({
@@ -594,7 +574,7 @@ Optional Parameters (provide at least one):
 
 TIP: Use cp_get_cluster first to see current configuration before updating.
 
-Authorization: Requires cp:write scope.
+Authorization: Requires clusters:update scope.
 "#
         .to_string(),
         json!({
@@ -687,7 +667,7 @@ WORKFLOW:
 Required Parameters:
 - name: Name of the cluster to delete
 
-Authorization: Requires cp:write scope.
+Authorization: Requires clusters:delete scope.
 "#
         .to_string(),
         json!({
@@ -720,13 +700,12 @@ pub async fn execute_create_cluster(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let service_name = args
-        .get("serviceName")
-        .or_else(|| args.get("service_name"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: serviceName".to_string())
-        })?;
+    crate::validation::validate_resource_name(name)
+        .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
+    let service_name = args.get("serviceName").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: serviceName".to_string())
+    })?;
 
     let endpoints_json = args.get("endpoints").ok_or_else(|| {
         McpError::InvalidParams("Missing required parameter: endpoints".to_string())
@@ -750,28 +729,21 @@ pub async fn execute_create_cluster(
     // 3. Build ClusterSpec from args
     let mut cluster_spec = ClusterSpec {
         endpoints,
-        connect_timeout_seconds: args
-            .get("connectTimeoutSeconds")
-            .or_else(|| args.get("connect_timeout_seconds"))
-            .and_then(|v| v.as_u64()),
-        lb_policy: args
-            .get("lbPolicy")
-            .or_else(|| args.get("lb_policy"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        use_tls: args.get("useTls").or_else(|| args.get("use_tls")).and_then(|v| v.as_bool()),
+        connect_timeout_seconds: args.get("connectTimeoutSeconds").and_then(|v| v.as_u64()),
+        lb_policy: args.get("lbPolicy").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        use_tls: args.get("useTls").and_then(|v| v.as_bool()),
         ..Default::default()
     };
 
     // 4. Parse health check if provided
-    if let Some(hc_json) = args.get("healthCheck").or_else(|| args.get("health_check")) {
+    if let Some(hc_json) = args.get("healthCheck") {
         if let Some(hc) = parse_health_check(hc_json) {
             cluster_spec.health_checks = vec![hc];
         }
     }
 
     // 5. Parse circuit breakers if provided
-    if let Some(cb_json) = args.get("circuitBreakers").or_else(|| args.get("circuit_breakers")) {
+    if let Some(cb_json) = args.get("circuitBreakers") {
         cluster_spec.circuit_breakers = parse_circuit_breakers(cb_json);
     }
 
@@ -788,10 +760,7 @@ pub async fn execute_create_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let result = ops.create(internal_req, &auth).await?;
 
     // 7. Format rich response with details and next-step guidance
@@ -822,7 +791,7 @@ pub async fn execute_create_cluster(
         "Successfully created cluster via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_cluster tool.
@@ -849,10 +818,7 @@ pub async fn execute_update_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let existing = ops.get(name, &auth).await?;
 
     // 3. Parse existing configuration
@@ -865,42 +831,30 @@ pub async fn execute_update_cluster(
             .map_err(|e| McpError::InvalidParams(format!("Invalid endpoints: {}", e)))?;
     }
 
-    if let Some(timeout) = args
-        .get("connectTimeoutSeconds")
-        .or_else(|| args.get("connect_timeout_seconds"))
-        .and_then(|v| v.as_u64())
-    {
+    if let Some(timeout) = args.get("connectTimeoutSeconds").and_then(|v| v.as_u64()) {
         cluster_spec.connect_timeout_seconds = Some(timeout);
     }
 
-    if let Some(lb_policy) =
-        args.get("lbPolicy").or_else(|| args.get("lb_policy")).and_then(|v| v.as_str())
-    {
+    if let Some(lb_policy) = args.get("lbPolicy").and_then(|v| v.as_str()) {
         cluster_spec.lb_policy = Some(lb_policy.to_string());
     }
 
-    if let Some(use_tls) =
-        args.get("useTls").or_else(|| args.get("use_tls")).and_then(|v| v.as_bool())
-    {
+    if let Some(use_tls) = args.get("useTls").and_then(|v| v.as_bool()) {
         cluster_spec.use_tls = Some(use_tls);
     }
 
-    if let Some(hc_json) = args.get("healthCheck").or_else(|| args.get("health_check")) {
+    if let Some(hc_json) = args.get("healthCheck") {
         if let Some(hc) = parse_health_check(hc_json) {
             cluster_spec.health_checks = vec![hc];
         }
     }
 
-    if let Some(cb_json) = args.get("circuitBreakers").or_else(|| args.get("circuit_breakers")) {
+    if let Some(cb_json) = args.get("circuitBreakers") {
         cluster_spec.circuit_breakers = parse_circuit_breakers(cb_json);
     }
 
     // 5. Get service name (use existing if not provided)
-    let service_name = args
-        .get("serviceName")
-        .or_else(|| args.get("service_name"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let service_name = args.get("serviceName").and_then(|v| v.as_str()).map(|s| s.to_string());
 
     // 6. Create request and use internal API layer
     let internal_req = InternalUpdateRequest { service_name, config: cluster_spec };
@@ -919,7 +873,7 @@ pub async fn execute_update_cluster(
         "Successfully updated cluster via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_cluster tool.
@@ -946,10 +900,7 @@ pub async fn execute_delete_cluster(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     ops.delete(name, &auth).await?;
 
     // 3. Format response with next-step guidance
@@ -960,7 +911,7 @@ pub async fn execute_delete_cluster(
 
     tracing::info!(team = %team, cluster_name = %name, "Successfully deleted cluster via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_get_cluster_health tool.
@@ -986,10 +937,7 @@ pub async fn execute_get_cluster_health(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let cluster = ops.get(name, &auth).await?;
     let cluster_id = cluster.id.clone();
 
@@ -1055,7 +1003,7 @@ pub async fn execute_get_cluster_health(
         "Successfully retrieved cluster health"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // === Helper Functions for MCP-Specific Parsing ===
@@ -1147,6 +1095,7 @@ fn parse_circuit_breakers(cb_json: &Value) -> Option<crate::xds::CircuitBreakers
 mod tests {
     use super::*;
     use crate::config::SimpleXdsConfig;
+    use crate::mcp::protocol::ContentBlock;
     use crate::storage::test_helpers::TestDatabase;
 
     async fn setup_test_xds() -> (TestDatabase, Arc<XdsState>) {

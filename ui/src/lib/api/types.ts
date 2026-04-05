@@ -7,28 +7,6 @@ export interface PaginatedResponse<T> {
 	offset: number;
 }
 
-export interface LoginRequest {
-	email: string;
-	password: string;
-}
-
-export interface LoginResponse {
-	sessionId: string;
-	csrfToken: string;
-	expiresAt: string;
-	userId: string;
-	userEmail: string;
-	isPlatformAdmin: boolean;
-	teams: string[];
-	scopes: string[];
-	orgId?: string;
-	orgName?: string;
-}
-
-export interface ChangePasswordRequest {
-	currentPassword: string;
-	newPassword: string;
-}
 
 export interface BootstrapStatusResponse {
 	needsInitialization: boolean;
@@ -49,17 +27,21 @@ export interface BootstrapInitializeResponse {
 	nextSteps: string[];
 }
 
+export interface GrantSummary {
+	teamName: string;
+	resourceType: string;
+	action: string;
+}
+
 export interface SessionInfoResponse {
-	sessionId: string;
 	userId: string;
 	name: string;
 	email: string;
-	isAdmin: boolean;
 	isPlatformAdmin: boolean;
 	teams: string[];
-	scopes: string[];
+	orgScopes: string[];
+	grants: GrantSummary[];
 	expiresAt: string | null;
-	version: string;
 	orgId?: string;
 	orgName?: string;
 	orgRole?: string;
@@ -121,41 +103,9 @@ export interface ApiError {
 	code?: string;
 }
 
-export type TokenStatus = 'Active' | 'Revoked' | 'Expired';
-
-export interface PersonalAccessToken {
-	id: string;
-	name: string;
-	description: string | null;
-	status: TokenStatus;
-	expiresAt: string | null;
-	lastUsedAt: string | null;
-	createdBy: string | null;
-	createdAt: string;
-	updatedAt: string;
-	scopes: string[];
-}
-
-export interface CreateTokenRequest {
-	name: string;
-	description?: string;
-	expiresAt?: string | null;
-	scopes: string[];
-}
-
-export interface TokenSecretResponse {
-	id: string;
-	token: string;
-}
-
-export interface UpdateTokenRequest {
-	name?: string;
-	description?: string;
-}
-
 export interface ImportOpenApiRequest {
 	spec: string; // YAML or JSON string
-	team?: string;
+	team: string;
 	listenerMode: 'existing' | 'new';
 	existingListenerName?: string; // when mode='existing'
 	newListenerName?: string; // when mode='new'
@@ -234,6 +184,7 @@ export interface RouteResponse {
 	team: string;
 	pathPrefix: string;
 	clusterTargets: string;
+	exposure: string;
 	importId?: string;
 	routeOrder?: number;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -244,84 +195,20 @@ export interface RouteResponse {
 // Routes are now accessed directly via RouteResponse
 
 // Cluster types
+export type { ClusterResponseData } from '$lib/schemas/cluster';
+export type ClusterConfig = import('$lib/schemas/cluster').ClusterConfig & Record<string, unknown>;
 export interface ClusterResponse {
 	name: string;
 	team: string;
 	serviceName: string;
 	importId?: string;
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	config: any; // Full cluster config - dynamic Envoy structure
+	config: ClusterConfig;
 }
 
 // Envoy configuration types
 export interface EnvoyConfigRequest {
 	team: string;
 	format?: 'yaml' | 'json';
-}
-
-// User Management types
-export type UserStatus = 'Active' | 'Inactive' | 'Suspended';
-
-export interface UserResponse {
-	id: string;
-	email: string;
-	name: string;
-	status: UserStatus;
-	isAdmin: boolean;
-	createdAt: string;
-	updatedAt: string;
-	orgId?: string;
-}
-
-export interface UserTeamMembership {
-	id: string;
-	userId: string;
-	team: string;
-	scopes: string[];
-	createdAt: string;
-}
-
-export interface UserWithTeamsResponse {
-	id: string;
-	email: string;
-	name: string;
-	status: UserStatus;
-	isAdmin: boolean;
-	createdAt: string;
-	updatedAt: string;
-	teams: UserTeamMembership[];
-}
-
-export interface CreateUserRequest {
-	email: string;
-	password: string;
-	name: string;
-	isAdmin?: boolean;
-	orgId?: string;
-}
-
-export interface UpdateUserRequest {
-	email?: string;
-	name?: string;
-	status?: UserStatus;
-	isAdmin?: boolean;
-}
-
-export interface CreateTeamMembershipRequest {
-	userId: string;
-	team: string;
-	scopes: string[];
-}
-
-export interface UpdateTeamMembershipRequest {
-	scopes: string[];
-}
-
-export interface ListUsersResponse {
-	items: UserResponse[];
-	total: number;
-	limit: number;
-	offset: number;
 }
 
 // Audit Log Types
@@ -397,7 +284,6 @@ export interface OutlierDetectionRequest {
 }
 
 export interface CreateClusterBody {
-	team: string;
 	name: string;
 	serviceName?: string;
 	endpoints: EndpointRequest[];
@@ -494,15 +380,13 @@ export interface VirtualHostDefinition {
 }
 
 export interface CreateRouteBody {
-	team: string;
 	name: string;
 	virtualHosts: VirtualHostDefinition[];
 }
 
 // UpdateRouteBody - full payload required for route updates
-// Note: team and name must match existing route
+// Note: name must match existing route; team comes from URL path
 export interface UpdateRouteBody {
-	team: string;
 	name: string;
 	virtualHosts: VirtualHostDefinition[];
 }
@@ -590,7 +474,6 @@ export interface ListenerFilterChainInput {
 }
 
 export interface CreateListenerBody {
-	team: string;
 	name: string;
 	address: string;
 	port: number;
@@ -636,7 +519,7 @@ export type AttachmentPoint = 'route' | 'listener' | 'cluster';
 
 // Filter type uses snake_case to match backend serde serialization
 // Note: jwt_authn is the Envoy filter name variant (with 'n')
-export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'local_rate_limit' | 'rate_limit' | 'ext_authz' | 'custom_response' | 'mcp';
+export type FilterType = 'header_mutation' | 'jwt_auth' | 'jwt_authn' | 'cors' | 'local_rate_limit' | 'rate_limit' | 'ext_authz' | 'compressor' | 'custom_response' | 'mcp';
 
 // ============================================================================
 // JWT Authentication Filter Types
@@ -825,6 +708,273 @@ export interface CustomResponseConfig {
 }
 
 // ============================================================================
+// CORS Filter Types
+// ============================================================================
+
+// Origin matcher type for CORS allow_origin rules
+export type CorsMatchType = 'exact' | 'prefix' | 'suffix' | 'contains' | 'regex';
+
+// Individual origin matcher
+export interface CorsOriginMatcher {
+	type: CorsMatchType;
+	value: string;
+}
+
+// CORS policy configuration (nested under policy key)
+export interface CorsPolicyConfig {
+	allow_origin: CorsOriginMatcher[];
+	allow_methods?: string[];
+	allow_headers?: string[];
+	expose_headers?: string[];
+	max_age?: number;
+	allow_credentials?: boolean;
+	filter_enabled?: RuntimeFractionalPercentConfig;
+	shadow_enabled?: RuntimeFractionalPercentConfig;
+	allow_private_network_access?: boolean;
+	forward_not_matching_preflights?: boolean;
+}
+
+// Top-level CORS config wrapping policy
+export interface CorsConfig {
+	policy: CorsPolicyConfig;
+}
+
+// ============================================================================
+// Rate Limit (External) Filter Types
+// ============================================================================
+
+// gRPC service configuration for external rate limit service
+export interface RateLimitGrpcService {
+	envoy_grpc?: {
+		cluster_name: string;
+		authority?: string;
+	};
+	google_grpc?: {
+		target_uri: string;
+		stat_prefix?: string;
+	};
+	timeout?: string;
+}
+
+// External rate limit service configuration
+export interface RateLimitServiceConfig {
+	grpc_service: RateLimitGrpcService;
+	transport_api_version?: string;
+}
+
+// External rate limit filter configuration
+export interface RateLimitConfig {
+	domain: string;
+	rate_limit_service: RateLimitServiceConfig;
+	stage?: number;
+	request_type?: 'internal' | 'external' | 'both';
+	timeout?: string;
+	failure_mode_deny?: boolean;
+	rate_limited_as_resource_exhausted?: boolean;
+	enable_x_ratelimit_headers?: 'OFF' | 'DRAFT_VERSION_03';
+}
+
+// ============================================================================
+// Compressor Filter Types
+// ============================================================================
+
+export interface CompressorCommonConfig {
+	min_content_length?: number;
+	content_type?: string[];
+	disable_on_etag_header?: boolean;
+	remove_accept_encoding_header?: boolean;
+}
+
+export interface CompressorResponseDirectionConfig {
+	common_config?: CompressorCommonConfig;
+}
+
+export interface CompressorLibraryConfig {
+	type: 'gzip';
+	compression_level?: 'best_speed' | 'best_compression' | 'default_compression';
+	compression_strategy?: 'default_strategy' | 'filtered' | 'huffman_only' | 'rle' | 'fixed';
+	memory_level?: number;
+	window_bits?: number;
+	chunk_size?: number;
+}
+
+export interface CompressorConfig {
+	response_direction_config?: CompressorResponseDirectionConfig;
+	compressor_library?: CompressorLibraryConfig;
+}
+
+// ============================================================================
+// External Authorization Filter Types
+// ============================================================================
+
+export interface ExtAuthzGrpcService {
+	envoy_grpc?: {
+		cluster_name: string;
+		authority?: string;
+	};
+	google_grpc?: {
+		target_uri: string;
+		stat_prefix?: string;
+	};
+	timeout?: string;
+}
+
+export interface ExtAuthzHeaderKeyValue {
+	key: string;
+	value: string;
+}
+
+export interface ExtAuthzServerUri {
+	uri?: string;
+	cluster?: string;
+	timeout_ms?: number;
+}
+
+export interface ExtAuthzServiceConfig {
+	type: 'grpc' | 'http';
+	target_uri?: string;
+	timeout_ms?: number;
+	initial_metadata?: ExtAuthzHeaderKeyValue[];
+	server_uri?: ExtAuthzServerUri;
+	path_prefix?: string;
+	headers_to_add?: ExtAuthzHeaderKeyValue[];
+	authorization_request?: {
+		allowed_headers?: string[];
+		headers_to_add?: ExtAuthzHeaderKeyValue[];
+	};
+	authorization_response?: {
+		allowed_upstream_headers?: string[];
+		allowed_client_headers?: string[];
+		allowed_client_headers_on_success?: string[];
+	};
+}
+
+export interface ExtAuthzWithRequestBody {
+	max_request_bytes?: number;
+	allow_partial_message?: boolean;
+	pack_as_bytes?: boolean;
+}
+
+export interface ExtAuthzConfig {
+	service: ExtAuthzServiceConfig;
+	failure_mode_allow?: boolean;
+	with_request_body?: ExtAuthzWithRequestBody;
+	clear_route_cache?: boolean;
+	status_on_error?: number;
+	stat_prefix?: string;
+	include_peer_certificate?: boolean;
+}
+
+// ============================================================================
+// RBAC Filter Types
+// ============================================================================
+
+export type RbacAction = 'allow' | 'deny' | 'log';
+
+export interface PermissionRule {
+	type: string;
+	any?: boolean;
+	name?: string;
+	exact_match?: string;
+	prefix_match?: string;
+	suffix_match?: string;
+	present_match?: boolean;
+	path?: string;
+	ignore_case?: boolean;
+	port?: number;
+	filter?: string;
+	rules?: PermissionRule[];
+	rule?: PermissionRule;
+}
+
+export interface PrincipalRule {
+	type: string;
+	any?: boolean;
+	principal_name?: string;
+	address_prefix?: string;
+	prefix_len?: number;
+	name?: string;
+	exact_match?: string;
+	prefix_match?: string;
+	ids?: PrincipalRule[];
+	id?: PrincipalRule;
+}
+
+export interface RbacPolicy {
+	permissions: PermissionRule[];
+	principals: PrincipalRule[];
+}
+
+export interface RbacRulesConfig {
+	action: RbacAction;
+	policies: Record<string, RbacPolicy>;
+}
+
+export interface RbacConfig {
+	rules?: RbacRulesConfig;
+	rules_stat_prefix?: string;
+	shadow_rules?: RbacRulesConfig;
+	shadow_rules_stat_prefix?: string;
+	track_per_rule_stats?: boolean;
+}
+
+// ============================================================================
+// OAuth2 Filter Types
+// ============================================================================
+
+export type OAuth2AuthType = 'url_encoded_body' | 'basic_auth';
+
+export interface TokenEndpointConfig {
+	uri: string;
+	cluster: string;
+	timeout_ms?: number;
+}
+
+export interface TokenSecretConfig {
+	name: string;
+}
+
+export interface OAuth2CookieNames {
+	bearer_token?: string;
+	oauth_hmac?: string;
+	oauth_expires?: string;
+	id_token?: string;
+	refresh_token?: string;
+}
+
+export interface OAuth2CredentialsConfig {
+	client_id: string;
+	token_secret?: TokenSecretConfig;
+	cookie_domain?: string;
+	cookie_names?: OAuth2CookieNames;
+}
+
+export interface PassThroughMatcher {
+	path_exact?: string;
+	path_prefix?: string;
+	path_regex?: string;
+	header_name?: string;
+	header_value?: string;
+}
+
+export interface OAuth2Config {
+	token_endpoint: TokenEndpointConfig;
+	authorization_endpoint: string;
+	credentials: OAuth2CredentialsConfig;
+	redirect_uri: string;
+	redirect_path?: string;
+	signout_path?: string;
+	auth_scopes?: string[];
+	auth_type?: OAuth2AuthType;
+	forward_bearer_token?: boolean;
+	preserve_authorization_header?: boolean;
+	use_refresh_token?: boolean;
+	default_expires_in_seconds?: number;
+	stat_prefix?: string;
+	pass_through_matcher?: PassThroughMatcher[];
+}
+
+// ============================================================================
 // MCP Filter Types
 // ============================================================================
 
@@ -846,6 +996,12 @@ export type FilterConfig =
 	| { type: 'header_mutation'; config: HeaderMutationFilterConfig }
 	| { type: 'jwt_auth'; config: JwtAuthenticationFilterConfig }
 	| { type: 'local_rate_limit'; config: LocalRateLimitConfig }
+	| { type: 'cors'; config: CorsConfig }
+	| { type: 'rate_limit'; config: RateLimitConfig }
+	| { type: 'compressor'; config: CompressorConfig }
+	| { type: 'ext_authz'; config: ExtAuthzConfig }
+	| { type: 'rbac'; config: RbacConfig }
+	| { type: 'oauth2'; config: OAuth2Config }
 	| { type: 'custom_response'; config: CustomResponseConfig }
 	| { type: 'mcp'; config: McpFilterConfig };
 
@@ -878,7 +1034,6 @@ export interface CreateFilterRequest {
 	filterType: FilterType;
 	description?: string;
 	config: FilterConfig;
-	team: string;
 }
 
 export interface UpdateFilterRequest {
@@ -1044,6 +1199,24 @@ export interface ListCertificatesQuery {
 	limit?: number;
 	/** Offset for pagination */
 	offset?: number;
+}
+
+// Expose/Unexpose types
+export interface ExposeRequest {
+	name: string;
+	upstream: string;
+	paths?: string[];
+	port?: number;
+}
+
+export interface ExposeResponse {
+	name: string;
+	upstream: string;
+	port: number;
+	paths: string[];
+	cluster: string;
+	route_config: string;
+	listener: string;
 }
 
 // Envoy configuration request with mTLS options
@@ -1321,6 +1494,14 @@ export interface UpdateSecretRequest {
 	expires_at?: string | null;
 }
 
+/** Request to rotate a secret (replaces configuration, bumps version) */
+export interface RotateSecretRequest {
+	/** New secret configuration (same shape as create, replaces existing) */
+	configuration: Record<string, unknown>;
+	/** Optional new expiration time (ISO 8601 format) */
+	expires_at?: string | null;
+}
+
 /** Query parameters for listing secrets */
 export interface ListSecretsQuery {
 	/** Maximum number of secrets to return */
@@ -1467,8 +1648,6 @@ export interface LearningSessionResponse {
 
 /** Request to create a learning session */
 export interface CreateLearningSessionRequest {
-	/** Team identifier for the learning session */
-	team: string;
 	routePattern: string;
 	clusterName?: string;
 	httpMethods?: string[];
@@ -1481,7 +1660,6 @@ export interface CreateLearningSessionRequest {
 
 /** Query parameters for listing learning sessions */
 export interface ListLearningSessionsQuery {
-	team?: string;
 	status?: LearningSessionStatus;
 	limit?: number;
 	offset?: number;
@@ -1520,8 +1698,6 @@ export interface AggregatedSchemaResponse {
 
 /** Query parameters for listing aggregated schemas */
 export interface ListAggregatedSchemasQuery {
-	/** Team to filter schemas by (required for proper filtering) */
-	team?: string;
 	path?: string;
 	httpMethod?: string;
 	minConfidence?: number;
@@ -1814,9 +1990,8 @@ export interface DataplaneResponse {
 	updatedAt: string;
 }
 
-/** Request to create a new dataplane */
+/** Request to create a new dataplane. Team is derived from URL path. */
 export interface CreateDataplaneBody {
-	team: string;
 	name: string;
 	gatewayHost?: string;
 	description?: string;
@@ -1904,54 +2079,46 @@ export interface ListOrgTeamsResponse {
 	teams: TeamResponse[];
 }
 
+export interface OrgTeamMemberResponse {
+	id: string;
+	userId: string;
+	team: string;
+	scopes: string[];
+	createdAt: string;
+	userName?: string;
+	userEmail?: string;
+}
+
+export interface ListOrgTeamMembersResponse {
+	members: OrgTeamMemberResponse[];
+}
+
+export interface AddOrgTeamMemberRequest {
+	userId: string;
+	scopes: string[];
+}
+
 // ============================================================================
-// Invitation Types (Invite-Only Registration)
+// Invite Types (Instant Provisioning via Admin API)
 // ============================================================================
 
 export type InvitableRole = 'admin' | 'member' | 'viewer';
 
-export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
-
-export interface InviteTokenInfo {
-	orgName: string;
-	orgDisplayName: string;
+export interface InviteOrgMemberRequest {
 	email: string;
 	role: InvitableRole;
-	expiresAt: string;
+	firstName: string;
+	lastName: string;
+	/** Optional initial password for local dev (bypasses Zitadel email flow). */
+	initialPassword?: string;
 }
 
-export interface AcceptInvitationRequest {
-	token: string;
-	name: string;
-	password: string;
-}
-
-export interface InvitationResponse {
-	id: string;
+export interface InviteOrgMemberResponse {
+	userId: string;
 	email: string;
-	role: InvitableRole;
-	status: InvitationStatus;
-	invitedBy: string | null;
-	expiresAt: string;
-	createdAt: string;
-}
-
-export interface CreateInvitationRequest {
-	email: string;
-	role: InvitableRole;
-}
-
-export interface CreateInvitationResponse {
-	id: string;
-	email: string;
-	role: InvitableRole;
-	expiresAt: string;
-	inviteUrl: string;
-}
-
-export interface PaginatedInvitations {
-	invitations: InvitationResponse[];
-	total: number;
+	role: OrgRole;
+	orgId: string;
+	userCreated: boolean;
 }
 
 // ============================================================================
@@ -1990,4 +2157,69 @@ export interface SummaryTotals {
 export interface AdminResourceSummary {
 	totals: SummaryTotals;
 	orgs: OrgSummary[];
+}
+
+// ===== Agent types =====
+
+export interface AgentInfo {
+	agentId: string;
+	name: string;
+	username: string;
+	teams: string[];
+	agentContext?: string;
+	createdAt: string;
+}
+
+export interface ListAgentsResponse {
+	agents: AgentInfo[];
+}
+
+export interface CreateAgentRequest {
+	name: string;
+	description?: string | null;
+	teams: string[];
+}
+
+export interface CreateAgentResponse {
+	agentId: string;
+	name: string;
+	username: string;
+	clientId: string | null;
+	clientSecret: string | null;
+	tokenEndpoint: string;
+	orgId: string;
+	teams: string[];
+	scopes: string[];
+	createdAt: string;
+	message: string | null;
+}
+
+// ===== Grant types =====
+
+export interface CreateGrantRequest {
+	grantType: 'resource' | 'gateway-tool' | 'route';
+	resourceType?: string;
+	action?: string;
+	team: string;
+	routeId?: string;
+	allowedMethods?: string[];
+	expiresAt?: string;
+}
+
+export interface GrantResponse {
+	id: string;
+	principalId: string;
+	grantType: 'resource' | 'gateway-tool' | 'route';
+	resourceType?: string;
+	action?: string;
+	team?: string;
+	routeId?: string;
+	allowedMethods?: string[];
+	createdBy: string;
+	createdAt: string;
+	expiresAt?: string;
+}
+
+export interface GrantListResponse {
+	grants: GrantResponse[];
 }

@@ -13,14 +13,10 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     api::{
-        error::ApiError,
-        handlers::team_access::{
-            get_effective_team_ids, require_resource_access_resolved, team_repo_from_state,
-            verify_team_access,
-        },
+        error::{ApiError, JsonBody},
+        handlers::team_access::{require_resource_access_resolved, team_repo_from_state},
         routes::ApiState,
     },
-    auth::authorization::require_resource_access,
     auth::models::AuthContext,
 };
 
@@ -31,11 +27,6 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
 pub struct ListAggregatedSchemasQuery {
-    /// Team to filter schemas by (required for team-scoped users, optional for admins)
-    #[serde(default)]
-    #[schema(example = "engineering")]
-    pub team: Option<String>,
-
     /// Text search in API path (substring match)
     #[serde(default)]
     #[schema(example = "users")]
@@ -239,8 +230,11 @@ fn schema_response_from_data(
 /// List aggregated schemas with optional filters
 #[utoipa::path(
     get,
-    path = "/api/v1/aggregated-schemas",
-    params(ListAggregatedSchemasQuery),
+    path = "/api/v1/teams/{team}/aggregated-schemas",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ListAggregatedSchemasQuery
+    ),
     responses(
         (status = 200, description = "List of aggregated schemas", body = Vec<AggregatedSchemaResponse>),
         (status = 400, description = "Bad request - invalid parameters"),
@@ -249,47 +243,20 @@ fn schema_response_from_data(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(user_id = ?context.user_id, path = ?query.path, http_method = ?query.http_method))]
+#[instrument(skip(state), fields(user_id = ?context.user_id, team = %team, path = ?query.path, http_method = ?query.http_method))]
 pub async fn list_aggregated_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Query(query): Query<ListAggregatedSchemasQuery>,
 ) -> Result<Json<Vec<AggregatedSchemaResponse>>, ApiError> {
-    // Determine team: use query parameter if provided, otherwise fall back to first team scope
-    let team = if let Some(ref requested_team) = query.team {
-        // Verify user has access to the requested team
-        require_resource_access_resolved(
-            &state,
-            &context,
-            "aggregated-schemas",
-            "read",
-            Some(requested_team),
-            context.org_id.as_ref(),
-        )
+    // Authorization
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
         .await?;
-        requested_team.clone()
-    } else {
-        // Fall back to first team scope from auth context (includes org admin expansion)
-        require_resource_access(&context, "aggregated-schemas", "read", None)?;
-        let team_repo = team_repo_from_state(&state)?;
-        let team_scopes = crate::api::handlers::team_access::get_effective_team_scopes_with_org(
-            &context, team_repo,
-        )
-        .await;
-        team_scopes
-            .first()
-            .ok_or_else(|| {
-                ApiError::BadRequest(
-                    "Team scope required for aggregated schemas. Provide 'team' query parameter."
-                        .to_string(),
-                )
-            })?
-            .clone()
-    };
 
     // Resolve team name to UUID
     use crate::storage::repositories::TeamRepository as _;
-    let team_repo = crate::api::handlers::team_access::team_repo_from_state(&state)?;
+    let team_repo = team_repo_from_state(&state)?;
     let team_ids = team_repo
         .resolve_team_ids(context.org_id.as_ref(), &[team])
         .await
@@ -344,8 +311,9 @@ pub async fn list_aggregated_schemas_handler(
 /// Get aggregated schema by ID
 #[utoipa::path(
     get,
-    path = "/api/v1/aggregated-schemas/{id}",
+    path = "/api/v1/teams/{team}/aggregated-schemas/{id}",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = i64, Path, description = "Aggregated schema ID")
     ),
     responses(
@@ -356,14 +324,15 @@ pub async fn list_aggregated_schemas_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(schema_id = %id, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(schema_id = %id, team = %team, user_id = ?context.user_id))]
 pub async fn get_aggregated_schema_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<i64>,
+    Path((team, id)): Path<(String, i64)>,
 ) -> Result<Json<AggregatedSchemaResponse>, ApiError> {
     // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -378,28 +347,13 @@ pub async fn get_aggregated_schema_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access based on user's scope type
-    let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
-    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
-
-    let authorized_schema = if is_admin || has_global_resource_scope {
-        // Admin or global scope - allow access to all schemas
-        schema
-    } else {
-        // Team-scoped user - verify access
-        verify_team_access(schema, &team_scopes).await?
-    };
-
     tracing::info!(
         id = id,
-        team = %authorized_schema.team,
+        team = %team,
         "Retrieved aggregated schema"
     );
 
-    let response = schema_response_from_data(authorized_schema);
+    let response = schema_response_from_data(schema);
 
     Ok(Json(response))
 }
@@ -407,8 +361,9 @@ pub async fn get_aggregated_schema_handler(
 /// Compare schema versions
 #[utoipa::path(
     get,
-    path = "/api/v1/aggregated-schemas/{id}/compare",
+    path = "/api/v1/teams/{team}/aggregated-schemas/{id}/compare",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = i64, Path, description = "Current schema ID"),
         CompareSchemaQuery
     ),
@@ -421,15 +376,16 @@ pub async fn get_aggregated_schema_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(schema_id = %id, compare_version = %query.with_version, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(schema_id = %id, team = %team, compare_version = %query.with_version, user_id = ?context.user_id))]
 pub async fn compare_aggregated_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<i64>,
+    Path((team, id)): Path<(String, i64)>,
     Query(query): Query<CompareSchemaQuery>,
 ) -> Result<Json<SchemaComparisonResponse>, ApiError> {
     // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -444,27 +400,12 @@ pub async fn compare_aggregated_schemas_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access based on user's scope type
-    let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
-    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
-
-    let authorized_current = if is_admin || has_global_resource_scope {
-        // Admin or global scope - allow access to all schemas
-        current_schema.clone()
-    } else {
-        // Team-scoped user - verify access
-        verify_team_access(current_schema.clone(), &team_scopes).await?
-    };
-
     // Get comparison version (same path, method, different version)
     let compared_schema = repo
         .get_by_version(
-            &authorized_current.team,
-            &authorized_current.path,
-            &authorized_current.http_method,
+            &current_schema.team,
+            &current_schema.path,
+            &current_schema.http_method,
             query.with_version,
         )
         .await
@@ -475,29 +416,29 @@ pub async fn compare_aggregated_schemas_handler(
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "Version {} not found for endpoint {} {}",
-                query.with_version, authorized_current.http_method, authorized_current.path
+                query.with_version, current_schema.http_method, current_schema.path
             ))
         })?;
 
     // Calculate differences
     let differences = SchemaDifferences {
-        version_change: authorized_current.version - compared_schema.version,
-        sample_count_change: authorized_current.sample_count - compared_schema.sample_count,
-        confidence_change: authorized_current.confidence_score - compared_schema.confidence_score,
-        has_breaking_changes: authorized_current.breaking_changes.is_some(),
-        breaking_changes: authorized_current.breaking_changes.clone(),
+        version_change: current_schema.version - compared_schema.version,
+        sample_count_change: current_schema.sample_count - compared_schema.sample_count,
+        confidence_change: current_schema.confidence_score - compared_schema.confidence_score,
+        has_breaking_changes: current_schema.breaking_changes.is_some(),
+        breaking_changes: current_schema.breaking_changes.clone(),
     };
 
     tracing::info!(
         current_id = id,
-        current_version = authorized_current.version,
+        current_version = current_schema.version,
         compared_version = compared_schema.version,
-        team = %authorized_current.team,
+        team = %team,
         "Compared schema versions"
     );
 
     let response = SchemaComparisonResponse {
-        current_schema: schema_response_from_data(authorized_current),
+        current_schema: schema_response_from_data(current_schema),
         compared_schema: schema_response_from_data(compared_schema),
         differences,
     };
@@ -508,8 +449,9 @@ pub async fn compare_aggregated_schemas_handler(
 /// Export schema as OpenAPI 3.1 specification
 #[utoipa::path(
     get,
-    path = "/api/v1/aggregated-schemas/{id}/export",
+    path = "/api/v1/teams/{team}/aggregated-schemas/{id}/export",
     params(
+        ("team" = String, Path, description = "Team name"),
         ("id" = i64, Path, description = "Schema ID to export"),
         ExportSchemaQuery
     ),
@@ -521,15 +463,16 @@ pub async fn compare_aggregated_schemas_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state), fields(schema_id = %id, include_metadata = %query.include_metadata, user_id = ?context.user_id))]
+#[instrument(skip(state), fields(schema_id = %id, team = %team, include_metadata = %query.include_metadata, user_id = ?context.user_id))]
 pub async fn export_aggregated_schema_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Path(id): Path<i64>,
+    Path((team, id)): Path<(String, i64)>,
     Query(query): Query<ExportSchemaQuery>,
 ) -> Result<Json<OpenApiExportResponse>, ApiError> {
     // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -544,30 +487,12 @@ pub async fn export_aggregated_schema_handler(
         ApiError::from(e)
     })?;
 
-    // Verify team access based on user's scope type
-    // - Admin users (admin:all) can access all schemas
-    // - Users with global aggregated-schemas:read can access all schemas
-    // - Users with team:X:aggregated-schemas:read can only access their team's schemas
-    let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
-    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
-
-    let authorized_schema = if is_admin || has_global_resource_scope {
-        // Admin or global scope - allow access to all schemas
-        schema
-    } else {
-        // Team-scoped user - verify access
-        verify_team_access(schema, &team_scopes).await?
-    };
-
     // Build OpenAPI 3.1 specification
-    let openapi = build_openapi_spec(&authorized_schema, query.include_metadata);
+    let openapi = build_openapi_spec(&schema, query.include_metadata);
 
     tracing::info!(
         id = id,
-        team = %authorized_schema.team,
+        team = %team,
         include_metadata = query.include_metadata,
         "Exported schema as OpenAPI"
     );
@@ -578,7 +503,10 @@ pub async fn export_aggregated_schema_handler(
 /// Export multiple schemas as a unified OpenAPI 3.1 specification
 #[utoipa::path(
     post,
-    path = "/api/v1/aggregated-schemas/export",
+    path = "/api/v1/teams/{team}/aggregated-schemas/export",
+    params(
+        ("team" = String, Path, description = "Team name")
+    ),
     request_body = ExportMultipleSchemasRequest,
     responses(
         (status = 200, description = "Unified OpenAPI 3.1 specification", body = OpenApiExportResponse),
@@ -589,11 +517,12 @@ pub async fn export_aggregated_schema_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state, body), fields(schema_count = body.schema_ids.len(), user_id = ?context.user_id))]
+#[instrument(skip(state, body), fields(team = %team, schema_count = body.schema_ids.len(), user_id = ?context.user_id))]
 pub async fn export_multiple_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Json(body): Json<ExportMultipleSchemasRequest>,
+    Path(team): Path<String>,
+    JsonBody(body): JsonBody<ExportMultipleSchemasRequest>,
 ) -> Result<Json<OpenApiExportResponse>, ApiError> {
     // Validate non-empty
     if body.schema_ids.is_empty() {
@@ -601,7 +530,8 @@ pub async fn export_multiple_schemas_handler(
     }
 
     // Authorization
-    require_resource_access(&context, "aggregated-schemas", "read", None)?;
+    require_resource_access_resolved(&state, &context, "aggregated-schemas", "read", Some(&team))
+        .await?;
 
     // Get repository
     let repo = state
@@ -624,29 +554,12 @@ pub async fn export_multiple_schemas_handler(
         return Err(ApiError::NotFound(format!("Schemas not found: {:?}", missing)));
     }
 
-    // Verify team access based on user's scope type
-    // - Admin users (admin:all) can access all schemas
-    // - Users with global aggregated-schemas:read can access all schemas
-    // - Users with team:X:aggregated-schemas:read can only access their team's schemas
-    let team_repo = team_repo_from_state(&state)?;
-    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
-    let is_admin = crate::auth::authorization::has_admin_bypass(&context);
-    let has_global_resource_scope = context.has_scope("aggregated-schemas:read")
-        || context.has_scope("aggregated-schemas:write");
-
-    if !is_admin && !has_global_resource_scope {
-        // Team-scoped user - verify access to each schema
-        for schema in &schemas {
-            verify_team_access(schema.clone(), &team_scopes).await?;
-        }
-    }
-    // Admin or global scope - allow access to all schemas (no verification needed)
-
     // Build unified OpenAPI spec
     let openapi = build_unified_openapi_spec(&schemas, &body);
 
     tracing::info!(
         schema_count = schemas.len(),
+        team = %team,
         title = %body.title,
         version = %body.version,
         include_metadata = body.include_metadata,

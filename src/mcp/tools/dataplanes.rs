@@ -4,11 +4,11 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    CreateDataplaneInternalRequest, DataplaneOperations, InternalAuthContext,
-    ListDataplanesInternalRequest, UpdateDataplaneInternalRequest,
+    CreateDataplaneInternalRequest, DataplaneOperations, ListDataplanesInternalRequest,
+    UpdateDataplaneInternalRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_delete_response, build_rich_create_response, build_update_response,
 };
@@ -50,19 +50,7 @@ RETURNS: Array of dataplane objects with:
 RELATED TOOLS: cp_get_dataplane (details), cp_create_dataplane (new dataplane)"#,
         json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return",
-                    "minimum": 1,
-                    "maximum": 1000
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of results to skip for pagination",
-                    "minimum": 0
-                }
-            }
+            "properties": super::pagination_schema("dataplanes")
         }),
     )
 }
@@ -150,7 +138,7 @@ EXAMPLE DATAPLANES:
 - "staging-envoy" - Staging environment gateway
 - "canary-proxy" - Canary deployment testing
 
-Authorization: Requires cp:write scope and team access.
+Authorization: Requires dataplanes:create scope.
 "#,
         json!({
             "type": "object",
@@ -163,7 +151,7 @@ Authorization: Requires cp:write scope and team access.
                     "type": "string",
                     "description": "Dataplane name (unique within team)"
                 },
-                "gateway_host": {
+                "gatewayHost": {
                     "type": "string",
                     "description": "Optional gateway host URL (e.g., https://api.example.com)"
                 },
@@ -211,7 +199,7 @@ EXAMPLE USE CASES:
 - Add description to undocumented dataplane
 - Update gateway_host after infrastructure changes
 
-Authorization: Requires cp:write scope and team access.
+Authorization: Requires dataplanes:update scope.
 "#,
         json!({
             "type": "object",
@@ -224,7 +212,7 @@ Authorization: Requires cp:write scope and team access.
                     "type": "string",
                     "description": "Dataplane name to update"
                 },
-                "gateway_host": {
+                "gatewayHost": {
                     "type": "string",
                     "description": "New gateway host URL"
                 },
@@ -275,7 +263,7 @@ CANNOT DELETE:
 - Dataplanes that are actively routing traffic (check listeners first)
 - Dataplanes with dependent resources (remove dependencies first)
 
-Authorization: Requires cp:write scope and team access.
+Authorization: Requires dataplanes:delete scope.
 "#,
         json!({
             "type": "object",
@@ -311,17 +299,14 @@ pub async fn execute_list_dataplanes(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = ListDataplanesInternalRequest { limit, offset };
 
-    let dataplanes = ops.list(req, &auth).await?;
+    let response = ops.list(req, &auth).await?;
 
     let result = json!({
-        "dataplanes": dataplanes.iter().map(|dp| {
+        "dataplanes": response.dataplanes.iter().map(|dp| {
             json!({
                 "id": dp.id.to_string(),
                 "team": dp.team,
@@ -332,13 +317,13 @@ pub async fn execute_list_dataplanes(
                 "updated_at": dp.updated_at.to_rfc3339()
             })
         }).collect::<Vec<_>>(),
-        "count": dataplanes.len()
+        "count": response.count
     });
 
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get dataplane operation using the internal API layer.
@@ -363,10 +348,7 @@ pub async fn execute_get_dataplane(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let dataplane = ops.get(dataplane_team, name, &auth).await?;
 
@@ -383,7 +365,7 @@ pub async fn execute_get_dataplane(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute create dataplane operation using the internal API layer.
@@ -406,7 +388,7 @@ pub async fn execute_create_dataplane(
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
     // 2. Parse optional fields
-    let gateway_host = args.get("gateway_host").and_then(|v| v.as_str()).map(String::from);
+    let gateway_host = args.get("gatewayHost").and_then(|v| v.as_str()).map(String::from);
     let description = args.get("description").and_then(|v| v.as_str()).map(String::from);
 
     tracing::debug!(
@@ -422,10 +404,7 @@ pub async fn execute_create_dataplane(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateDataplaneInternalRequest {
         team: dataplane_team.to_string(),
@@ -456,7 +435,7 @@ pub async fn execute_create_dataplane(
         "Successfully created dataplane via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute update dataplane operation using the internal API layer.
@@ -477,12 +456,12 @@ pub async fn execute_update_dataplane(
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
     // 2. Parse optional fields (at least one should be present)
-    let gateway_host = args.get("gateway_host").and_then(|v| v.as_str()).map(String::from);
+    let gateway_host = args.get("gatewayHost").and_then(|v| v.as_str()).map(String::from);
     let description = args.get("description").and_then(|v| v.as_str()).map(String::from);
 
     if gateway_host.is_none() && description.is_none() {
         return Err(McpError::InvalidParams(
-            "At least one field (gateway_host or description) must be provided for update"
+            "At least one field (gatewayHost or description) must be provided for update"
                 .to_string(),
         ));
     }
@@ -500,10 +479,7 @@ pub async fn execute_update_dataplane(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = UpdateDataplaneInternalRequest { gateway_host, description };
 
@@ -521,7 +497,7 @@ pub async fn execute_update_dataplane(
         "Successfully updated dataplane via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute delete dataplane operation using the internal API layer.
@@ -554,10 +530,7 @@ pub async fn execute_delete_dataplane(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(dataplane_team, name, &auth).await?;
 
@@ -573,7 +546,7 @@ pub async fn execute_delete_dataplane(
         "Successfully deleted dataplane via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]

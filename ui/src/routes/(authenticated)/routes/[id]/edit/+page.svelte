@@ -18,6 +18,7 @@
 		RouteRuleDefinition,
 		PathMatchDefinition,
 		RouteActionDefinition,
+		RetryPolicyDefinition,
 		ClusterResponse,
 		FilterResponse,
 		FilterTypeInfo,
@@ -35,6 +36,11 @@
 	} from '$lib/api/routes';
 	import { apiClient } from '$lib/api/client';
 	import { RouteFilterCard } from '$lib/components/filters';
+	import RetryPolicyForm, {
+		type RetryPreset,
+		retryPresets,
+		detectPresetFromConditions
+	} from '$lib/components/filters/RetryPolicyForm.svelte';
 	import { selectedTeam } from '$lib/stores/team';
 
 	// Route parameters
@@ -61,8 +67,17 @@
 	let httpMethods = $state<Set<string>>(new Set(['GET', 'POST']));
 	let primaryCluster = $state('');
 	let timeoutSeconds = $state<number | undefined>(30);
-	let maxRetries = $state<number | undefined>(3);
 	let prefixRewrite = $state('');
+
+	// Retry policy state
+	let retryEnabled = $state(false);
+	let retryMaxRetries = $state(3);
+	let retryPreset = $state<RetryPreset>('5xx');
+	let retryOnCustom = $state<string[]>([]);
+	let retryPerTryTimeout = $state<number | null>(null);
+	let showBackoff = $state(false);
+	let backoffBaseInterval = $state(100);
+	let backoffMaxInterval = $state(1000);
 
 	// Collapsible sections
 	let pathRewriteExpanded = $state(false);
@@ -111,8 +126,8 @@
 		try {
 			const [route, clustersData, filtersData] = await Promise.all([
 				getSingleRouteForEdit(routeId),
-				apiClient.listClusters(),
-				apiClient.listFilters()
+				$selectedTeam ? apiClient.listClusters($selectedTeam) : Promise.resolve([]),
+				$selectedTeam ? apiClient.listFilters($selectedTeam) : Promise.resolve([])
 			]);
 
 			routeData = route;
@@ -147,7 +162,21 @@
 				primaryCluster = route.route.action.cluster;
 				timeoutSeconds = route.route.action.timeoutSeconds;
 				prefixRewrite = route.route.action.prefixRewrite || '';
-				maxRetries = route.route.action.retryPolicy?.maxRetries;
+
+				// Load retry policy
+				const rp = route.route.action.retryPolicy;
+				if (rp && rp.retryOn && rp.retryOn.length > 0) {
+					retryEnabled = true;
+					retryMaxRetries = rp.maxRetries ?? 3;
+					retryPreset = detectPresetFromConditions(rp.retryOn);
+					retryOnCustom = retryPreset === 'custom' ? [...rp.retryOn] : [];
+					retryPerTryTimeout = rp.perTryTimeoutSeconds ?? null;
+					if (rp.backoff) {
+						showBackoff = true;
+						backoffBaseInterval = rp.backoff.baseIntervalMs ?? 100;
+						backoffMaxInterval = rp.backoff.maxIntervalMs ?? 1000;
+					}
+				}
 			}
 
 			// Load MCP status if route ID exists
@@ -179,12 +208,27 @@
 			...(pathMatchType === 'template' ? { template: pathValue } : { value: pathValue })
 		};
 
+		// Build retry policy from form state
+		let retryPolicy: RetryPolicyDefinition | undefined = undefined;
+		if (retryEnabled) {
+			const preset = retryPresets.find((p) => p.value === retryPreset);
+			const conditions = retryPreset === 'custom' ? retryOnCustom : (preset?.conditions ?? ['5xx']);
+			retryPolicy = {
+				maxRetries: retryMaxRetries,
+				retryOn: conditions,
+				perTryTimeoutSeconds: retryPerTryTimeout || undefined,
+				backoff: showBackoff
+					? { baseIntervalMs: backoffBaseInterval, maxIntervalMs: backoffMaxInterval }
+					: undefined
+			};
+		}
+
 		const action: RouteActionDefinition = {
 			type: 'forward',
 			cluster: primaryCluster,
 			timeoutSeconds: timeoutSeconds,
 			prefixRewrite: prefixRewrite || undefined,
-			retryPolicy: maxRetries ? { maxRetries, retryOn: ['5xx', 'reset'] } : undefined
+			retryPolicy
 		};
 
 		// Build headers array - only add method if methods are selected
@@ -217,6 +261,7 @@
 		try {
 			const updatedRoute = buildUpdatedRoute();
 			await updateSingleRoute(
+				routeData.config.team,
 				routeData.config.name,
 				routeData.virtualHostIndex,
 				routeData.routeIndex,
@@ -245,6 +290,7 @@
 
 		try {
 			await deleteSingleRoute(
+				routeData.config.team,
 				routeData.config.name,
 				routeData.virtualHostIndex,
 				routeData.routeIndex
@@ -319,6 +365,7 @@
 		try {
 			// Load hierarchy filters for this route
 			const hierarchyFilters = await apiClient.listRouteHierarchyFilters(
+				route.config.team,
 				route.config.name,
 				route.virtualHost.name,
 				route.route.name
@@ -331,6 +378,7 @@
 			// Load virtual host filters
 			try {
 				const vhFilters = await apiClient.listVirtualHostFilters(
+					route.config.team,
 					route.config.name,
 					route.virtualHost.name
 				);
@@ -341,7 +389,7 @@
 
 			// Load route config filters
 			try {
-				const configFilters = await apiClient.listRouteConfigFilters(route.config.name);
+				const configFilters = await apiClient.listRouteConfigFilters(route.config.team, route.config.name);
 				configFilters.filters || [];
 				routeConfigFilters = configFilters.filters || [];
 			} catch {
@@ -360,7 +408,7 @@
 
 		try {
 			// Use configureFilter with route scope
-			await apiClient.configureFilter(filter.id, {
+			await apiClient.configureFilter($selectedTeam, filter.id, {
 				scopeType: 'route',
 				scopeId: `${routeData.config.name}/${routeData.virtualHost.name}/${routeData.route.name}`
 			});
@@ -379,6 +427,7 @@
 		try {
 			// Use removeFilterConfiguration with route scope
 			await apiClient.removeFilterConfiguration(
+				$selectedTeam,
 				filterId,
 				'route',
 				`${routeData.config.name}/${routeData.virtualHost.name}/${routeData.route.name}`
@@ -690,16 +739,26 @@
 						/>
 					</div>
 				</div>
-				<div class="grid grid-cols-2 gap-4">
-					<div>
-						<label class="block text-sm font-medium text-gray-700 mb-1">Max Retries</label>
-						<input
-							type="number"
-							bind:value={maxRetries}
-							class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-							min="0"
-						/>
+				<!-- Resilience (Retry Policy) -->
+				<div class="border-t border-gray-200 pt-4">
+					<div class="flex items-center gap-2 mb-4">
+						<span class="text-sm font-medium text-gray-700">Resilience</span>
+						{#if retryEnabled}
+							<span class="px-2 py-0.5 text-xs font-medium bg-emerald-100 text-emerald-700 rounded-full">
+								Retry enabled
+							</span>
+						{/if}
 					</div>
+					<RetryPolicyForm
+						bind:retryEnabled
+						bind:maxRetries={retryMaxRetries}
+						bind:preset={retryPreset}
+						bind:customConditions={retryOnCustom}
+						bind:perTryTimeout={retryPerTryTimeout}
+						bind:showBackoff
+						bind:backoffBaseInterval
+						bind:backoffMaxInterval
+					/>
 				</div>
 			</div>
 		</div>

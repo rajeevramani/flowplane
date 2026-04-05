@@ -29,11 +29,61 @@
 //! // Returns: 404 Not Found with JSON body: {"error": "not_found", "message": "Listener with ID '123' not found"}
 //! ```
 
-use axum::{http::StatusCode, response::IntoResponse, Json};
-use serde::Serialize;
+use axum::{
+    extract::{rejection::JsonRejection, FromRequest, Request},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::auth::models::AuthError;
+use crate::domain::SecretValidationError;
 use crate::errors::FlowplaneError;
+
+/// Custom JSON extractor that converts deserialization errors to JSON 400 responses
+/// instead of Axum's default text/plain rejection.
+pub struct JsonBody<T>(pub T);
+
+impl<T, S> FromRequest<S> for JsonBody<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(JsonBody(value)),
+            Err(rejection) => Err(match rejection {
+                JsonRejection::JsonDataError(e) => {
+                    ApiError::BadRequest(format!("Invalid JSON data: {}", e))
+                }
+                JsonRejection::JsonSyntaxError(e) => {
+                    ApiError::BadRequest(format!("Invalid JSON syntax: {}", e))
+                }
+                JsonRejection::MissingJsonContentType(e) => {
+                    ApiError::BadRequest(format!("Missing JSON content type: {}", e))
+                }
+                _ => ApiError::BadRequest("Invalid request body".to_string()),
+            }),
+        }
+    }
+}
+
+/// Validate that a resource name doesn't contain control characters (including null bytes)
+/// that would cause database errors.  Returns `Ok(())` if the name is safe for DB lookup,
+/// or an appropriate `ApiError::NotFound` if it contains invalid characters.
+pub fn validate_path_name(name: &str, resource_type: &str) -> Result<(), ApiError> {
+    if name.contains('\0') || name.chars().any(|c| c.is_control()) {
+        return Err(ApiError::NotFound(format!(
+            "{} '{}' not found",
+            resource_type,
+            name.replace('\0', "").replace(|c: char| c.is_control(), "")
+        )));
+    }
+    Ok(())
+}
 
 /// API-layer error type for HTTP responses.
 ///
@@ -114,7 +164,10 @@ impl IntoResponse for ApiError {
                 ("too_many_requests", message, Some(retry_after_seconds))
             }
             ApiError::ServiceUnavailable(msg) => ("service_unavailable", msg, None),
-            ApiError::Internal(msg) => ("internal_error", msg, None),
+            ApiError::Internal(msg) => {
+                tracing::error!(error.internal = %msg, "Internal server error");
+                ("internal_error", "An internal error occurred".to_string(), None)
+            }
         };
 
         let body = Json(ErrorBody { error: error_kind, message });
@@ -140,7 +193,19 @@ impl From<FlowplaneError> for ApiError {
             }
             FlowplaneError::Conflict { message, .. } => ApiError::Conflict(message),
             FlowplaneError::Auth { message, .. } => ApiError::Unauthorized(message),
-            FlowplaneError::ConstraintViolation { message, .. } => ApiError::Conflict(message),
+            FlowplaneError::ConstraintViolation { message, source } => {
+                // FK violation (23503) means a referenced resource doesn't exist → 400
+                // All other constraints (unique 23505, not-null, check) → 409
+                if let Some(db_err) = source.as_database_error() {
+                    if db_err.code().is_some_and(|c| c.as_ref() == "23503") {
+                        return ApiError::BadRequest(format!(
+                            "Referenced resource does not exist: {}",
+                            message
+                        ));
+                    }
+                }
+                ApiError::Conflict(message)
+            }
             FlowplaneError::Database { context, .. } => ApiError::Internal(context),
             FlowplaneError::Config { message, .. }
             | FlowplaneError::Transport(message)
@@ -221,6 +286,15 @@ impl From<validator::ValidationErrors> for ApiError {
     }
 }
 
+/// Converts [`SecretValidationError`] to API-layer [`ApiError`].
+///
+/// Maps secret-specific validation errors to a 400 Bad Request response.
+impl From<SecretValidationError> for ApiError {
+    fn from(err: SecretValidationError) -> Self {
+        ApiError::BadRequest(format!("Validation failed: {}", err))
+    }
+}
+
 /// Converts [`McpServiceError`] to API-layer [`ApiError`].
 ///
 /// Maps MCP service errors to appropriate HTTP status codes.
@@ -278,5 +352,81 @@ impl ApiError {
     /// Use when rate limits are exceeded.
     pub fn rate_limited<S: Into<String>>(msg: S, retry_after_seconds: u32) -> Self {
         ApiError::TooManyRequests { message: msg.into(), retry_after_seconds }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use http_body_util::BodyExt;
+
+    #[tokio::test]
+    async fn internal_error_does_not_leak_details() {
+        let err = ApiError::Internal("secret SQL error: users table column mismatch".to_string());
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = response.into_body().collect().await.map(|b| b.to_bytes());
+        let body_str = match body {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(_) => panic!("failed to read response body"),
+        };
+
+        assert!(
+            !body_str.contains("SQL"),
+            "response body should not contain internal details, got: {body_str}"
+        );
+        assert!(
+            !body_str.contains("users table"),
+            "response body should not contain table names, got: {body_str}"
+        );
+        assert!(
+            body_str.contains("An internal error occurred"),
+            "response body should contain generic message, got: {body_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_internal_errors_preserve_message() {
+        let err = ApiError::NotFound("Cluster 'foo' not found".to_string());
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = response.into_body().collect().await.map(|b| b.to_bytes());
+        let body_str = match body {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(_) => panic!("failed to read response body"),
+        };
+
+        assert!(
+            body_str.contains("Cluster 'foo' not found"),
+            "non-internal errors should preserve their message, got: {body_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn database_error_converts_to_generic_internal() {
+        let fp_err = FlowplaneError::Database {
+            context: "Failed to query agent_grants table".to_string(),
+            source: sqlx::Error::RowNotFound,
+        };
+        let api_err: ApiError = fp_err.into();
+        let response = api_err.into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = response.into_body().collect().await.map(|b| b.to_bytes());
+        let body_str = match body {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(_) => panic!("failed to read response body"),
+        };
+
+        assert!(
+            !body_str.contains("agent_grants"),
+            "database errors should not leak table names, got: {body_str}"
+        );
     }
 }

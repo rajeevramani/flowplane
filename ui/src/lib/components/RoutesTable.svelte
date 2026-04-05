@@ -191,6 +191,7 @@
 						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Domains</th>
 						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Routes</th>
 						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cluster</th>
+						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Exposure</th>
 						<th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
 					</tr>
 				</thead>
@@ -236,13 +237,18 @@
 								</span>
 							</td>
 							<td class="px-4 py-4">
+								<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {route.exposure === 'external' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'}">
+									{route.exposure ?? 'internal'}
+								</span>
+							</td>
+							<td class="px-4 py-4">
 								<span class="text-sm text-gray-600">{getImportSource(route.importId)}</span>
 							</td>
 						</tr>
 
 						{#if isExpanded && routeDetails.length > 0}
 							<tr>
-								<td colspan="7" class="p-0">
+								<td colspan="8" class="p-0">
 									<RouteDetailRow routes={routeDetails} />
 								</td>
 							</tr>

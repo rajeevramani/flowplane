@@ -513,6 +513,30 @@ impl AggregatedSchemaRepository {
         row.map(|r| r.try_into()).transpose()
     }
 
+    /// List all aggregated schemas across all teams (admin only)
+    #[instrument(skip(self), name = "db_list_all_aggregated_schemas")]
+    pub async fn list_all(&self) -> Result<Vec<AggregatedSchemaData>> {
+        let rows = sqlx::query_as::<sqlx::Postgres, AggregatedSchemaRow>(
+            "SELECT id, team, path, http_method, version, previous_version_id,
+                    request_schema, response_schemas, request_headers, response_headers,
+                    sample_count, confidence_score,
+                    breaking_changes, first_observed, last_observed, created_at, updated_at
+             FROM aggregated_api_schemas
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to list all aggregated schemas");
+            FlowplaneError::Database {
+                source: e,
+                context: "Failed to list all aggregated schemas".to_string(),
+            }
+        })?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
+
     /// List all aggregated schemas for a team
     #[instrument(skip(self), fields(team = %team), name = "db_list_aggregated_schemas_by_team")]
     pub async fn list_by_team(&self, team: &str) -> Result<Vec<AggregatedSchemaData>> {

@@ -45,10 +45,5 @@ async fn ensure_default_gateway_resources_creates_default_resources() {
     .unwrap();
     assert_eq!(listener_count, 1, "Expected default gateway listener to be created");
 
-    // Verify NO bootstrap tokens were created (that's now handled in startup module)
-    let token_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM personal_access_tokens")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(token_count, 0, "ensure_default_gateway_resources should NOT create tokens");
+    // personal_access_tokens table was removed in auth v3 — no token check needed
 }

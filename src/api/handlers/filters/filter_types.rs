@@ -304,8 +304,8 @@ pub async fn reload_filter_schemas_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
 ) -> Result<StatusCode, ApiError> {
-    // Require admin access for schema reload
-    require_resource_access(&context, "admin", "write", None)?;
+    // Require admin-filter-schemas:update access for schema reload
+    require_resource_access(&context, "admin-filter-schemas", "update", None)?;
 
     let registry = state
         .filter_schema_registry

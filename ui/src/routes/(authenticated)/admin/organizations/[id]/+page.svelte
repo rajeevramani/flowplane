@@ -8,22 +8,20 @@
 		UpdateOrganizationRequest,
 		OrgMembershipResponse,
 		OrgStatus,
-		OrgRole,
-		UserResponse
+		OrgRole
 	} from '$lib/api/types';
-	import { isSystemAdmin, isOrgAdmin } from '$lib/stores/org';
+	import { isOrgAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 	import OrgInvitationsSection from '$lib/components/OrgInvitationsSection.svelte';
 
 	let orgId = $derived($page.params.id ?? '');
 
 	let org = $state<OrganizationResponse | null>(null);
 	let members = $state<OrgMembershipResponse[]>([]);
-	let users = $state<UserResponse[]>([]);
 	let userScopes = $state<string[]>([]);
 	let isPlatformAdmin = $state(false);
 	let isLoading = $state(true);
 	let isLoadingMembers = $state(true);
-	let isLoadingUsers = $state(true);
 	let isEditing = $state(false);
 	let isSubmitting = $state(false);
 	let isDeleting = $state(false);
@@ -31,7 +29,6 @@
 	let submitError = $state<string | null>(null);
 	let memberError = $state<string | null>(null);
 	let showDeleteConfirm = $state(false);
-	let showAddMember = $state(false);
 	let showRemoveMemberConfirm = $state<string | null>(null);
 
 	let formData = $state({
@@ -40,28 +37,19 @@
 		status: 'active' as OrgStatus
 	});
 
-	let addMemberData = $state({
-		userId: '',
-		role: 'member' as OrgRole
-	});
-
 	let errors = $state<Record<string, string>>({});
 
 	onMount(async () => {
 		try {
 			const sessionInfo = await apiClient.getSessionInfo();
-			userScopes = sessionInfo.scopes;
-			isPlatformAdmin = isSystemAdmin(sessionInfo.scopes);
-			if (!isSystemAdmin(sessionInfo.scopes) && !isOrgAdmin(sessionInfo.scopes)) {
+			userScopes = sessionInfo.orgScopes;
+			isPlatformAdmin = isGovernanceAdmin(sessionInfo);
+			if (!isGovernanceAdmin(sessionInfo) && !isOrgAdmin(sessionInfo.orgRole)) {
 				goto('/dashboard');
 				return;
 			}
 
-			const promises: Promise<void>[] = [loadOrg(), loadMembers()];
-			if (isPlatformAdmin) {
-				promises.push(loadUsers());
-			}
-			await Promise.all(promises);
+			await Promise.all([loadOrg(), loadMembers()]);
 		} catch {
 			goto('/login');
 		}
@@ -93,18 +81,6 @@
 			memberError = err instanceof Error ? err.message : 'Failed to load members';
 		} finally {
 			isLoadingMembers = false;
-		}
-	}
-
-	async function loadUsers() {
-		isLoadingUsers = true;
-		try {
-			const response = await apiClient.listUsers(100, 0);
-			users = response.items;
-		} catch {
-			// Non-fatal
-		} finally {
-			isLoadingUsers = false;
 		}
 	}
 
@@ -205,27 +181,6 @@
 		}
 	}
 
-	async function handleAddMember() {
-		if (!addMemberData.userId) {
-			memberError = 'Please select a user';
-			return;
-		}
-
-		memberError = null;
-
-		try {
-			await apiClient.addOrgMember(orgId, {
-				userId: addMemberData.userId,
-				role: addMemberData.role
-			});
-			showAddMember = false;
-			addMemberData = { userId: '', role: 'member' };
-			await loadMembers();
-		} catch (err: unknown) {
-			memberError = err instanceof Error ? err.message : 'Failed to add member';
-		}
-	}
-
 	async function handleChangeRole(userId: string, newRole: OrgRole) {
 		memberError = null;
 
@@ -265,11 +220,6 @@
 		submitError = null;
 	}
 
-	// Filter users not already members
-	let availableUsers = $derived.by(() => {
-		const memberUserIds = new Set(members.map((m) => m.userId));
-		return users.filter((u) => !memberUserIds.has(u.id));
-	});
 </script>
 
 <div class="min-h-screen bg-gray-50">
@@ -302,12 +252,14 @@
 						>
 							Edit
 						</button>
-						<button
-							onclick={() => (showDeleteConfirm = true)}
-							class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700"
-						>
-							Delete
-						</button>
+						{#if isPlatformAdmin}
+							<button
+								onclick={() => (showDeleteConfirm = true)}
+								class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700"
+							>
+								Delete
+							</button>
+						{/if}
 					</div>
 				{/if}
 			</div>
@@ -433,24 +385,26 @@
 								{/if}
 							</div>
 
-							<!-- Status -->
-							<div>
-								<label for="status" class="block text-sm font-medium text-gray-700 mb-2">
-									Status
-								</label>
-								<select
-									id="status"
-									bind:value={formData.status}
-									class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-								>
-									<option value="active">Active</option>
-									<option value="suspended">Suspended</option>
-									<option value="archived">Archived</option>
-								</select>
-								<p class="mt-1 text-xs text-gray-500">
-									Suspended organizations cannot modify resources. Archived organizations are read-only.
-								</p>
-							</div>
+							<!-- Status (platform admin only) -->
+							{#if isPlatformAdmin}
+								<div>
+									<label for="status" class="block text-sm font-medium text-gray-700 mb-2">
+										Status
+									</label>
+									<select
+										id="status"
+										bind:value={formData.status}
+										class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+									>
+										<option value="active">Active</option>
+										<option value="suspended">Suspended</option>
+										<option value="archived">Archived</option>
+									</select>
+									<p class="mt-1 text-xs text-gray-500">
+										Suspended organizations cannot modify resources. Archived organizations are read-only.
+									</p>
+								</div>
+							{/if}
 						</div>
 
 						<!-- Form Actions -->
@@ -479,79 +433,11 @@
 			<div class="mt-8">
 				<div class="flex items-center justify-between mb-4">
 					<h2 class="text-lg font-semibold text-gray-900">Members</h2>
-					{#if isPlatformAdmin}
-						<button
-							onclick={() => (showAddMember = true)}
-							class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
-						>
-							Add Member
-						</button>
-					{/if}
 				</div>
 
 				{#if memberError}
 					<div class="mb-4 bg-red-50 border-l-4 border-red-500 rounded-md p-4">
 						<p class="text-red-800 text-sm">{memberError}</p>
-					</div>
-				{/if}
-
-				<!-- Add Member Form (platform admins only) -->
-				{#if isPlatformAdmin && showAddMember}
-					<div class="bg-white rounded-lg shadow-md p-6 mb-4">
-						<h3 class="text-sm font-medium text-gray-900 mb-4">Add New Member</h3>
-						<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-							<div class="md:col-span-2">
-								<label for="addMemberUser" class="block text-sm font-medium text-gray-700 mb-1">
-									User
-								</label>
-								{#if isLoadingUsers}
-									<div class="text-sm text-gray-500">Loading users...</div>
-								{:else}
-									<select
-										id="addMemberUser"
-										bind:value={addMemberData.userId}
-										class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-									>
-										<option value="">Select a user...</option>
-										{#each availableUsers as user}
-											<option value={user.id}>{user.name} ({user.email})</option>
-										{/each}
-									</select>
-								{/if}
-							</div>
-							<div>
-								<label for="addMemberRole" class="block text-sm font-medium text-gray-700 mb-1">
-									Role
-								</label>
-								<select
-									id="addMemberRole"
-									bind:value={addMemberData.role}
-									class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-								>
-									{#each orgRoles as role}
-										<option value={role}>{role.charAt(0).toUpperCase() + role.slice(1)}</option>
-									{/each}
-								</select>
-							</div>
-						</div>
-						<div class="mt-4 flex justify-end gap-3">
-							<button
-								onclick={() => {
-									showAddMember = false;
-									addMemberData = { userId: '', role: 'member' };
-									memberError = null;
-								}}
-								class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
-							>
-								Cancel
-							</button>
-							<button
-								onclick={handleAddMember}
-								class="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700"
-							>
-								Add
-							</button>
-						</div>
 					</div>
 				{/if}
 
@@ -641,7 +527,7 @@
 
 			<!-- Invitations Section -->
 			{#if org}
-				<OrgInvitationsSection orgName={org.name} {orgId} {userScopes} />
+				<OrgInvitationsSection orgName={org.name} {orgId} {userScopes} onMemberInvited={loadMembers} />
 			{/if}
 		{/if}
 	</main>

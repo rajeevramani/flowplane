@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+# Setup Zitadel for local Flowplane development
+#
+# Creates: Zitadel project + SPA app, writes env files, restarts control-plane
+# Prerequisites: curl, jq
+# Usage: ./scripts/setup-zitadel.sh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+ZITADEL_HOST="${ZITADEL_HOST:-http://localhost:8081}"
+FLOWPLANE_URL="${FLOWPLANE_URL:-http://localhost:8080}"
+PAT_FILE="${PROJECT_DIR}/zitadel/machinekey/admin-pat.txt"
+
+# Defaults
+PROJECT_NAME="Flowplane"
+SPA_APP_NAME="Flowplane UI"
+SPA_REDIRECT_DOCKER="http://localhost:8080/auth/callback"
+SPA_REDIRECT_DEV="http://localhost:5173/auth/callback"
+SPA_POST_LOGOUT_DOCKER="http://localhost:8080/login"
+SPA_POST_LOGOUT_DEV="http://localhost:5173/login"
+
+# Colors
+CYAN='\033[36m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+RED='\033[31m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+log()  { echo -e "${CYAN}[zitadel]${RESET} $*"; }
+ok()   { echo -e "${GREEN}  ✓${RESET} $*"; }
+skip() { echo -e "${YELLOW}  ─${RESET} $* (already exists)"; }
+fail() { echo -e "${RED}  ✗${RESET} $*"; }
+
+# ── Prerequisite check ──────────────────────────────────────────
+for cmd in curl jq; do
+  if ! command -v "$cmd" &>/dev/null; then
+    fail "Required command not found: $cmd"
+    exit 1
+  fi
+done
+
+# ── API helper ──────────────────────────────────────────────────
+# Calls Zitadel Management API with admin PAT.
+# Returns response body. Sets HTTP_CODE global.
+BODY=""
+HTTP_CODE=""
+
+api() {
+  local method="$1" path="$2" body="${3:-}"
+  local tmp
+  tmp=$(mktemp)
+  local args=(
+    -s -w '\n%{http_code}'
+    -X "${method}"
+    -H "Authorization: Bearer ${ZITADEL_PAT}"
+    -H "Content-Type: application/json"
+  )
+  if [ -n "${body}" ]; then
+    args+=(-d "${body}")
+  fi
+  local raw
+  raw=$(curl "${args[@]}" "${ZITADEL_HOST}${path}")
+  HTTP_CODE=$(echo "$raw" | tail -1)
+  BODY=$(echo "$raw" | sed '$d')
+  rm -f "$tmp"
+}
+
+# ── Wait for Zitadel ─────────────────────────────────────────────
+wait_for_zitadel() {
+  log "Waiting for Zitadel at ${ZITADEL_HOST}..."
+  local attempts=0
+  while ! curl -sf "${ZITADEL_HOST}/debug/ready" > /dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ $attempts -ge 90 ]; then
+      fail "Zitadel not ready after 90s"
+      exit 1
+    fi
+    sleep 1
+  done
+  ok "Zitadel is ready (projections caught up)"
+}
+
+# ── Read PAT ───────────────────────────────────────────────────
+read_pat() {
+  log "Waiting for admin PAT at ${PAT_FILE}..."
+  local attempts=0
+  while [ ! -s "$PAT_FILE" ]; do
+    attempts=$((attempts + 1))
+    if [ $attempts -ge 60 ]; then
+      fail "PAT file not written after 60s: $PAT_FILE"
+      echo "  Check Zitadel logs: docker logs flowplane-zitadel" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  ZITADEL_PAT=$(cat "$PAT_FILE" | tr -d '[:space:]')
+  ok "PAT loaded (${#ZITADEL_PAT} chars)"
+
+  # Validate PAT works before proceeding
+  log "Validating PAT against Zitadel API..."
+  local valid_attempts=0
+  while true; do
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer ${ZITADEL_PAT}" \
+      "${ZITADEL_HOST}/management/v1/projects/_search" \
+      -X POST -H "Content-Type: application/json" -d '{"queries":[]}')
+    if [ "$code" = "200" ]; then
+      ok "PAT validated successfully"
+      return
+    fi
+    valid_attempts=$((valid_attempts + 1))
+    if [ $valid_attempts -ge 30 ]; then
+      fail "PAT validation failed after 30 attempts (last HTTP ${code})"
+      exit 1
+    fi
+    sleep 2
+  done
+}
+
+# ── Grant IAM_LOGIN_CLIENT role ──────────────────────────────────
+# Required for the seed script to programmatically obtain OIDC tokens
+# for human users via the Session API + OIDC finalize flow.
+grant_login_client_role() {
+  log "Granting IAM_LOGIN_CLIENT role to admin service account..."
+
+  # Get the PAT owner's user ID
+  local user_id
+  user_id=$(curl -s -H "Authorization: Bearer ${ZITADEL_PAT}" \
+    "${ZITADEL_HOST}/oidc/v1/userinfo" | jq -r '.sub')
+  if [ -z "$user_id" ] || [ "$user_id" = "null" ]; then
+    fail "Could not determine PAT owner user ID"
+    exit 1
+  fi
+
+  # Update IAM membership to include IAM_LOGIN_CLIENT alongside IAM_OWNER
+  local raw http_code
+  raw=$(curl -s -w '\n%{http_code}' -X PUT \
+    -H "Authorization: Bearer ${ZITADEL_PAT}" \
+    -H "Content-Type: application/json" \
+    -d '{"roles":["IAM_OWNER","IAM_LOGIN_CLIENT"]}' \
+    "${ZITADEL_HOST}/admin/v1/members/${user_id}")
+  http_code=$(echo "$raw" | tail -1)
+
+  if [ "$http_code" = "200" ]; then
+    ok "IAM_LOGIN_CLIENT role granted (userId: ${user_id})"
+  else
+    local body
+    body=$(echo "$raw" | sed '$d')
+    fail "Failed to grant IAM_LOGIN_CLIENT (HTTP ${http_code}): ${body}"
+    exit 1
+  fi
+}
+
+# ── Create project ────────────────────────────────────────────────
+create_project() {
+  log "Creating project '${PROJECT_NAME}'..."
+  api POST /management/v1/projects \
+    "{\"name\": \"${PROJECT_NAME}\", \"projectRoleAssertion\": true}"
+
+  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+    PROJECT_ID=$(echo "$BODY" | jq -r '.id')
+    ok "Project created (id: ${PROJECT_ID})"
+  elif [ "$HTTP_CODE" = "409" ] || echo "$BODY" | grep -qi "already exists"; then
+    # Find existing project
+    api POST "/management/v1/projects/_search" '{"queries":[]}'
+    PROJECT_ID=$(echo "$BODY" | jq -r ".result[] | select(.name==\"${PROJECT_NAME}\") | .id" 2>/dev/null | head -1)
+    if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+      fail "Project exists but could not find its ID"
+      exit 1
+    fi
+    skip "Project '${PROJECT_NAME}' (id: ${PROJECT_ID})"
+  else
+    fail "Create project failed (HTTP ${HTTP_CODE}): ${BODY}"
+    exit 1
+  fi
+}
+
+# ── Create SPA application ────────────────────────────────────────
+create_spa_app() {
+  log "Creating SPA application '${SPA_APP_NAME}'..."
+  api POST "/management/v1/projects/${PROJECT_ID}/apps/oidc" "{
+    \"name\": \"${SPA_APP_NAME}\",
+    \"redirectUris\": [\"${SPA_REDIRECT_DOCKER}\", \"${SPA_REDIRECT_DEV}\"],
+    \"postLogoutRedirectUris\": [\"${SPA_POST_LOGOUT_DOCKER}\", \"${SPA_POST_LOGOUT_DEV}\"],
+    \"responseTypes\": [\"OIDC_RESPONSE_TYPE_CODE\"],
+    \"grantTypes\": [\"OIDC_GRANT_TYPE_AUTHORIZATION_CODE\"],
+    \"appType\": \"OIDC_APP_TYPE_USER_AGENT\",
+    \"authMethodType\": \"OIDC_AUTH_METHOD_TYPE_NONE\",
+    \"accessTokenType\": \"OIDC_TOKEN_TYPE_JWT\",
+    \"devMode\": true
+  }"
+
+  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+    SPA_CLIENT_ID=$(echo "$BODY" | jq -r '.clientId')
+    ok "SPA app created (clientId: ${SPA_CLIENT_ID})"
+  elif [ "$HTTP_CODE" = "409" ] || echo "$BODY" | grep -qi "already exists"; then
+    # Find existing app
+    api POST "/management/v1/projects/${PROJECT_ID}/apps/_search" '{"queries":[]}'
+    SPA_CLIENT_ID=$(echo "$BODY" | jq -r ".result[] | select(.name==\"${SPA_APP_NAME}\") | .oidcConfig.clientId" 2>/dev/null | head -1)
+    if [ -z "$SPA_CLIENT_ID" ] || [ "$SPA_CLIENT_ID" = "null" ]; then
+      fail "SPA app exists but could not find its client ID"
+      exit 1
+    fi
+    skip "SPA app '${SPA_APP_NAME}' (clientId: ${SPA_CLIENT_ID})"
+  else
+    fail "Create SPA app failed (HTTP ${HTTP_CODE}): ${BODY}"
+    exit 1
+  fi
+}
+
+# ── Create Action: add email to access tokens ─────────────────────
+# Zitadel access tokens omit email by default. This Action adds it
+# for human users so audit trails have the real email address.
+# Machine users are unaffected (no human.email property).
+create_email_action() {
+  log "Creating Action to add email to access tokens..."
+
+  local action_script
+  action_script='function addEmailToAccessToken(ctx, api) { if (ctx.v1.user.human && ctx.v1.user.human.email) { api.v1.claims.setClaim("email", ctx.v1.user.human.email); if (ctx.v1.user.human.profile && ctx.v1.user.human.profile.displayName) { api.v1.claims.setClaim("name", ctx.v1.user.human.profile.displayName); } } }'
+
+  api POST /management/v1/actions "{
+    \"name\": \"addEmailToAccessToken\",
+    \"script\": \"$(echo "$action_script" | sed 's/"/\\"/g')\",
+    \"timeout\": \"10s\",
+    \"allowedToFail\": true
+  }"
+
+  local action_id=""
+  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+    action_id=$(echo "$BODY" | jq -r '.id')
+    ok "Action created (id: ${action_id})"
+  elif [ "$HTTP_CODE" = "409" ] || echo "$BODY" | grep -qi "already exists"; then
+    api POST /management/v1/actions/_search '{"queries":[]}'
+    action_id=$(echo "$BODY" | jq -r '.result[] | select(.name=="addEmailToAccessToken") | .id' 2>/dev/null | head -1)
+    if [ -z "$action_id" ] || [ "$action_id" = "null" ]; then
+      fail "Action exists but could not find its ID"
+      return
+    fi
+    skip "Action 'addEmailToAccessToken' (id: ${action_id})"
+  else
+    fail "Create action failed (HTTP ${HTTP_CODE}): ${BODY}"
+    return
+  fi
+
+  # Set action on Complement Token flow (type 2), Pre Access Token trigger (type 5)
+  log "Setting action on Complement Token flow..."
+  api POST /management/v1/flows/2/trigger/5 "{
+    \"actionIds\": [\"${action_id}\"]
+  }"
+
+  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+    ok "Action set on Pre Access Token Creation trigger"
+  else
+    fail "Set action on flow failed (HTTP ${HTTP_CODE}): ${BODY}"
+  fi
+}
+
+# ── Generate secret encryption key ────────────────────────────────
+generate_encryption_key() {
+  # Reuse existing key if present (re-running setup must not rotate the key)
+  if [ -f "${PROJECT_DIR}/.env.zitadel" ]; then
+    local existing
+    existing=$(grep '^FLOWPLANE_SECRET_ENCRYPTION_KEY=' "${PROJECT_DIR}/.env.zitadel" 2>/dev/null | cut -d= -f2-)
+    if [ -n "$existing" ]; then
+      ENCRYPTION_KEY="$existing"
+      skip "Encryption key (reusing existing)"
+      return
+    fi
+  fi
+
+  log "Generating secret encryption key..."
+  ENCRYPTION_KEY=$(openssl rand -base64 32)
+  ok "Encryption key generated (32 bytes, base64-encoded)"
+}
+
+# ── Write env files ───────────────────────────────────────────────
+write_env_files() {
+  log "Writing .env.zitadel..."
+  cat > "${PROJECT_DIR}/.env.zitadel" <<EOF
+# Generated by scripts/setup-zitadel.sh — do not commit
+ZITADEL_PROJECT_ID=${PROJECT_ID}
+ZITADEL_ADMIN_PAT=${ZITADEL_PAT}
+FLOWPLANE_ZITADEL_PROJECT_ID=${PROJECT_ID}
+FLOWPLANE_ZITADEL_ADMIN_PAT=${ZITADEL_PAT}
+FLOWPLANE_ZITADEL_SPA_CLIENT_ID=${SPA_CLIENT_ID}
+FLOWPLANE_SECRET_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+EOF
+  chmod 600 "${PROJECT_DIR}/.env.zitadel"
+  ok "Wrote .env.zitadel"
+
+  log "Writing ui/.env..."
+  cat > "${PROJECT_DIR}/ui/.env" <<EOF
+# Generated by scripts/setup-zitadel.sh — do not commit
+PUBLIC_API_BASE=http://localhost:8080
+VITE_ZITADEL_ISSUER=http://localhost:8081
+VITE_ZITADEL_CLIENT_ID=${SPA_CLIENT_ID}
+VITE_APP_URL=http://localhost:5173
+EOF
+  ok "Wrote ui/.env"
+}
+
+# ── Restart control-plane with project ID ─────────────────────────
+restart_control_plane() {
+  log "Restarting control-plane to pick up ZITADEL_PROJECT_ID..."
+  docker-compose -f "${PROJECT_DIR}/docker-compose.yml" up -d --force-recreate control-plane 2>/dev/null \
+    || docker compose -f "${PROJECT_DIR}/docker-compose.yml" up -d --force-recreate control-plane 2>/dev/null
+  ok "Control-plane restarting"
+
+  log "Waiting for Flowplane at ${FLOWPLANE_URL}..."
+  local attempts=0
+  while ! curl -sf "${FLOWPLANE_URL}/swagger-ui/" > /dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ $attempts -ge 90 ]; then
+      fail "Flowplane not reachable after 90s"
+      exit 1
+    fi
+    sleep 1
+  done
+  ok "Flowplane is ready"
+}
+
+# ── Main ───────────────────────────────────────────────────────
+main() {
+  echo ""
+  echo -e "${CYAN}━━━ Flowplane Zitadel Setup ━━━${RESET}"
+  echo ""
+
+  PROJECT_ID=""
+  SPA_CLIENT_ID=""
+
+  wait_for_zitadel
+  read_pat
+
+  grant_login_client_role
+  create_project
+  create_spa_app
+  create_email_action
+
+  generate_encryption_key
+  write_env_files
+  restart_control_plane
+
+  echo ""
+  echo -e "${GREEN}━━━ Setup complete ━━━${RESET}"
+  echo ""
+  echo -e "  ${BOLD}Zitadel Console:${RESET}"
+  echo -e "    URL:         ${CYAN}${ZITADEL_HOST}${RESET}"
+  echo -e "    Admin login: ${CYAN}zitadel-admin@zitadel.localhost${RESET} / ${CYAN}Password1!${RESET}"
+  echo ""
+  echo -e "  ${BOLD}Flowplane Platform Admin:${RESET}"
+  echo -e "    Email:       ${CYAN}${FLOWPLANE_SUPERADMIN_EMAIL:-admin@flowplane.local}${RESET} / ${CYAN}${FLOWPLANE_SUPERADMIN_INITIAL_PASSWORD:-Flowplane1!}${RESET}"
+  echo -e "    Note:        Seeded automatically on first startup"
+  echo ""
+  echo -e "  ${BOLD}Project:${RESET}"
+  echo -e "    Project ID:  ${CYAN}${PROJECT_ID}${RESET}"
+  echo ""
+  echo -e "  ${BOLD}Next step:${RESET}"
+  echo -e "    Run ${CYAN}make seed${RESET} to create demo data (org, users, teams)"
+  echo ""
+}
+
+main "$@"

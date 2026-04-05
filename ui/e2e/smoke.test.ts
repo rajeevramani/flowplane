@@ -23,7 +23,6 @@ const allPages: PageDef[] = [
 	{ path: '/secrets', name: 'Secrets', type: 'list' },
 	{ path: '/dataplanes', name: 'Dataplanes', type: 'list' },
 	{ path: '/imports', name: 'Imports', type: 'list' },
-	{ path: '/tokens', name: 'Access Tokens', type: 'list' },
 	{ path: '/custom-filters', name: 'Custom Filters', type: 'cards' },
 	{ path: '/learning', name: 'Learning Sessions', type: 'list' },
 	{ path: '/learning/schemas', name: 'Discovered Schemas', type: 'list' },
@@ -46,13 +45,11 @@ const allPages: PageDef[] = [
 
 	// Admin list pages
 	{ path: '/admin/organizations', name: 'Admin: Organizations', type: 'list' },
-	{ path: '/admin/users', name: 'Admin: Users', type: 'list' },
 	{ path: '/admin/teams', name: 'Admin: Teams', type: 'list' },
 	{ path: '/admin/audit-log', name: 'Admin: Audit Log', type: 'list' },
 
 	// Admin creation pages
 	{ path: '/admin/organizations/create', name: 'Admin: Create Organization', type: 'create' },
-	{ path: '/admin/users/create', name: 'Admin: Create User', type: 'create' },
 	{ path: '/admin/teams/create', name: 'Admin: Create Team', type: 'create' },
 
 	// Form pages (non-resource-creation forms)

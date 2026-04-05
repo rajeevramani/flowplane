@@ -13,7 +13,6 @@ fn default_health_check_type() -> String {
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
 #[serde(rename_all = "camelCase")]
 #[schema(example = json!({
-    "team": "payments",
     "name": "my-service-cluster",
     "serviceName": "inventory-service",
     "endpoints": [
@@ -50,11 +49,6 @@ fn default_health_check_type() -> String {
     }
 }))]
 pub struct CreateClusterBody {
-    /// Team identifier for ownership.
-    #[validate(length(min = 1, max = 100))]
-    #[schema(example = "payments")]
-    pub team: String,
-
     /// Unique name for the cluster.
     #[validate(length(min = 1, max = 50))]
     #[schema(example = "my-service-cluster")]
@@ -274,4 +268,70 @@ pub struct ClusterResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_id: Option<String>,
     pub config: ClusterSpec,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use validator::Validate;
+
+    fn minimal_body(port: u16) -> CreateClusterBody {
+        CreateClusterBody {
+            name: "test-cluster".into(),
+            service_name: None,
+            endpoints: vec![EndpointRequest { host: "10.0.0.1".into(), port }],
+            connect_timeout_seconds: None,
+            use_tls: None,
+            tls_server_name: None,
+            dns_lookup_family: None,
+            lb_policy: None,
+            health_checks: vec![],
+            circuit_breakers: None,
+            outlier_detection: None,
+            protocol_type: None,
+        }
+    }
+
+    #[test]
+    fn endpoint_port_zero_rejected() {
+        let body = minimal_body(0);
+        let result: Result<(), String> = body
+            .endpoints
+            .iter()
+            .try_for_each(|ep| crate::validation::validate_port_nonzero(ep.port));
+        assert!(result.is_err(), "port 0 should be rejected");
+    }
+
+    #[test]
+    fn endpoint_port_valid() {
+        assert!(crate::validation::validate_port_nonzero(8080).is_ok());
+        assert!(crate::validation::validate_port_nonzero(1).is_ok());
+        assert!(crate::validation::validate_port_nonzero(65535).is_ok());
+    }
+
+    #[test]
+    fn empty_endpoints_rejected() {
+        let mut body = minimal_body(8080);
+        body.endpoints.clear();
+        assert!(body.validate().is_err());
+    }
+
+    #[test]
+    fn empty_name_rejected() {
+        let mut body = minimal_body(8080);
+        body.name = "".into();
+        assert!(body.validate().is_err());
+    }
+
+    #[test]
+    fn special_char_name_rejected() {
+        let result = crate::validation::validate_resource_name("test!@#$");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn valid_name_accepted() {
+        assert!(crate::validation::validate_resource_name("my-cluster").is_ok());
+        assert!(crate::validation::validate_resource_name("my_cluster.v1").is_ok());
+    }
 }

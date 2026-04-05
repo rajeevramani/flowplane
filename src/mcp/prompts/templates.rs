@@ -1022,7 +1022,7 @@ mod demo_integration_tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"scope": "full", "include_details": true}),
+            json!({"scope": "full", "includeDetails": true}),
         )
         .await
         .expect("topology should succeed");
@@ -1064,7 +1064,7 @@ mod demo_integration_tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"scope": "full", "include_details": true}),
+            json!({"scope": "full", "includeDetails": true}),
         )
         .await
         .expect("topology should succeed");
@@ -1141,7 +1141,7 @@ mod demo_integration_tests {
             &db.pool,
             TEAM_A_ID,
             None,
-            json!({"scope": "route_config", "name": "orders-routes", "include_details": true}),
+            json!({"scope": "route_config", "name": "orders-routes", "includeDetails": true}),
         )
         .await
         .expect("topology should succeed");
@@ -1189,7 +1189,7 @@ mod demo_integration_tests {
             &db.pool,
             TEAM_B_ID,
             None,
-            json!({"scope": "full", "include_details": true}),
+            json!({"scope": "full", "includeDetails": true}),
         )
         .await
         .expect("topology should succeed");

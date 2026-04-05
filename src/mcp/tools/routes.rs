@@ -5,11 +5,11 @@
 use crate::domain::OrgId;
 use crate::internal_api::routes::transform_virtual_hosts_for_internal;
 use crate::internal_api::{
-    CreateRouteConfigRequest, InternalAuthContext, ListRouteConfigsRequest, RouteConfigOperations,
+    CreateRouteConfigRequest, ListRouteConfigsRequest, RouteConfigOperations,
     UpdateRouteConfigRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_delete_response, build_query_response, build_rich_create_response,
     build_rich_delete_response, build_update_response, ResourceRef,
@@ -19,6 +19,9 @@ use crate::xds::XdsState;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tracing::instrument;
+
+// validate_team_in_org is shared — use super::validate_team_in_org
+use super::validate_team_in_org;
 
 /// Tool definition for listing routes
 pub fn cp_list_routes_tool() -> Tool {
@@ -57,26 +60,17 @@ HIERARCHY:
   - Routes match paths and forward to clusters
 
 RELATED TOOLS: cp_create_route_config (create), cp_get_cluster (verify targets)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of routes to return (default: 100, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of routes to skip (for pagination)",
-                    "minimum": 0
-                },
-                "route_config": {
-                    "type": "string",
-                    "description": "Filter by route configuration name to see routes in a specific config"
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("routes");
+            props["routeConfig"] = json!({
+                "type": "string",
+                "description": "Filter by route configuration name to see routes in a specific config"
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -116,21 +110,7 @@ WORKFLOW CONTEXT:
 RELATED TOOLS: cp_list_routes (individual routes), cp_create_route_config (create), cp_list_listeners (consumers)"#.to_string(),
         json!({
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of route configs to return (default: 50, max: 1000)",
-                    "minimum": 1,
-                    "maximum": 1000,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of route configs to skip for pagination (default: 0)",
-                    "minimum": 0,
-                    "default": 0
-                }
-            }
+            "properties": super::pagination_schema("route configs")
         }),
     )
 }
@@ -156,10 +136,7 @@ pub async fn execute_list_route_configs(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let list_req = ListRouteConfigsRequest {
         limit,
         offset,
@@ -197,7 +174,7 @@ pub async fn execute_list_route_configs(
 
     tracing::info!(team = %team, route_config_count = result.count, "Successfully listed route configs");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Returns the MCP tool definition for getting a route config by name.
@@ -258,10 +235,7 @@ pub async fn execute_get_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
     let rc = ops.get(name, &auth).await?;
 
     // Parse configuration JSON for structured output
@@ -286,7 +260,7 @@ pub async fn execute_get_route_config(
 
     tracing::info!(team = %team, route_config_name = %name, "Successfully retrieved route config");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Returns the MCP tool definition for querying path routing.
@@ -352,13 +326,19 @@ pub async fn execute_list_routes(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
+    // Validate team belongs to caller's org
+    if let Some(oid) = org_id {
+        validate_team_in_org(db_pool, team, oid).await?;
+    }
+
     let limit = args["limit"].as_i64().unwrap_or(100).min(1000) as i32;
     let offset = args["offset"].as_i64().unwrap_or(0) as i32;
-    let route_config_filter = args["route_config"].as_str();
+    let route_config_filter = args["routeConfig"].as_str();
 
     // Build query with optional route_config filter
     let query = if route_config_filter.is_some() {
         "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, \
+                r.exposure, \
                 rm.operation_id, rm.summary, rm.description, rm.tags, \
                 vh.name as virtual_host_name, rc.name as route_config_name, \
                 r.created_at, r.updated_at \
@@ -371,6 +351,7 @@ pub async fn execute_list_routes(
          LIMIT $3 OFFSET $4"
     } else {
         "SELECT r.id, r.virtual_host_id, r.name, r.path_pattern, r.match_type, r.rule_order, \
+                r.exposure, \
                 rm.operation_id, rm.summary, rm.description, rm.tags, \
                 vh.name as virtual_host_name, rc.name as route_config_name, \
                 r.created_at, r.updated_at \
@@ -393,6 +374,7 @@ pub async fn execute_list_routes(
         path_pattern: String,
         match_type: String,
         rule_order: i32,
+        exposure: String,
         operation_id: Option<String>,
         summary: Option<String>,
         description: Option<String>,
@@ -438,6 +420,7 @@ pub async fn execute_list_routes(
                 "path_pattern": r.path_pattern,
                 "match_type": r.match_type,
                 "rule_order": r.rule_order,
+                "exposure": r.exposure,
                 "metadata": {
                     "operation_id": r.operation_id,
                     "summary": r.summary,
@@ -456,7 +439,7 @@ pub async fn execute_list_routes(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute the cp_query_path tool.
@@ -568,7 +551,7 @@ pub async fn execute_query_path(
 
     tracing::info!(team = %team, path = %query_path, port = ?port, found = found, "Path query completed");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -666,7 +649,7 @@ EXAMPLE WITH WEIGHTED ROUTING (canary/A-B testing):
   }]
 }
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:create scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -797,7 +780,7 @@ WORKFLOW:
 
 TIP: Copy current config, modify it, then submit the complete updated version.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:update scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -855,7 +838,7 @@ This is safe if no listeners reference the config.
 Required Parameters:
 - name: Name of the route config to delete
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:delete scope."#,
         json!({
             "type": "object",
             "properties": {
@@ -883,10 +866,12 @@ pub async fn execute_create_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let virtual_hosts =
-        args.get("virtualHosts").or_else(|| args.get("virtual_hosts")).ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
-        })?;
+    crate::validation::validate_resource_name(name)
+        .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
+    let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
+    })?;
 
     tracing::debug!(
         team = %team,
@@ -911,10 +896,7 @@ pub async fn execute_create_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateRouteConfigRequest {
         name: name.to_string(),
@@ -957,7 +939,7 @@ pub async fn execute_create_route_config(
         "Successfully created route config via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_route_config tool using the internal API layer.
@@ -974,10 +956,9 @@ pub async fn execute_update_route_config(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let virtual_hosts =
-        args.get("virtualHosts").or_else(|| args.get("virtual_hosts")).ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
-        })?;
+    let virtual_hosts = args.get("virtualHosts").ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHosts".to_string())
+    })?;
 
     tracing::debug!(
         team = %team,
@@ -1000,10 +981,7 @@ pub async fn execute_update_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = UpdateRouteConfigRequest { config: configuration };
 
@@ -1024,7 +1002,7 @@ pub async fn execute_update_route_config(
         "Successfully updated route config via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_route_config tool using the internal API layer.
@@ -1053,10 +1031,7 @@ pub async fn execute_delete_route_config(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(name, &auth).await?;
 
@@ -1073,7 +1048,7 @@ pub async fn execute_delete_route_config(
         "Successfully deleted route config via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -1121,11 +1096,11 @@ Authorization: Requires cp:read scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Route configuration name"
                 },
-                "virtual_host": {
+                "virtualHost": {
                     "type": "string",
                     "description": "Virtual host name within the route config"
                 },
@@ -1134,7 +1109,7 @@ Authorization: Requires cp:read scope."#,
                     "description": "Route name"
                 }
             },
-            "required": ["route_config", "virtual_host", "name"]
+            "required": ["routeConfig", "virtualHost", "name"]
         }),
     )
 }
@@ -1191,15 +1166,15 @@ Optional Parameters:
 
 IMPORTANT: After creating routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:create scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Route configuration name"
                 },
-                "virtual_host": {
+                "virtualHost": {
                     "type": "string",
                     "description": "Virtual host name within the route config"
                 },
@@ -1207,11 +1182,11 @@ Authorization: Requires cp:write scope."#,
                     "type": "string",
                     "description": "Unique route name (within virtual host)"
                 },
-                "path_pattern": {
+                "pathPattern": {
                     "type": "string",
                     "description": "URL path pattern (e.g., '/api', '/users/{id}')"
                 },
-                "match_type": {
+                "matchType": {
                     "type": "string",
                     "enum": ["prefix", "exact", "regex", "template"],
                     "description": "Type of path matching"
@@ -1220,13 +1195,13 @@ Authorization: Requires cp:write scope."#,
                     "type": "object",
                     "description": "Route action (forward, weighted, or redirect)"
                 },
-                "rule_order": {
+                "ruleOrder": {
                     "type": "integer",
                     "description": "Priority order (default: 100, lower values match first)",
                     "default": 100
                 }
             },
-            "required": ["route_config", "virtual_host", "name", "path_pattern", "match_type", "action"]
+            "required": ["routeConfig", "virtualHost", "name", "pathPattern", "matchType", "action"]
         }),
     )
 }
@@ -1267,18 +1242,19 @@ Optional Parameters (provide only what you want to change):
 - match_type: New match type (prefix, exact, regex, template)
 - rule_order: New priority order
 - action: New route action
+- exposure: Set route visibility ("internal" or "external") for agent access
 
 IMPORTANT: After updating routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:update scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Route configuration name"
                 },
-                "virtual_host": {
+                "virtualHost": {
                     "type": "string",
                     "description": "Virtual host name within the route config"
                 },
@@ -1286,25 +1262,30 @@ Authorization: Requires cp:write scope."#,
                     "type": "string",
                     "description": "Route name to update"
                 },
-                "path_pattern": {
+                "pathPattern": {
                     "type": "string",
                     "description": "New URL path pattern (optional)"
                 },
-                "match_type": {
+                "matchType": {
                     "type": "string",
                     "enum": ["prefix", "exact", "regex", "template"],
                     "description": "New match type (optional)"
                 },
-                "rule_order": {
+                "ruleOrder": {
                     "type": "integer",
                     "description": "New priority order (optional)"
+                },
+                "exposure": {
+                    "type": "string",
+                    "enum": ["internal", "external"],
+                    "description": "Route visibility for agent access. 'external' routes can be granted to agents. Changing external→internal is blocked if active grants exist. (optional)"
                 },
                 "action": {
                     "type": "object",
                     "description": "New route action (optional)"
                 }
             },
-            "required": ["route_config", "virtual_host", "name"]
+            "required": ["routeConfig", "virtualHost", "name"]
         }),
     )
 }
@@ -1337,15 +1318,15 @@ Required Parameters:
 
 IMPORTANT: After deleting routes, you must update the route config to sync changes to xDS.
 
-Authorization: Requires cp:write scope."#,
+Authorization: Requires routes:delete scope."#,
         json!({
             "type": "object",
             "properties": {
-                "route_config": {
+                "routeConfig": {
                     "type": "string",
                     "description": "Route configuration name"
                 },
-                "virtual_host": {
+                "virtualHost": {
                     "type": "string",
                     "description": "Virtual host name within the route config"
                 },
@@ -1354,7 +1335,7 @@ Authorization: Requires cp:write scope."#,
                     "description": "Route name to delete"
                 }
             },
-            "required": ["route_config", "virtual_host", "name"]
+            "required": ["routeConfig", "virtualHost", "name"]
         }),
     )
 }
@@ -1367,14 +1348,14 @@ pub async fn execute_get_route(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    use crate::internal_api::{InternalAuthContext, RouteOperations};
+    use crate::internal_api::RouteOperations;
 
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
-    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    let virtual_host = args.get("virtualHost").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHost".to_string())
     })?;
 
     let name = args
@@ -1395,10 +1376,7 @@ pub async fn execute_get_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let route = ops.get(route_config, virtual_host, name, &auth).await?;
 
@@ -1423,7 +1401,7 @@ pub async fn execute_get_route(
         "Successfully retrieved route"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_create_route tool
@@ -1434,14 +1412,14 @@ pub async fn execute_create_route(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    use crate::internal_api::{CreateRouteRequest, InternalAuthContext, RouteOperations};
+    use crate::internal_api::{CreateRouteRequest, RouteOperations};
 
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
-    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    let virtual_host = args.get("virtualHost").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHost".to_string())
     })?;
 
     let name = args
@@ -1449,19 +1427,19 @@ pub async fn execute_create_route(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let path_pattern = args.get("path_pattern").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: path_pattern".to_string())
+    let path_pattern = args.get("pathPattern").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: pathPattern".to_string())
     })?;
 
-    let match_type = args.get("match_type").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: match_type".to_string())
+    let match_type = args.get("matchType").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: matchType".to_string())
     })?;
 
     let action = args
         .get("action")
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: action".to_string()))?;
 
-    let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let rule_order = args.get("ruleOrder").and_then(|v| v.as_i64()).map(|v| v as i32);
 
     tracing::debug!(
         team = %team,
@@ -1476,10 +1454,7 @@ pub async fn execute_create_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateRouteRequest {
         route_config: route_config.to_string(),
@@ -1519,7 +1494,7 @@ pub async fn execute_create_route(
         "Successfully created route via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_update_route tool
@@ -1530,14 +1505,14 @@ pub async fn execute_update_route(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    use crate::internal_api::{InternalAuthContext, RouteOperations, UpdateRouteRequest};
+    use crate::internal_api::{RouteOperations, UpdateRouteRequest};
 
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
-    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    let virtual_host = args.get("virtualHost").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHost".to_string())
     })?;
 
     let name = args
@@ -1545,10 +1520,11 @@ pub async fn execute_update_route(
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("Missing required parameter: name".to_string()))?;
 
-    let path_pattern = args.get("path_pattern").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let match_type = args.get("match_type").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let rule_order = args.get("rule_order").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let path_pattern = args.get("pathPattern").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let match_type = args.get("matchType").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let rule_order = args.get("ruleOrder").and_then(|v| v.as_i64()).map(|v| v as i32);
     let action = args.get("action").cloned();
+    let exposure = args.get("exposure").and_then(|v| v.as_str()).map(|s| s.to_string());
 
     tracing::debug!(
         team = %team,
@@ -1563,12 +1539,9 @@ pub async fn execute_update_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
-    let req = UpdateRouteRequest { path_pattern, match_type, rule_order, action };
+    let req = UpdateRouteRequest { path_pattern, match_type, rule_order, action, exposure };
 
     let result = ops.update(route_config, virtual_host, name, req, &auth).await?;
 
@@ -1586,7 +1559,7 @@ pub async fn execute_update_route(
         "Successfully updated route via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute the cp_delete_route tool
@@ -1597,14 +1570,14 @@ pub async fn execute_delete_route(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    use crate::internal_api::{InternalAuthContext, RouteOperations};
+    use crate::internal_api::RouteOperations;
 
-    let route_config = args.get("route_config").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_config".to_string())
+    let route_config = args.get("routeConfig").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routeConfig".to_string())
     })?;
 
-    let virtual_host = args.get("virtual_host").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: virtual_host".to_string())
+    let virtual_host = args.get("virtualHost").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: virtualHost".to_string())
     })?;
 
     let name = args
@@ -1625,10 +1598,7 @@ pub async fn execute_delete_route(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(route_config, virtual_host, name, &auth).await?;
 
@@ -1645,7 +1615,7 @@ pub async fn execute_delete_route(
         "Successfully deleted route via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]
@@ -1705,8 +1675,8 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Get a specific route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
-        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("routeConfig")));
+        assert!(required.contains(&json!("virtualHost")));
         assert!(required.contains(&json!("name")));
     }
 
@@ -1717,11 +1687,11 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Create a new route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
-        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("routeConfig")));
+        assert!(required.contains(&json!("virtualHost")));
         assert!(required.contains(&json!("name")));
-        assert!(required.contains(&json!("path_pattern")));
-        assert!(required.contains(&json!("match_type")));
+        assert!(required.contains(&json!("pathPattern")));
+        assert!(required.contains(&json!("matchType")));
         assert!(required.contains(&json!("action")));
     }
 
@@ -1732,8 +1702,8 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Update an existing route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
-        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("routeConfig")));
+        assert!(required.contains(&json!("virtualHost")));
         assert!(required.contains(&json!("name")));
         assert_eq!(required.len(), 3); // Only 3 required, rest optional
     }
@@ -1745,8 +1715,8 @@ mod tests {
         assert!(tool.description.as_ref().unwrap().contains("Delete a route"));
 
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_config")));
-        assert!(required.contains(&json!("virtual_host")));
+        assert!(required.contains(&json!("routeConfig")));
+        assert!(required.contains(&json!("virtualHost")));
         assert!(required.contains(&json!("name")));
     }
 

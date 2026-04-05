@@ -64,7 +64,9 @@
 		error = null;
 
 		try {
-			const openapi = await apiClient.exportMultipleSchemasAsOpenApi({
+			const selectedSchemas = schemas.filter((s) => selectedIds.has(s.id));
+			const team = selectedSchemas[0]?.team ?? '';
+			const openapi = await apiClient.exportMultipleSchemasAsOpenApi(team, {
 				schemaIds: Array.from(selectedIds),
 				title: title.trim(),
 				version: version.trim(),

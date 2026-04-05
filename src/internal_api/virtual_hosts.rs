@@ -332,14 +332,12 @@ impl VirtualHostOperations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
+    use crate::storage::test_helpers::{
+        create_test_xds_state, TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID,
+    };
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
-        let test_db = TestDatabase::new("internal_api_virtual_hosts").await;
-        let pool = test_db.pool.clone();
-        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-        (test_db, state)
+        create_test_xds_state("internal_api_virtual_hosts").await
     }
 
     async fn create_test_route_config(

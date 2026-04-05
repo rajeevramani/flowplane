@@ -6,7 +6,7 @@
 	import AdminResourceSummary from '$lib/components/AdminResourceSummary.svelte';
 	import { selectedTeam } from '$lib/stores/team';
 	import { adminSummary, adminSummaryLoading, adminSummaryError, getAdminSummary } from '$lib/stores/adminSummary';
-	import { isSystemAdmin } from '$lib/stores/org';
+	import { isGovernanceAdmin } from '$lib/utils/permissions';
 	import type { Unsubscriber } from 'svelte/store';
 
 	let isFirstAdmin = $state(false);
@@ -28,9 +28,13 @@
 				team
 					? apiClient.listImports(team)
 					: Promise.resolve([]),
-				apiClient.listListeners(),
-				apiClient.listRouteConfigs(),
-				apiClient.listClusters()
+				team ? apiClient.listListeners(team) : Promise.resolve([]),
+				team
+					? apiClient.listRouteConfigs(team)
+					: Promise.resolve([]),
+				team
+					? apiClient.listClusters(team)
+					: Promise.resolve([])
 			]);
 
 			resourceCounts = {
@@ -158,13 +162,6 @@
 					<p class="text-sm text-gray-600">Create tenant orgs and assign org admins</p>
 				</a>
 				<a
-					href="/admin/users"
-					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
-				>
-					<h4 class="text-lg font-semibold text-gray-900 mb-2">Manage Users</h4>
-					<p class="text-sm text-gray-600">View and manage user accounts across the platform</p>
-				</a>
-				<a
 					href="/admin/audit-log"
 					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
 				>
@@ -248,17 +245,7 @@
 			<h3 class="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
 			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
 				<!-- Governance admin actions -->
-				{#if isSystemAdmin(sessionInfo.scopes)}
-					<a
-						href="/admin/users"
-						class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
-					>
-						<h4 class="text-lg font-semibold text-gray-900 mb-2">Manage Users</h4>
-						<p class="text-sm text-gray-600">
-							Create, edit, and manage user accounts and permissions
-						</p>
-					</a>
-
+				{#if isGovernanceAdmin(sessionInfo)}
 					<a
 						href="/admin/audit-log"
 						class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-purple-300 hover:shadow-md transition-all"
@@ -282,22 +269,22 @@
 
 				<!-- Developer actions -->
 				<a
+					href="/expose"
+					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
+				>
+					<h4 class="text-lg font-semibold text-gray-900 mb-2">Expose Service</h4>
+					<p class="text-sm text-gray-600">
+						Quickly expose a backend service through Envoy with one click
+					</p>
+				</a>
+
+				<a
 					href="/imports/import"
 					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
 				>
 					<h4 class="text-lg font-semibold text-gray-900 mb-2">Import OpenAPI Spec</h4>
 					<p class="text-sm text-gray-600">
 						Upload and configure your API from an OpenAPI specification
-					</p>
-				</a>
-
-				<a
-					href="/tokens"
-					class="block p-6 bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all"
-				>
-					<h4 class="text-lg font-semibold text-gray-900 mb-2">Create Token</h4>
-					<p class="text-sm text-gray-600">
-						Generate personal access tokens for API authentication
 					</p>
 				</a>
 
@@ -355,8 +342,7 @@
 							>4</span
 						>
 						<div>
-							<strong>Monitor and manage:</strong> Use the dashboard to view metrics, manage
-							tokens, and review audit logs.
+							<strong>Monitor and manage:</strong> Use the dashboard to view metrics and review audit logs.
 						</div>
 					</li>
 				</ol>

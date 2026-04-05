@@ -18,6 +18,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import { canReadSchemas } from '$lib/utils/permissions';
+	import { selectedTeam } from '$lib/stores/team';
 
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
@@ -26,11 +27,16 @@
 	let isLoadingComparison = $state(false);
 	let isExporting = $state(false);
 	let sessionInfo = $state<SessionInfoResponse | null>(null);
+	let currentTeam = $state<string>('');
 
 	// Tab state
 	let activeTab = $state<'request' | 'response' | 'comparison'>('request');
 
 	const schemaId = Number($page.params.id);
+
+	selectedTeam.subscribe((value) => {
+		currentTeam = value;
+	});
 
 	onMount(async () => {
 		try {
@@ -46,7 +52,7 @@
 		error = null;
 
 		try {
-			schema = await apiClient.getAggregatedSchema(schemaId);
+			schema = await apiClient.getAggregatedSchema(currentTeam, schemaId);
 
 			// Auto-load comparison if there's a previous version
 			if (schema.previousVersionId) {
@@ -65,7 +71,7 @@
 
 		isLoadingComparison = true;
 		try {
-			comparison = await apiClient.compareSchemaVersions(schemaId, schema.previousVersionId);
+			comparison = await apiClient.compareSchemaVersions(schema.team, schemaId, schema.previousVersionId);
 		} catch (e) {
 			console.error('Failed to load comparison:', e);
 		} finally {
@@ -84,7 +90,7 @@
 
 		isExporting = true;
 		try {
-			const openapi = await apiClient.exportSchemaAsOpenApi(schema.id, includeExamples);
+			const openapi = await apiClient.exportSchemaAsOpenApi(schema.team, schema.id, includeExamples);
 			const blob = new Blob([JSON.stringify(openapi, null, 2)], { type: 'application/json' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');

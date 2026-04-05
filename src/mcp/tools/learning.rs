@@ -4,11 +4,10 @@
 
 use crate::domain::OrgId;
 use crate::internal_api::{
-    CreateLearningSessionInternalRequest, InternalAuthContext, LearningSessionOperations,
-    ListLearningSessionsRequest,
+    CreateLearningSessionInternalRequest, LearningSessionOperations, ListLearningSessionsRequest,
 };
 use crate::mcp::error::McpError;
-use crate::mcp::protocol::{ContentBlock, Tool, ToolCallResult};
+use crate::mcp::protocol::{Tool, ToolCallResult};
 use crate::mcp::response_builders::{
     build_action_response, build_create_response, build_delete_response,
 };
@@ -57,27 +56,18 @@ RETURNS: Array of learning session objects with:
 - created_at, started_at, completed_at: Lifecycle timestamps
 
 RELATED TOOLS: cp_get_learning_session (details), cp_create_learning_session (new session)"#,
-        json!({
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Filter by session status",
-                    "enum": ["pending", "active", "completing", "completed", "cancelled", "failed"]
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return",
-                    "minimum": 1,
-                    "maximum": 100
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of results to skip for pagination",
-                    "minimum": 0
-                }
-            }
-        }),
+        {
+            let mut props = super::pagination_schema("learning sessions");
+            props["status"] = json!({
+                "type": "string",
+                "description": "Filter by session status",
+                "enum": ["pending", "active", "completing", "completed", "cancelled", "failed"]
+            });
+            json!({
+                "type": "object",
+                "properties": props
+            })
+        },
     )
 }
 
@@ -177,26 +167,26 @@ AFTER CREATION:
 - Monitor progress with cp_get_learning_session
 - When complete, find generated schemas with cp_list_schemas
 
-Authorization: Requires cp:write scope.
+Authorization: Requires learning-sessions:create scope.
 "#,
         json!({
             "type": "object",
             "properties": {
-                "route_pattern": {
+                "routePattern": {
                     "type": "string",
                     "description": "Regex pattern to match routes for learning"
                 },
-                "target_sample_count": {
+                "targetSampleCount": {
                     "type": "integer",
                     "description": "Number of traffic samples to collect",
                     "minimum": 1,
                     "maximum": 100000
                 },
-                "cluster_name": {
+                "clusterName": {
                     "type": "string",
                     "description": "Optional cluster name to filter traffic"
                 },
-                "http_methods": {
+                "httpMethods": {
                     "type": "array",
                     "description": "Optional array of HTTP methods to include",
                     "items": {
@@ -204,12 +194,12 @@ Authorization: Requires cp:write scope.
                         "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
                     }
                 },
-                "auto_start": {
+                "autoStart": {
                     "type": "boolean",
                     "description": "Whether to automatically start the session (default: true)"
                 }
             },
-            "required": ["route_pattern", "target_sample_count"]
+            "required": ["routePattern", "targetSampleCount"]
         }),
     )
 }
@@ -249,7 +239,7 @@ WORKFLOW TO DELETE:
 2. If active/pending, call this tool
 3. Session is cancelled and removed
 
-Authorization: Requires cp:write scope.
+Authorization: Requires learning-sessions:delete scope.
 "#,
         json!({
             "type": "object",
@@ -282,10 +272,7 @@ pub async fn execute_list_learning_sessions(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = ListLearningSessionsRequest { status, limit, offset };
 
@@ -317,7 +304,7 @@ pub async fn execute_list_learning_sessions(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute get learning session operation using the internal API layer.
@@ -338,10 +325,7 @@ pub async fn execute_get_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let session = ops.get(id, &auth).await?;
 
@@ -368,7 +352,7 @@ pub async fn execute_get_learning_session(
     let result_text =
         serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text: result_text }], is_error: None })
+    Ok(ToolCallResult::text(result_text))
 }
 
 /// Execute create learning session operation using the internal API layer.
@@ -380,23 +364,23 @@ pub async fn execute_create_learning_session(
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
     // 1. Parse required fields
-    let route_pattern = args.get("route_pattern").and_then(|v| v.as_str()).ok_or_else(|| {
-        McpError::InvalidParams("Missing required parameter: route_pattern".to_string())
+    let route_pattern = args.get("routePattern").and_then(|v| v.as_str()).ok_or_else(|| {
+        McpError::InvalidParams("Missing required parameter: routePattern".to_string())
     })?;
 
     let target_sample_count =
-        args.get("target_sample_count").and_then(|v| v.as_i64()).ok_or_else(|| {
-            McpError::InvalidParams("Missing required parameter: target_sample_count".to_string())
+        args.get("targetSampleCount").and_then(|v| v.as_i64()).ok_or_else(|| {
+            McpError::InvalidParams("Missing required parameter: targetSampleCount".to_string())
         })?;
 
     // 2. Parse optional fields
-    let cluster_name = args.get("cluster_name").and_then(|v| v.as_str()).map(String::from);
-    let http_methods = args.get("http_methods").and_then(|v| {
+    let cluster_name = args.get("clusterName").and_then(|v| v.as_str()).map(String::from);
+    let http_methods = args.get("httpMethods").and_then(|v| {
         v.as_array().map(|arr| {
             arr.iter().filter_map(|item| item.as_str().map(String::from)).collect::<Vec<_>>()
         })
     });
-    let auto_start = args.get("auto_start").and_then(|v| v.as_bool());
+    let auto_start = args.get("autoStart").and_then(|v| v.as_bool());
 
     tracing::debug!(
         team = %team,
@@ -418,13 +402,10 @@ pub async fn execute_create_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let req = CreateLearningSessionInternalRequest {
-        team: if team.is_empty() { None } else { Some(team.to_string()) },
+        team: auth.team.clone(),
         route_pattern: route_pattern.to_string(),
         cluster_name,
         http_methods,
@@ -457,7 +438,7 @@ pub async fn execute_create_learning_session(
         "Successfully created learning session via MCP"
     );
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 /// Execute delete learning session operation using the internal API layer.
@@ -481,10 +462,7 @@ pub async fn execute_delete_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     ops.delete(id, &auth).await?;
 
@@ -495,7 +473,7 @@ pub async fn execute_delete_learning_session(
 
     tracing::info!(team = %team, session_id = %id, "Successfully deleted learning session via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -534,7 +512,7 @@ AFTER ACTIVATION:
 - Send traffic through the gateway matching the session's route_pattern
 - Monitor current_sample_count with cp_get_learning_session
 
-Authorization: Requires cp:write scope.
+Authorization: Requires learning-sessions:execute scope.
 "#,
         json!({
             "type": "object",
@@ -567,10 +545,7 @@ pub async fn execute_activate_learning_session(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // Verify the session exists and belongs to this team
     let session = ops.get(id, &auth).await?;
@@ -603,7 +578,7 @@ pub async fn execute_activate_learning_session(
 
     tracing::info!(team = %team, session_id = %id, "Learning session activated via MCP");
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 // =============================================================================
@@ -673,10 +648,7 @@ pub async fn execute_ops_learning_session_health(
         .team_repository
         .as_ref()
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
-    let auth = InternalAuthContext::from_mcp(team, org_id.cloned(), None)
-        .resolve_teams(team_repo)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to resolve teams: {}", e)))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     let session = ops.get(id, &auth).await?;
 
@@ -850,7 +822,7 @@ pub async fn execute_ops_learning_session_health(
 
     let text = serde_json::to_string_pretty(&result).map_err(McpError::SerializationError)?;
 
-    Ok(ToolCallResult { content: vec![ContentBlock::Text { text }], is_error: None })
+    Ok(ToolCallResult::text(text))
 }
 
 #[cfg(test)]
@@ -885,8 +857,8 @@ mod tests {
 
         // Check required fields
         let required = tool.input_schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("route_pattern")));
-        assert!(required.contains(&json!("target_sample_count")));
+        assert!(required.contains(&json!("routePattern")));
+        assert!(required.contains(&json!("targetSampleCount")));
     }
 
     #[test]

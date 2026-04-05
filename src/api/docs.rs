@@ -3,14 +3,10 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 #[allow(unused_imports)]
-use crate::api::handlers::auth::{CreateTokenBody, UpdateTokenBody};
-#[allow(unused_imports)]
 use crate::api::handlers::{
     CircuitBreakerThresholdsRequest, CircuitBreakersRequest, ClusterResponse, CreateClusterBody,
     EndpointRequest, HealthCheckRequest, OutlierDetectionRequest,
 };
-#[allow(unused_imports)]
-use crate::auth::{models::PersonalAccessToken, token_service::TokenSecretResponse};
 #[allow(unused_imports)]
 use crate::xds::filters::http::{
     cors::CorsPolicyConfig, custom_response::CustomResponseConfig,
@@ -30,18 +26,6 @@ use crate::xds::{
         // Bootstrap endpoints
         crate::api::handlers::bootstrap::bootstrap_initialize_handler,
         crate::api::handlers::bootstrap::bootstrap_status_handler,
-        // Auth endpoints
-        crate::api::handlers::auth::create_token_handler,
-        crate::api::handlers::auth::list_tokens_handler,
-        crate::api::handlers::auth::get_token_handler,
-        crate::api::handlers::auth::update_token_handler,
-        crate::api::handlers::auth::revoke_token_handler,
-        crate::api::handlers::auth::rotate_token_handler,
-        crate::api::handlers::auth::create_session_handler,
-        crate::api::handlers::auth::get_session_info_handler,
-        crate::api::handlers::auth::logout_handler,
-        crate::api::handlers::auth::login_handler,
-        crate::api::handlers::auth::change_password_handler,
         // Cluster endpoints
         crate::api::handlers::clusters::create_cluster_handler,
         crate::api::handlers::clusters::list_clusters_handler,
@@ -74,16 +58,6 @@ use crate::xds::{
         crate::api::handlers::teams::get_mtls_status_handler,
         // Admin resource summary
         crate::api::handlers::admin_summary::admin_resource_summary_handler,
-        // User management endpoints
-        crate::api::handlers::users::create_user,
-        crate::api::handlers::users::list_users,
-        crate::api::handlers::users::get_user,
-        crate::api::handlers::users::update_user,
-        crate::api::handlers::users::delete_user,
-        crate::api::handlers::users::list_user_teams,
-        crate::api::handlers::users::add_team_membership,
-        crate::api::handlers::users::remove_team_membership,
-        crate::api::handlers::users::update_team_membership_scopes,
         // Scope endpoints
         crate::api::handlers::scopes::list_scopes_handler,
         crate::api::handlers::scopes::list_all_scopes_handler,
@@ -165,17 +139,6 @@ use crate::xds::{
             CircuitBreakerThresholdsSpec,
             HealthCheckSpec,
             OutlierDetectionSpec,
-            // Auth/Token schemas
-            CreateTokenBody,
-            UpdateTokenBody,
-            PersonalAccessToken,
-            TokenSecretResponse,
-            crate::api::handlers::auth::CreateSessionBody,
-            crate::api::handlers::auth::CreateSessionResponseBody,
-            crate::api::handlers::auth::SessionInfoResponse,
-            crate::api::handlers::auth::LoginBody,
-            crate::api::handlers::auth::LoginResponseBody,
-            crate::api::handlers::auth::ChangePasswordBody,
             // Admin resource summary schemas
             crate::api::handlers::admin_summary::AdminResourceSummary,
             crate::api::handlers::admin_summary::SummaryTotals,
@@ -206,13 +169,6 @@ use crate::xds::{
             crate::auth::team::Team,
             crate::auth::team::CreateTeamRequest,
             crate::auth::team::UpdateTeamRequest,
-            // User management schemas
-            crate::auth::user::CreateUserRequest,
-            crate::auth::user::UpdateUserRequest,
-            crate::auth::user::UserResponse,
-            crate::auth::user::UserWithTeamsResponse,
-            crate::auth::user::CreateTeamMembershipRequest,
-            crate::auth::user::UserTeamMembership,
             // Scope schemas
             crate::api::handlers::scopes::ListScopesResponse,
             crate::storage::repositories::ScopeDefinition,
@@ -298,10 +254,8 @@ use crate::xds::{
         (name = "Secrets", description = "Manage TLS certificates, OAuth tokens, API keys, and proxy certificates"),
         // API Discovery & Learning
         (name = "API Discovery", description = "Import OpenAPI specs, observe traffic, and learn API schemas"),
-        // Authentication & Authorization
-        (name = "Authentication", description = "Sessions, login, tokens, and password management"),
         // Administration
-        (name = "Administration", description = "Users, teams, scopes, and audit logs"),
+        (name = "Administration", description = "Teams, scopes, and audit logs"),
         // System
         (name = "System", description = "Health checks, bootstrap, mTLS status, statistics, and reporting")
     ),
@@ -355,11 +309,10 @@ mod tests {
         assert!(!required.contains(&"serviceName".to_string()));
 
         // Ensure clusters endpoint is documented.
-        assert!(openapi.paths.paths.contains_key("/api/v1/clusters"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/clusters/{name}"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/route-configs"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/route-configs/{name}"));
-        assert!(openapi.paths.paths.contains_key("/api/v1/tokens"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/teams/{team}/clusters"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/teams/{team}/clusters/{name}"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/teams/{team}/route-configs"));
+        assert!(openapi.paths.paths.contains_key("/api/v1/teams/{team}/route-configs/{name}"));
     }
 
     #[test]
@@ -377,55 +330,34 @@ mod tests {
             "Missing GET /api/v1/bootstrap/status"
         );
 
-        // Auth/Session endpoints (5)
-        assert!(paths.contains_key("/api/v1/auth/sessions"), "Missing POST /api/v1/auth/sessions");
-        assert!(
-            paths.contains_key("/api/v1/auth/sessions/me"),
-            "Missing GET /api/v1/auth/sessions/me"
-        );
-        assert!(
-            paths.contains_key("/api/v1/auth/sessions/logout"),
-            "Missing POST /api/v1/auth/sessions/logout"
-        );
-        assert!(paths.contains_key("/api/v1/auth/login"), "Missing POST /api/v1/auth/login");
-        assert!(
-            paths.contains_key("/api/v1/auth/change-password"),
-            "Missing POST /api/v1/auth/change-password"
-        );
-
-        // Token endpoints (6)
-        assert!(paths.contains_key("/api/v1/tokens"), "Missing GET/POST /api/v1/tokens");
-        assert!(
-            paths.contains_key("/api/v1/tokens/{id}"),
-            "Missing GET/PATCH/DELETE /api/v1/tokens/{{id}}"
-        );
-        assert!(
-            paths.contains_key("/api/v1/tokens/{id}/rotate"),
-            "Missing POST /api/v1/tokens/{{id}}/rotate"
-        );
-
         // Cluster endpoints (5)
-        assert!(paths.contains_key("/api/v1/clusters"), "Missing GET/POST /api/v1/clusters");
         assert!(
-            paths.contains_key("/api/v1/clusters/{name}"),
-            "Missing GET/PUT/DELETE /api/v1/clusters/{{name}}"
+            paths.contains_key("/api/v1/teams/{team}/clusters"),
+            "Missing GET/POST /api/v1/teams/{{team}}/clusters"
+        );
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/clusters/{name}"),
+            "Missing GET/PUT/DELETE /api/v1/teams/{{team}}/clusters/{{name}}"
         );
 
         // Route config endpoints (5)
         assert!(
-            paths.contains_key("/api/v1/route-configs"),
-            "Missing GET/POST /api/v1/route-configs"
+            paths.contains_key("/api/v1/teams/{team}/route-configs"),
+            "Missing GET/POST /api/v1/teams/{{team}}/route-configs"
         );
         assert!(
-            paths.contains_key("/api/v1/route-configs/{name}"),
-            "Missing GET/PUT/DELETE /api/v1/route-configs/{{name}}"
+            paths.contains_key("/api/v1/teams/{team}/route-configs/{name}"),
+            "Missing GET/PUT/DELETE /api/v1/teams/{{team}}/route-configs/{{name}}"
         );
 
         // Listener endpoints (5)
-        assert!(paths.contains_key("/api/v1/listeners"), "Missing GET/POST /api/v1/listeners");
         assert!(
-            paths.contains_key("/api/v1/listeners/{name}"),
-            "Missing GET/PUT/DELETE /api/v1/listeners/{{name}}"
+            paths.contains_key("/api/v1/teams/{team}/listeners"),
+            "Missing GET/POST /api/v1/teams/{{team}}/listeners"
+        );
+        assert!(
+            paths.contains_key("/api/v1/teams/{team}/listeners/{name}"),
+            "Missing GET/PUT/DELETE /api/v1/teams/{{team}}/listeners/{{name}}"
         );
 
         // Team endpoints (6)
@@ -436,33 +368,18 @@ mod tests {
             "Missing GET/PUT/DELETE /api/v1/admin/teams/{{id}}"
         );
 
-        // User management endpoints (8)
-        assert!(paths.contains_key("/api/v1/users"), "Missing GET/POST /api/v1/users");
-        assert!(
-            paths.contains_key("/api/v1/users/{id}"),
-            "Missing GET/PUT/DELETE /api/v1/users/{{id}}"
-        );
-        assert!(
-            paths.contains_key("/api/v1/users/{id}/teams"),
-            "Missing GET/POST /api/v1/users/{{id}}/teams"
-        );
-        assert!(
-            paths.contains_key("/api/v1/users/{id}/teams/{team}"),
-            "Missing DELETE /api/v1/users/{{id}}/teams/{{team}}"
-        );
-
         // Scope endpoints (2)
         assert!(paths.contains_key("/api/v1/scopes"), "Missing GET /api/v1/scopes");
         assert!(paths.contains_key("/api/v1/admin/scopes"), "Missing GET /api/v1/admin/scopes");
 
-        // OpenAPI import endpoints (4)
+        // OpenAPI import endpoints (4, team-scoped import and list)
         assert!(
-            paths.contains_key("/api/v1/openapi/import"),
-            "Missing POST /api/v1/openapi/import"
+            paths.contains_key("/api/v1/teams/{team}/openapi/import"),
+            "Missing POST /api/v1/teams/{{team}}/openapi/import"
         );
         assert!(
-            paths.contains_key("/api/v1/openapi/imports"),
-            "Missing GET /api/v1/openapi/imports"
+            paths.contains_key("/api/v1/teams/{team}/openapi/imports"),
+            "Missing GET /api/v1/teams/{{team}}/openapi/imports"
         );
         assert!(
             paths.contains_key("/api/v1/openapi/imports/{id}"),
@@ -472,32 +389,32 @@ mod tests {
         // Audit log endpoints (1)
         assert!(paths.contains_key("/api/v1/audit-logs"), "Missing GET /api/v1/audit-logs");
 
-        // Learning session endpoints (4)
+        // Learning session endpoints (4, team-scoped)
         assert!(
-            paths.contains_key("/api/v1/learning-sessions"),
-            "Missing GET/POST /api/v1/learning-sessions"
+            paths.contains_key("/api/v1/teams/{team}/learning-sessions"),
+            "Missing GET/POST /api/v1/teams/{{team}}/learning-sessions"
         );
         assert!(
-            paths.contains_key("/api/v1/learning-sessions/{id}"),
-            "Missing GET/DELETE /api/v1/learning-sessions/{{id}}"
+            paths.contains_key("/api/v1/teams/{team}/learning-sessions/{id}"),
+            "Missing GET/DELETE /api/v1/teams/{{team}}/learning-sessions/{{id}}"
         );
 
         // Aggregated schema endpoints (4)
         assert!(
-            paths.contains_key("/api/v1/aggregated-schemas"),
-            "Missing GET /api/v1/aggregated-schemas"
+            paths.contains_key("/api/v1/teams/{team}/aggregated-schemas"),
+            "Missing GET /api/v1/teams/{{team}}/aggregated-schemas"
         );
         assert!(
-            paths.contains_key("/api/v1/aggregated-schemas/{id}"),
-            "Missing GET /api/v1/aggregated-schemas/{{id}}"
+            paths.contains_key("/api/v1/teams/{team}/aggregated-schemas/{id}"),
+            "Missing GET /api/v1/teams/{{team}}/aggregated-schemas/{{id}}"
         );
         assert!(
-            paths.contains_key("/api/v1/aggregated-schemas/{id}/compare"),
-            "Missing GET /api/v1/aggregated-schemas/{{id}}/compare"
+            paths.contains_key("/api/v1/teams/{team}/aggregated-schemas/{id}/compare"),
+            "Missing GET /api/v1/teams/{{team}}/aggregated-schemas/{{id}}/compare"
         );
         assert!(
-            paths.contains_key("/api/v1/aggregated-schemas/{id}/export"),
-            "Missing GET /api/v1/aggregated-schemas/{{id}}/export"
+            paths.contains_key("/api/v1/teams/{team}/aggregated-schemas/{id}/export"),
+            "Missing GET /api/v1/teams/{{team}}/aggregated-schemas/{{id}}/export"
         );
 
         // Reporting endpoints (1)
@@ -572,23 +489,6 @@ mod tests {
             "Missing OutlierDetectionSpec schema"
         );
 
-        // Token schemas
-        assert!(schemas.contains_key("CreateTokenBody"), "Missing CreateTokenBody schema");
-        assert!(schemas.contains_key("UpdateTokenBody"), "Missing UpdateTokenBody schema");
-        assert!(schemas.contains_key("PersonalAccessToken"), "Missing PersonalAccessToken schema");
-        assert!(schemas.contains_key("TokenSecretResponse"), "Missing TokenSecretResponse schema");
-
-        // Session schemas
-        assert!(schemas.contains_key("CreateSessionBody"), "Missing CreateSessionBody schema");
-        assert!(
-            schemas.contains_key("CreateSessionResponseBody"),
-            "Missing CreateSessionResponseBody schema"
-        );
-        assert!(schemas.contains_key("SessionInfoResponse"), "Missing SessionInfoResponse schema");
-        assert!(schemas.contains_key("LoginBody"), "Missing LoginBody schema");
-        assert!(schemas.contains_key("LoginResponseBody"), "Missing LoginResponseBody schema");
-        assert!(schemas.contains_key("ChangePasswordBody"), "Missing ChangePasswordBody schema");
-
         // Route config schemas
         assert!(
             schemas.contains_key("RouteConfigDefinition"),
@@ -624,20 +524,6 @@ mod tests {
         assert!(schemas.contains_key("Team"), "Missing Team schema");
         assert!(schemas.contains_key("CreateTeamRequest"), "Missing CreateTeamRequest schema");
         assert!(schemas.contains_key("UpdateTeamRequest"), "Missing UpdateTeamRequest schema");
-
-        // User management schemas
-        assert!(schemas.contains_key("CreateUserRequest"), "Missing CreateUserRequest schema");
-        assert!(schemas.contains_key("UpdateUserRequest"), "Missing UpdateUserRequest schema");
-        assert!(schemas.contains_key("UserResponse"), "Missing UserResponse schema");
-        assert!(
-            schemas.contains_key("UserWithTeamsResponse"),
-            "Missing UserWithTeamsResponse schema"
-        );
-        assert!(
-            schemas.contains_key("CreateTeamMembershipRequest"),
-            "Missing CreateTeamMembershipRequest schema"
-        );
-        assert!(schemas.contains_key("UserTeamMembership"), "Missing UserTeamMembership schema");
 
         // Scope schemas
         assert!(schemas.contains_key("ListScopesResponse"), "Missing ListScopesResponse schema");
@@ -738,8 +624,6 @@ mod tests {
         assert!(tag_names.contains(&"Secrets"), "Missing 'Secrets' tag");
         // API Discovery & Learning
         assert!(tag_names.contains(&"API Discovery"), "Missing 'API Discovery' tag");
-        // Authentication & Authorization
-        assert!(tag_names.contains(&"Authentication"), "Missing 'Authentication' tag");
         // Administration
         assert!(tag_names.contains(&"Administration"), "Missing 'Administration' tag");
         // System
@@ -787,10 +671,6 @@ mod tests {
         assert!(
             schemas.contains_key("UpdateCustomWasmFilterRequest"),
             "Missing UpdateCustomWasmFilterRequest schema"
-        );
-        assert!(
-            schemas.contains_key("CustomWasmFilterResponse"),
-            "Missing CustomWasmFilterResponse schema"
         );
         assert!(
             schemas.contains_key("CustomWasmFilterResponse"),

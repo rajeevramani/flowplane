@@ -201,6 +201,7 @@ pub struct CircuitBreakerThresholdsSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HealthCheckSpec {
+    #[serde(rename_all = "camelCase")]
     Http {
         path: String,
         #[serde(default)]
@@ -209,33 +210,34 @@ pub enum HealthCheckSpec {
         #[serde(default)]
         #[serde(skip_serializing_if = "Option::is_none")]
         method: Option<String>,
-        #[serde(default)]
+        #[serde(default, alias = "interval_seconds")]
         #[serde(skip_serializing_if = "Option::is_none")]
         interval_seconds: Option<u64>,
-        #[serde(default)]
+        #[serde(default, alias = "timeout_seconds")]
         #[serde(skip_serializing_if = "Option::is_none")]
         timeout_seconds: Option<u64>,
-        #[serde(default)]
+        #[serde(default, alias = "healthy_threshold")]
         #[serde(skip_serializing_if = "Option::is_none")]
         healthy_threshold: Option<u32>,
-        #[serde(default)]
+        #[serde(default, alias = "unhealthy_threshold")]
         #[serde(skip_serializing_if = "Option::is_none")]
         unhealthy_threshold: Option<u32>,
-        #[serde(default)]
+        #[serde(default, alias = "expected_statuses")]
         #[serde(skip_serializing_if = "Option::is_none")]
         expected_statuses: Option<Vec<u32>>,
     },
+    #[serde(rename_all = "camelCase")]
     Tcp {
-        #[serde(default)]
+        #[serde(default, alias = "interval_seconds")]
         #[serde(skip_serializing_if = "Option::is_none")]
         interval_seconds: Option<u64>,
-        #[serde(default)]
+        #[serde(default, alias = "timeout_seconds")]
         #[serde(skip_serializing_if = "Option::is_none")]
         timeout_seconds: Option<u64>,
-        #[serde(default)]
+        #[serde(default, alias = "healthy_threshold")]
         #[serde(skip_serializing_if = "Option::is_none")]
         healthy_threshold: Option<u32>,
-        #[serde(default)]
+        #[serde(default, alias = "unhealthy_threshold")]
         #[serde(skip_serializing_if = "Option::is_none")]
         unhealthy_threshold: Option<u32>,
     },

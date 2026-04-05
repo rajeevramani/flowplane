@@ -56,9 +56,6 @@ use crate::{
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "snake_case")]
 pub struct ImportOpenApiQuery {
-    /// Team name for multi-tenancy isolation
-    #[param(required = true, example = "payments")]
-    pub team: String,
     /// Listener mode: "existing" to use an existing listener, "new" to create a new one
     #[param(required = true, example = "existing")]
     pub listener_mode: String,
@@ -162,8 +159,11 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
 /// Import OpenAPI spec and materialize routes directly to routes table
 #[utoipa::path(
     post,
-    path = "/api/v1/openapi/import",
-    params(ImportOpenApiQuery),
+    path = "/api/v1/teams/{team}/openapi/import",
+    params(
+        ("team" = String, Path, description = "Team name", example = "payments"),
+        ImportOpenApiQuery
+    ),
     request_body(
         description = "OpenAPI 3.0 document in JSON or YAML format",
         content(
@@ -179,23 +179,17 @@ pub struct OpenApiSpecBody(pub Vec<u8>);
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state, request), fields(team = %params.team, listener_mode = %params.listener_mode, user_id = ?context.user_id))]
+#[instrument(skip(state, request), fields(team = %team, listener_mode = %params.listener_mode, user_id = ?context.user_id))]
 pub async fn import_openapi_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
+    Path(team): Path<String>,
     Query(params): Query<ImportOpenApiQuery>,
     request: Request<Body>,
 ) -> std::result::Result<(StatusCode, Json<ImportResponse>), ApiError> {
-    // Authorization: require openapi-import:write scope for the target team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "openapi-import",
-        "write",
-        Some(&params.team),
-        context.org_id.as_ref(),
-    )
-    .await?;
+    // Authorization: require openapi-import:create scope for the target team
+    require_resource_access_resolved(&state, &context, "openapi-import", "create", Some(&team))
+        .await?;
 
     // Read request body
     let (parts, body) = request.into_parts();
@@ -255,7 +249,7 @@ pub async fn import_openapi_handler(
         protocol: "HTTP".to_string(),
         listener_mode,
         dataplane_id: params.dataplane_id.clone(),
-        team: Some(params.team.clone()),
+        team: Some(team.clone()),
     };
 
     let plan = build_gateway_plan(document, gateway_options)
@@ -272,13 +266,27 @@ pub async fn import_openapi_handler(
     // Resolve team name to UUID for FK-safe insert
     let team_id = crate::api::handlers::team_access::resolve_team_name(
         &state,
-        &params.team,
+        &team,
         context.org_id.as_ref(),
     )
     .await?;
 
-    // Create import metadata record
+    // Create import metadata record (idempotent: delete old import if same team+spec exists)
     let import_repo = ImportMetadataRepository::new(db_pool.clone());
+
+    // Check for existing import with same team + spec_name
+    if let Some(existing_import) =
+        import_repo.get_by_team_and_spec(&team_id, &spec_name).await.map_err(ApiError::from)?
+    {
+        tracing::info!(
+            existing_import_id = %existing_import.id,
+            spec_name = %spec_name,
+            team = %team_id,
+            "Replacing existing import with same team and spec name"
+        );
+        delete_import_cascade(&state.xds_state, &db_pool, &existing_import.id).await?;
+    }
+
     let import_metadata = import_repo
         .create(CreateImportMetadataRequest {
             spec_name: spec_name.clone(),
@@ -359,9 +367,9 @@ pub async fn import_openapi_handler(
 /// List all imports for a team
 #[utoipa::path(
     get,
-    path = "/api/v1/openapi/imports",
+    path = "/api/v1/teams/{team}/openapi/imports",
     params(
-        ("team" = String, Query, description = "Team name to filter imports", example = "payments")
+        ("team" = String, Path, description = "Team name", example = "payments")
     ),
     responses(
         (status = 200, description = "Successfully retrieved imports", body = ListImportsResponse),
@@ -369,13 +377,15 @@ pub async fn import_openapi_handler(
     ),
     tag = "API Discovery"
 )]
-#[instrument(skip(state, query), fields(user_id = ?context.user_id))]
+#[instrument(skip(state), fields(user_id = ?context.user_id, team = %team))]
 pub async fn list_imports_handler(
     State(state): State<ApiState>,
     Extension(context): Extension<AuthContext>,
-    Query(query): Query<serde_json::Value>,
+    Path(team): Path<String>,
 ) -> std::result::Result<Json<ListImportsResponse>, ApiError> {
-    let team = query.get("team").and_then(|v| v.as_str());
+    // Authorization: require openapi-import:read scope for the target team
+    require_resource_access_resolved(&state, &context, "openapi-import", "read", Some(&team))
+        .await?;
 
     let cluster_repo = state
         .xds_state
@@ -385,37 +395,7 @@ pub async fn list_imports_handler(
     let db_pool = cluster_repo.pool().clone();
     let import_repo = ImportMetadataRepository::new(db_pool);
 
-    // Admin users can list all imports when no team is specified
-    if has_admin_bypass(&context) {
-        let imports = if let Some(team) = team {
-            // Admin requesting specific team's imports
-            import_repo.list_by_team(team).await.map_err(ApiError::from)?
-        } else {
-            // Admin requesting all imports across all teams
-            import_repo.list_all().await.map_err(ApiError::from)?
-        };
-
-        return Ok(Json(ListImportsResponse {
-            imports: imports.into_iter().map(ImportSummary::from).collect(),
-        }));
-    }
-
-    // Non-admin users must specify a team
-    let team =
-        team.ok_or_else(|| ApiError::BadRequest("team parameter is required".to_string()))?;
-
-    // Authorization: require openapi-import:read scope for the target team
-    require_resource_access_resolved(
-        &state,
-        &context,
-        "openapi-import",
-        "read",
-        Some(team),
-        context.org_id.as_ref(),
-    )
-    .await?;
-
-    let imports = import_repo.list_by_team(team).await.map_err(ApiError::from)?;
+    let imports = import_repo.list_by_team(&team).await.map_err(ApiError::from)?;
 
     Ok(Json(ListImportsResponse {
         imports: imports.into_iter().map(ImportSummary::from).collect(),
@@ -463,7 +443,6 @@ pub async fn get_import_handler(
         "openapi-import",
         "read",
         Some(&import_data.team),
-        context.org_id.as_ref(),
     )
     .await?;
 
@@ -550,7 +529,6 @@ pub async fn delete_import_handler(
         "openapi-import",
         "delete",
         Some(&import_data.team),
-        context.org_id.as_ref(),
     )
     .await?;
 
@@ -872,6 +850,33 @@ async fn materialize_listener(
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Listener repository not configured".to_string()))?;
 
+    // Check for address:port collision before attempting to create.
+    // The partial unique index UNIQUE(address, port) WHERE port IS NOT NULL
+    // would cause a 500 if we let the DB reject it.
+    if let Some(port) = listener_request.port {
+        if let Some(existing) = listener_repo
+            .find_by_address_port(&listener_request.address, port)
+            .await
+            .map_err(ApiError::from)?
+        {
+            return Err(ApiError::Conflict(format!(
+                "A listener already exists at {}:{} (name: '{}'). \
+                 Use a different port with new_listener_port, or use \
+                 listener_mode=existing with existing_listener_name={}",
+                listener_request.address, port, existing.name, existing.name,
+            )));
+        }
+    }
+
+    // Check for name collision
+    if listener_repo.exists_by_name(&listener_request.name).await.map_err(ApiError::from)? {
+        return Err(ApiError::Conflict(format!(
+            "A listener named '{}' already exists. Use a different name with new_listener_name, \
+             or use listener_mode=existing to add routes to the existing listener",
+            listener_request.name,
+        )));
+    }
+
     // Add import metadata
     listener_request.team = Some(team.to_string());
     listener_request.import_id = Some(import_id.to_string());
@@ -1021,6 +1026,22 @@ async fn delete_import_cascade(
 
     // Delete import metadata (CASCADE deletes routes/listeners via FK)
     import_repo.delete(import_id).await.map_err(ApiError::from)?;
+
+    Ok(())
+}
+
+/// Public wrapper around `delete_import_cascade` for use by other handlers (e.g., unexpose).
+pub async fn delete_import_resources(
+    xds_state: &XdsState,
+    db_pool: &crate::storage::DbPool,
+    import_id: &str,
+) -> std::result::Result<(), ApiError> {
+    delete_import_cascade(xds_state, db_pool, import_id).await?;
+
+    // Trigger xDS refresh for all resource types
+    xds_state.refresh_clusters_from_repository().await.map_err(ApiError::from)?;
+    xds_state.refresh_listeners_from_repository().await.map_err(ApiError::from)?;
+    xds_state.refresh_routes_from_repository().await.map_err(ApiError::from)?;
 
     Ok(())
 }

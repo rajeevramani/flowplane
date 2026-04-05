@@ -43,14 +43,17 @@
 		isLoading = true;
 		error = null;
 
+		if (!currentTeam) {
+			isLoading = false;
+			return;
+		}
+
 		try {
-			const query: { team?: string; path?: string; httpMethod?: string } = {};
-			// Pass the selected team to filter schemas
-			if (currentTeam) query.team = currentTeam;
+			const query: { path?: string; httpMethod?: string } = {};
 			if (searchQuery) query.path = searchQuery;
 			if (methodFilter) query.httpMethod = methodFilter;
 
-			schemas = await apiClient.listAggregatedSchemas(query);
+			schemas = await apiClient.listAggregatedSchemas(currentTeam, query);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load schemas';
 			console.error('Failed to load schemas:', e);
@@ -94,7 +97,7 @@
 		}
 
 		try {
-			const openapi = await apiClient.exportSchemaAsOpenApi(schema.id, false);
+			const openapi = await apiClient.exportSchemaAsOpenApi(schema.team, schema.id, false);
 			const blob = new Blob([JSON.stringify(openapi, null, 2)], { type: 'application/json' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');

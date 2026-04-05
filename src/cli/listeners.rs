@@ -121,30 +121,41 @@ pub struct ListenerResponse {
 pub async fn handle_listener_command(
     command: ListenerCommands,
     client: &FlowplaneClient,
+    team: &str,
 ) -> Result<()> {
     match command {
-        ListenerCommands::Create { file, output } => create_listener(client, file, &output).await?,
+        ListenerCommands::Create { file, output } => {
+            create_listener(client, team, file, &output).await?
+        }
         ListenerCommands::List { protocol, limit, offset, output } => {
-            list_listeners(client, protocol, limit, offset, &output).await?
+            list_listeners(client, team, protocol, limit, offset, &output).await?
         }
-        ListenerCommands::Get { name, output } => get_listener(client, &name, &output).await?,
+        ListenerCommands::Get { name, output } => {
+            get_listener(client, team, &name, &output).await?
+        }
         ListenerCommands::Update { name, file, output } => {
-            update_listener(client, &name, file, &output).await?
+            update_listener(client, team, &name, file, &output).await?
         }
-        ListenerCommands::Delete { name, yes } => delete_listener(client, &name, yes).await?,
+        ListenerCommands::Delete { name, yes } => delete_listener(client, team, &name, yes).await?,
     }
 
     Ok(())
 }
 
-async fn create_listener(client: &FlowplaneClient, file: PathBuf, output: &str) -> Result<()> {
+async fn create_listener(
+    client: &FlowplaneClient,
+    team: &str,
+    file: PathBuf,
+    output: &str,
+) -> Result<()> {
     let contents = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     let body: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
-    let response: ListenerResponse = client.post_json("/api/v1/listeners", &body).await?;
+    let path = format!("/api/v1/teams/{team}/listeners");
+    let response: ListenerResponse = client.post_json(&path, &body).await?;
 
     print_output(&response, output)?;
     Ok(())
@@ -152,12 +163,13 @@ async fn create_listener(client: &FlowplaneClient, file: PathBuf, output: &str) 
 
 async fn list_listeners(
     client: &FlowplaneClient,
+    team: &str,
     protocol: Option<String>,
     limit: Option<i32>,
     offset: Option<i32>,
     output: &str,
 ) -> Result<()> {
-    let mut path = String::from("/api/v1/listeners?");
+    let mut path = format!("/api/v1/teams/{team}/listeners?");
     let mut params = Vec::new();
 
     if let Some(p) = protocol {
@@ -183,8 +195,13 @@ async fn list_listeners(
     Ok(())
 }
 
-async fn get_listener(client: &FlowplaneClient, name: &str, output: &str) -> Result<()> {
-    let path = format!("/api/v1/listeners/{}", name);
+async fn get_listener(
+    client: &FlowplaneClient,
+    team: &str,
+    name: &str,
+    output: &str,
+) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/listeners/{name}");
     let response: ListenerResponse = client.get_json(&path).await?;
 
     if output == "table" {
@@ -198,6 +215,7 @@ async fn get_listener(client: &FlowplaneClient, name: &str, output: &str) -> Res
 
 async fn update_listener(
     client: &FlowplaneClient,
+    team: &str,
     name: &str,
     file: PathBuf,
     output: &str,
@@ -208,14 +226,19 @@ async fn update_listener(
     let body: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
 
-    let path = format!("/api/v1/listeners/{}", name);
+    let path = format!("/api/v1/teams/{team}/listeners/{name}");
     let response: ListenerResponse = client.put_json(&path, &body).await?;
 
     print_output(&response, output)?;
     Ok(())
 }
 
-async fn delete_listener(client: &FlowplaneClient, name: &str, yes: bool) -> Result<()> {
+async fn delete_listener(
+    client: &FlowplaneClient,
+    team: &str,
+    name: &str,
+    yes: bool,
+) -> Result<()> {
     if !yes {
         println!("Are you sure you want to delete listener '{}'? (y/N)", name);
         let mut input = String::new();
@@ -226,7 +249,7 @@ async fn delete_listener(client: &FlowplaneClient, name: &str, yes: bool) -> Res
         }
     }
 
-    let path = format!("/api/v1/listeners/{}", name);
+    let path = format!("/api/v1/teams/{team}/listeners/{name}");
     client.delete_no_content(&path).await?;
 
     println!("Listener '{}' deleted successfully", name);

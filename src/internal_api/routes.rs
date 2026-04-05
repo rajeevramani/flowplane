@@ -579,14 +579,12 @@ fn transform_action(action: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::{TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID};
+    use crate::storage::test_helpers::{
+        create_test_xds_state, TestDatabase, TEAM_A_ID, TEAM_B_ID, TEST_TEAM_ID,
+    };
 
     async fn setup_state() -> (TestDatabase, Arc<XdsState>) {
-        let test_db = TestDatabase::new("internal_api_routes").await;
-        let pool = test_db.pool.clone();
-        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-        (test_db, state)
+        create_test_xds_state("internal_api_routes").await
     }
 
     fn sample_config() -> Value {
@@ -869,6 +867,7 @@ impl RouteOperations {
                 path_pattern: r.path_pattern,
                 match_type: r.match_type,
                 rule_order: r.rule_order,
+                exposure: r.exposure,
                 created_at: r.route_created_at,
                 updated_at: r.route_updated_at,
             })
@@ -1098,6 +1097,7 @@ impl RouteOperations {
             path_pattern: req.path_pattern,
             match_type,
             rule_order: req.rule_order,
+            exposure: req.exposure,
         };
 
         let updated = route_repo.update(&existing.id, update_req).await.map_err(|e| {
@@ -1184,14 +1184,10 @@ impl RouteOperations {
 #[cfg(test)]
 mod route_operations_tests {
     use super::*;
-    use crate::config::SimpleXdsConfig;
-    use crate::storage::test_helpers::{TestDatabase, TEST_TEAM_ID};
+    use crate::storage::test_helpers::{create_test_xds_state, TestDatabase, TEST_TEAM_ID};
 
     async fn setup_state_with_migrations() -> (TestDatabase, Arc<XdsState>) {
-        let test_db = TestDatabase::new("internal_api_route_ops").await;
-        let pool = test_db.pool.clone();
-        let state = Arc::new(XdsState::with_database(SimpleXdsConfig::default(), pool));
-        (test_db, state)
+        create_test_xds_state("internal_api_route_ops").await
     }
 
     fn sample_route_action() -> Value {
@@ -1367,6 +1363,7 @@ mod route_operations_tests {
             match_type: Some("exact".to_string()),
             rule_order: Some(20),
             action: None,
+            exposure: None,
         };
 
         let result = ops.update("test-rc", "default", "update-test", update_req, &auth).await;

@@ -93,11 +93,20 @@ pub fn extract_trace_context(metadata: &tonic::metadata::MetadataMap) -> opentel
     propagator.extract(&MetadataExtractor(metadata))
 }
 
-/// Tracks the last sent version and nonce for ACK/NACK detection
+/// Tracks the last sent version, nonce, and resource names for ACK/NACK detection.
+///
+/// `resource_names` tracks the set of resource names the client last subscribed to.
+/// This is critical for detecting subscription changes: when Envoy receives a new
+/// listener that references a route config by name, it sends a new RDS request with
+/// updated `resource_names` but the same version/nonce. Without checking this field,
+/// the stream handler incorrectly treats subscription updates as ACKs.
 #[derive(Clone, Debug)]
 struct LastDiscoverySnapshot {
     version: Arc<str>,
     nonce: Arc<str>,
+    /// Resource names from the last DiscoveryRequest for this type.
+    /// Empty vec means "subscribe to all" (wildcard, used by LDS/CDS).
+    resource_names: Vec<String>,
 }
 
 /// Extract resource names from an Envoy NACK error message.
@@ -371,16 +380,28 @@ where
 
                                 let current_version = state.get_version();
 
-                                let is_ack = last_snapshot
+                                // Detect subscription changes: if the client's resource_names
+                                // differ from what we last saw, this is a subscription update
+                                // (e.g., Envoy received a new listener and now wants an
+                                // additional route config via RDS), NOT an ACK.
+                                let subscription_changed = last_snapshot
                                     .as_ref()
                                     .map(|snapshot| {
-                                        !discovery_request.response_nonce.is_empty()
-                                            && discovery_request.response_nonce.as_str() == snapshot.nonce.as_ref()
-                                            && discovery_request.version_info.as_str() == snapshot.version.as_ref()
-                                            && discovery_request.error_detail.is_none()
-                                            && snapshot.version.as_ref() == current_version
+                                        discovery_request.resource_names != snapshot.resource_names
                                     })
                                     .unwrap_or(false);
+
+                                let is_ack = !subscription_changed
+                                    && last_snapshot
+                                        .as_ref()
+                                        .map(|snapshot| {
+                                            !discovery_request.response_nonce.is_empty()
+                                                && discovery_request.response_nonce.as_str() == snapshot.nonce.as_ref()
+                                                && discovery_request.version_info.as_str() == snapshot.version.as_ref()
+                                                && discovery_request.error_detail.is_none()
+                                                && snapshot.version.as_ref() == current_version
+                                        })
+                                        .unwrap_or(false);
 
                                 if is_ack {
                                     debug!(
@@ -392,6 +413,17 @@ where
                                         "[ACK] Skipping duplicate discovery request"
                                     );
                                     return;
+                                }
+
+                                if subscription_changed {
+                                    info!(
+                                        type_url = %discovery_request.type_url,
+                                        new_resources = ?discovery_request.resource_names,
+                                        old_resources = ?last_snapshot.as_ref().map(|s| &s.resource_names),
+                                        node_id = ?node_id,
+                                        stream = %label_for_task,
+                                        "Subscription changed — responding with updated resources"
+                                    );
                                 }
 
                                 if let Some(error_detail) = discovery_request.error_detail.as_ref() {
@@ -471,6 +503,9 @@ where
                                     guard.insert(discovery_request.type_url.clone());
                                 }
 
+                                // Capture resource_names before moving the request into the responder
+                                let request_resource_names = discovery_request.resource_names.clone();
+
                                 match responder(state, discovery_request).await {
                                     Ok(response) => {
                                         info!(
@@ -490,7 +525,11 @@ where
                                             let mut tracker_guard = tracker.lock().await;
                                             tracker_guard.insert(
                                                 type_url,
-                                                LastDiscoverySnapshot { version, nonce },
+                                                LastDiscoverySnapshot {
+                                                    version,
+                                                    nonce,
+                                                    resource_names: request_resource_names,
+                                                },
                                             );
                                         }
 
@@ -575,7 +614,20 @@ where
                                             let type_url = response.type_url.clone();
                                             {
                                                 let mut guard = tracker_for_task.lock().await;
-                                                guard.insert(type_url, LastDiscoverySnapshot { version, nonce });
+                                                // Push updates use the existing resource_names from the
+                                                // last snapshot (subscription hasn't changed — only data has)
+                                                let existing_names = guard
+                                                    .get(&type_url)
+                                                    .map(|s| s.resource_names.clone())
+                                                    .unwrap_or_default();
+                                                guard.insert(
+                                                    type_url,
+                                                    LastDiscoverySnapshot {
+                                                        version,
+                                                        nonce,
+                                                        resource_names: existing_names,
+                                                    },
+                                                );
                                             }
 
                                             if tx_for_task.send(Ok(response)).await.is_err() {

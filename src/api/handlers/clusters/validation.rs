@@ -1,7 +1,8 @@
 //! Cluster validation and conversion utilities
 
 use crate::{
-    api::error::ApiError, services::ClusterService, storage::ClusterData, xds::ClusterSpec,
+    api::error::ApiError, services::ClusterService, storage::ClusterData,
+    validation::business_rules::validate_outlier_detection_config, xds::ClusterSpec,
 };
 
 use super::types::{CreateClusterBody, HealthCheckRequest};
@@ -15,9 +16,10 @@ pub(super) struct ClusterConfigParts {
 }
 
 /// Convert create cluster request body to cluster config parts
-pub(super) fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConfigParts {
+pub(super) fn cluster_parts_from_body(
+    payload: CreateClusterBody,
+) -> Result<ClusterConfigParts, ApiError> {
     let CreateClusterBody {
-        team: _,
         name,
         service_name,
         endpoints,
@@ -93,18 +95,30 @@ pub(super) fn cluster_parts_from_body(payload: CreateClusterBody) -> ClusterConf
                 max_retries: h.max_retries,
             }),
         }),
-        outlier_detection: outlier_detection.map(|od| crate::xds::OutlierDetectionSpec {
-            consecutive_5xx: od.consecutive_5xx,
-            interval_seconds: od.interval_seconds,
-            base_ejection_time_seconds: od.base_ejection_time_seconds,
-            max_ejection_percent: od.max_ejection_percent,
-            min_hosts: od.min_hosts,
-        }),
+        outlier_detection: outlier_detection
+            .map(|od| {
+                validate_outlier_detection_config(
+                    od.consecutive_5xx,
+                    od.interval_seconds,
+                    od.base_ejection_time_seconds,
+                    od.max_ejection_percent,
+                    od.min_hosts,
+                )
+                .map_err(ApiError::from)?;
+                Ok::<_, ApiError>(crate::xds::OutlierDetectionSpec {
+                    consecutive_5xx: od.consecutive_5xx,
+                    interval_seconds: od.interval_seconds,
+                    base_ejection_time_seconds: od.base_ejection_time_seconds,
+                    max_ejection_percent: od.max_ejection_percent,
+                    min_hosts: od.min_hosts,
+                })
+            })
+            .transpose()?,
         protocol_type,
         ..Default::default()
     };
 
-    ClusterConfigParts { name, service_name, config }
+    Ok(ClusterConfigParts { name, service_name, config })
 }
 
 /// Convert cluster database data to response DTO
