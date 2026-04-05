@@ -1,0 +1,14 @@
+# GitGuardian configuration
+# All flagged items are dev/test-only defaults, not production credentials.
+
+paths-ignore:
+  # Test fixtures with fake secrets (base64 "mock-secret", "new-secret", "test")
+  - "tests/**"
+  - "src/api/handlers/secrets/types.rs"
+  - "src/secrets/backends/registry.rs"
+
+  # Dev-only seed script (uses env var overrides, defaults are public)
+  - "scripts/seed-demo.sh"
+
+  # Docker compose dev defaults (overridable via env vars)
+  - "docker-compose*.yml"
