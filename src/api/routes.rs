@@ -655,7 +655,16 @@ pub fn build_router_with_registry(
                 .fallback_service(serve_dir),
         )
     } else {
-        api_router
+        // No UI build — still return JSON for unknown /api/ paths
+        api_router.fallback(|| async {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(serde_json::json!({
+                    "error": "not_found",
+                    "message": "API endpoint not found"
+                })),
+            )
+        })
     }
 }
 
