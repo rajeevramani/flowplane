@@ -128,16 +128,16 @@ jobs:
           sudo apt-get install -y envoy || true
       - name: Check Envoy availability
         run: which envoy && envoy --version || echo "Envoy not installed, tests will skip"
-      - name: Run E2E smoke tests
+      - name: Run E2E smoke tests (dev mode only — no Zitadel in PR CI)
         run: |
           set -e
           export RUN_E2E=1
           export RUST_LOG=info
+          export FLOWPLANE_E2E_AUTH_MODE=dev
           export DATABASE_URL=postgresql://flowplane:flowplane@localhost:5432/flowplane_e2e
           export BOOTSTRAP_TOKEN=test-bootstrap-token-min-32-chars-long-secure
-          # mTLS connection tests skip gracefully without FLOWPLANE_E2E_MTLS=1
-          # Certificate API tests (test_200-205) run using mock backend
-          cargo test -p flowplane --test e2e smoke -- --ignored --nocapture --test-threads=1
+          # Run only dev-mode smoke tests (prefix: dev_) — prod tests need Zitadel
+          cargo test -p flowplane --test e2e dev_ -- --ignored --nocapture --test-threads=1
       - name: Clean up testcontainers
         if: always()
         run: |
