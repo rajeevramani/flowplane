@@ -124,6 +124,10 @@ pub struct AggregatedSchemaResponse {
     pub last_observed: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub snapshot_number: Option<i64>,
 }
 
 /// Export request body

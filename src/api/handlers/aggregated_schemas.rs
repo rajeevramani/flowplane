@@ -118,6 +118,10 @@ pub struct AggregatedSchemaResponse {
     pub last_observed: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_number: Option<i64>,
 }
 
 /// Schema comparison response
@@ -227,6 +231,8 @@ fn schema_response_from_data(
         last_observed: data.last_observed.to_rfc3339(),
         created_at: data.created_at.to_rfc3339(),
         updated_at: data.updated_at.to_rfc3339(),
+        session_id: data.session_id,
+        snapshot_number: data.snapshot_number,
     }
 }
 
