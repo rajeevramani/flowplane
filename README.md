@@ -44,7 +44,7 @@ graph LR
 - **xDS control plane** — ADS, LDS, RDS, CDS, EDS, and SDS over gRPC
 - **10 HTTP filters** — JWT auth, OAuth2, CORS, rate limiting, header mutation, ext authz, RBAC, compression, custom response, MCP
 - **68 MCP tools** — AI agents can deploy and manage gateway configuration end-to-end
-- **API schema learning** — capture live traffic, infer JSON schemas, export as OpenAPI
+- **API schema learning** — capture live traffic, infer JSON schemas, export as OpenAPI with enum detection, path normalization, and domain model dedup
 - **Multi-tenant** — org/team hierarchy with Zitadel RBAC
 - **REST API + Web UI** — JSON API and SvelteKit dashboard on port 8080
 
@@ -53,6 +53,7 @@ graph LR
 | Topic | Link |
 |-------|------|
 | Full walkthrough | [Getting Started](docs/getting-started.md) |
+| Learn APIs from traffic | [Learning Quickstart](docs/learning-quickstart.md) |
 | CLI commands | [CLI Reference](docs/cli-reference.md) |
 | Filter configuration | [Filters](docs/filters.md) |
 | MCP tools | [MCP Integration](docs/mcp.md) |
