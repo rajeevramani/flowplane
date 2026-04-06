@@ -7,6 +7,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use super::client::FlowplaneClient;
+use super::schema;
 
 #[derive(Subcommand)]
 pub enum LearnCommands {
@@ -16,6 +17,10 @@ pub enum LearnCommands {
         after_help = "EXAMPLES:\n    # Start learning all /api/v2 traffic with 500 samples\n    flowplane learn start --route-pattern '^/api/v2/.*' --target-sample-count 500\n\n    # Start learning with cluster filter and HTTP method filter\n    flowplane learn start --route-pattern '^/api/v1/users/.*' --cluster-name users-api \\\n        --http-methods GET POST --target-sample-count 1000\n\n    # Start with a max duration of 2 hours\n    flowplane learn start --route-pattern '^/api/.*' --target-sample-count 500 \\\n        --max-duration-seconds 7200 --triggered-by 'deploy-v2.3'"
     )]
     Start {
+        /// Session name (auto-generated if omitted)
+        #[arg(long)]
+        name: Option<String>,
+
         /// Route pattern (regex) to match for learning
         #[arg(long)]
         route_pattern: String,
@@ -44,6 +49,25 @@ pub enum LearnCommands {
         #[arg(long)]
         deployment_version: Option<String>,
 
+        /// Enable auto-aggregate snapshot mode (session continues after each aggregation)
+        #[arg(long)]
+        auto_aggregate: bool,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
+
+    /// Stop an active learning session (triggers final aggregation)
+    #[command(
+        long_about = "Stop an active learning session and trigger final schema aggregation.\n\nThis is especially useful for auto-aggregate sessions that run indefinitely.\nThe stop triggers a final schema aggregation from all collected samples.",
+        after_help = "EXAMPLES:\n    # Stop a session by ID\n    flowplane learn stop abc-123-def\n\n    # Stop and get JSON output\n    flowplane learn stop abc-123-def --output json"
+    )]
+    Stop {
+        /// Session name or UUID
+        #[arg(value_name = "NAME_OR_ID")]
+        name_or_id: String,
+
         /// Output format (json, yaml, or table)
         #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
@@ -55,9 +79,9 @@ pub enum LearnCommands {
         after_help = "EXAMPLES:\n    # Cancel a session by ID\n    flowplane learn cancel abc-123-def\n\n    # Cancel without confirmation\n    flowplane learn cancel abc-123-def --yes"
     )]
     Cancel {
-        /// Session ID to cancel
-        #[arg(value_name = "SESSION_ID")]
-        session_id: String,
+        /// Session name or UUID
+        #[arg(value_name = "NAME_OR_ID")]
+        name_or_id: String,
 
         /// Skip confirmation prompt
         #[arg(short, long)]
@@ -93,13 +117,44 @@ pub enum LearnCommands {
         after_help = "EXAMPLES:\n    # Get session details in JSON\n    flowplane learn get abc-123-def\n\n    # Get in table format\n    flowplane learn get abc-123-def --output table"
     )]
     Get {
-        /// Session ID to retrieve
-        #[arg(value_name = "SESSION_ID")]
-        session_id: String,
+        /// Session name or UUID
+        #[arg(value_name = "NAME_OR_ID")]
+        name_or_id: String,
 
         /// Output format (json, yaml, or table)
         #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
+    },
+
+    /// Export discovered schemas as OpenAPI spec
+    #[command(
+        long_about = "Export schemas discovered by learning sessions as an OpenAPI 3.1 spec.\n\nConvenience shortcut for `flowplane schema export --all`.\nExports all latest schemas to stdout (YAML) or to a file.",
+        after_help = "EXAMPLES:\n    # Export all schemas as YAML to stdout\n    flowplane learn export\n\n    # Export to a file\n    flowplane learn export -o api.yaml\n\n    # Export only high-confidence schemas\n    flowplane learn export --min-confidence 0.7 -o api.json"
+    )]
+    Export {
+        /// Export schemas from a specific session (name or UUID)
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Minimum confidence filter
+        #[arg(long)]
+        min_confidence: Option<f64>,
+
+        /// API title in the OpenAPI spec
+        #[arg(long, default_value = "Learned API")]
+        title: String,
+
+        /// API version in the OpenAPI spec
+        #[arg(long, default_value = "1.0.0")]
+        version: String,
+
+        /// API description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Output file (auto-detects format from extension; stdout if omitted)
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -109,6 +164,8 @@ pub enum LearnCommands {
 pub struct LearningSessionResponse {
     pub id: String,
     pub team: String,
+    #[serde(default)]
+    pub name: Option<String>,
     pub route_pattern: String,
     pub cluster_name: Option<String>,
     pub http_methods: Option<Vec<String>>,
@@ -123,12 +180,18 @@ pub struct LearningSessionResponse {
     pub triggered_by: Option<String>,
     pub deployment_version: Option<String>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub auto_aggregate: bool,
+    #[serde(default)]
+    pub snapshot_count: i64,
 }
 
 /// Request body for creating a learning session
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateLearningSessionRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     route_pattern: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_name: Option<String>,
@@ -141,6 +204,8 @@ struct CreateLearningSessionRequest {
     triggered_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deployment_version: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    auto_aggregate: bool,
 }
 
 /// Handle learn commands
@@ -151,6 +216,7 @@ pub async fn handle_learn_command(
 ) -> Result<()> {
     match command {
         LearnCommands::Start {
+            name,
             route_pattern,
             cluster_name,
             http_methods,
@@ -158,11 +224,13 @@ pub async fn handle_learn_command(
             max_duration_seconds,
             triggered_by,
             deployment_version,
+            auto_aggregate,
             output,
         } => {
             start_session(
                 client,
                 team,
+                name,
                 route_pattern,
                 cluster_name,
                 http_methods,
@@ -170,18 +238,38 @@ pub async fn handle_learn_command(
                 max_duration_seconds,
                 triggered_by,
                 deployment_version,
+                auto_aggregate,
                 &output,
             )
             .await?
         }
-        LearnCommands::Cancel { session_id, yes } => {
-            cancel_session(client, team, &session_id, yes).await?
+        LearnCommands::Stop { name_or_id, output } => {
+            stop_session(client, team, &name_or_id, &output).await?
+        }
+        LearnCommands::Cancel { name_or_id, yes } => {
+            cancel_session(client, team, &name_or_id, yes).await?
         }
         LearnCommands::List { status, limit, offset, output } => {
             list_sessions(client, team, status, limit, offset, &output).await?
         }
-        LearnCommands::Get { session_id, output } => {
-            get_session(client, team, &session_id, &output).await?
+        LearnCommands::Get { name_or_id, output } => {
+            get_session(client, team, &name_or_id, &output).await?
+        }
+        LearnCommands::Export { session, min_confidence, title, version, description, output } => {
+            // Thin wrapper: delegates to schema::export_schemas with --all
+            schema::export_schemas(
+                client,
+                team,
+                None,
+                true,
+                min_confidence,
+                title,
+                version,
+                description,
+                output,
+                session,
+            )
+            .await?
         }
     }
 
@@ -192,6 +280,7 @@ pub async fn handle_learn_command(
 async fn start_session(
     client: &FlowplaneClient,
     team: &str,
+    name: Option<String>,
     route_pattern: String,
     cluster_name: Option<String>,
     http_methods: Option<Vec<String>>,
@@ -199,9 +288,11 @@ async fn start_session(
     max_duration_seconds: Option<i64>,
     triggered_by: Option<String>,
     deployment_version: Option<String>,
+    auto_aggregate: bool,
     output: &str,
 ) -> Result<()> {
     let body = CreateLearningSessionRequest {
+        name,
         route_pattern,
         cluster_name,
         http_methods,
@@ -209,10 +300,29 @@ async fn start_session(
         max_duration_seconds,
         triggered_by,
         deployment_version,
+        auto_aggregate,
     };
 
     let path = format!("/api/v1/teams/{team}/learning-sessions");
     let response: LearningSessionResponse = client.post_json(&path, &body).await?;
+
+    if output == "table" {
+        print_sessions_table(&[response]);
+    } else {
+        print_output(&response, output)?;
+    }
+
+    Ok(())
+}
+
+async fn stop_session(
+    client: &FlowplaneClient,
+    team: &str,
+    session_id: &str,
+    output: &str,
+) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/learning-sessions/{session_id}/stop");
+    let response: LearningSessionResponse = client.post_json(&path, &serde_json::json!({})).await?;
 
     if output == "table" {
         print_sessions_table(&[response]);
@@ -326,15 +436,17 @@ fn print_sessions_table(sessions: &[LearningSessionResponse]) {
 
     println!();
     println!(
-        "{:<38} {:<12} {:<30} {:<8} {:<8} {:<8}",
-        "ID", "Status", "Route Pattern", "Samples", "Target", "Progress"
+        "{:<38} {:<20} {:<12} {:<30} {:<8} {:<8} {:<8}",
+        "ID", "Name", "Status", "Route Pattern", "Samples", "Target", "Progress"
     );
-    println!("{}", "-".repeat(110));
+    println!("{}", "-".repeat(130));
 
     for session in sessions {
+        let name_display = session.name.as_deref().unwrap_or("-");
         println!(
-            "{:<38} {:<12} {:<30} {:<8} {:<8} {:.1}%",
+            "{:<38} {:<20} {:<12} {:<30} {:<8} {:<8} {:.1}%",
             truncate(&session.id, 36),
+            truncate(name_display, 18),
             session.status,
             truncate(&session.route_pattern, 28),
             session.current_sample_count,

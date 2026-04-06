@@ -21,6 +21,7 @@ pub mod listeners;
 pub mod logs;
 pub mod output;
 pub mod routes;
+pub mod schema;
 pub mod secrets;
 pub mod status;
 pub mod teams;
@@ -189,6 +190,12 @@ EXAMPLES:
     Learn {
         #[command(subcommand)]
         command: learn::LearnCommands,
+    },
+
+    /// List, inspect, and export discovered API schemas
+    Schema {
+        #[command(subcommand)]
+        command: schema::SchemaCommands,
     },
 
     /// Filter management commands (CRUD + attach/detach)
@@ -365,6 +372,11 @@ async fn run_cli_commands(
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
             learn::handle_learn_command(command, &client, &team).await?
+        }
+        Commands::Schema { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            schema::handle_schema_command(command, &client, &team).await?
         }
         Commands::Config { command } => config_cmd::handle_config_command(command).await?,
         Commands::Team { command } => {

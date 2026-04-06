@@ -1630,6 +1630,7 @@ export type LearningSessionStatus =
 export interface LearningSessionResponse {
 	id: string;
 	team: string;
+	name: string | null;
 	routePattern: string;
 	clusterName: string | null;
 	httpMethods: string[] | null;
@@ -1644,10 +1645,13 @@ export interface LearningSessionResponse {
 	triggeredBy: string | null;
 	deploymentVersion: string | null;
 	errorMessage: string | null;
+	autoAggregate: boolean;
+	snapshotCount: number;
 }
 
 /** Request to create a learning session */
 export interface CreateLearningSessionRequest {
+	name?: string;
 	routePattern: string;
 	clusterName?: string;
 	httpMethods?: string[];
@@ -1656,6 +1660,7 @@ export interface CreateLearningSessionRequest {
 	triggeredBy?: string;
 	deploymentVersion?: string;
 	configurationSnapshot?: Record<string, unknown>;
+	autoAggregate?: boolean;
 }
 
 /** Query parameters for listing learning sessions */

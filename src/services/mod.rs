@@ -40,6 +40,7 @@ pub use listener_service::ListenerService;
 pub use mcp_service::{
     EnableMcpRequest, McpService, McpServiceError, McpStatusResponse, RefreshSchemaResult,
 };
+pub(crate) use path_normalizer::singularize;
 pub use path_normalizer::{normalize_path, PathNormalizationConfig};
 pub use route_hierarchy_sync::RouteHierarchySyncService;
 pub use route_service::RouteService;

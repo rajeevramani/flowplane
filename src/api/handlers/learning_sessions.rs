@@ -25,8 +25,8 @@ use crate::{
     auth::models::AuthContext,
     errors::Error,
     storage::repositories::{
-        CreateLearningSessionRequest, LearningSessionRepository, LearningSessionStatus,
-        UpdateLearningSessionRequest,
+        team::TeamRepository, CreateLearningSessionRequest, LearningSessionRepository,
+        LearningSessionStatus, UpdateLearningSessionRequest,
     },
 };
 
@@ -82,6 +82,17 @@ pub struct CreateLearningSessionBody {
     /// Optional configuration snapshot (JSON)
     #[serde(default)]
     pub configuration_snapshot: Option<serde_json::Value>,
+
+    /// Enable auto-aggregate snapshot mode (default: false)
+    #[serde(default)]
+    #[schema(example = false)]
+    pub auto_aggregate: Option<bool>,
+
+    /// Optional human-friendly session name (auto-generated from route_pattern if omitted)
+    #[serde(default)]
+    #[validate(length(min = 1, max = 64))]
+    #[schema(example = "v2-api-payments")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -103,6 +114,9 @@ pub struct LearningSessionResponse {
     pub triggered_by: Option<String>,
     pub deployment_version: Option<String>,
     pub error_message: Option<String>,
+    pub auto_aggregate: bool,
+    pub snapshot_count: i64,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema, Clone)]
@@ -146,6 +160,9 @@ fn session_response_from_data(
         triggered_by: data.triggered_by,
         deployment_version: data.deployment_version,
         error_message: data.error_message,
+        auto_aggregate: data.auto_aggregate,
+        snapshot_count: data.snapshot_count,
+        name: data.name,
     }
 }
 
@@ -224,6 +241,20 @@ pub async fn create_learning_session_handler(
 
     let session_repo = LearningSessionRepository::new(repo.pool().clone());
 
+    // Generate session name if not provided
+    let session_name = if let Some(name) = payload.name {
+        Some(name)
+    } else {
+        let generated = crate::services::learning_session_service::generate_unique_session_name(
+            &session_repo,
+            &team_id,
+            &payload.route_pattern,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to generate session name: {}", e)))?;
+        Some(generated)
+    };
+
     // Create session using resolved team ID
     let create_request = CreateLearningSessionRequest {
         team: team_id,
@@ -235,6 +266,8 @@ pub async fn create_learning_session_handler(
         triggered_by: payload.triggered_by,
         deployment_version: payload.deployment_version,
         configuration_snapshot: payload.configuration_snapshot,
+        auto_aggregate: payload.auto_aggregate.unwrap_or(false),
+        name: session_name,
     };
 
     let created = session_repo.create(create_request).await.map_err(|e| {
@@ -373,12 +406,23 @@ pub async fn get_learning_session_handler(
 
     let session_repo = LearningSessionRepository::new(repo.pool().clone());
 
-    // Get session by ID (without team filter)
-    let session = session_repo.get_by_id(&id).await.map_err(|e| {
+    // Resolve team name to UUID for name-based lookup
+    let team_repo_ref = team_repo_from_state(&state)?;
+    let resolved_team_ids = team_repo_ref
+        .resolve_team_ids(context.org_id.as_ref(), std::slice::from_ref(&team))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
+    let resolved_team_id = resolved_team_ids
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
+
+    // Get session by name or ID
+    let session = session_repo.get_by_name_or_id(&resolved_team_id, &id).await.map_err(|e| {
         tracing::error!(error = %e, session_id = %id, "Failed to get learning session");
         match e {
             Error::NotFound { .. } => {
-                ApiError::NotFound(format!("Learning session with ID '{}' not found", id))
+                ApiError::NotFound(format!("Learning session '{}' not found", id))
             }
             _ => ApiError::Internal(format!("Failed to get learning session: {}", e)),
         }
@@ -434,11 +478,22 @@ pub async fn delete_learning_session_handler(
 
     let session_repo = LearningSessionRepository::new(repo.pool().clone());
 
-    // First, get the session by ID (without team filter)
-    let session = session_repo.get_by_id(&id).await.map_err(|e| {
+    // Resolve team name to UUID for name-based lookup
+    let team_repo_ref = team_repo_from_state(&state)?;
+    let resolved_team_ids = team_repo_ref
+        .resolve_team_ids(context.org_id.as_ref(), std::slice::from_ref(&team))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
+    let resolved_team_id = resolved_team_ids
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
+
+    // Get session by name or ID
+    let session = session_repo.get_by_name_or_id(&resolved_team_id, &id).await.map_err(|e| {
         tracing::error!(error = %e, session_id = %id, "Failed to get learning session for cancellation");
         match e {
-            Error::NotFound { .. } => ApiError::NotFound(format!("Learning session with ID '{}' not found", id)),
+            Error::NotFound { .. } => ApiError::NotFound(format!("Learning session '{}' not found", id)),
             _ => ApiError::Internal(format!("Failed to get learning session: {}", e)),
         }
     })?;
@@ -489,7 +544,7 @@ pub async fn delete_learning_session_handler(
     if let Some(learning_service) = state.xds_state.get_learning_session_service() {
         // If session is active, we need to unregister from Access Log Service
         // The cancel_session method handles this
-        learning_service.cancel_session(&id).await.map_err(|e| {
+        learning_service.cancel_session(&session.id).await.map_err(|e| {
             tracing::error!(error = %e, session_id = %id, team = %session.team, "Failed to cancel learning session via service");
             ApiError::Internal(format!("Failed to cancel learning session: {}", e))
         })?;
@@ -504,13 +559,93 @@ pub async fn delete_learning_session_handler(
             error_message: Some("Cancelled by user".to_string()),
         };
 
-        session_repo.update(&id, update_request).await.map_err(|e| {
+        session_repo.update(&session.id, update_request).await.map_err(|e| {
             tracing::error!(error = %e, session_id = %id, team = %session.team, "Failed to cancel learning session");
             ApiError::Internal(format!("Failed to cancel learning session: {}", e))
         })?;
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/teams/{team}/learning-sessions/{id}/stop",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("id" = String, Path, description = "Learning session ID")
+    ),
+    responses(
+        (status = 200, description = "Learning session stopped", body = LearningSessionResponse),
+        (status = 400, description = "Invalid state - session not active"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
+        (status = 404, description = "Learning session not found"),
+        (status = 503, description = "Service unavailable")
+    ),
+    tag = "API Discovery"
+)]
+#[instrument(skip(state), fields(team = %team, session_id = %id, user_id = ?context.user_id))]
+pub async fn stop_learning_session_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((team, id)): Path<(String, String)>,
+) -> Result<Json<LearningSessionResponse>, ApiError> {
+    // Authorization: require learning-sessions:execute scope for the team from path
+    require_resource_access_resolved(&state, &context, "learning-sessions", "execute", Some(&team))
+        .await?;
+
+    // Get effective team scopes for access verification
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+
+    // Get repository
+    let repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Repository not configured".to_string()))?;
+
+    let session_repo = LearningSessionRepository::new(repo.pool().clone());
+
+    // Resolve team name to UUID for name-based lookup
+    let team_repo_ref = team_repo_from_state(&state)?;
+    let resolved_team_ids = team_repo_ref
+        .resolve_team_ids(context.org_id.as_ref(), std::slice::from_ref(&team))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
+    let resolved_team_id = resolved_team_ids
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
+
+    // Get session by name or ID
+    let session = session_repo.get_by_name_or_id(&resolved_team_id, &id).await.map_err(|e| {
+        tracing::error!(error = %e, session_id = %id, "Failed to get learning session for stop");
+        match e {
+            Error::NotFound { .. } => {
+                ApiError::NotFound(format!("Learning session '{}' not found", id))
+            }
+            _ => ApiError::Internal(format!("Failed to get learning session: {}", e)),
+        }
+    })?;
+
+    // Verify team access
+    verify_team_access(session.clone(), &team_scopes).await?;
+
+    // Use the learning session service to stop
+    let learning_service = state
+        .xds_state
+        .get_learning_session_service()
+        .ok_or_else(|| ApiError::Internal("Learning session service not available".to_string()))?;
+
+    let completed = learning_service.stop_session(&session.id).await.map_err(|e| {
+        tracing::error!(error = %e, session_id = %id, "Failed to stop learning session");
+        ApiError::BadRequest(format!("Failed to stop learning session: {}", e))
+    })?;
+
+    let response = session_response_from_data(completed);
+
+    Ok(Json(response))
 }
 
 #[cfg(test)]
@@ -541,6 +676,9 @@ mod tests {
                 configuration_snapshot: None,
                 error_message: None,
                 updated_at: chrono::Utc::now(),
+                auto_aggregate: false,
+                snapshot_count: 0,
+                name: None,
             }
         }
 
@@ -628,6 +766,27 @@ mod tests {
         }
 
         #[test]
+        fn test_session_response_auto_aggregate_fields() {
+            let mut data = sample_session_data();
+            data.auto_aggregate = true;
+            data.snapshot_count = 5;
+
+            let response = session_response_from_data(data);
+
+            assert!(response.auto_aggregate);
+            assert_eq!(response.snapshot_count, 5);
+        }
+
+        #[test]
+        fn test_session_response_auto_aggregate_defaults() {
+            let data = sample_session_data();
+            let response = session_response_from_data(data);
+
+            assert!(!response.auto_aggregate);
+            assert_eq!(response.snapshot_count, 0);
+        }
+
+        #[test]
         fn test_session_response_with_error_message() {
             let mut data = sample_session_data();
             data.status = LearningSessionStatus::Failed;
@@ -664,6 +823,9 @@ mod tests {
                 configuration_snapshot: None,
                 error_message: None,
                 updated_at: chrono::Utc::now(),
+                auto_aggregate: false,
+                snapshot_count: 0,
+                name: None,
             }
         }
 
@@ -744,6 +906,8 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
+                name: None,
             };
 
             use validator::Validate;
@@ -762,6 +926,8 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
+                name: None,
             };
 
             use validator::Validate;
@@ -780,6 +946,8 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
+                name: None,
             };
 
             use validator::Validate;
@@ -798,6 +966,8 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
+                name: None,
             };
 
             use validator::Validate;
@@ -817,6 +987,8 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
+                name: None,
             };
 
             use validator::Validate;
@@ -832,6 +1004,8 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
+                name: None,
             };
 
             assert!(body_max.validate().is_ok());

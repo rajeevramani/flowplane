@@ -99,6 +99,39 @@ impl LearningSessionWebhookEvent {
         }
     }
 
+    /// Create a webhook event for snapshot completion (auto-aggregate mode)
+    pub fn snapshot_completed(
+        session_id: String,
+        team: String,
+        route_pattern: String,
+        target_sample_count: i64,
+        current_sample_count: i64,
+        snapshot_count: i64,
+    ) -> Self {
+        let progress_percentage = if target_sample_count > 0 {
+            (current_sample_count as f64 / target_sample_count as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Self {
+            event_type: "learning_session.snapshot_completed".to_string(),
+            timestamp: chrono::Utc::now(),
+            session_id,
+            team,
+            previous_status: None,
+            current_status: LearningSessionStatus::Active,
+            route_pattern,
+            target_sample_count,
+            current_sample_count,
+            progress_percentage,
+            error_message: None,
+            metadata: serde_json::json!({
+                "snapshot_count": snapshot_count,
+            }),
+        }
+    }
+
     /// Create a webhook event for session failure
     pub fn failed(
         session_id: String,

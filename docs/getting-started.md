@@ -293,7 +293,7 @@ Browse the full REST API at http://localhost:8080/swagger-ui/.
 
 ### MCP connection
 
-Flowplane exposes 68 MCP tools at `POST /api/v1/mcp`. To connect from Claude Code or another MCP client:
+Flowplane exposes 69 MCP tools at `POST /api/v1/mcp`. To connect from Claude Code or another MCP client:
 
 ```bash
 # Get your dev token
@@ -346,6 +346,7 @@ flowplane auth login              # Opens browser-based PKCE flow
 
 ## Next steps
 
+- [Learning Quickstart](learning-quickstart.md) — discover API schemas from live traffic and export as OpenAPI
 - [CLI Reference](cli-reference.md) — every command, flag, and example
 - [Filters](filters.md) — 10 filter types: rate limiting, JWT auth, CORS, OAuth2, and more
 - [MCP Server](mcp.md) — full tool catalog for AI-driven gateway management

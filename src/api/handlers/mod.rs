@@ -71,7 +71,7 @@ pub use filters::{
 pub use health::health_handler;
 pub use learning_sessions::{
     create_learning_session_handler, delete_learning_session_handler, get_learning_session_handler,
-    list_learning_sessions_handler,
+    list_learning_sessions_handler, stop_learning_session_handler,
 };
 pub use listeners::{
     create_listener_handler, delete_listener_handler, get_listener_handler, list_listeners_handler,

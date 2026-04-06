@@ -73,6 +73,7 @@ impl AggregatedSchemaOperations {
             } else if req.path.is_some()
                 || req.http_method.is_some()
                 || req.min_confidence.is_some()
+                || req.session_id.is_some()
             {
                 // Use filtered query
                 repository
@@ -81,6 +82,7 @@ impl AggregatedSchemaOperations {
                         req.path.as_deref(),
                         req.http_method.as_deref(),
                         req.min_confidence,
+                        req.session_id.as_deref(),
                     )
                     .await
                     .map_err(InternalError::from)?
@@ -268,6 +270,8 @@ mod tests {
             first_observed: chrono::Utc::now(),
             last_observed: chrono::Utc::now(),
             previous_version_id: None,
+            session_id: None,
+            snapshot_number: None,
         };
 
         repo.create(request).await.expect("create schema")
@@ -361,6 +365,8 @@ mod tests {
             first_observed: chrono::Utc::now(),
             last_observed: chrono::Utc::now(),
             previous_version_id: Some(schema_v1.id),
+            session_id: None,
+            snapshot_number: None,
         };
         repo.create(request_v2).await.expect("create v2");
 
@@ -451,6 +457,8 @@ mod tests {
                 first_observed: chrono::Utc::now(),
                 last_observed: chrono::Utc::now(),
                 previous_version_id: if i == 2 { Some(schema_v1.id) } else { None },
+                session_id: None,
+                snapshot_number: None,
             };
             repo.create(request).await.expect("create version");
         }

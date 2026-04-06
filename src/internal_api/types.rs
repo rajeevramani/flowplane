@@ -421,6 +421,10 @@ pub struct CreateLearningSessionInternalRequest {
     pub target_sample_count: i64,
     /// Whether to automatically start the session after creation
     pub auto_start: Option<bool>,
+    /// Whether to use auto-aggregate snapshot mode
+    pub auto_aggregate: Option<bool>,
+    /// Optional human-friendly session name (auto-generated if omitted)
+    pub name: Option<String>,
 }
 
 /// Request to list learning sessions with pagination
@@ -453,6 +457,8 @@ pub struct ListSchemasRequest {
     pub limit: Option<i32>,
     /// Offset for pagination
     pub offset: Option<i32>,
+    /// Filter by learning session ID
+    pub session_id: Option<String>,
 }
 
 /// Response for listing aggregated schemas

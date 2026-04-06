@@ -132,6 +132,8 @@
 				!searchQuery ||
 				session.routePattern.toLowerCase().includes(searchQuery.toLowerCase()) ||
 				session.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+				(session.name &&
+					session.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
 				(session.clusterName &&
 					session.clusterName.toLowerCase().includes(searchQuery.toLowerCase()))
 		)
@@ -357,6 +359,9 @@
 				<thead class="bg-gray-50">
 					<tr>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+							Name
+						</th>
+						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
 							Route Pattern
 						</th>
 						<th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -376,6 +381,13 @@
 				<tbody class="bg-white divide-y divide-gray-200">
 					{#each filteredSessions as session}
 						<tr class="hover:bg-gray-50">
+							<td class="px-6 py-4 whitespace-nowrap">
+								{#if session.name}
+									<span class="text-sm font-medium text-gray-900">{session.name}</span>
+								{:else}
+									<span class="text-sm text-gray-400" title={session.id}>{session.id.slice(0, 8)}...</span>
+								{/if}
+							</td>
 							<td class="px-6 py-4">
 								<div class="flex flex-col">
 									<code class="text-sm font-mono text-gray-900">{session.routePattern}</code>
@@ -390,7 +402,14 @@
 								</div>
 							</td>
 							<td class="px-6 py-4 whitespace-nowrap">
+								<div class="flex items-center gap-2">
 								<SessionStatusBadge status={session.status} />
+								{#if session.autoAggregate}
+									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+										Auto
+									</span>
+								{/if}
+							</div>
 							</td>
 							<td class="px-6 py-4">
 								<div class="w-48">

@@ -43,8 +43,8 @@ graph LR
 
 - **xDS control plane** — ADS, LDS, RDS, CDS, EDS, and SDS over gRPC
 - **10 HTTP filters** — JWT auth, OAuth2, CORS, rate limiting, header mutation, ext authz, RBAC, compression, custom response, MCP
-- **68 MCP tools** — AI agents can deploy and manage gateway configuration end-to-end
-- **API schema learning** — capture live traffic, infer JSON schemas, export as OpenAPI
+- **69 MCP tools** — AI agents can deploy and manage gateway configuration end-to-end
+- **API schema learning** — capture live traffic, infer JSON schemas, export as OpenAPI with enum detection, path normalization, and domain model dedup
 - **Multi-tenant** — org/team hierarchy with Zitadel RBAC
 - **REST API + Web UI** — JSON API and SvelteKit dashboard on port 8080
 
@@ -53,6 +53,7 @@ graph LR
 | Topic | Link |
 |-------|------|
 | Full walkthrough | [Getting Started](docs/getting-started.md) |
+| Learn APIs from traffic | [Learning Quickstart](docs/learning-quickstart.md) |
 | CLI commands | [CLI Reference](docs/cli-reference.md) |
 | Filter configuration | [Filters](docs/filters.md) |
 | MCP tools | [MCP Integration](docs/mcp.md) |
@@ -75,7 +76,7 @@ This repo ships with [Claude Code](https://claude.ai/code) skills in `.claude/sk
 
 | Skill | Covers |
 |-------|--------|
-| `flowplane-api` | 68 MCP tools, learning sessions, filter attach/detach, routing workflows |
+| `flowplane-api` | 69 MCP tools, learning sessions, filter attach/detach, routing workflows |
 | `flowplane-ops` | Boot recipes, 6 diagnostic MCP tools, troubleshooting playbooks |
 | `flowplane-secrets` | SDS secrets, encryption keys, filter integration |
 | `create-filter-test` | Generate test fixtures for filter configurations |

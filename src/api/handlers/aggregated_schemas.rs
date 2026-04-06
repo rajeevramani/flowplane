@@ -41,6 +41,10 @@ pub struct ListAggregatedSchemasQuery {
     #[serde(default)]
     #[schema(example = 0.8, minimum = 0.0, maximum = 1.0)]
     pub min_confidence: Option<f64>,
+
+    /// Filter by learning session ID
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// Query parameters for schema comparison
@@ -114,6 +118,10 @@ pub struct AggregatedSchemaResponse {
     pub last_observed: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_number: Option<i64>,
 }
 
 /// Schema comparison response
@@ -173,6 +181,7 @@ fn strip_internal_attributes(schema: &mut serde_json::Value) {
             map.remove("confidence");
             map.remove("presence_count");
             map.remove("sample_count");
+            map.remove("observed_values");
 
             // Recursively process ALL nested values in the object
             // This handles properties, items, status codes (200, 201), and any other nested objects
@@ -222,6 +231,8 @@ fn schema_response_from_data(
         last_observed: data.last_observed.to_rfc3339(),
         created_at: data.created_at.to_rfc3339(),
         updated_at: data.updated_at.to_rfc3339(),
+        session_id: data.session_id,
+        snapshot_number: data.snapshot_number,
     }
 }
 
@@ -282,6 +293,24 @@ pub async fn list_aggregated_schemas_handler(
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Repository not configured".to_string()))?;
 
+    // Resolve session name-or-id to session UUID if provided
+    let resolved_session_id = if let Some(ref session_ref) = query.session_id {
+        let pool = state
+            .xds_state
+            .pool
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal("Database pool not configured".to_string()))?;
+        let session_repo =
+            crate::storage::repositories::LearningSessionRepository::new(pool.clone());
+        let session = session_repo.get_by_name_or_id(&team, session_ref).await.map_err(|e| {
+            tracing::warn!(error = %e, session_ref = %session_ref, "Failed to resolve session");
+            ApiError::NotFound(format!("Learning session '{}' not found", session_ref))
+        })?;
+        Some(session.id)
+    } else {
+        None
+    };
+
     // List schemas with filters
     let schemas = repo
         .list_filtered(
@@ -289,6 +318,7 @@ pub async fn list_aggregated_schemas_handler(
             query.path.as_deref(),
             query.http_method.as_deref(),
             query.min_confidence,
+            resolved_session_id.as_deref(),
         )
         .await
         .map_err(|e| {
@@ -1043,7 +1073,53 @@ pub fn build_unified_openapi_spec(
         }
     }
 
-    let mut components = serde_json::json!({"schemas": {}});
+    // Domain model deduplication: discover shared schemas and replace with $ref
+    let schema_entries: Vec<crate::openapi::domain_models::SchemaEntry> = schemas
+        .iter()
+        .map(|s| {
+            let parsed = parse_path_with_query(&s.path);
+            crate::openapi::domain_models::SchemaEntry {
+                path: parsed.base_path,
+                method: s.http_method.clone(),
+                request_schema: s.request_schema.clone().map(|mut rs| {
+                    strip_internal_attributes(&mut rs);
+                    convert_schema_to_openapi(&rs)
+                }),
+                response_schemas: s.response_schemas.clone().map(|mut rs| {
+                    strip_internal_attributes(&mut rs);
+                    // Convert each response schema within the map
+                    if let Some(map) = rs.as_object_mut() {
+                        for (_code, resp_schema) in map.iter_mut() {
+                            if !resp_schema.is_null() {
+                                *resp_schema = convert_schema_to_openapi(resp_schema);
+                            }
+                        }
+                    }
+                    rs
+                }),
+            }
+        })
+        .collect();
+
+    let discovery = crate::openapi::domain_models::discover_domain_models(&schema_entries);
+
+    // Replace inline schemas in paths with $ref pointers
+    if !discovery.models.is_empty() {
+        crate::openapi::domain_models::replace_with_refs(
+            &mut paths,
+            &discovery.fingerprint_to_name,
+        );
+    }
+
+    // Build components with discovered domain model schemas
+    let mut components = if discovery.models.is_empty() {
+        serde_json::json!({"schemas": {}})
+    } else {
+        let model_schemas =
+            crate::openapi::domain_models::build_components_schemas(&discovery.models);
+        serde_json::json!({"schemas": model_schemas})
+    };
+
     if security_schemes.as_object().is_some_and(|m| !m.is_empty()) {
         components["securitySchemes"] = security_schemes;
     }
@@ -1254,6 +1330,8 @@ mod tests {
             last_observed: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            session_id: None,
+            snapshot_number: None,
         }
     }
 
@@ -1407,6 +1485,8 @@ mod tests {
             last_observed: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            session_id: None,
+            snapshot_number: None,
         };
 
         let options = ExportMultipleSchemasRequest {
@@ -1468,6 +1548,8 @@ mod tests {
             last_observed: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            session_id: None,
+            snapshot_number: None,
         }
     }
 
@@ -1547,6 +1629,8 @@ mod tests {
             last_observed: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            session_id: None,
+            snapshot_number: None,
         };
 
         let options = ExportMultipleSchemasRequest {
@@ -1601,6 +1685,8 @@ mod tests {
                 last_observed: chrono::Utc::now(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
+                session_id: None,
+                snapshot_number: None,
             }
         }
 

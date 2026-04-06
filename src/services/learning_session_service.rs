@@ -193,14 +193,16 @@ impl LearningSessionService {
         Ok(updated)
     }
 
-    /// Check if a session should be completed and transition if needed
+    /// Check if a session should be completed (or snapshotted) and transition if needed
     #[instrument(skip(self), fields(session_id = %session_id), name = "check_learning_session_completion")]
     ///
     /// This method checks:
     /// 1. Has the target sample count been reached?
     /// 2. Has the session timed out (ends_at exceeded)?
     ///
-    /// If either condition is true: active → completing → completed
+    /// For auto_aggregate sessions: target reached → snapshot (stay active)
+    /// For normal sessions: target reached → completing → completed
+    /// Timeout always completes regardless of auto_aggregate.
     pub async fn check_completion(&self, session_id: &str) -> Result<Option<LearningSessionData>> {
         let session = self.repository.get_by_id(session_id).await?;
 
@@ -209,43 +211,160 @@ impl LearningSessionService {
             return Ok(None);
         }
 
-        let should_complete = self.should_complete(&session);
+        let target_reached = session.current_sample_count >= session.target_sample_count;
+        let timed_out = session.ends_at.is_some_and(|ends_at| chrono::Utc::now() >= ends_at);
 
-        if should_complete {
+        if target_reached && session.auto_aggregate && !timed_out {
+            // Auto-aggregate mode: trigger snapshot, stay active
+            self.snapshot_session(session_id).await.map(Some)
+        } else if target_reached || timed_out {
+            // Normal mode or timeout: complete the session
+            if target_reached {
+                info!(
+                    session_id = %session.id,
+                    current = session.current_sample_count,
+                    target = session.target_sample_count,
+                    "Session reached target sample count"
+                );
+            }
+            if timed_out {
+                warn!(
+                    session_id = %session.id,
+                    ends_at = %session.ends_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
+                    "Session timed out"
+                );
+            }
             self.complete_session(session_id).await.map(Some)
         } else {
             Ok(None)
         }
     }
 
-    /// Determine if a session should be completed
+    /// Determine if a session should be completed (used by tests; does NOT account for auto_aggregate snapshot)
+    #[cfg(test)]
     fn should_complete(&self, session: &LearningSessionData) -> bool {
         let now = chrono::Utc::now();
-
-        // Check if target sample count reached
         let target_reached = session.current_sample_count >= session.target_sample_count;
-
-        // Check if session timed out
         let timed_out = session.ends_at.is_some_and(|ends_at| now >= ends_at);
-
-        if target_reached {
-            info!(
-                session_id = %session.id,
-                current = session.current_sample_count,
-                target = session.target_sample_count,
-                "Session reached target sample count"
-            );
-        }
-
-        if timed_out {
-            warn!(
-                session_id = %session.id,
-                ends_at = %session.ends_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
-                "Session timed out"
-            );
-        }
-
         target_reached || timed_out
+    }
+
+    /// Take a snapshot of the current session state (auto-aggregate mode)
+    ///
+    /// Triggers aggregation as a snapshot, resets current_sample_count, increments
+    /// snapshot_count, and keeps the session Active for continued collection.
+    #[instrument(skip(self), fields(session_id = %session_id), name = "snapshot_learning_session")]
+    pub async fn snapshot_session(&self, session_id: &str) -> Result<LearningSessionData> {
+        let session = self.repository.get_by_id(session_id).await?;
+
+        if session.status != LearningSessionStatus::Active {
+            return Err(Error::validation(format!(
+                "Cannot snapshot session in '{}' state. Must be 'active'",
+                session.status
+            )));
+        }
+
+        if !session.auto_aggregate {
+            return Err(Error::validation(
+                "Cannot snapshot a session that is not in auto-aggregate mode".to_string(),
+            ));
+        }
+
+        // Calculate the next snapshot number
+        let next_snapshot = session.snapshot_count + 1;
+
+        info!(
+            session_id = %session_id,
+            snapshot_number = next_snapshot,
+            current_samples = session.current_sample_count,
+            "Taking snapshot of learning session"
+        );
+
+        // Trigger schema aggregation with snapshot metadata
+        if let Some(schema_aggregator) = &self.schema_aggregator {
+            match schema_aggregator
+                .aggregate_session_with_snapshot(
+                    session_id,
+                    Some(session_id.to_string()),
+                    Some(next_snapshot),
+                )
+                .await
+            {
+                Ok(aggregated_ids) => {
+                    info!(
+                        session_id = %session_id,
+                        snapshot_number = next_snapshot,
+                        aggregated_count = aggregated_ids.len(),
+                        "Successfully aggregated snapshot schemas"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        session_id = %session_id,
+                        snapshot_number = next_snapshot,
+                        error = %e,
+                        "Failed to aggregate snapshot schemas — continuing with snapshot"
+                    );
+                }
+            }
+        } else {
+            warn!(
+                session_id = %session_id,
+                "Schema aggregator not configured — skipping snapshot aggregation"
+            );
+        }
+
+        // Reset sample count and increment snapshot count atomically
+        let new_snapshot_count =
+            self.repository.reset_sample_count_and_increment_snapshot(session_id).await?;
+
+        info!(
+            session_id = %session_id,
+            snapshot_count = new_snapshot_count,
+            "Snapshot complete — session continues collecting"
+        );
+
+        // Publish webhook event
+        if let Some(webhook_service) = &self.webhook_service {
+            let event = LearningSessionWebhookEvent::snapshot_completed(
+                session.id.clone(),
+                session.team.clone(),
+                session.route_pattern.clone(),
+                session.target_sample_count,
+                session.current_sample_count,
+                new_snapshot_count,
+            );
+            webhook_service.publish_event(event).await;
+        }
+
+        self.repository.get_by_id(session_id).await
+    }
+
+    /// Stop an auto-aggregate session (trigger final aggregation + complete)
+    ///
+    /// This is called by cp_stop_learning to explicitly end a session that
+    /// would otherwise continue collecting indefinitely.
+    #[instrument(skip(self), fields(session_id = %session_id), name = "stop_learning_session")]
+    pub async fn stop_session(&self, session_id: &str) -> Result<LearningSessionData> {
+        let session = self.repository.get_by_id(session_id).await?;
+
+        if session.status != LearningSessionStatus::Active {
+            return Err(Error::validation(format!(
+                "Cannot stop session in '{}' state. Must be 'active'",
+                session.status
+            )));
+        }
+
+        info!(
+            session_id = %session_id,
+            auto_aggregate = session.auto_aggregate,
+            snapshot_count = session.snapshot_count,
+            current_samples = session.current_sample_count,
+            "Stopping learning session — triggering final aggregation"
+        );
+
+        // Complete the session (which triggers final aggregation)
+        self.complete_session(session_id).await
     }
 
     /// Complete a learning session (active → completing → completed)
@@ -592,6 +711,79 @@ impl LearningSessionService {
     }
 }
 
+/// Generate a human-friendly session name from a route pattern.
+///
+/// Strips regex metacharacters, replaces `/` with `-`, collapses dashes,
+/// and truncates to 48 chars. Returns e.g. `"v2-api"` from `"^/v2/api/.*"`.
+pub fn generate_session_name(route_pattern: &str) -> String {
+    let name: String = route_pattern
+        .chars()
+        .map(|c| match c {
+            '^' | '$' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' => {
+                ' '
+            }
+            '/' => '-',
+            _ => c,
+        })
+        .collect();
+
+    // Collapse whitespace and dashes, trim
+    let mut result = String::with_capacity(name.len());
+    let mut last_was_dash = true; // true to trim leading dash
+    for c in name.chars() {
+        if c == '-' || c == ' ' {
+            if !last_was_dash {
+                result.push('-');
+                last_was_dash = true;
+            }
+        } else {
+            result.push(c);
+            last_was_dash = false;
+        }
+    }
+
+    // Trim trailing dash
+    let result = result.trim_end_matches('-');
+
+    // Truncate to 48 chars
+    if result.len() > 48 {
+        result[..48].trim_end_matches('-').to_string()
+    } else {
+        result.to_string()
+    }
+}
+
+/// Generate a unique session name, appending `-2`, `-3`, etc. on conflict.
+///
+/// Tries the base name first, then appends a numeric suffix until no UNIQUE
+/// violation occurs (up to 100 attempts).
+pub async fn generate_unique_session_name(
+    repo: &crate::storage::repositories::LearningSessionRepository,
+    team: &str,
+    route_pattern: &str,
+) -> Result<String> {
+    let base = generate_session_name(route_pattern);
+    if base.is_empty() {
+        return Ok(format!("session-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+    }
+
+    // Try the base name first
+    if repo.get_by_name(team, &base).await.is_err() {
+        return Ok(base);
+    }
+
+    // Append suffix until unique
+    for i in 2..=100 {
+        let candidate = format!("{}-{}", base, i);
+        if repo.get_by_name(team, &candidate).await.is_err() {
+            return Ok(candidate);
+        }
+    }
+
+    // Fallback to uuid suffix
+    Ok(format!("{}-{}", base, &uuid::Uuid::new_v4().to_string()[..8]))
+}
+
 /// Convert a LearningSessionData to an Access Log Service LearningSession
 fn convert_to_access_log_session(session: &LearningSessionData) -> Result<LearningSession> {
     let pattern = regex::Regex::new(&session.route_pattern).map_err(|e| {
@@ -638,6 +830,9 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
+            name: None,
         };
 
         let (_db, service) = create_test_service().await;
@@ -664,6 +859,9 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
+            name: None,
         };
 
         let (_db, service) = create_test_service().await;
@@ -690,6 +888,9 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
+            name: None,
         };
 
         let (_db, service) = create_test_service().await;
@@ -716,6 +917,9 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
+            name: None,
         };
 
         let result = convert_to_access_log_session(&session);
@@ -725,6 +929,67 @@ mod tests {
         assert_eq!(learning_session.id, "test-session");
         assert_eq!(learning_session.route_patterns.len(), 1);
         assert_eq!(learning_session.methods, Some(vec!["GET".to_string(), "POST".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn test_should_complete_auto_aggregate_target_reached() {
+        // should_complete returns true even for auto_aggregate sessions
+        // (the snapshot vs complete branching is in check_completion, not should_complete)
+        let session = LearningSessionData {
+            id: "test-session".to_string(),
+            team: "test-team".to_string(),
+            route_pattern: "^/api/.*".to_string(),
+            cluster_name: None,
+            http_methods: None,
+            status: LearningSessionStatus::Active,
+            created_at: chrono::Utc::now(),
+            started_at: Some(chrono::Utc::now()),
+            ends_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            completed_at: None,
+            target_sample_count: 100,
+            current_sample_count: 100, // Target reached
+            triggered_by: None,
+            deployment_version: None,
+            configuration_snapshot: None,
+            error_message: None,
+            updated_at: chrono::Utc::now(),
+            auto_aggregate: true, // Auto-aggregate enabled
+            snapshot_count: 2,    // Already had 2 snapshots
+            name: None,
+        };
+
+        let (_db, service) = create_test_service().await;
+        // should_complete is a basic check — always true when target reached
+        assert!(service.should_complete(&session));
+    }
+
+    #[tokio::test]
+    async fn test_should_not_complete_auto_aggregate_below_target() {
+        let session = LearningSessionData {
+            id: "test-session".to_string(),
+            team: "test-team".to_string(),
+            route_pattern: "^/api/.*".to_string(),
+            cluster_name: None,
+            http_methods: None,
+            status: LearningSessionStatus::Active,
+            created_at: chrono::Utc::now(),
+            started_at: Some(chrono::Utc::now()),
+            ends_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            completed_at: None,
+            target_sample_count: 500,
+            current_sample_count: 250, // Below target
+            triggered_by: None,
+            deployment_version: None,
+            configuration_snapshot: None,
+            error_message: None,
+            updated_at: chrono::Utc::now(),
+            auto_aggregate: true,
+            snapshot_count: 0,
+            name: None,
+        };
+
+        let (_db, service) = create_test_service().await;
+        assert!(!service.should_complete(&session));
     }
 
     #[test]
@@ -747,9 +1012,62 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
+            name: None,
         };
 
         let result = convert_to_access_log_session(&session);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_session_name_basic() {
+        assert_eq!(generate_session_name("^/v2/api/.*"), "v2-api");
+    }
+
+    #[test]
+    fn test_generate_session_name_users_endpoint() {
+        assert_eq!(generate_session_name("^/api/v1/users/.*"), "api-v1-users");
+    }
+
+    #[test]
+    fn test_generate_session_name_complex_regex() {
+        assert_eq!(generate_session_name("^/api/v[0-9]+/orders/[0-9]+$"), "api-v-0-9-orders-0-9");
+    }
+
+    #[test]
+    fn test_generate_session_name_simple_path() {
+        assert_eq!(generate_session_name("/api/health"), "api-health");
+    }
+
+    #[test]
+    fn test_generate_session_name_empty() {
+        assert_eq!(generate_session_name(""), "");
+    }
+
+    #[test]
+    fn test_generate_session_name_only_regex_chars() {
+        assert_eq!(generate_session_name("^.*$"), "");
+    }
+
+    #[test]
+    fn test_generate_session_name_truncation() {
+        let long_pattern = "^/api/v1/this/is/a/very/long/path/that/exceeds/the/limit/of/forty/eight/characters/definitely/.*";
+        let result = generate_session_name(long_pattern);
+        assert!(result.len() <= 48);
+        assert!(!result.ends_with('-'));
+    }
+
+    #[test]
+    fn test_generate_session_name_no_leading_trailing_dashes() {
+        assert_eq!(generate_session_name("/api/users/"), "api-users");
+        assert_eq!(generate_session_name("^/api/"), "api");
+    }
+
+    #[test]
+    fn test_generate_session_name_collapse_dashes() {
+        // Multiple slashes should collapse to single dash
+        assert_eq!(generate_session_name("/api///users"), "api-users");
     }
 }

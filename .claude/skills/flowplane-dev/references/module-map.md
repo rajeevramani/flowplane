@@ -12,6 +12,9 @@ HTTP handlers, middleware, and route definitions for the REST API.
 | `handlers/organizations.rs` | Org, team, user, agent CRUD |
 | `handlers/bootstrap.rs` | First-time setup endpoints |
 | `handlers/dataplane.rs` | Dataplane operations |
+| `handlers/learning_sessions.rs` | Learning session CRUD + stop endpoint |
+| `handlers/aggregated_schemas.rs` | Schema listing, export, OpenAPI generation (`build_unified_openapi_spec()`) |
+| `handlers/openapi_utils.rs` | Schema-to-OpenAPI conversion helpers |
 | `error.rs` | `ApiError` type, error response formatting |
 | `rate_limit.rs` | Request rate limiting |
 
@@ -43,6 +46,7 @@ All `flowplane` CLI subcommands defined with clap.
 | `expose.rs` | Quick service exposure |
 | `import.rs` | OpenAPI import |
 | `learn.rs` | Learning sessions |
+| `schema.rs` | Schema list/get/export |
 | `status.rs` | Health checks, doctor |
 | `config.rs` | CLI config management |
 
@@ -95,7 +99,7 @@ MCP protocol implementation and tool definitions.
 | `filters.rs` | control_plane | `cp_create_filter`, `cp_list_filters`, `cp_get_filter`, `cp_delete_filter`, `cp_attach_filter`, `cp_detach_filter`, `cp_list_filter_attachments` |
 | `filter_types.rs` | control_plane | `cp_list_filter_types`, `cp_get_filter_type` |
 | `dataplanes.rs` | control_plane | `cp_list_dataplanes`, `cp_get_dataplane` |
-| `learning.rs` | control_plane | `cp_create_learning_session`, `cp_get_learning_session`, `cp_list_learning_sessions`, `cp_delete_learning_session`, `cp_activate_learning_session` |
+| `learning.rs` | control_plane | `cp_create_learning_session`, `cp_get_learning_session`, `cp_list_learning_sessions`, `cp_delete_learning_session`, `cp_activate_learning_session`, `cp_stop_learning` |
 | `schemas.rs` | control_plane | `cp_list_aggregated_schemas`, `cp_export_schema_openapi` |
 | `openapi.rs` | control_plane | OpenAPI import tools |
 | `ops_agent.rs` | control_plane | `ops_trace_request`, `ops_topology`, `ops_config_validate`, `ops_audit_query`, `ops_xds_delivery_status`, `ops_nack_history` |
@@ -117,6 +121,8 @@ Bridges REST, MCP, and CLI into a single operation interface. All three surfaces
 | `filters.rs` | `FilterOperations` — CRUD + attach/detach |
 | `virtual_hosts.rs` | `VirtualHostOperations` — CRUD |
 | `dataplanes.rs` | `DataplaneOperations` — CRUD |
+| `learning.rs` | `LearningSessionOperations` — create, list, get, delete, stop |
+| `schemas.rs` | `AggregatedSchemaOperations` — list, get with team filtering |
 | `auth.rs` | Auth context resolution |
 | `error.rs` | Unified error handling |
 
@@ -163,8 +169,8 @@ xDS protocol implementation — translates domain entities to Envoy protobuf res
 | `src/errors/` | Error types (`Error`, `Result`) |
 | `src/internal_api/` | Internal API endpoints |
 | `src/observability/` | OpenTelemetry tracing, Prometheus metrics |
-| `src/openapi/` | OpenAPI spec generation |
-| `src/schema/` | Schema inference from traffic |
+| `src/openapi/` | OpenAPI spec import + domain model dedup (`domain_models.rs`) |
+| `src/schema/` | Schema inference from traffic (`inference.rs`: enum detection, observed_values) |
 | `src/secrets/` | Vault integration for secret management |
 | `src/utils/` | Shared utilities |
 | `src/validation/` | Input validation |

@@ -16,11 +16,13 @@
 	let isLoadingPermissions = $state(true);
 
 	// Form state
+	let sessionName = $state('');
 	let routePattern = $state('^/api/.*');
 	let clusterName = $state('');
 	let httpMethods = $state<string[]>([]);
 	let targetSampleCount = $state(100);
 	let maxDurationSeconds = $state<number | null>(null);
+	let autoAggregate = $state(false);
 	let triggeredBy = $state('');
 	let deploymentVersion = $state('');
 
@@ -102,12 +104,20 @@
 				targetSampleCount
 			};
 
+			if (sessionName.trim()) {
+				request.name = sessionName.trim();
+			}
+
 			if (clusterName.trim()) {
 				request.clusterName = clusterName.trim();
 			}
 
 			if (httpMethods.length > 0) {
 				request.httpMethods = httpMethods;
+			}
+
+			if (autoAggregate) {
+				request.autoAggregate = true;
 			}
 
 			if (maxDurationSeconds && maxDurationSeconds > 0) {
@@ -173,6 +183,22 @@
 			<h2 class="text-lg font-semibold text-gray-900 mb-4">Traffic Matching</h2>
 
 			<div class="space-y-4">
+				<div>
+					<label for="sessionName" class="block text-sm font-medium text-gray-700 mb-1">
+						Session Name
+					</label>
+					<input
+						id="sessionName"
+						type="text"
+						bind:value={sessionName}
+						placeholder="e.g., mockbank-v1 (auto-generated if empty)"
+						class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+					/>
+					<p class="mt-1 text-sm text-gray-500">
+						A human-readable name for this session. Leave empty to auto-generate.
+					</p>
+				</div>
+
 				<div>
 					<label for="routePattern" class="block text-sm font-medium text-gray-700 mb-1">
 						Route Pattern (Regex) <span class="text-red-500">*</span>
@@ -258,6 +284,25 @@
 					<p class="mt-1 text-sm text-gray-500">
 						Session completes after capturing this many samples (1 - 100,000)
 					</p>
+				</div>
+
+				<div class="flex items-start gap-3">
+					<div class="flex h-6 items-center">
+						<input
+							id="autoAggregate"
+							type="checkbox"
+							bind:checked={autoAggregate}
+							class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+						/>
+					</div>
+					<div>
+						<label for="autoAggregate" class="text-sm font-medium text-gray-700">
+							Auto-aggregate
+						</label>
+						<p class="text-sm text-gray-500">
+							Periodically aggregate schemas while continuing to collect samples
+						</p>
+					</div>
 				</div>
 
 				<div>

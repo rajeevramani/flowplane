@@ -19,8 +19,13 @@ use crate::storage::repositories::{
     AggregatedSchemaRepository, CreateAggregatedSchemaRequest, InferredSchemaData,
     InferredSchemaRepository,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use tracing::{info, instrument, warn};
+
+/// Minimum number of samples before promoting observed values to enum
+const MIN_SAMPLES_FOR_ENUM: u64 = 10;
+/// Maximum cardinality for enum promotion (more distinct values = not an enum)
+const MAX_ENUM_CARDINALITY: usize = 10;
 
 /// Schema aggregation service
 pub struct SchemaAggregator {
@@ -47,6 +52,20 @@ impl SchemaAggregator {
     /// creating them in a single transaction.
     #[instrument(skip(self), fields(session_id = %session_id), name = "aggregate_session_schemas")]
     pub async fn aggregate_session(&self, session_id: &str) -> Result<Vec<i64>> {
+        self.aggregate_session_with_snapshot(session_id, Some(session_id.to_string()), None).await
+    }
+
+    /// Aggregate schemas for a session with optional snapshot metadata
+    ///
+    /// When `snapshot_session_id` and `snapshot_number` are provided, the aggregated
+    /// schemas are linked to the session and tagged with the snapshot number.
+    #[instrument(skip(self), fields(session_id = %session_id), name = "aggregate_session_schemas_snapshot")]
+    pub async fn aggregate_session_with_snapshot(
+        &self,
+        session_id: &str,
+        snapshot_session_id: Option<String>,
+        snapshot_number: Option<i64>,
+    ) -> Result<Vec<i64>> {
         info!(session_id = %session_id, "Starting schema aggregation for session");
 
         // Step 1: Fetch all inferred schemas for this session, grouped by endpoint
@@ -71,7 +90,7 @@ impl SchemaAggregator {
                 "Preparing endpoint aggregation"
             );
 
-            let request = self
+            let mut request = self
                 .prepare_aggregation(
                     &http_method,
                     &path_pattern,
@@ -79,6 +98,9 @@ impl SchemaAggregator {
                     observations,
                 )
                 .await?;
+
+            request.session_id = snapshot_session_id.clone();
+            request.snapshot_number = snapshot_number;
 
             create_requests.push(request);
         }
@@ -125,14 +147,16 @@ impl SchemaAggregator {
         // Use InferredSchema::merge() to properly combine observations
 
         // Aggregate request schemas by merging all observations
-        let request_schema = merge_schemas(&observations, |obs| obs.request_schema.as_ref())?;
+        let request_schema =
+            merge_schemas(&observations, |obs| obs.request_schema.as_ref(), Some(http_method))?;
 
         // Aggregate response schemas by status code.
         // Always insert the status code key so bodyless endpoints (DELETE 204,
         // GET collections) retain their status code in the aggregated record.
         let mut response_schemas_map = HashMap::new();
         if let Some(status) = response_status_code {
-            let response_schema = merge_schemas(&observations, |obs| obs.response_schema.as_ref())?;
+            let response_schema =
+                merge_schemas(&observations, |obs| obs.response_schema.as_ref(), None)?;
             response_schemas_map
                 .insert(status.to_string(), response_schema.unwrap_or(serde_json::Value::Null));
         }
@@ -214,6 +238,8 @@ impl SchemaAggregator {
             first_observed,
             last_observed,
             previous_version_id,
+            session_id: None,
+            snapshot_number: None,
         })
     }
 }
@@ -228,9 +254,12 @@ impl SchemaAggregator {
 ///
 /// After merging, the schema's `required` field is populated with fields
 /// that appear in 100% of observations.
+/// `http_method`: If `Some("PATCH")`, required fields are cleared on request schemas.
+/// Pass `None` for response schemas (they always get normal required analysis).
 fn merge_schemas<F>(
     observations: &[InferredSchemaData],
     schema_accessor: F,
+    http_method: Option<&str>,
 ) -> Result<Option<serde_json::Value>>
 where
     F: Fn(&InferredSchemaData) -> Option<&serde_json::Value> + Copy,
@@ -269,6 +298,14 @@ where
     // Calculate required fields based on 100% presence
     // For object schemas, determine which fields are required
     calculate_required_fields(&mut merged, total_observations);
+
+    // PATCH-aware: PATCH requests are partial updates, so no fields should be marked required
+    if http_method == Some("PATCH") {
+        clear_required_fields(&mut merged);
+    }
+
+    // Enum promotion: promote observed string values to enum when thresholds are met
+    promote_enums(&mut merged);
 
     // Convert merged schema to JSON value
     let result = serde_json::to_value(&merged).map_err(|e| {
@@ -448,6 +485,57 @@ fn calculate_required_fields(schema: &mut InferredSchema, total_observations: us
     }
 }
 
+/// Recursively clear all required fields from a schema.
+/// Used for PATCH requests where all fields are optional (partial update).
+fn clear_required_fields(schema: &mut InferredSchema) {
+    schema.required = None;
+
+    if let Some(ref mut properties) = schema.properties {
+        for field_schema in properties.values_mut() {
+            clear_required_fields(field_schema);
+        }
+    }
+
+    if let Some(ref mut items) = schema.items {
+        clear_required_fields(items);
+    }
+}
+
+/// Recursively promote observed string values to enum values when thresholds are met.
+///
+/// A string field is promoted to enum if:
+/// - It has `observed_values` (tracking was active)
+/// - `sample_count >= MIN_SAMPLES_FOR_ENUM` (enough data to be confident)
+/// - `unique observed values <= MAX_ENUM_CARDINALITY` (low cardinality = likely enum)
+///
+/// After promotion, `observed_values` is cleared (internal tracking only).
+fn promote_enums(schema: &mut InferredSchema) {
+    // Check if this field qualifies for enum promotion
+    if let Some(ref observed) = schema.observed_values {
+        if schema.stats.sample_count >= MIN_SAMPLES_FOR_ENUM {
+            let unique: BTreeSet<&str> = observed.iter().map(|s| s.as_str()).collect();
+            if unique.len() <= MAX_ENUM_CARDINALITY {
+                // Promote: set enum_values to sorted unique values
+                schema.enum_values = Some(unique.into_iter().map(String::from).collect());
+            }
+        }
+        // Always clear observed_values after aggregation (internal tracking only)
+        schema.observed_values = None;
+    }
+
+    // Recurse into object properties
+    if let Some(ref mut properties) = schema.properties {
+        for field_schema in properties.values_mut() {
+            promote_enums(field_schema);
+        }
+    }
+
+    // Recurse into array items
+    if let Some(ref mut items) = schema.items {
+        promote_enums(items);
+    }
+}
+
 /// Calculate comprehensive confidence score for aggregated schema
 ///
 /// Task 6.4: Confidence score based on multiple factors:
@@ -534,8 +622,8 @@ fn count_field_consistency(schema: &serde_json::Value, total: &mut usize, requir
                 }
             }
 
-            // Recursively check nested objects
-            if field_schema.get("type").and_then(|t| t.as_str()) == Some("object") {
+            // Recursively check nested objects (including oneOf with object variants)
+            if has_nested_object(field_schema) {
                 count_field_consistency(field_schema, total, required);
             }
         }
@@ -575,25 +663,37 @@ fn count_type_stability(schema: &serde_json::Value, total: &mut usize, stable: &
             *total += 1;
 
             // Check if type is stable (not a oneOf)
-            if let Some(type_val) = field_schema.get("type") {
-                let has_conflict = type_val.is_object() && type_val.get("oneof").is_some();
+            let has_conflict = field_schema
+                .get("type")
+                .map(|type_val| type_val.is_object() && type_val.get("oneof").is_some())
+                .unwrap_or(false);
 
-                if !has_conflict {
-                    *stable += 1;
-                }
-            } else {
-                // No type field means stable
+            if !has_conflict {
                 *stable += 1;
             }
 
             // Recursively check nested objects
-            if let Some(type_str) = field_schema.get("type").and_then(|t| t.as_str()) {
-                if type_str == "object" {
-                    count_type_stability(field_schema, total, stable);
-                }
+            // Handle both plain "object" type and oneOf containing "object"
+            if has_nested_object(field_schema) {
+                count_type_stability(field_schema, total, stable);
             }
         }
     }
+}
+
+/// Check if a field schema has nested object properties to recurse into.
+/// Handles both `"type": "object"` and `"type": {"oneof": [..., "object", ...]}`.
+fn has_nested_object(field_schema: &serde_json::Value) -> bool {
+    if let Some(type_val) = field_schema.get("type") {
+        if type_val.as_str() == Some("object") {
+            return true;
+        }
+        // oneOf containing "object" — field still has properties to recurse into
+        if let Some(oneof_arr) = type_val.get("oneof").and_then(|v| v.as_array()) {
+            return oneof_arr.iter().any(|t| t.as_str() == Some("object"));
+        }
+    }
+    false
 }
 
 /// Legacy simple confidence calculation (kept for backward compatibility in tests)
@@ -877,6 +977,185 @@ mod tests {
         // sample_score(10)=0.5, field=0.33, type=1.0
         // (0.5 * 0.4) + (0.33 * 0.4) + (1.0 * 0.2) = 0.2 + 0.132 + 0.2 = 0.532
         assert!(score > 0.50 && score < 0.56);
+    }
+
+    // === Enum promotion tests ===
+
+    #[test]
+    fn test_promote_enums_at_threshold() {
+        let mut schema = InferredSchema::new(crate::schema::SchemaType::String);
+        schema.stats.sample_count = MIN_SAMPLES_FOR_ENUM;
+        schema.observed_values = Some(vec!["active".into(), "inactive".into(), "pending".into()]);
+
+        promote_enums(&mut schema);
+
+        assert!(schema.observed_values.is_none(), "observed_values should be cleared");
+        assert_eq!(
+            schema.enum_values,
+            Some(vec!["active".into(), "inactive".into(), "pending".into()])
+        );
+    }
+
+    #[test]
+    fn test_promote_enums_below_threshold() {
+        let mut schema = InferredSchema::new(crate::schema::SchemaType::String);
+        schema.stats.sample_count = MIN_SAMPLES_FOR_ENUM - 1; // below threshold
+        schema.observed_values = Some(vec!["a".into(), "b".into()]);
+
+        promote_enums(&mut schema);
+
+        assert!(schema.observed_values.is_none(), "observed_values cleared regardless");
+        assert!(schema.enum_values.is_none(), "Should not promote below threshold");
+    }
+
+    #[test]
+    fn test_promote_enums_high_cardinality_rejected() {
+        let mut schema = InferredSchema::new(crate::schema::SchemaType::String);
+        schema.stats.sample_count = 20;
+        // 11 unique values > MAX_ENUM_CARDINALITY (10)
+        schema.observed_values = Some((0..11).map(|i| format!("val_{}", i)).collect());
+
+        promote_enums(&mut schema);
+
+        assert!(schema.enum_values.is_none(), "High cardinality should not promote");
+    }
+
+    #[test]
+    fn test_promote_enums_nested_objects() {
+        use crate::schema::SchemaType;
+
+        let mut inner = InferredSchema::new(SchemaType::String);
+        inner.stats.sample_count = 15;
+        inner.observed_values = Some(vec!["low".into(), "medium".into(), "high".into()]);
+
+        let mut props = HashMap::new();
+        props.insert("priority".to_string(), inner);
+
+        let mut schema = InferredSchema::new(SchemaType::Object);
+        schema.properties = Some(props);
+
+        promote_enums(&mut schema);
+
+        let priority = schema.properties.as_ref().and_then(|p| p.get("priority"));
+        assert_eq!(
+            priority.and_then(|s| s.enum_values.as_ref()),
+            Some(&vec!["high".to_string(), "low".to_string(), "medium".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_promote_enums_sorted_output() {
+        let mut schema = InferredSchema::new(crate::schema::SchemaType::String);
+        schema.stats.sample_count = 10;
+        schema.observed_values = Some(vec!["z".into(), "a".into(), "m".into()]);
+
+        promote_enums(&mut schema);
+
+        assert_eq!(
+            schema.enum_values,
+            Some(vec!["a".into(), "m".into(), "z".into()]),
+            "Enum values should be sorted"
+        );
+    }
+
+    // === PATCH-aware requirement tests ===
+
+    #[test]
+    fn test_clear_required_fields() {
+        use crate::schema::SchemaType;
+
+        let mut inner = InferredSchema::new(SchemaType::String);
+        inner.required = Some(vec!["nested_field".into()]);
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), InferredSchema::new(SchemaType::String));
+        props.insert("address".to_string(), inner);
+
+        let mut schema = InferredSchema::new(SchemaType::Object);
+        schema.properties = Some(props);
+        schema.required = Some(vec!["name".into()]);
+
+        clear_required_fields(&mut schema);
+
+        assert!(schema.required.is_none(), "Top-level required should be cleared");
+        let address = schema.properties.as_ref().and_then(|p| p.get("address"));
+        assert!(
+            address.and_then(|s| s.required.as_ref()).is_none(),
+            "Nested required should also be cleared"
+        );
+    }
+
+    // === Confidence scoring edge case tests ===
+
+    #[test]
+    fn test_field_consistency_empty_schema_returns_1() {
+        // No properties at all — should return 1.0
+        let schema = serde_json::json!({"type": "object"});
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+        let score = calculate_field_consistency_score(&None, &response_map);
+        assert_eq!(score, 1.0, "Empty schema should return 1.0 for consistency");
+    }
+
+    #[test]
+    fn test_type_stability_empty_schema_returns_1() {
+        let schema = serde_json::json!({"type": "object"});
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+        let score = calculate_type_stability_score(&None, &response_map);
+        assert_eq!(score, 1.0, "Empty schema should return 1.0 for stability");
+    }
+
+    #[test]
+    fn test_type_stability_oneof_object_with_nested_props() {
+        // Field with oneOf containing object — should recurse into properties
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": {"oneof": ["object", "null"]},
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"}
+                    }
+                }
+            }
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_type_stability_score(&None, &response_map);
+        // 3 total fields: data (unstable, oneOf), id (stable), name (stable)
+        // 2 stable out of 3 = 0.667
+        assert!((score - 0.667).abs() < 0.01, "Expected ~0.667 but got {}", score);
+    }
+
+    #[test]
+    fn test_field_consistency_oneof_object_with_nested_props() {
+        // Field with oneOf containing object — should recurse into properties
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": {"oneof": ["object", "null"]},
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"}
+                    },
+                    "required": ["id"]
+                }
+            },
+            "required": ["data"]
+        });
+
+        let mut response_map = HashMap::new();
+        response_map.insert("200".to_string(), schema);
+
+        let score = calculate_field_consistency_score(&None, &response_map);
+        // 3 total fields: data (required), id (required), name (not required)
+        // 2 required out of 3 = 0.667
+        assert!((score - 0.667).abs() < 0.01, "Expected ~0.667 but got {}", score);
     }
 
     #[cfg(feature = "postgres_tests")]

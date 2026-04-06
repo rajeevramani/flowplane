@@ -101,15 +101,16 @@ All 64 MCP tools grouped by category. Use via `tools/call` on the `/api/v1/mcp` 
 | `cp_update_dataplane` | Update dataplane config | `team` (string), `name` (string) | `gatewayHost` (string), `description` (string) |
 | `cp_delete_dataplane` | Delete a dataplane | `team` (string), `name` (string) | — |
 
-## Learning Session Tools (5)
+## Learning Session Tools (6)
 
 | Tool | Description | Required Params | Optional Params |
 |------|-------------|----------------|-----------------|
 | `cp_list_learning_sessions` | List learning sessions | — | `status` (enum: pending/active/completing/completed/cancelled/failed), `limit`, `offset` |
-| `cp_get_learning_session` | Get learning session details | `id` (string, UUID) | — |
-| `cp_create_learning_session` | Create learning session | `routePattern` (string), `targetSampleCount` (int) | `clusterName` (string), `httpMethods` (string array), `autoStart` (bool, default true) |
-| `cp_activate_learning_session` | Activate a pending session | `id` (string, UUID) | — |
-| `cp_delete_learning_session` | Cancel/delete a session | `id` (string, UUID) | — |
+| `cp_get_learning_session` | Get learning session details | `id` (string, name or UUID) | — |
+| `cp_create_learning_session` | Create learning session | `routePattern` (string), `targetSampleCount` (int) | `name` (string), `clusterName` (string), `httpMethods` (string array), `autoStart` (bool, default true), `autoAggregate` (bool, default false) |
+| `cp_activate_learning_session` | Activate a pending session | `id` (string, name or UUID) | — |
+| `cp_stop_learning` | Stop active session, trigger final aggregation | `id` (string, name or UUID) | — |
+| `cp_delete_learning_session` | Cancel/delete a session | `id` (string, name or UUID) | — |
 
 ## Schema Tools (3)
 
@@ -117,7 +118,7 @@ All 64 MCP tools grouped by category. Use via `tools/call` on the `/api/v1/mcp` 
 |------|-------------|----------------|-----------------|
 | `cp_list_aggregated_schemas` | List discovered API schemas | — | `path` (string), `httpMethod` (enum), `minConfidence` (float 0-1), `latestOnly` (bool), `limit`, `offset` |
 | `cp_get_aggregated_schema` | Get schema details | `id` (int) | — |
-| `cp_export_schema_openapi` | Export schemas as OpenAPI 3.1 | `schemaIds` (int array) | `title` (string), `version` (string), `description` (string), `includeMetadata` (bool) |
+| `cp_export_schema_openapi` | Export schemas as OpenAPI 3.1 (with domain model `$ref` dedup) | `schemaIds` (int array) | `title` (string), `version` (string), `description` (string), `includeMetadata` (bool) |
 
 ## OpenAPI Import Tools (2)
 

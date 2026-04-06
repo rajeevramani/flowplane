@@ -29,6 +29,8 @@ struct AggregatedSchemaRow {
     pub last_observed: chrono::DateTime<chrono::Utc>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub session_id: Option<String>,
+    pub snapshot_number: Option<i64>,
 }
 
 /// Aggregated API schema data
@@ -51,6 +53,8 @@ pub struct AggregatedSchemaData {
     pub last_observed: chrono::DateTime<chrono::Utc>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub session_id: Option<String>,
+    pub snapshot_number: Option<i64>,
 }
 
 impl TryFrom<AggregatedSchemaRow> for AggregatedSchemaData {
@@ -100,6 +104,8 @@ impl TryFrom<AggregatedSchemaRow> for AggregatedSchemaData {
             last_observed: row.last_observed,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            session_id: row.session_id,
+            snapshot_number: row.snapshot_number,
         })
     }
 }
@@ -142,6 +148,8 @@ pub struct CreateAggregatedSchemaRequest {
     pub first_observed: chrono::DateTime<chrono::Utc>,
     pub last_observed: chrono::DateTime<chrono::Utc>,
     pub previous_version_id: Option<i64>,
+    pub session_id: Option<String>,
+    pub snapshot_number: Option<i64>,
 }
 
 /// Repository for aggregated schema data access
@@ -222,8 +230,9 @@ impl AggregatedSchemaRepository {
                 team, path, http_method, version, previous_version_id,
                 request_schema, response_schemas, request_headers, response_headers,
                 sample_count, confidence_score,
-                breaking_changes, first_observed, last_observed, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                breaking_changes, first_observed, last_observed, created_at, updated_at,
+                session_id, snapshot_number
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             RETURNING id",
         )
         .bind(&request.team)
@@ -242,6 +251,8 @@ impl AggregatedSchemaRepository {
         .bind(request.last_observed)
         .bind(now)
         .bind(now)
+        .bind(&request.session_id)
+        .bind(request.snapshot_number)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
@@ -344,8 +355,9 @@ impl AggregatedSchemaRepository {
                     team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 RETURNING id",
             )
             .bind(&request.team)
@@ -364,6 +376,8 @@ impl AggregatedSchemaRepository {
             .bind(request.last_observed)
             .bind(now)
             .bind(now)
+            .bind(&request.session_id)
+            .bind(request.snapshot_number)
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| {
@@ -411,7 +425,8 @@ impl AggregatedSchemaRepository {
             "SELECT id, team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
              FROM aggregated_api_schemas WHERE id = $1",
         )
         .bind(id)
@@ -456,7 +471,8 @@ impl AggregatedSchemaRepository {
             "SELECT id, team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
              FROM aggregated_api_schemas
              WHERE id IN ({})
              ORDER BY path, http_method",
@@ -491,7 +507,8 @@ impl AggregatedSchemaRepository {
             "SELECT id, team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
              FROM aggregated_api_schemas
              WHERE team = $1 AND path = $2 AND http_method = $3
              ORDER BY version DESC
@@ -520,7 +537,8 @@ impl AggregatedSchemaRepository {
             "SELECT id, team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
              FROM aggregated_api_schemas
              ORDER BY created_at DESC",
         )
@@ -544,7 +562,8 @@ impl AggregatedSchemaRepository {
             "SELECT id, team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
              FROM aggregated_api_schemas
              WHERE team = $1
              ORDER BY created_at DESC",
@@ -570,7 +589,8 @@ impl AggregatedSchemaRepository {
             "SELECT a.id, a.team, a.path, a.http_method, a.version, a.previous_version_id,
                     a.request_schema, a.response_schemas, a.request_headers, a.response_headers,
                     a.sample_count, a.confidence_score,
-                    a.breaking_changes, a.first_observed, a.last_observed, a.created_at, a.updated_at
+                    a.breaking_changes, a.first_observed, a.last_observed, a.created_at, a.updated_at,
+                    a.session_id, a.snapshot_number
              FROM aggregated_api_schemas a
              INNER JOIN (
                  SELECT team, path, http_method, MAX(version) as max_version
@@ -610,7 +630,8 @@ impl AggregatedSchemaRepository {
             "SELECT id, team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
              FROM aggregated_api_schemas
              WHERE team = $1 AND path = $2 AND http_method = $3
              ORDER BY version DESC",
@@ -644,7 +665,8 @@ impl AggregatedSchemaRepository {
             "SELECT id, team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
              FROM aggregated_api_schemas
              WHERE team = $1 AND path = $2 AND http_method = $3 AND version = $4",
         )
@@ -673,12 +695,14 @@ impl AggregatedSchemaRepository {
         path_search: Option<&str>,
         http_method: Option<&str>,
         min_confidence: Option<f64>,
+        session_id: Option<&str>,
     ) -> Result<Vec<AggregatedSchemaData>> {
         let mut query = String::from(
             "SELECT id, team, path, http_method, version, previous_version_id,
                     request_schema, response_schemas, request_headers, response_headers,
                     sample_count, confidence_score,
-                    breaking_changes, first_observed, last_observed, created_at, updated_at
+                    breaking_changes, first_observed, last_observed, created_at, updated_at,
+                    session_id, snapshot_number
              FROM aggregated_api_schemas
              WHERE team = $1",
         );
@@ -700,6 +724,11 @@ impl AggregatedSchemaRepository {
             query.push_str(&format!(" AND confidence_score >= ${}", bind_count));
         }
 
+        if session_id.is_some() {
+            bind_count += 1;
+            query.push_str(&format!(" AND session_id = ${}", bind_count));
+        }
+
         query.push_str(" ORDER BY created_at DESC");
 
         let mut query_builder =
@@ -715,6 +744,10 @@ impl AggregatedSchemaRepository {
 
         if let Some(confidence) = min_confidence {
             query_builder = query_builder.bind(confidence);
+        }
+
+        if let Some(sid) = session_id {
+            query_builder = query_builder.bind(sid);
         }
 
         let rows = query_builder.fetch_all(&self.pool).await.map_err(|e| {
@@ -756,6 +789,8 @@ mod tests {
             first_observed: chrono::Utc::now(),
             last_observed: chrono::Utc::now(),
             previous_version_id: None,
+            session_id: None,
+            snapshot_number: None,
         };
 
         let created = repo.create(request).await.unwrap();
@@ -795,6 +830,8 @@ mod tests {
             first_observed: now,
             last_observed: now,
             previous_version_id: None,
+            session_id: None,
+            snapshot_number: None,
         };
 
         let v1 = repo.create(request1).await.unwrap();
@@ -815,6 +852,8 @@ mod tests {
             first_observed: now,
             last_observed: now,
             previous_version_id: Some(v1.id),
+            session_id: None,
+            snapshot_number: None,
         };
 
         let v2 = repo.create(request2).await.unwrap();
@@ -846,6 +885,8 @@ mod tests {
                 first_observed: now,
                 last_observed: now,
                 previous_version_id: None,
+                session_id: None,
+                snapshot_number: None,
             };
 
             repo.create(request).await.unwrap();
@@ -882,6 +923,8 @@ mod tests {
                     first_observed: now,
                     last_observed: now,
                     previous_version_id: None,
+                    session_id: None,
+                    snapshot_number: None,
                 };
 
                 repo.create(request).await.unwrap();
@@ -923,6 +966,8 @@ mod tests {
                 first_observed: now,
                 last_observed: now,
                 previous_version_id: None,
+                session_id: None,
+                snapshot_number: None,
             };
             let schema = repo.create(request).await.unwrap();
             ids.push(schema.id);
@@ -972,6 +1017,8 @@ mod tests {
                 first_observed: now,
                 last_observed: now,
                 previous_version_id: None,
+                session_id: None,
+                snapshot_number: None,
             };
             let schema = repo.create(request).await.unwrap();
             ids.push(schema.id);
@@ -1007,6 +1054,8 @@ mod tests {
             first_observed: now,
             last_observed: now,
             previous_version_id: None,
+            session_id: None,
+            snapshot_number: None,
         };
 
         let schema = repo.create(request).await.unwrap();
