@@ -293,6 +293,24 @@ pub async fn list_aggregated_schemas_handler(
         .as_ref()
         .ok_or_else(|| ApiError::Internal("Repository not configured".to_string()))?;
 
+    // Resolve session name-or-id to session UUID if provided
+    let resolved_session_id = if let Some(ref session_ref) = query.session_id {
+        let pool = state
+            .xds_state
+            .pool
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal("Database pool not configured".to_string()))?;
+        let session_repo =
+            crate::storage::repositories::LearningSessionRepository::new(pool.clone());
+        let session = session_repo.get_by_name_or_id(&team, session_ref).await.map_err(|e| {
+            tracing::warn!(error = %e, session_ref = %session_ref, "Failed to resolve session");
+            ApiError::NotFound(format!("Learning session '{}' not found", session_ref))
+        })?;
+        Some(session.id)
+    } else {
+        None
+    };
+
     // List schemas with filters
     let schemas = repo
         .list_filtered(
@@ -300,7 +318,7 @@ pub async fn list_aggregated_schemas_handler(
             query.path.as_deref(),
             query.http_method.as_deref(),
             query.min_confidence,
-            query.session_id.as_deref(),
+            resolved_session_id.as_deref(),
         )
         .await
         .map_err(|e| {
