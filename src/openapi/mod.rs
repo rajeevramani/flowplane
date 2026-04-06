@@ -22,6 +22,7 @@ use crate::{
 const EXTENSION_GLOBAL_FILTERS: &str = "x-flowplane-filters";
 
 pub mod defaults;
+pub mod domain_models;
 
 /// Listener mode for import operations
 #[derive(Debug, Clone, Serialize, Deserialize)]

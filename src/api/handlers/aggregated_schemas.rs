@@ -1044,7 +1044,53 @@ pub fn build_unified_openapi_spec(
         }
     }
 
-    let mut components = serde_json::json!({"schemas": {}});
+    // Domain model deduplication: discover shared schemas and replace with $ref
+    let schema_entries: Vec<crate::openapi::domain_models::SchemaEntry> = schemas
+        .iter()
+        .map(|s| {
+            let parsed = parse_path_with_query(&s.path);
+            crate::openapi::domain_models::SchemaEntry {
+                path: parsed.base_path,
+                method: s.http_method.clone(),
+                request_schema: s.request_schema.clone().map(|mut rs| {
+                    strip_internal_attributes(&mut rs);
+                    convert_schema_to_openapi(&rs)
+                }),
+                response_schemas: s.response_schemas.clone().map(|mut rs| {
+                    strip_internal_attributes(&mut rs);
+                    // Convert each response schema within the map
+                    if let Some(map) = rs.as_object_mut() {
+                        for (_code, resp_schema) in map.iter_mut() {
+                            if !resp_schema.is_null() {
+                                *resp_schema = convert_schema_to_openapi(resp_schema);
+                            }
+                        }
+                    }
+                    rs
+                }),
+            }
+        })
+        .collect();
+
+    let discovery = crate::openapi::domain_models::discover_domain_models(&schema_entries);
+
+    // Replace inline schemas in paths with $ref pointers
+    if !discovery.models.is_empty() {
+        crate::openapi::domain_models::replace_with_refs(
+            &mut paths,
+            &discovery.fingerprint_to_name,
+        );
+    }
+
+    // Build components with discovered domain model schemas
+    let mut components = if discovery.models.is_empty() {
+        serde_json::json!({"schemas": {}})
+    } else {
+        let model_schemas =
+            crate::openapi::domain_models::build_components_schemas(&discovery.models);
+        serde_json::json!({"schemas": model_schemas})
+    };
+
     if security_schemes.as_object().is_some_and(|m| !m.is_empty()) {
         components["securitySchemes"] = security_schemes;
     }

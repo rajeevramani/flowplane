@@ -367,7 +367,7 @@ static PLURAL_MAP: &[(&str, &str)] = &[
 /// - `-ies` → `-y` (e.g., `categories` → `category`)
 /// - `-ses` → `-s` but not `-sses` (e.g., `addresses` → `address`, but `processes` → `process`)
 /// - `-s` → strip but not `-ss` (e.g., `users` → `user`, but `class` stays `class`)
-fn singularize(word: &str) -> String {
+pub(crate) fn singularize(word: &str) -> String {
     let lower = word.to_lowercase();
 
     // Lookup table (binary search on sorted array)
