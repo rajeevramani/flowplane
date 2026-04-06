@@ -688,6 +688,7 @@ Start a learning session to record API traffic and infer schemas.
 
 ```
 flowplane learn start --route-pattern <REGEX> --target-sample-count <N> \
+  [--name <NAME>] [--auto-aggregate] \
   [--cluster-name <NAME>] [--http-methods <M>...] \
   [--max-duration-seconds <N>] [--triggered-by <WHO>] \
   [--deployment-version <VER>] [-o json|yaml|table]
@@ -697,6 +698,8 @@ flowplane learn start --route-pattern <REGEX> --target-sample-count <N> \
 |---|---|---|
 | `--route-pattern` | Yes | Regex to match request paths |
 | `--target-sample-count` | Yes | Number of samples to collect |
+| `--name` | No | Human-readable session name. Auto-generated from route pattern if omitted |
+| `--auto-aggregate` | No | Enable snapshot mode: aggregate every N samples and keep collecting |
 | `--cluster-name` | No | Filter to a specific cluster |
 | `--http-methods` | No | Filter by HTTP methods (space-separated) |
 | `--max-duration-seconds` | No | Max session duration |
@@ -706,9 +709,39 @@ flowplane learn start --route-pattern <REGEX> --target-sample-count <N> \
 Sessions auto-activate and begin collecting immediately. They can collect more samples than the target.
 
 ```bash
-flowplane learn start --route-pattern '^/api/.*' --target-sample-count 50
-flowplane learn start --route-pattern '^/get.*' --target-sample-count 100 \
-  --cluster-name my-cluster --http-methods GET POST
+flowplane learn start --name my-api --route-pattern '^/api/.*' --target-sample-count 50
+flowplane learn start --name continuous --route-pattern '^/api/.*' --target-sample-count 100 --auto-aggregate
+```
+
+### flowplane learn stop
+
+Stop an active session and trigger final schema aggregation. Useful for auto-aggregate sessions that run indefinitely.
+
+```
+flowplane learn stop <NAME_OR_ID> [-o json|yaml|table]
+```
+
+All learn subcommands accept a session **name** or **UUID**.
+
+```bash
+flowplane learn stop my-api
+```
+
+### flowplane learn export
+
+Export schemas from learning sessions as OpenAPI 3.1. Convenience shortcut for `flowplane schema export --all`.
+
+```
+flowplane learn export [--session <NAME_OR_ID>] [--min-confidence <FLOAT>] \
+  [--title <TITLE>] [--version <VER>] [--description <DESC>] [-o <FILE>]
+```
+
+Output goes to stdout as YAML by default. Use `-o file.yaml` or `-o file.json` to write to a file (format auto-detected from extension).
+
+```bash
+flowplane learn export                                    # all schemas, YAML to stdout
+flowplane learn export --session my-api -o api.yaml       # from specific session
+flowplane learn export --min-confidence 0.7 -o api.json   # high-confidence only
 ```
 
 ### flowplane learn list
@@ -727,23 +760,85 @@ flowplane learn list --status active
 ### flowplane learn get
 
 ```
-flowplane learn get <SESSION_ID> [-o json|yaml|table]
+flowplane learn get <NAME_OR_ID> [-o json|yaml|table]
 ```
 
 ```bash
-flowplane learn get <session-id> -o json
+flowplane learn get my-api -o json
 ```
 
 ### flowplane learn cancel
 
 ```
-flowplane learn cancel <SESSION_ID> [--yes]
+flowplane learn cancel <NAME_OR_ID> [--yes]
 ```
 
 > ⚠️ In non-interactive mode (piped stdin), cancel without `--yes` silently does nothing. Always use `--yes` in scripts.
 
 ```bash
-flowplane learn cancel <session-id> --yes
+flowplane learn cancel my-api --yes
+```
+
+---
+
+## Schemas
+
+List, inspect, and export API schemas discovered by learning sessions.
+
+### flowplane schema list
+
+```
+flowplane schema list [--min-confidence <FLOAT>] [--path <PATTERN>] [--method <METHOD>] \
+  [--session <NAME_OR_ID>] [--latest-only] [--limit N] [--offset N] [-o json|yaml|table]
+```
+
+```bash
+flowplane schema list                              # table view
+flowplane schema list --min-confidence 0.7         # high-confidence only
+flowplane schema list --session my-api             # from specific session
+```
+
+### flowplane schema get
+
+```
+flowplane schema get <ID> [-o json|yaml|table]
+```
+
+Table output shows field names, types, formats, and required markers.
+
+```bash
+flowplane schema get 1 -o table
+flowplane schema get 1 -o json
+```
+
+### flowplane schema export
+
+Export schemas as an OpenAPI 3.1 specification. Shared schemas are deduplicated into `components/schemas` with `$ref` references.
+
+```
+flowplane schema export (--all | --id <ID,ID,...>) \
+  [--session <NAME_OR_ID>] [--min-confidence <FLOAT>] \
+  [--title <TITLE>] [--version <VER>] [--description <DESC>] [-o <FILE>]
+```
+
+| Flag | Description |
+|---|---|
+| `--all` | Export all latest schemas |
+| `--id 1,2,3` | Export specific schema IDs (comma-separated) |
+| `--session` | Filter to schemas from a specific learning session |
+| `--min-confidence` | Only export schemas above this confidence threshold |
+| `--title` | API title in the spec (default: "Learned API") |
+| `--version` | API version (default: "1.0.0") |
+| `-o <FILE>` | Write to file. Format auto-detected: `.yaml`/`.yml` = YAML, `.json` = JSON. Stdout defaults to YAML |
+
+Without `--id` or `--all`, shows available schemas and exits with a helpful error.
+
+```bash
+flowplane schema export --all                               # YAML to stdout
+flowplane schema export --all -o api.yaml                   # write to file
+flowplane schema export --id 1,2,3 -o subset.json           # specific schemas
+flowplane schema export --session my-api --all -o api.yaml  # from specific session
+flowplane schema export --all --min-confidence 0.7          # high-confidence only
 ```
 
 ---

@@ -40,7 +40,7 @@ Any client that supports Streamable HTTP transport can connect. Set the URL to `
 
 ## Tools
 
-Flowplane registers 68 tools. They fall into two categories:
+Flowplane registers 69 tools. They fall into two categories:
 
 - **Control plane tools** (`cp_*`, `ops_*`, `devops_*`, `dev_*`) — manage gateway configuration and diagnose issues.
 - **Gateway API tools** (`api_*`) — proxy calls through the Envoy gateway to upstream services. These are generated dynamically from learned or imported API schemas.
@@ -56,8 +56,8 @@ Flowplane registers 68 tools. They fall into two categories:
 | **Routes** | `cp_list_routes`, `cp_get_route`, `cp_create_route`, `cp_update_route`, `cp_delete_route`, `cp_query_path` | Path-to-cluster routing rules |
 | **Filters** | `cp_list_filters`, `cp_get_filter`, `cp_create_filter`, `cp_update_filter`, `cp_delete_filter`, `cp_attach_filter`, `cp_detach_filter`, `cp_list_filter_attachments`, `cp_list_filter_types`, `cp_get_filter_type` | HTTP filters and filter chains |
 | **Dataplanes** | `cp_list_dataplanes`, `cp_get_dataplane`, `cp_create_dataplane`, `cp_update_dataplane`, `cp_delete_dataplane` | Envoy instance management |
-| **Learning** | `cp_list_learning_sessions`, `cp_get_learning_session`, `cp_create_learning_session`, `cp_activate_learning_session`, `cp_delete_learning_session` | API traffic learning and schema generation |
-| **Schemas** | `cp_list_aggregated_schemas`, `cp_get_aggregated_schema`, `cp_export_schema_openapi` | Aggregated API schemas and OpenAPI export |
+| **Learning** | `cp_list_learning_sessions`, `cp_get_learning_session`, `cp_create_learning_session`, `cp_activate_learning_session`, `cp_stop_learning`, `cp_delete_learning_session` | API traffic learning and schema generation. Sessions support `name` for human-readable references and `autoAggregate` for continuous collection with periodic snapshots |
+| **Schemas** | `cp_list_aggregated_schemas`, `cp_get_aggregated_schema`, `cp_export_schema_openapi` | Aggregated API schemas and OpenAPI 3.1 export with domain model `$ref` deduplication |
 | **OpenAPI Import** | `cp_list_openapi_imports`, `cp_get_openapi_import` | Import routes from OpenAPI specs |
 | **Secrets** | `cp_list_secrets`, `cp_get_secret`, `cp_create_secret`, `cp_delete_secret` | Secrets for filter configs |
 
