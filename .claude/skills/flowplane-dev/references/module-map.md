@@ -12,6 +12,9 @@ HTTP handlers, middleware, and route definitions for the REST API.
 | `handlers/organizations.rs` | Org, team, user, agent CRUD |
 | `handlers/bootstrap.rs` | First-time setup endpoints |
 | `handlers/dataplane.rs` | Dataplane operations |
+| `handlers/learning_sessions.rs` | Learning session CRUD + stop endpoint |
+| `handlers/aggregated_schemas.rs` | Schema listing, export, OpenAPI generation (`build_unified_openapi_spec()`) |
+| `handlers/openapi_utils.rs` | Schema-to-OpenAPI conversion helpers |
 | `error.rs` | `ApiError` type, error response formatting |
 | `rate_limit.rs` | Request rate limiting |
 
@@ -117,6 +120,8 @@ Bridges REST, MCP, and CLI into a single operation interface. All three surfaces
 | `filters.rs` | `FilterOperations` — CRUD + attach/detach |
 | `virtual_hosts.rs` | `VirtualHostOperations` — CRUD |
 | `dataplanes.rs` | `DataplaneOperations` — CRUD |
+| `learning.rs` | `LearningSessionOperations` — create, list, get, delete, stop |
+| `schemas.rs` | `AggregatedSchemaOperations` — list, get with team filtering |
 | `auth.rs` | Auth context resolution |
 | `error.rs` | Unified error handling |
 
@@ -163,8 +168,8 @@ xDS protocol implementation — translates domain entities to Envoy protobuf res
 | `src/errors/` | Error types (`Error`, `Result`) |
 | `src/internal_api/` | Internal API endpoints |
 | `src/observability/` | OpenTelemetry tracing, Prometheus metrics |
-| `src/openapi/` | OpenAPI spec generation |
-| `src/schema/` | Schema inference from traffic |
+| `src/openapi/` | OpenAPI spec import + domain model dedup (`domain_models.rs`) |
+| `src/schema/` | Schema inference from traffic (`inference.rs`: enum detection, observed_values) |
 | `src/secrets/` | Vault integration for secret management |
 | `src/utils/` | Shared utilities |
 | `src/validation/` | Input validation |

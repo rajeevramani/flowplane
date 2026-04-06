@@ -345,6 +345,9 @@ flowplane import openapi ./other-api.yaml --name other --port 10002
 # Start a learning session (auto-activates, begins collecting immediately)
 flowplane learn start --route-pattern '^/api/.*' --target-sample-count 50
 
+# Auto-aggregate mode: periodic snapshots while continuing to collect
+flowplane learn start --route-pattern '^/api/.*' --target-sample-count 50 --auto-aggregate
+
 # Optional filters: cluster, HTTP methods, duration limit
 flowplane learn start --route-pattern '^/get.*' --target-sample-count 100 \
   --cluster-name my-cluster --http-methods GET POST --max-duration-seconds 3600
@@ -355,7 +358,10 @@ flowplane learn list -o json                      # JSON with all fields
 flowplane learn get <session-id>                  # Single session details
 flowplane learn get <session-id> -o json          # Full JSON output
 
-# Cancel (always use --yes in scripts — without it, non-interactive stdin = silent no-op)
+# Stop session (triggers final aggregation, then completes)
+flowplane learn stop <session-id>
+
+# Cancel (discards without aggregating — use --yes in scripts)
 flowplane learn cancel <session-id> --yes
 ```
 
