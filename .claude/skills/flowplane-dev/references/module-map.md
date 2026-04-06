@@ -46,6 +46,7 @@ All `flowplane` CLI subcommands defined with clap.
 | `expose.rs` | Quick service exposure |
 | `import.rs` | OpenAPI import |
 | `learn.rs` | Learning sessions |
+| `schema.rs` | Schema list/get/export |
 | `status.rs` | Health checks, doctor |
 | `config.rs` | CLI config management |
 
@@ -98,7 +99,7 @@ MCP protocol implementation and tool definitions.
 | `filters.rs` | control_plane | `cp_create_filter`, `cp_list_filters`, `cp_get_filter`, `cp_delete_filter`, `cp_attach_filter`, `cp_detach_filter`, `cp_list_filter_attachments` |
 | `filter_types.rs` | control_plane | `cp_list_filter_types`, `cp_get_filter_type` |
 | `dataplanes.rs` | control_plane | `cp_list_dataplanes`, `cp_get_dataplane` |
-| `learning.rs` | control_plane | `cp_create_learning_session`, `cp_get_learning_session`, `cp_list_learning_sessions`, `cp_delete_learning_session`, `cp_activate_learning_session` |
+| `learning.rs` | control_plane | `cp_create_learning_session`, `cp_get_learning_session`, `cp_list_learning_sessions`, `cp_delete_learning_session`, `cp_activate_learning_session`, `cp_stop_learning` |
 | `schemas.rs` | control_plane | `cp_list_aggregated_schemas`, `cp_export_schema_openapi` |
 | `openapi.rs` | control_plane | OpenAPI import tools |
 | `ops_agent.rs` | control_plane | `ops_trace_request`, `ops_topology`, `ops_config_validate`, `ops_audit_query`, `ops_xds_delivery_status`, `ops_nack_history` |

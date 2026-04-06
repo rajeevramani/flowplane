@@ -342,36 +342,63 @@ flowplane import openapi ./other-api.yaml --name other --port 10002
 
 ### Learn API from traffic
 ```bash
-# Start a learning session (auto-activates, begins collecting immediately)
-flowplane learn start --route-pattern '^/api/.*' --target-sample-count 50
+# Start a named learning session (auto-activates, begins collecting immediately)
+flowplane learn start --route-pattern '^/api/.*' --target-sample-count 50 --name my-api-v1
 
 # Auto-aggregate mode: periodic snapshots while continuing to collect
-flowplane learn start --route-pattern '^/api/.*' --target-sample-count 50 --auto-aggregate
+flowplane learn start --route-pattern '^/api/.*' --target-sample-count 50 --name my-api-v1 --auto-aggregate
 
 # Optional filters: cluster, HTTP methods, duration limit
 flowplane learn start --route-pattern '^/get.*' --target-sample-count 100 \
-  --cluster-name my-cluster --http-methods GET POST --max-duration-seconds 3600
+  --name httpbin-learn --cluster-name my-cluster --http-methods GET POST
 
-# Monitor sessions
+# Monitor sessions (all accept name or UUID)
 flowplane learn list                              # Table view
 flowplane learn list -o json                      # JSON with all fields
-flowplane learn get <session-id>                  # Single session details
-flowplane learn get <session-id> -o json          # Full JSON output
+flowplane learn get my-api-v1                     # By name
+flowplane learn get <session-id> -o json          # By UUID
 
 # Stop session (triggers final aggregation, then completes)
-flowplane learn stop <session-id>
+flowplane learn stop my-api-v1                    # By name or UUID
 
 # Cancel (discards without aggregating — use --yes in scripts)
-flowplane learn cancel <session-id> --yes
+flowplane learn cancel my-api-v1 --yes
+
+# Export schemas as OpenAPI
+flowplane learn export --session my-api-v1 -o api.yaml
+flowplane schema export --all -o api.yaml
 ```
 
 Full workflow:
 ```bash
 flowplane expose http://httpbin:80 --name httpbin        # 1. Expose service
-flowplane learn start --route-pattern '^/.*' --target-sample-count 5  # 2. Start learning
+flowplane learn start --route-pattern '^/.*' --target-sample-count 5 --name httpbin-learn  # 2. Start learning
 for i in $(seq 1 10); do curl -s http://localhost:10001/get > /dev/null; done  # 3. Traffic
-flowplane learn get <session-id> -o json                 # 4. Check completion
-# Schemas available via MCP: cp_list_aggregated_schemas, cp_export_schema_openapi
+flowplane learn get httpbin-learn -o json                # 4. Check completion
+flowplane schema export --all -o api.yaml                # 5. Export OpenAPI
+```
+
+### Manage schemas
+```bash
+# List discovered schemas
+flowplane schema list                              # Table view
+flowplane schema list --min-confidence 0.7         # Filter by confidence
+flowplane schema list --session mockbank-v1        # Filter by session
+
+# View schema details
+flowplane schema get <ID>                          # JSON output
+flowplane schema get <ID> -o table                 # Human-readable summary
+
+# Export as OpenAPI 3.1
+flowplane schema export --all                      # All schemas to stdout (YAML)
+flowplane schema export --all -o api.yaml          # Write to file
+flowplane schema export --id 1,2,3 -o api.json     # Specific schemas, JSON format
+flowplane schema export --all --min-confidence 0.7 # High-confidence only
+flowplane schema export --session mockbank-v1 --all -o api.yaml  # From specific session
+
+# Convenience shortcut
+flowplane learn export                             # Same as schema export --all
+flowplane learn export --session mockbank-v1 -o api.yaml
 ```
 
 ### Manage secrets
@@ -407,6 +434,7 @@ flowplane cluster list  # now scoped to engineering team
 | expose/unexpose | `src/cli/expose.rs` |
 | import openapi | `src/cli/import.rs` |
 | learn (sessions) | `src/cli/learn.rs` |
+| schema list/get/export | `src/cli/schema.rs` |
 | secret CRUD | `src/cli/secrets.rs` |
 | config management | `src/cli/config_cmd.rs` |
 | team CRUD | `src/cli/teams.rs` |

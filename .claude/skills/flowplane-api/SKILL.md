@@ -411,11 +411,17 @@ Args: {
   "routePattern": "^/api/v1/.*",
   "targetSampleCount": 50,
   "team": "default",
+  "name": "my-api-v1",
   "httpMethods": ["GET", "POST", "PUT", "DELETE"],
-  "autoStart": true
+  "autoStart": true,
+  "autoAggregate": false
 }
 ```
-The `team` parameter is recommended via MCP in dev mode to scope the session to the correct team.
+- `name` — Human-readable session name. If omitted, auto-generated from route_pattern. Used for name-based lookups in all subsequent tools.
+- `autoAggregate` — Enable snapshot mode: periodic aggregation while continuing to collect. Default: false.
+- The `team` parameter is recommended via MCP in dev mode to scope the session to the correct team.
+
+All learning session tools (`cp_get_learning_session`, `cp_stop_learning`, `cp_activate_learning_session`, `cp_delete_learning_session`) accept either session name or UUID for the `id` parameter.
 
 **Step 3b: Verify activation**
 ```
@@ -470,7 +476,13 @@ Report: path, HTTP method, confidence score, sample count. Flag low-confidence s
 Tool: cp_export_schema_openapi
 Args: { "schemaIds": [1, 2], "team": "default", "title": "My API", "version": "1.0.0" }
 ```
-Note: `schemaIds` is camelCase and takes integer IDs (not strings). The `team` parameter is required in dev mode. Output is OpenAPI 3.1.0 with inferred response schemas, header parameters, and content types.
+Note: `schemaIds` is camelCase and takes integer IDs (not strings). The `team` parameter is required in dev mode. Output is OpenAPI 3.1.0 with inferred response schemas, header parameters, and content types. Export uses structural fingerprinting to deduplicate shared schemas as `$ref` references in `components/schemas`.
+
+Or use the CLI:
+```bash
+flowplane schema export --all -o api.yaml
+flowplane learn export --session <name> -o api.yaml
+```
 
 ### 6.5 Blue/Green Deployment
 
@@ -747,12 +759,15 @@ Every MCP tool operation has a CLI equivalent. Use the CLI for scripting, CI/CD,
 
 | MCP Tool | CLI Equivalent |
 |---|---|
-| `cp_create_learning_session` | `flowplane learn start --route-pattern <regex> --target-sample-count <n>` |
+| `cp_create_learning_session` | `flowplane learn start --route-pattern <regex> --target-sample-count <n> [--name <name>] [--auto-aggregate]` |
 | `cp_list_learning_sessions` | `flowplane learn list` |
-| `cp_get_learning_session` | `flowplane learn get <id>` |
-| `cp_delete_learning_session` | `flowplane learn cancel <id> --yes` |
-| `cp_list_aggregated_schemas` | (no CLI equivalent) |
-| `cp_export_schema_openapi` | (no CLI equivalent) |
+| `cp_get_learning_session` | `flowplane learn get <name-or-id>` |
+| `cp_stop_learning` | `flowplane learn stop <name-or-id>` |
+| `cp_delete_learning_session` | `flowplane learn cancel <name-or-id> --yes` |
+| `cp_list_aggregated_schemas` | `flowplane schema list [--min-confidence N] [--session <name>] [--path <path>] [--method <method>]` |
+| `cp_get_aggregated_schema` | `flowplane schema get <id>` |
+| `cp_export_schema_openapi` | `flowplane schema export --id 1,2,3` or `flowplane schema export --all` |
+| (all schemas shortcut) | `flowplane learn export [--session <name>]` |
 
 ### Secrets
 

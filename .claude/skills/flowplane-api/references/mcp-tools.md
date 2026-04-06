@@ -106,11 +106,11 @@ All 64 MCP tools grouped by category. Use via `tools/call` on the `/api/v1/mcp` 
 | Tool | Description | Required Params | Optional Params |
 |------|-------------|----------------|-----------------|
 | `cp_list_learning_sessions` | List learning sessions | — | `status` (enum: pending/active/completing/completed/cancelled/failed), `limit`, `offset` |
-| `cp_get_learning_session` | Get learning session details | `id` (string, UUID) | — |
-| `cp_create_learning_session` | Create learning session | `routePattern` (string), `targetSampleCount` (int) | `clusterName` (string), `httpMethods` (string array), `autoStart` (bool, default true), `autoAggregate` (bool, default false) |
-| `cp_activate_learning_session` | Activate a pending session | `id` (string, UUID) | — |
-| `cp_stop_learning` | Stop active session, trigger final aggregation | `id` (string, UUID) | — |
-| `cp_delete_learning_session` | Cancel/delete a session | `id` (string, UUID) | — |
+| `cp_get_learning_session` | Get learning session details | `id` (string, name or UUID) | — |
+| `cp_create_learning_session` | Create learning session | `routePattern` (string), `targetSampleCount` (int) | `name` (string), `clusterName` (string), `httpMethods` (string array), `autoStart` (bool, default true), `autoAggregate` (bool, default false) |
+| `cp_activate_learning_session` | Activate a pending session | `id` (string, name or UUID) | — |
+| `cp_stop_learning` | Stop active session, trigger final aggregation | `id` (string, name or UUID) | — |
+| `cp_delete_learning_session` | Cancel/delete a session | `id` (string, name or UUID) | — |
 
 ## Schema Tools (3)
 

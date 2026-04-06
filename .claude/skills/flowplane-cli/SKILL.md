@@ -234,17 +234,27 @@ flowplane import openapi <FILE> [--name <NAME>] [--port <PORT>]
 Start a learning session to record API traffic. Sessions auto-activate by default and begin collecting samples immediately.
 ```bash
 flowplane learn start --route-pattern <REGEX> --target-sample-count <N> \
+  [--name <NAME>] [--auto-aggregate] \
   [--cluster-name <NAME>] [--http-methods GET POST ...] \
   [--max-duration-seconds <N>] [--triggered-by <WHO>] \
   [--deployment-version <VERSION>] [-o json|yaml|table]
 ```
-Default output is JSON. Returns session ID, status, and timestamps.
+- `--name` — Human-readable session name. If omitted, auto-generated from route_pattern.
+- `--auto-aggregate` — Enable snapshot mode: periodic aggregation while continuing to collect samples.
+
+Default output is JSON. Returns session ID, name, status, and timestamps.
 
 Example:
 ```bash
-flowplane learn start --route-pattern '^/.*' --target-sample-count 5
+flowplane learn start --route-pattern '^/.*' --target-sample-count 5 --name mockbank-v1
 # Sessions can exceed target (e.g., 200% progress) — all samples in the
 # collection window are captured once target is reached.
+```
+
+### `flowplane learn stop`
+Stop an active learning session. Triggers final aggregation, then completes.
+```bash
+flowplane learn stop <NAME_OR_ID>         # Accepts session name or UUID
 ```
 
 ### `flowplane learn list`
@@ -257,20 +267,64 @@ flowplane learn list --limit 10        # Pagination
 ```
 
 ### `flowplane learn get`
-Get learning session details. Default output is json; use `-o table` for summary.
+Get learning session details. Accepts name or UUID. Default output is json; use `-o table` for summary.
 ```bash
-flowplane learn get <ID>               # Table format
-flowplane learn get <ID> -o json       # Full JSON including timestamps, team, error_message
+flowplane learn get <NAME_OR_ID>               # Table format
+flowplane learn get <NAME_OR_ID> -o json       # Full JSON including timestamps, team, error_message
 ```
 
 ### `flowplane learn cancel`
-Cancel an active learning session. Requires confirmation in interactive mode.
+Cancel an active learning session. Accepts name or UUID. Requires confirmation in interactive mode.
 ```bash
-flowplane learn cancel <ID>            # Prompts y/N (errors if stdin is not a terminal)
-flowplane learn cancel <ID> --yes      # Skip confirmation
-flowplane learn cancel <ID> -y         # Short form
+flowplane learn cancel <NAME_OR_ID>            # Prompts y/N (errors if stdin is not a terminal)
+flowplane learn cancel <NAME_OR_ID> --yes      # Skip confirmation
+flowplane learn cancel <NAME_OR_ID> -y         # Short form
 ```
 In non-interactive mode (piped stdin), cancel without `--yes` returns an error directing you to use `--yes`. Always use `--yes` in scripts.
+
+### `flowplane learn export`
+Convenience shortcut for `flowplane schema export --all`. Exports all schemas as OpenAPI 3.1.
+```bash
+flowplane learn export                                          # All schemas to stdout (YAML)
+flowplane learn export --session mockbank-v1 -o api.yaml        # From specific session
+flowplane learn export --min-confidence 0.7 --title "My API"    # High-confidence only
+```
+Flags: `--session`, `--min-confidence`, `--title`, `--version`, `--description`, `-o` (output file path).
+
+## Schema Management
+
+### `flowplane schema list`
+List discovered API schemas.
+```bash
+flowplane schema list                              # Table view
+flowplane schema list --min-confidence 0.7         # Filter by confidence
+flowplane schema list --session mockbank-v1        # Filter by session name
+flowplane schema list --path /api/users            # Filter by path
+flowplane schema list --method GET                 # Filter by HTTP method
+flowplane schema list --latest-only                # Only latest snapshot per endpoint
+flowplane schema list --limit 20 --offset 0        # Pagination
+flowplane schema list -o json                      # JSON output
+```
+
+### `flowplane schema get`
+Show schema detail by ID.
+```bash
+flowplane schema get <ID>                          # JSON output (default)
+flowplane schema get <ID> -o table                 # Human-readable summary
+flowplane schema get <ID> -o yaml                  # YAML output
+```
+
+### `flowplane schema export`
+Export schemas as OpenAPI 3.1. Auto-detects format from file extension (`.yaml`/`.json`). Stdout defaults to YAML.
+```bash
+flowplane schema export --all                      # All schemas to stdout (YAML)
+flowplane schema export --all -o api.yaml          # Write to file
+flowplane schema export --id 1,2,3 -o api.json     # Specific schemas, JSON format
+flowplane schema export --all --min-confidence 0.7 # High-confidence only
+flowplane schema export --session mockbank-v1 --all -o api.yaml  # From specific session
+flowplane schema export --all --title "My API" --version "1.0.0" --description "Generated from traffic"
+```
+Flags: `--id` (comma-separated IDs), `--all`, `--min-confidence`, `--session`, `--title`, `--version`, `--description`, `-o` (output file path).
 
 ## Secrets
 
