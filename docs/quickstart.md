@@ -147,6 +147,7 @@ flowplane auth login
 
 ## Next steps
 
+- [Learning Quickstart](learning-quickstart.md) — discover API schemas from live traffic
 - [Getting Started](getting-started.md) — full walkthrough with MCP examples
 - [CLI Reference](cli-reference.md) — every command, flag, and example
 - [Filters](filters.md) — all 10 filter types and configuration
