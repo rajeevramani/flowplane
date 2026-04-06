@@ -201,6 +201,7 @@ impl LearningSessionOperations {
             triggered_by: None,
             deployment_version: None,
             configuration_snapshot: None,
+            auto_aggregate: req.auto_aggregate.unwrap_or(false),
         };
 
         let created = repository.create(create_request).await.map_err(InternalError::from)?;
@@ -255,6 +256,54 @@ impl LearningSessionOperations {
         };
 
         Ok(OperationResult::with_message(session, message))
+    }
+
+    /// Stop an active learning session (trigger final aggregation + complete)
+    ///
+    /// # Arguments
+    /// * `id` - The session ID to stop
+    /// * `auth` - Authentication context for access control
+    ///
+    /// # Returns
+    /// * `Ok(OperationResult)` with the completed session
+    /// * `Err(InternalError)` on failure
+    #[instrument(skip(self, auth), fields(session_id = %id))]
+    pub async fn stop(
+        &self,
+        id: &str,
+        auth: &InternalAuthContext,
+    ) -> Result<OperationResult<LearningSessionData>, InternalError> {
+        // Verify access
+        let session = self.get(id, auth).await?;
+
+        // Validate state
+        if session.status != LearningSessionStatus::Active {
+            return Err(InternalError::conflict(format!(
+                "Cannot stop session in '{}' state. Must be 'active'",
+                session.status
+            )));
+        }
+
+        // Use the learning session service to stop (triggers final aggregation + completion)
+        let service = self.xds_state.get_learning_session_service().ok_or_else(|| {
+            InternalError::service_unavailable("Learning session service not available")
+        })?;
+
+        let completed = service
+            .stop_session(id)
+            .await
+            .map_err(|e| InternalError::internal(format!("Failed to stop session: {}", e)))?;
+
+        info!(
+            session_id = %id,
+            team = %completed.team,
+            "Learning session stopped via internal API"
+        );
+
+        Ok(OperationResult::with_message(
+            completed,
+            "Learning session stopped and final aggregation triggered.",
+        ))
     }
 
     /// Delete (cancel) a learning session
@@ -374,6 +423,7 @@ mod tests {
             http_methods: Some(vec!["GET".to_string(), "POST".to_string()]),
             target_sample_count: 100,
             auto_start: Some(false),
+            auto_aggregate: None,
         };
 
         let result = ops.create(req, &auth).await;
@@ -399,6 +449,7 @@ mod tests {
             http_methods: None,
             target_sample_count: 50,
             auto_start: Some(false),
+            auto_aggregate: None,
         };
 
         let result = ops.create(req, &auth).await;
@@ -418,6 +469,7 @@ mod tests {
             http_methods: None,
             target_sample_count: 50,
             auto_start: Some(false),
+            auto_aggregate: None,
         };
 
         let result = ops.create(req, &auth).await;
@@ -438,6 +490,7 @@ mod tests {
             http_methods: None,
             target_sample_count: 0, // Invalid
             auto_start: Some(false),
+            auto_aggregate: None,
         };
 
         let result = ops.create(req, &auth).await;
@@ -470,6 +523,7 @@ mod tests {
             http_methods: None,
             target_sample_count: 100,
             auto_start: Some(false),
+            auto_aggregate: None,
         };
         let created = ops.create(req, &admin_auth).await.expect("create session");
 
@@ -499,6 +553,7 @@ mod tests {
                     http_methods: None,
                     target_sample_count: 100,
                     auto_start: Some(false),
+                    auto_aggregate: None,
                 };
                 ops.create(req, &admin_auth).await.expect("create session");
             }
@@ -530,6 +585,7 @@ mod tests {
             http_methods: None,
             target_sample_count: 100,
             auto_start: Some(false),
+            auto_aggregate: None,
         };
         let created = ops.create(create_req, &auth).await.expect("create session");
 

@@ -14,6 +14,11 @@ use tracing::debug;
 
 use crate::errors::{Error, Result};
 
+/// Maximum string length for tracking observed values for enum detection
+pub const MAX_STRING_LENGTH_FOR_TRACKING: usize = 100;
+/// Maximum number of observed values to track per field
+pub const MAX_OBSERVED_VALUES: usize = 100;
+
 lazy_static! {
     static ref UUID_PATTERN: Regex = Regex::new(
         r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -273,6 +278,14 @@ pub struct InferredSchema {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field_mapping: Option<HashMap<String, String>>,
 
+    /// Observed string values for enum detection (transient — stripped from aggregated output)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_values: Option<Vec<String>>,
+
+    /// Promoted enum values (public output — included in aggregated schemas and OpenAPI)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
+
     /// Field statistics
     #[serde(flatten)]
     pub stats: FieldStats,
@@ -290,6 +303,8 @@ impl InferredSchema {
             items: None,
             properties: None,
             required: None,
+            observed_values: None,
+            enum_values: None,
             stats: FieldStats::new(),
         }
     }
@@ -341,6 +356,39 @@ impl InferredSchema {
             items.merge(other_items);
         }
 
+        // Merge observed_values for enum detection (deduplicate, cap at MAX_OBSERVED_VALUES)
+        match (&mut self.observed_values, &other.observed_values) {
+            (Some(ref mut self_vals), Some(other_vals)) => {
+                let existing: HashSet<String> = self_vals.iter().cloned().collect();
+                for val in other_vals {
+                    if !existing.contains(val) && self_vals.len() < MAX_OBSERVED_VALUES {
+                        self_vals.push(val.clone());
+                    }
+                }
+            }
+            (None, Some(other_vals)) => {
+                self.observed_values = Some(other_vals.clone());
+            }
+            _ => {}
+        }
+
+        // Merge enum_values (take union, sorted)
+        match (&mut self.enum_values, &other.enum_values) {
+            (Some(ref mut self_vals), Some(other_vals)) => {
+                let mut combined: HashSet<String> = self_vals.drain(..).collect();
+                for val in other_vals {
+                    combined.insert(val.clone());
+                }
+                let mut sorted: Vec<String> = combined.into_iter().collect();
+                sorted.sort();
+                *self_vals = sorted;
+            }
+            (None, Some(other_vals)) => {
+                self.enum_values = Some(other_vals.clone());
+            }
+            _ => {}
+        }
+
         // Update stats
         self.stats.sample_count += other.stats.sample_count;
         self.stats.presence_count += other.stats.presence_count;
@@ -366,7 +414,30 @@ impl InferredSchema {
             );
         }
 
+        // Strip observed_values from output — they contain raw payload data
+        // and must never appear in the exported JSON schema.
+        strip_observed_values(&mut schema);
+
         Ok(schema)
+    }
+}
+
+/// Recursively remove `observed_values` keys from a JSON value tree.
+/// These contain raw payload data that must never leak into exported schemas.
+fn strip_observed_values(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.remove("observed_values");
+            for v in map.values_mut() {
+                strip_observed_values(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                strip_observed_values(v);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -455,6 +526,10 @@ impl SchemaInferenceEngine {
                 let detected_format = self.detect_string_format(s);
                 if detected_format != StringFormat::None {
                     schema.format = Some(detected_format);
+                } else if s.len() <= MAX_STRING_LENGTH_FOR_TRACKING {
+                    // Track observed values for potential enum detection
+                    // Only for unformatted strings under the length threshold
+                    schema.observed_values = Some(vec![s.clone()]);
                 }
                 Ok(schema)
             }
@@ -1545,5 +1620,112 @@ mod tests {
         // -0.0 should be detected as Number
         let schema = engine.infer_from_value(&serde_json::json!(-0.0)).unwrap();
         assert_eq!(schema.schema_type, SchemaType::Number);
+    }
+
+    // === Enum detection tests ===
+
+    #[test]
+    fn test_string_value_tracking_no_format() {
+        let engine = SchemaInferenceEngine::new();
+        let schema = engine.infer_from_value(&Value::String("active".to_string())).ok();
+        let schema = schema.as_ref().and_then(|s| s.observed_values.as_ref());
+        assert_eq!(schema, Some(&vec!["active".to_string()]));
+    }
+
+    #[test]
+    fn test_string_value_tracking_with_format_excluded() {
+        let engine = SchemaInferenceEngine::new();
+        // UUID has a detected format — should NOT track observed_values
+        let schema = engine
+            .infer_from_value(&Value::String("550e8400-e29b-41d4-a716-446655440000".to_string()))
+            .ok();
+        let observed = schema.as_ref().and_then(|s| s.observed_values.as_ref());
+        assert!(observed.is_none(), "Formatted strings should not be tracked");
+    }
+
+    #[test]
+    fn test_string_value_tracking_email_excluded() {
+        let engine = SchemaInferenceEngine::new();
+        let schema = engine.infer_from_value(&Value::String("user@example.com".to_string())).ok();
+        let observed = schema.as_ref().and_then(|s| s.observed_values.as_ref());
+        assert!(observed.is_none(), "Email strings should not be tracked");
+    }
+
+    #[test]
+    fn test_string_value_tracking_long_string_excluded() {
+        let engine = SchemaInferenceEngine::new();
+        let long_string = "a".repeat(MAX_STRING_LENGTH_FOR_TRACKING + 1);
+        let schema = engine.infer_from_value(&Value::String(long_string)).ok();
+        let observed = schema.as_ref().and_then(|s| s.observed_values.as_ref());
+        assert!(observed.is_none(), "Long strings should not be tracked");
+    }
+
+    #[test]
+    fn test_merge_observed_values_dedup() {
+        let engine = SchemaInferenceEngine::new();
+        let mut s1 = engine.infer_from_value(&Value::String("active".to_string())).unwrap();
+        let s2 = engine.infer_from_value(&Value::String("active".to_string())).unwrap();
+        s1.merge(&s2);
+        let observed = s1.observed_values.as_ref();
+        assert_eq!(observed.map(|v| v.len()), Some(1), "Duplicate values should be deduped");
+        assert_eq!(observed.map(|v| v[0].as_str()), Some("active"));
+    }
+
+    #[test]
+    fn test_merge_observed_values_combines() {
+        let engine = SchemaInferenceEngine::new();
+        let mut s1 = engine.infer_from_value(&Value::String("active".to_string())).unwrap();
+        let s2 = engine.infer_from_value(&Value::String("inactive".to_string())).unwrap();
+        s1.merge(&s2);
+        let observed = s1.observed_values.as_ref();
+        assert_eq!(observed.map(|v| v.len()), Some(2));
+    }
+
+    #[test]
+    fn test_merge_observed_values_cap_at_max() {
+        let engine = SchemaInferenceEngine::new();
+        // Build a schema with MAX_OBSERVED_VALUES values
+        let mut base = engine.infer_from_value(&Value::String("val_0".to_string())).unwrap();
+        for i in 1..MAX_OBSERVED_VALUES {
+            let other = engine.infer_from_value(&Value::String(format!("val_{}", i))).unwrap();
+            base.merge(&other);
+        }
+        assert_eq!(base.observed_values.as_ref().map(|v| v.len()), Some(MAX_OBSERVED_VALUES));
+
+        // One more should not exceed the cap
+        let extra = engine.infer_from_value(&Value::String("overflow_value".to_string())).unwrap();
+        base.merge(&extra);
+        assert_eq!(
+            base.observed_values.as_ref().map(|v| v.len()),
+            Some(MAX_OBSERVED_VALUES),
+            "Should not exceed MAX_OBSERVED_VALUES"
+        );
+    }
+
+    #[test]
+    fn test_observed_values_serde_roundtrip() {
+        let engine = SchemaInferenceEngine::new();
+        let schema = engine.infer_from_value(&Value::String("pending".to_string())).unwrap();
+        let json = serde_json::to_string(&schema).unwrap();
+        let deserialized: InferredSchema = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.observed_values, Some(vec!["pending".to_string()]));
+    }
+
+    #[test]
+    fn test_observed_values_backward_compat_deserialization() {
+        // Old schemas without observed_values should deserialize with None
+        let json = r#"{"type":"string","sample_count":1,"presence_count":1,"confidence":1.0}"#;
+        let schema: InferredSchema = serde_json::from_str(json).unwrap();
+        assert!(schema.observed_values.is_none());
+        assert!(schema.enum_values.is_none());
+    }
+
+    #[test]
+    fn test_enum_values_serde_roundtrip() {
+        let mut schema = InferredSchema::new(SchemaType::String);
+        schema.enum_values = Some(vec!["a".to_string(), "b".to_string()]);
+        let json = serde_json::to_string(&schema).unwrap();
+        let deserialized: InferredSchema = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.enum_values, Some(vec!["a".to_string(), "b".to_string()]));
     }
 }

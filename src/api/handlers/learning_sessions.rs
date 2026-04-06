@@ -82,6 +82,11 @@ pub struct CreateLearningSessionBody {
     /// Optional configuration snapshot (JSON)
     #[serde(default)]
     pub configuration_snapshot: Option<serde_json::Value>,
+
+    /// Enable auto-aggregate snapshot mode (default: false)
+    #[serde(default)]
+    #[schema(example = false)]
+    pub auto_aggregate: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -103,6 +108,8 @@ pub struct LearningSessionResponse {
     pub triggered_by: Option<String>,
     pub deployment_version: Option<String>,
     pub error_message: Option<String>,
+    pub auto_aggregate: bool,
+    pub snapshot_count: i64,
 }
 
 #[derive(Debug, Deserialize, ToSchema, Clone)]
@@ -146,6 +153,8 @@ fn session_response_from_data(
         triggered_by: data.triggered_by,
         deployment_version: data.deployment_version,
         error_message: data.error_message,
+        auto_aggregate: data.auto_aggregate,
+        snapshot_count: data.snapshot_count,
     }
 }
 
@@ -235,6 +244,7 @@ pub async fn create_learning_session_handler(
         triggered_by: payload.triggered_by,
         deployment_version: payload.deployment_version,
         configuration_snapshot: payload.configuration_snapshot,
+        auto_aggregate: payload.auto_aggregate.unwrap_or(false),
     };
 
     let created = session_repo.create(create_request).await.map_err(|e| {
@@ -513,6 +523,75 @@ pub async fn delete_learning_session_handler(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/teams/{team}/learning-sessions/{id}/stop",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("id" = String, Path, description = "Learning session ID")
+    ),
+    responses(
+        (status = 200, description = "Learning session stopped", body = LearningSessionResponse),
+        (status = 400, description = "Invalid state - session not active"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
+        (status = 404, description = "Learning session not found"),
+        (status = 503, description = "Service unavailable")
+    ),
+    tag = "API Discovery"
+)]
+#[instrument(skip(state), fields(team = %team, session_id = %id, user_id = ?context.user_id))]
+pub async fn stop_learning_session_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((team, id)): Path<(String, String)>,
+) -> Result<Json<LearningSessionResponse>, ApiError> {
+    // Authorization: require learning-sessions:execute scope for the team from path
+    require_resource_access_resolved(&state, &context, "learning-sessions", "execute", Some(&team))
+        .await?;
+
+    // Get effective team scopes for access verification
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+
+    // Get repository
+    let repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Repository not configured".to_string()))?;
+
+    let session_repo = LearningSessionRepository::new(repo.pool().clone());
+
+    // Get session by ID
+    let session = session_repo.get_by_id(&id).await.map_err(|e| {
+        tracing::error!(error = %e, session_id = %id, "Failed to get learning session for stop");
+        match e {
+            Error::NotFound { .. } => {
+                ApiError::NotFound(format!("Learning session with ID '{}' not found", id))
+            }
+            _ => ApiError::Internal(format!("Failed to get learning session: {}", e)),
+        }
+    })?;
+
+    // Verify team access
+    verify_team_access(session.clone(), &team_scopes).await?;
+
+    // Use the learning session service to stop
+    let learning_service = state
+        .xds_state
+        .get_learning_session_service()
+        .ok_or_else(|| ApiError::Internal("Learning session service not available".to_string()))?;
+
+    let completed = learning_service.stop_session(&id).await.map_err(|e| {
+        tracing::error!(error = %e, session_id = %id, "Failed to stop learning session");
+        ApiError::BadRequest(format!("Failed to stop learning session: {}", e))
+    })?;
+
+    let response = session_response_from_data(completed);
+
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,6 +620,8 @@ mod tests {
                 configuration_snapshot: None,
                 error_message: None,
                 updated_at: chrono::Utc::now(),
+                auto_aggregate: false,
+                snapshot_count: 0,
             }
         }
 
@@ -628,6 +709,27 @@ mod tests {
         }
 
         #[test]
+        fn test_session_response_auto_aggregate_fields() {
+            let mut data = sample_session_data();
+            data.auto_aggregate = true;
+            data.snapshot_count = 5;
+
+            let response = session_response_from_data(data);
+
+            assert!(response.auto_aggregate);
+            assert_eq!(response.snapshot_count, 5);
+        }
+
+        #[test]
+        fn test_session_response_auto_aggregate_defaults() {
+            let data = sample_session_data();
+            let response = session_response_from_data(data);
+
+            assert!(!response.auto_aggregate);
+            assert_eq!(response.snapshot_count, 0);
+        }
+
+        #[test]
         fn test_session_response_with_error_message() {
             let mut data = sample_session_data();
             data.status = LearningSessionStatus::Failed;
@@ -664,6 +766,8 @@ mod tests {
                 configuration_snapshot: None,
                 error_message: None,
                 updated_at: chrono::Utc::now(),
+                auto_aggregate: false,
+                snapshot_count: 0,
             }
         }
 
@@ -744,6 +848,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
             };
 
             use validator::Validate;
@@ -762,6 +867,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
             };
 
             use validator::Validate;
@@ -780,6 +886,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
             };
 
             use validator::Validate;
@@ -798,6 +905,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
             };
 
             use validator::Validate;
@@ -817,6 +925,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
             };
 
             use validator::Validate;
@@ -832,6 +941,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: Some(false),
             };
 
             assert!(body_max.validate().is_ok());

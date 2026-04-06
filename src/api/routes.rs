@@ -71,8 +71,8 @@ use super::{
         list_secrets_handler, list_team_members, list_teams_handler,
         list_virtual_host_filters_handler, list_virtual_hosts_handler, refresh_mcp_schema_handler,
         reload_filter_schemas_handler, remove_filter_configuration_handler, remove_team_member,
-        revoke_certificate_handler, set_app_status_handler, unexpose_handler,
-        uninstall_filter_handler, update_cluster_handler, update_filter_handler,
+        revoke_certificate_handler, set_app_status_handler, stop_learning_session_handler,
+        unexpose_handler, uninstall_filter_handler, update_cluster_handler, update_filter_handler,
         update_listener_handler, update_mcp_tool_handler, update_org_team,
         update_route_config_handler, update_secret_handler,
     },
@@ -472,6 +472,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/learning-sessions", post(create_learning_session_handler))
         .route("/api/v1/teams/{team}/learning-sessions/{id}", get(get_learning_session_handler))
         .route("/api/v1/teams/{team}/learning-sessions/{id}", delete(delete_learning_session_handler))
+        .route("/api/v1/teams/{team}/learning-sessions/{id}/stop", post(stop_learning_session_handler))
         // Dataplane endpoints (team-scoped Envoy instances with gateway_host)
         .route("/api/v1/dataplanes", get(list_all_dataplanes_handler))
         .route("/api/v1/teams/{team}/dataplanes", get(list_dataplanes_handler))

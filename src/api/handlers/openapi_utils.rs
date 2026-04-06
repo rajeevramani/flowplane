@@ -319,8 +319,17 @@ pub fn convert_schema_to_openapi(schema: &serde_json::Value) -> serde_json::Valu
                         result.insert("items".to_string(), convert_schema_to_openapi(value));
                     }
 
+                    // Emit enum_values as standard OpenAPI "enum"
+                    "enum_values" => {
+                        if let Some(arr) = value.as_array() {
+                            if !arr.is_empty() {
+                                result.insert("enum".to_string(), value.clone());
+                            }
+                        }
+                    }
+
                     // Skip internal metadata fields (these shouldn't appear after strip_internal_attributes)
-                    "confidence" | "presence_count" | "sample_count" => {
+                    "confidence" | "presence_count" | "sample_count" | "observed_values" => {
                         // Skip these internal fields
                     }
 
@@ -1117,5 +1126,53 @@ mod tests {
 
         assert!(!has_resource_id_param("/users"));
         assert!(!has_resource_id_param("/v2/api/users"));
+    }
+
+    #[test]
+    fn test_convert_schema_enum_values_emitted() {
+        let schema = serde_json::json!({
+            "type": "string",
+            "enum_values": ["active", "inactive", "pending"]
+        });
+
+        let result = convert_schema_to_openapi(&schema);
+        let enum_arr = result.get("enum").and_then(|v| v.as_array());
+        assert!(enum_arr.is_some(), "enum should be emitted in OpenAPI output");
+        let values: Vec<&str> =
+            enum_arr.map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+        assert_eq!(values, vec!["active", "inactive", "pending"]);
+        // enum_values key should not appear in output
+        assert!(result.get("enum_values").is_none());
+    }
+
+    #[test]
+    fn test_convert_schema_observed_values_stripped() {
+        let schema = serde_json::json!({
+            "type": "string",
+            "observed_values": ["foo", "bar"]
+        });
+
+        let result = convert_schema_to_openapi(&schema);
+        assert!(result.get("observed_values").is_none(), "observed_values should be stripped");
+        assert!(result.get("enum").is_none(), "No enum without enum_values");
+    }
+
+    #[test]
+    fn test_convert_schema_enum_values_nested_in_properties() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum_values": ["on", "off"]
+                }
+            }
+        });
+
+        let result = convert_schema_to_openapi(&schema);
+        let status = result.get("properties").and_then(|p| p.get("status"));
+        assert!(status.is_some());
+        let enum_arr = status.and_then(|s| s.get("enum"));
+        assert!(enum_arr.is_some(), "Nested enum_values should be converted");
     }
 }

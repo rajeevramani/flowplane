@@ -91,12 +91,12 @@ pub use schemas::{execute_get_aggregated_schema, execute_list_aggregated_schemas
 pub use learning::{
     cp_activate_learning_session_tool, cp_create_learning_session_tool,
     cp_delete_learning_session_tool, cp_get_learning_session_tool, cp_list_learning_sessions_tool,
-    ops_learning_session_health_tool,
+    cp_stop_learning_session_tool, ops_learning_session_health_tool,
 };
 pub use learning::{
     execute_activate_learning_session, execute_create_learning_session,
     execute_delete_learning_session, execute_get_learning_session, execute_list_learning_sessions,
-    execute_ops_learning_session_health,
+    execute_ops_learning_session_health, execute_stop_learning_session,
 };
 
 // Re-export OpenAPI import tools
@@ -264,6 +264,7 @@ pub fn get_all_tools() -> Vec<Tool> {
         cp_create_learning_session_tool(),
         cp_activate_learning_session_tool(),
         cp_delete_learning_session_tool(),
+        cp_stop_learning_session_tool(),
         // Learning session diagnostic tools
         ops_learning_session_health_tool(),
         // OpenAPI import tools
@@ -342,8 +343,8 @@ mod tests {
     #[test]
     fn test_get_all_tools() {
         let tools = get_all_tools();
-        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 3 learning session + 1 learning diag + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 6 ops agent + 3 dev agent + 4 secrets = 68 total
-        assert_eq!(tools.len(), 68);
+        // 16 read-only tools + 18 CRUD tools + 3 filter attachment + 4 learning session + 1 learning diag + 2 openapi + 5 dataplane + 2 filter types + 1 devops + 2 query-first + 2 status + 6 ops agent + 3 dev agent + 4 secrets = 69 total
+        assert_eq!(tools.len(), 69);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
 

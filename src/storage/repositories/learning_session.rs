@@ -70,6 +70,8 @@ struct LearningSessionRow {
     pub configuration_snapshot: Option<String>, // JSON
     pub error_message: Option<String>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub auto_aggregate: bool,
+    pub snapshot_count: i64,
 }
 
 /// Learning session data
@@ -92,6 +94,8 @@ pub struct LearningSessionData {
     pub configuration_snapshot: Option<serde_json::Value>,
     pub error_message: Option<String>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub auto_aggregate: bool,
+    pub snapshot_count: i64,
 }
 
 impl TryFrom<LearningSessionRow> for LearningSessionData {
@@ -141,6 +145,8 @@ impl TryFrom<LearningSessionRow> for LearningSessionData {
             configuration_snapshot,
             error_message: row.error_message,
             updated_at: row.updated_at,
+            auto_aggregate: row.auto_aggregate,
+            snapshot_count: row.snapshot_count,
         })
     }
 }
@@ -179,6 +185,7 @@ pub struct CreateLearningSessionRequest {
     pub triggered_by: Option<String>,
     pub deployment_version: Option<String>,
     pub configuration_snapshot: Option<serde_json::Value>,
+    pub auto_aggregate: bool,
 }
 
 /// Update learning session request
@@ -236,8 +243,9 @@ impl LearningSessionRepository {
             "INSERT INTO learning_sessions (
                 id, team, route_pattern, cluster_name, http_methods, status,
                 created_at, ends_at, target_sample_count, current_sample_count,
-                triggered_by, deployment_version, configuration_snapshot, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                triggered_by, deployment_version, configuration_snapshot, updated_at,
+                auto_aggregate, snapshot_count
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
         )
         .bind(&id)
         .bind(&request.team)
@@ -253,6 +261,8 @@ impl LearningSessionRepository {
         .bind(&request.deployment_version)
         .bind(&config_snapshot_json)
         .bind(now)
+        .bind(request.auto_aggregate)
+        .bind(0i64) // snapshot_count starts at 0
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -285,7 +295,8 @@ impl LearningSessionRepository {
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,
                     triggered_by, deployment_version, configuration_snapshot,
-                    error_message, updated_at
+                    error_message, updated_at,
+                    auto_aggregate, snapshot_count
              FROM learning_sessions WHERE id = $1",
         )
         .bind(id)
@@ -316,7 +327,8 @@ impl LearningSessionRepository {
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,
                     triggered_by, deployment_version, configuration_snapshot,
-                    error_message, updated_at
+                    error_message, updated_at,
+                    auto_aggregate, snapshot_count
              FROM learning_sessions WHERE id = $1 AND team = $2"
         )
         .bind(id)
@@ -358,7 +370,8 @@ impl LearningSessionRepository {
                         created_at, started_at, ends_at, completed_at,
                         target_sample_count, current_sample_count,
                         triggered_by, deployment_version, configuration_snapshot,
-                        error_message, updated_at
+                        error_message, updated_at,
+                        auto_aggregate, snapshot_count
                  FROM learning_sessions
                  WHERE team = $1 AND status = $2
                  ORDER BY created_at DESC LIMIT $3 OFFSET $4",
@@ -369,7 +382,8 @@ impl LearningSessionRepository {
                         created_at, started_at, ends_at, completed_at,
                         target_sample_count, current_sample_count,
                         triggered_by, deployment_version, configuration_snapshot,
-                        error_message, updated_at
+                        error_message, updated_at,
+                        auto_aggregate, snapshot_count
                  FROM learning_sessions
                  WHERE team = $1
                  ORDER BY created_at DESC LIMIT $2 OFFSET $3",
@@ -424,7 +438,8 @@ impl LearningSessionRepository {
                         created_at, started_at, ends_at, completed_at,
                         target_sample_count, current_sample_count,
                         triggered_by, deployment_version, configuration_snapshot,
-                        error_message, updated_at
+                        error_message, updated_at,
+                        auto_aggregate, snapshot_count
                  FROM learning_sessions
                  WHERE status = $1
                  ORDER BY created_at DESC
@@ -436,7 +451,8 @@ impl LearningSessionRepository {
                         created_at, started_at, ends_at, completed_at,
                         target_sample_count, current_sample_count,
                         triggered_by, deployment_version, configuration_snapshot,
-                        error_message, updated_at
+                        error_message, updated_at,
+                        auto_aggregate, snapshot_count
                  FROM learning_sessions
                  ORDER BY created_at DESC
                  LIMIT $1 OFFSET $2",
@@ -477,7 +493,8 @@ impl LearningSessionRepository {
                     created_at, started_at, ends_at, completed_at,
                     target_sample_count, current_sample_count,
                     triggered_by, deployment_version, configuration_snapshot,
-                    error_message, updated_at
+                    error_message, updated_at,
+                    auto_aggregate, snapshot_count
              FROM learning_sessions
              WHERE status = $1
              ORDER BY created_at DESC",
@@ -670,6 +687,46 @@ impl LearningSessionRepository {
         }
     }
 
+    /// Reset sample count and increment snapshot count (for auto-aggregate snapshot mode)
+    ///
+    /// Atomically resets current_sample_count to 0 and increments snapshot_count.
+    /// Used when a snapshot aggregation is triggered during auto-aggregate mode.
+    #[instrument(skip(self), fields(session_id = %id), name = "db_reset_sample_count_increment_snapshot")]
+    pub async fn reset_sample_count_and_increment_snapshot(&self, id: &str) -> Result<i64> {
+        let now = chrono::Utc::now();
+
+        let result = sqlx::query(
+            "UPDATE learning_sessions
+             SET current_sample_count = 0, snapshot_count = snapshot_count + 1, updated_at = $1
+             WHERE id = $2
+             RETURNING snapshot_count",
+        )
+        .bind(now)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, session_id = %id, "Failed to reset sample count and increment snapshot");
+            FlowplaneError::Database {
+                source: e,
+                context: format!("Failed to reset sample count for session '{}'", id),
+            }
+        })?;
+
+        match result {
+            Some(row) => {
+                let count: i64 = row.try_get("snapshot_count").map_err(|e| {
+                    FlowplaneError::validation(format!("Failed to get snapshot_count: {}", e))
+                })?;
+                Ok(count)
+            }
+            None => Err(FlowplaneError::not_found_msg(format!(
+                "Learning session with ID '{}' not found",
+                id
+            ))),
+        }
+    }
+
     /// Delete learning session (cancel)
     #[instrument(skip(self), fields(session_id = %id), name = "db_delete_learning_session")]
     pub async fn delete(&self, id: &str, team: &str) -> Result<()> {
@@ -774,6 +831,7 @@ mod tests {
                 triggered_by: Some("test-user".to_string()),
                 deployment_version: Some("v1.0.0".to_string()),
                 configuration_snapshot: Some(serde_json::json!({"key": "value"})),
+                auto_aggregate: false,
             };
 
             let created = repo.create(request).await.expect("create should succeed");
@@ -816,6 +874,7 @@ mod tests {
                     triggered_by: None,
                     deployment_version: None,
                     configuration_snapshot: None,
+                    auto_aggregate: false,
                 };
                 repo.create(request).await.expect("create should succeed");
             }
@@ -831,6 +890,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: false,
             };
             repo.create(request).await.expect("create should succeed");
 
@@ -863,6 +923,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: false,
             };
             let session = repo.create(request).await.expect("create should succeed");
             assert_eq!(session.status, LearningSessionStatus::Pending);
@@ -934,6 +995,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: false,
             };
             let session = repo.create(request).await.expect("create should succeed");
             assert_eq!(session.current_sample_count, 0);
@@ -967,6 +1029,7 @@ mod tests {
                 triggered_by: None,
                 deployment_version: None,
                 configuration_snapshot: None,
+                auto_aggregate: false,
             };
             let session = repo.create(request).await.expect("create should succeed");
 

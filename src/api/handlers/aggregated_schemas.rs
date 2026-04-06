@@ -173,6 +173,7 @@ fn strip_internal_attributes(schema: &mut serde_json::Value) {
             map.remove("confidence");
             map.remove("presence_count");
             map.remove("sample_count");
+            map.remove("observed_values");
 
             // Recursively process ALL nested values in the object
             // This handles properties, items, status codes (200, 201), and any other nested objects
@@ -1254,6 +1255,8 @@ mod tests {
             last_observed: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            session_id: None,
+            snapshot_number: None,
         }
     }
 
@@ -1407,6 +1410,8 @@ mod tests {
             last_observed: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            session_id: None,
+            snapshot_number: None,
         };
 
         let options = ExportMultipleSchemasRequest {
@@ -1468,6 +1473,8 @@ mod tests {
             last_observed: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            session_id: None,
+            snapshot_number: None,
         }
     }
 
@@ -1547,6 +1554,8 @@ mod tests {
             last_observed: chrono::Utc::now(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            session_id: None,
+            snapshot_number: None,
         };
 
         let options = ExportMultipleSchemasRequest {
@@ -1601,6 +1610,8 @@ mod tests {
                 last_observed: chrono::Utc::now(),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
+                session_id: None,
+                snapshot_number: None,
             }
         }
 

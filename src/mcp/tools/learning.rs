@@ -197,6 +197,10 @@ Authorization: Requires learning-sessions:create scope.
                 "autoStart": {
                     "type": "boolean",
                     "description": "Whether to automatically start the session (default: true)"
+                },
+                "autoAggregate": {
+                    "type": "boolean",
+                    "description": "Enable snapshot mode: when target is reached, aggregate and reset instead of completing. Session continues until explicitly stopped with cp_stop_learning. (default: false)"
                 }
             },
             "required": ["routePattern", "targetSampleCount"]
@@ -381,6 +385,7 @@ pub async fn execute_create_learning_session(
         })
     });
     let auto_start = args.get("autoStart").and_then(|v| v.as_bool());
+    let auto_aggregate = args.get("autoAggregate").and_then(|v| v.as_bool());
 
     tracing::debug!(
         team = %team,
@@ -411,6 +416,7 @@ pub async fn execute_create_learning_session(
         http_methods,
         target_sample_count,
         auto_start,
+        auto_aggregate,
     };
 
     let result = ops.create(req, &auth).await?;
@@ -472,6 +478,94 @@ pub async fn execute_delete_learning_session(
     let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
 
     tracing::info!(team = %team, session_id = %id, "Successfully deleted learning session via MCP");
+
+    Ok(ToolCallResult::text(text))
+}
+
+// =============================================================================
+// STOP LEARNING SESSION
+// =============================================================================
+
+/// Tool definition for stopping a learning session
+pub fn cp_stop_learning_session_tool() -> Tool {
+    Tool::new(
+        "cp_stop_learning",
+        r#"Stop an active learning session, triggering final schema aggregation.
+
+PURPOSE: Explicitly stop a session that is actively collecting traffic. This triggers a final schema aggregation and marks the session as completed.
+
+WHEN TO USE:
+- Stop an auto-aggregate session that would otherwise run indefinitely
+- End a session early before it reaches its target sample count
+- Trigger immediate schema generation from collected samples
+
+BEHAVIOR:
+- Triggers final schema aggregation from all collected samples
+- Transitions session from 'active' to 'completing' to 'completed'
+- Unregisters from traffic collection pipeline
+- Generated schemas available via cp_list_aggregated_schemas
+
+PREREQUISITES:
+- Session must be in 'active' state
+- Sessions in other states cannot be stopped (use cp_delete_learning_session to cancel pending sessions)
+
+Required Parameters:
+- id: Session UUID to stop
+
+AFTER STOPPING:
+- Check generated schemas with cp_list_aggregated_schemas
+- View session final state with cp_get_learning_session
+
+Authorization: Requires learning-sessions:execute scope.
+"#,
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Learning session UUID to stop"
+                }
+            },
+            "required": ["id"]
+        }),
+    )
+}
+
+/// Execute stop learning session
+#[instrument(skip(xds_state, args), fields(team = %team), name = "mcp_execute_stop_learning_session")]
+pub async fn execute_stop_learning_session(
+    xds_state: &Arc<XdsState>,
+    team: &str,
+    org_id: Option<&OrgId>,
+    args: Value,
+) -> Result<ToolCallResult, McpError> {
+    let id = args["id"]
+        .as_str()
+        .ok_or_else(|| McpError::InvalidParams("Missing required parameter: id".to_string()))?;
+
+    // Use internal API layer for access control
+    let ops = LearningSessionOperations::new(xds_state.clone());
+    let team_repo = xds_state
+        .team_repository
+        .as_ref()
+        .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
+    let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
+
+    let result = ops.stop(id, &auth).await?;
+
+    let mut output = build_action_response(true, None);
+    output["status"] = json!(result.data.status.to_string());
+    output["completed_at"] = match &result.data.completed_at {
+        Some(ts) => json!(ts.to_rfc3339()),
+        None => json!(null),
+    };
+    output["snapshot_count"] = json!(result.data.snapshot_count);
+    output["next_step"] =
+        json!("Session completed. Use cp_list_aggregated_schemas to view generated schemas.");
+
+    let text = serde_json::to_string(&output).map_err(McpError::SerializationError)?;
+
+    tracing::info!(team = %team, session_id = %id, "Learning session stopped via MCP");
 
     Ok(ToolCallResult::text(text))
 }
@@ -896,6 +990,26 @@ mod tests {
     }
 
     #[test]
+    fn test_cp_stop_learning_session_tool_definition() {
+        let tool = cp_stop_learning_session_tool();
+        assert_eq!(tool.name, "cp_stop_learning");
+        assert!(tool.description.as_ref().unwrap().contains("Stop"));
+
+        let required = tool.input_schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("id")));
+    }
+
+    #[test]
+    fn test_cp_create_tool_has_auto_aggregate_param() {
+        let tool = cp_create_learning_session_tool();
+        let properties = tool.input_schema["properties"].as_object().unwrap();
+        assert!(
+            properties.contains_key("autoAggregate"),
+            "create tool should have autoAggregate parameter"
+        );
+    }
+
+    #[test]
     fn test_tool_names_are_unique() {
         let tools = [
             cp_list_learning_sessions_tool(),
@@ -903,6 +1017,7 @@ mod tests {
             cp_create_learning_session_tool(),
             cp_activate_learning_session_tool(),
             cp_delete_learning_session_tool(),
+            cp_stop_learning_session_tool(),
             ops_learning_session_health_tool(),
         ];
 

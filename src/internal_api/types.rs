@@ -421,6 +421,8 @@ pub struct CreateLearningSessionInternalRequest {
     pub target_sample_count: i64,
     /// Whether to automatically start the session after creation
     pub auto_start: Option<bool>,
+    /// Whether to use auto-aggregate snapshot mode
+    pub auto_aggregate: Option<bool>,
 }
 
 /// Request to list learning sessions with pagination

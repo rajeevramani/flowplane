@@ -193,14 +193,16 @@ impl LearningSessionService {
         Ok(updated)
     }
 
-    /// Check if a session should be completed and transition if needed
+    /// Check if a session should be completed (or snapshotted) and transition if needed
     #[instrument(skip(self), fields(session_id = %session_id), name = "check_learning_session_completion")]
     ///
     /// This method checks:
     /// 1. Has the target sample count been reached?
     /// 2. Has the session timed out (ends_at exceeded)?
     ///
-    /// If either condition is true: active → completing → completed
+    /// For auto_aggregate sessions: target reached → snapshot (stay active)
+    /// For normal sessions: target reached → completing → completed
+    /// Timeout always completes regardless of auto_aggregate.
     pub async fn check_completion(&self, session_id: &str) -> Result<Option<LearningSessionData>> {
         let session = self.repository.get_by_id(session_id).await?;
 
@@ -209,43 +211,160 @@ impl LearningSessionService {
             return Ok(None);
         }
 
-        let should_complete = self.should_complete(&session);
+        let target_reached = session.current_sample_count >= session.target_sample_count;
+        let timed_out = session.ends_at.is_some_and(|ends_at| chrono::Utc::now() >= ends_at);
 
-        if should_complete {
+        if target_reached && session.auto_aggregate && !timed_out {
+            // Auto-aggregate mode: trigger snapshot, stay active
+            self.snapshot_session(session_id).await.map(Some)
+        } else if target_reached || timed_out {
+            // Normal mode or timeout: complete the session
+            if target_reached {
+                info!(
+                    session_id = %session.id,
+                    current = session.current_sample_count,
+                    target = session.target_sample_count,
+                    "Session reached target sample count"
+                );
+            }
+            if timed_out {
+                warn!(
+                    session_id = %session.id,
+                    ends_at = %session.ends_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
+                    "Session timed out"
+                );
+            }
             self.complete_session(session_id).await.map(Some)
         } else {
             Ok(None)
         }
     }
 
-    /// Determine if a session should be completed
+    /// Determine if a session should be completed (used by tests; does NOT account for auto_aggregate snapshot)
+    #[cfg(test)]
     fn should_complete(&self, session: &LearningSessionData) -> bool {
         let now = chrono::Utc::now();
-
-        // Check if target sample count reached
         let target_reached = session.current_sample_count >= session.target_sample_count;
-
-        // Check if session timed out
         let timed_out = session.ends_at.is_some_and(|ends_at| now >= ends_at);
-
-        if target_reached {
-            info!(
-                session_id = %session.id,
-                current = session.current_sample_count,
-                target = session.target_sample_count,
-                "Session reached target sample count"
-            );
-        }
-
-        if timed_out {
-            warn!(
-                session_id = %session.id,
-                ends_at = %session.ends_at.map(|t| t.to_rfc3339()).unwrap_or_default(),
-                "Session timed out"
-            );
-        }
-
         target_reached || timed_out
+    }
+
+    /// Take a snapshot of the current session state (auto-aggregate mode)
+    ///
+    /// Triggers aggregation as a snapshot, resets current_sample_count, increments
+    /// snapshot_count, and keeps the session Active for continued collection.
+    #[instrument(skip(self), fields(session_id = %session_id), name = "snapshot_learning_session")]
+    pub async fn snapshot_session(&self, session_id: &str) -> Result<LearningSessionData> {
+        let session = self.repository.get_by_id(session_id).await?;
+
+        if session.status != LearningSessionStatus::Active {
+            return Err(Error::validation(format!(
+                "Cannot snapshot session in '{}' state. Must be 'active'",
+                session.status
+            )));
+        }
+
+        if !session.auto_aggregate {
+            return Err(Error::validation(
+                "Cannot snapshot a session that is not in auto-aggregate mode".to_string(),
+            ));
+        }
+
+        // Calculate the next snapshot number
+        let next_snapshot = session.snapshot_count + 1;
+
+        info!(
+            session_id = %session_id,
+            snapshot_number = next_snapshot,
+            current_samples = session.current_sample_count,
+            "Taking snapshot of learning session"
+        );
+
+        // Trigger schema aggregation with snapshot metadata
+        if let Some(schema_aggregator) = &self.schema_aggregator {
+            match schema_aggregator
+                .aggregate_session_with_snapshot(
+                    session_id,
+                    Some(session_id.to_string()),
+                    Some(next_snapshot),
+                )
+                .await
+            {
+                Ok(aggregated_ids) => {
+                    info!(
+                        session_id = %session_id,
+                        snapshot_number = next_snapshot,
+                        aggregated_count = aggregated_ids.len(),
+                        "Successfully aggregated snapshot schemas"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        session_id = %session_id,
+                        snapshot_number = next_snapshot,
+                        error = %e,
+                        "Failed to aggregate snapshot schemas — continuing with snapshot"
+                    );
+                }
+            }
+        } else {
+            warn!(
+                session_id = %session_id,
+                "Schema aggregator not configured — skipping snapshot aggregation"
+            );
+        }
+
+        // Reset sample count and increment snapshot count atomically
+        let new_snapshot_count =
+            self.repository.reset_sample_count_and_increment_snapshot(session_id).await?;
+
+        info!(
+            session_id = %session_id,
+            snapshot_count = new_snapshot_count,
+            "Snapshot complete — session continues collecting"
+        );
+
+        // Publish webhook event
+        if let Some(webhook_service) = &self.webhook_service {
+            let event = LearningSessionWebhookEvent::snapshot_completed(
+                session.id.clone(),
+                session.team.clone(),
+                session.route_pattern.clone(),
+                session.target_sample_count,
+                session.current_sample_count,
+                new_snapshot_count,
+            );
+            webhook_service.publish_event(event).await;
+        }
+
+        self.repository.get_by_id(session_id).await
+    }
+
+    /// Stop an auto-aggregate session (trigger final aggregation + complete)
+    ///
+    /// This is called by cp_stop_learning to explicitly end a session that
+    /// would otherwise continue collecting indefinitely.
+    #[instrument(skip(self), fields(session_id = %session_id), name = "stop_learning_session")]
+    pub async fn stop_session(&self, session_id: &str) -> Result<LearningSessionData> {
+        let session = self.repository.get_by_id(session_id).await?;
+
+        if session.status != LearningSessionStatus::Active {
+            return Err(Error::validation(format!(
+                "Cannot stop session in '{}' state. Must be 'active'",
+                session.status
+            )));
+        }
+
+        info!(
+            session_id = %session_id,
+            auto_aggregate = session.auto_aggregate,
+            snapshot_count = session.snapshot_count,
+            current_samples = session.current_sample_count,
+            "Stopping learning session — triggering final aggregation"
+        );
+
+        // Complete the session (which triggers final aggregation)
+        self.complete_session(session_id).await
     }
 
     /// Complete a learning session (active → completing → completed)
@@ -638,6 +757,8 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
         };
 
         let (_db, service) = create_test_service().await;
@@ -664,6 +785,8 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
         };
 
         let (_db, service) = create_test_service().await;
@@ -690,6 +813,8 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
         };
 
         let (_db, service) = create_test_service().await;
@@ -716,6 +841,8 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
         };
 
         let result = convert_to_access_log_session(&session);
@@ -725,6 +852,65 @@ mod tests {
         assert_eq!(learning_session.id, "test-session");
         assert_eq!(learning_session.route_patterns.len(), 1);
         assert_eq!(learning_session.methods, Some(vec!["GET".to_string(), "POST".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn test_should_complete_auto_aggregate_target_reached() {
+        // should_complete returns true even for auto_aggregate sessions
+        // (the snapshot vs complete branching is in check_completion, not should_complete)
+        let session = LearningSessionData {
+            id: "test-session".to_string(),
+            team: "test-team".to_string(),
+            route_pattern: "^/api/.*".to_string(),
+            cluster_name: None,
+            http_methods: None,
+            status: LearningSessionStatus::Active,
+            created_at: chrono::Utc::now(),
+            started_at: Some(chrono::Utc::now()),
+            ends_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            completed_at: None,
+            target_sample_count: 100,
+            current_sample_count: 100, // Target reached
+            triggered_by: None,
+            deployment_version: None,
+            configuration_snapshot: None,
+            error_message: None,
+            updated_at: chrono::Utc::now(),
+            auto_aggregate: true, // Auto-aggregate enabled
+            snapshot_count: 2,    // Already had 2 snapshots
+        };
+
+        let (_db, service) = create_test_service().await;
+        // should_complete is a basic check — always true when target reached
+        assert!(service.should_complete(&session));
+    }
+
+    #[tokio::test]
+    async fn test_should_not_complete_auto_aggregate_below_target() {
+        let session = LearningSessionData {
+            id: "test-session".to_string(),
+            team: "test-team".to_string(),
+            route_pattern: "^/api/.*".to_string(),
+            cluster_name: None,
+            http_methods: None,
+            status: LearningSessionStatus::Active,
+            created_at: chrono::Utc::now(),
+            started_at: Some(chrono::Utc::now()),
+            ends_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            completed_at: None,
+            target_sample_count: 500,
+            current_sample_count: 250, // Below target
+            triggered_by: None,
+            deployment_version: None,
+            configuration_snapshot: None,
+            error_message: None,
+            updated_at: chrono::Utc::now(),
+            auto_aggregate: true,
+            snapshot_count: 0,
+        };
+
+        let (_db, service) = create_test_service().await;
+        assert!(!service.should_complete(&session));
     }
 
     #[test]
@@ -747,6 +933,8 @@ mod tests {
             configuration_snapshot: None,
             error_message: None,
             updated_at: chrono::Utc::now(),
+            auto_aggregate: false,
+            snapshot_count: 0,
         };
 
         let result = convert_to_access_log_session(&session);

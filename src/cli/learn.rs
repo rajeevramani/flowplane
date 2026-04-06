@@ -44,6 +44,25 @@ pub enum LearnCommands {
         #[arg(long)]
         deployment_version: Option<String>,
 
+        /// Enable auto-aggregate snapshot mode (session continues after each aggregation)
+        #[arg(long)]
+        auto_aggregate: bool,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
+
+    /// Stop an active learning session (triggers final aggregation)
+    #[command(
+        long_about = "Stop an active learning session and trigger final schema aggregation.\n\nThis is especially useful for auto-aggregate sessions that run indefinitely.\nThe stop triggers a final schema aggregation from all collected samples.",
+        after_help = "EXAMPLES:\n    # Stop a session by ID\n    flowplane learn stop abc-123-def\n\n    # Stop and get JSON output\n    flowplane learn stop abc-123-def --output json"
+    )]
+    Stop {
+        /// Session ID to stop
+        #[arg(value_name = "SESSION_ID")]
+        session_id: String,
+
         /// Output format (json, yaml, or table)
         #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
@@ -123,6 +142,10 @@ pub struct LearningSessionResponse {
     pub triggered_by: Option<String>,
     pub deployment_version: Option<String>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub auto_aggregate: bool,
+    #[serde(default)]
+    pub snapshot_count: i64,
 }
 
 /// Request body for creating a learning session
@@ -141,6 +164,8 @@ struct CreateLearningSessionRequest {
     triggered_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deployment_version: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    auto_aggregate: bool,
 }
 
 /// Handle learn commands
@@ -158,6 +183,7 @@ pub async fn handle_learn_command(
             max_duration_seconds,
             triggered_by,
             deployment_version,
+            auto_aggregate,
             output,
         } => {
             start_session(
@@ -170,9 +196,13 @@ pub async fn handle_learn_command(
                 max_duration_seconds,
                 triggered_by,
                 deployment_version,
+                auto_aggregate,
                 &output,
             )
             .await?
+        }
+        LearnCommands::Stop { session_id, output } => {
+            stop_session(client, team, &session_id, &output).await?
         }
         LearnCommands::Cancel { session_id, yes } => {
             cancel_session(client, team, &session_id, yes).await?
@@ -199,6 +229,7 @@ async fn start_session(
     max_duration_seconds: Option<i64>,
     triggered_by: Option<String>,
     deployment_version: Option<String>,
+    auto_aggregate: bool,
     output: &str,
 ) -> Result<()> {
     let body = CreateLearningSessionRequest {
@@ -209,10 +240,29 @@ async fn start_session(
         max_duration_seconds,
         triggered_by,
         deployment_version,
+        auto_aggregate,
     };
 
     let path = format!("/api/v1/teams/{team}/learning-sessions");
     let response: LearningSessionResponse = client.post_json(&path, &body).await?;
+
+    if output == "table" {
+        print_sessions_table(&[response]);
+    } else {
+        print_output(&response, output)?;
+    }
+
+    Ok(())
+}
+
+async fn stop_session(
+    client: &FlowplaneClient,
+    team: &str,
+    session_id: &str,
+    output: &str,
+) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/learning-sessions/{session_id}/stop");
+    let response: LearningSessionResponse = client.post_json(&path, &serde_json::json!({})).await?;
 
     if output == "table" {
         print_sessions_table(&[response]);

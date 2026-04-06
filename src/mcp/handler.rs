@@ -753,6 +753,7 @@ impl McpHandler {
             | "cp_create_learning_session"
             | "cp_activate_learning_session"
             | "cp_delete_learning_session"
+            | "cp_stop_learning"
             | "ops_learning_session_health"
             | "cp_create_cluster"
             | "cp_update_cluster"
@@ -1176,6 +1177,15 @@ impl McpHandler {
                     }
                     "cp_delete_learning_session" => {
                         tools::execute_delete_learning_session(
+                            xds_state,
+                            &tool_team,
+                            self.context.org_id.as_ref(),
+                            args,
+                        )
+                        .await
+                    }
+                    "cp_stop_learning" => {
+                        tools::execute_stop_learning_session(
                             xds_state,
                             &tool_team,
                             self.context.org_id.as_ref(),
