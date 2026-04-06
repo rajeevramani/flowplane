@@ -114,7 +114,7 @@ RELATED TOOLS: cp_list_learning_sessions (discovery), cp_create_learning_session
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "Learning session UUID"
+                    "description": "Learning session UUID or name"
                 }
             },
             "required": ["id"]
@@ -201,6 +201,10 @@ Authorization: Requires learning-sessions:create scope.
                 "autoAggregate": {
                     "type": "boolean",
                     "description": "Enable snapshot mode: when target is reached, aggregate and reset instead of completing. Session continues until explicitly stopped with cp_stop_learning. (default: false)"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional human-friendly session name (auto-generated from route_pattern if omitted). Must be unique within the team."
                 }
             },
             "required": ["routePattern", "targetSampleCount"]
@@ -250,7 +254,7 @@ Authorization: Requires learning-sessions:delete scope.
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "Learning session UUID to delete"
+                    "description": "Learning session UUID or name to delete"
                 }
             },
             "required": ["id"]
@@ -286,6 +290,7 @@ pub async fn execute_list_learning_sessions(
         "sessions": sessions.iter().map(|s| {
             json!({
                 "id": s.id,
+                "name": s.name,
                 "team": s.team,
                 "route_pattern": s.route_pattern,
                 "cluster_name": s.cluster_name,
@@ -331,10 +336,11 @@ pub async fn execute_get_learning_session(
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
     let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
-    let session = ops.get(id, &auth).await?;
+    let session = ops.resolve_session(id, &auth).await?;
 
     let result = json!({
         "id": session.id,
+        "name": session.name,
         "team": session.team,
         "route_pattern": session.route_pattern,
         "cluster_name": session.cluster_name,
@@ -386,6 +392,7 @@ pub async fn execute_create_learning_session(
     });
     let auto_start = args.get("autoStart").and_then(|v| v.as_bool());
     let auto_aggregate = args.get("autoAggregate").and_then(|v| v.as_bool());
+    let name = args.get("name").and_then(|v| v.as_str()).map(String::from);
 
     tracing::debug!(
         team = %team,
@@ -417,6 +424,7 @@ pub async fn execute_create_learning_session(
         target_sample_count,
         auto_start,
         auto_aggregate,
+        name,
     };
 
     let result = ops.create(req, &auth).await?;
@@ -424,6 +432,7 @@ pub async fn execute_create_learning_session(
     // 5. Format success response — include status so agents can verify activation
     let mut output =
         build_create_response("learning_session", &result.data.route_pattern, &result.data.id);
+    output["name"] = json!(result.data.name);
     output["status"] = json!(result.data.status.to_string());
     output["started_at"] = match &result.data.started_at {
         Some(ts) => json!(ts.to_rfc3339()),
@@ -523,7 +532,7 @@ Authorization: Requires learning-sessions:execute scope.
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "Learning session UUID to stop"
+                    "description": "Learning session UUID or name to stop"
                 }
             },
             "required": ["id"]
@@ -642,7 +651,7 @@ pub async fn execute_activate_learning_session(
     let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
     // Verify the session exists and belongs to this team
-    let session = ops.get(id, &auth).await?;
+    let session = ops.resolve_session(id, &auth).await?;
     if session.status.to_string() != "pending" {
         return Err(McpError::InvalidParams(format!(
             "Cannot activate session in '{}' state — must be 'pending'",
@@ -656,7 +665,7 @@ pub async fn execute_activate_learning_session(
     })?;
 
     let activated = service
-        .activate_session(id)
+        .activate_session(&session.id)
         .await
         .map_err(|e| McpError::InternalError(format!("Failed to activate session: {}", e)))?;
 
@@ -744,7 +753,7 @@ pub async fn execute_ops_learning_session_health(
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
     let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
-    let session = ops.get(id, &auth).await?;
+    let session = ops.resolve_session(id, &auth).await?;
 
     let status_str = session.status.to_string();
     let mut checks: Vec<Value> = Vec::new();

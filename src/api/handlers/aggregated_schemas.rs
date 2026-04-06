@@ -41,6 +41,10 @@ pub struct ListAggregatedSchemasQuery {
     #[serde(default)]
     #[schema(example = 0.8, minimum = 0.0, maximum = 1.0)]
     pub min_confidence: Option<f64>,
+
+    /// Filter by learning session ID
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// Query parameters for schema comparison
@@ -290,6 +294,7 @@ pub async fn list_aggregated_schemas_handler(
             query.path.as_deref(),
             query.http_method.as_deref(),
             query.min_confidence,
+            query.session_id.as_deref(),
         )
         .await
         .map_err(|e| {

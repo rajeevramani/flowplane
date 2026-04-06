@@ -52,7 +52,7 @@ impl SchemaAggregator {
     /// creating them in a single transaction.
     #[instrument(skip(self), fields(session_id = %session_id), name = "aggregate_session_schemas")]
     pub async fn aggregate_session(&self, session_id: &str) -> Result<Vec<i64>> {
-        self.aggregate_session_with_snapshot(session_id, None, None).await
+        self.aggregate_session_with_snapshot(session_id, Some(session_id.to_string()), None).await
     }
 
     /// Aggregate schemas for a session with optional snapshot metadata

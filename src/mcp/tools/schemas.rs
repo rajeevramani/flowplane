@@ -316,7 +316,15 @@ pub async fn execute_list_aggregated_schemas(
         .ok_or_else(|| McpError::InternalError("Team repository unavailable".to_string()))?;
     let auth = super::resolve_mcp_auth(team, org_id, team_repo).await?;
 
-    let req = ListSchemasRequest { path, http_method, min_confidence, latest_only, limit, offset };
+    let req = ListSchemasRequest {
+        path,
+        http_method,
+        min_confidence,
+        latest_only,
+        limit,
+        offset,
+        session_id: None,
+    };
 
     let response = ops.list(req, &auth).await?;
 

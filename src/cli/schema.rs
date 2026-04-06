@@ -17,6 +17,10 @@ pub enum SchemaCommands {
         after_help = "EXAMPLES:\n    # List all schemas\n    flowplane schema list\n\n    # Filter by confidence\n    flowplane schema list --min-confidence 0.7\n\n    # Filter by HTTP method\n    flowplane schema list --method GET\n\n    # JSON output for scripting\n    flowplane schema list -o json"
     )]
     List {
+        /// Filter by learning session (name or UUID)
+        #[arg(long)]
+        session: Option<String>,
+
         /// Minimum confidence score (0.0 - 1.0)
         #[arg(long)]
         min_confidence: Option<f64>,
@@ -67,6 +71,10 @@ pub enum SchemaCommands {
         after_help = "EXAMPLES:\n    # Export all schemas as YAML to stdout\n    flowplane schema export --all\n\n    # Export specific schemas to a file\n    flowplane schema export --id 1,2,3 -o api.yaml\n\n    # Export high-confidence schemas as JSON\n    flowplane schema export --all --min-confidence 0.7 -o api.json\n\n    # Pipe to another tool\n    flowplane schema export --all | yq '.paths'"
     )]
     Export {
+        /// Export schemas from a specific session (name or UUID)
+        #[arg(long)]
+        session: Option<String>,
+
         /// Schema IDs to export (comma-separated)
         #[arg(long, value_delimiter = ',')]
         id: Option<Vec<i64>>,
@@ -136,6 +144,7 @@ pub async fn handle_schema_command(
 ) -> Result<()> {
     match command {
         SchemaCommands::List {
+            session,
             min_confidence,
             path,
             method,
@@ -153,6 +162,7 @@ pub async fn handle_schema_command(
                 latest_only,
                 limit,
                 offset,
+                session,
             )
             .await?;
             if output == "table" {
@@ -169,7 +179,16 @@ pub async fn handle_schema_command(
                 print_output(&schema, &output)?;
             }
         }
-        SchemaCommands::Export { id, all, min_confidence, title, version, description, output } => {
+        SchemaCommands::Export {
+            session,
+            id,
+            all,
+            min_confidence,
+            title,
+            version,
+            description,
+            output,
+        } => {
             export_schemas(
                 client,
                 team,
@@ -180,6 +199,7 @@ pub async fn handle_schema_command(
                 version,
                 description,
                 output,
+                session,
             )
             .await?;
         }
@@ -199,6 +219,7 @@ pub async fn list_schemas(
     latest_only: bool,
     limit: Option<i32>,
     offset: Option<i32>,
+    session: Option<String>,
 ) -> Result<Vec<AggregatedSchemaResponse>> {
     let mut query_path = format!("/api/v1/teams/{team}/aggregated-schemas?");
     let mut params = Vec::new();
@@ -221,6 +242,9 @@ pub async fn list_schemas(
     if let Some(o) = offset {
         params.push(format!("offset={o}"));
     }
+    if let Some(s) = &session {
+        params.push(format!("sessionId={s}"));
+    }
 
     query_path.push_str(&params.join("&"));
 
@@ -239,6 +263,7 @@ pub async fn export_schemas(
     version: String,
     description: Option<String>,
     output: Option<String>,
+    session: Option<String>,
 ) -> Result<()> {
     // Resolve schema IDs
     let schema_ids = if let Some(ids) = ids {
@@ -248,14 +273,16 @@ pub async fn export_schemas(
         ids
     } else if all {
         let schemas =
-            list_schemas(client, team, min_confidence, None, None, true, None, None).await?;
+            list_schemas(client, team, min_confidence, None, None, true, None, None, session)
+                .await?;
         if schemas.is_empty() {
             anyhow::bail!("No schemas found. Run a learning session first.");
         }
         schemas.iter().map(|s| s.id).collect()
     } else {
         // Show available schemas and error
-        let schemas = list_schemas(client, team, None, None, None, true, Some(10), None).await?;
+        let schemas =
+            list_schemas(client, team, None, None, None, true, Some(10), None, None).await?;
         if schemas.is_empty() {
             anyhow::bail!("No schemas found. Run a learning session first.");
         }

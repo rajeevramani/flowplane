@@ -190,7 +190,7 @@
 		<div class="mb-8 flex items-start justify-between">
 			<div>
 				<div class="flex items-center gap-3">
-					<h1 class="text-3xl font-bold text-gray-900">Learning Session</h1>
+					<h1 class="text-3xl font-bold text-gray-900">{session.name ?? 'Learning Session'}</h1>
 					<SessionStatusBadge status={session.status} size="md" />
 					{#if session.autoAggregate}
 						<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">

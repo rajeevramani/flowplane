@@ -1630,6 +1630,7 @@ export type LearningSessionStatus =
 export interface LearningSessionResponse {
 	id: string;
 	team: string;
+	name: string | null;
 	routePattern: string;
 	clusterName: string | null;
 	httpMethods: string[] | null;
@@ -1650,6 +1651,7 @@ export interface LearningSessionResponse {
 
 /** Request to create a learning session */
 export interface CreateLearningSessionRequest {
+	name?: string;
 	routePattern: string;
 	clusterName?: string;
 	httpMethods?: string[];

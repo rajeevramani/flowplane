@@ -73,6 +73,7 @@ impl AggregatedSchemaOperations {
             } else if req.path.is_some()
                 || req.http_method.is_some()
                 || req.min_confidence.is_some()
+                || req.session_id.is_some()
             {
                 // Use filtered query
                 repository
@@ -81,6 +82,7 @@ impl AggregatedSchemaOperations {
                         req.path.as_deref(),
                         req.http_method.as_deref(),
                         req.min_confidence,
+                        req.session_id.as_deref(),
                     )
                     .await
                     .map_err(InternalError::from)?

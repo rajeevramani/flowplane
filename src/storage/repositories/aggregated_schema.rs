@@ -695,6 +695,7 @@ impl AggregatedSchemaRepository {
         path_search: Option<&str>,
         http_method: Option<&str>,
         min_confidence: Option<f64>,
+        session_id: Option<&str>,
     ) -> Result<Vec<AggregatedSchemaData>> {
         let mut query = String::from(
             "SELECT id, team, path, http_method, version, previous_version_id,
@@ -723,6 +724,11 @@ impl AggregatedSchemaRepository {
             query.push_str(&format!(" AND confidence_score >= ${}", bind_count));
         }
 
+        if session_id.is_some() {
+            bind_count += 1;
+            query.push_str(&format!(" AND session_id = ${}", bind_count));
+        }
+
         query.push_str(" ORDER BY created_at DESC");
 
         let mut query_builder =
@@ -738,6 +744,10 @@ impl AggregatedSchemaRepository {
 
         if let Some(confidence) = min_confidence {
             query_builder = query_builder.bind(confidence);
+        }
+
+        if let Some(sid) = session_id {
+            query_builder = query_builder.bind(sid);
         }
 
         let rows = query_builder.fetch_all(&self.pool).await.map_err(|e| {

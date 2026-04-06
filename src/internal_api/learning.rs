@@ -140,6 +140,45 @@ impl LearningSessionOperations {
         Ok(session)
     }
 
+    /// Resolve a learning session by name or ID
+    ///
+    /// Tries UUID parse first (lookup by ID), falls back to name lookup
+    /// within the user's accessible teams.
+    #[instrument(skip(self, auth), fields(name_or_id = %name_or_id))]
+    pub async fn resolve_session(
+        &self,
+        name_or_id: &str,
+        auth: &InternalAuthContext,
+    ) -> Result<LearningSessionData, InternalError> {
+        let cluster_repo = self
+            .xds_state
+            .cluster_repository
+            .as_ref()
+            .ok_or_else(|| InternalError::service_unavailable("Repository not configured"))?;
+        let repository = crate::storage::repositories::LearningSessionRepository::new(
+            cluster_repo.pool().clone(),
+        );
+
+        // Try UUID-based lookup first
+        if uuid::Uuid::parse_str(name_or_id).is_ok() {
+            if let Ok(session) = repository.get_by_id(name_or_id).await {
+                if auth.is_admin || auth.can_access_team(Some(&session.team)) {
+                    return Ok(session);
+                }
+                return Err(InternalError::not_found("Learning session", name_or_id));
+            }
+        }
+
+        // Fall back to name lookup across allowed teams
+        for team in &auth.allowed_teams {
+            if let Ok(session) = repository.get_by_name(team, name_or_id).await {
+                return Ok(session);
+            }
+        }
+
+        Err(InternalError::not_found("Learning session", name_or_id))
+    }
+
     /// Create a new learning session
     ///
     /// # Arguments
@@ -191,6 +230,23 @@ impl LearningSessionOperations {
             cluster_repo.pool().clone(),
         );
 
+        // Generate session name if not provided
+        let session_name = if let Some(name) = req.name {
+            Some(name)
+        } else {
+            let generated =
+                crate::services::learning_session_service::generate_unique_session_name(
+                    &repository,
+                    &team,
+                    &req.route_pattern,
+                )
+                .await
+                .map_err(|e| {
+                    InternalError::internal(format!("Failed to generate session name: {}", e))
+                })?;
+            Some(generated)
+        };
+
         let create_request = CreateLearningSessionRequest {
             team: team.clone(),
             route_pattern: req.route_pattern.clone(),
@@ -202,6 +258,7 @@ impl LearningSessionOperations {
             deployment_version: None,
             configuration_snapshot: None,
             auto_aggregate: req.auto_aggregate.unwrap_or(false),
+            name: session_name,
         };
 
         let created = repository.create(create_request).await.map_err(InternalError::from)?;
@@ -273,8 +330,8 @@ impl LearningSessionOperations {
         id: &str,
         auth: &InternalAuthContext,
     ) -> Result<OperationResult<LearningSessionData>, InternalError> {
-        // Verify access
-        let session = self.get(id, auth).await?;
+        // Verify access — resolve name or ID
+        let session = self.resolve_session(id, auth).await?;
 
         // Validate state
         if session.status != LearningSessionStatus::Active {
@@ -290,12 +347,12 @@ impl LearningSessionOperations {
         })?;
 
         let completed = service
-            .stop_session(id)
+            .stop_session(&session.id)
             .await
             .map_err(|e| InternalError::internal(format!("Failed to stop session: {}", e)))?;
 
         info!(
-            session_id = %id,
+            session_id = %session.id,
             team = %completed.team,
             "Learning session stopped via internal API"
         );
@@ -321,8 +378,8 @@ impl LearningSessionOperations {
         id: &str,
         auth: &InternalAuthContext,
     ) -> Result<OperationResult<()>, InternalError> {
-        // 1. Get existing session and verify access
-        let existing = self.get(id, auth).await?;
+        // 1. Resolve session by name or ID and verify access
+        let existing = self.resolve_session(id, auth).await?;
 
         // 2. Validate state - can only delete pending or active sessions
         match existing.status {
@@ -353,23 +410,23 @@ impl LearningSessionOperations {
             cluster_repo.pool().clone(),
         );
 
-        repository.delete(id, &existing.team).await.map_err(InternalError::from)?;
+        repository.delete(&existing.id, &existing.team).await.map_err(InternalError::from)?;
 
         // 4. If session was active, unregister from access log service
         if existing.status == LearningSessionStatus::Active {
             if let Some(access_log_service) = &self.xds_state.access_log_service {
-                access_log_service.remove_session(id).await;
+                access_log_service.remove_session(&existing.id).await;
                 info!(
-                    session_id = %id,
+                    session_id = %existing.id,
                     "Unregistered learning session from Access Log Service"
                 );
             }
 
             // Unregister from ExtProc service
             if let Some(ext_proc_service) = &self.xds_state.ext_proc_service {
-                ext_proc_service.remove_session(id).await;
+                ext_proc_service.remove_session(&existing.id).await;
                 info!(
-                    session_id = %id,
+                    session_id = %existing.id,
                     "Unregistered learning session from ExtProc Service"
                 );
             }
@@ -377,20 +434,20 @@ impl LearningSessionOperations {
             // Trigger LDS update to remove access log configuration
             if let Err(e) = self.xds_state.refresh_listeners_from_repository().await {
                 tracing::error!(
-                    session_id = %id,
+                    session_id = %existing.id,
                     error = %e,
                     "Failed to refresh listeners after session deletion"
                 );
             } else {
                 info!(
-                    session_id = %id,
+                    session_id = %existing.id,
                     "Triggered LDS update to remove access log configuration"
                 );
             }
         }
 
         info!(
-            session_id = %id,
+            session_id = %existing.id,
             team = %existing.team,
             "Learning session deleted via internal API"
         );
@@ -424,6 +481,7 @@ mod tests {
             target_sample_count: 100,
             auto_start: Some(false),
             auto_aggregate: None,
+            name: None,
         };
 
         let result = ops.create(req, &auth).await;
@@ -450,6 +508,7 @@ mod tests {
             target_sample_count: 50,
             auto_start: Some(false),
             auto_aggregate: None,
+            name: None,
         };
 
         let result = ops.create(req, &auth).await;
@@ -470,6 +529,7 @@ mod tests {
             target_sample_count: 50,
             auto_start: Some(false),
             auto_aggregate: None,
+            name: None,
         };
 
         let result = ops.create(req, &auth).await;
@@ -491,6 +551,7 @@ mod tests {
             target_sample_count: 0, // Invalid
             auto_start: Some(false),
             auto_aggregate: None,
+            name: None,
         };
 
         let result = ops.create(req, &auth).await;
@@ -524,6 +585,7 @@ mod tests {
             target_sample_count: 100,
             auto_start: Some(false),
             auto_aggregate: None,
+            name: None,
         };
         let created = ops.create(req, &admin_auth).await.expect("create session");
 
@@ -554,6 +616,7 @@ mod tests {
                     target_sample_count: 100,
                     auto_start: Some(false),
                     auto_aggregate: None,
+                    name: None,
                 };
                 ops.create(req, &admin_auth).await.expect("create session");
             }
@@ -586,6 +649,7 @@ mod tests {
             target_sample_count: 100,
             auto_start: Some(false),
             auto_aggregate: None,
+            name: None,
         };
         let created = ops.create(create_req, &auth).await.expect("create session");
 

@@ -711,6 +711,79 @@ impl LearningSessionService {
     }
 }
 
+/// Generate a human-friendly session name from a route pattern.
+///
+/// Strips regex metacharacters, replaces `/` with `-`, collapses dashes,
+/// and truncates to 48 chars. Returns e.g. `"v2-api"` from `"^/v2/api/.*"`.
+pub fn generate_session_name(route_pattern: &str) -> String {
+    let name: String = route_pattern
+        .chars()
+        .map(|c| match c {
+            '^' | '$' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' => {
+                ' '
+            }
+            '/' => '-',
+            _ => c,
+        })
+        .collect();
+
+    // Collapse whitespace and dashes, trim
+    let mut result = String::with_capacity(name.len());
+    let mut last_was_dash = true; // true to trim leading dash
+    for c in name.chars() {
+        if c == '-' || c == ' ' {
+            if !last_was_dash {
+                result.push('-');
+                last_was_dash = true;
+            }
+        } else {
+            result.push(c);
+            last_was_dash = false;
+        }
+    }
+
+    // Trim trailing dash
+    let result = result.trim_end_matches('-');
+
+    // Truncate to 48 chars
+    if result.len() > 48 {
+        result[..48].trim_end_matches('-').to_string()
+    } else {
+        result.to_string()
+    }
+}
+
+/// Generate a unique session name, appending `-2`, `-3`, etc. on conflict.
+///
+/// Tries the base name first, then appends a numeric suffix until no UNIQUE
+/// violation occurs (up to 100 attempts).
+pub async fn generate_unique_session_name(
+    repo: &crate::storage::repositories::LearningSessionRepository,
+    team: &str,
+    route_pattern: &str,
+) -> Result<String> {
+    let base = generate_session_name(route_pattern);
+    if base.is_empty() {
+        return Ok(format!("session-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+    }
+
+    // Try the base name first
+    if repo.get_by_name(team, &base).await.is_err() {
+        return Ok(base);
+    }
+
+    // Append suffix until unique
+    for i in 2..=100 {
+        let candidate = format!("{}-{}", base, i);
+        if repo.get_by_name(team, &candidate).await.is_err() {
+            return Ok(candidate);
+        }
+    }
+
+    // Fallback to uuid suffix
+    Ok(format!("{}-{}", base, &uuid::Uuid::new_v4().to_string()[..8]))
+}
+
 /// Convert a LearningSessionData to an Access Log Service LearningSession
 fn convert_to_access_log_session(session: &LearningSessionData) -> Result<LearningSession> {
     let pattern = regex::Regex::new(&session.route_pattern).map_err(|e| {
@@ -759,6 +832,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             auto_aggregate: false,
             snapshot_count: 0,
+            name: None,
         };
 
         let (_db, service) = create_test_service().await;
@@ -787,6 +861,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             auto_aggregate: false,
             snapshot_count: 0,
+            name: None,
         };
 
         let (_db, service) = create_test_service().await;
@@ -815,6 +890,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             auto_aggregate: false,
             snapshot_count: 0,
+            name: None,
         };
 
         let (_db, service) = create_test_service().await;
@@ -843,6 +919,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             auto_aggregate: false,
             snapshot_count: 0,
+            name: None,
         };
 
         let result = convert_to_access_log_session(&session);
@@ -878,6 +955,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             auto_aggregate: true, // Auto-aggregate enabled
             snapshot_count: 2,    // Already had 2 snapshots
+            name: None,
         };
 
         let (_db, service) = create_test_service().await;
@@ -907,6 +985,7 @@ mod tests {
             updated_at: chrono::Utc::now(),
             auto_aggregate: true,
             snapshot_count: 0,
+            name: None,
         };
 
         let (_db, service) = create_test_service().await;
@@ -935,9 +1014,60 @@ mod tests {
             updated_at: chrono::Utc::now(),
             auto_aggregate: false,
             snapshot_count: 0,
+            name: None,
         };
 
         let result = convert_to_access_log_session(&session);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_session_name_basic() {
+        assert_eq!(generate_session_name("^/v2/api/.*"), "v2-api");
+    }
+
+    #[test]
+    fn test_generate_session_name_users_endpoint() {
+        assert_eq!(generate_session_name("^/api/v1/users/.*"), "api-v1-users");
+    }
+
+    #[test]
+    fn test_generate_session_name_complex_regex() {
+        assert_eq!(generate_session_name("^/api/v[0-9]+/orders/[0-9]+$"), "api-v-0-9-orders-0-9");
+    }
+
+    #[test]
+    fn test_generate_session_name_simple_path() {
+        assert_eq!(generate_session_name("/api/health"), "api-health");
+    }
+
+    #[test]
+    fn test_generate_session_name_empty() {
+        assert_eq!(generate_session_name(""), "");
+    }
+
+    #[test]
+    fn test_generate_session_name_only_regex_chars() {
+        assert_eq!(generate_session_name("^.*$"), "");
+    }
+
+    #[test]
+    fn test_generate_session_name_truncation() {
+        let long_pattern = "^/api/v1/this/is/a/very/long/path/that/exceeds/the/limit/of/forty/eight/characters/definitely/.*";
+        let result = generate_session_name(long_pattern);
+        assert!(result.len() <= 48);
+        assert!(!result.ends_with('-'));
+    }
+
+    #[test]
+    fn test_generate_session_name_no_leading_trailing_dashes() {
+        assert_eq!(generate_session_name("/api/users/"), "api-users");
+        assert_eq!(generate_session_name("^/api/"), "api");
+    }
+
+    #[test]
+    fn test_generate_session_name_collapse_dashes() {
+        // Multiple slashes should collapse to single dash
+        assert_eq!(generate_session_name("/api///users"), "api-users");
     }
 }
