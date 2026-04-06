@@ -1,27 +1,38 @@
 # Learning Quickstart
 
-Discover API schemas from live traffic and export as OpenAPI — zero source code or annotations required.
+Discover API schemas from live traffic and export as OpenAPI — zero source code or annotations required. Point it at any HTTP backend, send traffic through the gateway, and get a spec.
 
 ## Prerequisites
 
 Complete the [Quickstart](quickstart.md) first (Flowplane + Envoy running in dev mode).
 
-## 1. Start a backend
+## 1. Expose your backend
 
-Start the MockBank demo API:
+Expose any HTTP service through Envoy. The learning engine observes traffic as it flows through the gateway.
+
+```bash
+flowplane expose http://<your-service>:<port> --name my-api --path /api
+```
+
+**Using your own backend:**
+
+```bash
+# Example: a service running on port 3000
+flowplane expose http://host.docker.internal:3000 --name my-api --path /api
+```
+
+Use `host.docker.internal` to reach services running on the host machine. For Docker services on the same network, use the container/service name directly.
+
+**Using the included MockBank demo** (no setup required):
 
 ```bash
 docker compose -f docker-compose-mockbackend.yml up -d
 flowplane expose http://mockbank-api:3000 --name mockbank --path /v2/api
 ```
 
-```
-Exposed 'mockbank' -> http://mockbank-api:3000
-  Port:   10001
-  Paths:  /v2/api
-```
+This guide uses MockBank for examples, but every command works with any backend.
 
-Verify: `curl http://localhost:10001/v2/api/customers` should return JSON.
+Verify traffic flows: `curl http://localhost:10001/v2/api/customers` (or your endpoint).
 
 ## 2. Start a learning session
 
@@ -180,6 +191,45 @@ The session aggregates every 100 samples and keeps collecting. Stop when ready:
 ```bash
 flowplane learn stop mockbank-continuous
 ```
+
+## CLI Reference
+
+### Learning sessions
+
+| Command | Description |
+|---------|-------------|
+| `flowplane learn start --name <N> --route-pattern <R> --target-sample-count <C>` | Create and activate a session |
+| `flowplane learn list` | List all sessions |
+| `flowplane learn get <name-or-id>` | Session details and progress |
+| `flowplane learn stop <name-or-id>` | Stop session, trigger final aggregation |
+| `flowplane learn cancel <name-or-id> --yes` | Cancel without aggregating |
+| `flowplane learn export [--session <name>] [-o file]` | Export schemas as OpenAPI |
+
+Key flags for `learn start`:
+
+| Flag | Description |
+|------|-------------|
+| `--name` | Human-readable name (auto-generated if omitted) |
+| `--route-pattern` | Regex matching request paths to observe |
+| `--target-sample-count` | Samples to collect before aggregation |
+| `--auto-aggregate` | Aggregate periodically, keep collecting |
+| `--cluster-name` | Filter to traffic for a specific cluster |
+| `--http-methods` | Filter by HTTP method (e.g., `GET POST`) |
+
+### Schemas
+
+| Command | Description |
+|---------|-------------|
+| `flowplane schema list` | List discovered schemas |
+| `flowplane schema list --session <name>` | Schemas from a specific session |
+| `flowplane schema list --min-confidence 0.7` | Filter by confidence |
+| `flowplane schema get <id>` | Schema detail (fields, types, formats) |
+| `flowplane schema get <id> -o table` | Human-readable summary |
+| `flowplane schema export --all -o api.yaml` | Export all as OpenAPI |
+| `flowplane schema export --id 1,2,3 -o api.json` | Export specific schemas |
+| `flowplane schema export --session <name> --all` | Export from specific session |
+
+For the full CLI reference, see [CLI Reference](cli-reference.md).
 
 ## Next steps
 
