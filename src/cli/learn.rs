@@ -7,6 +7,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use super::client::FlowplaneClient;
+use super::schema;
 
 #[derive(Subcommand)]
 pub enum LearnCommands {
@@ -120,6 +121,33 @@ pub enum LearnCommands {
         #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
         output: String,
     },
+
+    /// Export discovered schemas as OpenAPI spec
+    #[command(
+        long_about = "Export schemas discovered by learning sessions as an OpenAPI 3.1 spec.\n\nConvenience shortcut for `flowplane schema export --all`.\nExports all latest schemas to stdout (YAML) or to a file.",
+        after_help = "EXAMPLES:\n    # Export all schemas as YAML to stdout\n    flowplane learn export\n\n    # Export to a file\n    flowplane learn export -o api.yaml\n\n    # Export only high-confidence schemas\n    flowplane learn export --min-confidence 0.7 -o api.json"
+    )]
+    Export {
+        /// Minimum confidence filter
+        #[arg(long)]
+        min_confidence: Option<f64>,
+
+        /// API title in the OpenAPI spec
+        #[arg(long, default_value = "Learned API")]
+        title: String,
+
+        /// API version in the OpenAPI spec
+        #[arg(long, default_value = "1.0.0")]
+        version: String,
+
+        /// API description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Output file (auto-detects format from extension; stdout if omitted)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 /// Learning session response matching the API response
@@ -212,6 +240,21 @@ pub async fn handle_learn_command(
         }
         LearnCommands::Get { session_id, output } => {
             get_session(client, team, &session_id, &output).await?
+        }
+        LearnCommands::Export { min_confidence, title, version, description, output } => {
+            // Thin wrapper: delegates to schema::export_schemas with --all
+            schema::export_schemas(
+                client,
+                team,
+                None,
+                true,
+                min_confidence,
+                title,
+                version,
+                description,
+                output,
+            )
+            .await?
         }
     }
 
