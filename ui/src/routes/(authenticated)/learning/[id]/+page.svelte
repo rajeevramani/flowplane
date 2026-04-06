@@ -14,7 +14,9 @@
 		AlertTriangle,
 		Calendar,
 		Target,
-		FileCode
+		FileCode,
+		StopCircle,
+		Camera
 	} from 'lucide-svelte';
 	import type { LearningSessionResponse } from '$lib/api/types';
 	import Button from '$lib/components/Button.svelte';
@@ -95,6 +97,25 @@
 		}
 	}
 
+	async function handleStop() {
+		if (!session) return;
+		if (
+			!confirm(
+				'Stop this session? This will trigger final aggregation and complete the session.'
+			)
+		) {
+			return;
+		}
+
+		actionError = null;
+		try {
+			await apiClient.stopLearningSession(session.team, session.id);
+			await loadSession();
+		} catch (err) {
+			actionError = err instanceof Error ? err.message : 'Failed to stop session';
+		}
+	}
+
 	async function handleCancel() {
 		if (!session) return;
 		if (
@@ -171,16 +192,30 @@
 				<div class="flex items-center gap-3">
 					<h1 class="text-3xl font-bold text-gray-900">Learning Session</h1>
 					<SessionStatusBadge status={session.status} size="md" />
+					{#if session.autoAggregate}
+						<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+							<Camera class="h-3 w-3" />
+							Auto
+						</span>
+					{/if}
 				</div>
 				<p class="mt-2 text-sm text-gray-500 font-mono">{session.id}</p>
 			</div>
 
-			{#if session.status === 'active' || session.status === 'pending'}
-				<Button onclick={handleCancel} variant="danger">
-					<XCircle class="h-4 w-4 mr-2" />
-					Cancel Session
-				</Button>
-			{/if}
+			<div class="flex items-center gap-2">
+				{#if session.status === 'active'}
+					<Button onclick={handleStop} variant="primary">
+						<StopCircle class="h-4 w-4 mr-2" />
+						Stop Session
+					</Button>
+				{/if}
+				{#if session.status === 'active' || session.status === 'pending'}
+					<Button onclick={handleCancel} variant="danger">
+						<XCircle class="h-4 w-4 mr-2" />
+						Cancel Session
+					</Button>
+				{/if}
+			</div>
 		</div>
 
 		<!-- Action Error -->
@@ -210,6 +245,13 @@
 				size="lg"
 				animated={session.status === 'active'}
 			/>
+
+			{#if session.autoAggregate && session.snapshotCount > 0}
+				<div class="mt-4 flex items-center gap-2 text-sm text-gray-600">
+					<Camera class="h-4 w-4 text-purple-500" />
+					<span>Snapshots: {session.snapshotCount}</span>
+				</div>
+			{/if}
 
 			{#if session.errorMessage}
 				<div

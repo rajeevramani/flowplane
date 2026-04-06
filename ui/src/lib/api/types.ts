@@ -1644,6 +1644,8 @@ export interface LearningSessionResponse {
 	triggeredBy: string | null;
 	deploymentVersion: string | null;
 	errorMessage: string | null;
+	autoAggregate: boolean;
+	snapshotCount: number;
 }
 
 /** Request to create a learning session */
@@ -1656,6 +1658,7 @@ export interface CreateLearningSessionRequest {
 	triggeredBy?: string;
 	deploymentVersion?: string;
 	configurationSnapshot?: Record<string, unknown>;
+	autoAggregate?: boolean;
 }
 
 /** Query parameters for listing learning sessions */

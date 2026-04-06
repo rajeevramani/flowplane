@@ -993,6 +993,17 @@ class ApiClient {
 	}
 
 	/**
+	 * Stop a learning session.
+	 * This triggers final aggregation and completes the session gracefully.
+	 */
+	async stopLearningSession(team: string, id: string): Promise<LearningSessionResponse> {
+		return this.post<LearningSessionResponse>(
+			`/api/v1/teams/${encodeURIComponent(team)}/learning-sessions/${encodeURIComponent(id)}/stop`,
+			{}
+		);
+	}
+
+	/**
 	 * Cancel a learning session.
 	 * This will stop traffic capture and mark the session as cancelled.
 	 */

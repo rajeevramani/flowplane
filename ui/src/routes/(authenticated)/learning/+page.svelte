@@ -390,7 +390,14 @@
 								</div>
 							</td>
 							<td class="px-6 py-4 whitespace-nowrap">
+								<div class="flex items-center gap-2">
 								<SessionStatusBadge status={session.status} />
+								{#if session.autoAggregate}
+									<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+										Auto
+									</span>
+								{/if}
+							</div>
 							</td>
 							<td class="px-6 py-4">
 								<div class="w-48">
