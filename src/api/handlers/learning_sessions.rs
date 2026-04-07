@@ -648,6 +648,86 @@ pub async fn stop_learning_session_handler(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/teams/{team}/learning-sessions/{id}/activate",
+    params(
+        ("team" = String, Path, description = "Team name"),
+        ("id" = String, Path, description = "Learning session ID")
+    ),
+    responses(
+        (status = 200, description = "Learning session activated", body = LearningSessionResponse),
+        (status = 400, description = "Invalid state - session not pending"),
+        (status = 403, description = "Forbidden - insufficient permissions"),
+        (status = 404, description = "Learning session not found"),
+        (status = 503, description = "Service unavailable")
+    ),
+    tag = "API Discovery"
+)]
+#[instrument(skip(state), fields(team = %team, session_id = %id, user_id = ?context.user_id))]
+pub async fn activate_learning_session_handler(
+    State(state): State<ApiState>,
+    Extension(context): Extension<AuthContext>,
+    Path((team, id)): Path<(String, String)>,
+) -> Result<Json<LearningSessionResponse>, ApiError> {
+    // Authorization: require learning-sessions:write scope for the team from path
+    require_resource_access_resolved(&state, &context, "learning-sessions", "write", Some(&team))
+        .await?;
+
+    // Get effective team scopes for access verification
+    let team_repo = team_repo_from_state(&state)?;
+    let team_scopes = get_effective_team_ids(&context, team_repo, context.org_id.as_ref()).await?;
+
+    // Get repository
+    let repo = state
+        .xds_state
+        .cluster_repository
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Repository not configured".to_string()))?;
+
+    let session_repo = LearningSessionRepository::new(repo.pool().clone());
+
+    // Resolve team name to UUID for name-based lookup
+    let team_repo_ref = team_repo_from_state(&state)?;
+    let resolved_team_ids = team_repo_ref
+        .resolve_team_ids(context.org_id.as_ref(), std::slice::from_ref(&team))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve team ID: {}", e)))?;
+    let resolved_team_id = resolved_team_ids
+        .into_iter()
+        .next()
+        .ok_or_else(|| ApiError::NotFound(format!("Team '{}' not found", team)))?;
+
+    // Get session by name or ID
+    let session = session_repo.get_by_name_or_id(&resolved_team_id, &id).await.map_err(|e| {
+        tracing::error!(error = %e, session_id = %id, "Failed to get learning session for activate");
+        match e {
+            Error::NotFound { .. } => {
+                ApiError::NotFound(format!("Learning session '{}' not found", id))
+            }
+            _ => ApiError::Internal(format!("Failed to get learning session: {}", e)),
+        }
+    })?;
+
+    // Verify team access
+    verify_team_access(session.clone(), &team_scopes).await?;
+
+    // Use the learning session service to activate
+    let learning_service = state
+        .xds_state
+        .get_learning_session_service()
+        .ok_or_else(|| ApiError::Internal("Learning session service not available".to_string()))?;
+
+    let activated = learning_service.activate_session(&session.id).await.map_err(|e| {
+        tracing::error!(error = %e, session_id = %id, "Failed to activate learning session");
+        ApiError::BadRequest(format!("Failed to activate learning session: {}", e))
+    })?;
+
+    let response = session_response_from_data(activated);
+
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
