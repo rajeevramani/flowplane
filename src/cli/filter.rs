@@ -119,6 +119,17 @@ pub enum FilterCommands {
         #[arg(short, long, default_value = "json", value_parser = ["json", "yaml"])]
         output: String,
     },
+
+    /// Generate a template manifest for a filter type
+    Scaffold {
+        /// Filter type name (e.g., header_mutation)
+        #[arg(value_name = "TYPE")]
+        filter_type: String,
+
+        /// Output format (yaml or json)
+        #[arg(short, long, default_value = "yaml", value_parser = ["json", "yaml"])]
+        output: String,
+    },
 }
 
 /// Filter response structure matching the API
@@ -203,6 +214,9 @@ pub async fn handle_filter_command(
         }
         FilterCommands::Types { output } => list_filter_types(client, &output).await?,
         FilterCommands::Type { name, output } => get_filter_type(client, &name, &output).await?,
+        FilterCommands::Scaffold { filter_type, output } => {
+            scaffold_filter(client, &filter_type, &output).await?
+        }
     }
 
     Ok(())
@@ -395,6 +409,143 @@ async fn get_filter_type(client: &FlowplaneClient, name: &str, output: &str) -> 
     print_output(&response, output)?;
 
     Ok(())
+}
+
+async fn scaffold_filter(client: &FlowplaneClient, filter_type: &str, output: &str) -> Result<()> {
+    let path = format!("/api/v1/filter-types/{filter_type}");
+    let type_info: FilterTypeInfo = client
+        .get_json(&path)
+        .await
+        .with_context(|| format!("Failed to fetch filter type '{filter_type}'"))?;
+
+    let config_fields = build_config_from_schema(&type_info.config_schema);
+
+    if output == "json" {
+        let mut scaffold = serde_json::Map::new();
+        scaffold.insert("kind".to_string(), serde_json::Value::String("Filter".to_string()));
+        scaffold.insert(
+            "name".to_string(),
+            serde_json::Value::String("<your-filter-name>".to_string()),
+        );
+        scaffold.insert(
+            "description".to_string(),
+            serde_json::Value::String(type_info.description.clone()),
+        );
+
+        let mut config = serde_json::Map::new();
+        config.insert("type".to_string(), serde_json::Value::String(filter_type.to_string()));
+        config.insert("config".to_string(), config_fields);
+        scaffold.insert("config".to_string(), serde_json::Value::Object(config));
+
+        let json = serde_json::to_string_pretty(&serde_json::Value::Object(scaffold))
+            .context("Failed to serialize scaffold to JSON")?;
+        println!("{json}");
+    } else {
+        let properties = extract_properties(&type_info.config_schema);
+        println!("# Scaffold for filter type: {filter_type}");
+        println!("# {}", type_info.description);
+        println!("kind: Filter");
+        println!("name: \"<your-filter-name>\"");
+        println!("description: \"{}\"", type_info.description);
+        println!("config:");
+        println!("  type: \"{}\"", filter_type);
+        println!("  config:");
+        for (key, desc, default_val) in &properties {
+            if let Some(d) = desc {
+                println!("    # {d}");
+            }
+            println!("    {key}: {default_val}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a JSON Value from the config_schema properties with default/placeholder values
+fn build_config_from_schema(config_schema: &Option<serde_json::Value>) -> serde_json::Value {
+    let schema = match config_schema {
+        Some(s) => s,
+        None => return serde_json::Value::Object(serde_json::Map::new()),
+    };
+
+    let properties = match schema.get("properties").and_then(|p| p.as_object()) {
+        Some(p) => p,
+        None => return serde_json::Value::Object(serde_json::Map::new()),
+    };
+
+    let mut result = serde_json::Map::new();
+    for (key, prop) in properties {
+        let value = if let Some(default) = prop.get("default") {
+            default.clone()
+        } else {
+            placeholder_for_type(prop.get("type").and_then(|t| t.as_str()).unwrap_or("string"))
+        };
+        result.insert(key.clone(), value);
+    }
+
+    serde_json::Value::Object(result)
+}
+
+/// Extract properties as (key, description, yaml_default_string) tuples
+fn extract_properties(
+    config_schema: &Option<serde_json::Value>,
+) -> Vec<(String, Option<String>, String)> {
+    let schema = match config_schema {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+
+    let properties = match schema.get("properties").and_then(|p| p.as_object()) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+
+    properties
+        .iter()
+        .map(|(key, prop)| {
+            let desc = prop.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+            let default_str = if let Some(default) = prop.get("default") {
+                yaml_value_str(default)
+            } else {
+                yaml_placeholder_for_type(
+                    prop.get("type").and_then(|t| t.as_str()).unwrap_or("string"),
+                )
+            };
+            (key.clone(), desc, default_str)
+        })
+        .collect()
+}
+
+fn placeholder_for_type(type_str: &str) -> serde_json::Value {
+    match type_str {
+        "integer" | "number" => serde_json::Value::Number(serde_json::Number::from(0)),
+        "boolean" => serde_json::Value::Bool(false),
+        "array" => serde_json::Value::Array(Vec::new()),
+        "object" => serde_json::Value::Object(serde_json::Map::new()),
+        _ => serde_json::Value::String("<your-value>".to_string()),
+    }
+}
+
+fn yaml_placeholder_for_type(type_str: &str) -> String {
+    match type_str {
+        "integer" | "number" => "0".to_string(),
+        "boolean" => "false".to_string(),
+        "array" => "[]".to_string(),
+        "object" => "{}".to_string(),
+        _ => "\"<your-value>\"".to_string(),
+    }
+}
+
+fn yaml_value_str(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::String(s) => format!("\"{s}\""),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Array(arr) if arr.is_empty() => "[]".to_string(),
+        serde_json::Value::Object(obj) if obj.is_empty() => "{}".to_string(),
+        other => serde_json::to_string(other).unwrap_or_else(|_| "\"<your-value>\"".to_string()),
+    }
 }
 
 fn print_filter_types_table(types: &[FilterTypeInfo]) {

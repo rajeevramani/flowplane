@@ -100,6 +100,17 @@ impl FlowplaneClient {
         self.handle_response(response).await
     }
 
+    /// Send a GET request and return `None` on 404, `Some(T)` on success
+    pub async fn get_json_optional<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
+        let response = self.get(path).send().await.context("Failed to send GET request")?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        self.handle_response(response).await.map(Some)
+    }
+
     /// Send a POST request with JSON body and deserialize the response
     pub async fn post_json<T: Serialize, R: DeserializeOwned>(
         &self,

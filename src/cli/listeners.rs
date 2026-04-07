@@ -98,6 +98,13 @@ pub enum ListenerCommands {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Generate a template listener manifest
+    Scaffold {
+        /// Output format (yaml or json)
+        #[arg(short, long, default_value = "yaml", value_parser = ["json", "yaml"])]
+        output: String,
+    },
 }
 
 /// Listener response structure matching API response
@@ -137,6 +144,7 @@ pub async fn handle_listener_command(
             update_listener(client, team, &name, file, &output).await?
         }
         ListenerCommands::Delete { name, yes } => delete_listener(client, team, &name, yes).await?,
+        ListenerCommands::Scaffold { output } => scaffold_listener(&output)?,
     }
 
     Ok(())
@@ -253,6 +261,32 @@ async fn delete_listener(
     client.delete_no_content(&path).await?;
 
     println!("Listener '{}' deleted successfully", name);
+    Ok(())
+}
+
+fn scaffold_listener(output: &str) -> Result<()> {
+    if output == "json" {
+        let scaffold = serde_json::json!({
+            "kind": "Listener",
+            "name": "<your-listener-name>",
+            "address": "0.0.0.0",
+            "port": 10001,
+            "dataplaneId": "<your-dataplane-id>"
+        });
+        let json =
+            serde_json::to_string_pretty(&scaffold).context("Failed to serialize scaffold")?;
+        println!("{json}");
+    } else {
+        println!("# Listener scaffold");
+        println!("kind: Listener");
+        println!("name: \"<your-listener-name>\"");
+        println!("# Bind address (0.0.0.0 for all interfaces)");
+        println!("address: \"0.0.0.0\"");
+        println!("# Port to listen on");
+        println!("port: 10001");
+        println!("# Dataplane ID to attach this listener to");
+        println!("dataplaneId: \"<your-dataplane-id>\"");
+    }
     Ok(())
 }
 

@@ -98,6 +98,13 @@ pub enum RouteCommands {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Generate a template route manifest
+    Scaffold {
+        /// Output format (yaml or json)
+        #[arg(short, long, default_value = "yaml", value_parser = ["json", "yaml"])]
+        output: String,
+    },
 }
 
 /// Route config response structure (matches API's RouteConfigResponse)
@@ -130,6 +137,7 @@ pub async fn handle_route_command(
             update_route(client, team, &name, file, &output).await?
         }
         RouteCommands::Delete { name, yes } => delete_route(client, team, &name, yes).await?,
+        RouteCommands::Scaffold { output } => scaffold_route(&output)?,
     }
 
     Ok(())
@@ -236,6 +244,51 @@ async fn delete_route(client: &FlowplaneClient, team: &str, name: &str, yes: boo
     client.delete_no_content(&path).await?;
 
     println!("Route config '{}' deleted successfully", name);
+    Ok(())
+}
+
+fn scaffold_route(output: &str) -> Result<()> {
+    if output == "json" {
+        let scaffold = serde_json::json!({
+            "kind": "Route",
+            "name": "<your-route-config-name>",
+            "virtualHosts": [
+                {
+                    "name": "<your-vhost-name>",
+                    "domains": ["*"],
+                    "routes": [
+                        {
+                            "match": {
+                                "prefix": "/"
+                            },
+                            "route": {
+                                "cluster": "<your-cluster-name>"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+        let json =
+            serde_json::to_string_pretty(&scaffold).context("Failed to serialize scaffold")?;
+        println!("{json}");
+    } else {
+        println!("# Route configuration scaffold");
+        println!("kind: Route");
+        println!("name: \"<your-route-config-name>\"");
+        println!("virtualHosts:");
+        println!("  - name: \"<your-vhost-name>\"");
+        println!("    # Domains to match (use \"*\" to match all)");
+        println!("    domains:");
+        println!("      - \"*\"");
+        println!("    routes:");
+        println!("      - match:");
+        println!("          # Path prefix to match");
+        println!("          prefix: \"/\"");
+        println!("        route:");
+        println!("          # Target cluster name");
+        println!("          cluster: \"<your-cluster-name>\"");
+    }
     Ok(())
 }
 

@@ -98,6 +98,13 @@ pub enum ClusterCommands {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Generate a template cluster manifest
+    Scaffold {
+        /// Output format (yaml or json)
+        #[arg(short, long, default_value = "yaml", value_parser = ["json", "yaml"])]
+        output: String,
+    },
 }
 
 /// Cluster response structure matching API response
@@ -133,6 +140,7 @@ pub async fn handle_cluster_command(
             update_cluster(client, team, &name, file, &output).await?
         }
         ClusterCommands::Delete { name, yes } => delete_cluster(client, team, &name, yes).await?,
+        ClusterCommands::Scaffold { output } => scaffold_cluster(&output)?,
     }
 
     Ok(())
@@ -239,6 +247,39 @@ async fn delete_cluster(client: &FlowplaneClient, team: &str, name: &str, yes: b
     client.delete_no_content(&path).await?;
 
     println!("Cluster '{}' deleted successfully", name);
+    Ok(())
+}
+
+fn scaffold_cluster(output: &str) -> Result<()> {
+    if output == "json" {
+        let scaffold = serde_json::json!({
+            "kind": "Cluster",
+            "name": "<your-cluster-name>",
+            "serviceName": "<your-service-name>",
+            "endpoints": [
+                {
+                    "address": "<host-or-ip>",
+                    "port": 8080
+                }
+            ],
+            "lbPolicy": "ROUND_ROBIN"
+        });
+        let json =
+            serde_json::to_string_pretty(&scaffold).context("Failed to serialize scaffold")?;
+        println!("{json}");
+    } else {
+        println!("# Cluster scaffold");
+        println!("kind: Cluster");
+        println!("name: \"<your-cluster-name>\"");
+        println!("# Service name for this cluster");
+        println!("serviceName: \"<your-service-name>\"");
+        println!("# Upstream endpoints");
+        println!("endpoints:");
+        println!("  - address: \"<host-or-ip>\"");
+        println!("    port: 8080");
+        println!("# Load balancing policy: ROUND_ROBIN, LEAST_REQUEST, RANDOM, RING_HASH");
+        println!("lbPolicy: ROUND_ROBIN");
+    }
     Ok(())
 }
 
