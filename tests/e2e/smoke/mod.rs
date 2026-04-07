@@ -10,8 +10,10 @@
 //! ```
 
 pub mod test_bootstrap;
+pub mod test_cli_ops;
 pub mod test_cli_phase3;
 pub mod test_cli_phase3_prod;
+pub mod test_cli_phase4;
 pub mod test_cli_subprocess;
 pub mod test_dev_mode_smoke;
 pub mod test_prod_mode_smoke;
