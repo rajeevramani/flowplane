@@ -126,6 +126,38 @@ pub enum LearnCommands {
         output: String,
     },
 
+    /// Check health and diagnostics of a learning session
+    #[command(
+        long_about = "Show health status and diagnostics for a learning session.\n\n\
+            Displays sample collection rate, route pattern diagnostics, and overall\n\
+            session health to help troubleshoot collection issues.",
+        after_help = "EXAMPLES:\n    flowplane learn health my-session\n    flowplane learn health my-session -o json"
+    )]
+    Health {
+        /// Session name or UUID
+        #[arg(value_name = "NAME_OR_ID")]
+        name_or_id: String,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
+
+    /// Activate a completed learning session (apply learned schemas)
+    #[command(
+        long_about = "Activate a completed learning session, applying its discovered schemas.\n\nOnly completed sessions can be activated.",
+        after_help = "EXAMPLES:\n    # Activate a session by name or ID\n    flowplane learn activate my-session\n\n    # Activate and get JSON output\n    flowplane learn activate abc-123-def -o json"
+    )]
+    Activate {
+        /// Session name or UUID
+        #[arg(value_name = "NAME_OR_ID")]
+        name_or_id: String,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
+
     /// Export discovered schemas as OpenAPI spec
     #[command(
         long_about = "Export schemas discovered by learning sessions as an OpenAPI 3.1 spec.\n\nConvenience shortcut for `flowplane schema export --all`.\nExports all latest schemas to stdout (YAML) or to a file.",
@@ -255,6 +287,12 @@ pub async fn handle_learn_command(
         LearnCommands::Get { name_or_id, output } => {
             get_session(client, team, &name_or_id, &output).await?
         }
+        LearnCommands::Health { name_or_id, output } => {
+            health_session(client, team, &name_or_id, &output).await?
+        }
+        LearnCommands::Activate { name_or_id, output } => {
+            activate_session(client, team, &name_or_id, &output).await?
+        }
         LearnCommands::Export { session, min_confidence, title, version, description, output } => {
             // Thin wrapper: delegates to schema::export_schemas with --all
             schema::export_schemas(
@@ -322,6 +360,24 @@ async fn stop_session(
     output: &str,
 ) -> Result<()> {
     let path = format!("/api/v1/teams/{team}/learning-sessions/{session_id}/stop");
+    let response: LearningSessionResponse = client.post_json(&path, &serde_json::json!({})).await?;
+
+    if output == "table" {
+        print_sessions_table(&[response]);
+    } else {
+        print_output(&response, output)?;
+    }
+
+    Ok(())
+}
+
+async fn activate_session(
+    client: &FlowplaneClient,
+    team: &str,
+    session_id: &str,
+    output: &str,
+) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/learning-sessions/{session_id}/activate");
     let response: LearningSessionResponse = client.post_json(&path, &serde_json::json!({})).await?;
 
     if output == "table" {
@@ -409,6 +465,101 @@ async fn get_session(
     }
 
     Ok(())
+}
+
+async fn health_session(
+    client: &FlowplaneClient,
+    team: &str,
+    session_id: &str,
+    output: &str,
+) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/ops/learning/{session_id}/health");
+    let response: serde_json::Value = client.get_json(&path).await?;
+
+    if output == "table" {
+        print_health_table(&response);
+    } else {
+        print_output(&response, output)?;
+    }
+
+    Ok(())
+}
+
+fn print_health_table(data: &serde_json::Value) {
+    println!();
+    println!("Learning Session Health");
+    println!("{}", "-".repeat(50));
+
+    if let Some(status) = data.get("status").and_then(|v| v.as_str()) {
+        println!("  {:<30} {}", "Status", status);
+    }
+    if let Some(count) = data.get("sampleCount").or_else(|| data.get("sample_count")) {
+        println!("  {:<30} {}", "Sample Count", count);
+    }
+    if let Some(rate) = data.get("collectionRate").or_else(|| data.get("collection_rate")) {
+        println!("  {:<30} {}", "Collection Rate", rate);
+    }
+
+    // Route pattern diagnostics
+    if let Some(diagnostics) =
+        data.get("routePatternDiagnostics").or_else(|| data.get("route_pattern_diagnostics"))
+    {
+        println!();
+        println!("  Route Pattern Diagnostics");
+        println!("  {}", "-".repeat(46));
+        if let Some(obj) = diagnostics.as_object() {
+            for (key, value) in obj {
+                let display_key = key.replace('_', " ");
+                let display_val = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => "-".to_string(),
+                    other => other.to_string(),
+                };
+                println!("    {:<28} {}", display_key, display_val);
+            }
+        } else if let Some(arr) = diagnostics.as_array() {
+            for item in arr {
+                if let Some(obj) = item.as_object() {
+                    for (key, value) in obj {
+                        let display_key = key.replace('_', " ");
+                        let display_val = match value {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Null => "-".to_string(),
+                            other => other.to_string(),
+                        };
+                        println!("    {:<28} {}", display_key, display_val);
+                    }
+                }
+            }
+        }
+    }
+
+    // Print any remaining top-level fields
+    if let Some(obj) = data.as_object() {
+        let known = [
+            "status",
+            "sampleCount",
+            "sample_count",
+            "collectionRate",
+            "collection_rate",
+            "routePatternDiagnostics",
+            "route_pattern_diagnostics",
+        ];
+        let extras: Vec<_> = obj.iter().filter(|(k, _)| !known.contains(&k.as_str())).collect();
+        if !extras.is_empty() {
+            println!();
+            for (key, value) in extras {
+                let display_key = key.replace('_', " ");
+                let display_val = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => "-".to_string(),
+                    other => other.to_string(),
+                };
+                println!("  {:<30} {}", display_key, display_val);
+            }
+        }
+    }
+    println!();
 }
 
 fn print_output<T: Serialize>(data: &T, format: &str) -> Result<()> {
