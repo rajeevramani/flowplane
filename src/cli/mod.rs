@@ -12,6 +12,7 @@ pub mod compose_runner;
 pub mod config;
 pub mod config_cmd;
 pub mod credentials;
+pub mod dataplane;
 pub mod expose;
 pub mod filter;
 pub mod import;
@@ -20,11 +21,15 @@ pub mod list;
 pub mod listeners;
 pub mod logs;
 pub mod output;
+pub mod reports;
+pub mod route_views;
 pub mod routes;
 pub mod schema;
 pub mod secrets;
+pub mod stats;
 pub mod status;
 pub mod teams;
+pub mod vhost;
 
 use std::sync::Arc;
 
@@ -130,6 +135,12 @@ EXAMPLES:
         command: clusters::ClusterCommands,
     },
 
+    /// Dataplane management commands
+    Dataplane {
+        #[command(subcommand)]
+        command: dataplane::DataplaneCommands,
+    },
+
     /// Listener management commands
     Listener {
         #[command(subcommand)]
@@ -152,6 +163,12 @@ EXAMPLES:
     Team {
         #[command(subcommand)]
         command: teams::TeamCommands,
+    },
+
+    /// Virtual host management commands
+    Vhost {
+        #[command(subcommand)]
+        command: vhost::VhostCommands,
     },
 
     /// Expose a local service through the gateway
@@ -208,6 +225,25 @@ EXAMPLES:
     Secret {
         #[command(subcommand)]
         command: secrets::SecretCommands,
+    },
+
+    /// System and cluster statistics
+    Stats {
+        #[command(subcommand)]
+        command: stats::StatsCommands,
+    },
+
+    /// Aggregated route views across listeners and clusters
+    #[command(name = "route-views")]
+    RouteViews {
+        #[command(subcommand)]
+        command: route_views::RouteViewsCommands,
+    },
+
+    /// Operational reports
+    Reports {
+        #[command(subcommand)]
+        command: reports::ReportsCommands,
     },
 
     /// Show system status or lookup a specific listener
@@ -358,6 +394,11 @@ async fn run_cli_commands(
             let team = config::resolve_team(team_flag)?;
             clusters::handle_cluster_command(command, &client, &team).await?
         }
+        Commands::Dataplane { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            dataplane::handle_dataplane_command(command, &client, &team).await?
+        }
         Commands::Listener { command } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
@@ -383,6 +424,11 @@ async fn run_cli_commands(
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             teams::handle_team_command(command, &client).await?
         }
+        Commands::Vhost { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            vhost::handle_vhost_command(command, &client, &team).await?
+        }
         Commands::Filter { command } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
@@ -392,6 +438,21 @@ async fn run_cli_commands(
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
             secrets::handle_secret_command(command, &client, &team).await?
+        }
+        Commands::Stats { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            stats::handle_stats_command(command, &client, &team).await?
+        }
+        Commands::RouteViews { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            route_views::handle_route_views_command(command, &client, &team).await?
+        }
+        Commands::Reports { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            reports::handle_reports_command(command, &client, &team).await?
         }
         Commands::Status { name } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
