@@ -4,6 +4,9 @@
 //! API definition management, native resource management via HTTP client, and the
 //! `serve` subcommand that starts the control plane server.
 
+pub mod admin;
+pub mod agent;
+pub mod apply;
 pub mod audit;
 pub mod auth;
 pub mod client;
@@ -21,6 +24,9 @@ pub mod learn;
 pub mod list;
 pub mod listeners;
 pub mod logs;
+pub mod mcp_tools;
+pub mod mtls;
+pub mod org;
 pub mod output;
 pub mod reports;
 pub mod route_views;
@@ -34,6 +40,7 @@ pub mod topology;
 pub mod trace;
 pub mod validate;
 pub mod vhost;
+pub mod wasm;
 pub mod xds;
 
 use std::sync::Arc;
@@ -284,13 +291,58 @@ EXAMPLES:
     /// List exposed services
     List,
 
+    /// MCP tool management commands (list tools, enable/disable on routes)
+    #[command(name = "mcp")]
+    McpTools {
+        #[command(subcommand)]
+        command: mcp_tools::McpToolsCommands,
+    },
+
+    /// Custom WASM filter management commands
+    Wasm {
+        #[command(subcommand)]
+        command: wasm::WasmCommands,
+    },
+
+    /// Platform administration commands (requires admin:all scope)
+    Admin {
+        #[command(subcommand)]
+        command: admin::AdminCommands,
+    },
+
+    /// mTLS status and configuration
+    Mtls {
+        #[command(subcommand)]
+        command: mtls::MtlsCommands,
+    },
+
+    /// Proxy certificate management (mTLS)
+    Cert {
+        #[command(subcommand)]
+        command: mtls::CertCommands,
+    },
+
+    /// Organization management (platform admin)
+    Org {
+        #[command(subcommand)]
+        command: org::OrgCommands,
+    },
+
+    /// Agent management (org-scoped machine identities)
+    Agent {
+        #[command(subcommand)]
+        command: agent::AgentCommands,
+    },
+
     /// View local dev stack logs
     Logs {
         /// Follow log output
         #[arg(short, long)]
         follow: bool,
     },
-    // MCP is available via HTTP at /api/v1/mcp (no CLI command needed)
+
+    /// Apply declarative resource manifests (create or update)
+    Apply(apply::ApplyArgs),
 }
 
 #[derive(Subcommand)]
@@ -519,10 +571,46 @@ async fn run_cli_commands(
             let team = config::resolve_team(team_flag)?;
             xds::handle_xds_command(command, &client, &team).await?
         }
+        Commands::McpTools { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            mcp_tools::handle_mcp_tools_command(command, &client, &team).await?
+        }
+        Commands::Wasm { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            wasm::handle_wasm_command(command, &client, &team).await?
+        }
+        Commands::Admin { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            admin::handle_admin_command(command, &client).await?
+        }
+        Commands::Mtls { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            mtls::handle_mtls_command(command, &client).await?
+        }
+        Commands::Cert { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            mtls::handle_cert_command(command, &client, &team).await?
+        }
+        Commands::Org { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            org::handle_org_command(command, &client).await?
+        }
+        Commands::Agent { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            agent::handle_agent_command(command, &client).await?
+        }
         Commands::Audit { command } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
             audit::handle_audit_command(command, &client, &team).await?
+        }
+        Commands::Apply(args) => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            apply::handle_apply_command(args, &client, &team).await?
         }
     }
 
