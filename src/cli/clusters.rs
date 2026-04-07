@@ -258,7 +258,7 @@ fn scaffold_cluster(output: &str) -> Result<()> {
             "serviceName": "<your-service-name>",
             "endpoints": [
                 {
-                    "address": "<host-or-ip>",
+                    "host": "<host-or-ip>",
                     "port": 8080
                 }
             ],
