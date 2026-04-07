@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use reqwest::{Client, RequestBuilder, Response};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, trace};
 
@@ -133,6 +134,59 @@ impl FlowplaneClient {
             self.put(path).json(body).send().await.context("Failed to send PUT request")?;
 
         self.handle_response(response).await
+    }
+
+    /// Send a PATCH request with JSON body and deserialize the response
+    pub async fn patch_json<T: Serialize, R: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<R> {
+        if self.config.verbose {
+            let body_json = serde_json::to_string_pretty(body)
+                .unwrap_or_else(|_| "<unable to serialize>".to_string());
+            trace!("Request body:\n{}", body_json);
+        }
+
+        let url = format!("{}{}", self.config.base_url, path);
+        debug!("PATCH {}", url);
+
+        let response = self
+            .client
+            .patch(&url)
+            .bearer_auth(&self.config.token)
+            .json(body)
+            .send()
+            .await
+            .context("Failed to send PATCH request")?;
+
+        self.handle_response(response).await
+    }
+
+    /// Send a GET request and download the response as a binary file
+    pub async fn download_binary(&self, path: &str, output_path: &Path) -> Result<()> {
+        let response = self.get(path).send().await.context("Failed to send GET request")?;
+
+        let status = response.status();
+        debug!("Response status: {}", status);
+
+        if !status.is_success() {
+            let error_text =
+                response.text().await.unwrap_or_else(|_| "<unable to read error>".to_string());
+
+            if self.config.verbose {
+                trace!("Error response:\n{}", error_text);
+            }
+
+            anyhow::bail!("HTTP request failed with status {}: {}", status, error_text);
+        }
+
+        let bytes = response.bytes().await.context("Failed to read response bytes")?;
+        tokio::fs::write(output_path, &bytes)
+            .await
+            .with_context(|| format!("Failed to write to {}", output_path.display()))?;
+
+        Ok(())
     }
 
     /// Send a DELETE request and handle the response
