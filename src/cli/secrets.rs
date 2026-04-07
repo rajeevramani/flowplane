@@ -314,9 +314,9 @@ async fn rotate_secret(
         Some(ref c) => {
             let value: serde_json::Value =
                 serde_json::from_str(c).context("Invalid JSON in --config")?;
-            value
+            serde_json::json!({ "configuration": value })
         }
-        None => serde_json::json!({}),
+        None => serde_json::json!({ "configuration": {} }),
     };
 
     let path = format!("/api/v1/teams/{team}/secrets/{secret_id}/rotate");
