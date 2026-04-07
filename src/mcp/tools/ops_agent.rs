@@ -1006,27 +1006,18 @@ pub async fn execute_ops_nack_history(
     // Choose the most specific query method based on filters
     let events =
         if let Some(dp_name) = dataplane_name {
-            nack_repo.list_by_dataplane(team, dp_name, Some(limit)).await.map_err(|e| {
+            nack_repo.list_by_dataplane(team, dp_name, since, Some(limit)).await.map_err(|e| {
                 McpError::InternalError(format!("Failed to query NACK events: {}", e))
             })?
         } else if let Some(tu) = type_url_filter {
             let full_url = expand_type_url(tu);
-            nack_repo.list_by_type_url(team, &full_url, Some(limit)).await.map_err(|e| {
+            nack_repo.list_by_type_url(team, &full_url, since, Some(limit)).await.map_err(|e| {
                 McpError::InternalError(format!("Failed to query NACK events: {}", e))
             })?
         } else {
             nack_repo.list_recent(team, since, Some(limit)).await.map_err(|e| {
                 McpError::InternalError(format!("Failed to query NACK events: {}", e))
             })?
-        };
-
-    // Apply `since` filter client-side for dataplane/type_url queries (those methods don't accept since)
-    let events: Vec<_> =
-        if since.is_some() && (dataplane_name.is_some() || type_url_filter.is_some()) {
-            let since_time = since.as_ref().copied();
-            events.into_iter().filter(|e| since_time.is_none_or(|s| e.created_at >= s)).collect()
-        } else {
-            events
         };
 
     let formatted: Vec<Value> = events
