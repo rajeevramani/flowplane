@@ -25,11 +25,11 @@ pub enum ReportsCommands {
 pub async fn handle_reports_command(
     command: ReportsCommands,
     client: &FlowplaneClient,
-    team: &str,
+    _team: &str,
 ) -> Result<()> {
     match command {
         ReportsCommands::RouteFlows { output } => {
-            let path = format!("/api/v1/teams/{team}/reports/route-flows");
+            let path = "/api/v1/reports/route-flows".to_string();
             let response: serde_json::Value = client.get_json(&path).await?;
 
             if output == "table" {

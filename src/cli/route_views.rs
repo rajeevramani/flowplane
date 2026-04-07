@@ -45,11 +45,11 @@ pub struct RouteViewResponse {
 pub async fn handle_route_views_command(
     command: RouteViewsCommands,
     client: &FlowplaneClient,
-    team: &str,
+    _team: &str,
 ) -> Result<()> {
     match command {
         RouteViewsCommands::List { output } => {
-            let path = format!("/api/v1/teams/{team}/route-views");
+            let path = "/api/v1/route-views".to_string();
             let response: serde_json::Value = client.get_json(&path).await?;
 
             if output == "table" {
@@ -59,7 +59,7 @@ pub async fn handle_route_views_command(
             }
         }
         RouteViewsCommands::Stats { output } => {
-            let path = format!("/api/v1/teams/{team}/route-views/stats");
+            let path = "/api/v1/route-views/stats".to_string();
             let response: serde_json::Value = client.get_json(&path).await?;
 
             if output == "table" {

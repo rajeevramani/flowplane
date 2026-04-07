@@ -283,9 +283,10 @@ EXAMPLES:
     },
 
     /// Audit log of resource changes
+    #[command(subcommand_required = false)]
     Audit {
         #[command(subcommand)]
-        command: audit::AuditCommands,
+        command: Option<audit::AuditCommands>,
     },
 
     /// List exposed services
@@ -605,7 +606,14 @@ async fn run_cli_commands(
         Commands::Audit { command } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
-            audit::handle_audit_command(command, &client, &team).await?
+            let cmd = command.unwrap_or(audit::AuditCommands::List {
+                resource_type: None,
+                action: None,
+                since: None,
+                limit: 20,
+                output: "table".to_string(),
+            });
+            audit::handle_audit_command(cmd, &client, &team).await?
         }
         Commands::Apply(args) => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
