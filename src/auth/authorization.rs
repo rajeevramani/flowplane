@@ -549,6 +549,22 @@ pub fn resource_from_path(path: &str) -> Option<&str> {
                 return Some("custom-wasm-filters");
             }
 
+            // Ops endpoints: /api/v1/teams/{team}/ops/{sub} map to existing resource scopes
+            if sub_resource == "ops" {
+                return if parts.len() >= 6 {
+                    match parts[5] {
+                        "trace" => Some("routes"),
+                        "topology" | "validate" | "xds" => Some("clusters"),
+                        "audit" => Some("audit"),
+                        "learning" => Some("learning-sessions"),
+                        _ => Some("clusters"), // default ops to clusters scope
+                    }
+                } else {
+                    // /api/v1/teams/{team}/ops with no sub-path → clusters
+                    Some("clusters")
+                };
+            }
+
             return Some(sub_resource);
         }
 
@@ -1399,6 +1415,22 @@ mod tests {
         assert_eq!(resource_from_path("/api/v1/openapi/imports"), Some("openapi-import"));
         assert_eq!(resource_from_path("/api/v1/openapi/imports/abc-123"), Some("openapi-import"));
         assert_eq!(resource_from_path("/api/v1/auth/session"), None);
+
+        // Ops sub-paths map to existing resource scopes
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops/trace"), Some("routes"));
+        assert_eq!(
+            resource_from_path("/api/v1/teams/eng/ops/trace/some-request-id"),
+            Some("routes")
+        );
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops/topology"), Some("clusters"));
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops/validate"), Some("clusters"));
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops/xds"), Some("clusters"));
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops/xds/status"), Some("clusters"));
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops/xds/nacks"), Some("clusters"));
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops/audit"), Some("audit"));
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops/learning"), Some("learning-sessions"));
+        // Bare /ops with no sub-path defaults to clusters
+        assert_eq!(resource_from_path("/api/v1/teams/eng/ops"), Some("clusters"));
     }
 
     // === Grant-based access tests (replacing wildcard scope tests) ===
