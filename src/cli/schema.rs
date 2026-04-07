@@ -65,6 +65,25 @@ pub enum SchemaCommands {
         output: String,
     },
 
+    /// Compare two schema versions
+    #[command(
+        long_about = "Compare two aggregated schema versions to see differences.\n\nWhen --with is omitted, compares against the previous version.",
+        after_help = "EXAMPLES:\n    # Compare schema with its previous version\n    flowplane schema compare 5\n\n    # Compare two specific schemas\n    flowplane schema compare 5 --with 3\n\n    # Diff output\n    flowplane schema compare 5 -o diff"
+    )]
+    Compare {
+        /// Schema ID to compare
+        #[arg(value_name = "ID")]
+        id: i64,
+
+        /// Schema ID to compare against (defaults to previous version)
+        #[arg(long, value_name = "ID")]
+        with: Option<i64>,
+
+        /// Output format
+        #[arg(short, long, default_value = "json", value_parser = ["json", "diff"])]
+        output: String,
+    },
+
     /// Export schemas as OpenAPI 3.1 spec
     #[command(
         long_about = "Export aggregated schemas as an OpenAPI 3.1 specification.\n\nOutput goes to stdout by default (pipeable). Use -o to write to a file.\nFile format is auto-detected from extension (.yaml/.yml = YAML, .json = JSON).\nStdout defaults to YAML.",
@@ -182,6 +201,9 @@ pub async fn handle_schema_command(
             } else {
                 print_output(&schema, &output)?;
             }
+        }
+        SchemaCommands::Compare { id, with, output } => {
+            compare_schemas(client, team, id, with, &output).await?;
         }
         SchemaCommands::Export {
             session,
@@ -322,6 +344,36 @@ pub async fn export_schemas(
             // Stdout — default to YAML (more readable for humans)
             let yaml = serde_yaml::to_string(&spec).context("Failed to serialize to YAML")?;
             print!("{yaml}");
+        }
+    }
+
+    Ok(())
+}
+
+async fn compare_schemas(
+    client: &FlowplaneClient,
+    team: &str,
+    id: i64,
+    with: Option<i64>,
+    output: &str,
+) -> Result<()> {
+    let mut path = format!("/api/v1/teams/{team}/aggregated-schemas/{id}/compare");
+    if let Some(other_id) = with {
+        path.push_str(&format!("?with={other_id}"));
+    }
+
+    let response: serde_json::Value = client.get_json(&path).await?;
+
+    match output {
+        "diff" => {
+            // Print as human-readable diff
+            let yaml = serde_yaml::to_string(&response).context("Failed to serialize to YAML")?;
+            println!("{yaml}");
+        }
+        _ => {
+            let json =
+                serde_json::to_string_pretty(&response).context("Failed to serialize to JSON")?;
+            println!("{json}");
         }
     }
 
