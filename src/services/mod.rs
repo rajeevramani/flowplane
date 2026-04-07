@@ -14,6 +14,7 @@ pub mod listener_filter_chain;
 pub mod listener_route_config_sync;
 pub mod listener_service;
 pub mod mcp_service;
+pub mod ops_service;
 pub mod path_normalizer;
 pub mod route_hierarchy_sync;
 pub mod route_service;
