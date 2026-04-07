@@ -145,10 +145,48 @@ fn extract_resource_names_from_error(error_message: &str) -> Option<String> {
     }
 }
 
+/// Parse the dataplane UUID from an Envoy node ID.
+///
+/// Node IDs follow the format `team={team}/dp-{uuid}`. Returns the UUID
+/// portion if the format matches, or `None` otherwise.
+fn parse_dataplane_id_from_node_id(node_id: &str) -> Option<&str> {
+    node_id.split('/').find_map(|segment| segment.strip_prefix("dp-"))
+}
+
+/// Resolve the human-readable dataplane name from a node ID.
+///
+/// Parses the UUID from the node ID format `team={team}/dp-{uuid}`, then
+/// looks up the dataplane name in the database. Falls back to the raw
+/// node ID if the lookup fails or the format doesn't match.
+async fn resolve_dataplane_name(pool: &crate::storage::DbPool, node_id: &str) -> String {
+    let dp_id = match parse_dataplane_id_from_node_id(node_id) {
+        Some(id) => id,
+        None => return node_id.to_string(),
+    };
+
+    match sqlx::query_scalar::<_, String>("SELECT name FROM dataplanes WHERE id = $1")
+        .bind(dp_id)
+        .fetch_optional(pool)
+        .await
+    {
+        Ok(Some(name)) => name,
+        Ok(None) => {
+            debug!(node_id = %node_id, dp_id = %dp_id, "Dataplane not found for node ID, using raw node ID");
+            node_id.to_string()
+        }
+        Err(e) => {
+            warn!(error = %e, node_id = %node_id, "Failed to resolve dataplane name, using raw node ID");
+            node_id.to_string()
+        }
+    }
+}
+
 /// Persist a NACK event to the database asynchronously.
 ///
 /// Spawns a background task so the stream loop is never blocked.
 /// Failures are logged but do not affect stream processing.
+/// Resolves the human-readable dataplane name from the Envoy node ID
+/// so that NACK queries by dataplane name return correct results.
 fn persist_nack_event(
     state: &Arc<XdsState>,
     team: Option<String>,
@@ -167,9 +205,14 @@ fn persist_nack_event(
         None => return, // No repository configured (file-based mode)
     };
 
+    let pool = state.pool.clone();
     let type_url = request.type_url.clone();
     tokio::spawn(async move {
-        let request = CreateNackEventRequest { team, ..request };
+        let dataplane_name = match pool {
+            Some(ref p) => resolve_dataplane_name(p, &request.dataplane_name).await,
+            None => request.dataplane_name.clone(),
+        };
+        let request = CreateNackEventRequest { team, dataplane_name, ..request };
         if let Err(e) = repo.insert(request).await {
             warn!(error = %e, type_url = %type_url, "Failed to persist NACK event to database");
         }
@@ -1154,5 +1197,39 @@ mod tests {
 
         let result = extract_team_from_node(&node);
         assert_eq!(result, Some("platform".to_string()));
+    }
+
+    #[test]
+    fn test_parse_dataplane_id_standard_format() {
+        let node_id = "team=abc123/dp-550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(
+            parse_dataplane_id_from_node_id(node_id),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    #[test]
+    fn test_parse_dataplane_id_no_dp_prefix() {
+        assert_eq!(parse_dataplane_id_from_node_id("team=abc123/envoy-node-1"), None);
+    }
+
+    #[test]
+    fn test_parse_dataplane_id_empty_string() {
+        assert_eq!(parse_dataplane_id_from_node_id(""), None);
+    }
+
+    #[test]
+    fn test_parse_dataplane_id_just_dp_segment() {
+        assert_eq!(parse_dataplane_id_from_node_id("dp-my-uuid"), Some("my-uuid"));
+    }
+
+    #[test]
+    fn test_parse_dataplane_id_no_slash() {
+        assert_eq!(parse_dataplane_id_from_node_id("team=abc123"), None);
+    }
+
+    #[test]
+    fn test_parse_dataplane_id_dp_empty_value() {
+        assert_eq!(parse_dataplane_id_from_node_id("team=abc/dp-"), Some(""));
     }
 }
