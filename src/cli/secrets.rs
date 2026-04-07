@@ -89,6 +89,25 @@ pub enum SecretCommands {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Rotate a secret (bump version with optional new config)
+    #[command(
+        long_about = "Rotate a secret by ID, bumping its version.\n\nOptionally provide new configuration to replace the secret value during rotation.",
+        after_help = "EXAMPLES:\n    # Rotate a secret (bump version, keep existing config)\n    flowplane secret rotate abc-123\n\n    # Rotate with new config\n    flowplane secret rotate abc-123 --config '{\"secret\": \"new-base64-value\"}'\n\n    # Rotate and output as JSON\n    flowplane secret rotate abc-123 -o json"
+    )]
+    Rotate {
+        /// Secret ID to rotate
+        #[arg(value_name = "SECRET_ID")]
+        secret_id: String,
+
+        /// Optional new configuration as JSON string
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
 }
 
 /// Secret response matching the API response shape
@@ -150,6 +169,9 @@ pub async fn handle_secret_command(
         }
         SecretCommands::Delete { secret_id, yes } => {
             delete_secret(client, team, &secret_id, yes).await?
+        }
+        SecretCommands::Rotate { secret_id, config, output } => {
+            rotate_secret(client, team, &secret_id, config, &output).await?
         }
     }
 
@@ -278,6 +300,34 @@ async fn delete_secret(
     client.delete_no_content(&path).await?;
 
     println!("Secret '{}' deleted successfully", secret_id);
+    Ok(())
+}
+
+async fn rotate_secret(
+    client: &FlowplaneClient,
+    team: &str,
+    secret_id: &str,
+    config: Option<String>,
+    output: &str,
+) -> Result<()> {
+    let body = match config {
+        Some(ref c) => {
+            let value: serde_json::Value =
+                serde_json::from_str(c).context("Invalid JSON in --config")?;
+            value
+        }
+        None => serde_json::json!({}),
+    };
+
+    let path = format!("/api/v1/teams/{team}/secrets/{secret_id}/rotate");
+    let response: SecretResponse = client.post_json(&path, &body).await?;
+
+    if output == "table" {
+        print_secrets_table(&[response]);
+    } else {
+        print_output(&response, output)?;
+    }
+
     Ok(())
 }
 

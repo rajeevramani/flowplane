@@ -4,6 +4,7 @@
 //! API definition management, native resource management via HTTP client, and the
 //! `serve` subcommand that starts the control plane server.
 
+pub mod audit;
 pub mod auth;
 pub mod client;
 pub mod clusters;
@@ -29,7 +30,11 @@ pub mod secrets;
 pub mod stats;
 pub mod status;
 pub mod teams;
+pub mod topology;
+pub mod trace;
+pub mod validate;
 pub mod vhost;
+pub mod xds;
 
 use std::sync::Arc;
 
@@ -255,6 +260,27 @@ EXAMPLES:
     /// Run diagnostic health checks
     Doctor,
 
+    /// Trace a request path through the gateway
+    Trace(trace::TraceArgs),
+
+    /// Show gateway configuration topology
+    Topology(topology::TopologyArgs),
+
+    /// Validate gateway configuration
+    Validate(validate::ValidateArgs),
+
+    /// xDS sync status and NACK inspection
+    Xds {
+        #[command(subcommand)]
+        command: xds::XdsCommands,
+    },
+
+    /// Audit log of resource changes
+    Audit {
+        #[command(subcommand)]
+        command: audit::AuditCommands,
+    },
+
     /// List exposed services
     List,
 
@@ -472,6 +498,31 @@ async fn run_cli_commands(
         Commands::Logs { follow } => {
             let resolved_base_url = config::resolve_base_url(base_url);
             logs::handle_logs_command(&resolved_base_url, follow).await?
+        }
+        Commands::Trace(args) => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            trace::handle_trace_command(args, &client, &team).await?
+        }
+        Commands::Topology(args) => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            topology::handle_topology_command(args, &client, &team).await?
+        }
+        Commands::Validate(args) => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            validate::handle_validate_command(args, &client, &team).await?
+        }
+        Commands::Xds { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            xds::handle_xds_command(command, &client, &team).await?
+        }
+        Commands::Audit { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            audit::handle_audit_command(command, &client, &team).await?
         }
     }
 
