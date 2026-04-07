@@ -345,6 +345,20 @@ impl From<McpError> for ApiError {
     }
 }
 
+/// Converts [`OpsServiceError`] to API-layer [`ApiError`].
+///
+/// Maps ops service diagnostic errors to appropriate HTTP status codes.
+impl From<crate::services::ops_service::OpsServiceError> for ApiError {
+    fn from(err: crate::services::ops_service::OpsServiceError) -> Self {
+        match err {
+            crate::services::ops_service::OpsServiceError::InvalidParam(msg) => {
+                ApiError::BadRequest(msg)
+            }
+            crate::services::ops_service::OpsServiceError::Internal(msg) => ApiError::Internal(msg),
+        }
+    }
+}
+
 /// Converts [`McpServiceError`] to API-layer [`ApiError`].
 ///
 /// Maps MCP service errors to appropriate HTTP status codes.
