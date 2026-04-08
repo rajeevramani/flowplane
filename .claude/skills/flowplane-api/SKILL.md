@@ -751,9 +751,25 @@ Every MCP tool operation has a CLI equivalent. Use the CLI for scripting, CI/CD,
 | `cp_create_filter` | `flowplane filter create -f filter.json` |
 | `cp_list_filters` | `flowplane filter list` |
 | `cp_get_filter` | `flowplane filter get <name>` |
+| `cp_update_filter` | `flowplane filter update <name> -f filter.json` |
 | `cp_delete_filter` | `flowplane filter delete <name>` |
 | `cp_attach_filter` | `flowplane filter attach <name> --listener <listener> --order <n>` |
 | `cp_detach_filter` | `flowplane filter detach <name> --listener <listener>` |
+| `cp_list_filter_types` | `flowplane filter types` |
+| `cp_get_filter_type` | `flowplane filter type <type_name>` |
+| `cp_list_dataplanes` | `flowplane dataplane list` |
+| `cp_get_dataplane` | `flowplane dataplane get <name>` |
+| (dataplane bootstrap config) | `flowplane dataplane config <name>` |
+| `cp_list_virtual_hosts` | `flowplane vhost list --route-config <name>` |
+
+### Import Management
+
+| CLI Command | Description |
+|---|---|
+| `flowplane import openapi <file>` | Import routes from OpenAPI spec |
+| `flowplane import list` | List all OpenAPI imports |
+| `flowplane import get <id>` | Get import details by ID |
+| `flowplane import delete <id> --yes` | Delete import and cascade resources |
 
 ### Learning & Schema
 
@@ -763,6 +779,7 @@ Every MCP tool operation has a CLI equivalent. Use the CLI for scripting, CI/CD,
 | `cp_list_learning_sessions` | `flowplane learn list` |
 | `cp_get_learning_session` | `flowplane learn get <name-or-id>` |
 | `cp_stop_learning` | `flowplane learn stop <name-or-id>` |
+| `cp_activate_learning_session` | `flowplane learn activate <name-or-id>` |
 | `cp_delete_learning_session` | `flowplane learn cancel <name-or-id> --yes` |
 | `cp_list_aggregated_schemas` | `flowplane schema list [--min-confidence N] [--session <name>] [--path <path>] [--method <method>]` |
 | `cp_get_aggregated_schema` | `flowplane schema get <id>` |
@@ -771,7 +788,15 @@ Every MCP tool operation has a CLI equivalent. Use the CLI for scripting, CI/CD,
 
 ### Secrets
 
-MCP tools: `cp_create_secret`, `cp_list_secrets`, `cp_get_secret`, `cp_delete_secret`. See the **`flowplane-secrets` skill** for full details.
+| MCP Tool | CLI Equivalent |
+|---|---|
+| `cp_create_secret` | `flowplane secret create --name <name> --type <type> --config '<json>'` |
+| `cp_list_secrets` | `flowplane secret list` |
+| `cp_get_secret` | `flowplane secret get <id>` |
+| `cp_rotate_secret` | `flowplane secret rotate <id> --config '<json>'` |
+| `cp_delete_secret` | `flowplane secret delete <id> --yes` |
+
+See the **`flowplane-secrets` skill** for full details.
 
 ### Diagnostics
 
@@ -780,6 +805,39 @@ MCP tools: `cp_create_secret`, `cp_list_secrets`, `cp_get_secret`, `cp_delete_se
 | `devops_get_deployment_status` | `flowplane status` |
 | (system diagnostics) | `flowplane doctor` |
 | (log inspection) | `flowplane logs [-f]` |
+| `ops_trace_request` | `flowplane trace <path> [--port N]` |
+| `ops_topology` | `flowplane topology` |
+| `ops_config_validate` | `flowplane validate` |
+| `ops_xds_delivery_status` | `flowplane xds status` |
+| `ops_nack_history` | `flowplane xds nacks [--limit N]` |
+| `ops_audit_query` | `flowplane audit list [--resource-type TYPE] [--action ACTION] [--limit N]` |
+| `cp_learning_session_health` | `flowplane learn health <name>` |
+
+### Observability & Admin
+
+| MCP Tool | CLI Equivalent |
+|---|---|
+| (route topology view) | `flowplane route-views list [-o json]` |
+| (route stats) | `flowplane route-views stats [-o json]` |
+| (route flow reports) | `flowplane reports route-flows [-o json]` |
+| (stats dashboard) | `flowplane stats overview` / `flowplane stats clusters` |
+| `cp_compare_schema_versions` | `flowplane schema compare <id> [--with <id>] [-o json\|diff]` |
+| (admin scopes) | `flowplane admin scopes [-o json]` |
+| (admin resources) | `flowplane admin resources` |
+| (org management) | `flowplane org list [-o json]` |
+| (agent management) | `flowplane agent list --org <org>` |
+| (MCP tool listing) | `flowplane mcp tools [-o json]` |
+| (WASM filters) | `flowplane wasm list [-o json]` |
+
+### Declarative & Scaffolding (CLI-only)
+
+| CLI Command | Description |
+|---|---|
+| `flowplane apply -f <file\|dir>` | Declarative create-or-update from YAML/JSON manifests (no MCP equivalent) |
+| `flowplane cluster scaffold [-o json]` | Generate cluster manifest template (no MCP equivalent) |
+| `flowplane listener scaffold` | Generate listener manifest template (no MCP equivalent) |
+| `flowplane route scaffold` | Generate route config manifest template (no MCP equivalent) |
+| `flowplane filter scaffold <type> [-o json]` | Generate filter manifest template (no MCP equivalent) |
 
 > For full CLI flag details, see the `flowplane-cli` skill.
 

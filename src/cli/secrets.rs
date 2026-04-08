@@ -90,19 +90,19 @@ pub enum SecretCommands {
         yes: bool,
     },
 
-    /// Rotate a secret (bump version with optional new config)
+    /// Rotate a secret (bump version with new config)
     #[command(
-        long_about = "Rotate a secret by ID, bumping its version.\n\nOptionally provide new configuration to replace the secret value during rotation.",
-        after_help = "EXAMPLES:\n    # Rotate a secret (bump version, keep existing config)\n    flowplane secret rotate abc-123\n\n    # Rotate with new config\n    flowplane secret rotate abc-123 --config '{\"secret\": \"new-base64-value\"}'\n\n    # Rotate and output as JSON\n    flowplane secret rotate abc-123 -o json"
+        long_about = "Rotate a secret by ID, bumping its version.\n\nProvide new configuration to replace the secret value during rotation.",
+        after_help = "EXAMPLES:\n    # Rotate with new config\n    flowplane secret rotate abc-123 --config '{\"secret\": \"new-base64-value\"}'\n\n    # Rotate and output as JSON\n    flowplane secret rotate abc-123 --config '{\"secret\": \"new-base64-value\"}' -o json"
     )]
     Rotate {
         /// Secret ID to rotate
         #[arg(value_name = "SECRET_ID")]
         secret_id: String,
 
-        /// Optional new configuration as JSON string
+        /// New configuration as JSON string (required)
         #[arg(long)]
-        config: Option<String>,
+        config: String,
 
         /// Output format (json, yaml, or table)
         #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
@@ -171,7 +171,7 @@ pub async fn handle_secret_command(
             delete_secret(client, team, &secret_id, yes).await?
         }
         SecretCommands::Rotate { secret_id, config, output } => {
-            rotate_secret(client, team, &secret_id, config, &output).await?
+            rotate_secret(client, team, &secret_id, &config, &output).await?
         }
     }
 
@@ -307,17 +307,12 @@ async fn rotate_secret(
     client: &FlowplaneClient,
     team: &str,
     secret_id: &str,
-    config: Option<String>,
+    config: &str,
     output: &str,
 ) -> Result<()> {
-    let body = match config {
-        Some(ref c) => {
-            let value: serde_json::Value =
-                serde_json::from_str(c).context("Invalid JSON in --config")?;
-            serde_json::json!({ "configuration": value })
-        }
-        None => serde_json::json!({ "configuration": {} }),
-    };
+    let value: serde_json::Value =
+        serde_json::from_str(config).context("Invalid JSON in --config")?;
+    let body = serde_json::json!({ "configuration": value });
 
     let path = format!("/api/v1/teams/{team}/secrets/{secret_id}/rotate");
     let response: SecretResponse = client.post_json(&path, &body).await?;
