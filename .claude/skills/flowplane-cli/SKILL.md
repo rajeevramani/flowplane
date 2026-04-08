@@ -389,13 +389,10 @@ flowplane schema get <ID> -o yaml                  # YAML output
 ### `flowplane schema compare`
 Compare two aggregated schema versions to see differences.
 ```bash
-flowplane schema compare <ID>                      # Compare with previous version
 flowplane schema compare <ID> --with <OTHER_ID>    # Compare two specific schemas
-flowplane schema compare <ID> -o diff              # Diff output format
+flowplane schema compare <ID> --with <OTHER_ID> -o diff  # Diff output format
 ```
-Output formats: `json` (default), `diff`.
-
-> **Known issue:** `schema compare` currently fails with a 400 error ("missing field `withVersion`") — the CLI does not send the required query parameter. This command is not yet functional.
+`--with` is required. Output formats: `json` (default), `diff`.
 
 ### `flowplane schema export`
 Export schemas as OpenAPI 3.1. Auto-detects format from file extension (`.yaml`/`.json`). Stdout defaults to YAML.
@@ -568,12 +565,12 @@ Shows route flow data. JSON response includes `items`, `total`, `limit`, `offset
 
 ### Stats
 
-> **Note:** Stats commands require the stats dashboard to be enabled on the server. In dev mode, these return 403 "Stats dashboard is not enabled."
-
 ```bash
 flowplane stats overview                           # System overview stats
 flowplane stats clusters                           # Cluster-level stats
 ```
+
+Stats dashboard is auto-enabled in dev mode (seeded on startup). In prod mode, an admin must enable it via `PUT /api/v1/admin/apps/stats_dashboard`.
 
 ## Admin & Governance
 

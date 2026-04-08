@@ -179,7 +179,7 @@ Tool: cp_create_cluster
 Args: {
   "name": "httpbin-8000-cluster",
   "serviceName": "httpbin-service",
-  "endpoints": [{"address": "httpbin", "port": 80}],
+  "endpoints": [{"host": "httpbin", "port": 80}],
   "lb_policy": "ROUND_ROBIN"
 }
 ```
@@ -200,7 +200,7 @@ Outlier detection monitors upstream endpoints and automatically ejects (removes 
 Tool: cp_create_cluster
 Args: {
   "name": "my-api-cluster",
-  "endpoints": [{"address": "api1", "port": 8000}, {"address": "api2", "port": 8000}, {"address": "api3", "port": 8000}],
+  "endpoints": [{"host": "api1", "port": 8000}, {"host": "api2", "port": 8000}, {"host": "api3", "port": 8000}],
   "outlierDetection": {
     "consecutive5xx": 5,           // Default: 5 (range: 1-1000)
     "intervalSeconds": 10,          // Default: 10 (range: 1-300)
