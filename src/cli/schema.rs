@@ -67,17 +67,17 @@ pub enum SchemaCommands {
 
     /// Compare two schema versions
     #[command(
-        long_about = "Compare two aggregated schema versions to see differences.\n\nWhen --with is omitted, compares against the previous version.",
-        after_help = "EXAMPLES:\n    # Compare schema with its previous version\n    flowplane schema compare 5\n\n    # Compare two specific schemas\n    flowplane schema compare 5 --with 3\n\n    # Diff output\n    flowplane schema compare 5 -o diff"
+        long_about = "Compare two aggregated schema versions to see differences.",
+        after_help = "EXAMPLES:\n    # Compare two specific schemas\n    flowplane schema compare 5 --with 3\n\n    # Diff output\n    flowplane schema compare 5 --with 3 -o diff"
     )]
     Compare {
         /// Schema ID to compare
         #[arg(value_name = "ID")]
         id: i64,
 
-        /// Schema ID to compare against (defaults to previous version)
+        /// Schema ID to compare against
         #[arg(long, value_name = "ID")]
-        with: Option<i64>,
+        with: i64,
 
         /// Output format
         #[arg(short, long, default_value = "json", value_parser = ["json", "diff"])]
@@ -202,8 +202,8 @@ pub async fn handle_schema_command(
                 print_output(&schema, &output)?;
             }
         }
-        SchemaCommands::Compare { id, with, output } => {
-            compare_schemas(client, team, id, with, &output).await?;
+        SchemaCommands::Compare { id, with: with_version, output } => {
+            compare_schemas(client, team, id, with_version, &output).await?;
         }
         SchemaCommands::Export {
             session,
@@ -354,13 +354,11 @@ async fn compare_schemas(
     client: &FlowplaneClient,
     team: &str,
     id: i64,
-    with: Option<i64>,
+    with_version: i64,
     output: &str,
 ) -> Result<()> {
-    let mut path = format!("/api/v1/teams/{team}/aggregated-schemas/{id}/compare");
-    if let Some(other_id) = with {
-        path.push_str(&format!("?with={other_id}"));
-    }
+    let path =
+        format!("/api/v1/teams/{team}/aggregated-schemas/{id}/compare?with_version={with_version}");
 
     let response: serde_json::Value = client.get_json(&path).await?;
 
