@@ -1,9 +1,11 @@
 //! Phase 5 CLI E2E tests — dev mode
 //!
 //! Tests the CLI commands added in Phases 3-5: mTLS/cert, admin, MCP tools,
-//! WASM, apply lifecycle, scaffold, and negative cases. All tests use the
-//! dev-mode harness (bearer token, no Zitadel) and the CliRunner subprocess
-//! driver.
+//! WASM, apply lifecycle, scaffold, and negative cases.
+//!
+//! Scaffold create/update tests use an Envoy-enabled harness and verify that
+//! resources reach Envoy via xDS (config_dump) and that traffic flows through
+//! the proxy. Error tests (bad extension, malformed YAML) remain API-only.
 //!
 //! ```bash
 //! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_phase5 -- --ignored --nocapture
@@ -11,15 +13,154 @@
 //! ```
 
 use std::io::Write;
+use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::dev_harness;
+use crate::common::harness::{dev_harness, quick_harness, TestHarness};
 
 /// Write content to a named temp file with the given extension.
 fn write_temp_file(content: &str, extension: &str) -> tempfile::NamedTempFile {
     let mut f = tempfile::Builder::new().suffix(extension).tempfile().unwrap();
     f.write_all(content.as_bytes()).unwrap();
     f
+}
+
+// ============================================================================
+// Envoy verification helpers
+// ============================================================================
+
+/// Poll Envoy config_dump until the given resource name appears, or timeout.
+async fn verify_in_config_dump(harness: &TestHarness, resource_name: &str) {
+    if !harness.has_envoy() {
+        eprintln!("SKIP: Envoy not available — cannot verify config_dump");
+        return;
+    }
+    let envoy = harness.envoy().expect("Envoy should be available");
+    envoy.wait_for_config_content(resource_name).await.unwrap_or_else(|e| {
+        panic!("Resource '{}' not found in Envoy config_dump: {}", resource_name, e)
+    });
+}
+
+/// Create a route config + listener via the API to complete the Envoy chain
+/// for a cluster that was already created via CLI. Returns (route_name, domain)
+/// for traffic verification.
+async fn create_chain_for_cluster(
+    harness: &TestHarness,
+    cluster_name: &str,
+    test_prefix: &str,
+) -> (String, String) {
+    let team = &harness.team;
+    let route_name = format!("{}-rc", test_prefix);
+    let domain = format!("{}.e2e.local", test_prefix);
+
+    // Create route config pointing to the cluster
+    let route_body = serde_json::json!({
+        "name": route_name,
+        "virtualHosts": [{
+            "name": format!("{}-vh", test_prefix),
+            "domains": [&domain],
+            "routes": [{
+                "name": format!("{}-rt", test_prefix),
+                "match": {"path": {"type": "prefix", "value": "/"}},
+                "action": {"type": "forward", "cluster": cluster_name, "timeoutSeconds": 30}
+            }]
+        }]
+    });
+    let resp = harness
+        .authed_post(&format!("/api/v1/teams/{}/route-configs", team), &route_body)
+        .await
+        .expect("route create should succeed");
+    assert!(
+        resp.status().is_success(),
+        "route create returned {}: {}",
+        resp.status(),
+        resp.text().await.unwrap_or_default()
+    );
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Create listener pointing to the route config
+    let listener_body = serde_json::json!({
+        "name": format!("{}-ls", test_prefix),
+        "address": "0.0.0.0",
+        "port": harness.ports.listener,
+        "filterChains": [{
+            "name": "default",
+            "filters": [{
+                "name": "envoy.filters.network.http_connection_manager",
+                "type": "httpConnectionManager",
+                "routeConfigName": route_name
+            }]
+        }],
+        "dataplaneId": "dev-dataplane-id"
+    });
+    let resp = harness
+        .authed_post(&format!("/api/v1/teams/{}/listeners", team), &listener_body)
+        .await
+        .expect("listener create should succeed");
+    assert!(
+        resp.status().is_success(),
+        "listener create returned {}: {}",
+        resp.status(),
+        resp.text().await.unwrap_or_default()
+    );
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    (route_name, domain)
+}
+
+/// Create a listener via the API to complete the Envoy chain for a route config
+/// that was already created via CLI (with its prerequisite cluster already in place).
+/// Returns the domain for traffic verification.
+async fn create_chain_for_route(
+    harness: &TestHarness,
+    route_name: &str,
+    test_prefix: &str,
+    domain: &str,
+) -> String {
+    let team = &harness.team;
+
+    // Create listener pointing to the route config
+    let listener_body = serde_json::json!({
+        "name": format!("{}-ls", test_prefix),
+        "address": "0.0.0.0",
+        "port": harness.ports.listener,
+        "filterChains": [{
+            "name": "default",
+            "filters": [{
+                "name": "envoy.filters.network.http_connection_manager",
+                "type": "httpConnectionManager",
+                "routeConfigName": route_name
+            }]
+        }],
+        "dataplaneId": "dev-dataplane-id"
+    });
+    let resp = harness
+        .authed_post(&format!("/api/v1/teams/{}/listeners", team), &listener_body)
+        .await
+        .expect("listener create should succeed");
+    assert!(
+        resp.status().is_success(),
+        "listener create returned {}: {}",
+        resp.status(),
+        resp.text().await.unwrap_or_default()
+    );
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    domain.to_string()
+}
+
+/// Verify traffic flows through Envoy for a given domain and path.
+async fn verify_traffic(harness: &TestHarness, domain: &str, path: &str) {
+    if !harness.has_envoy() {
+        eprintln!("SKIP: Envoy not available — cannot verify traffic");
+        return;
+    }
+    let body = harness
+        .wait_for_route(domain, path, 200)
+        .await
+        .unwrap_or_else(|e| panic!("Traffic verification failed for {}:{} — {}", domain, path, e));
+    assert!(!body.is_empty(), "Proxied response body should not be empty");
 }
 
 // ============================================================================
@@ -525,27 +666,32 @@ fn scaffold_and_create(
 }
 
 /// Scaffold YAML → replace placeholders → `cluster create -f file.yaml` → verify
-/// cluster exists via `cluster get`.
+/// cluster exists via `cluster get`, appears in Envoy config_dump, and traffic flows.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_scaffold_create_yaml() {
-    let harness = dev_harness("dev_cli_scaff_cr_yaml").await.expect("harness should start");
+    let harness = quick_harness("dev_cli_scaff_cr_yaml").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
     let cluster_name = "e2e-scaff-yaml-cr";
     let replacements = &[
         ("<your-cluster-name>", cluster_name),
         ("<your-service-name>", "my-svc"),
-        ("<host>", "httpbin.org"),
-        ("<port>", "443"),
+        ("<host-or-ip>", echo_host),
+        ("<host>", echo_host),
+        ("<port>", echo_port),
         ("your-cluster-name", cluster_name),
         ("your-service-name", "my-svc"),
-        ("host.example.com", "httpbin.org"),
-        ("8080", "443"),
+        ("host.example.com", echo_host),
+        ("8080", echo_port),
     ];
 
     let output = scaffold_and_create(
@@ -561,7 +707,7 @@ async fn dev_cli_cluster_scaffold_create_yaml() {
         output.stdout, output.stderr
     );
 
-    // Verify the cluster exists
+    // Verify the cluster exists via CLI
     let get_output = cli.run(&["cluster", "get", cluster_name]).unwrap();
     get_output.assert_success();
     assert!(
@@ -569,30 +715,40 @@ async fn dev_cli_cluster_scaffold_create_yaml() {
         "Expected cluster name in get output, got: {}",
         get_output.stdout
     );
+
+    // Create route + listener to complete Envoy chain, then verify xDS + traffic
+    let (_route, domain) = create_chain_for_cluster(&harness, cluster_name, "scaff-yaml-cr").await;
+    verify_in_config_dump(&harness, cluster_name).await;
+    verify_traffic(&harness, &domain, "/test").await;
 }
 
 /// Scaffold JSON → replace placeholders → `cluster create -f file.json` → verify
-/// cluster exists via `cluster get`.
+/// cluster exists via `cluster get`, appears in Envoy config_dump, and traffic flows.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_scaffold_create_json() {
-    let harness = dev_harness("dev_cli_scaff_cr_json").await.expect("harness should start");
+    let harness = quick_harness("dev_cli_scaff_cr_json").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
     let cluster_name = "e2e-scaff-json-cr";
     let replacements = &[
         ("<your-cluster-name>", cluster_name),
         ("<your-service-name>", "my-json-svc"),
-        ("<host>", "httpbin.org"),
-        ("<port>", "443"),
+        ("<host-or-ip>", echo_host),
+        ("<host>", echo_host),
+        ("<port>", echo_port),
         ("your-cluster-name", cluster_name),
         ("your-service-name", "my-json-svc"),
-        ("host.example.com", "httpbin.org"),
-        ("8080", "443"),
+        ("host.example.com", echo_host),
+        ("8080", echo_port),
     ];
 
     let output = scaffold_and_create(
@@ -608,7 +764,7 @@ async fn dev_cli_cluster_scaffold_create_json() {
         output.stdout, output.stderr
     );
 
-    // Verify the cluster exists
+    // Verify the cluster exists via CLI
     let get_output = cli.run(&["cluster", "get", cluster_name]).unwrap();
     get_output.assert_success();
     assert!(
@@ -616,29 +772,41 @@ async fn dev_cli_cluster_scaffold_create_json() {
         "Expected cluster name in get output, got: {}",
         get_output.stdout
     );
+
+    // Create route + listener to complete Envoy chain, then verify xDS + traffic
+    let (_route, domain) = create_chain_for_cluster(&harness, cluster_name, "scaff-json-cr").await;
+    verify_in_config_dump(&harness, cluster_name).await;
+    verify_traffic(&harness, &domain, "/test").await;
 }
 
 /// Manually write a YAML cluster spec → `cluster create -f file.yaml` succeeds.
 /// Proves YAML acceptance without depending on scaffold output format.
+/// Verifies the cluster appears in Envoy config_dump.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_create_yaml_file() {
-    let harness = dev_harness("dev_cli_cr_yaml_file").await.expect("harness should start");
+    let harness = quick_harness("dev_cli_cr_yaml_file").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let yaml_content = r#"name: e2e-manual-yaml-cr
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let cluster_name = "e2e-manual-yaml-cr";
+    let yaml_content = format!(
+        r#"name: {cluster_name}
 endpoints:
-  - host: api.example.com
-    port: 8443
+  - host: {echo_host}
+    port: {echo_port}
 connectTimeoutSeconds: 10
-useTls: true
 lbPolicy: ROUND_ROBIN
-"#;
-    let file = write_temp_file(yaml_content, ".yaml");
+"#
+    );
+    let file = write_temp_file(&yaml_content, ".yaml");
 
     let output = cli.run(&["cluster", "create", "-f", file.path().to_str().unwrap()]).unwrap();
     assert_eq!(
@@ -647,29 +815,36 @@ lbPolicy: ROUND_ROBIN
         output.stdout, output.stderr
     );
 
-    let get_output = cli.run(&["cluster", "get", "e2e-manual-yaml-cr"]).unwrap();
+    let get_output = cli.run(&["cluster", "get", cluster_name]).unwrap();
     get_output.assert_success();
+
+    // Verify cluster reaches Envoy via xDS
+    verify_in_config_dump(&harness, cluster_name).await;
 }
 
 /// Create a cluster via JSON, then update it via YAML file. Proves `update -f`
-/// accepts YAML, not just JSON.
+/// accepts YAML, not just JSON. Verifies updated cluster in Envoy config_dump.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_update_yaml_file() {
-    let harness = dev_harness("dev_cli_upd_yaml").await.expect("harness should start");
+    let harness = quick_harness("dev_cli_upd_yaml").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let cluster_name = "e2e-upd-yaml-cl";
+
     // Create cluster via JSON first
-    let json_content = r#"{
-  "name": "e2e-upd-yaml-cl",
-  "endpoints": [{"host": "backend.example.com", "port": 8080}],
-  "connectTimeoutSeconds": 5
-}"#;
-    let json_file = write_temp_file(json_content, ".json");
+    let json_content = format!(
+        r#"{{"name": "{cluster_name}", "endpoints": [{{"host": "{echo_host}", "port": {echo_port}}}], "connectTimeoutSeconds": 5}}"#
+    );
+    let json_file = write_temp_file(&json_content, ".json");
     let create_output =
         cli.run(&["cluster", "create", "-f", json_file.path().to_str().unwrap()]).unwrap();
     assert_eq!(
@@ -678,37 +853,45 @@ async fn dev_cli_cluster_update_yaml_file() {
         create_output.stdout, create_output.stderr
     );
 
-    // Update the same cluster via YAML — change timeout and add TLS
-    let yaml_update = r#"name: e2e-upd-yaml-cl
+    // Update the same cluster via YAML — change timeout
+    let yaml_update = format!(
+        r#"name: {cluster_name}
 endpoints:
-  - host: backend.example.com
-    port: 8443
+  - host: {echo_host}
+    port: {echo_port}
 connectTimeoutSeconds: 15
-useTls: true
-"#;
-    let yaml_file = write_temp_file(yaml_update, ".yaml");
+"#
+    );
+    let yaml_file = write_temp_file(&yaml_update, ".yaml");
     let update_output = cli
-        .run(&["cluster", "update", "e2e-upd-yaml-cl", "-f", yaml_file.path().to_str().unwrap()])
+        .run(&["cluster", "update", cluster_name, "-f", yaml_file.path().to_str().unwrap()])
         .unwrap();
     assert_eq!(
         update_output.exit_code, 0,
         "update via YAML failed: stdout={}, stderr={}",
         update_output.stdout, update_output.stderr
     );
+
+    // Verify updated cluster reaches Envoy via xDS
+    verify_in_config_dump(&harness, cluster_name).await;
 }
 
 /// Scaffold YAML → create cluster → modify a field → `update -f file.yaml` with
 /// `kind: Cluster` still present in the file. Proves `strip_kind_field` works in
-/// the update code path, not just create.
+/// the update code path, not just create. Verifies updated cluster in Envoy config_dump.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_scaffold_update_yaml() {
-    let harness = dev_harness("dev_cli_scaff_upd").await.expect("harness should start");
+    let harness = quick_harness("dev_cli_scaff_upd").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
 
     let cluster_name = "e2e-scaff-upd-cl";
 
@@ -716,12 +899,13 @@ async fn dev_cli_cluster_scaffold_update_yaml() {
     let replacements = &[
         ("<your-cluster-name>", cluster_name),
         ("<your-service-name>", "upd-svc"),
-        ("<host>", "original.example.com"),
-        ("<port>", "8080"),
+        ("<host-or-ip>", echo_host),
+        ("<host>", echo_host),
+        ("<port>", echo_port),
         ("your-cluster-name", cluster_name),
         ("your-service-name", "upd-svc"),
-        ("host.example.com", "original.example.com"),
-        ("8080", "8080"),
+        ("host.example.com", echo_host),
+        ("8080", echo_port),
     ];
     let create_output = scaffold_and_create(
         &cli,
@@ -743,8 +927,8 @@ async fn dev_cli_cluster_scaffold_update_yaml() {
         r#"kind: Cluster
 name: {cluster_name}
 endpoints:
-  - host: updated.example.com
-    port: 9090
+  - host: {echo_host}
+    port: {echo_port}
 connectTimeoutSeconds: 20
 "#
     );
@@ -761,30 +945,38 @@ connectTimeoutSeconds: 20
     // Verify the cluster still exists after update
     let get_output = cli.run(&["cluster", "get", cluster_name]).unwrap();
     get_output.assert_success();
+
+    // Verify updated cluster reaches Envoy via xDS
+    verify_in_config_dump(&harness, cluster_name).await;
 }
 
 /// Scaffold YAML → replace placeholders → `apply -f file.yaml` → verify cluster
-/// exists. Tests the apply path with scaffold output (apply uses `kind` to route).
+/// exists, appears in Envoy config_dump, and traffic flows.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_scaffold_apply() {
-    let harness = dev_harness("dev_cli_scaff_apply").await.expect("harness should start");
+    let harness = quick_harness("dev_cli_scaff_apply").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
     let cluster_name = "e2e-scaff-apply-cl";
     let replacements = &[
         ("<your-cluster-name>", cluster_name),
         ("<your-service-name>", "apply-svc"),
-        ("<host>", "apply-backend.example.com"),
-        ("<port>", "443"),
+        ("<host-or-ip>", echo_host),
+        ("<host>", echo_host),
+        ("<port>", echo_port),
         ("your-cluster-name", cluster_name),
         ("your-service-name", "apply-svc"),
-        ("host.example.com", "apply-backend.example.com"),
-        ("8080", "443"),
+        ("host.example.com", echo_host),
+        ("8080", echo_port),
     ];
 
     let output = scaffold_and_create(
@@ -808,7 +1000,454 @@ async fn dev_cli_cluster_scaffold_apply() {
         "Expected cluster name in get output, got: {}",
         get_output.stdout
     );
+
+    // Create route + listener to complete Envoy chain, then verify xDS + traffic
+    let (_route, domain) = create_chain_for_cluster(&harness, cluster_name, "scaff-apply").await;
+    verify_in_config_dump(&harness, cluster_name).await;
+    verify_traffic(&harness, &domain, "/test").await;
 }
+
+// ============================================================================
+// route scaffold → create/update/apply roundtrip tests
+// ============================================================================
+
+/// Helper: create a prerequisite cluster that route forward actions can
+/// reference, returning the cluster name used.
+fn create_prerequisite_cluster(cli: &CliRunner, cluster_name: &str, host: &str, port: &str) {
+    let cluster_yaml = format!(
+        r#"name: {cluster_name}
+endpoints:
+  - host: {host}
+    port: {port}
+connectTimeoutSeconds: 5
+"#
+    );
+    let file = write_temp_file(&cluster_yaml, ".yaml");
+    let output = cli.run(&["cluster", "create", "-f", file.path().to_str().unwrap()]).unwrap();
+    assert_eq!(
+        output.exit_code, 0,
+        "prerequisite cluster create failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+}
+
+/// Route scaffold YAML → replace placeholders → `route create -f file.yaml`
+/// → `route get` confirms the route config exists. Verifies route in Envoy
+/// config_dump and traffic flows through the proxy.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_route_scaffold_create_yaml() {
+    let harness = quick_harness("dev_cli_rt_scaff_yaml").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let cluster_name = "e2e-rt-yaml-cl";
+    let route_name = "e2e-rt-yaml-rc";
+    let vhost_name = "e2e-rt-yaml-vh";
+
+    // Create prerequisite cluster pointing to echo server
+    create_prerequisite_cluster(&cli, cluster_name, echo_host, echo_port);
+
+    // Scaffold route YAML → replace placeholders → create
+    let replacements = &[
+        ("<your-route-config-name>", route_name),
+        ("<your-vhost-name>", vhost_name),
+        ("<your-route-name>", "catch-all"),
+        ("<your-cluster-name>", cluster_name),
+        ("your-route-config-name", route_name),
+        ("your-vhost-name", vhost_name),
+        ("your-route-name", "catch-all"),
+        ("your-cluster-name", cluster_name),
+    ];
+
+    let output = scaffold_and_create(
+        &cli,
+        &["route", "scaffold"],
+        replacements,
+        ".yaml",
+        &["route", "create", "-f"],
+    );
+    assert_eq!(
+        output.exit_code, 0,
+        "route create -f yaml failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    // Verify the route config exists via CLI
+    let get_output = cli.run(&["route", "get", route_name]).unwrap();
+    get_output.assert_success();
+    assert!(
+        get_output.stdout.contains(route_name),
+        "Expected route config name in get output, got: {}",
+        get_output.stdout
+    );
+
+    // Create listener to complete Envoy chain, then verify xDS + traffic
+    let domain =
+        create_chain_for_route(&harness, route_name, "rt-yaml-cr", "rt-yaml.e2e.local").await;
+    verify_in_config_dump(&harness, route_name).await;
+    verify_traffic(&harness, &domain, "/test").await;
+}
+
+/// Route scaffold JSON → replace placeholders → `route create -f file.json`
+/// → `route get` confirms. Verifies route in Envoy config_dump and traffic flows.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_route_scaffold_create_json() {
+    let harness = quick_harness("dev_cli_rt_scaff_json").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let cluster_name = "e2e-rt-json-cl";
+    let route_name = "e2e-rt-json-rc";
+    let vhost_name = "e2e-rt-json-vh";
+
+    create_prerequisite_cluster(&cli, cluster_name, echo_host, echo_port);
+
+    let replacements = &[
+        ("<your-route-config-name>", route_name),
+        ("<your-vhost-name>", vhost_name),
+        ("<your-route-name>", "catch-all"),
+        ("<your-cluster-name>", cluster_name),
+        ("your-route-config-name", route_name),
+        ("your-vhost-name", vhost_name),
+        ("your-route-name", "catch-all"),
+        ("your-cluster-name", cluster_name),
+    ];
+
+    let output = scaffold_and_create(
+        &cli,
+        &["route", "scaffold", "-o", "json"],
+        replacements,
+        ".json",
+        &["route", "create", "-f"],
+    );
+    assert_eq!(
+        output.exit_code, 0,
+        "route create -f json failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    let get_output = cli.run(&["route", "get", route_name]).unwrap();
+    get_output.assert_success();
+    assert!(
+        get_output.stdout.contains(route_name),
+        "Expected route config name in get output, got: {}",
+        get_output.stdout
+    );
+
+    // Create listener to complete Envoy chain, then verify xDS + traffic
+    let domain =
+        create_chain_for_route(&harness, route_name, "rt-json-cr", "rt-json.e2e.local").await;
+    verify_in_config_dump(&harness, route_name).await;
+    verify_traffic(&harness, &domain, "/test").await;
+}
+
+/// Route scaffold YAML → replace placeholders → `apply -f file.yaml` → `route get`.
+/// Key test: proves that `kind: RouteConfig` is correctly routed by the apply command.
+/// Verifies route in Envoy config_dump and traffic flows through the proxy.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_route_scaffold_apply() {
+    let harness = quick_harness("dev_cli_rt_scaff_apply").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let cluster_name = "e2e-rt-apply-cl";
+    let route_name = "e2e-rt-apply-rc";
+    let vhost_name = "e2e-rt-apply-vh";
+
+    create_prerequisite_cluster(&cli, cluster_name, echo_host, echo_port);
+
+    let replacements = &[
+        ("<your-route-config-name>", route_name),
+        ("<your-vhost-name>", vhost_name),
+        ("<your-route-name>", "api-route"),
+        ("<your-cluster-name>", cluster_name),
+        ("your-route-config-name", route_name),
+        ("your-vhost-name", vhost_name),
+        ("your-route-name", "api-route"),
+        ("your-cluster-name", cluster_name),
+    ];
+
+    let output =
+        scaffold_and_create(&cli, &["route", "scaffold"], replacements, ".yaml", &["apply", "-f"]);
+    assert_eq!(
+        output.exit_code, 0,
+        "apply -f route scaffold yaml failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    // Verify route config exists
+    let get_output = cli.run(&["route", "get", route_name]).unwrap();
+    get_output.assert_success();
+    assert!(
+        get_output.stdout.contains(route_name),
+        "Expected route config name in get output, got: {}",
+        get_output.stdout
+    );
+
+    // Create listener to complete Envoy chain, then verify xDS + traffic
+    let domain =
+        create_chain_for_route(&harness, route_name, "rt-apply", "rt-apply.e2e.local").await;
+    verify_in_config_dump(&harness, route_name).await;
+    verify_traffic(&harness, &domain, "/test").await;
+}
+
+/// Create a route config manually, then update it via `route update -f file.yaml`
+/// with a modified domain. Proves YAML file-based update works for routes.
+/// Verifies updated route appears in Envoy config_dump.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_route_update_yaml_file() {
+    let harness = quick_harness("dev_cli_rt_upd_yaml").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let cluster_name = "e2e-rt-upd-cl";
+    let route_name = "e2e-rt-upd-rc";
+
+    create_prerequisite_cluster(&cli, cluster_name, echo_host, echo_port);
+
+    // Create route config via JSON first
+    let json_content = format!(
+        r#"{{
+  "name": "{route_name}",
+  "virtualHosts": [
+    {{
+      "name": "original-vhost",
+      "domains": ["api.original.example.com"],
+      "routes": [
+        {{
+          "match": {{"path": {{"type": "prefix", "value": "/"}}}},
+          "action": {{"type": "forward", "cluster": "{cluster_name}"}}
+        }}
+      ]
+    }}
+  ]
+}}"#
+    );
+    let json_file = write_temp_file(&json_content, ".json");
+    let create_output =
+        cli.run(&["route", "create", "-f", json_file.path().to_str().unwrap()]).unwrap();
+    assert_eq!(
+        create_output.exit_code, 0,
+        "initial route create via JSON failed: stdout={}, stderr={}",
+        create_output.stdout, create_output.stderr
+    );
+
+    // Update with YAML — change domain
+    let yaml_update = format!(
+        r#"name: {route_name}
+virtualHosts:
+  - name: updated-vhost
+    domains:
+      - "api.updated.example.com"
+    routes:
+      - match:
+          path:
+            type: prefix
+            value: "/v2"
+        action:
+          type: forward
+          cluster: {cluster_name}
+          timeoutSeconds: 30
+"#
+    );
+    let yaml_file = write_temp_file(&yaml_update, ".yaml");
+    let update_output = cli
+        .run(&["route", "update", route_name, "-f", yaml_file.path().to_str().unwrap()])
+        .unwrap();
+    assert_eq!(
+        update_output.exit_code, 0,
+        "route update via YAML failed: stdout={}, stderr={}",
+        update_output.stdout, update_output.stderr
+    );
+
+    // Verify updated route still exists
+    let get_output = cli.run(&["route", "get", route_name]).unwrap();
+    get_output.assert_success();
+
+    // Create a listener that references this route config so Envoy
+    // receives it via RDS (route configs only appear in config_dump
+    // when referenced by a listener).
+    let _domain =
+        create_chain_for_route(&harness, route_name, "rt-upd-yaml", "rt-upd.e2e.local").await;
+
+    // Verify updated route reaches Envoy via xDS
+    verify_in_config_dump(&harness, route_name).await;
+}
+
+/// Scaffold YAML → create route → modify → `route update -f` with `kind: RouteConfig`
+/// still present in the file. Proves `strip_kind_field` works for route updates.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_route_scaffold_update_yaml() {
+    let harness = quick_harness("dev_cli_rt_scaff_upd").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let cluster_name = "e2e-rt-scfupd-cl";
+    let route_name = "e2e-rt-scfupd-rc";
+    let vhost_name = "e2e-rt-scfupd-vh";
+
+    create_prerequisite_cluster(&cli, cluster_name, echo_host, echo_port);
+
+    // Step 1: Create route from scaffold
+    let replacements = &[
+        ("<your-route-config-name>", route_name),
+        ("<your-vhost-name>", vhost_name),
+        ("<your-route-name>", "initial-route"),
+        ("<your-cluster-name>", cluster_name),
+        ("your-route-config-name", route_name),
+        ("your-vhost-name", vhost_name),
+        ("your-route-name", "initial-route"),
+        ("your-cluster-name", cluster_name),
+    ];
+    let create_output = scaffold_and_create(
+        &cli,
+        &["route", "scaffold"],
+        replacements,
+        ".yaml",
+        &["route", "create", "-f"],
+    );
+    assert_eq!(
+        create_output.exit_code, 0,
+        "scaffold route create failed: stdout={}, stderr={}",
+        create_output.stdout, create_output.stderr
+    );
+
+    // Step 2: Update with YAML that still contains `kind: RouteConfig`.
+    // The CLI must strip the kind field before sending to the API.
+    let update_yaml = format!(
+        r#"kind: RouteConfig
+name: {route_name}
+virtualHosts:
+  - name: {vhost_name}
+    domains:
+      - "updated.example.com"
+    routes:
+      - name: updated-route
+        match:
+          path:
+            type: prefix
+            value: "/updated"
+        action:
+          type: forward
+          cluster: {cluster_name}
+"#
+    );
+    let update_file = write_temp_file(&update_yaml, ".yaml");
+    let update_output = cli
+        .run(&["route", "update", route_name, "-f", update_file.path().to_str().unwrap()])
+        .unwrap();
+    assert_eq!(
+        update_output.exit_code, 0,
+        "route update with kind field in YAML failed: stdout={}, stderr={}",
+        update_output.stdout, update_output.stderr
+    );
+
+    // Verify route still exists after update
+    let get_output = cli.run(&["route", "get", route_name]).unwrap();
+    get_output.assert_success();
+
+    // Create a listener that references this route config so Envoy
+    // receives it via RDS (route configs only appear in config_dump
+    // when referenced by a listener).
+    let _domain =
+        create_chain_for_route(&harness, route_name, "rt-scfupd", "rt-scfupd.e2e.local").await;
+
+    // Verify updated route reaches Envoy via xDS
+    verify_in_config_dump(&harness, route_name).await;
+}
+
+/// `route create -f` with syntactically invalid YAML should produce a
+/// user-friendly error (not a panic or raw stack trace).
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_route_create_malformed_yaml() {
+    let harness = dev_harness("dev_cli_rt_badyaml").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    // Intentionally broken YAML — mixed indentation, unclosed bracket, bad types
+    let bad_yaml = r#"name: [broken-route
+  virtualHosts:
+    - name: "missing close quote
+      domains: not-a-list
+    routes: {{{
+"#;
+    let file = write_temp_file(bad_yaml, ".yaml");
+
+    let output = cli.run(&["route", "create", "-f", file.path().to_str().unwrap()]).unwrap();
+
+    assert_ne!(
+        output.exit_code, 0,
+        "Expected non-zero exit for malformed YAML, got exit_code=0, stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    // Should NOT contain a raw Rust panic/backtrace
+    let combined = format!("{} {}", output.stdout, output.stderr);
+    assert!(
+        !combined.contains("panicked at") && !combined.contains("stack backtrace"),
+        "Malformed YAML should produce a user-friendly error, not a panic: {}",
+        combined
+    );
+
+    // Should contain something indicating a parse/format error
+    let combined_lower = combined.to_lowercase();
+    assert!(
+        combined_lower.contains("error")
+            || combined_lower.contains("invalid")
+            || combined_lower.contains("parse")
+            || combined_lower.contains("yaml"),
+        "Expected parse error message, got: {}",
+        combined
+    );
+}
+
+// ============================================================================
+// cluster negative tests
+// ============================================================================
 
 /// `cluster create -f file.txt` should fail with an error mentioning supported
 /// file extensions (.yaml, .yml, .json).

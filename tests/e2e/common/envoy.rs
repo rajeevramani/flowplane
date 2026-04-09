@@ -123,7 +123,7 @@ impl EnvoyHandle {
         cmd.arg("-c").arg(&config_path);
         cmd.arg("--disable-hot-restart");
         cmd.arg("-l").arg("warn"); // Set envoy log level to warn to reduce noise
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
         let child = cmd.spawn().map_err(|e| {
             anyhow::anyhow!("Failed to spawn Envoy process: {}. Is 'envoy' in your PATH?", e)
