@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
@@ -413,6 +414,17 @@ async fn scaffold_filter(client: &FlowplaneClient, filter_type: &str, output: &s
         .await
         .with_context(|| format!("Failed to fetch filter type '{filter_type}'"))?;
 
+    let mut stdout = std::io::stdout();
+    scaffold_filter_to_writer(&mut stdout, &type_info, filter_type, output)
+}
+
+/// Write filter scaffold to a writer. Shared by CLI and unit tests.
+fn scaffold_filter_to_writer(
+    writer: &mut impl Write,
+    type_info: &FilterTypeInfo,
+    filter_type: &str,
+    output: &str,
+) -> Result<()> {
     let config_fields = build_config_from_schema(&type_info.config_schema);
 
     if output == "json" {
@@ -422,6 +434,8 @@ async fn scaffold_filter(client: &FlowplaneClient, filter_type: &str, output: &s
             "name".to_string(),
             serde_json::Value::String("<your-filter-name>".to_string()),
         );
+        scaffold
+            .insert("filterType".to_string(), serde_json::Value::String(filter_type.to_string()));
         scaffold.insert(
             "description".to_string(),
             serde_json::Value::String(type_info.description.clone()),
@@ -434,51 +448,112 @@ async fn scaffold_filter(client: &FlowplaneClient, filter_type: &str, output: &s
 
         let json = serde_json::to_string_pretty(&serde_json::Value::Object(scaffold))
             .context("Failed to serialize scaffold to JSON")?;
-        println!("{json}");
+        writeln!(writer, "{json}").context("Failed to write scaffold JSON")?;
     } else {
         let properties = extract_properties(&type_info.config_schema);
-        println!("# Scaffold for filter type: {filter_type}");
-        println!("# {}", type_info.description);
-        println!("kind: Filter");
-        println!("name: \"<your-filter-name>\"");
-        println!("description: \"{}\"", type_info.description);
-        println!("config:");
-        println!("  type: \"{}\"", filter_type);
-        println!("  config:");
+        writeln!(writer, "# Scaffold for filter type: {filter_type}")?;
+        writeln!(writer, "# {}", type_info.description)?;
+        writeln!(writer, "kind: Filter")?;
+        writeln!(writer, "name: \"<your-filter-name>\"")?;
+        writeln!(writer, "filterType: \"{}\"", filter_type)?;
+        writeln!(writer, "description: \"{}\"", type_info.description)?;
+        writeln!(writer, "config:")?;
+        writeln!(writer, "  type: \"{}\"", filter_type)?;
+        writeln!(writer, "  config:")?;
         for (key, desc, default_val) in &properties {
             if let Some(d) = desc {
-                println!("    # {d}");
+                writeln!(writer, "    # {d}")?;
             }
-            println!("    {key}: {default_val}");
+            writeln!(writer, "    {key}: {default_val}")?;
         }
     }
 
     Ok(())
 }
 
-/// Build a JSON Value from the config_schema properties with default/placeholder values
+/// Build a JSON Value from the config_schema properties with default/placeholder values.
+/// Recurses into nested objects to populate required sub-fields.
 fn build_config_from_schema(config_schema: &Option<serde_json::Value>) -> serde_json::Value {
-    let schema = match config_schema {
-        Some(s) => s,
-        None => return serde_json::Value::Object(serde_json::Map::new()),
-    };
+    match config_schema {
+        Some(s) => build_value_from_schema(s),
+        None => serde_json::Value::Object(serde_json::Map::new()),
+    }
+}
 
-    let properties = match schema.get("properties").and_then(|p| p.as_object()) {
-        Some(p) => p,
-        None => return serde_json::Value::Object(serde_json::Map::new()),
-    };
+/// Recursively build a JSON value from a schema node, populating defaults and
+/// required nested fields.
+fn build_value_from_schema(schema: &serde_json::Value) -> serde_json::Value {
+    let type_str = schema.get("type").and_then(|t| t.as_str()).unwrap_or("string");
 
-    let mut result = serde_json::Map::new();
-    for (key, prop) in properties {
-        let value = if let Some(default) = prop.get("default") {
-            default.clone()
-        } else {
-            placeholder_for_type(prop.get("type").and_then(|t| t.as_str()).unwrap_or("string"))
-        };
-        result.insert(key.clone(), value);
+    // If there's a default, use it
+    if let Some(default) = schema.get("default") {
+        return default.clone();
     }
 
-    serde_json::Value::Object(result)
+    // If there's an enum, use the first value as the placeholder
+    if let Some(enum_vals) = schema.get("enum").and_then(|e| e.as_array()) {
+        if let Some(first) = enum_vals.first() {
+            return first.clone();
+        }
+    }
+
+    match type_str {
+        "object" => {
+            let properties = match schema.get("properties").and_then(|p| p.as_object()) {
+                Some(p) => p,
+                None => {
+                    // additionalProperties object (e.g., providers map) — generate
+                    // a single example entry
+                    if schema.get("additionalProperties").is_some() {
+                        let mut map = serde_json::Map::new();
+                        let inner = schema
+                            .get("additionalProperties")
+                            .map(build_value_from_schema)
+                            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                        map.insert("<your-key>".to_string(), inner);
+                        return serde_json::Value::Object(map);
+                    }
+                    return serde_json::Value::Object(serde_json::Map::new());
+                }
+            };
+
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+
+            let mut result = serde_json::Map::new();
+            for (key, prop) in properties {
+                // Include field if it's required, has a default, or has required sub-fields
+                let is_required = required.contains(&key.as_str());
+                let has_default = prop.get("default").is_some();
+                let has_required_children = prop.get("required").is_some();
+
+                if is_required || has_default || has_required_children {
+                    result.insert(key.clone(), build_value_from_schema(prop));
+                }
+            }
+
+            // If no fields matched, include all properties (flat schema like header_mutation)
+            if result.is_empty() {
+                for (key, prop) in properties {
+                    result.insert(key.clone(), build_value_from_schema(prop));
+                }
+            }
+
+            serde_json::Value::Object(result)
+        }
+        "array" => {
+            // For arrays with items schema, generate one example item
+            if let Some(items_schema) = schema.get("items") {
+                serde_json::Value::Array(vec![build_value_from_schema(items_schema)])
+            } else {
+                serde_json::Value::Array(Vec::new())
+            }
+        }
+        _ => placeholder_for_type(type_str),
+    }
 }
 
 /// Extract properties as (key, description, yaml_default_string) tuples
@@ -611,5 +686,447 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_type_info(
+        filter_type: &str,
+        config_schema: Option<serde_json::Value>,
+    ) -> FilterTypeInfo {
+        FilterTypeInfo {
+            name: filter_type.to_string(),
+            display_name: filter_type.to_string(),
+            description: format!("Test {filter_type} filter"),
+            version: "1.0".to_string(),
+            is_implemented: true,
+            source: "built-in".to_string(),
+            config_schema,
+            extra: serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+
+    #[test]
+    fn scaffold_json_includes_filter_type() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "traffic_mode": {
+                    "type": "string",
+                    "default": "pass_through"
+                }
+            }
+        });
+        let type_info = make_type_info("mcp", Some(schema));
+
+        let mut buf = Vec::new();
+        scaffold_filter_to_writer(&mut buf, &type_info, "mcp", "json")
+            .expect("scaffold should succeed");
+        let output = String::from_utf8(buf).expect("valid utf8");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("output should be valid JSON");
+        assert_eq!(
+            parsed.get("filterType").and_then(|v| v.as_str()),
+            Some("mcp"),
+            "JSON scaffold must include filterType field. Got: {output}"
+        );
+        assert_eq!(parsed.get("kind").and_then(|v| v.as_str()), Some("Filter"),);
+    }
+
+    #[test]
+    fn scaffold_yaml_includes_filter_type() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "traffic_mode": {
+                    "type": "string",
+                    "default": "pass_through"
+                }
+            }
+        });
+        let type_info = make_type_info("mcp", Some(schema));
+
+        let mut buf = Vec::new();
+        scaffold_filter_to_writer(&mut buf, &type_info, "mcp", "yaml")
+            .expect("scaffold should succeed");
+        let output = String::from_utf8(buf).expect("valid utf8");
+
+        assert!(
+            output.contains("filterType: \"mcp\""),
+            "YAML scaffold must include filterType field. Got:\n{output}"
+        );
+        assert!(output.contains("kind: Filter"));
+    }
+
+    #[test]
+    fn scaffold_json_includes_filter_type_for_all_filter_types() {
+        let filter_types = [
+            "header_mutation",
+            "cors",
+            "custom_response",
+            "rbac",
+            "mcp",
+            "local_rate_limit",
+            "compressor",
+            "ext_authz",
+            "jwt_auth",
+            "oauth2",
+        ];
+
+        for ft in &filter_types {
+            let type_info =
+                make_type_info(ft, Some(serde_json::json!({"type": "object", "properties": {}})));
+            let mut buf = Vec::new();
+            scaffold_filter_to_writer(&mut buf, &type_info, ft, "json")
+                .expect("scaffold should succeed");
+            let output = String::from_utf8(buf).expect("valid utf8");
+            let parsed: serde_json::Value = serde_json::from_str(&output)
+                .unwrap_or_else(|e| panic!("Invalid JSON for {ft}: {e}\n{output}"));
+
+            assert_eq!(
+                parsed.get("filterType").and_then(|v| v.as_str()),
+                Some(*ft),
+                "filterType missing for filter type '{ft}'"
+            );
+        }
+    }
+
+    #[test]
+    fn build_config_handles_nested_required_fields() {
+        // Simulates compressor schema: compressor_library.type is required
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "compressor_library": {
+                    "type": "object",
+                    "required": ["type"],
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["gzip"],
+                            "default": "gzip"
+                        },
+                        "memory_level": {
+                            "type": "integer",
+                            "default": 5
+                        }
+                    }
+                }
+            }
+        });
+        let result = build_config_from_schema(&Some(schema));
+        let lib = result.get("compressor_library").expect("compressor_library should exist");
+        assert_eq!(
+            lib.get("type").and_then(|v| v.as_str()),
+            Some("gzip"),
+            "compressor_library.type should be populated"
+        );
+    }
+
+    #[test]
+    fn build_config_handles_enum_first_value() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["service"],
+            "properties": {
+                "service": {
+                    "type": "object",
+                    "required": ["type"],
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["grpc", "http"]
+                        }
+                    }
+                }
+            }
+        });
+        let result = build_config_from_schema(&Some(schema));
+        let svc = result.get("service").expect("service should exist");
+        assert_eq!(
+            svc.get("type").and_then(|v| v.as_str()),
+            Some("grpc"),
+            "Should use first enum value as placeholder"
+        );
+    }
+
+    #[test]
+    fn build_config_handles_additional_properties() {
+        // Simulates jwt_auth providers (additionalProperties map)
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["providers"],
+            "properties": {
+                "providers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "required": ["jwks"],
+                        "properties": {
+                            "issuer": {"type": "string"},
+                            "jwks": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {"type": "string", "default": "remote"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let result = build_config_from_schema(&Some(schema));
+        let providers = result.get("providers").expect("providers should exist");
+        assert!(
+            providers.as_object().map(|m| !m.is_empty()).unwrap_or(false),
+            "providers should have at least one example entry"
+        );
+    }
+
+    #[test]
+    fn build_config_local_rate_limit_includes_required_fields() {
+        // Exact local_rate_limit schema structure
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["stat_prefix", "token_bucket"],
+            "properties": {
+                "stat_prefix": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "token_bucket": {
+                    "type": "object",
+                    "required": ["max_tokens", "fill_interval_ms"],
+                    "properties": {
+                        "max_tokens": {"type": "integer", "default": 100},
+                        "tokens_per_fill": {"type": "integer"},
+                        "fill_interval_ms": {"type": "integer", "default": 1000}
+                    }
+                },
+                "filter_enabled": {
+                    "type": "object",
+                    "required": ["numerator"],
+                    "properties": {
+                        "numerator": {"type": "integer", "default": 100},
+                        "denominator": {"type": "string", "enum": ["hundred", "ten_thousand", "million"], "default": "hundred"}
+                    }
+                },
+                "filter_enforced": {
+                    "type": "object",
+                    "required": ["numerator"],
+                    "properties": {
+                        "numerator": {"type": "integer", "default": 100},
+                        "denominator": {"type": "string", "enum": ["hundred", "ten_thousand", "million"], "default": "hundred"}
+                    }
+                }
+            }
+        });
+        let result = build_config_from_schema(&Some(schema));
+
+        // Required top-level fields must be present
+        assert!(result.get("stat_prefix").is_some(), "stat_prefix must be present");
+        assert!(result.get("token_bucket").is_some(), "token_bucket must be present");
+
+        // token_bucket must include required sub-fields with defaults
+        let tb = result.get("token_bucket").unwrap();
+        assert_eq!(tb.get("max_tokens"), Some(&serde_json::json!(100)));
+        assert_eq!(tb.get("fill_interval_ms"), Some(&serde_json::json!(1000)));
+
+        // filter_enabled/enforced must include numerator when present (has required children)
+        let fe = result.get("filter_enabled").expect("filter_enabled should be present");
+        assert_eq!(
+            fe.get("numerator"),
+            Some(&serde_json::json!(100)),
+            "filter_enabled.numerator must be populated"
+        );
+        let fenf = result.get("filter_enforced").expect("filter_enforced should be present");
+        assert_eq!(
+            fenf.get("numerator"),
+            Some(&serde_json::json!(100)),
+            "filter_enforced.numerator must be populated"
+        );
+    }
+
+    #[test]
+    fn build_config_compressor_includes_library_type() {
+        // Exact compressor schema structure
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "response_direction_config": {
+                    "type": "object",
+                    "properties": {
+                        "common_config": {
+                            "type": "object",
+                            "properties": {
+                                "min_content_length": {"type": "integer", "default": 30}
+                            }
+                        }
+                    }
+                },
+                "compressor_library": {
+                    "type": "object",
+                    "required": ["type"],
+                    "properties": {
+                        "type": {"type": "string", "enum": ["gzip"], "default": "gzip"},
+                        "memory_level": {"type": "integer", "default": 5},
+                        "compression_level": {"type": "string", "default": "best_speed"}
+                    }
+                }
+            }
+        });
+        let result = build_config_from_schema(&Some(schema));
+
+        let lib = result.get("compressor_library").expect("compressor_library must be present");
+        assert_eq!(
+            lib.get("type").and_then(|v| v.as_str()),
+            Some("gzip"),
+            "compressor_library.type must be 'gzip'. Got: {:?}",
+            lib
+        );
+    }
+
+    #[test]
+    fn build_config_ext_authz_includes_service_type() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["service"],
+            "properties": {
+                "service": {
+                    "type": "object",
+                    "required": ["type"],
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["grpc", "http"]
+                        },
+                        "target_uri": {"type": "string"},
+                        "timeout_ms": {"type": "integer", "default": 200}
+                    }
+                },
+                "failure_mode_allow": {"type": "boolean", "default": false}
+            }
+        });
+        let result = build_config_from_schema(&Some(schema));
+
+        let service = result.get("service").expect("service must be present");
+        assert_eq!(
+            service.get("type").and_then(|v| v.as_str()),
+            Some("grpc"),
+            "service.type must use first enum value 'grpc'. Got: {:?}",
+            service
+        );
+    }
+
+    #[test]
+    fn build_config_jwt_auth_includes_providers() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["providers"],
+            "properties": {
+                "providers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "required": ["jwks"],
+                        "properties": {
+                            "issuer": {"type": "string"},
+                            "jwks": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {"type": "string", "default": "remote"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let result = build_config_from_schema(&Some(schema));
+
+        let providers = result.get("providers").expect("providers must be present");
+        let providers_map = providers.as_object().expect("providers must be an object");
+        assert!(!providers_map.is_empty(), "providers must have at least one example entry");
+        // The example entry should have a jwks sub-object
+        let first_provider = providers_map.values().next().unwrap();
+        assert!(
+            first_provider.get("jwks").is_some(),
+            "Provider entry must include required jwks. Got: {:?}",
+            first_provider
+        );
+    }
+
+    #[test]
+    fn build_config_oauth2_includes_required_fields() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["token_endpoint", "authorization_endpoint", "credentials", "redirect_uri"],
+            "properties": {
+                "token_endpoint": {
+                    "type": "object",
+                    "required": ["uri", "cluster"],
+                    "properties": {
+                        "uri": {"type": "string"},
+                        "cluster": {"type": "string"},
+                        "timeout_ms": {"type": "integer", "default": 5000}
+                    }
+                },
+                "authorization_endpoint": {"type": "string"},
+                "credentials": {
+                    "type": "object",
+                    "required": ["client_id"],
+                    "properties": {
+                        "client_id": {"type": "string"},
+                        "token_secret": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": {"type": "string"}
+                            }
+                        }
+                    }
+                },
+                "redirect_uri": {"type": "string"}
+            }
+        });
+        let result = build_config_from_schema(&Some(schema));
+
+        assert!(result.get("token_endpoint").is_some(), "token_endpoint must be present");
+        assert!(
+            result.get("authorization_endpoint").is_some(),
+            "authorization_endpoint must be present"
+        );
+        assert!(result.get("redirect_uri").is_some(), "redirect_uri must be present");
+
+        let creds = result.get("credentials").expect("credentials must be present");
+        assert!(
+            creds.get("client_id").is_some(),
+            "credentials.client_id must be present. Got: {:?}",
+            creds
+        );
+
+        let token_ep = result.get("token_endpoint").unwrap();
+        assert!(
+            token_ep.get("uri").is_some(),
+            "token_endpoint.uri must be present. Got: {:?}",
+            token_ep
+        );
+        assert!(
+            token_ep.get("cluster").is_some(),
+            "token_endpoint.cluster must be present. Got: {:?}",
+            token_ep
+        );
+
+        // token_secret has required: [name], so should be included
+        let token_secret = creds.get("token_secret").expect("token_secret should be present");
+        assert!(
+            token_secret.get("name").is_some(),
+            "token_secret.name must be present. Got: {:?}",
+            token_secret
+        );
     }
 }
