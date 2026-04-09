@@ -176,9 +176,12 @@ pub async fn handle_wasm_command(
 }
 
 fn print_wasm_table(data: &serde_json::Value) {
-    let items = match data.as_array() {
-        Some(arr) => arr.clone(),
-        None => vec![data.clone()],
+    let items = if let Some(arr) = data.get("items").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else if let Some(arr) = data.as_array() {
+        arr.clone()
+    } else {
+        vec![data.clone()]
     };
 
     if items.is_empty() {

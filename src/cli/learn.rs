@@ -476,10 +476,22 @@ async fn health_session(
     let path = format!("/api/v1/teams/{team}/ops/learning/{session_id}/health");
     let response: serde_json::Value = client.get_json(&path).await?;
 
-    if output == "table" {
-        print_health_table(&response);
+    // The health endpoint returns MCP-style [{"text": "...", "type": "text"}] wrapper.
+    // Unwrap to get the actual health JSON inside the text field.
+    let health_data = if let Some(arr) = response.as_array() {
+        if let Some(text_str) = arr.first().and_then(|v| v.get("text")).and_then(|v| v.as_str()) {
+            serde_json::from_str::<serde_json::Value>(text_str).unwrap_or_else(|_| response.clone())
+        } else {
+            response.clone()
+        }
     } else {
-        print_output(&response, output)?;
+        response
+    };
+
+    if output == "table" {
+        print_health_table(&health_data);
+    } else {
+        print_output(&health_data, output)?;
     }
 
     Ok(())
@@ -491,71 +503,36 @@ fn print_health_table(data: &serde_json::Value) {
     println!("{}", "-".repeat(50));
 
     if let Some(status) = data.get("status").and_then(|v| v.as_str()) {
-        println!("  {:<30} {}", "Status", status);
+        println!("  {:<20} {}", "Status", status);
     }
-    if let Some(count) = data.get("sampleCount").or_else(|| data.get("sample_count")) {
-        println!("  {:<30} {}", "Sample Count", count);
+    if let Some(pattern) = data.get("route_pattern").and_then(|v| v.as_str()) {
+        println!("  {:<20} {}", "Route Pattern", pattern);
     }
-    if let Some(rate) = data.get("collectionRate").or_else(|| data.get("collection_rate")) {
-        println!("  {:<30} {}", "Collection Rate", rate);
+    if let Some(diagnosis) = data.get("diagnosis").and_then(|v| v.as_str()) {
+        println!("  {:<20} {}", "Diagnosis", diagnosis);
+    }
+    if let Some(fix) = data.get("fix").and_then(|v| v.as_str()) {
+        println!("  {:<20} {}", "Fix", fix);
     }
 
-    // Route pattern diagnostics
-    if let Some(diagnostics) =
-        data.get("routePatternDiagnostics").or_else(|| data.get("route_pattern_diagnostics"))
-    {
+    // Print checks array
+    if let Some(checks) = data.get("checks").and_then(|v| v.as_array()) {
         println!();
-        println!("  Route Pattern Diagnostics");
+        println!("  Checks");
         println!("  {}", "-".repeat(46));
-        if let Some(obj) = diagnostics.as_object() {
-            for (key, value) in obj {
-                let display_key = key.replace('_', " ");
-                let display_val = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Null => "-".to_string(),
-                    other => other.to_string(),
-                };
-                println!("    {:<28} {}", display_key, display_val);
-            }
-        } else if let Some(arr) = diagnostics.as_array() {
-            for item in arr {
-                if let Some(obj) = item.as_object() {
-                    for (key, value) in obj {
-                        let display_key = key.replace('_', " ");
-                        let display_val = match value {
-                            serde_json::Value::String(s) => s.clone(),
-                            serde_json::Value::Null => "-".to_string(),
-                            other => other.to_string(),
-                        };
-                        println!("    {:<28} {}", display_key, display_val);
-                    }
-                }
-            }
-        }
-    }
-
-    // Print any remaining top-level fields
-    if let Some(obj) = data.as_object() {
-        let known = [
-            "status",
-            "sampleCount",
-            "sample_count",
-            "collectionRate",
-            "collection_rate",
-            "routePatternDiagnostics",
-            "route_pattern_diagnostics",
-        ];
-        let extras: Vec<_> = obj.iter().filter(|(k, _)| !known.contains(&k.as_str())).collect();
-        if !extras.is_empty() {
-            println!();
-            for (key, value) in extras {
-                let display_key = key.replace('_', " ");
-                let display_val = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Null => "-".to_string(),
-                    other => other.to_string(),
-                };
-                println!("  {:<30} {}", display_key, display_val);
+        for check in checks {
+            let name = check.get("check").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let result = check.get("result").and_then(|v| v.as_str()).unwrap_or("-");
+            let detail = check.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+            let icon = match result {
+                "OK" => "OK  ",
+                "WARN" => "WARN",
+                "FAIL" => "FAIL",
+                _ => "    ",
+            };
+            println!("    [{icon}] {name}: {detail}");
+            if let Some(hint) = check.get("hint").and_then(|v| v.as_str()) {
+                println!("           Hint: {hint}");
             }
         }
     }

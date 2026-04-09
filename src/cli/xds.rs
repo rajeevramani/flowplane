@@ -112,12 +112,14 @@ pub async fn handle_xds_command(
 }
 
 fn print_xds_status_table(data: &serde_json::Value) {
-    let items = match data.as_array() {
-        Some(arr) => arr.clone(),
-        None => vec![data.clone()],
-    };
+    let dataplanes = data
+        .get("dataplanes")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .or_else(|| data.as_array().cloned())
+        .unwrap_or_default();
 
-    if items.is_empty() {
+    if dataplanes.is_empty() {
         println!("No xDS status entries found");
         return;
     }
@@ -130,37 +132,61 @@ fn print_xds_status_table(data: &serde_json::Value) {
         ("Error", 40),
     ]);
 
-    for item in &items {
-        let dataplane = item.get("dataplane").and_then(|v| v.as_str()).unwrap_or("-");
-        let xds_type = item
-            .get("type")
-            .or_else(|| item.get("xdsType"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
-        let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("-");
-        let version = item.get("version").and_then(|v| v.as_str()).unwrap_or("-");
-        let error = item
-            .get("error")
-            .or_else(|| item.get("errorMessage"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+    for dp in &dataplanes {
+        let dataplane = dp.get("name").and_then(|v| v.as_str()).unwrap_or("-");
 
-        println!(
-            "{:<25} {:<6} {:<10} {:<12} {}",
-            truncate(dataplane, 23),
-            xds_type,
-            status,
-            truncate(version, 10),
-            truncate(error, 38),
-        );
+        if let Some(resource_types) = dp.get("resource_types").and_then(|v| v.as_object()) {
+            let mut types: Vec<_> = resource_types.keys().collect();
+            types.sort();
+            for xds_type in types {
+                let info = &resource_types[xds_type];
+                let status = info.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+                let version = info.get("version").and_then(|v| v.as_str()).unwrap_or("-");
+                let error = info
+                    .get("error")
+                    .or_else(|| info.get("errorMessage"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                println!(
+                    "{:<25} {:<6} {:<10} {:<12} {}",
+                    truncate(dataplane, 23),
+                    xds_type,
+                    status,
+                    truncate(version, 10),
+                    truncate(error, 38),
+                );
+            }
+        } else {
+            let xds_type = dp
+                .get("type")
+                .or_else(|| dp.get("xdsType"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            let status = dp.get("status").and_then(|v| v.as_str()).unwrap_or("-");
+            let version = dp.get("version").and_then(|v| v.as_str()).unwrap_or("-");
+            let error = dp.get("error").and_then(|v| v.as_str()).unwrap_or("");
+
+            println!(
+                "{:<25} {:<6} {:<10} {:<12} {}",
+                truncate(dataplane, 23),
+                xds_type,
+                status,
+                truncate(version, 10),
+                truncate(error, 38),
+            );
+        }
     }
     println!();
 }
 
 fn print_xds_nacks_table(data: &serde_json::Value) {
-    let items = match data.as_array() {
-        Some(arr) => arr.clone(),
-        None => vec![data.clone()],
+    let items = if let Some(arr) = data.get("events").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else if let Some(arr) = data.as_array() {
+        arr.clone()
+    } else {
+        vec![data.clone()]
     };
 
     if items.is_empty() {

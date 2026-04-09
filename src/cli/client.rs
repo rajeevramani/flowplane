@@ -200,6 +200,34 @@ impl FlowplaneClient {
         Ok(())
     }
 
+    /// Send a POST request with JSON body that expects no content response (200/204 with empty body)
+    pub async fn post_json_no_content<T: Serialize>(&self, path: &str, body: &T) -> Result<()> {
+        if self.config.verbose {
+            let body_json = serde_json::to_string_pretty(body)
+                .unwrap_or_else(|_| "<unable to serialize>".to_string());
+            trace!("Request body:\n{}", body_json);
+        }
+
+        let response =
+            self.post(path).json(body).send().await.context("Failed to send POST request")?;
+
+        let status = response.status();
+        debug!("Response status: {}", status);
+
+        if !status.is_success() {
+            let error_text =
+                response.text().await.unwrap_or_else(|_| "<unable to read error>".to_string());
+
+            if self.config.verbose {
+                trace!("Error response:\n{}", error_text);
+            }
+
+            anyhow::bail!("HTTP request failed with status {}: {}", status, error_text);
+        }
+
+        Ok(())
+    }
+
     /// Send a DELETE request and handle the response
     pub async fn delete_json<R: DeserializeOwned>(&self, path: &str) -> Result<R> {
         let response = self.delete(path).send().await.context("Failed to send DELETE request")?;

@@ -162,8 +162,7 @@ pub async fn handle_unexpose_command(
     let status = response.status();
 
     if status == reqwest::StatusCode::NOT_FOUND {
-        println!("{name} is not currently exposed");
-        return Ok(());
+        anyhow::bail!("{name} is not currently exposed");
     }
 
     if !status.is_success() {

@@ -70,8 +70,7 @@ pub async fn handle_admin_command(command: AdminCommands, client: &FlowplaneClie
         }
         AdminCommands::ReloadFilterSchemas => {
             let path = "/api/v1/admin/filter-schemas/reload";
-            let _response: serde_json::Value =
-                client.post_json(path, &serde_json::json!({})).await?;
+            client.post_json_no_content(path, &serde_json::json!({})).await?;
             println!("Filter schemas reloaded successfully");
         }
     }
@@ -133,9 +132,12 @@ fn print_resources_table(data: &serde_json::Value) {
 }
 
 fn print_scopes_table(data: &serde_json::Value) {
-    let items = match data.as_array() {
-        Some(arr) => arr.clone(),
-        None => vec![data.clone()],
+    let items = if let Some(arr) = data.get("scopes").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else if let Some(arr) = data.as_array() {
+        arr.clone()
+    } else {
+        vec![data.clone()]
     };
 
     if items.is_empty() {
@@ -147,9 +149,9 @@ fn print_scopes_table(data: &serde_json::Value) {
 
     for item in &items {
         let scope = item
-            .get("scope")
-            .or_else(|| item.get("key"))
-            .or_else(|| item.get("name"))
+            .get("value")
+            .or_else(|| item.get("label"))
+            .or_else(|| item.get("id"))
             .and_then(|v| v.as_str())
             .unwrap_or("-");
         let resource = item.get("resource").and_then(|v| v.as_str()).unwrap_or("-");

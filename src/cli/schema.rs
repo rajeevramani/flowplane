@@ -358,7 +358,7 @@ async fn compare_schemas(
     output: &str,
 ) -> Result<()> {
     let path =
-        format!("/api/v1/teams/{team}/aggregated-schemas/{id}/compare?with_version={with_version}");
+        format!("/api/v1/teams/{team}/aggregated-schemas/{id}/compare?withVersion={with_version}");
 
     let response: serde_json::Value = client.get_json(&path).await?;
 

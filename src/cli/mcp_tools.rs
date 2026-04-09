@@ -74,11 +74,8 @@ pub async fn handle_mcp_tools_command(
         }
         McpToolsCommands::Disable { route_id } => {
             let path = format!("/api/v1/teams/{team}/routes/{route_id}/mcp/disable");
-            let response: serde_json::Value =
-                client.post_json(&path, &serde_json::json!({})).await?;
+            client.post_json_no_content(&path, &serde_json::json!({})).await?;
             println!("MCP disabled for route '{route_id}'");
-            let json = serde_json::to_string_pretty(&response)?;
-            println!("{json}");
         }
     }
 
@@ -86,9 +83,12 @@ pub async fn handle_mcp_tools_command(
 }
 
 fn print_mcp_tools_table(data: &serde_json::Value) {
-    let items = match data.as_array() {
-        Some(arr) => arr.clone(),
-        None => vec![data.clone()],
+    let items = if let Some(arr) = data.get("items").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else if let Some(arr) = data.as_array() {
+        arr.clone()
+    } else {
+        vec![data.clone()]
     };
 
     if items.is_empty() {
