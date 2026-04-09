@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
@@ -266,7 +267,7 @@ async fn delete_listener(
     Ok(())
 }
 
-fn scaffold_listener(output: &str) -> Result<()> {
+fn scaffold_listener_to_writer(output: &str, writer: &mut impl Write) -> Result<()> {
     if output == "json" {
         let scaffold = serde_json::json!({
             "kind": "Listener",
@@ -274,6 +275,7 @@ fn scaffold_listener(output: &str) -> Result<()> {
             "address": "0.0.0.0",
             "port": 10001,
             "dataplaneId": "<your-dataplane-id>",
+            "protocol": "TCP",
             "filterChains": [
                 {
                     "name": "default",
@@ -284,7 +286,10 @@ fn scaffold_listener(output: &str) -> Result<()> {
                             "routeConfigName": "<your-route-config-name>",
                             "httpFilters": [
                                 { "filter": { "type": "router" } }
-                            ]
+                            ],
+                            "accessLog": {
+                                "path": "/dev/stdout"
+                            }
                         }
                     ]
                 }
@@ -292,30 +297,98 @@ fn scaffold_listener(output: &str) -> Result<()> {
         });
         let json =
             serde_json::to_string_pretty(&scaffold).context("Failed to serialize scaffold")?;
-        println!("{json}");
+        writeln!(writer, "{json}")?;
     } else {
-        println!("# Listener scaffold");
-        println!("kind: Listener");
-        println!("name: \"<your-listener-name>\"");
-        println!("# Bind address (0.0.0.0 for all interfaces)");
-        println!("address: \"0.0.0.0\"");
-        println!("# Port to listen on (10000-10020 for Envoy)");
-        println!("port: 10001");
-        println!("# Dataplane ID to attach this listener to");
-        println!("dataplaneId: \"<your-dataplane-id>\"");
-        println!("# Filter chains (required — at least one with an HTTP connection manager)");
-        println!("filterChains:");
-        println!("  - name: default");
-        println!("    filters:");
-        println!("      - name: envoy.filters.network.http_connection_manager");
-        println!("        type: httpConnectionManager");
-        println!("        # Route config to bind to this listener");
-        println!("        routeConfigName: \"<your-route-config-name>\"");
-        println!("        httpFilters:");
-        println!("          - filter:");
-        println!("              type: router");
+        writeln!(writer, "# Listener scaffold")?;
+        writeln!(writer, "#")?;
+        writeln!(writer, "# Use with: flowplane listener create -f <file>")?;
+        writeln!(writer, "#       or: flowplane apply -f <file>")?;
+        writeln!(writer)?;
+        writeln!(writer, "kind: Listener")?;
+        writeln!(writer)?;
+        writeln!(writer, "# [REQUIRED] Unique name for the listener")?;
+        writeln!(writer, "name: \"<your-listener-name>\"")?;
+        writeln!(writer)?;
+        writeln!(writer, "# [REQUIRED] Bind address (0.0.0.0 for all interfaces)")?;
+        writeln!(writer, "address: \"0.0.0.0\"")?;
+        writeln!(writer)?;
+        writeln!(writer, "# [REQUIRED] Port to listen on (10000-10020 for Envoy)")?;
+        writeln!(writer, "port: 10001")?;
+        writeln!(writer)?;
+        writeln!(
+            writer,
+            "# [REQUIRED] Dataplane ID (run 'flowplane dataplane list' to find yours)"
+        )?;
+        writeln!(writer, "dataplaneId: \"<your-dataplane-id>\"")?;
+        writeln!(writer)?;
+        writeln!(writer, "# [OPTIONAL] Protocol: TCP, UDP (default: TCP)")?;
+        writeln!(writer, "# protocol: TCP")?;
+        writeln!(writer)?;
+        writeln!(
+            writer,
+            "# [REQUIRED] Filter chains (at least one with an HTTP connection manager or TCP proxy)"
+        )?;
+        writeln!(writer, "filterChains:")?;
+        writeln!(writer, "  - name: \"default\"")?;
+        writeln!(writer, "    filters:")?;
+        writeln!(writer, "      - name: \"envoy.filters.network.http_connection_manager\"")?;
+        writeln!(writer, "        # Filter type: httpConnectionManager or tcpProxy")?;
+        writeln!(writer, "        type: httpConnectionManager")?;
+        writeln!(writer)?;
+        writeln!(writer, "        # [REQUIRED for HCM] Route config to use")?;
+        writeln!(writer, "        routeConfigName: \"<your-route-config-name>\"")?;
+        writeln!(writer)?;
+        writeln!(
+            writer,
+            "        # [OPTIONAL] Inline route config (alternative to routeConfigName)"
+        )?;
+        writeln!(writer, "        # inlineRouteConfig: {{}}")?;
+        writeln!(writer)?;
+        writeln!(writer, "        # [OPTIONAL] HTTP filters in the connection manager")?;
+        writeln!(writer, "        httpFilters:")?;
+        writeln!(writer, "          - filter:")?;
+        writeln!(writer, "              type: router")?;
+        writeln!(writer)?;
+        writeln!(writer, "        # [OPTIONAL] Access logging")?;
+        writeln!(writer, "        # accessLog:")?;
+        writeln!(writer, "        #   path: \"/dev/stdout\"")?;
+        writeln!(
+            writer,
+            "        #   format: \"%START_TIME% %REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL% %RESPONSE_CODE%\""
+        )?;
+        writeln!(writer)?;
+        writeln!(writer, "        # [OPTIONAL] Distributed tracing")?;
+        writeln!(writer, "        # tracing:")?;
+        writeln!(writer, "        #   provider:")?;
+        writeln!(writer, "        #     type: open_telemetry")?;
+        writeln!(writer, "        #     service_name: \"my-service\"")?;
+        writeln!(writer, "        #     grpc_cluster: \"otel-collector\"")?;
+        writeln!(writer, "        #   randomSamplingPercentage: 100.0")?;
+        writeln!(writer, "        #   spawnUpstreamSpan: true")?;
+        writeln!(writer, "        #   customTags:")?;
+        writeln!(writer, "        #     environment: \"production\"")?;
+        writeln!(writer)?;
+        writeln!(writer, "    # [OPTIONAL] TLS termination")?;
+        writeln!(writer, "    # tlsContext:")?;
+        writeln!(writer, "    #   certChainFile: \"/etc/certs/server.crt\"")?;
+        writeln!(writer, "    #   privateKeyFile: \"/etc/certs/server.key\"")?;
+        writeln!(writer, "    #   caCertFile: \"/etc/certs/ca.crt\"")?;
+        writeln!(writer, "    #   requireClientCertificate: false")?;
+        writeln!(writer)?;
+        writeln!(writer, "# --- Alternative: TCP proxy filter ---")?;
+        writeln!(writer, "# filters:")?;
+        writeln!(writer, "#   - name: \"envoy.filters.network.tcp_proxy\"")?;
+        writeln!(writer, "#     type: tcpProxy")?;
+        writeln!(writer, "#     cluster: \"<your-cluster-name>\"")?;
+        writeln!(writer, "#     accessLog:")?;
+        writeln!(writer, "#       path: \"/dev/stdout\"")?;
     }
     Ok(())
+}
+
+fn scaffold_listener(output: &str) -> Result<()> {
+    let mut stdout = std::io::stdout();
+    scaffold_listener_to_writer(output, &mut stdout)
 }
 
 fn print_output<T: Serialize>(data: &T, format: &str) -> Result<()> {
@@ -363,5 +436,156 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scaffold_yaml() -> String {
+        let mut buf = Vec::new();
+        scaffold_listener_to_writer("yaml", &mut buf).expect("scaffold yaml");
+        String::from_utf8(buf).expect("valid utf8")
+    }
+
+    fn scaffold_json() -> String {
+        let mut buf = Vec::new();
+        scaffold_listener_to_writer("json", &mut buf).expect("scaffold json");
+        String::from_utf8(buf).expect("valid utf8")
+    }
+
+    #[test]
+    fn yaml_kind_is_listener() {
+        let yaml = scaffold_yaml();
+        assert!(yaml.contains("kind: Listener"), "missing kind: Listener");
+    }
+
+    #[test]
+    fn json_kind_is_listener() {
+        let json = scaffold_json();
+        assert!(json.contains("\"kind\": \"Listener\""), "missing kind: Listener in JSON");
+    }
+
+    #[test]
+    fn yaml_contains_all_fields_and_annotations() {
+        let yaml = scaffold_yaml();
+
+        assert!(yaml.contains("[REQUIRED]"), "missing [REQUIRED] annotation");
+        assert!(yaml.contains("[OPTIONAL]"), "missing [OPTIONAL] annotation");
+
+        // All camelCase field names must be present
+        for field in [
+            "name:",
+            "address:",
+            "port:",
+            "dataplaneId:",
+            "filterChains:",
+            "routeConfigName:",
+            "httpFilters:",
+            "accessLog:",
+            "tracing:",
+            "randomSamplingPercentage:",
+            "spawnUpstreamSpan:",
+            "customTags:",
+            "tlsContext:",
+            "certChainFile:",
+            "privateKeyFile:",
+            "caCertFile:",
+            "requireClientCertificate:",
+            "tcpProxy",
+            "httpConnectionManager",
+            "protocol:",
+            "inlineRouteConfig:",
+        ] {
+            assert!(yaml.contains(field), "missing field: {field}");
+        }
+    }
+
+    #[test]
+    fn yaml_field_names_are_camel_case() {
+        let yaml = scaffold_yaml();
+
+        // These snake_case variants must NOT appear
+        assert!(!yaml.contains("dataplane_id"), "found snake_case: dataplane_id");
+        assert!(!yaml.contains("filter_chains"), "found snake_case: filter_chains");
+        assert!(!yaml.contains("route_config_name"), "found snake_case: route_config_name");
+        assert!(!yaml.contains("http_filters"), "found snake_case: http_filters");
+        assert!(!yaml.contains("access_log"), "found snake_case: access_log");
+        assert!(
+            !yaml.contains("random_sampling_percentage"),
+            "found snake_case: random_sampling_percentage"
+        );
+        assert!(!yaml.contains("spawn_upstream_span"), "found snake_case: spawn_upstream_span");
+        assert!(!yaml.contains("custom_tags"), "found snake_case: custom_tags");
+        assert!(!yaml.contains("tls_context"), "found snake_case: tls_context");
+        assert!(!yaml.contains("cert_chain_file"), "found snake_case: cert_chain_file");
+        assert!(!yaml.contains("private_key_file"), "found snake_case: private_key_file");
+        assert!(!yaml.contains("ca_cert_file"), "found snake_case: ca_cert_file");
+        assert!(
+            !yaml.contains("require_client_certificate"),
+            "found snake_case: require_client_certificate"
+        );
+        assert!(!yaml.contains("inline_route_config"), "found snake_case: inline_route_config");
+    }
+
+    #[test]
+    fn yaml_uncommented_lines_are_parseable() {
+        let yaml = scaffold_yaml();
+
+        // Extract only non-comment, non-empty lines
+        let uncommented: String = yaml
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty() && !trimmed.starts_with('#')
+            })
+            .map(|line| format!("{line}\n"))
+            .collect();
+
+        let parsed: serde_json::Value =
+            serde_yaml::from_str(&uncommented).expect("uncommented YAML should parse");
+
+        // Verify top-level keys
+        assert_eq!(parsed["kind"], "Listener");
+        assert!(parsed.get("name").is_some(), "missing 'name' key");
+        assert!(parsed.get("address").is_some(), "missing 'address' key");
+        assert!(parsed.get("port").is_some(), "missing 'port' key");
+        assert!(parsed.get("dataplaneId").is_some(), "missing 'dataplaneId' key");
+        assert!(parsed.get("filterChains").is_some(), "missing 'filterChains' key");
+
+        // Verify filterChains[0].filters[0] has name and type keys
+        let chains = parsed["filterChains"].as_array().expect("filterChains should be array");
+        assert!(!chains.is_empty(), "filterChains should not be empty");
+        let filters = chains[0]["filters"].as_array().expect("filters should be array");
+        assert!(!filters.is_empty(), "filters should not be empty");
+        assert!(filters[0].get("name").is_some(), "filter missing 'name' key");
+        assert!(filters[0].get("type").is_some(), "filter missing 'type' key");
+    }
+
+    #[test]
+    fn json_output_is_valid_json_with_all_keys() {
+        let json_str = scaffold_json();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json_str).expect("scaffold JSON should parse");
+
+        for key in ["kind", "name", "address", "port", "dataplaneId", "protocol", "filterChains"] {
+            assert!(parsed.get(key).is_some(), "missing key in JSON: {key}");
+        }
+
+        // filterChains structure
+        let chains = parsed["filterChains"].as_array().expect("filterChains should be array");
+        assert!(!chains.is_empty(), "filterChains should not be empty");
+
+        let filter = &chains[0]["filters"][0];
+        assert!(filter.get("name").is_some(), "filter missing 'name' key");
+        assert!(filter.get("type").is_some(), "filter missing 'type' key");
+        assert!(filter.get("routeConfigName").is_some(), "filter missing 'routeConfigName'");
+        assert!(filter.get("httpFilters").is_some(), "filter missing 'httpFilters'");
+        assert!(filter.get("accessLog").is_some(), "filter missing 'accessLog'");
+
+        // Tracing and tlsContext are omitted from JSON scaffold (documented in YAML
+        // comments only). Tracing references external clusters; tlsContext with null
+        // cert paths causes server errors.
     }
 }

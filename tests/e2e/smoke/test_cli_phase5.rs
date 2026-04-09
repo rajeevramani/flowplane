@@ -1534,3 +1534,459 @@ async fn dev_cli_cluster_create_malformed_yaml() {
         combined
     );
 }
+
+// ============================================================================
+// listener scaffold → create/update/apply roundtrip tests
+// ============================================================================
+
+/// Helper: create prerequisite cluster + route config for listener tests.
+/// Returns (cluster_name, route_name, domain) so the listener can reference
+/// the route config and traffic can be verified against the domain.
+fn create_listener_prerequisites(
+    cli: &CliRunner,
+    prefix: &str,
+    echo_host: &str,
+    echo_port: &str,
+) -> (String, String, String) {
+    let cluster_name = format!("{}-cl", prefix);
+    let route_name = format!("{}-rc", prefix);
+    let vhost_name = format!("{}-vh", prefix);
+    let domain = format!("{}.e2e.local", prefix);
+
+    // Create cluster
+    let cluster_yaml = format!(
+        r#"name: {cluster_name}
+endpoints:
+  - host: {echo_host}
+    port: {echo_port}
+connectTimeoutSeconds: 5
+"#
+    );
+    let file = write_temp_file(&cluster_yaml, ".yaml");
+    let output = cli.run(&["cluster", "create", "-f", file.path().to_str().unwrap()]).unwrap();
+    assert_eq!(
+        output.exit_code, 0,
+        "prerequisite cluster create failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    // Create route config
+    let route_json = serde_json::json!({
+        "name": route_name,
+        "virtualHosts": [{
+            "name": vhost_name,
+            "domains": [&domain],
+            "routes": [{
+                "match": {"path": {"type": "prefix", "value": "/"}},
+                "action": {"type": "forward", "cluster": &cluster_name, "timeoutSeconds": 30}
+            }]
+        }]
+    });
+    let route_file = write_temp_file(&serde_json::to_string_pretty(&route_json).unwrap(), ".json");
+    let output = cli.run(&["route", "create", "-f", route_file.path().to_str().unwrap()]).unwrap();
+    assert_eq!(
+        output.exit_code, 0,
+        "prerequisite route create failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    (cluster_name, route_name, domain)
+}
+
+/// Listener scaffold YAML → replace placeholders (including dataplaneId) →
+/// `listener create -f file.yaml` → `listener get` → config_dump → traffic.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_listener_scaffold_create_yaml() {
+    let harness = quick_harness("dev_cli_ls_scaff_yaml").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let prefix = "e2e-ls-yaml";
+    let listener_name = format!("{}-ls", prefix);
+    let listener_port = harness.ports.listener;
+
+    let (_cluster, route_name, domain) =
+        create_listener_prerequisites(&cli, prefix, echo_host, echo_port);
+
+    // Scaffold listener YAML → replace all placeholders → create
+    let replacements = &[
+        ("<your-listener-name>", listener_name.as_str()),
+        ("<your-dataplane-id>", "dev-dataplane-id"),
+        ("<your-route-config-name>", route_name.as_str()),
+        ("your-listener-name", listener_name.as_str()),
+        ("your-dataplane-id", "dev-dataplane-id"),
+        ("your-route-config-name", route_name.as_str()),
+        ("10001", &listener_port.to_string()),
+    ];
+
+    let output = scaffold_and_create(
+        &cli,
+        &["listener", "scaffold"],
+        replacements,
+        ".yaml",
+        &["listener", "create", "-f"],
+    );
+    assert_eq!(
+        output.exit_code, 0,
+        "listener create -f yaml failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    // Verify listener exists via CLI
+    let get_output = cli.run(&["listener", "get", &listener_name]).unwrap();
+    get_output.assert_success();
+    assert!(
+        get_output.stdout.contains(&listener_name),
+        "Expected listener name in get output, got: {}",
+        get_output.stdout
+    );
+
+    // Verify listener reaches Envoy via xDS
+    verify_in_config_dump(&harness, &listener_name).await;
+
+    // Verify traffic flows through the listener
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    verify_traffic(&harness, &domain, "/test").await;
+}
+
+/// Listener scaffold JSON → replace placeholders → `listener create -f file.json`
+/// → `listener get` → config_dump → traffic.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_listener_scaffold_create_json() {
+    let harness = quick_harness("dev_cli_ls_scaff_json").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let prefix = "e2e-ls-json";
+    let listener_name = format!("{}-ls", prefix);
+    let listener_port = harness.ports.listener;
+
+    let (_cluster, route_name, domain) =
+        create_listener_prerequisites(&cli, prefix, echo_host, echo_port);
+
+    let replacements = &[
+        ("<your-listener-name>", listener_name.as_str()),
+        ("<your-dataplane-id>", "dev-dataplane-id"),
+        ("<your-route-config-name>", route_name.as_str()),
+        ("your-listener-name", listener_name.as_str()),
+        ("your-dataplane-id", "dev-dataplane-id"),
+        ("your-route-config-name", route_name.as_str()),
+        ("10001", &listener_port.to_string()),
+    ];
+
+    let output = scaffold_and_create(
+        &cli,
+        &["listener", "scaffold", "-o", "json"],
+        replacements,
+        ".json",
+        &["listener", "create", "-f"],
+    );
+    assert_eq!(
+        output.exit_code, 0,
+        "listener create -f json failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    // Verify listener exists via CLI
+    let get_output = cli.run(&["listener", "get", &listener_name]).unwrap();
+    get_output.assert_success();
+    assert!(
+        get_output.stdout.contains(&listener_name),
+        "Expected listener name in get output, got: {}",
+        get_output.stdout
+    );
+
+    // Verify listener reaches Envoy via xDS
+    verify_in_config_dump(&harness, &listener_name).await;
+
+    // Verify traffic flows through the listener
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    verify_traffic(&harness, &domain, "/test").await;
+}
+
+/// Listener scaffold YAML → replace placeholders → `apply -f file.yaml` →
+/// `listener get` → config_dump → traffic. Tests that kind:Listener is
+/// correctly routed by the apply command.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_listener_scaffold_apply() {
+    let harness = quick_harness("dev_cli_ls_scaff_apply").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let prefix = "e2e-ls-apply";
+    let listener_name = format!("{}-ls", prefix);
+    let listener_port = harness.ports.listener;
+
+    let (_cluster, route_name, domain) =
+        create_listener_prerequisites(&cli, prefix, echo_host, echo_port);
+
+    let replacements = &[
+        ("<your-listener-name>", listener_name.as_str()),
+        ("<your-dataplane-id>", "dev-dataplane-id"),
+        ("<your-route-config-name>", route_name.as_str()),
+        ("your-listener-name", listener_name.as_str()),
+        ("your-dataplane-id", "dev-dataplane-id"),
+        ("your-route-config-name", route_name.as_str()),
+        ("10001", &listener_port.to_string()),
+    ];
+
+    let output = scaffold_and_create(
+        &cli,
+        &["listener", "scaffold"],
+        replacements,
+        ".yaml",
+        &["apply", "-f"],
+    );
+    assert_eq!(
+        output.exit_code, 0,
+        "apply -f listener scaffold yaml failed: stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    // Verify listener exists via get
+    let get_output = cli.run(&["listener", "get", &listener_name]).unwrap();
+    get_output.assert_success();
+    assert!(
+        get_output.stdout.contains(&listener_name),
+        "Expected listener name in get output, got: {}",
+        get_output.stdout
+    );
+
+    // Verify listener reaches Envoy via xDS
+    verify_in_config_dump(&harness, &listener_name).await;
+
+    // Verify traffic flows through the listener
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    verify_traffic(&harness, &domain, "/test").await;
+}
+
+/// Create a listener via JSON, then update it via `listener update -f file.yaml`.
+/// Proves YAML file-based update works for listeners. Verifies updated
+/// listener in Envoy config_dump.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_listener_update_yaml_file() {
+    let harness = quick_harness("dev_cli_ls_upd_yaml").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let prefix = "e2e-ls-upd";
+    let listener_name = format!("{}-ls", prefix);
+    let listener_port = harness.ports.listener;
+
+    let (_cluster, route_name, _domain) =
+        create_listener_prerequisites(&cli, prefix, echo_host, echo_port);
+
+    // Create listener via JSON first
+    let json_content = serde_json::json!({
+        "name": listener_name,
+        "address": "0.0.0.0",
+        "port": listener_port,
+        "filterChains": [{
+            "name": "default",
+            "filters": [{
+                "name": "envoy.filters.network.http_connection_manager",
+                "type": "httpConnectionManager",
+                "routeConfigName": route_name
+            }]
+        }],
+        "dataplaneId": "dev-dataplane-id"
+    });
+    let json_file = write_temp_file(&serde_json::to_string(&json_content).unwrap(), ".json");
+    let create_output =
+        cli.run(&["listener", "create", "-f", json_file.path().to_str().unwrap()]).unwrap();
+    assert_eq!(
+        create_output.exit_code, 0,
+        "initial listener create via JSON failed: stdout={}, stderr={}",
+        create_output.stdout, create_output.stderr
+    );
+
+    // Update the same listener via YAML — change filter chain name
+    let yaml_update = format!(
+        r#"address: "0.0.0.0"
+port: {listener_port}
+filterChains:
+  - name: "updated-chain"
+    filters:
+      - name: "envoy.filters.network.http_connection_manager"
+        type: httpConnectionManager
+        routeConfigName: {route_name}
+dataplaneId: "dev-dataplane-id"
+"#
+    );
+    let yaml_file = write_temp_file(&yaml_update, ".yaml");
+    let update_output = cli
+        .run(&["listener", "update", &listener_name, "-f", yaml_file.path().to_str().unwrap()])
+        .unwrap();
+    assert_eq!(
+        update_output.exit_code, 0,
+        "listener update via YAML failed: stdout={}, stderr={}",
+        update_output.stdout, update_output.stderr
+    );
+
+    // Verify updated listener reaches Envoy via xDS
+    verify_in_config_dump(&harness, &listener_name).await;
+}
+
+/// Scaffold YAML → create listener → modify → `listener update -f` with
+/// `kind: Listener` still present in the file. Proves strip_kind_field works
+/// for listener updates, not just create. Verifies updated listener in config_dump.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_listener_scaffold_update_yaml() {
+    let harness = quick_harness("dev_cli_ls_scaff_upd").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let (echo_host, echo_port) = (parts[0], parts[1]);
+
+    let prefix = "e2e-ls-scfupd";
+    let listener_name = format!("{}-ls", prefix);
+    let listener_port = harness.ports.listener;
+
+    let (_cluster, route_name, _domain) =
+        create_listener_prerequisites(&cli, prefix, echo_host, echo_port);
+
+    // Step 1: Create listener from scaffold
+    let replacements = &[
+        ("<your-listener-name>", listener_name.as_str()),
+        ("<your-dataplane-id>", "dev-dataplane-id"),
+        ("<your-route-config-name>", route_name.as_str()),
+        ("your-listener-name", listener_name.as_str()),
+        ("your-dataplane-id", "dev-dataplane-id"),
+        ("your-route-config-name", route_name.as_str()),
+        ("10001", &listener_port.to_string()),
+    ];
+    let create_output = scaffold_and_create(
+        &cli,
+        &["listener", "scaffold"],
+        replacements,
+        ".yaml",
+        &["listener", "create", "-f"],
+    );
+    assert_eq!(
+        create_output.exit_code, 0,
+        "scaffold listener create failed: stdout={}, stderr={}",
+        create_output.stdout, create_output.stderr
+    );
+
+    // Step 2: Update with YAML that includes `kind: Listener`.
+    // The CLI must strip the kind field before sending to the API.
+    let update_yaml = format!(
+        r#"kind: Listener
+name: {listener_name}
+address: "0.0.0.0"
+port: {listener_port}
+filterChains:
+  - name: "updated-filter-chain"
+    filters:
+      - name: "envoy.filters.network.http_connection_manager"
+        type: httpConnectionManager
+        routeConfigName: {route_name}
+dataplaneId: "dev-dataplane-id"
+"#
+    );
+    let update_file = write_temp_file(&update_yaml, ".yaml");
+    let update_output = cli
+        .run(&["listener", "update", &listener_name, "-f", update_file.path().to_str().unwrap()])
+        .unwrap();
+    assert_eq!(
+        update_output.exit_code, 0,
+        "listener update with kind field in YAML failed: stdout={}, stderr={}",
+        update_output.stdout, update_output.stderr
+    );
+
+    // Verify listener still exists after update
+    let get_output = cli.run(&["listener", "get", &listener_name]).unwrap();
+    get_output.assert_success();
+
+    // Verify updated listener reaches Envoy via xDS
+    verify_in_config_dump(&harness, &listener_name).await;
+}
+
+/// `listener create -f file.yaml` with syntactically invalid YAML should
+/// produce a user-friendly error (not a panic or raw stack trace).
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_listener_create_malformed_yaml() {
+    let harness = dev_harness("dev_cli_ls_badyaml").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    // Intentionally broken YAML — mixed indentation, unclosed bracket, bad nesting
+    let bad_yaml = r#"name: [broken-listener
+  address: "0.0.0.0"
+  port: not-a-number
+  filterChains:
+    - name: "missing close quote
+      filters: {{{
+  dataplaneId: [unterminated
+"#;
+    let file = write_temp_file(bad_yaml, ".yaml");
+
+    let output = cli.run(&["listener", "create", "-f", file.path().to_str().unwrap()]).unwrap();
+
+    assert_ne!(
+        output.exit_code, 0,
+        "Expected non-zero exit for malformed YAML, got exit_code=0, stdout={}, stderr={}",
+        output.stdout, output.stderr
+    );
+
+    // Should NOT contain a raw Rust panic/backtrace
+    let combined = format!("{} {}", output.stdout, output.stderr);
+    assert!(
+        !combined.contains("panicked at") && !combined.contains("stack backtrace"),
+        "Malformed YAML should produce a user-friendly error, not a panic: {}",
+        combined
+    );
+
+    // Should contain something indicating a parse/format error
+    let combined_lower = combined.to_lowercase();
+    assert!(
+        combined_lower.contains("error")
+            || combined_lower.contains("invalid")
+            || combined_lower.contains("parse")
+            || combined_lower.contains("yaml"),
+        "Expected parse error message for malformed listener YAML, got: {}",
+        combined
+    );
+}
