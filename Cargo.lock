@@ -1374,9 +1374,9 @@ dependencies = [
 
 [[package]]
 name = "envoy-types"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38d99c7e35a6f87bcdbaf70b34a6753aab3e08cee92f8547ea3c84bde2af1dd5"
+checksum = "b71205be41837bfbb3340812d0ccdda7ebf81d78f8d1d6bcb9f6472e949cd021"
 dependencies = [
  "futures-core",
  "prost",
@@ -3382,7 +3382,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9120690fafc389a67ba3803df527d0ec9cbbc9cc45e4cc20b332996dfb672425"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.106",

@@ -53,6 +53,8 @@ services:
       FLOWPLANE_COOKIE_SECURE: "false"
       # Secret Encryption (replaced with generated key at init time)
       FLOWPLANE_SECRET_ENCRYPTION_KEY: __FLOWPLANE_DEV_ENCRYPTION_KEY__
+      # Envoy admin (for stats dashboard — uses Docker network hostname)
+      ENVOY_ADMIN_BASE_URL: "http://flowplane-envoy"
       # Logging
       RUST_LOG: info,flowplane=debug
     ports:

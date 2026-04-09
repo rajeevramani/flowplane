@@ -102,6 +102,7 @@ impl McpFilterConfig {
             clear_route_cache: false,
             max_request_body_size: None,
             parser_config: None,
+            request_storage_mode: 0, // ModeUnspecified = default (DYNAMIC_METADATA)
         };
 
         Ok(any_from_message(MCP_TYPE_URL, &proto))
@@ -162,6 +163,7 @@ impl McpPerRouteConfig {
             clear_route_cache: false,
             max_request_body_size: None,
             parser_config: None,
+            request_storage_mode: 0, // ModeUnspecified = default (DYNAMIC_METADATA)
         };
 
         Ok(any_from_message(MCP_PER_ROUTE_TYPE_URL, &proto))
