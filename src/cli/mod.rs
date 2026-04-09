@@ -15,6 +15,7 @@ pub mod compose;
 pub mod compose_runner;
 pub mod config;
 pub mod config_cmd;
+pub mod config_file;
 pub mod credentials;
 pub mod dataplane;
 pub mod expose;

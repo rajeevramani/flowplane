@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
 use crate::api::handlers::PaginatedResponse;
 
 #[derive(Subcommand)]
@@ -18,8 +19,8 @@ pub enum RouteCommands {
         after_help = "EXAMPLES:\n    # Create a route from a JSON file\n    flowplane-cli route create --file route-spec.json\n\n    # Create and output as YAML\n    flowplane-cli route create --file route-spec.json --output yaml\n\n    # With authentication\n    flowplane-cli route create --file route-spec.json --token your-token"
     )]
     Create {
-        /// Path to JSON file with route spec
-        #[arg(short, long, value_name = "FILE")]
+        /// Path to YAML or JSON file with resource spec
+        #[arg(short, long, value_name = "FILE", help = config_file::FILE_ARG_HELP)]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
@@ -75,8 +76,8 @@ pub enum RouteCommands {
         #[arg(value_name = "NAME")]
         name: String,
 
-        /// Path to JSON file with update spec
-        #[arg(short, long, value_name = "FILE")]
+        /// Path to YAML or JSON file with resource spec
+        #[arg(short, long, value_name = "FILE", help = config_file::FILE_ARG_HELP)]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
@@ -149,11 +150,8 @@ async fn create_route(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/route-configs");
     let response: RouteConfigResponse = client.post_json(&path, &body).await?;
@@ -216,11 +214,8 @@ async fn update_route(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/route-configs/{name}");
     let response: RouteConfigResponse = client.put_json(&path, &body).await?;
@@ -258,10 +253,15 @@ fn scaffold_route(output: &str) -> Result<()> {
                     "domains": ["*"],
                     "routes": [
                         {
+                            "name": "<your-route-name>",
                             "match": {
-                                "prefix": "/"
+                                "path": {
+                                    "type": "prefix",
+                                    "value": "/"
+                                }
                             },
-                            "route": {
+                            "action": {
+                                "type": "forward",
                                 "cluster": "<your-cluster-name>"
                             }
                         }
@@ -282,10 +282,15 @@ fn scaffold_route(output: &str) -> Result<()> {
         println!("    domains:");
         println!("      - \"*\"");
         println!("    routes:");
-        println!("      - match:");
-        println!("          # Path prefix to match");
-        println!("          prefix: \"/\"");
-        println!("        route:");
+        println!("      - name: \"<your-route-name>\"");
+        println!("        match:");
+        println!("          path:");
+        println!("            # Match type: prefix, exact, regex, or template");
+        println!("            type: prefix");
+        println!("            value: \"/\"");
+        println!("        action:");
+        println!("          # Action type: forward, weighted, or redirect");
+        println!("          type: forward");
         println!("          # Target cluster name");
         println!("          cluster: \"<your-cluster-name>\"");
     }

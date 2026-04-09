@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
 
 #[derive(Subcommand)]
 pub enum OrgCommands {
@@ -43,7 +44,7 @@ pub enum OrgCommands {
         after_help = "EXAMPLES:\n    # Create from JSON file\n    flowplane org create -f org-spec.json\n\n    # Create with JSON output\n    flowplane org create -f org.json -o json"
     )]
     Create {
-        /// Path to JSON file with organization spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -168,11 +169,8 @@ async fn get_org(client: &FlowplaneClient, name: &str, output: &str) -> Result<(
 }
 
 async fn create_org(client: &FlowplaneClient, file: PathBuf, output: &str) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let response: OrgResponse = client.post_json("/api/v1/admin/organizations", &body).await?;
 

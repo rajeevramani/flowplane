@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
 
 #[derive(Subcommand)]
 pub enum MtlsCommands {
@@ -57,7 +58,7 @@ pub enum CertCommands {
         after_help = "EXAMPLES:\n    # Generate a certificate from spec file\n    flowplane cert create -f cert-request.json\n\n    # Generate with JSON output\n    flowplane cert create -f cert-request.json -o json"
     )]
     Create {
-        /// Path to JSON file with certificate request spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -154,10 +155,17 @@ async fn mtls_status(client: &FlowplaneClient, output: &str) -> Result<()> {
 
 async fn list_certs(client: &FlowplaneClient, team: &str, output: &str) -> Result<()> {
     let path = format!("/api/v1/teams/{team}/proxy-certificates");
-    let response: Vec<CertificateResponse> = client.get_json(&path).await?;
+    let response: serde_json::Value = client.get_json(&path).await?;
 
     if output == "table" {
-        print_certs_table(&response);
+        let items: Vec<CertificateResponse> = if let Some(arr) = response.get("items") {
+            serde_json::from_value(arr.clone()).unwrap_or_default()
+        } else if response.is_array() {
+            serde_json::from_value(response.clone()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        print_certs_table(&items);
     } else {
         print_output(&response, output)?;
     }
@@ -182,11 +190,8 @@ async fn create_cert(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/proxy-certificates");
     let response: CertificateResponse = client.post_json(&path, &body).await?;

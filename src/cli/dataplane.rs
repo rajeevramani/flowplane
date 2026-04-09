@@ -2,12 +2,13 @@
 //!
 //! Provides command-line interface for managing dataplane configurations
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
 use super::output::{print_output, print_table_header, truncate};
 use crate::api::handlers::PaginatedResponse;
 
@@ -41,7 +42,7 @@ pub enum DataplaneCommands {
 
     /// Create a new dataplane
     Create {
-        /// Path to JSON file with dataplane spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -56,7 +57,7 @@ pub enum DataplaneCommands {
         #[arg(value_name = "NAME")]
         name: String,
 
-        /// Path to JSON file with update spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -186,11 +187,8 @@ async fn create_dataplane(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/dataplanes");
     let response: DataplaneResponse = client.post_json(&path, &body).await?;
@@ -206,11 +204,8 @@ async fn update_dataplane(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/dataplanes/{name}");
     let response: DataplaneResponse = client.patch_json(&path, &body).await?;
@@ -248,7 +243,8 @@ async fn get_dataplane_config(
     name: &str,
     output: &str,
 ) -> Result<()> {
-    let path = format!("/api/v1/teams/{team}/dataplanes/{name}/envoy-config?format={output}");
+    // Always request JSON from the API — let print_output handle format conversion
+    let path = format!("/api/v1/teams/{team}/dataplanes/{name}/envoy-config?format=json");
     let response: serde_json::Value = client.get_json(&path).await?;
 
     print_output(&response, output)?;

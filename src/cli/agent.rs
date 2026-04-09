@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
 
 #[derive(Subcommand)]
 pub enum AgentCommands {
@@ -36,7 +37,7 @@ pub enum AgentCommands {
         #[arg(long)]
         org: String,
 
-        /// Path to JSON file with agent spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -121,11 +122,8 @@ async fn create_agent(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/orgs/{org}/agents");
     let response: AgentResponse = client.post_json(&path, &body).await?;

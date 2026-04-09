@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
 
 #[derive(Subcommand)]
 pub enum TeamCommands {
@@ -23,7 +24,7 @@ pub enum TeamCommands {
         #[arg(long)]
         org: String,
 
-        /// Path to JSON file with team spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -92,7 +93,7 @@ pub enum TeamCommands {
         #[arg(value_name = "TEAM")]
         name: String,
 
-        /// Path to JSON file with update spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -184,11 +185,8 @@ async fn create_team(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let url = format!("/api/v1/orgs/{}/teams", org);
     let response: TeamResponse = client.post_json(&url, &body).await?;
@@ -299,11 +297,8 @@ async fn update_team(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let url = format!("/api/v1/orgs/{}/teams/{}", org, name);
     let response: TeamResponse = client.put_json(&url, &body).await?;

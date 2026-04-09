@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
 use crate::api::handlers::PaginatedResponse;
 
 #[derive(Subcommand)]
@@ -18,8 +19,8 @@ pub enum ListenerCommands {
         after_help = "EXAMPLES:\n    # Create a listener from a JSON file\n    flowplane-cli listener create --file listener-spec.json\n\n    # Create and output as YAML\n    flowplane-cli listener create --file listener-spec.json --output yaml\n\n    # With authentication\n    flowplane-cli listener create --file listener-spec.json --token your-token"
     )]
     Create {
-        /// Path to JSON file with listener spec
-        #[arg(short, long, value_name = "FILE")]
+        /// Path to YAML or JSON file with resource spec
+        #[arg(short, long, value_name = "FILE", help = config_file::FILE_ARG_HELP)]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
@@ -75,8 +76,8 @@ pub enum ListenerCommands {
         #[arg(value_name = "NAME")]
         name: String,
 
-        /// Path to JSON file with update spec
-        #[arg(short, long, value_name = "FILE")]
+        /// Path to YAML or JSON file with resource spec
+        #[arg(short, long, value_name = "FILE", help = config_file::FILE_ARG_HELP)]
         file: PathBuf,
 
         /// Output format (json, yaml, or table)
@@ -156,11 +157,8 @@ async fn create_listener(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/listeners");
     let response: ListenerResponse = client.post_json(&path, &body).await?;
@@ -180,7 +178,7 @@ async fn list_listeners(
     let mut path = format!("/api/v1/teams/{team}/listeners?");
     let mut params = Vec::new();
 
-    if let Some(p) = protocol {
+    if let Some(ref p) = protocol {
         params.push(format!("protocol={}", p));
     }
     if let Some(l) = limit {
@@ -194,10 +192,17 @@ async fn list_listeners(
 
     let response: PaginatedResponse<ListenerResponse> = client.get_json(&path).await?;
 
-    if output == "table" {
-        print_listeners_table(&response.items);
+    // Client-side filtering by protocol (API doesn't support this filter yet)
+    let items: Vec<ListenerResponse> = if let Some(ref proto) = protocol {
+        response.items.into_iter().filter(|l| l.protocol.eq_ignore_ascii_case(proto)).collect()
     } else {
-        print_output(&response.items, output)?;
+        response.items
+    };
+
+    if output == "table" {
+        print_listeners_table(&items);
+    } else {
+        print_output(&items, output)?;
     }
 
     Ok(())
@@ -228,11 +233,8 @@ async fn update_listener(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/listeners/{name}");
     let response: ListenerResponse = client.put_json(&path, &body).await?;
@@ -271,7 +273,22 @@ fn scaffold_listener(output: &str) -> Result<()> {
             "name": "<your-listener-name>",
             "address": "0.0.0.0",
             "port": 10001,
-            "dataplaneId": "<your-dataplane-id>"
+            "dataplaneId": "<your-dataplane-id>",
+            "filterChains": [
+                {
+                    "name": "default",
+                    "filters": [
+                        {
+                            "name": "envoy.filters.network.http_connection_manager",
+                            "type": "httpConnectionManager",
+                            "routeConfigName": "<your-route-config-name>",
+                            "httpFilters": [
+                                { "filter": { "type": "router" } }
+                            ]
+                        }
+                    ]
+                }
+            ]
         });
         let json =
             serde_json::to_string_pretty(&scaffold).context("Failed to serialize scaffold")?;
@@ -282,10 +299,21 @@ fn scaffold_listener(output: &str) -> Result<()> {
         println!("name: \"<your-listener-name>\"");
         println!("# Bind address (0.0.0.0 for all interfaces)");
         println!("address: \"0.0.0.0\"");
-        println!("# Port to listen on");
+        println!("# Port to listen on (10000-10020 for Envoy)");
         println!("port: 10001");
         println!("# Dataplane ID to attach this listener to");
         println!("dataplaneId: \"<your-dataplane-id>\"");
+        println!("# Filter chains (required — at least one with an HTTP connection manager)");
+        println!("filterChains:");
+        println!("  - name: default");
+        println!("    filters:");
+        println!("      - name: envoy.filters.network.http_connection_manager");
+        println!("        type: httpConnectionManager");
+        println!("        # Route config to bind to this listener");
+        println!("        routeConfigName: \"<your-route-config-name>\"");
+        println!("        httpFilters:");
+        println!("          - filter:");
+        println!("              type: router");
     }
     Ok(())
 }

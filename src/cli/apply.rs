@@ -35,7 +35,7 @@ impl ResourceKind {
         match s {
             "Cluster" => Ok(Self::Cluster),
             "Listener" => Ok(Self::Listener),
-            "RouteConfig" | "Route-Config" | "route-config" => Ok(Self::RouteConfig),
+            "RouteConfig" | "Route-Config" | "route-config" | "Route" => Ok(Self::RouteConfig),
             "Filter" => Ok(Self::Filter),
             "Secret" => Ok(Self::Secret),
             "Dataplane" => Ok(Self::Dataplane),
@@ -154,17 +154,7 @@ fn load_directory(dir: &Path) -> Result<Vec<(String, serde_json::Value)>> {
 }
 
 fn load_file(path: &Path) -> Result<serde_json::Value> {
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read file: {}", path.display()))?;
-
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    match ext {
-        "yaml" | "yml" => serde_yaml::from_str(&contents)
-            .with_context(|| format!("Invalid YAML: {}", path.display())),
-        "json" => serde_json::from_str(&contents)
-            .with_context(|| format!("Invalid JSON: {}", path.display())),
-        _ => anyhow::bail!("Unsupported file extension: {}", path.display()),
-    }
+    super::config_file::load_config_file(path)
 }
 
 /// Apply a single manifest. Returns (kind, name, outcome).
@@ -189,9 +179,7 @@ async fn apply_single(
 
     // Strip `kind` from the payload before sending
     let mut body = value.clone();
-    if let Some(obj) = body.as_object_mut() {
-        obj.remove("kind");
-    }
+    super::config_file::strip_kind_field(&mut body);
 
     let outcome = match kind {
         ResourceKind::Cluster => {

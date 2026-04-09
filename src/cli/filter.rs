@@ -9,13 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
 use crate::api::handlers::PaginatedResponse;
 
 #[derive(Subcommand)]
 pub enum FilterCommands {
     /// Create a new HTTP filter from a JSON spec file
     Create {
-        /// Path to JSON file with filter spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -93,7 +94,7 @@ pub enum FilterCommands {
         #[arg(value_name = "NAME")]
         name: String,
 
-        /// Path to JSON file with updated filter spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -241,11 +242,8 @@ async fn create_filter(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/filters");
     let response: FilterResponse = client.post_json(&path, &body).await?;
@@ -371,11 +369,8 @@ async fn update_filter(
 ) -> Result<()> {
     let id = resolve_filter_id(client, team, name).await?;
 
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let path = format!("/api/v1/teams/{team}/filters/{id}");
     let response: FilterResponse = client.patch_json(&path, &body).await?;
