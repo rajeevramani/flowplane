@@ -65,8 +65,9 @@ FLOWPLANE_E2E_MTLS=1 make test-e2e-prod   # Prod + mTLS
 ```
 tests/e2e/
   common/
-    harness.rs        — TestHarness (HTTP client + auth + assertions)
+    harness.rs        — TestHarness (HTTP client + auth + assertions + Envoy helpers)
     cli_runner.rs     — CliRunner (subprocess flowplane commands)
+    envoy.rs          — EnvoyHandle (Envoy process + admin API + config_dump)
     shared_infra.rs   — SharedInfrastructure (shared test setup)
     mod.rs            — Module declarations
   smoke/              — Smoke tests (quick, both modes)
@@ -78,6 +79,7 @@ tests/e2e/
     test_cli_subprocess.rs
     test_cli_phase3.rs
     test_cli_phase3_prod.rs
+    test_cli_phase5.rs    — Scaffold E2E tests (30 tests: cluster, route, listener, 10 filter types)
   full/               — Full E2E tests (feature-specific)
     test_11_bootstrap.rs
     test_12_header_mutation.rs
@@ -98,27 +100,56 @@ tests/e2e/
 ```
 
 ### Conventions
-- **Dev mode tests:** Use `dev_harness()`, test name must start with `dev_`
+- **Dev mode tests:** Use `dev_harness()` (API-only) or `quick_harness()` (with Envoy), test name must start with `dev_`
 - **Prod mode tests:** Use `TestHarnessConfig::new(...)` with real Zitadel
 - **Gating:** All E2E tests use `#[ignore]` + `RUN_E2E=1` env var
 - **Filtering:** `make test-e2e-dev` filters by `dev_` prefix, `make test-e2e-prod` filters non-`dev_` tests
 
-### TestHarness Pattern
+### Harness Types
+- **`dev_harness()`** — API-only, no Envoy. Use for tests that only verify CLI → API (error handling, basic CRUD).
+- **`quick_harness()`** — Starts Envoy with dedicated ports. Use for tests that verify the full pipeline: CLI → API → xDS → Envoy config_dump → traffic.
+
+### TestHarness Pattern (API-only)
 ```rust
 #[tokio::test]
-#[ignore] // Gated behind RUN_E2E=1
+#[ignore]
 async fn dev_my_feature_test() {
-    let harness = dev_harness().await;
+    let harness = dev_harness("test_name").await.expect("harness should start");
+    let cli = CliRunner::from_harness(&harness).unwrap();
 
-    // Create resources
-    let cluster = harness.create_cluster("test-cluster", &["backend:8000"]).await;
-
-    // Verify
-    assert_eq!(cluster.name, "test-cluster");
-
-    // Cleanup is automatic via harness Drop
+    let output = cli.run(&["cluster", "get", "my-cluster"]).unwrap();
+    output.assert_success();
 }
 ```
+
+### TestHarness Pattern (with Envoy verification)
+```rust
+#[tokio::test]
+#[ignore]
+async fn dev_my_feature_with_envoy() {
+    let harness = quick_harness("test_name").await.expect("harness should start");
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    // Create resource via CLI
+    let output = cli.run(&["cluster", "create", "-f", file_path]).unwrap();
+    output.assert_success();
+
+    // Verify resource reached Envoy via xDS
+    verify_in_config_dump(&harness, "my-cluster").await;
+
+    // Verify traffic flows through Envoy
+    verify_traffic(&harness, "my-domain.local", "/test").await;
+}
+```
+
+### Scaffold E2E Helpers (in test_cli_phase5.rs)
+- **`scaffold_and_create()`** — Scaffolds resource, replaces placeholders, writes temp file, runs create. Returns `CliOutput` without asserting.
+- **`verify_in_config_dump(harness, name)`** — Polls Envoy admin config_dump until named resource appears (30s timeout).
+- **`verify_traffic(harness, domain, path)`** — Sends traffic through Envoy, asserts 200 response.
+- **`create_chain_for_cluster()`** — Creates route + listener to complete Envoy chain for a CLI-created cluster.
+- **`create_chain_for_route()`** — Creates listener for a CLI-created route.
+- **`create_filter_test_chain()`** — Creates cluster + route + listener chain for filter E2E tests.
+- **`attach_filter_to_listener()`** — Attaches filter to listener via CLI.
 
 ## 3. Anti-Patterns — DO NOT DO THESE
 
@@ -173,3 +204,5 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 - Team isolation (can user A see user B's resources?)
 - Filter create → attach → verify → detach lifecycle
 - Both dev and prod auth modes where applicable
+- **Scaffold roundtrip**: scaffold → create -f → get → Envoy config_dump → traffic (for any scaffold changes)
+- **YAML/JSON parity**: both formats accepted by create -f and update -f (shared loader in `src/cli/config_file.rs`)

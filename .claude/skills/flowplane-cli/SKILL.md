@@ -132,32 +132,34 @@ Deletes `<NAME>` (cluster), `<NAME>-routes` (route config), `<NAME>-listener` (l
 
 ## Resource CRUD
 
-All resource commands follow the same pattern: `create -f <JSON>`, `list`, `get <NAME>`, `update <NAME> -f <JSON>`, `delete <NAME> [--yes]`.
+All resource commands follow the same pattern: `create -f <FILE>`, `list`, `get <NAME>`, `update <NAME> -f <FILE>`, `delete <NAME> [--yes]`.
+
+**File format:** `-f` accepts both YAML (`.yaml`/`.yml`) and JSON (`.json`) files. Format is detected by file extension. All resource types support both formats for `create`, `update`, and `apply` commands.
 
 ### Clusters
 ```bash
-flowplane cluster create -f cluster.json
+flowplane cluster create -f cluster.yaml        # YAML or JSON
 flowplane cluster list [--service <SVC>] [--limit N] [--offset N]
 flowplane cluster get <NAME>
-flowplane cluster update <NAME> -f cluster.json
+flowplane cluster update <NAME> -f cluster.yaml  # YAML or JSON
 flowplane cluster delete <NAME> [--yes]
 ```
 
 ### Listeners
 ```bash
-flowplane listener create -f listener.json
+flowplane listener create -f listener.yaml       # YAML or JSON
 flowplane listener list [--protocol <PROTO>] [--limit N] [--offset N]
 flowplane listener get <NAME>
-flowplane listener update <NAME> -f listener.json
+flowplane listener update <NAME> -f listener.yaml
 flowplane listener delete <NAME> [--yes]
 ```
 
 ### Routes (Route Configs)
 ```bash
-flowplane route create -f route-config.json
+flowplane route create -f route-config.yaml      # YAML or JSON
 flowplane route list [--cluster <NAME>] [--limit N] [--offset N]
 flowplane route get <NAME>
-flowplane route update <NAME> -f route-config.json
+flowplane route update <NAME> -f route-config.yaml
 flowplane route delete <NAME> [--yes]
 ```
 
@@ -649,28 +651,40 @@ Supported kinds: `Cluster`, `Listener`, `Route`, `Filter`.
 
 ## Resource Scaffolding
 
-Generate starter manifests for any resource type. Use with `flowplane apply` for a complete workflow.
+Generate comprehensive starter manifests for any resource type. Scaffold output includes ALL fields with `[REQUIRED]`/`[OPTIONAL]` annotations. Optional complex sections (health checks, TLS, tracing, etc.) are commented out with example values. Use with `flowplane apply` or `flowplane <resource> create -f` for a complete workflow.
 
 ```bash
-flowplane cluster scaffold                         # YAML scaffold
+flowplane cluster scaffold                         # YAML scaffold (all fields)
 flowplane cluster scaffold -o json                 # JSON scaffold
-flowplane listener scaffold                        # Listener scaffold
-flowplane route scaffold                           # Route config scaffold
+flowplane listener scaffold                        # Listener scaffold (HCM, TLS, tracing, TCP proxy)
+flowplane route scaffold                           # Route config scaffold (forward, weighted, redirect)
 flowplane filter scaffold <FILTER_TYPE>            # Filter scaffold by type
 flowplane filter scaffold <FILTER_TYPE> -o json    # Filter scaffold as JSON
 ```
 
-Available filter types for scaffolding: `local_rate_limit`, `jwt_auth`, `cors`, `rbac`, `ext_authz`, `oauth2`, `header_mutation`, `custom_response`, `rate_limit`, `compressor`.
+Available filter types for scaffolding: `header_mutation`, `cors`, `custom_response`, `rbac`, `mcp`, `local_rate_limit`, `compressor`, `ext_authz`, `jwt_auth`, `oauth2`, `rate_limit` (not implemented).
+
+**Scaffold fields by resource:**
+- **Cluster:** name, serviceName, endpoints, connectTimeoutSeconds, useTls, tlsServerName, dnsLookupFamily, lbPolicy, protocolType, healthChecks, circuitBreakers, outlierDetection
+- **Route:** name, virtualHosts (with domains, routes, match types: prefix/exact/regex/template, actions: forward/weighted/redirect, retryPolicy, headers/queryParameters matchers, typedPerFilterConfig)
+- **Listener:** name, address, port, dataplaneId, protocol, filterChains (httpConnectionManager with routeConfigName/accessLog/tracing/httpFilters, tcpProxy, tlsContext)
+- **Filter:** name, filterType, config (type-specific, schema-driven with all required nested fields populated)
 
 **Example workflow:**
 ```bash
-# Generate a scaffold, edit it, then apply
+# Generate, edit, then create or apply
 flowplane cluster scaffold > my-cluster.yaml
-# Edit my-cluster.yaml with your values...
-flowplane apply -f my-cluster.yaml
+# Edit my-cluster.yaml — replace <placeholders> with real values
+flowplane cluster create -f my-cluster.yaml     # Direct create
+# OR
+flowplane apply -f my-cluster.yaml              # Declarative create-or-update (uses kind field)
 ```
 
-Scaffold output includes comments explaining each field. JSON output uses `host` for endpoint addresses (not `address`).
+**Key details:**
+- YAML scaffold includes `kind` field for `apply -f` compatibility. `create -f` and `update -f` strip `kind` automatically.
+- Filter scaffold includes `filterType` at top level (required by API).
+- All field names use camelCase (matching API serde serialization).
+- JSON output includes all fields with defaults; YAML comments out optional complex sections.
 
 ## Gotchas
 

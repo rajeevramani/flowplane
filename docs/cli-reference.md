@@ -213,6 +213,8 @@ flowplane <resource> update <NAME> -f <FILE> [-o json|yaml|table]
 flowplane <resource> delete <NAME> [--yes]
 ```
 
+**File format:** `-f` accepts both YAML (`.yaml`/`.yml`) and JSON (`.json`) files. Format is detected by file extension.
+
 ### Clusters
 
 Manage upstream service clusters (backend endpoints + load balancing).
@@ -296,7 +298,7 @@ Passive health checking — ejects unhealthy hosts based on observed 5xx errors.
 #### Examples
 
 ```bash
-flowplane cluster create -f cluster.json
+flowplane cluster create -f cluster.yaml
 flowplane cluster list --service payments -o table
 flowplane cluster get my-backend -o json
 flowplane cluster update my-backend -f updated-cluster.json
@@ -349,7 +351,7 @@ Manage Envoy listeners (entry points for traffic).
 #### Examples
 
 ```bash
-flowplane listener create -f listener.json
+flowplane listener create -f listener.yaml
 flowplane listener list --protocol HTTP -o table
 flowplane listener get my-listener -o json
 flowplane listener update my-listener -f updated-listener.json
@@ -444,7 +446,7 @@ Route order matters — first match wins. Place more-specific paths before broad
 #### Examples
 
 ```bash
-flowplane route create -f routes.json
+flowplane route create -f routes.yaml
 flowplane route list --cluster my-backend -o table
 flowplane route get my-routes -o json
 flowplane route update my-routes -f updated-routes.json
@@ -598,7 +600,7 @@ Available filter types: `local_rate_limit`, `jwt_auth`, `oauth2`, `ext_authz`, `
 </details>
 
 ```bash
-flowplane filter create -f ratelimit.json
+flowplane filter create -f ratelimit.yaml
 ```
 
 ### flowplane filter list
