@@ -287,6 +287,14 @@ impl TestHarness {
     pub fn is_dev_mode(&self) -> bool {
         self.auth_mode == flowplane::config::AuthMode::Dev
     }
+
+    /// Access the shared infrastructure (if using shared mode).
+    ///
+    /// Returns `None` in isolated mode. Use this to access multi-user
+    /// token helpers (`create_test_user`, `get_user_token`, etc.) in prod mode.
+    pub fn shared_infra(&self) -> Option<&'static SharedInfrastructure> {
+        self.shared
+    }
 }
 
 impl TestHarness {
@@ -575,13 +583,11 @@ impl TestHarness {
                 )
             }
             super::shared_infra::E2eAuthMode::Prod => {
-                // In prod isolated mode, there's no shared Zitadel/mock — token comes later
-                (
-                    String::new(),
-                    super::shared_infra::E2E_SHARED_TEAM.to_string(),
-                    "e2e-org".to_string(),
-                    flowplane::config::AuthMode::Prod,
-                )
+                anyhow::bail!(
+                    "Isolated mode is not supported for prod auth. \
+                     Use shared mode (the default) for prod E2E tests. \
+                     Isolated mode requires its own Zitadel container, which is not yet implemented."
+                );
             }
         };
 

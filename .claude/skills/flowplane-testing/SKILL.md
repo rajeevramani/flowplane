@@ -65,11 +65,20 @@ FLOWPLANE_E2E_MTLS=1 make test-e2e-prod   # Prod + mTLS
 ```
 tests/e2e/
   common/
-    harness.rs        — TestHarness (HTTP client + auth + assertions + Envoy helpers)
+    harness.rs        — TestHarness (orchestrator: CP, Envoy, mocks, DB)
     cli_runner.rs     — CliRunner (subprocess flowplane commands)
     envoy.rs          — EnvoyHandle (Envoy process + admin API + config_dump)
-    shared_infra.rs   — SharedInfrastructure (shared test setup)
-    mod.rs            — Module declarations
+    shared_infra.rs   — SharedInfrastructure (singleton shared test setup)
+    test_helpers.rs   — Shared E2E helpers (verify_in_config_dump, verify_traffic, etc.)
+    resource_setup.rs — ResourceSetup builder (clusters, routes, listeners, filters)
+    zitadel.rs        — Zitadel container lifecycle + OIDC token acquisition
+    api_client.rs     — Typed HTTP client for Flowplane API
+    mocks.rs          — Mock services (Echo, Auth0, ext_authz)
+    ports.rs          — Port allocation
+    stats.rs          — Envoy stats parsing
+    filter_configs.rs — Type-safe filter configuration builders
+    timeout.rs        — Timeout utilities and retry logic
+    mod.rs            — Module declarations and re-exports
   smoke/              — Smoke tests (quick, both modes)
     test_bootstrap.rs
     test_dev_mode_smoke.rs
@@ -79,7 +88,9 @@ tests/e2e/
     test_cli_subprocess.rs
     test_cli_phase3.rs
     test_cli_phase3_prod.rs
+    test_cli_phase4.rs
     test_cli_phase5.rs    — Scaffold E2E tests (30 tests: cluster, route, listener, 10 filter types)
+    test_cli_ops.rs       — Ops diagnostic commands (trace, topology, validate, xds, audit, admin)
   full/               — Full E2E tests (feature-specific)
     test_11_bootstrap.rs
     test_12_header_mutation.rs
@@ -100,10 +111,11 @@ tests/e2e/
 ```
 
 ### Conventions
-- **Dev mode tests:** Use `dev_harness()` (API-only) or `quick_harness()` (with Envoy), test name must start with `dev_`
-- **Prod mode tests:** Use `TestHarnessConfig::new(...)` with real Zitadel
+- **Dev mode tests:** Use `dev_harness()` (API-only) or `quick_harness()` (with Envoy), test name **must** start with `dev_`
+- **Prod mode tests:** Use shared harness (default), test name **must** start with `prod_`
 - **Gating:** All E2E tests use `#[ignore]` + `RUN_E2E=1` env var
-- **Filtering:** `make test-e2e-dev` filters by `dev_` prefix, `make test-e2e-prod` filters non-`dev_` tests
+- **Filtering:** `make test-e2e-dev` filters to `dev_` prefix only, `make test-e2e-prod` filters to `prod_` prefix only
+- **Isolated mode:** Only supported for dev auth. Prod isolated mode is explicitly unsupported (will bail with error)
 
 ### Harness Types
 - **`dev_harness()`** — API-only, no Envoy. Use for tests that only verify CLI → API (error handling, basic CRUD).
@@ -142,14 +154,49 @@ async fn dev_my_feature_with_envoy() {
 }
 ```
 
-### Scaffold E2E Helpers (in test_cli_phase5.rs)
-- **`scaffold_and_create()`** — Scaffolds resource, replaces placeholders, writes temp file, runs create. Returns `CliOutput` without asserting.
-- **`verify_in_config_dump(harness, name)`** — Polls Envoy admin config_dump until named resource appears (30s timeout).
-- **`verify_traffic(harness, domain, path)`** — Sends traffic through Envoy, asserts 200 response.
-- **`create_chain_for_cluster()`** — Creates route + listener to complete Envoy chain for a CLI-created cluster.
-- **`create_chain_for_route()`** — Creates listener for a CLI-created route.
+### Shared E2E Helpers (`tests/e2e/common/test_helpers.rs`)
+
+These are re-exported from `crate::common` — import via `use crate::common::test_helpers::*`:
+
+- **`write_temp_file(content, extension)`** — Creates a named temp file for CLI input (`-f` flag). Caller must hold the return value to keep file alive.
+- **`verify_in_config_dump(harness, name)`** — Polls Envoy admin config_dump until named resource appears (30s timeout). Skips gracefully if Envoy unavailable.
+- **`verify_traffic(harness, domain, path)`** — Sends traffic through Envoy, asserts 200 + non-empty body. Skips gracefully if Envoy unavailable.
+- **`create_chain_for_cluster(harness, cluster, prefix)`** — Creates route config + listener via API to complete Envoy chain for a CLI-created cluster. Returns `(route_name, domain)`.
+- **`create_chain_for_route(harness, route, prefix, domain)`** — Creates listener for a CLI-created route config. Returns domain.
+
+### Test-file-local Helpers (in `test_cli_phase5.rs`)
+- **`scaffold_and_create()`** — Scaffolds resource, replaces placeholders, writes temp file, runs create.
 - **`create_filter_test_chain()`** — Creates cluster + route + listener chain for filter E2E tests.
 - **`attach_filter_to_listener()`** — Attaches filter to listener via CLI.
+
+### Multi-User CLI Testing
+
+For prod-mode tests that need multiple users with different team roles:
+
+```rust
+#[tokio::test]
+#[ignore]
+async fn prod_team_isolation_via_cli() {
+    let harness = quick_harness("isolation_test").await.unwrap();
+    if harness.is_dev_mode() { return; }
+
+    let shared = harness.shared_infra().expect("prod uses shared mode");
+
+    // Create two users with different team roles
+    shared.create_test_user("alice@test.com", "Alice", "Test", "pass123").await.unwrap();
+    let alice_token = shared.get_user_token("alice@test.com", "pass123").await.unwrap();
+
+    // Run CLI as alice targeting team-a
+    let alice_cli = CliRunner::with_token_and_team(&harness, &alice_token, "team-a", "acme-corp").unwrap();
+    let output = alice_cli.run(&["cluster", "list"]).unwrap();
+    output.assert_success();
+}
+```
+
+**Key methods:**
+- `CliRunner::with_token(harness, token)` — Same team/org as harness, different auth token
+- `CliRunner::with_token_and_team(harness, token, team, org)` — Different team, org, and auth token
+- `harness.shared_infra()` — Access `SharedInfrastructure` for `create_test_user()`, `get_user_token()`, `get_agent_token()`
 
 ## 3. Anti-Patterns — DO NOT DO THESE
 

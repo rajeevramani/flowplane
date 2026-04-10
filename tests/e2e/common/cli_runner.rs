@@ -61,6 +61,60 @@ impl CliRunner {
         Ok(Self { binary_path, _home_dir: home_dir, home_path, env_vars: HashMap::new() })
     }
 
+    /// Create a CliRunner that uses a different auth token than the harness default.
+    ///
+    /// Use this for multi-user isolation tests: create a user via
+    /// `harness.shared_infra().create_test_user(...)`, obtain their token via
+    /// `shared.get_user_token(email, password)`, then run CLI commands as that user.
+    pub fn with_token(harness: &TestHarness, token: &str) -> anyhow::Result<Self> {
+        let binary_path = Self::find_binary()?;
+        let home_dir = tempfile::tempdir()?;
+        let home_path = home_dir.path().to_path_buf();
+
+        let fp_dir = home_path.join(".flowplane");
+        std::fs::create_dir_all(&fp_dir)?;
+
+        let config_content = format!(
+            "base_url = \"{}\"\nteam = \"{}\"\norg = \"{}\"\n",
+            harness.api_url(),
+            harness.team,
+            harness.org,
+        );
+        std::fs::write(fp_dir.join("config.toml"), config_content)?;
+        std::fs::write(fp_dir.join("credentials"), token)?;
+
+        Ok(Self { binary_path, _home_dir: home_dir, home_path, env_vars: HashMap::new() })
+    }
+
+    /// Create a CliRunner targeting a specific team and org with a custom token.
+    ///
+    /// Use this when testing cross-team isolation: user A in team-engineering
+    /// should not see resources created by user B in team-ops.
+    pub fn with_token_and_team(
+        harness: &TestHarness,
+        token: &str,
+        team: &str,
+        org: &str,
+    ) -> anyhow::Result<Self> {
+        let binary_path = Self::find_binary()?;
+        let home_dir = tempfile::tempdir()?;
+        let home_path = home_dir.path().to_path_buf();
+
+        let fp_dir = home_path.join(".flowplane");
+        std::fs::create_dir_all(&fp_dir)?;
+
+        let config_content = format!(
+            "base_url = \"{}\"\nteam = \"{}\"\norg = \"{}\"\n",
+            harness.api_url(),
+            team,
+            org,
+        );
+        std::fs::write(fp_dir.join("config.toml"), config_content)?;
+        std::fs::write(fp_dir.join("credentials"), token)?;
+
+        Ok(Self { binary_path, _home_dir: home_dir, home_path, env_vars: HashMap::new() })
+    }
+
     /// Add an env var for subsequent runs.
     pub fn with_env(mut self, key: &str, value: &str) -> Self {
         self.env_vars.insert(key.to_string(), value.to_string());
