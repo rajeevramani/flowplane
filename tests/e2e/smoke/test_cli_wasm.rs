@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
 use crate::common::harness::quick_harness;
-use crate::common::test_helpers::{create_chain_for_cluster, verify_in_config_dump, write_temp_file};
+use crate::common::test_helpers::{
+    create_chain_for_cluster, verify_in_config_dump, write_temp_file,
+};
 
 /// Minimal valid WASM filter definition JSON for testing.
 /// Uses a tiny valid WASM module (magic + version header only, base64-encoded).
@@ -76,9 +78,7 @@ async fn dev_cli_wasm_create() {
     let file = write_temp_file(&json_content, ".json");
 
     // Step 1: create the WASM filter
-    let create_output = cli
-        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
-        .unwrap();
+    let create_output = cli.run(&["wasm", "create", "-f", file.path().to_str().unwrap()]).unwrap();
     assert_eq!(
         create_output.exit_code, 0,
         "wasm create failed: stdout={}, stderr={}",
@@ -126,11 +126,7 @@ async fn dev_cli_wasm_create() {
                 "NOTE: custom WASM filter type '{}' {} in Envoy config_dump \
                  (may require attachment to a filter chain to appear)",
                 filter_type,
-                if config_dump.contains(&filter_type) {
-                    "found"
-                } else {
-                    "not found"
-                }
+                if config_dump.contains(&filter_type) { "found" } else { "not found" }
             );
         }
     }
@@ -159,9 +155,8 @@ async fn dev_cli_wasm_update() {
     let create_file = write_temp_file(&json_content, ".json");
 
     // Step 1: create the filter
-    let create_output = cli
-        .run(&["wasm", "create", "-f", create_file.path().to_str().unwrap()])
-        .unwrap();
+    let create_output =
+        cli.run(&["wasm", "create", "-f", create_file.path().to_str().unwrap()]).unwrap();
     assert_eq!(
         create_output.exit_code, 0,
         "wasm create failed: stdout={}, stderr={}",
@@ -175,13 +170,7 @@ async fn dev_cli_wasm_update() {
     let update_content = updated_wasm_filter_json();
     let update_file = write_temp_file(&update_content, ".json");
     let update_output = cli
-        .run(&[
-            "wasm",
-            "update",
-            filter_id,
-            "-f",
-            update_file.path().to_str().unwrap(),
-        ])
+        .run(&["wasm", "update", filter_id, "-f", update_file.path().to_str().unwrap()])
         .unwrap();
     assert_eq!(
         update_output.exit_code, 0,
@@ -207,9 +196,8 @@ async fn dev_cli_wasm_update() {
         get_json["description"]
     );
     // attachment_points should now be just ["listener"]
-    let attachment_points = get_json["attachment_points"]
-        .as_array()
-        .expect("attachment_points should be an array");
+    let attachment_points =
+        get_json["attachment_points"].as_array().expect("attachment_points should be an array");
     assert_eq!(
         attachment_points.len(),
         1,
@@ -247,9 +235,7 @@ async fn dev_cli_wasm_delete() {
     let file = write_temp_file(&json_content, ".json");
 
     // Step 1: create the filter
-    let create_output = cli
-        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
-        .unwrap();
+    let create_output = cli.run(&["wasm", "create", "-f", file.path().to_str().unwrap()]).unwrap();
     assert_eq!(
         create_output.exit_code, 0,
         "wasm create failed: stdout={}, stderr={}",
@@ -332,9 +318,7 @@ async fn dev_cli_wasm_envoy_delivery() {
     let json_content = sample_wasm_filter_json(wasm_name);
     let file = write_temp_file(&json_content, ".json");
 
-    let create_output = cli
-        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
-        .unwrap();
+    let create_output = cli.run(&["wasm", "create", "-f", file.path().to_str().unwrap()]).unwrap();
     create_output.assert_success();
     let created: serde_json::Value =
         serde_json::from_str(&create_output.stdout).expect("create output should be valid JSON");
@@ -406,10 +390,7 @@ config:
         filter_type, filter_name
     );
 
-    eprintln!(
-        "WASM ENVOY VERIFIED: filter type '{}' delivered to Envoy",
-        filter_type
-    );
+    eprintln!("WASM ENVOY VERIFIED: filter type '{}' delivered to Envoy", filter_type);
 
     // Cleanup
     let _ = cli.run(&["filter", "delete", filter_name, "--yes"]);
@@ -435,9 +416,7 @@ async fn dev_cli_wasm_delete_verify_envoy_removal() {
     let wasm_name = "e2e-wasm-del-envoy";
     let json_content = sample_wasm_filter_json(wasm_name);
     let file = write_temp_file(&json_content, ".json");
-    let create_output = cli
-        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
-        .unwrap();
+    let create_output = cli.run(&["wasm", "create", "-f", file.path().to_str().unwrap()]).unwrap();
     create_output.assert_success();
     let created: serde_json::Value =
         serde_json::from_str(&create_output.stdout).expect("valid JSON");
@@ -466,9 +445,7 @@ async fn dev_cli_wasm_delete_verify_envoy_removal() {
     cli.run(&["filter", "create", "-f", filter_file.path().to_str().unwrap()])
         .unwrap()
         .assert_success();
-    cli.run(&["filter", "attach", filter_name, "wasm-del-ls"])
-        .unwrap()
-        .assert_success();
+    cli.run(&["filter", "attach", filter_name, "wasm-del-ls"]).unwrap().assert_success();
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -494,10 +471,7 @@ async fn dev_cli_wasm_delete_verify_envoy_removal() {
     );
 
     if was_present {
-        eprintln!(
-            "WASM REMOVAL VERIFIED: '{}' was in Envoy, now gone after delete",
-            filter_type
-        );
+        eprintln!("WASM REMOVAL VERIFIED: '{}' was in Envoy, now gone after delete", filter_type);
     } else {
         eprintln!(
             "NOTE: WASM filter was not visible in Envoy before deletion \
@@ -524,9 +498,7 @@ async fn dev_cli_wasm_create_invalid_json() {
     let bad_json = "{ this is not valid json at all!!!";
     let file = write_temp_file(bad_json, ".json");
 
-    let output = cli
-        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
-        .unwrap();
+    let output = cli.run(&["wasm", "create", "-f", file.path().to_str().unwrap()]).unwrap();
     assert_ne!(
         output.exit_code, 0,
         "wasm create with malformed JSON should fail, got stdout={}, stderr={}",
@@ -536,7 +508,8 @@ async fn dev_cli_wasm_create_invalid_json() {
     assert!(
         combined.contains("invalid") || combined.contains("error") || combined.contains("json"),
         "Error output should mention invalid/error/json, got stdout={}, stderr={}",
-        output.stdout, output.stderr
+        output.stdout,
+        output.stderr
     );
 }
 
@@ -558,9 +531,7 @@ async fn dev_cli_wasm_create_missing_fields() {
     .to_string();
     let file = write_temp_file(&incomplete, ".json");
 
-    let output = cli
-        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
-        .unwrap();
+    let output = cli.run(&["wasm", "create", "-f", file.path().to_str().unwrap()]).unwrap();
     assert_ne!(
         output.exit_code, 0,
         "wasm create with missing required fields should fail, got stdout={}, stderr={}",
@@ -579,9 +550,7 @@ async fn dev_cli_wasm_create_nonexistent_file() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let output = cli
-        .run(&["wasm", "create", "-f", "/tmp/does-not-exist-e2e-wasm.json"])
-        .unwrap();
+    let output = cli.run(&["wasm", "create", "-f", "/tmp/does-not-exist-e2e-wasm.json"]).unwrap();
     assert_ne!(
         output.exit_code, 0,
         "wasm create with nonexistent file should fail, got stdout={}, stderr={}",
@@ -604,13 +573,7 @@ async fn dev_cli_wasm_update_nonexistent() {
     let file = write_temp_file(&update_content, ".json");
 
     let output = cli
-        .run(&[
-            "wasm",
-            "update",
-            "totally-fake-wasm-id-xyz",
-            "-f",
-            file.path().to_str().unwrap(),
-        ])
+        .run(&["wasm", "update", "totally-fake-wasm-id-xyz", "-f", file.path().to_str().unwrap()])
         .unwrap();
 
     let has_error = output.exit_code != 0
@@ -636,9 +599,7 @@ async fn dev_cli_wasm_delete_nonexistent() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let output = cli
-        .run(&["wasm", "delete", "totally-fake-wasm-id-xyz", "--yes"])
-        .unwrap();
+    let output = cli.run(&["wasm", "delete", "totally-fake-wasm-id-xyz", "--yes"]).unwrap();
 
     let has_error = output.exit_code != 0
         || output.stderr.to_lowercase().contains("not found")
@@ -668,9 +629,7 @@ async fn dev_cli_wasm_delete_no_confirm() {
     let json_content = sample_wasm_filter_json(filter_name);
     let file = write_temp_file(&json_content, ".json");
 
-    let create_output = cli
-        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
-        .unwrap();
+    let create_output = cli.run(&["wasm", "create", "-f", file.path().to_str().unwrap()]).unwrap();
     assert_eq!(
         create_output.exit_code, 0,
         "wasm create failed: stdout={}, stderr={}",

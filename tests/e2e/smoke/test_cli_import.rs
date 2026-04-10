@@ -169,10 +169,7 @@ async fn dev_import_openapi_nonexistent_file() {
         ])
         .unwrap();
 
-    assert!(
-        output.exit_code != 0,
-        "import of nonexistent file should fail, but got exit 0"
-    );
+    assert!(output.exit_code != 0, "import of nonexistent file should fail, but got exit 0");
 }
 
 /// Importing an invalid (non-OpenAPI) file should fail.
@@ -210,14 +207,9 @@ openapi: spec
     let spec_file = write_temp_file(bad_spec, ".yaml");
     let spec_path = spec_file.path().to_str().expect("valid utf-8 path");
 
-    let output = cli
-        .run(&["import", "openapi", spec_path, "--name", "e2e-bad-spec"])
-        .unwrap();
+    let output = cli.run(&["import", "openapi", spec_path, "--name", "e2e-bad-spec"]).unwrap();
 
-    assert!(
-        output.exit_code != 0,
-        "import of invalid spec should fail, but got exit 0"
-    );
+    assert!(output.exit_code != 0, "import of invalid spec should fail, but got exit 0");
 }
 
 /// Importing an empty file should fail.
@@ -234,12 +226,7 @@ async fn dev_import_openapi_empty_file() {
     let spec_file = write_temp_file("", ".yaml");
     let spec_path = spec_file.path().to_str().expect("valid utf-8 path");
 
-    let output = cli
-        .run(&["import", "openapi", spec_path, "--name", "e2e-empty-spec"])
-        .unwrap();
+    let output = cli.run(&["import", "openapi", spec_path, "--name", "e2e-empty-spec"]).unwrap();
 
-    assert!(
-        output.exit_code != 0,
-        "import of empty file should fail, but got exit 0"
-    );
+    assert!(output.exit_code != 0, "import of empty file should fail, but got exit 0");
 }

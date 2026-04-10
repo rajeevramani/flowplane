@@ -734,8 +734,7 @@ connectTimeoutSeconds: 15
     verify_in_config_dump(&harness, cluster_name).await;
 
     // Verify traffic flows through the updated cluster
-    let (_route_name, domain) =
-        create_chain_for_cluster(&harness, cluster_name, "upd-yaml").await;
+    let (_route_name, domain) = create_chain_for_cluster(&harness, cluster_name, "upd-yaml").await;
     verify_traffic(&harness, &domain, "/").await;
 }
 
@@ -813,8 +812,7 @@ connectTimeoutSeconds: 20
     verify_in_config_dump(&harness, cluster_name).await;
 
     // Verify traffic flows through the updated cluster
-    let (_route_name, domain) =
-        create_chain_for_cluster(&harness, cluster_name, "scaff-upd").await;
+    let (_route_name, domain) = create_chain_for_cluster(&harness, cluster_name, "scaff-upd").await;
     verify_traffic(&harness, &domain, "/").await;
 }
 

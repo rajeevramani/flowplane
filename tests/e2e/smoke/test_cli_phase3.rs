@@ -765,8 +765,7 @@ async fn dev_cli_unexpose_with_envoy_verification() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_expose_unexpose_lifecycle_envoy() {
-    let harness =
-        quick_harness("dev_cli_lifecycle_envoy").await.expect("harness should start");
+    let harness = quick_harness("dev_cli_lifecycle_envoy").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -820,10 +819,7 @@ async fn dev_cli_expose_unexpose_lifecycle_envoy() {
     match result {
         Err(_) => { /* expected — connection refused or route gone */ }
         Ok((status, _)) => {
-            assert_ne!(
-                status, 200,
-                "Traffic should not return 200 after unexpose"
-            );
+            assert_ne!(status, 200, "Traffic should not return 200 after unexpose");
         }
     }
 

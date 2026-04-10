@@ -133,9 +133,7 @@ async fn dev_cli_secret_rotate() {
 
     // Step 2: rotate the secret with new config
     let new_config = r#"{"secret": "cm90YXRlZC12YWx1ZQ=="}"#; // pragma: allowlist secret
-    let rotate_output = cli
-        .run(&["secret", "rotate", secret_id, "--config", new_config])
-        .unwrap();
+    let rotate_output = cli.run(&["secret", "rotate", secret_id, "--config", new_config]).unwrap();
     assert_eq!(
         rotate_output.exit_code, 0,
         "secret rotate failed: stdout={}, stderr={}",
@@ -280,8 +278,7 @@ async fn dev_cli_secret_sds_delivery() {
         .unwrap()
         .assert_success();
 
-    let (_route_name, _domain) =
-        create_chain_for_cluster(&harness, cluster_name, "sds-cli").await;
+    let (_route_name, _domain) = create_chain_for_cluster(&harness, cluster_name, "sds-cli").await;
 
     // Verify routing infra reached Envoy
     verify_in_config_dump(&harness, cluster_name).await;
@@ -351,7 +348,8 @@ config:
         secret_in_dump || filter_in_dump,
         "Either secret '{}' or JWT filter '{}' should appear in Envoy config_dump. \
          Neither found — xDS/SDS delivery failed.",
-        secret_name, filter_name
+        secret_name,
+        filter_name
     );
 
     if secret_in_dump {
@@ -458,16 +456,14 @@ config:
     cli.run(&["filter", "create", "-f", filter_file.path().to_str().unwrap()])
         .unwrap()
         .assert_success();
-    cli.run(&["filter", "attach", filter_name, "sds-rot-ls"])
-        .unwrap()
-        .assert_success();
+    cli.run(&["filter", "attach", filter_name, "sds-rot-ls"]).unwrap().assert_success();
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify initial delivery
     let config_dump_before = harness.get_config_dump().await.expect("config_dump should work");
-    let filter_delivered = config_dump_before.contains(filter_name)
-        || config_dump_before.contains("sds-rot-provider");
+    let filter_delivered =
+        config_dump_before.contains(filter_name) || config_dump_before.contains("sds-rot-provider");
     assert!(filter_delivered, "JWT filter should be in Envoy before rotation");
 
     // Rotate the secret
@@ -475,18 +471,15 @@ config:
     let rotate = cli.run(&["secret", "rotate", secret_id, "--config", new_config]).unwrap();
     rotate.assert_success();
     let rotated: serde_json::Value = serde_json::from_str(&rotate.stdout).expect("valid JSON");
-    assert!(
-        rotated["version"].as_i64().unwrap_or(0) > 1,
-        "Version should bump after rotation"
-    );
+    assert!(rotated["version"].as_i64().unwrap_or(0) > 1, "Version should bump after rotation");
 
     // Wait for SDS re-delivery
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify filter is still in Envoy after rotation (SDS re-delivery didn't break it)
     let config_dump_after = harness.get_config_dump().await.expect("config_dump should work");
-    let still_delivered = config_dump_after.contains(filter_name)
-        || config_dump_after.contains("sds-rot-provider");
+    let still_delivered =
+        config_dump_after.contains(filter_name) || config_dump_after.contains("sds-rot-provider");
     assert!(
         still_delivered,
         "JWT filter should remain in Envoy after secret rotation (SDS re-delivery)"

@@ -34,9 +34,8 @@ async fn dev_cli_learn_start_creates_session() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Expose a service so learning has something to observe
-    let expose = cli
-        .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-start-svc"])
-        .unwrap();
+    let expose =
+        cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-start-svc"]).unwrap();
     expose.assert_success();
 
     // Verify the exposed service reached Envoy
@@ -78,9 +77,7 @@ async fn dev_cli_learn_start_with_filters() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let expose = cli
-        .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-filt-svc"])
-        .unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-filt-svc"]).unwrap();
     expose.assert_success();
     verify_in_config_dump(&harness, "learn-filt-svc").await;
 
@@ -126,9 +123,7 @@ async fn dev_cli_learn_stop_lifecycle() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Expose a service
-    let expose = cli
-        .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-stop-svc"])
-        .unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-stop-svc"]).unwrap();
     expose.assert_success();
     verify_in_config_dump(&harness, "learn-stop-svc").await;
 
@@ -181,9 +176,8 @@ async fn dev_cli_learn_cancel_discards_session() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Expose a service
-    let expose = cli
-        .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-cancel-svc"])
-        .unwrap();
+    let expose =
+        cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-cancel-svc"]).unwrap();
     expose.assert_success();
     verify_in_config_dump(&harness, "learn-cancel-svc").await;
 
@@ -240,9 +234,7 @@ async fn dev_cli_learn_activate_applies_schemas() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Expose a service
-    let expose = cli
-        .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-act-svc"])
-        .unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-act-svc"]).unwrap();
     expose.assert_success();
     verify_in_config_dump(&harness, "learn-act-svc").await;
 
@@ -269,8 +261,7 @@ async fn dev_cli_learn_activate_applies_schemas() {
     stop.assert_success();
 
     // Activate the completed session
-    let activate =
-        cli.run(&["learn", "activate", "e2e-learn-activate", "-o", "json"]).unwrap();
+    let activate = cli.run(&["learn", "activate", "e2e-learn-activate", "-o", "json"]).unwrap();
     activate.assert_success();
 
     // Verify schema was applied — schema list should show something
@@ -293,9 +284,7 @@ async fn dev_cli_learn_get_session_details() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let expose = cli
-        .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-get-svc"])
-        .unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-get-svc"]).unwrap();
     expose.assert_success();
     verify_in_config_dump(&harness, "learn-get-svc").await;
 
@@ -414,9 +403,7 @@ async fn dev_cli_learn_cancel_no_yes_non_tty_fails() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Expose + start a session so cancel has a valid target
-    let expose = cli
-        .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-nyes-svc"])
-        .unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-nyes-svc"]).unwrap();
     expose.assert_success();
     verify_in_config_dump(&harness, "learn-nyes-svc").await;
 
@@ -456,9 +443,7 @@ async fn dev_cli_learn_start_missing_route_pattern_fails() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Missing --route-pattern — clap should reject
-    let start = cli
-        .run(&["learn", "start", "--target-sample-count", "10"])
-        .unwrap();
+    let start = cli.run(&["learn", "start", "--target-sample-count", "10"]).unwrap();
     start.assert_failure();
 }
 
@@ -474,9 +459,7 @@ async fn dev_cli_learn_start_missing_sample_count_fails() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Missing --target-sample-count — clap should reject
-    let start = cli
-        .run(&["learn", "start", "--route-pattern", "^/.*"])
-        .unwrap();
+    let start = cli.run(&["learn", "start", "--route-pattern", "^/.*"]).unwrap();
     start.assert_failure();
 }
 
@@ -495,9 +478,8 @@ async fn dev_cli_learn_health_active_session() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let expose = cli
-        .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-health-svc"])
-        .unwrap();
+    let expose =
+        cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-health-svc"]).unwrap();
     expose.assert_success();
     verify_in_config_dump(&harness, "learn-health-svc").await;
 

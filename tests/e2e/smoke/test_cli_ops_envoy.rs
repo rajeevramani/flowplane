@@ -97,7 +97,8 @@ filterChains:
         routeConfigName: {route_name}
 "#
     );
-    std::fs::write(dir.path().join("03-listener.yaml"), listener_yaml).expect("write listener yaml");
+    std::fs::write(dir.path().join("03-listener.yaml"), listener_yaml)
+        .expect("write listener yaml");
 
     // Apply the whole directory
     let output = cli.run(&["apply", "-f", dir.path().to_str().unwrap()]).unwrap();
@@ -194,8 +195,7 @@ connectTimeoutSeconds: 5
         output.stdout, output.stderr
     );
 
-    let (_route, _domain) =
-        create_chain_for_cluster(&harness, cluster_name, "trace-xv").await;
+    let (_route, _domain) = create_chain_for_cluster(&harness, cluster_name, "trace-xv").await;
 
     // Verify resources are in Envoy config_dump
     verify_in_config_dump(&harness, cluster_name).await;
@@ -320,8 +320,7 @@ connectTimeoutSeconds: 5
         output.stdout, output.stderr
     );
 
-    let (_route, _domain) =
-        create_chain_for_cluster(&harness, cluster_name, "xds-xv").await;
+    let (_route, _domain) = create_chain_for_cluster(&harness, cluster_name, "xds-xv").await;
 
     // Wait for xDS to propagate
     verify_in_config_dump(&harness, cluster_name).await;
@@ -437,8 +436,7 @@ connectTimeoutSeconds: 5
         output.stdout, output.stderr
     );
 
-    let (_route, _domain) =
-        create_chain_for_cluster(&harness, cluster_name, "topo-xv").await;
+    let (_route, _domain) = create_chain_for_cluster(&harness, cluster_name, "topo-xv").await;
 
     // Verify everything is in Envoy
     verify_in_config_dump(&harness, cluster_name).await;
@@ -472,7 +470,9 @@ connectTimeoutSeconds: 5
                 || topo_combined.contains("topo-xv"),
             "topology should reference our cluster '{}' when it exists in Envoy.\n\
              topology stdout: {}\ntopology stderr: {}",
-            cluster_name, topo_output.stdout, topo_output.stderr
+            cluster_name,
+            topo_output.stdout,
+            topo_output.stderr
         );
     }
 
@@ -482,7 +482,8 @@ connectTimeoutSeconds: 5
             topo_combined.contains("listener") || topo_combined.contains("topo-xv-ls"),
             "topology should reference listeners when Envoy has them.\n\
              topology stdout: {}\ntopology stderr: {}",
-            topo_output.stdout, topo_output.stderr
+            topo_output.stdout,
+            topo_output.stderr
         );
     }
 }

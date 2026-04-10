@@ -400,8 +400,7 @@ async fn dev_cli_filter_delete_nonexistent() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let output =
-        cli.run(&["filter", "delete", "no-such-filter-ever-existed", "--yes"]).unwrap();
+    let output = cli.run(&["filter", "delete", "no-such-filter-ever-existed", "--yes"]).unwrap();
     assert_ne!(
         output.exit_code, 0,
         "Deleting nonexistent filter should fail, but got exit 0. stdout={}, stderr={}",

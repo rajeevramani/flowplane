@@ -73,8 +73,7 @@ async fn dev_cli_delete_cluster() {
     get_output.assert_stdout_contains(cluster_name);
 
     // Step 3: build full Envoy chain and verify traffic
-    let (_route, domain) =
-        create_chain_for_cluster(&harness, cluster_name, "del-cluster").await;
+    let (_route, domain) = create_chain_for_cluster(&harness, cluster_name, "del-cluster").await;
     verify_in_config_dump(&harness, cluster_name).await;
     verify_traffic(&harness, &domain, "/test").await;
 
@@ -316,8 +315,7 @@ async fn dev_cli_delete_route() {
     );
 
     // Step 3: complete the Envoy chain with a listener, verify traffic
-    let domain =
-        create_chain_for_route(&harness, route_name, "del-route", domain).await;
+    let domain = create_chain_for_route(&harness, route_name, "del-route", domain).await;
     verify_in_config_dump(&harness, route_name).await;
     verify_traffic(&harness, &domain, "/test").await;
 
@@ -362,9 +360,7 @@ async fn dev_cli_delete_nonexistent_cluster() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let output = cli
-        .run(&["cluster", "delete", "does-not-exist-cluster-xyz", "--yes"])
-        .unwrap();
+    let output = cli.run(&["cluster", "delete", "does-not-exist-cluster-xyz", "--yes"]).unwrap();
     output.assert_failure();
 }
 
@@ -379,9 +375,7 @@ async fn dev_cli_delete_nonexistent_listener() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let output = cli
-        .run(&["listener", "delete", "does-not-exist-listener-xyz", "--yes"])
-        .unwrap();
+    let output = cli.run(&["listener", "delete", "does-not-exist-listener-xyz", "--yes"]).unwrap();
     output.assert_failure();
 }
 
@@ -396,8 +390,6 @@ async fn dev_cli_delete_nonexistent_route() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let output = cli
-        .run(&["route", "delete", "does-not-exist-route-xyz", "--yes"])
-        .unwrap();
+    let output = cli.run(&["route", "delete", "does-not-exist-route-xyz", "--yes"]).unwrap();
     output.assert_failure();
 }
