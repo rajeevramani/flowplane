@@ -15,6 +15,25 @@ use crate::common::cli_runner::CliRunner;
 use crate::common::harness::quick_harness;
 use crate::common::test_helpers::{verify_in_config_dump, write_temp_file};
 
+/// Create a dataplane via CLI for tests that need one as a prerequisite.
+fn create_dataplane_via_cli(cli: &CliRunner, name: &str) {
+    let spec = format!(
+        "name: {name}\ngatewayHost: \"127.0.0.1\"\ndescription: \"Dataplane for import E2E test\"\n"
+    );
+    let file = write_temp_file(&spec, ".yaml");
+    let output = cli.run(&["dataplane", "create", "-f", file.path().to_str().unwrap()]).unwrap();
+    // Accept success or 409 conflict (already exists)
+    assert!(
+        output.exit_code == 0
+            || output.stderr.contains("conflict")
+            || output.stderr.contains("already exists")
+            || output.stderr.contains("duplicate"),
+        "dataplane creation via CLI failed unexpectedly: exit_code={}, stderr={}",
+        output.exit_code,
+        output.stderr
+    );
+}
+
 // ============================================================================
 // import openapi — happy path with Envoy verification
 // ============================================================================
@@ -32,20 +51,7 @@ async fn dev_import_openapi_full_lifecycle() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Ensure a dataplane exists (import command requires one)
-    let dp_body = serde_json::json!({
-        "name": "import-dp",
-        "gateway_host": "127.0.0.1",
-        "description": "Dataplane for import E2E test"
-    });
-    let resp = harness
-        .authed_post(&format!("/api/v1/teams/{}/dataplanes", harness.team), &dp_body)
-        .await
-        .expect("dataplane creation request should succeed");
-    let status = resp.status().as_u16();
-    assert!(
-        status == 200 || status == 201 || status == 409,
-        "dataplane creation returned unexpected status: {status}"
-    );
+    create_dataplane_via_cli(&cli, "import-dp");
 
     // Write a minimal OpenAPI 3.0 spec pointing to the echo server
     let echo = harness.echo_endpoint();
@@ -184,20 +190,7 @@ async fn dev_import_openapi_invalid_spec() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Ensure a dataplane exists
-    let dp_body = serde_json::json!({
-        "name": "import-bad-dp",
-        "gateway_host": "127.0.0.1",
-        "description": "Dataplane for bad import test"
-    });
-    let resp = harness
-        .authed_post(&format!("/api/v1/teams/{}/dataplanes", harness.team), &dp_body)
-        .await
-        .expect("dataplane creation request should succeed");
-    let status = resp.status().as_u16();
-    assert!(
-        status == 200 || status == 201 || status == 409,
-        "dataplane creation returned unexpected status: {status}"
-    );
+    create_dataplane_via_cli(&cli, "import-bad-dp");
 
     // Write invalid YAML (not an OpenAPI spec)
     let bad_spec = r#"this: is

@@ -10,10 +10,13 @@
 //! ```
 
 pub mod test_bootstrap;
+pub mod test_cli_admin;
+pub mod test_cli_dataplane;
 pub mod test_cli_deletes;
 pub mod test_cli_filter_ops;
 pub mod test_cli_import;
 pub mod test_cli_learn;
+pub mod test_cli_mcp;
 pub mod test_cli_ops;
 pub mod test_cli_ops_envoy;
 pub mod test_cli_phase3;
