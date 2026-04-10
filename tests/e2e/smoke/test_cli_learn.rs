@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
 use crate::common::harness::{dev_harness, quick_harness};
+use crate::common::test_helpers::verify_in_config_dump;
 
 // ============================================================================
 // learn start — basic
@@ -37,6 +38,9 @@ async fn dev_cli_learn_start_creates_session() {
         .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-start-svc"])
         .unwrap();
     expose.assert_success();
+
+    // Verify the exposed service reached Envoy
+    verify_in_config_dump(&harness, "learn-start-svc").await;
 
     // Start a learning session
     let start = cli
@@ -78,6 +82,7 @@ async fn dev_cli_learn_start_with_filters() {
         .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-filt-svc"])
         .unwrap();
     expose.assert_success();
+    verify_in_config_dump(&harness, "learn-filt-svc").await;
 
     let start = cli
         .run(&[
@@ -125,6 +130,7 @@ async fn dev_cli_learn_stop_lifecycle() {
         .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-stop-svc"])
         .unwrap();
     expose.assert_success();
+    verify_in_config_dump(&harness, "learn-stop-svc").await;
 
     // Start learning
     let start = cli
@@ -179,6 +185,7 @@ async fn dev_cli_learn_cancel_discards_session() {
         .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-cancel-svc"])
         .unwrap();
     expose.assert_success();
+    verify_in_config_dump(&harness, "learn-cancel-svc").await;
 
     // Start learning
     let start = cli
@@ -237,6 +244,7 @@ async fn dev_cli_learn_activate_applies_schemas() {
         .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-act-svc"])
         .unwrap();
     expose.assert_success();
+    verify_in_config_dump(&harness, "learn-act-svc").await;
 
     // Start learning
     let start = cli
@@ -289,6 +297,7 @@ async fn dev_cli_learn_get_session_details() {
         .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-get-svc"])
         .unwrap();
     expose.assert_success();
+    verify_in_config_dump(&harness, "learn-get-svc").await;
 
     let start = cli
         .run(&[
@@ -409,6 +418,7 @@ async fn dev_cli_learn_cancel_no_yes_non_tty_fails() {
         .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-nyes-svc"])
         .unwrap();
     expose.assert_success();
+    verify_in_config_dump(&harness, "learn-nyes-svc").await;
 
     let start = cli
         .run(&[
@@ -489,6 +499,7 @@ async fn dev_cli_learn_health_active_session() {
         .run(&["expose", "http://127.0.0.1:9999", "--name", "learn-health-svc"])
         .unwrap();
     expose.assert_success();
+    verify_in_config_dump(&harness, "learn-health-svc").await;
 
     let start = cli
         .run(&[
