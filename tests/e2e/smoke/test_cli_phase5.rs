@@ -732,6 +732,11 @@ connectTimeoutSeconds: 15
 
     // Verify updated cluster reaches Envoy via xDS
     verify_in_config_dump(&harness, cluster_name).await;
+
+    // Verify traffic flows through the updated cluster
+    let (_route_name, domain) =
+        create_chain_for_cluster(&harness, cluster_name, "upd-yaml").await;
+    verify_traffic(&harness, &domain, "/").await;
 }
 
 /// Scaffold YAML → create cluster → modify a field → `update -f file.yaml` with
@@ -806,6 +811,11 @@ connectTimeoutSeconds: 20
 
     // Verify updated cluster reaches Envoy via xDS
     verify_in_config_dump(&harness, cluster_name).await;
+
+    // Verify traffic flows through the updated cluster
+    let (_route_name, domain) =
+        create_chain_for_cluster(&harness, cluster_name, "scaff-upd").await;
+    verify_traffic(&harness, &domain, "/").await;
 }
 
 /// Scaffold YAML → replace placeholders → `apply -f file.yaml` → verify cluster
@@ -1252,6 +1262,13 @@ virtualHosts:
 
     // Verify updated route reaches Envoy via xDS
     verify_in_config_dump(&harness, route_name).await;
+
+    // Verify traffic flows through the updated route.
+    // The update changed the domain to "updated.example.com" and prefix to "/updated",
+    // but the listener was wired to "rt-scfupd.e2e.local". Traffic verification uses
+    // the listener's domain since that's what Envoy binds to for Host-based routing.
+    // The route's virtual host domain was updated to "updated.example.com", so use that.
+    verify_traffic(&harness, "updated.example.com", "/updated").await;
 }
 
 /// `route create -f` with syntactically invalid YAML should produce a
@@ -1738,7 +1755,7 @@ async fn dev_cli_listener_scaffold_update_yaml() {
     let listener_name = format!("{}-ls", prefix);
     let listener_port = harness.ports.listener;
 
-    let (_cluster, route_name, _domain) =
+    let (_cluster, route_name, domain) =
         create_listener_prerequisites(&cli, prefix, echo_host, echo_port);
 
     // Step 1: Create listener from scaffold
@@ -1796,6 +1813,9 @@ dataplaneId: "dev-dataplane-id"
 
     // Verify updated listener reaches Envoy via xDS
     verify_in_config_dump(&harness, &listener_name).await;
+
+    // Verify traffic flows through the updated listener
+    verify_traffic(&harness, &domain, "/").await;
 }
 
 /// `listener create -f file.yaml` with syntactically invalid YAML should
