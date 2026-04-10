@@ -176,9 +176,9 @@ async fn dev_cli_cert_create_and_list() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let proxy_id = "e2e-test-proxy";
+    let proxy_id = "e2e-test-proxy-01";
     let spec = serde_json::json!({
-        "proxy_id": proxy_id
+        "proxyId": proxy_id
     });
     let file = write_temp_file(&serde_json::to_string_pretty(&spec).unwrap(), ".json");
     let file_path = file.path().to_str().unwrap().to_string();
@@ -241,7 +241,7 @@ async fn dev_cli_cert_revoke() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // First create a certificate to revoke
-    let spec = serde_json::json!({ "proxy_id": "e2e-revoke-proxy" });
+    let spec = serde_json::json!({ "proxyId": "e2e-revoke-proxy" });
     let file = write_temp_file(&serde_json::to_string_pretty(&spec).unwrap(), ".json");
     let file_path = file.path().to_str().unwrap().to_string();
 

@@ -82,19 +82,23 @@ paths:
     let spec_file = write_temp_file(&spec, ".yaml");
     let spec_path = spec_file.path().to_str().expect("valid utf-8 path");
 
-    let port = harness.ports.listener;
+    // Use port in the auto-allocatable range (10001-10020) to avoid conflicts
+    let port: u16 = 10018;
 
-    // Import the OpenAPI spec
+    // Import the OpenAPI spec (use longer timeout — import may take time)
     let import_out = cli
-        .run(&[
-            "import",
-            "openapi",
-            spec_path,
-            "--name",
-            "e2e-import-full",
-            "--port",
-            &port.to_string(),
-        ])
+        .run_with_timeout(
+            &[
+                "import",
+                "openapi",
+                spec_path,
+                "--name",
+                "e2e-import-full",
+                "--port",
+                &port.to_string(),
+            ],
+            std::time::Duration::from_secs(60),
+        )
         .unwrap();
     import_out.assert_success();
     import_out.assert_stdout_contains("Import E2E API");

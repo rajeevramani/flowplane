@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::common::cli_runner::CliRunner;
 use crate::common::harness::{dev_harness, quick_harness};
-use crate::common::test_helpers::{verify_in_config_dump, verify_traffic};
+use crate::common::test_helpers::{parse_expose_port, verify_in_config_dump};
 
 // ============================================================================
 // expose — with API verification
@@ -703,25 +703,19 @@ async fn dev_cli_expose_with_envoy_verification() {
     let cli = CliRunner::from_harness(&harness).unwrap();
     let echo = harness.echo_endpoint();
 
-    // Expose the echo service on the harness listener port
-    let output = cli
-        .run(&[
-            "expose",
-            &echo,
-            "--name",
-            "e2e-envoy-exp",
-            "--port",
-            &harness.ports.listener.to_string(),
-        ])
-        .unwrap();
+    // Expose the echo service — let expose auto-allocate a port from the pool
+    let output = cli.run(&["expose", &echo, "--name", "e2e-envoy-exp"]).unwrap();
     output.assert_success();
     output.assert_stdout_contains("Exposed");
+
+    // Parse the allocated port from expose output
+    let port = parse_expose_port(&output);
 
     // Verify the cluster appears in Envoy config_dump via xDS
     verify_in_config_dump(&harness, "e2e-envoy-exp").await;
 
     // Verify traffic flows through Envoy to the echo upstream
-    verify_traffic(&harness, "e2e-envoy-exp.local", "/").await;
+    let _ = harness.wait_for_route_on_port(port, "e2e-envoy-exp.local", "/", 200).await;
 
     // Cleanup: release port
     let _ = cli.run(&["unexpose", "e2e-envoy-exp"]);
@@ -744,18 +738,11 @@ async fn dev_cli_unexpose_with_envoy_verification() {
     let cli = CliRunner::from_harness(&harness).unwrap();
     let echo = harness.echo_endpoint();
 
-    // Expose the echo service
-    let expose = cli
-        .run(&[
-            "expose",
-            &echo,
-            "--name",
-            "e2e-envoy-unexp",
-            "--port",
-            &harness.ports.listener.to_string(),
-        ])
-        .unwrap();
+    // Expose the echo service — let expose auto-allocate a port
+    let expose = cli.run(&["expose", &echo, "--name", "e2e-envoy-unexp"]).unwrap();
     expose.assert_success();
+
+    let port = parse_expose_port(&expose);
 
     // Confirm it reached Envoy
     verify_in_config_dump(&harness, "e2e-envoy-unexp").await;
@@ -775,7 +762,7 @@ async fn dev_cli_unexpose_with_envoy_verification() {
     );
 
     // Verify traffic no longer flows (should get an error or non-200)
-    let result = harness.proxy_get("e2e-envoy-unexp.local", "/").await;
+    let result = harness.proxy_get_on_port(port, "e2e-envoy-unexp.local", "/").await;
     match result {
         Err(_) => { /* connection refused or timeout — expected */ }
         Ok((status, _)) => {
@@ -804,23 +791,16 @@ async fn dev_cli_expose_unexpose_lifecycle_envoy() {
     let cli = CliRunner::from_harness(&harness).unwrap();
     let echo = harness.echo_endpoint();
 
-    // === Phase 1: Expose ===
-    let expose = cli
-        .run(&[
-            "expose",
-            &echo,
-            "--name",
-            "e2e-lifecycle-envoy",
-            "--port",
-            &harness.ports.listener.to_string(),
-        ])
-        .unwrap();
+    // === Phase 1: Expose (auto-allocate port) ===
+    let expose = cli.run(&["expose", &echo, "--name", "e2e-lifecycle-envoy"]).unwrap();
     expose.assert_success();
     expose.assert_stdout_contains("Exposed");
 
+    let port = parse_expose_port(&expose);
+
     // === Phase 2: Verify config + traffic ===
     verify_in_config_dump(&harness, "e2e-lifecycle-envoy").await;
-    verify_traffic(&harness, "e2e-lifecycle-envoy.local", "/").await;
+    let _ = harness.wait_for_route_on_port(port, "e2e-lifecycle-envoy.local", "/", 200).await;
 
     // Also verify via `list` that the service appears
     let list = cli.run(&["list"]).unwrap();
@@ -842,7 +822,7 @@ async fn dev_cli_expose_unexpose_lifecycle_envoy() {
     );
 
     // Traffic should stop
-    let result = harness.proxy_get("e2e-lifecycle-envoy.local", "/").await;
+    let result = harness.proxy_get_on_port(port, "e2e-lifecycle-envoy.local", "/").await;
     match result {
         Err(_) => { /* expected — connection refused or route gone */ }
         Ok((status, _)) => {

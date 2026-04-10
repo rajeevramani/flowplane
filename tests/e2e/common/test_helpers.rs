@@ -6,6 +6,7 @@
 use std::io::Write;
 use std::time::Duration;
 
+use crate::common::cli_runner::CliOutput;
 use crate::common::harness::TestHarness;
 
 /// Write content to a named temp file with the given extension.
@@ -16,6 +17,21 @@ pub fn write_temp_file(content: &str, extension: &str) -> tempfile::NamedTempFil
     let mut f = tempfile::Builder::new().suffix(extension).tempfile().unwrap();
     f.write_all(content.as_bytes()).unwrap();
     f
+}
+
+/// Parse the allocated port number from `expose` CLI output.
+///
+/// The expose command prints a summary that includes a line like:
+///   `  Port:   10003`
+/// This helper extracts the port number from that line.
+pub fn parse_expose_port(output: &CliOutput) -> u16 {
+    output
+        .stdout
+        .lines()
+        .find(|l| l.trim().starts_with("Port:"))
+        .and_then(|l| l.split_whitespace().last())
+        .and_then(|p| p.parse().ok())
+        .expect("expose output should contain port number in 'Port:' line")
 }
 
 /// Poll Envoy config_dump until the given resource name appears, or timeout.
