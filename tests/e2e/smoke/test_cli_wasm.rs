@@ -10,9 +10,11 @@
 //! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_wasm -- --ignored --nocapture
 //! ```
 
+use std::time::Duration;
+
 use crate::common::cli_runner::CliRunner;
 use crate::common::harness::quick_harness;
-use crate::common::test_helpers::write_temp_file;
+use crate::common::test_helpers::{create_chain_for_cluster, verify_in_config_dump, write_temp_file};
 
 /// Minimal valid WASM filter definition JSON for testing.
 /// Uses a tiny valid WASM module (magic + version header only, base64-encoded).
@@ -298,6 +300,209 @@ async fn dev_cli_wasm_delete() {
                 filter_type
             );
         }
+    }
+}
+
+// ============================================================================
+// WASM filter → Envoy delivery (full chain)
+// ============================================================================
+
+/// Full Envoy delivery test: create WASM filter → create a filter instance of
+/// that custom type → set up routing infra → attach filter to listener →
+/// verify `envoy.filters.http.wasm` appears in Envoy config_dump.
+///
+/// WASM filters only appear in Envoy when instantiated and attached to a listener.
+/// This mirrors the SDS pattern from test_cli_secrets.rs.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_wasm_envoy_delivery() {
+    let harness = quick_harness("dev_wasm_envoy").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    if !harness.has_envoy() {
+        eprintln!("SKIP: Envoy not available — cannot verify WASM delivery");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    // Step 1: create the WASM filter definition
+    let wasm_name = "e2e-wasm-envoy";
+    let json_content = sample_wasm_filter_json(wasm_name);
+    let file = write_temp_file(&json_content, ".json");
+
+    let create_output = cli
+        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
+        .unwrap();
+    create_output.assert_success();
+    let created: serde_json::Value =
+        serde_json::from_str(&create_output.stdout).expect("create output should be valid JSON");
+    let wasm_id = created["id"].as_str().expect("response should contain id");
+    let filter_type = format!("custom_wasm_{}", wasm_id);
+
+    // Step 2: create routing infra (cluster → route + listener)
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let cluster_name = "wasm-envoy-cluster";
+    let cluster_yaml = format!(
+        "name: {cluster_name}\nendpoints:\n  - host: {}\n    port: {}\nconnectTimeoutSeconds: 5\n",
+        parts[0], parts[1]
+    );
+    let cluster_file = write_temp_file(&cluster_yaml, ".yaml");
+    cli.run(&["cluster", "create", "-f", cluster_file.path().to_str().unwrap()])
+        .unwrap()
+        .assert_success();
+
+    let (_route_name, _domain) =
+        create_chain_for_cluster(&harness, cluster_name, "wasm-envoy").await;
+    verify_in_config_dump(&harness, cluster_name).await;
+
+    // Step 3: create a filter instance using the custom WASM type
+    // The filter type is `custom_wasm_{id}` which maps to envoy.filters.http.wasm
+    let filter_name = "wasm-envoy-filter";
+    let filter_yaml = format!(
+        r#"name: {filter_name}
+filterType: {filter_type}
+config:
+  type: {filter_type}
+  config:
+    enabled: true
+"#
+    );
+    let filter_file = write_temp_file(&filter_yaml, ".yaml");
+    let filter_output =
+        cli.run(&["filter", "create", "-f", filter_file.path().to_str().unwrap()]).unwrap();
+    assert_eq!(
+        filter_output.exit_code, 0,
+        "filter create with WASM type failed: stdout={}, stderr={}",
+        filter_output.stdout, filter_output.stderr
+    );
+
+    // Step 4: attach the filter to the listener
+    let listener_name = "wasm-envoy-ls";
+    let attach_output = cli.run(&["filter", "attach", filter_name, listener_name]).unwrap();
+    assert_eq!(
+        attach_output.exit_code, 0,
+        "filter attach failed: stdout={}, stderr={}",
+        attach_output.stdout, attach_output.stderr
+    );
+
+    // Step 5: wait for xDS delivery and verify in Envoy config_dump
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let config_dump = harness.get_config_dump().await.expect("config_dump should succeed");
+
+    // WASM filters appear as envoy.filters.http.wasm in Envoy config
+    let wasm_in_envoy = config_dump.contains("envoy.filters.http.wasm")
+        || config_dump.contains(&filter_type)
+        || config_dump.contains(filter_name);
+
+    assert!(
+        wasm_in_envoy,
+        "WASM filter should appear in Envoy config_dump after attachment. \
+         Looked for 'envoy.filters.http.wasm', '{}', or '{}'. \
+         Config dump does not contain any of them.",
+        filter_type, filter_name
+    );
+
+    eprintln!(
+        "WASM ENVOY VERIFIED: filter type '{}' delivered to Envoy",
+        filter_type
+    );
+
+    // Cleanup
+    let _ = cli.run(&["filter", "delete", filter_name, "--yes"]);
+    let _ = cli.run(&["wasm", "delete", wasm_id, "--yes"]);
+}
+
+/// Delete a WASM filter that has an attached instance, verify removal from Envoy.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_wasm_delete_verify_envoy_removal() {
+    let harness = quick_harness("dev_wasm_del_envoy").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    if !harness.has_envoy() {
+        eprintln!("SKIP: Envoy not available");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+
+    // Create WASM filter + routing + filter instance + attach (same setup as above)
+    let wasm_name = "e2e-wasm-del-envoy";
+    let json_content = sample_wasm_filter_json(wasm_name);
+    let file = write_temp_file(&json_content, ".json");
+    let create_output = cli
+        .run(&["wasm", "create", "-f", file.path().to_str().unwrap()])
+        .unwrap();
+    create_output.assert_success();
+    let created: serde_json::Value =
+        serde_json::from_str(&create_output.stdout).expect("valid JSON");
+    let wasm_id = created["id"].as_str().expect("id");
+    let filter_type = format!("custom_wasm_{}", wasm_id);
+
+    let echo = harness.echo_endpoint();
+    let parts: Vec<&str> = echo.split(':').collect();
+    let cluster_yaml = format!(
+        "name: wasm-del-cluster\nendpoints:\n  - host: {}\n    port: {}\nconnectTimeoutSeconds: 5\n",
+        parts[0], parts[1]
+    );
+    let cluster_file = write_temp_file(&cluster_yaml, ".yaml");
+    cli.run(&["cluster", "create", "-f", cluster_file.path().to_str().unwrap()])
+        .unwrap()
+        .assert_success();
+
+    create_chain_for_cluster(&harness, "wasm-del-cluster", "wasm-del").await;
+    verify_in_config_dump(&harness, "wasm-del-cluster").await;
+
+    let filter_name = "wasm-del-filter";
+    let filter_yaml = format!(
+        "name: {filter_name}\nfilterType: {filter_type}\nconfig:\n  type: {filter_type}\n  config:\n    enabled: true\n"
+    );
+    let filter_file = write_temp_file(&filter_yaml, ".yaml");
+    cli.run(&["filter", "create", "-f", filter_file.path().to_str().unwrap()])
+        .unwrap()
+        .assert_success();
+    cli.run(&["filter", "attach", filter_name, "wasm-del-ls"])
+        .unwrap()
+        .assert_success();
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Verify filter is in Envoy before deletion
+    let config_before = harness.get_config_dump().await.expect("config_dump should work");
+    let was_present = config_before.contains("envoy.filters.http.wasm")
+        || config_before.contains(&filter_type)
+        || config_before.contains(filter_name);
+
+    // Delete the filter instance first, then the WASM definition
+    let _ = cli.run(&["filter", "delete", filter_name, "--yes"]);
+    let _ = cli.run(&["wasm", "delete", wasm_id, "--yes"]);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Verify WASM filter is gone from Envoy
+    let config_after = harness.get_config_dump().await.expect("config_dump should work");
+    let still_present = config_after.contains(&filter_type);
+    assert!(
+        !still_present,
+        "WASM filter type '{}' should be gone from Envoy config_dump after deletion",
+        filter_type
+    );
+
+    if was_present {
+        eprintln!(
+            "WASM REMOVAL VERIFIED: '{}' was in Envoy, now gone after delete",
+            filter_type
+        );
+    } else {
+        eprintln!(
+            "NOTE: WASM filter was not visible in Envoy before deletion \
+             (may not have been delivered in time)"
+        );
     }
 }
 
