@@ -10,6 +10,8 @@
 //! ```
 
 pub mod test_bootstrap;
+pub mod test_cli_deletes;
+pub mod test_cli_filter_ops;
 pub mod test_cli_ops;
 pub mod test_cli_phase3;
 pub mod test_cli_phase3_prod;

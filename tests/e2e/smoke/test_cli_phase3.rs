@@ -12,7 +12,8 @@
 use serde_json::json;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::dev_harness;
+use crate::common::harness::{dev_harness, quick_harness};
+use crate::common::test_helpers::{verify_in_config_dump, verify_traffic};
 
 // ============================================================================
 // expose — with API verification
@@ -654,5 +655,183 @@ async fn dev_cli_auth_whoami_shows_user() {
     assert!(
         !output.stdout.trim().is_empty(),
         "Expected whoami to print user info, got empty stdout"
+    );
+}
+
+// ============================================================================
+// expose / unexpose — with Envoy verification
+// ============================================================================
+
+/// Expose a service via CLI, then verify it appears in Envoy config_dump and
+/// that traffic flows through the proxy to the upstream echo service.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_expose_with_envoy_verification() {
+    let harness = quick_harness("dev_cli_expose_envoy").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    if !harness.has_envoy() {
+        eprintln!("SKIP: Envoy not available");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+    let echo = harness.echo_endpoint();
+
+    // Expose the echo service on the harness listener port
+    let output = cli
+        .run(&[
+            "expose",
+            &echo,
+            "--name",
+            "e2e-envoy-exp",
+            "--port",
+            &harness.ports.listener.to_string(),
+        ])
+        .unwrap();
+    output.assert_success();
+    output.assert_stdout_contains("Exposed");
+
+    // Verify the cluster appears in Envoy config_dump via xDS
+    verify_in_config_dump(&harness, "e2e-envoy-exp").await;
+
+    // Verify traffic flows through Envoy to the echo upstream
+    verify_traffic(&harness, "e2e-envoy-exp.local", "/").await;
+}
+
+/// Expose a service, verify traffic works, then unexpose it and verify resources
+/// are removed from Envoy and traffic stops flowing.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_unexpose_with_envoy_verification() {
+    let harness = quick_harness("dev_cli_unexpose_envoy").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    if !harness.has_envoy() {
+        eprintln!("SKIP: Envoy not available");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+    let echo = harness.echo_endpoint();
+
+    // Expose the echo service
+    let expose = cli
+        .run(&[
+            "expose",
+            &echo,
+            "--name",
+            "e2e-envoy-unexp",
+            "--port",
+            &harness.ports.listener.to_string(),
+        ])
+        .unwrap();
+    expose.assert_success();
+
+    // Confirm it reached Envoy
+    verify_in_config_dump(&harness, "e2e-envoy-unexp").await;
+
+    // Unexpose
+    let unexpose = cli.run(&["unexpose", "e2e-envoy-unexp"]).unwrap();
+    unexpose.assert_success();
+
+    // Wait a moment for xDS to propagate the removal
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Verify the resource is gone from Envoy config_dump
+    let config_dump = harness.get_config_dump().await.expect("should get config_dump");
+    assert!(
+        !config_dump.contains("e2e-envoy-unexp"),
+        "Expected resource 'e2e-envoy-unexp' to be removed from Envoy config_dump after unexpose"
+    );
+
+    // Verify traffic no longer flows (should get an error or non-200)
+    let result = harness.proxy_get("e2e-envoy-unexp.local", "/").await;
+    match result {
+        Err(_) => { /* connection refused or timeout — expected */ }
+        Ok((status, _)) => {
+            assert_ne!(
+                status, 200,
+                "Expected non-200 status after unexpose, but got 200 — route still active"
+            );
+        }
+    }
+}
+
+/// Full lifecycle: expose → verify traffic flows → unexpose → verify traffic stops.
+/// Exercises the complete user journey through Envoy.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_expose_unexpose_lifecycle_envoy() {
+    let harness =
+        quick_harness("dev_cli_lifecycle_envoy").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    if !harness.has_envoy() {
+        eprintln!("SKIP: Envoy not available");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+    let echo = harness.echo_endpoint();
+
+    // === Phase 1: Expose ===
+    let expose = cli
+        .run(&[
+            "expose",
+            &echo,
+            "--name",
+            "e2e-lifecycle-envoy",
+            "--port",
+            &harness.ports.listener.to_string(),
+        ])
+        .unwrap();
+    expose.assert_success();
+    expose.assert_stdout_contains("Exposed");
+
+    // === Phase 2: Verify config + traffic ===
+    verify_in_config_dump(&harness, "e2e-lifecycle-envoy").await;
+    verify_traffic(&harness, "e2e-lifecycle-envoy.local", "/").await;
+
+    // Also verify via `list` that the service appears
+    let list = cli.run(&["list"]).unwrap();
+    list.assert_success();
+    list.assert_stdout_contains("e2e-lifecycle-envoy");
+
+    // === Phase 3: Unexpose ===
+    let unexpose = cli.run(&["unexpose", "e2e-lifecycle-envoy"]).unwrap();
+    unexpose.assert_success();
+
+    // === Phase 4: Verify removal ===
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Config dump should no longer contain the resource
+    let config_dump = harness.get_config_dump().await.expect("should get config_dump");
+    assert!(
+        !config_dump.contains("e2e-lifecycle-envoy"),
+        "Resource 'e2e-lifecycle-envoy' should be gone from config_dump after unexpose"
+    );
+
+    // Traffic should stop
+    let result = harness.proxy_get("e2e-lifecycle-envoy.local", "/").await;
+    match result {
+        Err(_) => { /* expected — connection refused or route gone */ }
+        Ok((status, _)) => {
+            assert_ne!(
+                status, 200,
+                "Traffic should not return 200 after unexpose"
+            );
+        }
+    }
+
+    // List should no longer show the service
+    let list_after = cli.run(&["list"]).unwrap();
+    list_after.assert_success();
+    assert!(
+        !list_after.stdout.contains("e2e-lifecycle-envoy"),
+        "Service should not appear in list after unexpose"
     );
 }
