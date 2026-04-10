@@ -60,6 +60,9 @@ async fn dev_cli_learn_start_creates_session() {
     let list = cli.run(&["learn", "list", "-o", "json"]).unwrap();
     list.assert_success();
     list.assert_stdout_contains("e2e-learn-start");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "learn-start-svc"]);
 }
 
 // ============================================================================
@@ -105,6 +108,9 @@ async fn dev_cli_learn_start_with_filters() {
     get.assert_success();
     get.assert_stdout_contains("e2e-learn-filtered");
     get.assert_stdout_contains("^/api/.*");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "learn-filt-svc"]);
 }
 
 // ============================================================================
@@ -147,8 +153,13 @@ async fn dev_cli_learn_stop_lifecycle() {
     list.assert_success();
     list.assert_stdout_contains("e2e-learn-stop");
 
-    // Stop the session
-    let stop = cli.run(&["learn", "stop", "e2e-learn-stop", "-o", "json"]).unwrap();
+    // Stop the session (may take longer than default 30s timeout)
+    let stop = cli
+        .run_with_timeout(
+            &["learn", "stop", "e2e-learn-stop", "-o", "json"],
+            Duration::from_secs(60),
+        )
+        .unwrap();
     stop.assert_success();
 
     // Verify session is no longer active
@@ -158,6 +169,9 @@ async fn dev_cli_learn_stop_lifecycle() {
         !list_after.stdout.contains("e2e-learn-stop"),
         "stopped session should not appear in active list"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "learn-stop-svc"]);
 }
 
 // ============================================================================
@@ -216,6 +230,9 @@ async fn dev_cli_learn_cancel_discards_session() {
         !schemas.stdout.contains("e2e-learn-cancel"),
         "no schema should exist for a cancelled session"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "learn-cancel-svc"]);
 }
 
 // ============================================================================
@@ -256,17 +273,33 @@ async fn dev_cli_learn_activate_applies_schemas() {
     // Brief pause to let the session become active
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Stop learning (triggers final aggregation)
-    let stop = cli.run(&["learn", "stop", "e2e-learn-activate", "-o", "json"]).unwrap();
+    // Stop learning (triggers final aggregation — may take longer than default 30s)
+    let stop = cli
+        .run_with_timeout(
+            &["learn", "stop", "e2e-learn-activate", "-o", "json"],
+            Duration::from_secs(60),
+        )
+        .unwrap();
     stop.assert_success();
 
+    // Wait for session to fully stop before activating
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
     // Activate the completed session
-    let activate = cli.run(&["learn", "activate", "e2e-learn-activate", "-o", "json"]).unwrap();
+    let activate = cli
+        .run_with_timeout(
+            &["learn", "activate", "e2e-learn-activate", "-o", "json"],
+            Duration::from_secs(60),
+        )
+        .unwrap();
     activate.assert_success();
 
     // Verify schema was applied — schema list should show something
     let schemas = cli.run(&["schema", "list", "-o", "json"]).unwrap();
     schemas.assert_success();
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "learn-act-svc"]);
 }
 
 // ============================================================================
@@ -309,6 +342,9 @@ async fn dev_cli_learn_get_session_details() {
     get.assert_stdout_contains("e2e-learn-get");
     get.assert_stdout_contains("^/health");
     get.assert_stdout_contains("e2e-test"); // triggered_by
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "learn-get-svc"]);
 }
 
 // ============================================================================
@@ -425,6 +461,9 @@ async fn dev_cli_learn_cancel_no_yes_non_tty_fails() {
     let cancel = cli.run(&["learn", "cancel", "e2e-learn-nyes"]).unwrap();
     cancel.assert_failure();
     cancel.assert_stderr_contains("terminal");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "learn-nyes-svc"]);
 }
 
 // ============================================================================
@@ -499,4 +538,7 @@ async fn dev_cli_learn_health_active_session() {
 
     let health = cli.run(&["learn", "health", "e2e-learn-health"]).unwrap();
     health.assert_success();
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "learn-health-svc"]);
 }

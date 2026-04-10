@@ -60,6 +60,9 @@ async fn dev_cli_expose_creates_backend_resources() {
         reqwest::StatusCode::OK,
         "route-config should exist after CLI expose"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p3-res"]);
 }
 
 /// Exposing the same name+upstream twice should succeed both times (idempotent).
@@ -79,6 +82,9 @@ async fn dev_cli_expose_idempotent() {
 
     let second = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "e2e-p3-idem"]).unwrap();
     second.assert_success();
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p3-idem"]);
 }
 
 /// Expose the same name but a different upstream — should fail or indicate a
@@ -115,6 +121,9 @@ async fn dev_cli_expose_conflict_different_upstream() {
          exit_code={}, stdout={}, stderr={}",
         second.exit_code, second.stdout, second.stderr
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p3-conflict"]);
 }
 
 /// Expose with a --path argument should succeed.
@@ -133,6 +142,9 @@ async fn dev_cli_expose_with_path() {
         .unwrap();
     output.assert_success();
     output.assert_stdout_contains("Exposed");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p3-path"]);
 }
 
 /// Expose without --name: the CLI should auto-generate a name from the upstream.
@@ -149,6 +161,12 @@ async fn dev_cli_expose_auto_name() {
     let output = cli.run(&["expose", "http://127.0.0.1:9999"]).unwrap();
     output.assert_success();
     output.assert_stdout_contains("Exposed");
+
+    // Cleanup: extract auto-generated name from output and unexpose
+    // The expose output contains "Exposed <name>", extract the name
+    if let Some(name) = output.stdout.split_whitespace().nth(1) {
+        let _ = cli.run(&["unexpose", name]);
+    }
 }
 
 // ============================================================================
@@ -423,6 +441,9 @@ async fn dev_cli_list_after_expose_shows_service() {
         "Expected list output to strip '-listener' suffix, but found it:\n{}",
         list.stdout
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-list-svc"]);
 }
 
 /// `flowplane status` with no argument shows system overview with resource info.
@@ -476,6 +497,9 @@ async fn dev_cli_status_specific_listener() {
         status.stdout,
         status.stderr
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-stat-svc"]);
 }
 
 // ============================================================================
@@ -698,6 +722,9 @@ async fn dev_cli_expose_with_envoy_verification() {
 
     // Verify traffic flows through Envoy to the echo upstream
     verify_traffic(&harness, "e2e-envoy-exp.local", "/").await;
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-envoy-exp"]);
 }
 
 /// Expose a service, verify traffic works, then unexpose it and verify resources

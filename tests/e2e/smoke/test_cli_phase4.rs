@@ -111,6 +111,9 @@ async fn dev_cli_vhost_list_after_expose() {
         !output.stdout.trim().is_empty(),
         "Expected vhost list to contain entries after expose, got empty stdout"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p4-vhost"]);
 }
 
 /// Get a specific vhost and verify domains field appears in output.
@@ -141,6 +144,9 @@ async fn dev_cli_vhost_get() {
         "Expected vhost get to show domain info, got:\n{}",
         output.stdout
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p4-vhget"]);
 }
 
 // ============================================================================
@@ -239,6 +245,9 @@ async fn dev_cli_filter_update_lifecycle() {
         update.exit_code == 0 || !update.stderr.is_empty(),
         "Expected filter update to either succeed or produce an error message"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p4-filt"]);
 }
 
 // ============================================================================
@@ -359,6 +368,9 @@ async fn dev_cli_route_views_after_expose() {
         output.stdout.contains("e2e-p4-rv") || !output.stdout.trim().is_empty(),
         "Expected route-views to show routes after expose, got empty output"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p4-rv"]);
 }
 
 // ============================================================================

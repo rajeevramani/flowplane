@@ -61,7 +61,7 @@ info:
   title: Import E2E API
   version: "1.0.0"
 servers:
-  - url: {echo}
+  - url: http://{echo}
 paths:
   /api/test:
     get:

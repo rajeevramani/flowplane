@@ -365,7 +365,8 @@ config:
 
     // Step 4: attach the filter to the listener
     let listener_name = "wasm-envoy-ls";
-    let attach_output = cli.run(&["filter", "attach", filter_name, listener_name]).unwrap();
+    let attach_output =
+        cli.run(&["filter", "attach", filter_name, "--listener", listener_name]).unwrap();
     assert_eq!(
         attach_output.exit_code, 0,
         "filter attach failed: stdout={}, stderr={}",
@@ -445,7 +446,9 @@ async fn dev_cli_wasm_delete_verify_envoy_removal() {
     cli.run(&["filter", "create", "-f", filter_file.path().to_str().unwrap()])
         .unwrap()
         .assert_success();
-    cli.run(&["filter", "attach", filter_name, "wasm-del-ls"]).unwrap().assert_success();
+    cli.run(&["filter", "attach", filter_name, "--listener", "wasm-del-ls"])
+        .unwrap()
+        .assert_success();
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 

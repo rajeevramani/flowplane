@@ -574,7 +574,7 @@ async fn prod_cli_org_team_lifecycle() {
 }
 
 // ============================================================================
-// Dev-mode team/org tests
+// Dev-mode team tests + prod-mode org/admin tests (originally dev, reclassified)
 // ============================================================================
 
 /// Dev mode: `flowplane team list --org <org>` should work with bearer token.
@@ -593,13 +593,13 @@ async fn dev_cli_team_list() {
     output.assert_stdout_contains("teams");
 }
 
-/// Dev mode: `flowplane team list --admin` should work.
+/// `flowplane team list --admin` requires admin scope (prod mode only).
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_team_list_admin() {
-    let harness = dev_harness("dev_cli_team_ladm").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_team_list_admin_dev() {
+    let harness = dev_harness("prod_cli_team_ladm2").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: admin team list requires Zitadel (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -649,13 +649,13 @@ async fn dev_cli_team_create_get_delete() {
     get_after.assert_failure();
 }
 
-/// Dev mode: `flowplane org list` should work.
+/// `flowplane org list` requires admin privileges (prod mode only).
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_org_list() {
-    let harness = dev_harness("dev_cli_org_list").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_org_list_standalone() {
+    let harness = dev_harness("prod_cli_org_list2").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: org commands require admin privileges (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -665,13 +665,13 @@ async fn dev_cli_org_list() {
     output.assert_stdout_contains("organizations");
 }
 
-/// Dev mode: `flowplane org get <org>` should return the dev org.
+/// `flowplane org get <org>` requires admin privileges (prod mode only).
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_org_get() {
-    let harness = dev_harness("dev_cli_org_get").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_org_get_standalone() {
+    let harness = dev_harness("prod_cli_org_get2").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: org commands require admin privileges (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -681,13 +681,13 @@ async fn dev_cli_org_get() {
     output.assert_stdout_contains(&harness.org);
 }
 
-/// Dev mode: `flowplane org create + delete` lifecycle.
+/// `flowplane org create + delete` lifecycle requires admin (prod mode only).
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_org_create_delete() {
-    let harness = dev_harness("dev_cli_org_cd").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_org_create_delete_standalone() {
+    let harness = dev_harness("prod_cli_org_cd2").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: org commands require admin privileges (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -719,13 +719,13 @@ async fn dev_cli_org_create_delete() {
     get_out.assert_failure();
 }
 
-/// Dev mode: `flowplane org members <org>` should work.
+/// `flowplane org members <org>` requires admin privileges (prod mode only).
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_org_members() {
-    let harness = dev_harness("dev_cli_org_memb").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_org_members_standalone() {
+    let harness = dev_harness("prod_cli_org_memb2").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: org commands require admin privileges (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();

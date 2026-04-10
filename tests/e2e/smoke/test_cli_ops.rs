@@ -43,6 +43,9 @@ async fn dev_ops_trace_returns_json() {
     let body: serde_json::Value = resp.json().await.expect("response should be valid JSON");
     assert!(body.is_object(), "trace response should be a JSON object");
     assert!(body.get("path").is_some(), "trace response should contain a path field");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "ops-trace-svc"]);
 }
 
 /// GET /ops/trace without path param should return 400 (missing required param).
@@ -109,6 +112,9 @@ async fn dev_ops_topology_returns_json() {
         body_str.contains("listener") || body_str.contains("cluster") || body_str.contains("route"),
         "topology response should reference listeners, clusters, or routes: {body}"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "ops-topo-svc"]);
 }
 
 /// GET /ops/validate returns JSON with an issues array.
@@ -142,6 +148,9 @@ async fn dev_ops_validate_returns_json() {
         "validate response should contain an 'issues' field: {body}"
     );
     assert!(body["issues"].is_array(), "issues field should be an array: {}", body["issues"]);
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "ops-validate-svc"]);
 }
 
 /// GET /ops/xds/status returns valid JSON.
@@ -195,6 +204,9 @@ async fn dev_ops_audit_returns_json() {
     // After exposing a service, there should be at least one audit event
     let events = body.as_array().unwrap();
     assert!(!events.is_empty(), "audit log should contain events after exposing a service");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "ops-audit-svc"]);
 }
 
 // ============================================================================
@@ -233,6 +245,9 @@ async fn dev_cli_trace_with_exposed_service() {
         output.stdout,
         output.stderr
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "trace-test-svc"]);
 }
 
 /// Trace a path that doesn't match any exposed service — should succeed but
@@ -289,6 +304,9 @@ async fn dev_cli_topology_shows_resources() {
         output.stdout,
         output.stderr
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "topo-test-svc"]);
 }
 
 /// Expose a valid service, validate config — should exit 0 (no issues).
@@ -308,6 +326,9 @@ async fn dev_cli_validate_clean_config() {
 
     let output = cli.run(&["validate"]).unwrap();
     output.assert_success();
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "validate-test-svc"]);
 }
 
 /// Expose a service, run audit, verify create events appear.
@@ -340,6 +361,9 @@ async fn dev_cli_audit_after_changes() {
         output.stdout,
         output.stderr
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "audit-test-svc"]);
 }
 
 /// `flowplane xds status` should exit 0 and produce output.

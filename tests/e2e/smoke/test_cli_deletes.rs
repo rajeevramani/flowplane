@@ -77,7 +77,12 @@ async fn dev_cli_delete_cluster() {
     verify_in_config_dump(&harness, cluster_name).await;
     verify_traffic(&harness, &domain, "/test").await;
 
-    // Step 4: delete the cluster
+    // Step 4: delete in reverse dependency order — listener → route → cluster
+    // The chain creates "del-cluster-ls" listener and "del-cluster-rc" route config.
+    // Cluster cannot be deleted while referenced by a route config.
+    let _ = cli.run(&["listener", "delete", "del-cluster-ls", "--yes"]);
+    let _ = cli.run(&["route", "delete", "del-cluster-rc", "--yes"]);
+
     let delete_output = cli.run(&["cluster", "delete", cluster_name, "--yes"]).unwrap();
     delete_output.assert_success();
     delete_output.assert_stdout_contains("deleted");
@@ -192,8 +197,11 @@ async fn dev_cli_delete_listener() {
         .replace("<your-route-config-name>", route_name)
         .replace("your-route-config-name", route_name)
         .replace("my-route-config", route_name)
+        .replace("<your-dataplane-id>", "dev-dataplane-id")
+        .replace("your-dataplane-id", "dev-dataplane-id")
         .replace("<port>", &harness.ports.listener.to_string())
         .replace("10000", &harness.ports.listener.to_string())
+        .replace("10001", &harness.ports.listener.to_string())
         .replace("8080", &harness.ports.listener.to_string());
 
     let listener_file = write_temp_file(&listener_content, ".yaml");

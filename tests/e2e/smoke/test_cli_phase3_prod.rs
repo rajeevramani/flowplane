@@ -55,6 +55,9 @@ async fn prod_cli_expose_creates_resources() {
         reqwest::StatusCode::OK,
         "route-config should exist after CLI expose"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-prod-cli-svc"]);
 }
 
 /// Unexpose via CLI with JWT auth — verify cleanup.
@@ -120,6 +123,9 @@ async fn prod_cli_expose_idempotent() {
     let output2 =
         cli.run(&["expose", "http://127.0.0.1:9999", "--name", "e2e-prod-cli-idem"]).unwrap();
     output2.assert_success();
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-prod-cli-idem"]);
 }
 
 // ============================================================================

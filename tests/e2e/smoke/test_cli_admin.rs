@@ -1,9 +1,13 @@
-//! E2E tests for CLI agent, cert, and admin commands (dev mode).
+//! E2E tests for CLI agent, cert, and admin commands.
 //!
-//! Tests agent create/delete, cert create/revoke, and admin reload-filter-schemas
-//! commands via the CLI binary. All mutations verified via subsequent CLI reads.
+//! Agent tests require Zitadel (prod mode only). Cert and admin tests run in
+//! dev mode with graceful skips when PKI/Vault is not configured.
 //!
 //! ```bash
+//! # Agent tests (prod mode only)
+//! RUN_E2E=1 cargo test --test e2e prod_cli_agent -- --ignored --nocapture
+//! # Cert + admin tests (dev mode)
+//! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_cert -- --ignored --nocapture
 //! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_admin -- --ignored --nocapture
 //! ```
 
@@ -18,11 +22,11 @@ use crate::common::test_helpers::write_temp_file;
 /// `flowplane agent create -f <file>` should create a machine identity agent,
 /// and `flowplane agent list` should show it afterwards.
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_agent_create_and_list() {
-    let harness = dev_harness("dev_cli_agent_create").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_agent_create_and_list() {
+    let harness = dev_harness("prod_cli_agent_create").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: agent management requires Zitadel (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -54,11 +58,11 @@ async fn dev_cli_agent_create_and_list() {
 /// `flowplane agent delete <name>` should remove an agent, and subsequent
 /// list should not contain it.
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_agent_delete() {
-    let harness = dev_harness("dev_cli_agent_del").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_agent_delete() {
+    let harness = dev_harness("prod_cli_agent_del").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: agent management requires Zitadel (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -96,11 +100,11 @@ async fn dev_cli_agent_delete() {
 
 /// `flowplane agent create` with invalid config (missing teams) should fail.
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_agent_create_bad_config() {
-    let harness = dev_harness("dev_cli_agent_bad").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_agent_create_bad_config() {
+    let harness = dev_harness("prod_cli_agent_bad").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: agent management requires Zitadel (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -119,11 +123,11 @@ async fn dev_cli_agent_create_bad_config() {
 
 /// `flowplane agent create` with invalid name (uppercase, special chars) should fail.
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_agent_create_invalid_name() {
-    let harness = dev_harness("dev_cli_agent_invn").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_agent_create_invalid_name() {
+    let harness = dev_harness("prod_cli_agent_invn").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: agent management requires Zitadel (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -142,11 +146,11 @@ async fn dev_cli_agent_create_invalid_name() {
 
 /// `flowplane agent delete` for a nonexistent agent should fail.
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_agent_delete_nonexistent() {
-    let harness = dev_harness("dev_cli_agent_del404").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_agent_delete_nonexistent() {
+    let harness = dev_harness("prod_cli_agent_del404").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: agent management requires Zitadel (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -415,11 +419,11 @@ async fn dev_cli_admin_reload_filter_schemas_idempotent() {
 
 /// `flowplane agent create` with a malformed (non-JSON) file should fail.
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_agent_create_malformed_file() {
-    let harness = dev_harness("dev_cli_agent_malf").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_agent_create_malformed_file() {
+    let harness = dev_harness("prod_cli_agent_malf").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: agent management requires Zitadel (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -433,11 +437,11 @@ async fn dev_cli_agent_create_malformed_file() {
 
 /// `flowplane agent create` with name that's too short (< 3 chars) should fail.
 #[tokio::test]
-#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_agent_create_name_too_short() {
-    let harness = dev_harness("dev_cli_agent_short").await.expect("harness should start");
-    if !harness.is_dev_mode() {
-        eprintln!("SKIP: not in dev mode");
+#[ignore = "requires RUN_E2E=1"]
+async fn prod_cli_agent_create_name_too_short() {
+    let harness = dev_harness("prod_cli_agent_short").await.expect("harness should start");
+    if harness.is_dev_mode() {
+        eprintln!("SKIP: agent management requires Zitadel (prod mode)");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();

@@ -132,7 +132,8 @@ async fn dev_cli_secret_rotate() {
     assert_eq!(created["version"].as_i64(), Some(1));
 
     // Step 2: rotate the secret with new config
-    let new_config = r#"{"secret": "cm90YXRlZC12YWx1ZQ=="}"#; // pragma: allowlist secret
+    // Rotate config must include the "type" field, matching the original secret type
+    let new_config = r#"{"type": "generic_secret", "secret": "cm90YXRlZC12YWx1ZQ=="}"#; // pragma: allowlist secret
     let rotate_output = cli.run(&["secret", "rotate", secret_id, "--config", new_config]).unwrap();
     assert_eq!(
         rotate_output.exit_code, 0,
@@ -324,7 +325,8 @@ config:
 
     // Step 4: attach the filter to the listener
     let listener_name = "sds-cli-ls";
-    let attach_output = cli.run(&["filter", "attach", filter_name, listener_name]).unwrap();
+    let attach_output =
+        cli.run(&["filter", "attach", filter_name, "--listener", listener_name]).unwrap();
     assert_eq!(
         attach_output.exit_code, 0,
         "filter attach failed: stdout={}, stderr={}",
@@ -456,7 +458,9 @@ config:
     cli.run(&["filter", "create", "-f", filter_file.path().to_str().unwrap()])
         .unwrap()
         .assert_success();
-    cli.run(&["filter", "attach", filter_name, "sds-rot-ls"]).unwrap().assert_success();
+    cli.run(&["filter", "attach", filter_name, "--listener", "sds-rot-ls"])
+        .unwrap()
+        .assert_success();
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -466,8 +470,8 @@ config:
         config_dump_before.contains(filter_name) || config_dump_before.contains("sds-rot-provider");
     assert!(filter_delivered, "JWT filter should be in Envoy before rotation");
 
-    // Rotate the secret
-    let new_config = r#"{"secret": "cm90YXRlZA=="}"#; // pragma: allowlist secret
+    // Rotate the secret (must include type field)
+    let new_config = r#"{"type": "generic_secret", "secret": "cm90YXRlZA=="}"#; // pragma: allowlist secret
     let rotate = cli.run(&["secret", "rotate", secret_id, "--config", new_config]).unwrap();
     rotate.assert_success();
     let rotated: serde_json::Value = serde_json::from_str(&rotate.stdout).expect("valid JSON");
@@ -561,7 +565,7 @@ async fn dev_cli_secret_rotate_nonexistent() {
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let fake_id = "00000000-0000-0000-0000-000000000000";
-    let config = r#"{"secret": "bm9uZXhpc3Q="}"#; // pragma: allowlist secret
+    let config = r#"{"type": "generic_secret", "secret": "bm9uZXhpc3Q="}"#; // pragma: allowlist secret
 
     let output = cli.run(&["secret", "rotate", fake_id, "--config", config]).unwrap();
     output.assert_failure();

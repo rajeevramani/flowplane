@@ -39,10 +39,17 @@ async fn expose_and_get_route_id(cli: &CliRunner, service_name: &str) -> String 
         panic!("Failed to parse route-views JSON: {}\nstdout: {}", e, views.stdout);
     });
 
-    // route-views returns an array of objects; find the one matching our service
-    let routes = views_json.as_array().unwrap_or_else(|| {
-        panic!("Expected route-views to return an array, got: {}", views_json);
-    });
+    // route-views returns {"items": [...]} or a bare array; handle both
+    let routes = views_json
+        .get("items")
+        .and_then(|v| v.as_array())
+        .or_else(|| views_json.as_array())
+        .unwrap_or_else(|| {
+            panic!(
+                "Expected route-views to return {{items: [...]}} or an array, got: {}",
+                views_json
+            );
+        });
 
     let route = routes
         .iter()
@@ -131,6 +138,9 @@ async fn dev_cli_mcp_enable_route() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     let domain = format!("{}.local", service_name);
     verify_traffic(&harness, &domain, "/").await;
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", service_name]);
 }
 
 // ============================================================================
@@ -187,6 +197,9 @@ async fn dev_cli_mcp_disable_route() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     let domain = format!("{}.local", service_name);
     verify_traffic(&harness, &domain, "/").await;
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", service_name]);
 }
 
 // ============================================================================
@@ -266,6 +279,9 @@ async fn dev_cli_mcp_enable_disable_lifecycle() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     let domain = format!("{}.local", service_name);
     verify_traffic(&harness, &domain, "/").await;
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", service_name]);
 }
 
 /// Count enabled tools from `mcp tools -o json` output.
@@ -449,4 +465,7 @@ async fn dev_cli_mcp_disable_not_enabled() {
          got exit_code={}, stdout={}, stderr={}",
         output.exit_code, output.stdout, output.stderr
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", service_name]);
 }

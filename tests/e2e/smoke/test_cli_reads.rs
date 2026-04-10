@@ -39,6 +39,9 @@ async fn dev_cli_reads_listener_list() {
     let output = cli.run(&["listener", "list"]).unwrap();
     output.assert_success();
     output.assert_stdout_contains("reads-ls-list");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "reads-ls-list"]);
 }
 
 // ============================================================================
@@ -64,6 +67,9 @@ async fn dev_cli_reads_route_list() {
     let output = cli.run(&["route", "list"]).unwrap();
     output.assert_success();
     output.assert_stdout_contains("reads-rt-list");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "reads-rt-list"]);
 }
 
 // ============================================================================
@@ -288,6 +294,9 @@ async fn dev_cli_reads_vhost_get() {
         "Expected vhost get to show vhost details, got:\n{}",
         get.stdout
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "reads-vhget"]);
 }
 
 // ============================================================================
@@ -379,6 +388,9 @@ async fn dev_cli_reads_route_views_stats() {
         "Expected route-views stats to return data after traffic, got:\n{}",
         output.stdout
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "reads-rv-stats"]);
 }
 
 /// Expose a service, send traffic, then verify `flowplane stats clusters`
@@ -411,6 +423,9 @@ async fn dev_cli_reads_stats_clusters() {
         "Expected stats clusters to return data after traffic, got:\n{}",
         output.stdout
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "reads-st-cls"]);
 }
 
 /// Expose a service, send traffic, then verify `flowplane stats cluster <name>`
@@ -443,6 +458,9 @@ async fn dev_cli_reads_stats_cluster_specific() {
         !output.stdout.trim().is_empty(),
         "Expected stats cluster to return data, got empty stdout"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "reads-st-cl1"]);
 }
 
 // ============================================================================
