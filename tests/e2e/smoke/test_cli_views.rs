@@ -1,12 +1,11 @@
-//! Phase 4 CLI E2E tests — dev mode
+//! CLI E2E tests — dataplane, vhost, filter types, import, stats, route-views,
+//! schema, reports (dev mode)
 //!
-//! Tests the CLI commands added in Phase 2/3 ops gaps: dataplane, vhost, filter
-//! types/update, import lifecycle, stats, route-views, schema, and reports.
 //! All tests use the dev-mode harness (bearer token, no Zitadel) and the
 //! CliRunner subprocess driver.
 //!
 //! ```bash
-//! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_phase4 -- --ignored --nocapture
+//! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_views -- --ignored --nocapture
 //! # or: make test-e2e-dev
 //! ```
 
@@ -98,12 +97,16 @@ async fn dev_cli_vhost_list_after_expose() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let name = format!("e2e-p4-vhost-{id}");
+
     // Expose a service to create route config + vhost
-    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "e2e-p4-vhost"]).unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", &name]).unwrap();
     expose.assert_success();
 
     // List vhosts for the route config created by expose
-    let output = cli.run(&["vhost", "list", "--route-config", "e2e-p4-vhost-routes"]).unwrap();
+    let route_config_name = format!("{name}-routes");
+    let output = cli.run(&["vhost", "list", "--route-config", &route_config_name]).unwrap();
     output.assert_success();
 
     // Should contain at least one vhost entry
@@ -127,26 +130,32 @@ async fn dev_cli_vhost_get() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let name = format!("e2e-p4-vhget-{id}");
+
     // Expose a service to create a vhost
-    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "e2e-p4-vhget"]).unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", &name]).unwrap();
     expose.assert_success();
 
-    // Get the vhost — expose typically creates a vhost named after the service
-    let output = cli
-        .run(&["vhost", "get", "e2e-p4-vhget", "--route-config", "e2e-p4-vhget-routes"])
-        .unwrap();
+    // Expose creates route config "{name}-routes" and vhost "{name}-routes-vhost"
+    // (vhost name = route_config_name + "-vhost", see expose.rs line 211)
+    let route_config_name = format!("{name}-routes");
+    let vhost_name = format!("{name}-routes-vhost");
+
+    // Get the vhost
+    let output = cli.run(&["vhost", "get", &route_config_name, &vhost_name]).unwrap();
     output.assert_success();
 
     // Output should contain domain info
     let stdout_lower = output.stdout.to_lowercase();
     assert!(
-        stdout_lower.contains("domain") || stdout_lower.contains("e2e-p4-vhget"),
+        stdout_lower.contains("domain") || stdout_lower.contains(&name),
         "Expected vhost get to show domain info, got:\n{}",
         output.stdout
     );
 
     // Cleanup: release port
-    let _ = cli.run(&["unexpose", "e2e-p4-vhget"]);
+    let _ = cli.run(&["unexpose", &name]);
 }
 
 // ============================================================================
@@ -266,10 +275,14 @@ async fn dev_cli_import_lifecycle() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let spec_title = format!("E2E Test API {id}");
+
     // Write a minimal OpenAPI spec to a temp file
-    let spec = r#"openapi: "3.1.0"
+    let spec = format!(
+        r#"openapi: "3.1.0"
 info:
-  title: "E2E Test API"
+  title: "{spec_title}"
   version: "1.0.0"
 servers:
   - url: "http://127.0.0.1:9999"
@@ -279,42 +292,57 @@ paths:
       responses:
         "200":
           description: "OK"
-"#;
+"#
+    );
     let spec_dir = tempfile::tempdir().expect("create temp dir for spec");
     let spec_path = spec_dir.path().join("e2e-test-api.yaml");
-    std::fs::write(&spec_path, spec).expect("write spec file");
+    std::fs::write(&spec_path, &spec).expect("write spec file");
 
-    // Import the spec
+    // Import the spec — use a unique port to avoid collision with other import tests
+    let import_port = {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+        listener.local_addr().unwrap().port().to_string()
+    };
     let import = cli
         .run(&[
             "import",
             "openapi",
             spec_path.to_str().expect("valid utf-8 path"),
             "--name",
-            "e2e-import-test",
+            &format!("e2e-import-{id}"),
+            "--port",
+            &import_port,
         ])
         .unwrap();
     import.assert_success();
 
-    // List imports — should contain our import
+    // Parse the import UUID from output
+    let import_id = import
+        .stdout
+        .lines()
+        .find(|l| l.contains("Import ID:"))
+        .and_then(|l| l.split("Import ID:").nth(1))
+        .map(|s| s.trim().to_string())
+        .expect("import output should contain Import ID");
+
+    // List imports — should contain the spec name
     let list = cli.run(&["import", "list"]).unwrap();
     list.assert_success();
-    list.assert_stdout_contains("e2e-import-test");
+    list.assert_stdout_contains(&spec_title);
 
-    // Get the specific import
-    let get = cli.run(&["import", "get", "e2e-import-test"]).unwrap();
+    // Get the specific import by UUID
+    let get = cli.run(&["import", "get", &import_id]).unwrap();
     get.assert_success();
-    get.assert_stdout_contains("e2e-import-test");
 
-    // Delete the import
-    let delete = cli.run(&["import", "delete", "e2e-import-test"]).unwrap();
+    // Delete the import by UUID (--yes to skip confirmation prompt)
+    let delete = cli.run(&["import", "delete", &import_id, "--yes"]).unwrap();
     delete.assert_success();
 
     // List again — should no longer contain the import
     let list_after = cli.run(&["import", "list"]).unwrap();
     list_after.assert_success();
     assert!(
-        !list_after.stdout.contains("e2e-import-test"),
+        !list_after.stdout.contains(&spec_title),
         "import should not appear in list after delete, got:\n{}",
         list_after.stdout
     );
@@ -336,7 +364,7 @@ async fn dev_cli_stats_overview() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let output = cli.run(&["stats"]).unwrap();
+    let output = cli.run(&["stats", "overview"]).unwrap();
     output.assert_success();
 }
 
@@ -355,22 +383,29 @@ async fn dev_cli_route_views_after_expose() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let name = format!("e2e-p4-rv-{id}");
+
+    // Pre-cleanup: clear stale resources from any prior failed test run
+    let _ = cli.run(&["unexpose", &name]);
+
     // Expose a service first
-    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "e2e-p4-rv"]).unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", &name]).unwrap();
     expose.assert_success();
 
-    // Run route-views
-    let output = cli.run(&["route-views"]).unwrap();
+    // Run route-views list
+    let output = cli.run(&["route-views", "list"]).unwrap();
     output.assert_success();
 
-    // Should mention the route or service we just exposed
+    // route-views may print to stdout or stderr — check combined output
+    let combined = format!("{}{}", output.stdout, output.stderr);
     assert!(
-        output.stdout.contains("e2e-p4-rv") || !output.stdout.trim().is_empty(),
+        combined.contains(&name) || !combined.trim().is_empty(),
         "Expected route-views to show routes after expose, got empty output"
     );
 
     // Cleanup: release port
-    let _ = cli.run(&["unexpose", "e2e-p4-rv"]);
+    let _ = cli.run(&["unexpose", &name]);
 }
 
 // ============================================================================

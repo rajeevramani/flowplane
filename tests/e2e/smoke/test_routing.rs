@@ -24,7 +24,7 @@ use crate::common::{
         ApiClient,
     },
     filter_configs,
-    harness::{TestHarness, TestHarnessConfig},
+    harness::envoy_harness,
     shared_infra::{E2eAuthMode, SharedInfrastructure},
     timeout::{with_timeout, TestTimeout},
 };
@@ -33,9 +33,7 @@ use crate::common::{
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn smoke_test_basic_routing() {
-    let harness = TestHarness::start(TestHarnessConfig::new("smoke_test_basic_routing"))
-        .await
-        .expect("Failed to start test harness");
+    let harness = envoy_harness("smoke_test_basic_routing").await.expect("harness should start");
 
     let api = ApiClient::new(harness.api_url());
 
@@ -102,19 +100,15 @@ async fn smoke_test_basic_routing() {
     // 3 sec delay before calling Envoy
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Verify routing through Envoy (if available)
-    if harness.has_envoy() {
-        let body = with_timeout(TestTimeout::default_with_label("Route convergence"), async {
-            harness.wait_for_route("smoke.e2e.local", "/smoke/test", 200).await
-        })
-        .await
-        .expect("Route should converge");
+    // Verify routing through Envoy
+    let body = with_timeout(TestTimeout::default_with_label("Route convergence"), async {
+        harness.wait_for_route("smoke.e2e.local", "/smoke/test", 200).await
+    })
+    .await
+    .expect("Route should converge");
 
-        assert!(!body.is_empty(), "Response body should not be empty");
-        println!("✓ Proxy verified: {}", &body[..50.min(body.len())]);
-    } else {
-        println!("⚠ Envoy not available, skipping proxy verification");
-    }
+    assert!(!body.is_empty(), "Response body should not be empty");
+    println!("✓ Proxy verified: {}", &body[..50.min(body.len())]);
 
     println!("Routing smoke test PASSED");
 }
@@ -123,9 +117,8 @@ async fn smoke_test_basic_routing() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn smoke_test_filter_attachment() {
-    let harness = TestHarness::start(TestHarnessConfig::new("smoke_test_filter_attachment"))
-        .await
-        .expect("Failed to start test harness");
+    let harness =
+        envoy_harness("smoke_test_filter_attachment").await.expect("harness should start");
 
     let api = ApiClient::new(harness.api_url());
 
@@ -252,49 +245,45 @@ async fn smoke_test_filter_attachment() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify filter through Envoy
-    if harness.has_envoy() {
-        // Wait for route convergence first
-        with_timeout(TestTimeout::default_with_label("Route convergence"), async {
-            harness.wait_for_route("smoke-filter.e2e.local", "/smoke/filter/test", 200).await
-        })
-        .await
-        .expect("Route should converge");
+    // Wait for route convergence first
+    with_timeout(TestTimeout::default_with_label("Route convergence"), async {
+        harness.wait_for_route("smoke-filter.e2e.local", "/smoke/filter/test", 200).await
+    })
+    .await
+    .expect("Route should converge");
 
-        // Make request and check headers
-        let response = with_timeout(TestTimeout::quick("Check headers"), async {
-            let envoy = harness.envoy().expect("Envoy should be available");
-            envoy
-                .proxy_get_with_headers(
-                    harness.ports.listener,
-                    "smoke-filter.e2e.local",
-                    "/smoke/filter/verify",
-                )
-                .await
-        })
-        .await
-        .expect("Proxy request should succeed");
+    // Make request and check headers
+    let response = with_timeout(TestTimeout::quick("Check headers"), async {
+        let envoy = harness.envoy().expect("Envoy should be available");
+        envoy
+            .proxy_get_with_headers(
+                harness.ports.listener,
+                "smoke-filter.e2e.local",
+                "/smoke/filter/verify",
+            )
+            .await
+    })
+    .await
+    .expect("Proxy request should succeed");
 
-        // Verify custom headers are present
-        assert!(
-            response.headers.contains_key("x-smoke-test"),
-            "X-Smoke-Test header should be present. Headers: {:?}",
-            response.headers
-        );
-        assert_eq!(
-            response.headers.get("x-smoke-test").map(|s| s.as_str()),
-            Some("flowplane"),
-            "X-Smoke-Test header value should be 'flowplane'"
-        );
-        println!("✓ Filter headers verified: X-Smoke-Test=flowplane");
+    // Verify custom headers are present
+    assert!(
+        response.headers.contains_key("x-smoke-test"),
+        "X-Smoke-Test header should be present. Headers: {:?}",
+        response.headers
+    );
+    assert_eq!(
+        response.headers.get("x-smoke-test").map(|s| s.as_str()),
+        Some("flowplane"),
+        "X-Smoke-Test header value should be 'flowplane'"
+    );
+    println!("✓ Filter headers verified: X-Smoke-Test=flowplane");
 
-        assert!(
-            response.headers.contains_key("x-frame-options"),
-            "X-Frame-Options header should be present"
-        );
-        println!("✓ Filter headers verified: X-Frame-Options=DENY");
-    } else {
-        println!("⚠ Envoy not available, skipping filter verification");
-    }
+    assert!(
+        response.headers.contains_key("x-frame-options"),
+        "X-Frame-Options header should be present"
+    );
+    println!("✓ Filter headers verified: X-Frame-Options=DENY");
 
     println!("Filter attachment smoke test PASSED");
 }
@@ -303,9 +292,7 @@ async fn smoke_test_filter_attachment() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn smoke_test_xds_config() {
-    let harness = TestHarness::start(TestHarnessConfig::new("smoke_test_xds_config"))
-        .await
-        .expect("Failed to start test harness");
+    let harness = envoy_harness("smoke_test_xds_config").await.expect("harness should start");
 
     let api = ApiClient::new(harness.api_url());
 
@@ -370,44 +357,40 @@ async fn smoke_test_xds_config() {
     println!("✓ Listener created");
 
     // Wait for route convergence before checking config dump
-    if harness.has_envoy() {
-        // First, wait for the route to actually work
-        with_timeout(TestTimeout::default_with_label("Route convergence"), async {
-            harness.wait_for_route("smoke-xds.e2e.local", "/smoke/xds/test", 200).await
-        })
-        .await
-        .expect("Route should converge");
-        println!("✓ Route verified working");
+    // First, wait for the route to actually work
+    with_timeout(TestTimeout::default_with_label("Route convergence"), async {
+        harness.wait_for_route("smoke-xds.e2e.local", "/smoke/xds/test", 200).await
+    })
+    .await
+    .expect("Route should converge");
+    println!("✓ Route verified working");
 
-        // Now get config dump
-        let config_dump = with_timeout(TestTimeout::quick("Get config dump"), async {
-            harness.get_config_dump().await
-        })
-        .await
-        .expect("Config dump should succeed");
+    // Now get config dump
+    let config_dump = with_timeout(TestTimeout::quick("Get config dump"), async {
+        harness.get_config_dump().await
+    })
+    .await
+    .expect("Config dump should succeed");
 
-        // Verify cluster appears in config (check both name variants)
-        let has_cluster =
-            config_dump.contains("smoke-xds-backend") || config_dump.contains(&cluster.name);
-        assert!(has_cluster, "Cluster should appear in xDS config dump");
-        println!("✓ Cluster verified in xDS config");
+    // Verify cluster appears in config (check both name variants)
+    let has_cluster =
+        config_dump.contains("smoke-xds-backend") || config_dump.contains(&cluster.name);
+    assert!(has_cluster, "Cluster should appear in xDS config dump");
+    println!("✓ Cluster verified in xDS config");
 
-        // Verify route config name appears (domain may be nested in virtual_hosts)
-        let has_route = config_dump.contains("smoke-xds-route")
-            || config_dump.contains(&route.name)
-            || config_dump.contains("smoke-xds.e2e.local");
-        assert!(has_route, "Route should appear in xDS config dump");
-        println!("✓ Route verified in xDS config");
+    // Verify route config name appears (domain may be nested in virtual_hosts)
+    let has_route = config_dump.contains("smoke-xds-route")
+        || config_dump.contains(&route.name)
+        || config_dump.contains("smoke-xds.e2e.local");
+    assert!(has_route, "Route should appear in xDS config dump");
+    println!("✓ Route verified in xDS config");
 
-        // Verify listener port appears
-        assert!(
-            config_dump.contains(&format!("{}", harness.ports.listener)),
-            "Listener port should appear in xDS config dump"
-        );
-        println!("✓ Listener port verified in xDS config");
-    } else {
-        println!("⚠ Envoy not available, skipping xDS verification");
-    }
+    // Verify listener port appears
+    assert!(
+        config_dump.contains(&format!("{}", harness.ports.listener)),
+        "Listener port should appear in xDS config dump"
+    );
+    println!("✓ Listener port verified in xDS config");
 
     println!("xDS config smoke test PASSED");
 }
@@ -423,9 +406,7 @@ async fn smoke_test_team_isolation() {
         return;
     }
 
-    let harness = TestHarness::start(TestHarnessConfig::new("smoke_test_team_isolation"))
-        .await
-        .expect("Failed to start test harness");
+    let harness = envoy_harness("smoke_test_team_isolation").await.expect("harness should start");
 
     let api = ApiClient::new(harness.api_url());
 
@@ -487,9 +468,7 @@ async fn smoke_test_team_isolation() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn smoke_test_crud_operations() {
-    let harness = TestHarness::start(TestHarnessConfig::new("smoke_test_crud_operations"))
-        .await
-        .expect("Failed to start test harness");
+    let harness = envoy_harness("smoke_test_crud_operations").await.expect("harness should start");
 
     let api = ApiClient::new(harness.api_url());
 

@@ -6,7 +6,7 @@
 //! - negative: stop/cancel/activate with no active session
 //!
 //! Learning requires a running service with traffic flowing, so these tests
-//! use `quick_harness` (which includes Envoy) and expose a service first.
+//! use `envoy_harness` (which spawns a per-test Envoy) and expose a service first.
 //!
 //! ```bash
 //! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_learn -- --ignored --nocapture
@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::{dev_harness, quick_harness};
+use crate::common::harness::{dev_harness, envoy_harness};
 use crate::common::test_helpers::verify_in_config_dump;
 
 // ============================================================================
@@ -26,7 +26,7 @@ use crate::common::test_helpers::verify_in_config_dump;
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_learn_start_creates_session() {
-    let harness = quick_harness("dev_learn_start").await.expect("harness should start");
+    let harness = envoy_harness("dev_learn_start").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -73,7 +73,7 @@ async fn dev_cli_learn_start_creates_session() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_learn_start_with_filters() {
-    let harness = quick_harness("dev_learn_filt").await.expect("harness should start");
+    let harness = envoy_harness("dev_learn_filt").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -121,17 +121,21 @@ async fn dev_cli_learn_start_with_filters() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_learn_stop_lifecycle() {
-    let harness = quick_harness("dev_learn_stop").await.expect("harness should start");
+    let harness = envoy_harness("dev_learn_stop").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+    let svc_name = format!("lrn-stop-{id}");
+    let session_name = format!("e2e-lrn-stop-{id}");
+
     // Expose a service
-    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-stop-svc"]).unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", &svc_name]).unwrap();
     expose.assert_success();
-    verify_in_config_dump(&harness, "learn-stop-svc").await;
+    verify_in_config_dump(&harness, &svc_name).await;
 
     // Start learning
     let start = cli
@@ -143,35 +147,32 @@ async fn dev_cli_learn_stop_lifecycle() {
             "--target-sample-count",
             "100",
             "--name",
-            "e2e-learn-stop",
+            &session_name,
         ])
         .unwrap();
     start.assert_success();
 
-    // Verify it's active
-    let list = cli.run(&["learn", "list", "--status", "active", "-o", "json"]).unwrap();
+    // Verify session was created (sessions start as "pending")
+    let list = cli.run(&["learn", "list", "-o", "json"]).unwrap();
     list.assert_success();
-    list.assert_stdout_contains("e2e-learn-stop");
+    list.assert_stdout_contains(&session_name);
 
     // Stop the session (may take longer than default 30s timeout)
     let stop = cli
-        .run_with_timeout(
-            &["learn", "stop", "e2e-learn-stop", "-o", "json"],
-            Duration::from_secs(60),
-        )
+        .run_with_timeout(&["learn", "stop", &session_name, "-o", "json"], Duration::from_secs(60))
         .unwrap();
     stop.assert_success();
 
-    // Verify session is no longer active
-    let list_after = cli.run(&["learn", "list", "--status", "active", "-o", "json"]).unwrap();
+    // Verify session status changed (no longer pending/active)
+    let list_after = cli.run(&["learn", "list", "--status", "pending", "-o", "json"]).unwrap();
     list_after.assert_success();
     assert!(
-        !list_after.stdout.contains("e2e-learn-stop"),
-        "stopped session should not appear in active list"
+        !list_after.stdout.contains(&session_name),
+        "stopped session should not appear in pending list"
     );
 
     // Cleanup: release port
-    let _ = cli.run(&["unexpose", "learn-stop-svc"]);
+    let _ = cli.run(&["unexpose", &svc_name]);
 }
 
 // ============================================================================
@@ -182,7 +183,7 @@ async fn dev_cli_learn_stop_lifecycle() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_learn_cancel_discards_session() {
-    let harness = quick_harness("dev_learn_cancel").await.expect("harness should start");
+    let harness = envoy_harness("dev_learn_cancel").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -243,17 +244,21 @@ async fn dev_cli_learn_cancel_discards_session() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_learn_activate_applies_schemas() {
-    let harness = quick_harness("dev_learn_act").await.expect("harness should start");
+    let harness = envoy_harness("dev_learn_act").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+    let svc_name = format!("lrn-act-{id}");
+    let session_name = format!("e2e-lrn-act-{id}");
+
     // Expose a service
-    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "learn-act-svc"]).unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", &svc_name]).unwrap();
     expose.assert_success();
-    verify_in_config_dump(&harness, "learn-act-svc").await;
+    verify_in_config_dump(&harness, &svc_name).await;
 
     // Start learning
     let start = cli
@@ -265,7 +270,7 @@ async fn dev_cli_learn_activate_applies_schemas() {
             "--target-sample-count",
             "10",
             "--name",
-            "e2e-learn-activate",
+            &session_name,
         ])
         .unwrap();
     start.assert_success();
@@ -275,10 +280,7 @@ async fn dev_cli_learn_activate_applies_schemas() {
 
     // Stop learning (triggers final aggregation — may take longer than default 30s)
     let stop = cli
-        .run_with_timeout(
-            &["learn", "stop", "e2e-learn-activate", "-o", "json"],
-            Duration::from_secs(60),
-        )
+        .run_with_timeout(&["learn", "stop", &session_name, "-o", "json"], Duration::from_secs(60))
         .unwrap();
     stop.assert_success();
 
@@ -288,7 +290,7 @@ async fn dev_cli_learn_activate_applies_schemas() {
     // Activate the completed session
     let activate = cli
         .run_with_timeout(
-            &["learn", "activate", "e2e-learn-activate", "-o", "json"],
+            &["learn", "activate", &session_name, "-o", "json"],
             Duration::from_secs(60),
         )
         .unwrap();
@@ -299,7 +301,7 @@ async fn dev_cli_learn_activate_applies_schemas() {
     schemas.assert_success();
 
     // Cleanup: release port
-    let _ = cli.run(&["unexpose", "learn-act-svc"]);
+    let _ = cli.run(&["unexpose", &svc_name]);
 }
 
 // ============================================================================
@@ -310,7 +312,7 @@ async fn dev_cli_learn_activate_applies_schemas() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_learn_get_session_details() {
-    let harness = quick_harness("dev_learn_get").await.expect("harness should start");
+    let harness = envoy_harness("dev_learn_get").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -431,7 +433,7 @@ async fn dev_cli_learn_get_nonexistent_fails() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_learn_cancel_no_yes_non_tty_fails() {
-    let harness = quick_harness("dev_learn_nyes").await.expect("harness should start");
+    let harness = envoy_harness("dev_learn_nyes").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -510,7 +512,7 @@ async fn dev_cli_learn_start_missing_sample_count_fails() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_learn_health_active_session() {
-    let harness = quick_harness("dev_learn_health").await.expect("harness should start");
+    let harness = envoy_harness("dev_learn_health").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;

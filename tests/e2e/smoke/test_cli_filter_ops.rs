@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::quick_harness;
+use crate::common::harness::envoy_harness;
 use crate::common::test_helpers::{verify_in_config_dump, write_temp_file};
 
 // ============================================================================
@@ -124,7 +124,7 @@ fn attach_filter(cli: &CliRunner, filter_name: &str, listener_name: &str) {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_update_from_file() {
-    let harness = quick_harness("dev_flt_update").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_update").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -149,20 +149,18 @@ async fn dev_cli_filter_update_from_file() {
     verify_in_config_dump(&harness, &listener_name).await;
 
     // Verify original header value
-    if harness.has_envoy() {
-        let envoy = harness.envoy().expect("Envoy should be available");
-        let resp = envoy
-            .proxy_get_with_headers(listener_port, &domain, "/test-update")
-            .await
-            .expect("proxy request should succeed");
-        assert_eq!(resp.status, 200, "Expected 200, got {}", resp.status);
-        assert_eq!(
-            resp.headers.get("x-filter-ops-test").map(|v| v.as_str()),
-            Some("original-value"),
-            "Expected original header value. Headers: {:?}",
-            resp.headers
-        );
-    }
+    let envoy = harness.envoy().expect("Envoy should be available");
+    let resp = envoy
+        .proxy_get_with_headers(listener_port, &domain, "/test-update")
+        .await
+        .expect("proxy request should succeed");
+    assert_eq!(resp.status, 200, "Expected 200, got {}", resp.status);
+    assert_eq!(
+        resp.headers.get("x-filter-ops-test").map(|v| v.as_str()),
+        Some("original-value"),
+        "Expected original header value. Headers: {:?}",
+        resp.headers
+    );
 
     // Update filter with new header value
     let updated_json = serde_json::json!({
@@ -192,20 +190,18 @@ async fn dev_cli_filter_update_from_file() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify updated header value in Envoy response
-    if harness.has_envoy() {
-        let envoy = harness.envoy().expect("Envoy should be available");
-        let resp = envoy
-            .proxy_get_with_headers(listener_port, &domain, "/test-update-after")
-            .await
-            .expect("proxy request after update should succeed");
-        assert_eq!(resp.status, 200, "Expected 200 after update, got {}", resp.status);
-        assert_eq!(
-            resp.headers.get("x-filter-ops-test").map(|v| v.as_str()),
-            Some("updated-value"),
-            "Expected updated header value after filter update. Headers: {:?}",
-            resp.headers
-        );
-    }
+    let envoy = harness.envoy().expect("Envoy should be available");
+    let resp = envoy
+        .proxy_get_with_headers(listener_port, &domain, "/test-update-after")
+        .await
+        .expect("proxy request after update should succeed");
+    assert_eq!(resp.status, 200, "Expected 200 after update, got {}", resp.status);
+    assert_eq!(
+        resp.headers.get("x-filter-ops-test").map(|v| v.as_str()),
+        Some("updated-value"),
+        "Expected updated header value after filter update. Headers: {:?}",
+        resp.headers
+    );
 }
 
 // ============================================================================
@@ -217,7 +213,7 @@ async fn dev_cli_filter_update_from_file() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_detach() {
-    let harness = quick_harness("dev_flt_detach").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_detach").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -242,20 +238,18 @@ async fn dev_cli_filter_detach() {
     verify_in_config_dump(&harness, &listener_name).await;
 
     // Verify header is present before detach
-    if harness.has_envoy() {
-        let envoy = harness.envoy().expect("Envoy should be available");
-        let resp = envoy
-            .proxy_get_with_headers(listener_port, &domain, "/test-before-detach")
-            .await
-            .expect("proxy request should succeed");
-        assert_eq!(resp.status, 200, "Expected 200 before detach, got {}", resp.status);
-        assert_eq!(
-            resp.headers.get("x-filter-ops-test").map(|v| v.as_str()),
-            Some("detach-test-header"),
-            "Expected filter header before detach. Headers: {:?}",
-            resp.headers
-        );
-    }
+    let envoy = harness.envoy().expect("Envoy should be available");
+    let resp = envoy
+        .proxy_get_with_headers(listener_port, &domain, "/test-before-detach")
+        .await
+        .expect("proxy request should succeed");
+    assert_eq!(resp.status, 200, "Expected 200 before detach, got {}", resp.status);
+    assert_eq!(
+        resp.headers.get("x-filter-ops-test").map(|v| v.as_str()),
+        Some("detach-test-header"),
+        "Expected filter header before detach. Headers: {:?}",
+        resp.headers
+    );
 
     // Detach filter from listener
     let detach_output =
@@ -270,19 +264,17 @@ async fn dev_cli_filter_detach() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify traffic still flows but header is gone
-    if harness.has_envoy() {
-        let envoy = harness.envoy().expect("Envoy should be available");
-        let resp = envoy
-            .proxy_get_with_headers(listener_port, &domain, "/test-after-detach")
-            .await
-            .expect("proxy request after detach should succeed");
-        assert_eq!(resp.status, 200, "Expected 200 after detach — traffic should still flow");
-        assert!(
-            !resp.headers.contains_key("x-filter-ops-test"),
-            "X-Filter-Ops-Test header should be GONE after detach. Headers: {:?}",
-            resp.headers
-        );
-    }
+    let envoy = harness.envoy().expect("Envoy should be available");
+    let resp = envoy
+        .proxy_get_with_headers(listener_port, &domain, "/test-after-detach")
+        .await
+        .expect("proxy request after detach should succeed");
+    assert_eq!(resp.status, 200, "Expected 200 after detach — traffic should still flow");
+    assert!(
+        !resp.headers.contains_key("x-filter-ops-test"),
+        "X-Filter-Ops-Test header should be GONE after detach. Headers: {:?}",
+        resp.headers
+    );
 }
 
 // ============================================================================
@@ -293,7 +285,7 @@ async fn dev_cli_filter_detach() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_delete() {
-    let harness = quick_harness("dev_flt_del").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_del").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -339,7 +331,7 @@ async fn dev_cli_filter_delete() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_delete_while_attached() {
-    let harness = quick_harness("dev_flt_del_att").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_del_att").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -393,7 +385,7 @@ async fn dev_cli_filter_delete_while_attached() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_delete_nonexistent() {
-    let harness = quick_harness("dev_flt_del_ne").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_del_ne").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -412,7 +404,7 @@ async fn dev_cli_filter_delete_nonexistent() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_detach_wrong_listener() {
-    let harness = quick_harness("dev_flt_det_wl").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_det_wl").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -446,7 +438,7 @@ async fn dev_cli_filter_detach_wrong_listener() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_detach_nonexistent_listener() {
-    let harness = quick_harness("dev_flt_det_nel").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_det_nel").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -478,7 +470,7 @@ async fn dev_cli_filter_detach_nonexistent_listener() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_update_bad_config() {
-    let harness = quick_harness("dev_flt_upd_bad").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_upd_bad").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -512,7 +504,7 @@ async fn dev_cli_filter_update_bad_config() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_update_nonexistent() {
-    let harness = quick_harness("dev_flt_upd_ne").await.expect("harness should start");
+    let harness = envoy_harness("dev_flt_upd_ne").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;

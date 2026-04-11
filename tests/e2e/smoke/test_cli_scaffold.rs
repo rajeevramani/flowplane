@@ -1,21 +1,18 @@
-//! Phase 5 CLI E2E tests — dev mode
-//!
-//! Tests the CLI commands added in Phases 3-5: mTLS/cert, admin, MCP tools,
-//! WASM, apply lifecycle, scaffold, and negative cases.
+//! CLI E2E tests — mTLS/cert, admin, MCP tools, WASM, apply, scaffold (dev mode)
 //!
 //! Scaffold create/update tests use an Envoy-enabled harness and verify that
 //! resources reach Envoy via xDS (config_dump) and that traffic flows through
 //! the proxy. Error tests (bad extension, malformed YAML) remain API-only.
 //!
 //! ```bash
-//! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_phase5 -- --ignored --nocapture
+//! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_scaffold -- --ignored --nocapture
 //! # or: make test-e2e-dev
 //! ```
 
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::{dev_harness, quick_harness};
+use crate::common::harness::{dev_harness, envoy_harness};
 use crate::common::test_helpers::{
     create_chain_for_cluster, create_chain_for_route, verify_in_config_dump, verify_traffic,
     write_temp_file,
@@ -528,7 +525,7 @@ fn scaffold_and_create(
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_scaffold_create_yaml() {
-    let harness = quick_harness("dev_cli_scaff_cr_yaml").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_scaff_cr_yaml").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -585,7 +582,7 @@ async fn dev_cli_cluster_scaffold_create_yaml() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_scaffold_create_json() {
-    let harness = quick_harness("dev_cli_scaff_cr_json").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_scaff_cr_json").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -643,7 +640,7 @@ async fn dev_cli_cluster_scaffold_create_json() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_create_yaml_file() {
-    let harness = quick_harness("dev_cli_cr_yaml_file").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_cr_yaml_file").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -685,7 +682,7 @@ lbPolicy: ROUND_ROBIN
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_update_yaml_file() {
-    let harness = quick_harness("dev_cli_upd_yaml").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_upd_yaml").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -744,7 +741,7 @@ connectTimeoutSeconds: 15
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_scaffold_update_yaml() {
-    let harness = quick_harness("dev_cli_scaff_upd").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_scaff_upd").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -821,7 +818,7 @@ connectTimeoutSeconds: 20
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_cluster_scaffold_apply() {
-    let harness = quick_harness("dev_cli_scaff_apply").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_scaff_apply").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -903,7 +900,7 @@ connectTimeoutSeconds: 5
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_route_scaffold_create_yaml() {
-    let harness = quick_harness("dev_cli_rt_scaff_yaml").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_rt_scaff_yaml").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -967,7 +964,7 @@ async fn dev_cli_route_scaffold_create_yaml() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_route_scaffold_create_json() {
-    let harness = quick_harness("dev_cli_rt_scaff_json").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_rt_scaff_json").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1029,7 +1026,7 @@ async fn dev_cli_route_scaffold_create_json() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_route_scaffold_apply() {
-    let harness = quick_harness("dev_cli_rt_scaff_apply").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_rt_scaff_apply").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1087,7 +1084,7 @@ async fn dev_cli_route_scaffold_apply() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_route_update_yaml_file() {
-    let harness = quick_harness("dev_cli_rt_upd_yaml").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_rt_upd_yaml").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1177,7 +1174,7 @@ virtualHosts:
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_route_scaffold_update_yaml() {
-    let harness = quick_harness("dev_cli_rt_scaff_upd").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_rt_scaff_upd").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1471,7 +1468,7 @@ connectTimeoutSeconds: 5
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_listener_scaffold_create_yaml() {
-    let harness = quick_harness("dev_cli_ls_scaff_yaml").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_ls_scaff_yaml").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1535,7 +1532,7 @@ async fn dev_cli_listener_scaffold_create_yaml() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_listener_scaffold_create_json() {
-    let harness = quick_harness("dev_cli_ls_scaff_json").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_ls_scaff_json").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1599,7 +1596,7 @@ async fn dev_cli_listener_scaffold_create_json() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_listener_scaffold_apply() {
-    let harness = quick_harness("dev_cli_ls_scaff_apply").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_ls_scaff_apply").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1663,7 +1660,7 @@ async fn dev_cli_listener_scaffold_apply() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_listener_update_yaml_file() {
-    let harness = quick_harness("dev_cli_ls_upd_yaml").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_ls_upd_yaml").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1738,7 +1735,7 @@ dataplaneId: "dev-dataplane-id"
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_listener_scaffold_update_yaml() {
-    let harness = quick_harness("dev_cli_ls_scaff_upd").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_ls_scaff_upd").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -1749,12 +1746,13 @@ async fn dev_cli_listener_scaffold_update_yaml() {
     let parts: Vec<&str> = echo.split(':').collect();
     let (echo_host, echo_port) = (parts[0], parts[1]);
 
-    let prefix = "e2e-ls-scfupd";
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let prefix = format!("e2e-ls-scfupd-{id}");
     let listener_name = format!("{}-ls", prefix);
     let listener_port = harness.ports.listener;
 
     let (_cluster, route_name, domain) =
-        create_listener_prerequisites(&cli, prefix, echo_host, echo_port);
+        create_listener_prerequisites(&cli, &prefix, echo_host, echo_port);
 
     // Step 1: Create listener from scaffold
     let replacements = &[
@@ -2014,7 +2012,7 @@ fn attach_filter_to_listener(cli: &CliRunner, filter_name: &str, listener_name: 
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_header_mutation() {
-    let harness = quick_harness("dev_cli_flt_hdrmut").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_hdrmut").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2087,27 +2085,25 @@ async fn dev_cli_filter_scaffold_header_mutation() {
     verify_in_config_dump(&harness, &listener_name).await;
 
     // Step 7: Send traffic and verify header mutation adds response headers
-    if harness.has_envoy() {
-        let envoy = harness.envoy().expect("Envoy should be available");
-        let resp = envoy
-            .proxy_get_with_headers(listener_port, &domain, "/test")
-            .await
-            .expect("proxy request should succeed");
+    let envoy = harness.envoy().expect("Envoy should be available");
+    let resp = envoy
+        .proxy_get_with_headers(listener_port, &domain, "/test")
+        .await
+        .expect("proxy request should succeed");
 
-        assert_eq!(resp.status, 200, "Expected 200 OK, got {}. Body: {}", resp.status, resp.body);
-        assert_eq!(
-            resp.headers.get("x-flowplane-e2e").map(|v| v.as_str()),
-            Some("header-mutation-test"),
-            "Expected X-Flowplane-E2E header in response. Headers: {:?}",
-            resp.headers
-        );
-        assert_eq!(
-            resp.headers.get("x-custom-filter").map(|v| v.as_str()),
-            Some("active"),
-            "Expected X-Custom-Filter header in response. Headers: {:?}",
-            resp.headers
-        );
-    }
+    assert_eq!(resp.status, 200, "Expected 200 OK, got {}. Body: {}", resp.status, resp.body);
+    assert_eq!(
+        resp.headers.get("x-flowplane-e2e").map(|v| v.as_str()),
+        Some("header-mutation-test"),
+        "Expected X-Flowplane-E2E header in response. Headers: {:?}",
+        resp.headers
+    );
+    assert_eq!(
+        resp.headers.get("x-custom-filter").map(|v| v.as_str()),
+        Some("active"),
+        "Expected X-Custom-Filter header in response. Headers: {:?}",
+        resp.headers
+    );
 }
 
 /// E2E: scaffold cors filter → create → attach to listener →
@@ -2115,7 +2111,7 @@ async fn dev_cli_filter_scaffold_header_mutation() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_cors() {
-    let harness = quick_harness("dev_cli_flt_cors").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_cors").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2200,7 +2196,7 @@ async fn dev_cli_filter_scaffold_cors() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_custom_response() {
-    let harness = quick_harness("dev_cli_flt_custresp").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_custresp").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2275,7 +2271,7 @@ async fn dev_cli_filter_scaffold_custom_response() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_rbac() {
-    let harness = quick_harness("dev_cli_flt_rbac").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_rbac").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2357,7 +2353,7 @@ async fn dev_cli_filter_scaffold_rbac() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_mcp() {
-    let harness = quick_harness("dev_cli_flt_mcp").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_mcp").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2368,13 +2364,14 @@ async fn dev_cli_filter_scaffold_mcp() {
     let parts: Vec<&str> = echo.split(':').collect();
     let (echo_host, echo_port) = (parts[0], parts[1]);
 
-    let prefix = "e2e-flt-mcp";
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let prefix = format!("e2e-flt-mcp-{id}");
     let filter_name = format!("{}-filter", prefix);
     let listener_port = harness.ports.listener;
 
     // Step 1: Create cluster + route + listener chain
     let (listener_name, _route_name, domain) =
-        create_filter_test_chain(&cli, prefix, echo_host, echo_port, listener_port);
+        create_filter_test_chain(&cli, &prefix, echo_host, echo_port, listener_port);
 
     // Step 2: Verify scaffold includes filterType
     let scaffold_output = cli.run(&["filter", "scaffold", "mcp", "-o", "json"]).unwrap();
@@ -2431,7 +2428,7 @@ async fn dev_cli_filter_scaffold_mcp() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_local_rate_limit() {
-    let harness = quick_harness("dev_cli_flt_ratelim").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_ratelim").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2526,34 +2523,32 @@ async fn dev_cli_filter_scaffold_local_rate_limit() {
     verify_in_config_dump(&harness, &listener_name).await;
 
     // Step 7: Send rapid requests — first should succeed, subsequent should get 429
-    if harness.has_envoy() {
-        let envoy = harness.envoy().expect("Envoy should be available");
+    let envoy = harness.envoy().expect("Envoy should be available");
 
-        // First request: should consume the single token → 200
+    // First request: should consume the single token → 200
+    let resp = envoy
+        .proxy_get_with_headers(listener_port, &domain, "/test")
+        .await
+        .expect("first request should succeed");
+    assert_eq!(
+        resp.status, 200,
+        "First request should succeed with 200. Got: {}. Body: {}",
+        resp.status, resp.body
+    );
+
+    // Rapid follow-up requests: at least one should get 429
+    let mut got_429 = false;
+    for _ in 0..5 {
         let resp = envoy
             .proxy_get_with_headers(listener_port, &domain, "/test")
             .await
-            .expect("first request should succeed");
-        assert_eq!(
-            resp.status, 200,
-            "First request should succeed with 200. Got: {}. Body: {}",
-            resp.status, resp.body
-        );
-
-        // Rapid follow-up requests: at least one should get 429
-        let mut got_429 = false;
-        for _ in 0..5 {
-            let resp = envoy
-                .proxy_get_with_headers(listener_port, &domain, "/test")
-                .await
-                .expect("follow-up request should complete");
-            if resp.status == 429 {
-                got_429 = true;
-                break;
-            }
+            .expect("follow-up request should complete");
+        if resp.status == 429 {
+            got_429 = true;
+            break;
         }
-        assert!(got_429, "Expected at least one 429 response after exhausting rate limit token");
     }
+    assert!(got_429, "Expected at least one 429 response after exhausting rate limit token");
 }
 
 /// E2E: compressor scaffold → create → attach to listener →
@@ -2561,7 +2556,7 @@ async fn dev_cli_filter_scaffold_local_rate_limit() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_compressor() {
-    let harness = quick_harness("dev_cli_flt_compress").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_compress").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2643,28 +2638,26 @@ async fn dev_cli_filter_scaffold_compressor() {
     verify_in_config_dump(&harness, &listener_name).await;
 
     // Step 7: Send request with Accept-Encoding: gzip and verify response
-    if harness.has_envoy() {
-        let envoy = harness.envoy().expect("Envoy should be available");
-        let mut headers = std::collections::HashMap::new();
-        headers.insert("Accept-Encoding".to_string(), "gzip".to_string());
+    let envoy = harness.envoy().expect("Envoy should be available");
+    let mut headers = std::collections::HashMap::new();
+    headers.insert("Accept-Encoding".to_string(), "gzip".to_string());
 
-        let (status, resp_headers, _body) = envoy
-            .proxy_request(listener_port, hyper::Method::GET, &domain, "/test", headers, None)
-            .await
-            .expect("request with Accept-Encoding should succeed");
+    let (status, resp_headers, _body) = envoy
+        .proxy_request(listener_port, hyper::Method::GET, &domain, "/test", headers, None)
+        .await
+        .expect("request with Accept-Encoding should succeed");
 
-        assert_eq!(status, 200, "Expected 200, got {status}");
+    assert_eq!(status, 200, "Expected 200, got {status}");
 
-        // Compressor may or may not compress depending on response size (min_content_length).
-        // Just verify the filter didn't break traffic. If compressed, content-encoding is present.
-        if let Some(encoding) = resp_headers.get("content-encoding") {
-            assert_eq!(
-                encoding, "gzip",
-                "If content-encoding is set, it should be gzip. Got: {encoding}"
-            );
-        }
-        // Either way, traffic should work
+    // Compressor may or may not compress depending on response size (min_content_length).
+    // Just verify the filter didn't break traffic. If compressed, content-encoding is present.
+    if let Some(encoding) = resp_headers.get("content-encoding") {
+        assert_eq!(
+            encoding, "gzip",
+            "If content-encoding is set, it should be gzip. Got: {encoding}"
+        );
     }
+    // Either way, traffic should work
 }
 
 /// E2E: ext_authz scaffold → create → attach to listener →
@@ -2674,7 +2667,7 @@ async fn dev_cli_filter_scaffold_compressor() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_ext_authz() {
-    let harness = quick_harness("dev_cli_flt_extauthz").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_extauthz").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2685,13 +2678,14 @@ async fn dev_cli_filter_scaffold_ext_authz() {
     let parts: Vec<&str> = echo.split(':').collect();
     let (echo_host, echo_port) = (parts[0], parts[1]);
 
-    let prefix = "e2e-flt-extauthz";
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let prefix = format!("e2e-flt-extauthz-{id}");
     let filter_name = format!("{}-filter", prefix);
     let listener_port = harness.ports.listener;
 
     // Step 1: Create cluster + route + listener chain
     let (listener_name, _route_name, _domain) =
-        create_filter_test_chain(&cli, prefix, echo_host, echo_port, listener_port);
+        create_filter_test_chain(&cli, &prefix, echo_host, echo_port, listener_port);
 
     // Step 2: Verify scaffold includes filterType and required service.type
     let scaffold_output = cli.run(&["filter", "scaffold", "ext_authz", "-o", "json"]).unwrap();
@@ -2779,7 +2773,7 @@ connectTimeoutSeconds: 5
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_jwt_auth() {
-    let harness = quick_harness("dev_cli_flt_jwtauth").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_jwtauth").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -2876,7 +2870,7 @@ async fn dev_cli_filter_scaffold_jwt_auth() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_filter_scaffold_oauth2() {
-    let harness = quick_harness("dev_cli_flt_oauth2").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_flt_oauth2").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;

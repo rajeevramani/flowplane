@@ -386,6 +386,28 @@ impl SharedInfrastructure {
             .await?;
             info!(admin_port = SHARED_ENVOY_ADMIN_PORT, "Shared Envoy ready");
 
+            // Update the default team's envoy_admin_port so the stats API
+            // can reach Envoy at the correct port in the test environment.
+            {
+                use flowplane::storage::create_pool;
+                use sqlx::Executor;
+                let db_cfg = flowplane::config::DatabaseConfig {
+                    url: db_url.clone(),
+                    auto_migrate: false,
+                    max_connections: 2,
+                    min_connections: 1,
+                    ..Default::default()
+                };
+                let pool = create_pool(&db_cfg).await?;
+                pool.execute(
+                    sqlx::query("UPDATE teams SET envoy_admin_port = $1 WHERE name = 'default'")
+                        .bind(SHARED_ENVOY_ADMIN_PORT as i64),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to update team envoy_admin_port: {}", e))?;
+                info!(port = SHARED_ENVOY_ADMIN_PORT, "Updated default team envoy_admin_port");
+            }
+
             Some(envoy)
         } else {
             info!("Envoy binary not found - tests will skip proxy verification");

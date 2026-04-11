@@ -2,7 +2,7 @@
 //!
 //! Tests `flowplane mcp enable`, `flowplane mcp disable`, and
 //! `flowplane mcp tools` after enable/disable. Uses the dev-mode
-//! harness with Envoy (quick_harness) for full-stack verification.
+//! harness with Envoy (envoy_harness) for full-stack verification.
 //!
 //! ```bash
 //! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_mcp -- --ignored --nocapture
@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::quick_harness;
+use crate::common::harness::envoy_harness;
 use crate::common::test_helpers::{parse_expose_port, verify_in_config_dump};
 
 // ============================================================================
@@ -95,12 +95,11 @@ async fn expose_and_get_route_id(cli: &CliRunner, service_name: &str) -> (String
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_mcp_enable_route() {
-    let harness = quick_harness("dev_cli_mcp_enable").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_mcp_enable").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let service_name = "e2e-mcp-en";
@@ -118,7 +117,6 @@ async fn dev_cli_mcp_enable_route() {
             "SKIP: mcp enable returned non-zero (suspected server bug): stdout={}, stderr={}",
             enable.stdout, enable.stderr
         );
-        let _ = cli.run(&["unexpose", service_name]);
         return;
     }
 
@@ -142,12 +140,7 @@ async fn dev_cli_mcp_enable_route() {
     // Verify traffic still flows through the route after MCP enable
     tokio::time::sleep(Duration::from_secs(2)).await;
     let domain = format!("{}.local", service_name);
-    if harness.has_envoy() {
-        let _ = harness.wait_for_route_on_port(port, &domain, "/", 200).await;
-    }
-
-    // Cleanup: release port
-    let _ = cli.run(&["unexpose", service_name]);
+    let _ = harness.wait_for_route_on_port(port, &domain, "/", 200).await;
 }
 
 // ============================================================================
@@ -161,12 +154,11 @@ async fn dev_cli_mcp_enable_route() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_mcp_disable_route() {
-    let harness = quick_harness("dev_cli_mcp_disable").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_mcp_disable").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let service_name = "e2e-mcp-dis";
@@ -180,7 +172,6 @@ async fn dev_cli_mcp_disable_route() {
             "SKIP: mcp enable (setup) returned non-zero (suspected server bug): stdout={}, stderr={}",
             enable.stdout, enable.stderr
         );
-        let _ = cli.run(&["unexpose", service_name]);
         return;
     }
 
@@ -207,12 +198,7 @@ async fn dev_cli_mcp_disable_route() {
     // Verify traffic still flows (disabling MCP shouldn't break routing)
     tokio::time::sleep(Duration::from_secs(2)).await;
     let domain = format!("{}.local", service_name);
-    if harness.has_envoy() {
-        let _ = harness.wait_for_route_on_port(port, &domain, "/", 200).await;
-    }
-
-    // Cleanup: release port
-    let _ = cli.run(&["unexpose", service_name]);
+    let _ = harness.wait_for_route_on_port(port, &domain, "/", 200).await;
 }
 
 // ============================================================================
@@ -223,16 +209,16 @@ async fn dev_cli_mcp_disable_route() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_mcp_enable_disable_lifecycle() {
-    let harness = quick_harness("dev_cli_mcp_lifecycle").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_mcp_lifecycle").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let service_name = "e2e-mcp-lc";
-    let (route_id, port) = expose_and_get_route_id(&cli, service_name).await;
+    let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+    let service_name = format!("e2e-mcp-lc-{id}");
+    let (route_id, port) = expose_and_get_route_id(&cli, &service_name).await;
 
     // Verify route in Envoy config_dump
     let route_config_name = format!("{}-routes", service_name);
@@ -250,7 +236,6 @@ async fn dev_cli_mcp_enable_disable_lifecycle() {
             "SKIP: mcp enable returned non-zero (suspected server bug): stdout={}, stderr={}",
             enable.stdout, enable.stderr
         );
-        let _ = cli.run(&["unexpose", service_name]);
         return;
     }
 
@@ -295,12 +280,7 @@ async fn dev_cli_mcp_enable_disable_lifecycle() {
     // Step 6: Traffic still flows through the route
     tokio::time::sleep(Duration::from_secs(2)).await;
     let domain = format!("{}.local", service_name);
-    if harness.has_envoy() {
-        let _ = harness.wait_for_route_on_port(port, &domain, "/", 200).await;
-    }
-
-    // Cleanup: release port
-    let _ = cli.run(&["unexpose", service_name]);
+    let _ = harness.wait_for_route_on_port(port, &domain, "/", 200).await;
 }
 
 /// Count enabled tools from `mcp tools -o json` output.
@@ -332,12 +312,11 @@ fn count_enabled_tools(json_str: &str) -> usize {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_mcp_enable_nonexistent_route() {
-    let harness = quick_harness("dev_cli_mcp_en_noexist").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_mcp_en_noexist").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let output = cli.run(&["mcp", "enable", "00000000-0000-0000-0000-000000000000"]).unwrap();
@@ -359,12 +338,11 @@ async fn dev_cli_mcp_enable_nonexistent_route() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_mcp_enable_missing_route_id() {
-    let harness = quick_harness("dev_cli_mcp_en_noarg").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_mcp_en_noarg").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Invoke `mcp enable` without the required route_id argument
@@ -393,12 +371,11 @@ async fn dev_cli_mcp_enable_missing_route_id() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_mcp_disable_nonexistent_route() {
-    let harness = quick_harness("dev_cli_mcp_dis_noexist").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_mcp_dis_noexist").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let output = cli.run(&["mcp", "disable", "00000000-0000-0000-0000-000000000000"]).unwrap();
@@ -420,12 +397,11 @@ async fn dev_cli_mcp_disable_nonexistent_route() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_mcp_disable_missing_route_id() {
-    let harness = quick_harness("dev_cli_mcp_dis_noarg").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_mcp_dis_noarg").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let output = cli.run(&["mcp", "disable"]).unwrap();
@@ -453,12 +429,11 @@ async fn dev_cli_mcp_disable_missing_route_id() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_mcp_disable_not_enabled() {
-    let harness = quick_harness("dev_cli_mcp_dis_notenb").await.expect("harness should start");
+    let harness = envoy_harness("dev_cli_mcp_dis_notenb").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let service_name = "e2e-mcp-disnot";
@@ -484,7 +459,4 @@ async fn dev_cli_mcp_disable_not_enabled() {
          got exit_code={}, stdout={}, stderr={}",
         output.exit_code, output.stdout, output.stderr
     );
-
-    // Cleanup: release port
-    let _ = cli.run(&["unexpose", service_name]);
 }

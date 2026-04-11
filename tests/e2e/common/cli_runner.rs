@@ -147,6 +147,7 @@ impl CliRunner {
         }
 
         let child = cmd
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()

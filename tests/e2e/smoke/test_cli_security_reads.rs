@@ -12,7 +12,7 @@
 //! ```
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::{dev_harness, quick_harness};
+use crate::common::harness::dev_harness;
 
 // ============================================================================
 // Dev-mode: Secret reads
@@ -23,7 +23,7 @@ use crate::common::harness::{dev_harness, quick_harness};
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_security_secret_list() {
-    let harness = quick_harness("dev_sec_slist").await.expect("harness should start");
+    let harness = dev_harness("dev_sec_slist").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -66,7 +66,7 @@ async fn dev_cli_security_secret_list() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_security_secret_get() {
-    let harness = quick_harness("dev_sec_sget").await.expect("harness should start");
+    let harness = dev_harness("dev_sec_sget").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -108,7 +108,7 @@ async fn dev_cli_security_secret_get() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_security_secret_get_nonexistent() {
-    let harness = quick_harness("dev_sec_sget404").await.expect("harness should start");
+    let harness = dev_harness("dev_sec_sget404").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -128,7 +128,7 @@ async fn dev_cli_security_secret_get_nonexistent() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_security_cert_list() {
-    let harness = quick_harness("dev_sec_clist").await.expect("harness should start");
+    let harness = dev_harness("dev_sec_clist").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -147,7 +147,7 @@ async fn dev_cli_security_cert_list() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_security_cert_get_nonexistent() {
-    let harness = quick_harness("dev_sec_cget404").await.expect("harness should start");
+    let harness = dev_harness("dev_sec_cget404").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -321,7 +321,7 @@ async fn prod_cli_security_agent_list() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn prod_cli_security_secret_cross_tenant() {
-    let harness = quick_harness("prod_sec_sxtenant").await.expect("harness should start");
+    let harness = dev_harness("prod_sec_sxtenant").await.expect("harness should start");
     if harness.is_dev_mode() {
         eprintln!("SKIP: requires prod mode for multi-user isolation");
         return;

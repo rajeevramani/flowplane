@@ -305,14 +305,20 @@ impl EnvoyHandle {
         Ok(json)
     }
 
-    /// Wait for config to contain expected content
+    /// Wait for config to contain expected content.
+    ///
+    /// Uses a text search across the full config_dump. For checking resource
+    /// existence, cross-references (e.g., cluster name in route action) are
+    /// acceptable — if the name appears anywhere, the resource has reached Envoy.
+    ///
+    /// Polls every 200ms with a 30s timeout.
     pub async fn wait_for_config_content(&self, expected: &str) -> anyhow::Result<()> {
         let expected = expected.to_string();
         let admin_port = self.admin_port;
 
         retry_with_timeout(
             Duration::from_secs(30),
-            Duration::from_millis(500),
+            Duration::from_millis(200),
             &format!("Config contains '{}'", expected),
             move || {
                 let expected = expected.clone();
@@ -338,6 +344,48 @@ impl EnvoyHandle {
         .await
     }
 
+    /// Wait for a resource with the given name to disappear from Envoy config_dump.
+    ///
+    /// Parses the config_dump JSON and checks only the `"name"` fields of dynamic
+    /// active resources. This avoids false positives from cross-references (e.g.,
+    /// a route config's `cluster` action field, or a listener's `routeConfigName`).
+    ///
+    /// Polls every 200ms with a 30s timeout.
+    pub async fn wait_for_config_content_removed(&self, removed: &str) -> anyhow::Result<()> {
+        let removed = removed.to_string();
+        let admin_port = self.admin_port;
+
+        retry_with_timeout(
+            Duration::from_secs(30),
+            Duration::from_millis(200),
+            &format!("Config no longer contains resource named '{}'", removed),
+            move || {
+                let removed = removed.clone();
+                async move {
+                    let client: Client<HttpConnector, Full<bytes::Bytes>> =
+                        Client::builder(TokioExecutor::new()).build(HttpConnector::new());
+                    let uri: Uri =
+                        format!("http://127.0.0.1:{}/config_dump", admin_port).parse().unwrap();
+
+                    let res = client.get(uri).await.map_err(|e| e.to_string())?;
+                    let bytes =
+                        res.into_body().collect().await.map_err(|e| e.to_string())?.to_bytes();
+                    let dump = String::from_utf8_lossy(bytes.chunk()).to_string();
+
+                    // Parse JSON and check only resource "name" fields, not the
+                    // full serialized body. This prevents false positives from
+                    // cross-references like routeConfigName or cluster action fields.
+                    if has_resource_named(&dump, &removed) {
+                        Err(format!("Resource '{}' still in config_dump", removed))
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await
+    }
+
     /// Shutdown Envoy gracefully
     pub fn shutdown(&mut self) {
         if let Some(mut child) = self.child.take() {
@@ -355,6 +403,82 @@ impl Drop for EnvoyHandle {
         // Clean up temp config file
         let _ = std::fs::remove_file(&self.config_path);
     }
+}
+
+/// Check if config_dump JSON contains a dynamic active resource with the given name.
+///
+/// Scans the `"name"` fields of resources inside `dynamic_active_clusters`,
+/// `dynamic_active_listeners`, and `dynamic_route_configs` sections. Does NOT
+/// match against cross-references like `routeConfigName` or route action `cluster`.
+fn has_resource_named(config_dump_json: &str, name: &str) -> bool {
+    let Ok(dump) = serde_json::from_str::<serde_json::Value>(config_dump_json) else {
+        // If we can't parse, fall back to text search
+        return config_dump_json.contains(name);
+    };
+
+    let configs = match dump.get("configs") {
+        Some(serde_json::Value::Array(arr)) => arr,
+        _ => return config_dump_json.contains(name),
+    };
+
+    for config in configs {
+        // Check dynamic_active_clusters
+        if let Some(clusters) = config.get("dynamic_active_clusters") {
+            if let Some(arr) = clusters.as_array() {
+                for entry in arr {
+                    // Structure: { "cluster": { "name": "..." } }
+                    if let Some(n) = entry.pointer("/cluster/name").and_then(|v| v.as_str()) {
+                        if n == name {
+                            return true;
+                        }
+                    }
+                    // Alt structure: { "cluster": { "@type": "...", "name": "..." } }
+                    if let Some(n) = entry
+                        .pointer("/cluster/@type")
+                        .and(entry.pointer("/cluster/name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        if n == name {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check dynamic_listeners — only consider a listener "present" if it has
+        // an active_state or warming_state. After deletion, Envoy may keep the
+        // entry with just a "name" field (draining/empty) which is NOT active.
+        if let Some(listeners) = config.get("dynamic_listeners") {
+            if let Some(arr) = listeners.as_array() {
+                for entry in arr {
+                    let entry_name = entry.get("name").and_then(|v| v.as_str());
+                    let has_active = entry.get("active_state").is_some();
+                    let has_warming = entry.get("warming_state").is_some();
+                    if entry_name == Some(name) && (has_active || has_warming) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Check dynamic_route_configs
+        // Only match on route_config.name inside the entry, not top-level fields.
+        if let Some(routes) = config.get("dynamic_route_configs") {
+            if let Some(arr) = routes.as_array() {
+                for entry in arr {
+                    // Structure: { "route_config": { "@type": "...", "name": "..." } }
+                    if let Some(n) = entry.pointer("/route_config/name").and_then(|v| v.as_str()) {
+                        if n == name {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Send a GET request through the proxy

@@ -347,7 +347,7 @@ async fn dev_neg_route_create_bad_extension() {
 }
 
 // ============================================================================
-// listener create -f — bad extension (malformed yaml already tested in phase5)
+// listener create -f — bad extension (malformed yaml already tested in test_cli_scaffold)
 // ============================================================================
 
 /// listener create with bad file extension should fail.
@@ -403,7 +403,7 @@ async fn dev_neg_filter_create_nonexistent_file() {
 }
 
 // ============================================================================
-// apply -f — bad file extension (malformed/missing-name/nonexistent covered in phase5)
+// apply -f — bad file extension (malformed/missing-name/nonexistent covered in test_cli_scaffold)
 // ============================================================================
 
 /// apply with bad file extension should fail.

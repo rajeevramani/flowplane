@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::quick_harness;
+use crate::common::harness::envoy_harness;
 use crate::common::test_helpers::{verify_in_config_dump, write_temp_file};
 
 /// Create a dataplane via CLI for tests that need one as a prerequisite.
@@ -43,7 +43,7 @@ fn create_dataplane_via_cli(cli: &CliRunner, name: &str) {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_import_openapi_full_lifecycle() {
-    let harness = quick_harness("dev_import_oa_full").await.expect("harness should start");
+    let harness = envoy_harness("dev_import_oa_full").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -103,22 +103,30 @@ paths:
     import_out.assert_success();
     import_out.assert_stdout_contains("Import E2E API");
 
-    // List imports — should contain our import
+    // Parse the import ID from output (line: "  Import ID:        <uuid>")
+    let import_id = import_out
+        .stdout
+        .lines()
+        .find(|l| l.contains("Import ID:"))
+        .and_then(|l| l.split("Import ID:").nth(1))
+        .map(|s| s.trim().to_string())
+        .expect("import output should contain Import ID");
+
+    // List imports — should contain the spec name
     let list = cli.run(&["import", "list"]).unwrap();
     list.assert_success();
-    list.assert_stdout_contains("import-e2e-api");
+    list.assert_stdout_contains("Import E2E API");
 
-    // Get the import details
-    let get = cli.run(&["import", "get", "import-e2e-api"]).unwrap();
+    // Get the import details by UUID
+    let get = cli.run(&["import", "get", &import_id]).unwrap();
     get.assert_success();
-    get.assert_stdout_contains("import-e2e-api");
 
     // Verify cluster was created
     let clusters = cli.run(&["cluster", "list"]).unwrap();
     clusters.assert_success();
 
     // Verify route config was created
-    let routes = cli.run(&["route-config", "list"]).unwrap();
+    let routes = cli.run(&["route", "list"]).unwrap();
     routes.assert_success();
 
     // Wait for xDS convergence
@@ -128,27 +136,25 @@ paths:
     verify_in_config_dump(&harness, "e2e-import-full-listener").await;
 
     // Verify traffic through the imported route
-    if harness.has_envoy() {
-        let result = harness.wait_for_route_on_port(port, "localhost", "/api/test", 200).await;
-        match result {
-            Ok(body) => {
-                assert!(!body.is_empty(), "Proxied response body should not be empty");
-            }
-            Err(e) => {
-                panic!("Traffic verification failed for imported route /api/test: {e}");
-            }
+    let result = harness.wait_for_route_on_port(port, "localhost", "/api/test", 200).await;
+    match result {
+        Ok(body) => {
+            assert!(!body.is_empty(), "Proxied response body should not be empty");
+        }
+        Err(e) => {
+            panic!("Traffic verification failed for imported route /api/test: {e}");
         }
     }
 
-    // Cleanup: delete the import (with --yes to skip confirmation)
-    let delete = cli.run(&["import", "delete", "import-e2e-api", "--yes"]).unwrap();
+    // Cleanup: delete the import by UUID (with --yes to skip confirmation)
+    let delete = cli.run(&["import", "delete", &import_id, "--yes"]).unwrap();
     delete.assert_success();
 
     // Verify import is gone
     let list_after = cli.run(&["import", "list"]).unwrap();
     list_after.assert_success();
     assert!(
-        !list_after.stdout.contains("import-e2e-api"),
+        !list_after.stdout.contains("Import E2E API"),
         "import should not appear after delete, got:\n{}",
         list_after.stdout
     );
@@ -162,7 +168,7 @@ paths:
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_import_openapi_nonexistent_file() {
-    let harness = quick_harness("dev_import_oa_nofile").await.expect("harness should start");
+    let harness = envoy_harness("dev_import_oa_nofile").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -186,7 +192,7 @@ async fn dev_import_openapi_nonexistent_file() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_import_openapi_invalid_spec() {
-    let harness = quick_harness("dev_import_oa_bad").await.expect("harness should start");
+    let harness = envoy_harness("dev_import_oa_bad").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -213,7 +219,7 @@ openapi: spec
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_import_openapi_empty_file() {
-    let harness = quick_harness("dev_import_oa_empty").await.expect("harness should start");
+    let harness = envoy_harness("dev_import_oa_empty").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;

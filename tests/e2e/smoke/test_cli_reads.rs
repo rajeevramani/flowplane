@@ -3,7 +3,7 @@
 //! Tests basic list/get/show/path read commands and observability reads
 //! (route-views stats, stats clusters, stats cluster) that currently have
 //! zero E2E coverage. All tests use `dev_harness` (API-only) for basic reads
-//! or `quick_harness` (with Envoy) for observability reads.
+//! or `envoy_harness` (with per-test Envoy) for observability reads.
 //!
 //! ```bash
 //! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_reads -- --ignored --nocapture
@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::{dev_harness, quick_harness};
+use crate::common::harness::{dev_harness, envoy_harness};
 use crate::common::test_helpers::{parse_expose_port, verify_in_config_dump};
 
 // ============================================================================
@@ -171,6 +171,9 @@ async fn dev_cli_reads_learn_export() {
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let session_name = format!("reads-learn-export-{id}");
+
     // Start a learning session
     let start = cli
         .run(&[
@@ -181,18 +184,18 @@ async fn dev_cli_reads_learn_export() {
             "--target-sample-count",
             "10",
             "--name",
-            "reads-learn-export",
+            &session_name,
         ])
         .unwrap();
     start.assert_success();
 
     // Brief pause then stop
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let stop = cli.run(&["learn", "stop", "reads-learn-export"]).unwrap();
+    let stop = cli.run(&["learn", "stop", &session_name]).unwrap();
     stop.assert_success();
 
     // Export schemas from the session
-    let export = cli.run(&["learn", "export", "--session", "reads-learn-export"]).unwrap();
+    let export = cli.run(&["learn", "export", "--session", &session_name]).unwrap();
     export.assert_success();
 
     // Export should produce some output (OpenAPI spec, even if minimal)
@@ -379,12 +382,11 @@ async fn dev_cli_reads_config_path() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_reads_route_views_stats() {
-    let harness = quick_harness("dev_reads_rv_stats").await.expect("harness should start");
+    let harness = envoy_harness("dev_reads_rv_stats").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Expose a service — auto-allocate port
@@ -419,12 +421,11 @@ async fn dev_cli_reads_route_views_stats() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_reads_stats_clusters() {
-    let harness = quick_harness("dev_reads_st_cls").await.expect("harness should start");
+    let harness = envoy_harness("dev_reads_st_cls").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Expose a service — auto-allocate port
@@ -456,26 +457,29 @@ async fn dev_cli_reads_stats_clusters() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_reads_stats_cluster_specific() {
-    let harness = quick_harness("dev_reads_st_cl1").await.expect("harness should start");
+    let harness = envoy_harness("dev_reads_st_cl1").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
+    let id = &uuid::Uuid::new_v4().as_simple().to_string()[..8];
+    let svc_name = format!("rd-st-cl1-{id}");
+    let domain = format!("{svc_name}.local");
+
     // Expose a service — auto-allocate port
-    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "reads-st-cl1"]).unwrap();
+    let expose = cli.run(&["expose", "http://127.0.0.1:9999", "--name", &svc_name]).unwrap();
     expose.assert_success();
 
     let port = parse_expose_port(&expose);
 
     // Verify in Envoy and send traffic on the allocated port
-    verify_in_config_dump(&harness, "reads-st-cl1").await;
-    let _ = harness.wait_for_route_on_port(port, "reads-st-cl1.local", "/test", 200).await;
+    verify_in_config_dump(&harness, &svc_name).await;
+    let _ = harness.wait_for_route_on_port(port, &domain, "/test", 200).await;
 
-    // Check specific cluster stats — the cluster name from expose is "<name>-cluster"
-    let output = cli.run(&["stats", "cluster", "reads-st-cl1-cluster", "-o", "json"]).unwrap();
+    // Check specific cluster stats — the cluster name from expose equals the service name
+    let output = cli.run(&["stats", "cluster", &svc_name, "-o", "json"]).unwrap();
     output.assert_success();
 
     // Should contain stats for the specific cluster
@@ -485,7 +489,7 @@ async fn dev_cli_reads_stats_cluster_specific() {
     );
 
     // Cleanup: release port
-    let _ = cli.run(&["unexpose", "reads-st-cl1"]);
+    let _ = cli.run(&["unexpose", &svc_name]);
 }
 
 // ============================================================================

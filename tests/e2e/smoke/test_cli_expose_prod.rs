@@ -1,6 +1,6 @@
-//! Phase 3 CLI E2E tests — prod mode (Zitadel OIDC)
+//! CLI E2E tests — expose, unexpose, list, status (prod mode, Zitadel OIDC)
 //!
-//! Mirror of test_cli_phase3.rs but running in prod mode with JWT auth.
+//! Mirror of test_cli_expose.rs but running in prod mode with JWT auth.
 //! Validates that the same CLI commands work with both dev bearer tokens
 //! and prod JWT tokens from the Zitadel OIDC provider.
 //!

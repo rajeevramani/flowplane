@@ -13,9 +13,10 @@
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::quick_harness;
+use crate::common::harness::envoy_harness;
 use crate::common::test_helpers::{
-    create_chain_for_cluster, verify_in_config_dump, verify_traffic, write_temp_file,
+    create_chain_for_cluster, verify_in_config_dump, verify_not_in_config_dump, verify_traffic,
+    write_temp_file,
 };
 
 // ============================================================================
@@ -27,12 +28,11 @@ use crate::common::test_helpers::{
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_ops_envoy_apply_dir() {
-    let harness = quick_harness("dev_ops_envoy_apply").await.expect("harness should start");
+    let harness = envoy_harness("dev_ops_envoy_apply").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let echo = harness.echo_endpoint();
@@ -122,12 +122,17 @@ filterChains:
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_ops_envoy_apply_dir_empty() {
-    let harness = quick_harness("dev_ops_envoy_apply_e").await.expect("harness should start");
+    let harness = envoy_harness("dev_ops_envoy_apply_e").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
+
+    // Use a unique sentinel name that this test would have created if the dir
+    // were non-empty. Since the dir IS empty, this name must NOT appear in Envoy.
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let sentinel_name = format!("empty-dir-{}", id);
 
     let dir = tempfile::tempdir().expect("create temp dir");
 
@@ -148,11 +153,13 @@ async fn dev_ops_envoy_apply_dir_empty() {
         output.exit_code, output.stdout, output.stderr
     );
 
-    // Cross-verify: Envoy should NOT have any resources from this test
+    // Cross-verify: Envoy should NOT have a resource with our unique sentinel name
+    // (which was never created because the directory was empty).
     let config_dump = harness.get_config_dump().await.expect("config_dump should succeed");
     assert!(
-        !config_dump.contains("dev_ops_envoy_apply_e"),
-        "Envoy should not have resources from the empty-directory test"
+        !config_dump.contains(&sentinel_name),
+        "Envoy should not have resources from the empty-directory test (sentinel: {})",
+        sentinel_name
     );
 }
 
@@ -165,12 +172,11 @@ async fn dev_ops_envoy_apply_dir_empty() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_ops_envoy_trace_cross_verify() {
-    let harness = quick_harness("dev_ops_envoy_trace").await.expect("harness should start");
+    let harness = envoy_harness("dev_ops_envoy_trace").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let echo = harness.echo_endpoint();
@@ -249,12 +255,11 @@ connectTimeoutSeconds: 5
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_ops_envoy_trace_no_match() {
-    let harness = quick_harness("dev_ops_envoy_tr_no").await.expect("harness should start");
+    let harness = envoy_harness("dev_ops_envoy_tr_no").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // Don't expose any service — trace should find nothing
@@ -290,12 +295,11 @@ async fn dev_ops_envoy_trace_no_match() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_ops_envoy_xds_status_cross_verify() {
-    let harness = quick_harness("dev_ops_envoy_xds").await.expect("harness should start");
+    let harness = envoy_harness("dev_ops_envoy_xds").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     let echo = harness.echo_endpoint();
@@ -303,7 +307,9 @@ async fn dev_ops_envoy_xds_status_cross_verify() {
     let (echo_host, echo_port) = (parts[0], parts[1]);
 
     // Create resources so xDS has something to report
-    let cluster_name = "e2e-xds-xv-cl";
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let cluster_name = format!("e2e-xds-xv-{id}-cl");
+    let chain_prefix = format!("xds-xv-{id}");
     let cluster_yaml = format!(
         r#"name: {cluster_name}
 endpoints:
@@ -320,10 +326,10 @@ connectTimeoutSeconds: 5
         output.stdout, output.stderr
     );
 
-    let (_route, _domain) = create_chain_for_cluster(&harness, cluster_name, "xds-xv").await;
+    let (_route, _domain) = create_chain_for_cluster(&harness, &cluster_name, &chain_prefix).await;
 
     // Wait for xDS to propagate
-    verify_in_config_dump(&harness, cluster_name).await;
+    verify_in_config_dump(&harness, &cluster_name).await;
 
     // Run xds status via CLI
     let xds_output = cli.run(&["xds", "status"]).unwrap();
@@ -371,18 +377,31 @@ connectTimeoutSeconds: 5
         !xds_combined.trim().is_empty(),
         "xds status should produce output when resources exist in Envoy"
     );
+
+    // Cleanup: delete resources in reverse dependency order.
+    // Assert success so stale references don't pollute config_dump.
+    let chain_ls = format!("{chain_prefix}-ls");
+    let chain_rc = format!("{chain_prefix}-rc");
+    let ls_del = cli.run(&["listener", "delete", &chain_ls, "--yes"]).unwrap();
+    ls_del.assert_success();
+    let rc_del = cli.run(&["route", "delete", &chain_rc, "--yes"]).unwrap();
+    rc_del.assert_success();
+    let cl_del = cli.run(&["cluster", "delete", &cluster_name, "--yes"]).unwrap();
+    cl_del.assert_success();
+    // Verify cluster is gone from Envoy config_dump
+    // Uses name_regex filter — only checks cluster resources, not cross-references in routes
+    verify_not_in_config_dump(&harness, &cluster_name).await;
 }
 
 /// xds status with no resources should still succeed (empty or baseline state).
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_ops_envoy_xds_status_empty() {
-    let harness = quick_harness("dev_ops_envoy_xds_e").await.expect("harness should start");
+    let harness = envoy_harness("dev_ops_envoy_xds_e").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // No resources created — xds status should still work (may exit 0 or 1 for empty)
@@ -411,20 +430,22 @@ async fn dev_ops_envoy_xds_status_empty() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_ops_envoy_topology_cross_verify() {
-    let harness = quick_harness("dev_ops_envoy_topo").await.expect("harness should start");
+    let harness = envoy_harness("dev_ops_envoy_topo").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
 
     let echo = harness.echo_endpoint();
     let parts: Vec<&str> = echo.split(':').collect();
     let (echo_host, echo_port) = (parts[0], parts[1]);
 
-    // Create a full chain: cluster → route → listener
-    let cluster_name = "e2e-topo-xv-cl";
+    // Create a full chain: cluster → route → listener (unique names per run)
+    let cluster_name = format!("e2e-topo-xv-{}-cl", id);
+    let test_prefix = format!("topo-xv-{}", id);
     let cluster_yaml = format!(
         r#"name: {cluster_name}
 endpoints:
@@ -441,10 +462,10 @@ connectTimeoutSeconds: 5
         output.stdout, output.stderr
     );
 
-    let (_route, _domain) = create_chain_for_cluster(&harness, cluster_name, "topo-xv").await;
+    let (_route, _domain) = create_chain_for_cluster(&harness, &cluster_name, &test_prefix).await;
 
     // Verify everything is in Envoy
-    verify_in_config_dump(&harness, cluster_name).await;
+    verify_in_config_dump(&harness, &cluster_name).await;
 
     // Get Envoy config_dump for cross-verification
     let config_dump = harness.get_config_dump().await.expect("config_dump should succeed");
@@ -460,7 +481,7 @@ connectTimeoutSeconds: 5
         topo_combined.contains("cluster")
             || topo_combined.contains("listener")
             || topo_combined.contains("route")
-            || topo_combined.contains(cluster_name),
+            || topo_combined.contains(&cluster_name),
         "topology output should reference resource types present in Envoy.\n\
          topology stdout: {}\ntopology stderr: {}",
         topo_output.stdout,
@@ -468,11 +489,11 @@ connectTimeoutSeconds: 5
     );
 
     // Cross-verify: if Envoy has our cluster, topology should mention it or its type
-    if config_dump.contains(cluster_name) {
+    if config_dump.contains(cluster_name.as_str()) {
         assert!(
-            topo_combined.contains(cluster_name)
+            topo_combined.contains(&cluster_name)
                 || topo_combined.contains("cluster")
-                || topo_combined.contains("topo-xv"),
+                || topo_combined.contains(&test_prefix),
             "topology should reference our cluster '{}' when it exists in Envoy.\n\
              topology stdout: {}\ntopology stderr: {}",
             cluster_name,
@@ -482,27 +503,34 @@ connectTimeoutSeconds: 5
     }
 
     // If Envoy has listeners, topology should show them
+    let listener_name = format!("{}-ls", test_prefix);
     if config_dump.to_lowercase().contains("listener") {
         assert!(
-            topo_combined.contains("listener") || topo_combined.contains("topo-xv-ls"),
+            topo_combined.contains("listener") || topo_combined.contains(&listener_name),
             "topology should reference listeners when Envoy has them.\n\
              topology stdout: {}\ntopology stderr: {}",
             topo_output.stdout,
             topo_output.stderr
         );
     }
+
+    // Cleanup: delete resources so later "empty" tests see clean state
+    let route_name = format!("{}-rc", test_prefix);
+    let _ = cli.run(&["listener", "delete", &listener_name, "--yes"]);
+    let _ = cli.run(&["route", "delete", &route_name, "--yes"]);
+    let _ = cli.run(&["cluster", "delete", &cluster_name, "--yes"]);
+    verify_not_in_config_dump(&harness, &cluster_name).await;
 }
 
 /// Topology with no resources should succeed but show empty/baseline state.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_ops_envoy_topology_empty() {
-    let harness = quick_harness("dev_ops_envoy_topo_e").await.expect("harness should start");
+    let harness = envoy_harness("dev_ops_envoy_topo_e").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    assert!(harness.has_envoy(), "This test requires Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
     // No resources created — topology may exit 0 or 1 for empty state
@@ -514,10 +542,10 @@ async fn dev_ops_envoy_topology_empty() {
         output.stderr
     );
 
-    // Cross-verify: Envoy should not have user-created resources
+    // Cross-verify: Envoy should not have user-created resources from this test
     let config_dump = harness.get_config_dump().await.expect("config_dump should succeed");
     assert!(
-        !config_dump.contains("e2e-topo-xv-cl"),
+        !config_dump.contains("e2e-topo-empty-cl"),
         "Envoy should not have test clusters when none were created"
     );
 

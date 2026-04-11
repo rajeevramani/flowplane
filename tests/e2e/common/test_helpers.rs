@@ -49,6 +49,24 @@ pub async fn verify_in_config_dump(harness: &TestHarness, resource_name: &str) {
     });
 }
 
+/// Poll Envoy config_dump until the given resource name disappears, or timeout.
+///
+/// If Envoy is not available (API-only harness), prints a skip message and
+/// returns without failing.
+pub async fn verify_not_in_config_dump(harness: &TestHarness, resource_name: &str) {
+    if !harness.has_envoy() {
+        eprintln!("SKIP: Envoy not available — cannot verify config_dump removal");
+        return;
+    }
+    let envoy = harness.envoy().expect("Envoy should be available");
+    envoy.wait_for_config_content_removed(resource_name).await.unwrap_or_else(|e| {
+        panic!(
+            "Resource '{}' still present in Envoy config_dump after deletion: {}",
+            resource_name, e
+        )
+    });
+}
+
 /// Verify traffic flows through Envoy for a given domain and path.
 ///
 /// Polls Envoy proxy until the route returns HTTP 200 with a non-empty body,

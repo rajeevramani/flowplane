@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::quick_harness;
+use crate::common::harness::envoy_harness;
 use crate::common::test_helpers::{
     create_chain_for_cluster, verify_in_config_dump, write_temp_file,
 };
@@ -66,7 +66,7 @@ fn updated_wasm_filter_json() -> String {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_create() {
-    let harness = quick_harness("dev_wasm_create").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_create").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -127,15 +127,13 @@ async fn dev_cli_wasm_create() {
     // to a listener/route, but the filter_type identifier should be registered.
     // We check for the custom filter type pattern.
     let filter_type = format!("custom_wasm_{}", filter_id);
-    if harness.has_envoy() {
-        if let Ok(config_dump) = harness.get_config_dump().await {
-            eprintln!(
-                "NOTE: custom WASM filter type '{}' {} in Envoy config_dump \
-                 (may require attachment to a filter chain to appear)",
-                filter_type,
-                if config_dump.contains(&filter_type) { "found" } else { "not found" }
-            );
-        }
+    if let Ok(config_dump) = harness.get_config_dump().await {
+        eprintln!(
+            "NOTE: custom WASM filter type '{}' {} in Envoy config_dump \
+             (may require attachment to a filter chain to appear)",
+            filter_type,
+            if config_dump.contains(&filter_type) { "found" } else { "not found" }
+        );
     }
 
     // Cleanup
@@ -150,7 +148,7 @@ async fn dev_cli_wasm_create() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_update() {
-    let harness = quick_harness("dev_wasm_update").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_update").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -236,7 +234,7 @@ async fn dev_cli_wasm_update() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_delete() {
-    let harness = quick_harness("dev_wasm_delete").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_delete").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -297,14 +295,12 @@ async fn dev_cli_wasm_delete() {
 
     // Step 6: verify removed from Envoy config if applicable
     let filter_type = format!("custom_wasm_{}", filter_id);
-    if harness.has_envoy() {
-        if let Ok(config_dump) = harness.get_config_dump().await {
-            assert!(
-                !config_dump.contains(&filter_type),
-                "Deleted WASM filter type '{}' should not appear in Envoy config_dump",
-                filter_type
-            );
-        }
+    if let Ok(config_dump) = harness.get_config_dump().await {
+        assert!(
+            !config_dump.contains(&filter_type),
+            "Deleted WASM filter type '{}' should not appear in Envoy config_dump",
+            filter_type
+        );
     }
 }
 
@@ -321,13 +317,9 @@ async fn dev_cli_wasm_delete() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_envoy_delivery() {
-    let harness = quick_harness("dev_wasm_envoy").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_envoy").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
-        return;
-    }
-    if !harness.has_envoy() {
-        eprintln!("SKIP: Envoy not available — cannot verify WASM delivery");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -431,13 +423,9 @@ config:
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_delete_verify_envoy_removal() {
-    let harness = quick_harness("dev_wasm_del_envoy").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_del_envoy").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
-        return;
-    }
-    if !harness.has_envoy() {
-        eprintln!("SKIP: Envoy not available");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -530,7 +518,7 @@ async fn dev_cli_wasm_delete_verify_envoy_removal() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_create_invalid_json() {
-    let harness = quick_harness("dev_wasm_bad_json").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_bad_json").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -559,7 +547,7 @@ async fn dev_cli_wasm_create_invalid_json() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_create_missing_fields() {
-    let harness = quick_harness("dev_wasm_no_fields").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_no_fields").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -585,7 +573,7 @@ async fn dev_cli_wasm_create_missing_fields() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_create_nonexistent_file() {
-    let harness = quick_harness("dev_wasm_no_file").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_no_file").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -604,7 +592,7 @@ async fn dev_cli_wasm_create_nonexistent_file() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_update_nonexistent() {
-    let harness = quick_harness("dev_wasm_upd_noex").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_upd_noex").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -634,7 +622,7 @@ async fn dev_cli_wasm_update_nonexistent() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_delete_nonexistent() {
-    let harness = quick_harness("dev_wasm_del_noex").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_del_noex").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -659,7 +647,7 @@ async fn dev_cli_wasm_delete_nonexistent() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_wasm_delete_no_confirm() {
-    let harness = quick_harness("dev_wasm_del_noconfirm").await.expect("harness should start");
+    let harness = envoy_harness("dev_wasm_del_noconfirm").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;

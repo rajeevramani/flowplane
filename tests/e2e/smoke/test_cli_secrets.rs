@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::quick_harness;
+use crate::common::harness::envoy_harness;
 use crate::common::test_helpers::{
     create_chain_for_cluster, verify_in_config_dump, write_temp_file,
 };
@@ -28,7 +28,7 @@ use crate::common::test_helpers::{
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_create_list_get() {
-    let harness = quick_harness("dev_secret_clg").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_clg").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -98,7 +98,7 @@ async fn dev_cli_secret_create_list_get() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_rotate() {
-    let harness = quick_harness("dev_secret_rot").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_rot").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -161,7 +161,7 @@ async fn dev_cli_secret_rotate() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_delete() {
-    let harness = quick_harness("dev_secret_del").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_del").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -208,14 +208,12 @@ async fn dev_cli_secret_delete() {
     get_output.assert_failure();
 
     // Step 5: verify secret is gone from Envoy config_dump
-    if harness.has_envoy() {
-        if let Ok(config_dump) = harness.get_config_dump().await {
-            assert!(
-                !config_dump.contains(secret_name),
-                "Deleted secret '{}' should not appear in Envoy config_dump",
-                secret_name
-            );
-        }
+    if let Ok(config_dump) = harness.get_config_dump().await {
+        assert!(
+            !config_dump.contains(secret_name),
+            "Deleted secret '{}' should not appear in Envoy config_dump",
+            secret_name
+        );
     }
 }
 
@@ -232,18 +230,15 @@ async fn dev_cli_secret_delete() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_sds_delivery() {
-    let harness = quick_harness("dev_secret_sds").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_sds").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
     }
-    if !harness.has_envoy() {
-        eprintln!("SKIP: Envoy not available — cannot verify SDS delivery");
-        return;
-    }
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let secret_name = "e2e-sds-cli-secret";
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let secret_name = format!("e2e-sds-cli-secret-{id}");
     let secret_config = r#"{"secret": "c2RzLXRlc3QtdmFsdWU="}"#; // pragma: allowlist secret
 
     // Step 1: create the secret via CLI
@@ -252,7 +247,7 @@ async fn dev_cli_secret_sds_delivery() {
             "secret",
             "create",
             "--name",
-            secret_name,
+            &secret_name,
             "--type",
             "generic_secret",
             "--config",
@@ -270,7 +265,7 @@ async fn dev_cli_secret_sds_delivery() {
     let echo = harness.echo_endpoint();
     let parts: Vec<&str> = echo.split(':').collect();
     let (echo_host, echo_port) = (parts[0], parts[1]);
-    let cluster_name = "sds-cli-cluster";
+    let cluster_name = format!("sds-cli-cluster-{id}");
     let cluster_yaml = format!(
         "name: {cluster_name}\nendpoints:\n  - host: {echo_host}\n    port: {echo_port}\nconnectTimeoutSeconds: 5\n"
     );
@@ -279,14 +274,17 @@ async fn dev_cli_secret_sds_delivery() {
         .unwrap()
         .assert_success();
 
-    let (_route_name, _domain) = create_chain_for_cluster(&harness, cluster_name, "sds-cli").await;
+    let chain_prefix = format!("sds-cli-{id}");
+    let (_route_name, _domain) =
+        create_chain_for_cluster(&harness, &cluster_name, &chain_prefix).await;
 
     // Verify routing infra reached Envoy
-    verify_in_config_dump(&harness, cluster_name).await;
+    verify_in_config_dump(&harness, &cluster_name).await;
 
     // Step 3: create a JWT auth filter that references the secret
     // We write the filter config directly since scaffold may not produce SDS references
-    let filter_name = "sds-cli-jwt-filter";
+    let filter_name = format!("sds-cli-jwt-filter-{id}");
+    let provider_name = format!("sds-cli-provider-{id}");
     let filter_yaml = format!(
         r#"name: {filter_name}
 filterType: jwt_auth
@@ -294,7 +292,7 @@ config:
   type: jwt_auth
   config:
     providers:
-      sds-cli-provider:
+      {provider_name}:
         issuer: "https://sds-cli-test.example.com"
         audiences:
           - "sds-cli-audience"
@@ -311,7 +309,7 @@ config:
             Prefix: "/"
         requires:
           type: provider_name
-          provider_name: sds-cli-provider
+          provider_name: {provider_name}
 "#
     );
     let filter_file = write_temp_file(&filter_yaml, ".yaml");
@@ -324,9 +322,9 @@ config:
     );
 
     // Step 4: attach the filter to the listener
-    let listener_name = "sds-cli-ls";
+    let listener_name = format!("{chain_prefix}-ls");
     let attach_output =
-        cli.run(&["filter", "attach", filter_name, "--listener", listener_name]).unwrap();
+        cli.run(&["filter", "attach", &filter_name, "--listener", &listener_name]).unwrap();
     assert_eq!(
         attach_output.exit_code, 0,
         "filter attach failed: stdout={}, stderr={}",
@@ -339,12 +337,12 @@ config:
     let config_dump = harness.get_config_dump().await.expect("config_dump should succeed");
 
     // Check if secret name appears directly in config_dump (SDS delivery)
-    let secret_in_dump = config_dump.contains(secret_name);
+    let secret_in_dump = config_dump.contains(&secret_name);
 
     // Check if the filter/provider config was delivered (proves xDS works)
-    let filter_in_dump = config_dump.contains(filter_name)
+    let filter_in_dump = config_dump.contains(&filter_name)
         || config_dump.contains("jwt_auth")
-        || config_dump.contains("sds-cli-provider");
+        || config_dump.contains(&provider_name);
 
     assert!(
         secret_in_dump || filter_in_dump,
@@ -365,7 +363,7 @@ config:
     }
 
     // Cleanup
-    let _ = cli.run(&["filter", "delete", filter_name, "--yes"]);
+    let _ = cli.run(&["filter", "delete", &filter_name, "--yes"]);
     let _ = cli.run(&["secret", "delete", secret_id, "--yes"]);
 }
 
@@ -378,13 +376,9 @@ config:
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_rotate_sds_redelivery() {
-    let harness = quick_harness("dev_secret_rot_sds").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_rot_sds").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
-        return;
-    }
-    if !harness.has_envoy() {
-        eprintln!("SKIP: Envoy not available — cannot verify SDS re-delivery");
         return;
     }
     let cli = CliRunner::from_harness(&harness).unwrap();
@@ -502,7 +496,7 @@ config:
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_create_duplicate() {
-    let harness = quick_harness("dev_secret_dup").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_dup").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -557,7 +551,7 @@ async fn dev_cli_secret_create_duplicate() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_rotate_nonexistent() {
-    let harness = quick_harness("dev_secret_rotne").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_rotne").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -579,7 +573,7 @@ async fn dev_cli_secret_rotate_nonexistent() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_delete_nonexistent() {
-    let harness = quick_harness("dev_secret_delne").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_delne").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -599,7 +593,7 @@ async fn dev_cli_secret_delete_nonexistent() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_create_invalid_type() {
-    let harness = quick_harness("dev_secret_badtype").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_badtype").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
@@ -629,7 +623,7 @@ async fn dev_cli_secret_create_invalid_type() {
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_cli_secret_create_malformed_config() {
-    let harness = quick_harness("dev_secret_badjson").await.expect("harness should start");
+    let harness = envoy_harness("dev_secret_badjson").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
         return;
