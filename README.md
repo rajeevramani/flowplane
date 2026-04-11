@@ -1,5 +1,10 @@
 # Flowplane
 
+[![CI](https://github.com/rajeevramani/flowplane/actions/workflows/ci.yml/badge.svg)](https://github.com/rajeevramani/flowplane/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/rajeevramani/flowplane)](https://github.com/rajeevramani/flowplane/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](https://www.rust-lang.org/)
+
 A control plane for [Envoy proxy](https://www.envoyproxy.io/) that manages gateway configuration through a CLI, REST API, or MCP server. Stores clusters, listeners, routes, and filters in PostgreSQL and pushes them to Envoy via xDS.
 
 ## Quick Start
