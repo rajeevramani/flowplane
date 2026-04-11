@@ -145,11 +145,11 @@ pub struct ListOrgTeamsResponse {
     pub teams: Vec<TeamResponse>,
 }
 
-/// List teams response (admin)
+/// List teams response (admin) — matches PaginatedResponse<Team> from API
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAdminTeamsResponse {
-    pub teams: Vec<TeamResponse>,
+    pub items: Vec<TeamResponse>,
     pub total: i64,
     pub limit: i64,
     pub offset: i64,
@@ -235,11 +235,11 @@ async fn list_teams_admin(
 
     match output {
         "table" => {
-            print_teams_table(&response.teams);
+            print_teams_table(&response.items);
             println!(
                 "Total: {} | Showing {} teams (offset: {})",
                 response.total,
-                response.teams.len(),
+                response.items.len(),
                 response.offset
             );
         }
