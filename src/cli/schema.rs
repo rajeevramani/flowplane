@@ -300,18 +300,9 @@ pub async fn export_schemas(
         ids
     } else if all {
         let has_session = session.is_some();
-        let schemas = list_schemas(
-            client,
-            team,
-            min_confidence,
-            None,
-            None,
-            true,
-            None,
-            None,
-            session,
-        )
-        .await?;
+        let schemas =
+            list_schemas(client, team, min_confidence, None, None, true, None, None, session)
+                .await?;
         if schemas.is_empty() {
             // When exporting from a specific session with no schemas (no traffic captured),
             // emit a minimal empty OpenAPI spec instead of erroring.

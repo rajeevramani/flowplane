@@ -393,10 +393,8 @@ pub async fn admin_list_organizations(
 
     // Platform admin sees all orgs; non-admin users see only their own orgs
     if has_admin_bypass(&context) {
-        let (organizations, total) = tokio::join!(
-            repo.list_organizations(limit, offset),
-            repo.count_organizations(),
-        );
+        let (organizations, total) =
+            tokio::join!(repo.list_organizations(limit, offset), repo.count_organizations(),);
         let organizations = organizations.map_err(ApiError::from)?;
         let total = total.map_err(ApiError::from)?;
         Ok(Json(PaginatedResponse::new(
