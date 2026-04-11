@@ -108,7 +108,8 @@ pub struct OrgResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListOrgsResponse {
-    pub items: Vec<OrgResponse>,
+    #[serde(alias = "items")]
+    pub organizations: Vec<OrgResponse>,
 }
 
 /// Org member response
@@ -149,7 +150,7 @@ async fn list_orgs(client: &FlowplaneClient, output: &str) -> Result<()> {
     let response: ListOrgsResponse = client.get_json("/api/v1/admin/organizations").await?;
 
     if output == "table" {
-        print_orgs_table(&response.items);
+        print_orgs_table(&response.organizations);
     } else {
         print_output(&response, output)?;
     }

@@ -149,7 +149,8 @@ pub struct ListOrgTeamsResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAdminTeamsResponse {
-    pub items: Vec<TeamResponse>,
+    #[serde(alias = "items")]
+    pub teams: Vec<TeamResponse>,
     pub total: i64,
     pub limit: i64,
     pub offset: i64,
@@ -235,11 +236,11 @@ async fn list_teams_admin(
 
     match output {
         "table" => {
-            print_teams_table(&response.items);
+            print_teams_table(&response.teams);
             println!(
                 "Total: {} | Showing {} teams (offset: {})",
                 response.total,
-                response.items.len(),
+                response.teams.len(),
                 response.offset
             );
         }
@@ -301,7 +302,7 @@ async fn update_team(
     config_file::strip_kind_field(&mut body);
 
     let url = format!("/api/v1/orgs/{}/teams/{}", org, name);
-    let response: TeamResponse = client.put_json(&url, &body).await?;
+    let response: TeamResponse = client.patch_json(&url, &body).await?;
 
     print_output(&response, output)?;
     Ok(())
@@ -320,7 +321,7 @@ async fn delete_team(client: &FlowplaneClient, org: &str, name: &str, yes: bool)
     }
 
     let url = format!("/api/v1/orgs/{}/teams/{}", org, name);
-    client.delete(&url).send().await.context("Failed to delete team")?;
+    client.delete_no_content(&url).await?;
 
     println!("Team '{}' deleted successfully from org '{}'", name, org);
     Ok(())
