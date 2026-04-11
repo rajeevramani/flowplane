@@ -299,6 +299,7 @@ pub async fn export_schemas(
         }
         ids
     } else if all {
+        let has_session = session.is_some();
         let schemas = list_schemas(
             client,
             team,
@@ -308,13 +309,13 @@ pub async fn export_schemas(
             true,
             None,
             None,
-            session.clone(),
+            session,
         )
         .await?;
         if schemas.is_empty() {
             // When exporting from a specific session with no schemas (no traffic captured),
             // emit a minimal empty OpenAPI spec instead of erroring.
-            if session.is_some() {
+            if has_session {
                 let empty_spec = serde_json::json!({
                     "openapi": "3.1.0",
                     "info": { "title": title, "version": version },

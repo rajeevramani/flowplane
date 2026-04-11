@@ -1048,19 +1048,10 @@ fn print_migrations_table(migrations: &[MigrationInfo]) {
         println!(
             "{:<15} {:<50} {:<25} {:<10}",
             migration.version,
-            truncate_string(&migration.description, 48),
+            output::truncate(&migration.description, 48),
             migration.installed_on.format("%Y-%m-%d %H:%M:%S"),
             migration.execution_time
         );
-    }
-}
-
-/// Truncate a string to a maximum length
-fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
     }
 }
 

@@ -103,7 +103,7 @@ Route traffic from an Envoy listener to a running httpbin instance. Each step is
     "arguments": {
       "name": "httpbin",
       "serviceName": "httpbin-service",
-      "endpoints": [{"address": "httpbin", "port": 80}],
+      "endpoints": [{"host": "httpbin", "port": 80}],
       "team": "default"
     }
   }

@@ -393,8 +393,12 @@ pub async fn admin_list_organizations(
 
     // Platform admin sees all orgs; non-admin users see only their own orgs
     if has_admin_bypass(&context) {
-        let organizations = repo.list_organizations(limit, offset).await.map_err(ApiError::from)?;
-        let total = repo.count_organizations().await.map_err(ApiError::from)?;
+        let (organizations, total) = tokio::join!(
+            repo.list_organizations(limit, offset),
+            repo.count_organizations(),
+        );
+        let organizations = organizations.map_err(ApiError::from)?;
+        let total = total.map_err(ApiError::from)?;
         Ok(Json(PaginatedResponse::new(
             organizations.into_iter().map(|o| o.into()).collect(),
             total,
@@ -402,7 +406,7 @@ pub async fn admin_list_organizations(
             offset,
         )))
     } else {
-        // Non-admin: return only orgs the user has membership in
+        // Non-admin: return only orgs the user has membership in (single batch query)
         let user_id = context
             .user_id
             .as_ref()
@@ -411,15 +415,16 @@ pub async fn admin_list_organizations(
         let memberships =
             membership_repo.list_user_memberships(user_id).await.map_err(ApiError::from)?;
 
-        let mut orgs = Vec::new();
-        for m in &memberships {
-            if let Some(org) =
-                repo.get_organization_by_id(&m.org_id).await.map_err(ApiError::from)?
-            {
-                orgs.push(org.into());
-            }
-        }
-        let total = orgs.len() as i64;
+        let org_ids: Vec<&str> = memberships.iter().map(|m| m.org_id.as_str()).collect();
+        let all_orgs = repo.get_organizations_by_ids(&org_ids).await.map_err(ApiError::from)?;
+        let total = all_orgs.len() as i64;
+        let orgs: Vec<OrganizationResponse> = all_orgs
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .map(|o| o.into())
+            .collect();
+
         Ok(Json(PaginatedResponse::new(orgs, total, limit, offset)))
     }
 }

@@ -151,4 +151,4 @@ flowplane auth login
 - [Getting Started](getting-started.md) — full walkthrough with MCP examples
 - [CLI Reference](cli-reference.md) — every command, flag, and example
 - [Filters](filters.md) — all 10 filter types and configuration
-- [MCP Tools](mcp.md) — 68 tools for AI-driven gateway management
+- [MCP Tools](mcp.md) — 69 tools for AI-driven gateway management

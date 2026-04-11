@@ -7,6 +7,7 @@ use anyhow::Result;
 
 use super::client::FlowplaneClient;
 use super::listeners::ListenerResponse;
+use super::output::truncate;
 use crate::api::handlers::PaginatedResponse;
 
 /// Strip the `-listener` suffix from a listener name, if present.
@@ -40,14 +41,6 @@ pub async fn handle_list_command(client: &FlowplaneClient, team: &str) -> Result
     println!();
 
     Ok(())
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
 }
 
 #[cfg(test)]

@@ -71,7 +71,7 @@ RETURNS: Full cluster details including:
 - team: Owning team
 
 CONFIGURATION DETAILS:
-- endpoints: Array of {address, port} for backend servers
+- endpoints: Array of {host, port} for backend servers
 - lbPolicy: Load balancing strategy (ROUND_ROBIN, LEAST_REQUEST, etc.)
 - healthCheck: Health check settings if configured
 - circuitBreakers: Circuit breaker thresholds if configured
@@ -565,7 +565,7 @@ Required Parameters:
 
 Optional Parameters (provide at least one):
 - serviceName: New service description
-- endpoints: New list of endpoints [{address, port}] - REPLACES all existing
+- endpoints: New list of endpoints [{host, port}] - REPLACES all existing
 - connectTimeoutSeconds: New connection timeout (1-300)
 - lbPolicy: ROUND_ROBIN | LEAST_REQUEST | RANDOM | RING_HASH | MAGLEV
 - useTls: Enable/disable TLS for upstream
