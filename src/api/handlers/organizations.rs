@@ -151,13 +151,15 @@ async fn resolve_org_by_id_or_name(
     repo: &dyn OrganizationRepository,
     id_or_name: &str,
 ) -> Result<crate::auth::organization::Organization, ApiError> {
-    // Try by ID first
-    let org_id = OrgId::from_string(id_or_name.to_string());
-    if let Some(org) = repo.get_organization_by_id(&org_id).await.map_err(ApiError::from)? {
-        return Ok(org);
+    // If the input looks like a UUID, try ID lookup first
+    if uuid::Uuid::parse_str(id_or_name).is_ok() {
+        let org_id = OrgId::from_string(id_or_name.to_string());
+        if let Some(org) = repo.get_organization_by_id(&org_id).await.map_err(ApiError::from)? {
+            return Ok(org);
+        }
     }
 
-    // Fall back to name lookup
+    // Fall back to (or start with) name lookup
     repo.get_organization_by_name(id_or_name)
         .await
         .map_err(ApiError::from)?

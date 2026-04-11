@@ -23,6 +23,7 @@ use crate::xds::{ClusterSpec, HealthCheckSpec};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use tracing::instrument;
 
 // =============================================================================
@@ -364,10 +365,22 @@ pub async fn trace_request(
     };
 
     // Serialize matches and endpoints to Value for the result
-    let matches: Vec<Value> =
-        result.matches.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect();
-    let endpoints: Vec<Value> =
-        result.endpoints.iter().map(|e| serde_json::to_value(e).unwrap_or_default()).collect();
+    let matches: Vec<Value> = result
+        .matches
+        .iter()
+        .map(|m| {
+            serde_json::to_value(m)
+                .map_err(|e| OpsServiceError::Internal(format!("Serialization error: {}", e)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let endpoints: Vec<Value> = result
+        .endpoints
+        .iter()
+        .map(|e| {
+            serde_json::to_value(e)
+                .map_err(|e| OpsServiceError::Internal(format!("Serialization error: {}", e)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(TraceRequestResult {
         path: path.to_string(),
@@ -410,7 +423,17 @@ pub async fn topology(
     );
 
     let rows = if include_details {
-        Some(result.rows.iter().map(|r| serde_json::to_value(r).unwrap_or_default()).collect())
+        Some(
+            result
+                .rows
+                .iter()
+                .map(|r| {
+                    serde_json::to_value(r).map_err(|e| {
+                        OpsServiceError::Internal(format!("Serialization error: {}", e))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
     } else {
         None
     };
@@ -418,14 +441,21 @@ pub async fn topology(
     let orphan_clusters: Vec<Value> = result
         .orphan_clusters
         .iter()
-        .map(|o| serde_json::to_value(o).unwrap_or_default())
-        .collect();
+        .map(|o| {
+            serde_json::to_value(o)
+                .map_err(|e| OpsServiceError::Internal(format!("Serialization error: {}", e)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let orphan_route_configs: Vec<Value> = result
         .orphan_route_configs
         .iter()
-        .map(|o| serde_json::to_value(o).unwrap_or_default())
-        .collect();
-    let summary = serde_json::to_value(&result.summary).unwrap_or_default();
+        .map(|o| {
+            serde_json::to_value(o)
+                .map_err(|e| OpsServiceError::Internal(format!("Serialization error: {}", e)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let summary = serde_json::to_value(&result.summary)
+        .map_err(|e| OpsServiceError::Internal(format!("Serialization error: {}", e)))?;
 
     Ok(TopologyServiceResult {
         scope: scope.unwrap_or("full").to_string(),
@@ -448,11 +478,24 @@ pub async fn config_validate(
     team: &str,
 ) -> Result<ConfigValidationResult, OpsServiceError> {
     let repo = ReportingRepository::new(pool.clone());
+    let cluster_repo = ClusterRepository::new(pool.clone());
+    let nack_repo = NackEventRepository::new(pool.clone());
 
-    let topology_result = repo
-        .full_topology(team, None, None, Some(200))
-        .await
+    // Run independent queries concurrently
+    let team_filter = [team.to_string()];
+    let (topology_result, clusters, recent_nacks) = tokio::join!(
+        repo.full_topology(team, None, None, Some(200)),
+        cluster_repo.list_by_teams(&team_filter, true, Some(500), Some(0)),
+        nack_repo.list_recent(team, None, Some(5)),
+    );
+
+    let topology_result = topology_result
         .map_err(|e| OpsServiceError::Internal(format!("Failed to validate config: {}", e)))?;
+    let clusters = clusters.map_err(|e| {
+        OpsServiceError::Internal(format!("Failed to list clusters for validation: {}", e))
+    })?;
+    let recent_nacks = recent_nacks
+        .map_err(|e| OpsServiceError::Internal(format!("Failed to query recent NACKs: {}", e)))?;
 
     let mut issues: Vec<ValidationIssue> = Vec::new();
 
@@ -482,37 +525,25 @@ pub async fn config_validate(
         });
     }
 
-    // Check for listeners with no route configs
+    // Check for listeners with no route configs (O(1) dedup via HashSet)
+    let mut seen_empty_listeners: HashSet<&str> = HashSet::new();
     for row in &topology_result.rows {
-        if row.route_config_name.is_none() {
-            let already_reported = issues
-                .iter()
-                .any(|i| i.category == "empty_listener" && i.resource == row.listener_name);
-            if !already_reported {
-                issues.push(ValidationIssue {
-                    severity: "warning".to_string(),
-                    category: "empty_listener".to_string(),
-                    message: format!(
-                        "Listener '{}' ({}:{}) has no route configs bound — it cannot route traffic",
-                        row.listener_name,
-                        row.listener_address,
-                        row.listener_port
-                            .map(|p| p.to_string())
-                            .unwrap_or_else(|| "?".to_string())
-                    ),
-                    resource: row.listener_name.clone(),
-                });
-            }
+        if row.route_config_name.is_none() && seen_empty_listeners.insert(&row.listener_name) {
+            issues.push(ValidationIssue {
+                severity: "warning".to_string(),
+                category: "empty_listener".to_string(),
+                message: format!(
+                    "Listener '{}' ({}:{}) has no route configs bound — it cannot route traffic",
+                    row.listener_name,
+                    row.listener_address,
+                    row.listener_port.map(|p| p.to_string()).unwrap_or_else(|| "?".to_string())
+                ),
+                resource: row.listener_name.clone(),
+            });
         }
     }
 
     // Proto violation checks
-    let cluster_repo = ClusterRepository::new(pool.clone());
-    let clusters =
-        cluster_repo.list_by_teams(&[team.to_string()], true, Some(500), Some(0)).await.map_err(
-            |e| OpsServiceError::Internal(format!("Failed to list clusters for validation: {}", e)),
-        )?;
-
     for cluster in &clusters {
         let mut hc_issues = check_health_check_thresholds(&cluster.name, &cluster.configuration);
         issues.append(&mut hc_issues);
@@ -520,13 +551,6 @@ pub async fn config_validate(
         let mut rf_issues = check_cluster_required_fields(&cluster.name, &cluster.configuration);
         issues.append(&mut rf_issues);
     }
-
-    // xDS delivery: recent NACK warnings
-    let nack_repo = NackEventRepository::new(pool.clone());
-    let recent_nacks = nack_repo
-        .list_recent(team, None, Some(5))
-        .await
-        .map_err(|e| OpsServiceError::Internal(format!("Failed to query recent NACKs: {}", e)))?;
 
     for nack in &recent_nacks {
         let resource_names: Option<Vec<String>> =
@@ -554,6 +578,7 @@ pub async fn config_validate(
     let proto_violation_count = issues.iter().filter(|i| i.category == "proto_violation").count();
     let nack_count = recent_nacks.len();
     let valid = issues.is_empty();
+    let total_issues = issues.len();
 
     let next_step = if error_count > 0 {
         "Fix proto_violation errors first — these will cause Envoy to NACK the config. Use cp_get_cluster to inspect affected clusters, then cp_update_cluster to fix.".to_string()
@@ -567,9 +592,9 @@ pub async fn config_validate(
 
     Ok(ConfigValidationResult {
         valid,
-        issues: issues.clone(),
+        issues,
         summary: ValidationSummary {
-            total_issues: issues.len(),
+            total_issues,
             warnings: warning_count,
             errors: error_count,
             proto_violations: proto_violation_count,

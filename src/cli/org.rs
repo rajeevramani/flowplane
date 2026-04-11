@@ -2,13 +2,14 @@
 //!
 //! Provides command-line interface for managing organizations (admin-scoped).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
 use super::config_file;
+use super::output::{print_output, truncate};
 
 #[derive(Subcommand)]
 pub enum OrgCommands {
@@ -254,29 +255,4 @@ fn print_members_table(members: &[OrgMemberResponse]) {
         );
     }
     println!();
-}
-
-fn print_output<T: Serialize>(data: &T, format: &str) -> Result<()> {
-    match format {
-        "json" => {
-            let json = serde_json::to_string_pretty(data).context("Failed to serialize to JSON")?;
-            println!("{}", json);
-        }
-        "yaml" => {
-            let yaml = serde_yaml::to_string(data).context("Failed to serialize to YAML")?;
-            println!("{}", yaml);
-        }
-        _ => {
-            anyhow::bail!("Unsupported output format: {}. Use 'json' or 'yaml'.", format);
-        }
-    }
-    Ok(())
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
 }
