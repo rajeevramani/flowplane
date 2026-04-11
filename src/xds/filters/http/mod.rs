@@ -16,9 +16,12 @@ pub mod health_check;
 pub mod jwt_auth;
 pub mod local_rate_limit;
 pub mod mcp;
+// envoy-types 0.7.3 deprecated some HeaderMatchSpecifier and Principal variants
+#[allow(deprecated)]
 pub mod oauth2;
 pub mod rate_limit;
 pub mod rate_limit_quota;
+#[allow(deprecated)]
 pub mod rbac;
 pub mod wasm;
 

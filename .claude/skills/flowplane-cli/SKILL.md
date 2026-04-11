@@ -132,32 +132,34 @@ Deletes `<NAME>` (cluster), `<NAME>-routes` (route config), `<NAME>-listener` (l
 
 ## Resource CRUD
 
-All resource commands follow the same pattern: `create -f <JSON>`, `list`, `get <NAME>`, `update <NAME> -f <JSON>`, `delete <NAME> [--yes]`.
+All resource commands follow the same pattern: `create -f <FILE>`, `list`, `get <NAME>`, `update <NAME> -f <FILE>`, `delete <NAME> [--yes]`.
+
+**File format:** `-f` accepts both YAML (`.yaml`/`.yml`) and JSON (`.json`) files. Format is detected by file extension. All resource types support both formats for `create`, `update`, and `apply` commands.
 
 ### Clusters
 ```bash
-flowplane cluster create -f cluster.json
+flowplane cluster create -f cluster.yaml        # YAML or JSON
 flowplane cluster list [--service <SVC>] [--limit N] [--offset N]
 flowplane cluster get <NAME>
-flowplane cluster update <NAME> -f cluster.json
+flowplane cluster update <NAME> -f cluster.yaml  # YAML or JSON
 flowplane cluster delete <NAME> [--yes]
 ```
 
 ### Listeners
 ```bash
-flowplane listener create -f listener.json
+flowplane listener create -f listener.yaml       # YAML or JSON
 flowplane listener list [--protocol <PROTO>] [--limit N] [--offset N]
 flowplane listener get <NAME>
-flowplane listener update <NAME> -f listener.json
+flowplane listener update <NAME> -f listener.yaml
 flowplane listener delete <NAME> [--yes]
 ```
 
 ### Routes (Route Configs)
 ```bash
-flowplane route create -f route-config.json
+flowplane route create -f route-config.yaml      # YAML or JSON
 flowplane route list [--cluster <NAME>] [--limit N] [--offset N]
 flowplane route get <NAME>
-flowplane route update <NAME> -f route-config.json
+flowplane route update <NAME> -f route-config.yaml
 flowplane route delete <NAME> [--yes]
 ```
 
@@ -171,6 +173,21 @@ flowplane team get --org <ORG> <TEAM>
 flowplane team update --org <ORG> <TEAM> -f team.json
 flowplane team delete --org <ORG> <TEAM> [--yes]
 ```
+
+### Dataplanes
+```bash
+flowplane dataplane list [--limit N] [--offset N]
+flowplane dataplane get <NAME>
+flowplane dataplane config <NAME>                # Envoy bootstrap config (xDS, admin, node)
+```
+All commands support `-o json|yaml|table` (default: table for list, json for get/config).
+
+### Virtual Hosts
+Virtual hosts are scoped to a route config.
+```bash
+flowplane vhost list --route-config <ROUTE_CONFIG_NAME>
+```
+Supports `-o json|yaml|table` (default: table). Shows name, domains, order, route count, and filter count.
 
 ## Filters
 
@@ -192,11 +209,33 @@ Get filter details including attachment info.
 flowplane filter get <NAME>
 ```
 
+### `flowplane filter update`
+Update an existing filter from a JSON spec file. Bumps the filter version.
+```bash
+flowplane filter update <NAME> -f filter.json
+```
+The JSON format is the same as `filter create`. Returns the updated filter with incremented version number.
+
 ### `flowplane filter delete`
 Delete a filter.
 ```bash
 flowplane filter delete <NAME>
 ```
+
+### `flowplane filter types`
+List all available filter types.
+```bash
+flowplane filter types                  # Table: Name, Display Name, Description
+flowplane filter types -o json          # Full JSON array
+```
+
+### `flowplane filter type`
+Get detailed information about a specific filter type, including its config schema, attachment points, and UI hints.
+```bash
+flowplane filter type <TYPE_NAME>             # JSON output (default)
+flowplane filter type <TYPE_NAME> -o json     # Same — JSON with full configSchema
+```
+Use this to discover required fields before creating a filter of that type.
 
 ### `flowplane filter attach`
 Attach a filter to a listener.
@@ -229,6 +268,26 @@ flowplane import openapi <FILE> [--name <NAME>] [--port <PORT>]
 - **Port collision**: Returns 409 Conflict with a helpful message suggesting an alternative port or `listener_mode=existing`.
 - **Name collision**: Returns 409 if a listener with the derived name already exists.
 - Requires at least one dataplane for the team (created automatically by `flowplane init`).
+
+### `flowplane import list`
+List all OpenAPI imports.
+```bash
+flowplane import list                   # Table: ID, Name, Team, Imported At
+flowplane import list -o json           # Full JSON with specVersion, listenerName
+```
+
+### `flowplane import get`
+Get details of a specific import by ID.
+```bash
+flowplane import get <IMPORT_ID>               # JSON output (default)
+flowplane import get <IMPORT_ID> -o json       # Full JSON with routeCount, clusterCount, listenerCount
+```
+
+### `flowplane import delete`
+Delete an import and its associated resources (cascade).
+```bash
+flowplane import delete <IMPORT_ID> --yes      # Skip confirmation
+```
 
 ### `flowplane learn start`
 Start a learning session to record API traffic. Sessions auto-activate by default and begin collecting samples immediately.
@@ -282,6 +341,21 @@ flowplane learn cancel <NAME_OR_ID> -y         # Short form
 ```
 In non-interactive mode (piped stdin), cancel without `--yes` returns an error directing you to use `--yes`. Always use `--yes` in scripts.
 
+### `flowplane learn activate`
+Activate a pending learning session. Only works on sessions in `pending` state (created via MCP with `autoStart: false`). Sessions created via CLI `learn start` are auto-activated.
+```bash
+flowplane learn activate <NAME_OR_ID>            # Accepts session name or UUID
+flowplane learn activate <NAME_OR_ID> -o json    # JSON output
+```
+
+### `flowplane learn health`
+Check the health of a learning session. Runs diagnostic checks on session status, regex matching, and sample progress.
+```bash
+flowplane learn health <NAME_OR_ID>            # Table summary
+flowplane learn health <NAME_OR_ID> -o json    # Full JSON with checks, diagnosis, and fix suggestions
+```
+Checks include: session status, regex match against configured route paths, and sample collection progress. Returns a `diagnosis` (e.g., `healthy`, `stalled`) and a `fix` suggestion when issues are detected.
+
 ### `flowplane learn export`
 Convenience shortcut for `flowplane schema export --all`. Exports all schemas as OpenAPI 3.1.
 ```bash
@@ -314,6 +388,14 @@ flowplane schema get <ID> -o table                 # Human-readable summary
 flowplane schema get <ID> -o yaml                  # YAML output
 ```
 
+### `flowplane schema compare`
+Compare two aggregated schema versions to see differences.
+```bash
+flowplane schema compare <ID> --with <OTHER_ID>    # Compare two specific schemas
+flowplane schema compare <ID> --with <OTHER_ID> -o diff  # Diff output format
+```
+`--with` is required. Output formats: `json` (default), `diff`.
+
 ### `flowplane schema export`
 Export schemas as OpenAPI 3.1. Auto-detects format from file extension (`.yaml`/`.json`). Stdout defaults to YAML.
 ```bash
@@ -326,17 +408,82 @@ flowplane schema export --all --title "My API" --version "1.0.0" --description "
 ```
 Flags: `--id` (comma-separated IDs), `--all`, `--min-confidence`, `--session`, `--title`, `--version`, `--description`, `-o` (output file path).
 
+## Ops Diagnostics
+
+### `flowplane trace`
+Trace a request path through the gateway routing table (listener → route config → virtual host → route → cluster). Shows where routing succeeds or fails.
+```bash
+flowplane trace <PATH>                         # Trace across all listeners
+flowplane trace <PATH> --port <PORT>           # Filter to specific listener port
+flowplane trace <PATH> -o json                 # JSON output with full match details
+```
+Exit code 0 = route found, exit code 1 = no match. MCP equivalent: `ops_trace_request`.
+
+### `flowplane topology`
+Show the complete gateway layout — listeners, route configs, clusters, routes, and orphaned resources.
+```bash
+flowplane topology                             # Table summary
+flowplane topology -o json                     # Full JSON with summary counts
+```
+MCP equivalent: `ops_topology`.
+
+### `flowplane validate`
+Scan configuration for misconfigurations: orphan clusters, unbound route configs, empty virtual hosts, duplicate path matchers, and recent NACKs.
+```bash
+flowplane validate                             # Human-readable summary
+flowplane validate -o json                     # JSON with issues array and summary counts
+```
+Exit code 0 = valid. MCP equivalent: `ops_config_validate`.
+
+### `flowplane xds status`
+Show per-dataplane xDS delivery status (ACK/NACK for CDS, RDS, LDS, EDS).
+```bash
+flowplane xds status                           # Table view
+flowplane xds status -o json                   # JSON with per-dataplane resource type status
+```
+MCP equivalent: `ops_xds_delivery_status`.
+
+### `flowplane xds nacks`
+Query recent NACK events — times Envoy rejected a config push.
+```bash
+flowplane xds nacks                            # Table view
+flowplane xds nacks --limit <N>                # Limit results
+flowplane xds nacks -o json                    # JSON output
+```
+MCP equivalent: `ops_nack_history`.
+
+### `flowplane audit list`
+View the audit trail of resource changes. `audit` with no subcommand defaults to `audit list`.
+```bash
+flowplane audit list                           # All recent entries (default limit 20)
+flowplane audit list --resource-type cluster   # Filter by resource type
+flowplane audit list --action create           # Filter by action (create/update/delete)
+flowplane audit list --since 2026-04-01T00:00:00Z  # Filter by time
+flowplane audit list --limit 50                # Change result limit
+flowplane audit list -o json                   # JSON output
+```
+MCP equivalent: `ops_audit_query`.
+
 ## Secrets
 
-Commands: `flowplane secret create`, `list`, `get`, `delete`. See the **`flowplane-secrets` skill** for full syntax, examples, secret types, and filter integration.
+Commands: `flowplane secret create`, `list`, `get`, `rotate`, `delete`. See the **`flowplane-secrets` skill** for full syntax, examples, secret types, and filter integration.
 
 ```bash
 flowplane secret create --name oauth-secret --type generic_secret \
   --config '{"type":"generic_secret","secret":"dGVzdC1zZWNyZXQ="}'
 flowplane secret list
 flowplane secret get <SECRET_ID> -o json
+flowplane secret rotate <SECRET_ID> --config '{"type":"generic_secret","secret":"bmV3LXNlY3JldA=="}'
 flowplane secret delete <SECRET_ID> --yes
 ```
+
+### `flowplane secret rotate`
+Rotate a secret by ID, bumping its version. Requires `--config` with new secret configuration.
+```bash
+flowplane secret rotate <SECRET_ID> --config '<JSON>'     # Rotate with new config
+flowplane secret rotate <SECRET_ID> --config '<JSON>' -o json
+```
+The `--config` JSON must include the secret type and value (same shape as `secret create`'s `--config`). The API wraps it as `{"configuration": <config>}` internally.
 
 ## Config
 
@@ -391,6 +538,153 @@ Validate database schema.
 ```bash
 flowplane database validate
 ```
+
+## Observability
+
+### Route Views
+
+Inspect the route topology — all routes with their clusters, listeners, and virtual hosts.
+
+```bash
+flowplane route-views list                         # Table view
+flowplane route-views list -o json                 # Full JSON with pagination and stats
+flowplane route-views stats                        # Summary statistics only
+flowplane route-views stats -o json                # Stats as JSON
+```
+
+Table columns: Route, Method, Cluster, Listener. JSON includes full detail: path pattern, match type, domains, route config name, virtual host name, MCP enablement, filter count.
+
+Stats fields: `totalRoutes`, `totalRouteConfigs`, `totalVirtualHosts`, `uniqueClusters`, `uniqueDomains`, `mcpEnabledCount`.
+
+### Reports
+
+```bash
+flowplane reports route-flows                      # Table view
+flowplane reports route-flows -o json              # JSON with pagination
+```
+
+Shows route flow data. JSON response includes `items`, `total`, `limit`, `offset`.
+
+### Stats
+
+```bash
+flowplane stats overview                           # System overview stats
+flowplane stats clusters                           # Cluster-level stats
+```
+
+Stats dashboard is auto-enabled in dev mode (seeded on startup). In prod mode, an admin must enable it via `PUT /api/v1/admin/apps/stats_dashboard`.
+
+## Admin & Governance
+
+### Admin
+
+```bash
+flowplane admin scopes                             # List all permission scopes (table)
+flowplane admin scopes -o json                     # Scopes as JSON with full detail
+flowplane admin resources                          # List admin resources (requires admin scope)
+```
+
+`admin scopes` returns all 45 permission scopes (clusters, routes, listeners, filters, secrets, dataplanes, wasm, learning-sessions, schemas, certificates, reports, audit, stats, agents, admin). Each scope has: id, resource, action, category, label, enabled, visibleInUi.
+
+`admin resources` requires `admin:all` scope — returns 403 in dev mode.
+
+### Organizations
+
+> Requires admin scope (`admin:all`). Returns 403 in dev mode.
+
+```bash
+flowplane org list                                 # List organizations
+flowplane org list -o json                         # JSON output
+```
+
+### Agents
+
+```bash
+flowplane agent list --org <ORG>                   # List agents for an org
+```
+
+### MCP Tools
+
+List all registered MCP tools with their descriptions and status.
+
+```bash
+flowplane mcp tools                                # Table view
+flowplane mcp tools -o json                        # Full JSON with input schemas
+```
+
+Table columns: Name, Description, Enabled, Route. JSON includes: id, category, description, enabled, inputSchema, confidence, clusterName, httpMethod, httpPath.
+
+### WASM Filters
+
+```bash
+flowplane wasm list                                # List custom WASM filters
+flowplane wasm list -o json                        # JSON output
+```
+
+## Bulk Operations
+
+### `flowplane apply`
+Declarative create-or-update for resources from YAML/JSON manifests.
+```bash
+flowplane apply -f <FILE>                          # Apply a single manifest
+flowplane apply -f <DIRECTORY>/                    # Apply all manifests in a directory
+```
+
+**Manifest format:**
+```yaml
+kind: Cluster                    # Resource type: Cluster, Listener, Route, Filter
+name: my-cluster                 # Resource name
+serviceName: my-service          # Type-specific fields...
+endpoints:
+  - host: "127.0.0.1"
+    port: 8080
+lbPolicy: ROUND_ROBIN
+```
+
+**Behavior:**
+- **Create-or-update:** Creates the resource if it doesn't exist, updates if it does.
+- **Directory mode:** Processes all `.yaml` and `.json` files in the directory.
+- **Output:** Reports `created` or `updated` per resource (e.g., `Cluster/my-cluster: created`).
+- **Errors:** Reports per-file errors without stopping other files (e.g., missing `name` field, unsupported `kind`).
+
+Supported kinds: `Cluster`, `Listener`, `Route`, `Filter`.
+
+## Resource Scaffolding
+
+Generate comprehensive starter manifests for any resource type. Scaffold output includes ALL fields with `[REQUIRED]`/`[OPTIONAL]` annotations. Optional complex sections (health checks, TLS, tracing, etc.) are commented out with example values. Use with `flowplane apply` or `flowplane <resource> create -f` for a complete workflow.
+
+```bash
+flowplane cluster scaffold                         # YAML scaffold (all fields)
+flowplane cluster scaffold -o json                 # JSON scaffold
+flowplane listener scaffold                        # Listener scaffold (HCM, TLS, tracing, TCP proxy)
+flowplane route scaffold                           # Route config scaffold (forward, weighted, redirect)
+flowplane filter scaffold <FILTER_TYPE>            # Filter scaffold by type
+flowplane filter scaffold <FILTER_TYPE> -o json    # Filter scaffold as JSON
+```
+
+Available filter types for scaffolding: `header_mutation`, `cors`, `custom_response`, `rbac`, `mcp`, `local_rate_limit`, `compressor`, `ext_authz`, `jwt_auth`, `oauth2`, `rate_limit` (not implemented).
+
+**Scaffold fields by resource:**
+- **Cluster:** name, serviceName, endpoints, connectTimeoutSeconds, useTls, tlsServerName, dnsLookupFamily, lbPolicy, protocolType, healthChecks, circuitBreakers, outlierDetection
+- **Route:** name, virtualHosts (with domains, routes, match types: prefix/exact/regex/template, actions: forward/weighted/redirect, retryPolicy, headers/queryParameters matchers, typedPerFilterConfig)
+- **Listener:** name, address, port, dataplaneId, protocol, filterChains (httpConnectionManager with routeConfigName/accessLog/tracing/httpFilters, tcpProxy, tlsContext)
+- **Filter:** name, filterType, config (type-specific, schema-driven with all required nested fields populated)
+
+**Example workflow:**
+```bash
+# Generate, edit, then create or apply
+flowplane cluster scaffold > my-cluster.yaml
+# Edit my-cluster.yaml — replace <placeholders> with real values
+flowplane cluster create -f my-cluster.yaml     # Direct create
+# OR
+flowplane apply -f my-cluster.yaml              # Declarative create-or-update (uses kind field)
+```
+
+**Key details:**
+- YAML scaffold includes `kind` field for `apply -f` compatibility. `create -f` and `update -f` strip `kind` automatically.
+- Filter scaffold includes `filterType` at top level (required by API).
+- All field names use camelCase (matching API serde serialization).
+- JSON output includes all fields with defaults; YAML comments out optional complex sections.
 
 ## Gotchas
 

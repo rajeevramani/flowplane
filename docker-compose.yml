@@ -134,6 +134,9 @@ services:
       # UI and MCP
       FLOWPLANE_UI_ORIGIN: "http://localhost:8080,http://localhost:6274"
 
+      # Envoy admin (for stats dashboard — uses Docker network hostname)
+      ENVOY_ADMIN_BASE_URL: "http://flowplane-envoy"
+
       # Logging
       RUST_LOG: info,flowplane=debug
 

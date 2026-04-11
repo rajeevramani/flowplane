@@ -71,7 +71,7 @@ RETURNS: Full cluster details including:
 - team: Owning team
 
 CONFIGURATION DETAILS:
-- endpoints: Array of {address, port} for backend servers
+- endpoints: Array of {host, port} for backend servers
 - lbPolicy: Load balancing strategy (ROUND_ROBIN, LEAST_REQUEST, etc.)
 - healthCheck: Health check settings if configured
 - circuitBreakers: Circuit breaker thresholds if configured
@@ -408,8 +408,8 @@ Example:
   "name": "api-backend",
   "serviceName": "api.example.com",
   "endpoints": [
-    {"address": "10.0.1.10", "port": 8080},
-    {"address": "10.0.1.11", "port": 8080}
+    {"host": "10.0.1.10", "port": 8080},
+    {"host": "10.0.1.11", "port": 8080}
   ],
   "lbPolicy": "ROUND_ROBIN",
   "connectTimeoutSeconds": 10,
@@ -445,7 +445,7 @@ Authorization: Requires clusters:create scope.
                     "items": {
                         "type": "object",
                         "properties": {
-                            "address": {
+                            "host": {
                                 "type": "string",
                                 "description": "IP address or hostname"
                             },
@@ -456,7 +456,7 @@ Authorization: Requires clusters:create scope.
                                 "maximum": 65535
                             }
                         },
-                        "required": ["address", "port"]
+                        "required": ["host", "port"]
                     }
                 },
                 "connectTimeoutSeconds": {
@@ -565,7 +565,7 @@ Required Parameters:
 
 Optional Parameters (provide at least one):
 - serviceName: New service description
-- endpoints: New list of endpoints [{address, port}] - REPLACES all existing
+- endpoints: New list of endpoints [{host, port}] - REPLACES all existing
 - connectTimeoutSeconds: New connection timeout (1-300)
 - lbPolicy: ROUND_ROBIN | LEAST_REQUEST | RANDOM | RING_HASH | MAGLEV
 - useTls: Enable/disable TLS for upstream
@@ -596,10 +596,10 @@ Authorization: Requires clusters:update scope.
                     "items": {
                         "type": "object",
                         "properties": {
-                            "address": {"type": "string"},
+                            "host": {"type": "string"},
                             "port": {"type": "integer", "minimum": 1, "maximum": 65535}
                         },
-                        "required": ["address", "port"]
+                        "required": ["host", "port"]
                     }
                 },
                 "connectTimeoutSeconds": {
@@ -970,7 +970,7 @@ pub async fn execute_get_cluster_health(
                 crate::domain::EndpointHealthStatus::Unknown => unknown_count += 1,
             }
             json!({
-                "address": ep.address,
+                "host": ep.address,
                 "port": ep.port,
                 "status": ep.health_status.as_str()
             })
@@ -1016,9 +1016,9 @@ fn parse_endpoints(endpoints_json: &Value) -> Result<Vec<EndpointSpec>, String> 
     let mut endpoints = Vec::new();
     for (idx, ep) in endpoints_array.iter().enumerate() {
         let address = ep
-            .get("address")
+            .get("host")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("endpoints[{}]: missing 'address'", idx))?;
+            .ok_or_else(|| format!("endpoints[{}]: missing 'host'", idx))?;
 
         let port = ep
             .get("port")
@@ -1180,7 +1180,7 @@ mod tests {
         let create_args = json!({
             "name": "mcp-created-cluster",
             "serviceName": "test-service",
-            "endpoints": [{"address": "10.0.0.1", "port": 8080}]
+            "endpoints": [{"host": "10.0.0.1", "port": 8080}]
         });
 
         let result = execute_create_cluster(&xds_state, "test-team", None, create_args).await;
@@ -1237,7 +1237,7 @@ mod tests {
         let create_args = json!({
             "name": "update-test",
             "serviceName": "original",
-            "endpoints": [{"address": "10.0.0.1", "port": 8080}]
+            "endpoints": [{"host": "10.0.0.1", "port": 8080}]
         });
         execute_create_cluster(&xds_state, "test-team", None, create_args)
             .await
@@ -1269,7 +1269,7 @@ mod tests {
         let create_args = json!({
             "name": "delete-test",
             "serviceName": "service",
-            "endpoints": [{"address": "10.0.0.1", "port": 8080}]
+            "endpoints": [{"host": "10.0.0.1", "port": 8080}]
         });
         execute_create_cluster(&xds_state, "test-team", None, create_args)
             .await

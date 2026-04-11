@@ -10,6 +10,7 @@ pub mod access_log;
 mod cluster_spec;
 pub mod filters;
 pub mod helpers;
+#[allow(deprecated)] // envoy-types 0.7.3 deprecated Format::TextFormat
 pub mod listener;
 pub(crate) mod resources;
 pub mod route;

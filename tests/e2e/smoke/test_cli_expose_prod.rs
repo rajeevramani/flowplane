@@ -1,6 +1,6 @@
-//! Phase 3 CLI E2E tests — prod mode (Zitadel OIDC)
+//! CLI E2E tests — expose, unexpose, list, status (prod mode, Zitadel OIDC)
 //!
-//! Mirror of test_cli_phase3.rs but running in prod mode with JWT auth.
+//! Mirror of test_cli_expose.rs but running in prod mode with JWT auth.
 //! Validates that the same CLI commands work with both dev bearer tokens
 //! and prod JWT tokens from the Zitadel OIDC provider.
 //!
@@ -55,6 +55,9 @@ async fn prod_cli_expose_creates_resources() {
         reqwest::StatusCode::OK,
         "route-config should exist after CLI expose"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-prod-cli-svc"]);
 }
 
 /// Unexpose via CLI with JWT auth — verify cleanup.
@@ -120,6 +123,9 @@ async fn prod_cli_expose_idempotent() {
     let output2 =
         cli.run(&["expose", "http://127.0.0.1:9999", "--name", "e2e-prod-cli-idem"]).unwrap();
     output2.assert_success();
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-prod-cli-idem"]);
 }
 
 // ============================================================================

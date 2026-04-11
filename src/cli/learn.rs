@@ -2,11 +2,12 @@
 //!
 //! Provides command-line interface for managing API learning sessions
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use super::client::FlowplaneClient;
+use super::output::{print_output, truncate};
 use super::schema;
 
 #[derive(Subcommand)]
@@ -117,6 +118,38 @@ pub enum LearnCommands {
         after_help = "EXAMPLES:\n    # Get session details in JSON\n    flowplane learn get abc-123-def\n\n    # Get in table format\n    flowplane learn get abc-123-def --output table"
     )]
     Get {
+        /// Session name or UUID
+        #[arg(value_name = "NAME_OR_ID")]
+        name_or_id: String,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
+
+    /// Check health and diagnostics of a learning session
+    #[command(
+        long_about = "Show health status and diagnostics for a learning session.\n\n\
+            Displays sample collection rate, route pattern diagnostics, and overall\n\
+            session health to help troubleshoot collection issues.",
+        after_help = "EXAMPLES:\n    flowplane learn health my-session\n    flowplane learn health my-session -o json"
+    )]
+    Health {
+        /// Session name or UUID
+        #[arg(value_name = "NAME_OR_ID")]
+        name_or_id: String,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
+
+    /// Activate a completed learning session (apply learned schemas)
+    #[command(
+        long_about = "Activate a completed learning session, applying its discovered schemas.\n\nOnly completed sessions can be activated.",
+        after_help = "EXAMPLES:\n    # Activate a session by name or ID\n    flowplane learn activate my-session\n\n    # Activate and get JSON output\n    flowplane learn activate abc-123-def -o json"
+    )]
+    Activate {
         /// Session name or UUID
         #[arg(value_name = "NAME_OR_ID")]
         name_or_id: String,
@@ -255,6 +288,12 @@ pub async fn handle_learn_command(
         LearnCommands::Get { name_or_id, output } => {
             get_session(client, team, &name_or_id, &output).await?
         }
+        LearnCommands::Health { name_or_id, output } => {
+            health_session(client, team, &name_or_id, &output).await?
+        }
+        LearnCommands::Activate { name_or_id, output } => {
+            activate_session(client, team, &name_or_id, &output).await?
+        }
         LearnCommands::Export { session, min_confidence, title, version, description, output } => {
             // Thin wrapper: delegates to schema::export_schemas with --all
             schema::export_schemas(
@@ -322,6 +361,24 @@ async fn stop_session(
     output: &str,
 ) -> Result<()> {
     let path = format!("/api/v1/teams/{team}/learning-sessions/{session_id}/stop");
+    let response: LearningSessionResponse = client.post_json(&path, &serde_json::json!({})).await?;
+
+    if output == "table" {
+        print_sessions_table(&[response]);
+    } else {
+        print_output(&response, output)?;
+    }
+
+    Ok(())
+}
+
+async fn activate_session(
+    client: &FlowplaneClient,
+    team: &str,
+    session_id: &str,
+    output: &str,
+) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/learning-sessions/{session_id}/activate");
     let response: LearningSessionResponse = client.post_json(&path, &serde_json::json!({})).await?;
 
     if output == "table" {
@@ -411,21 +468,76 @@ async fn get_session(
     Ok(())
 }
 
-fn print_output<T: Serialize>(data: &T, format: &str) -> Result<()> {
-    match format {
-        "json" => {
-            let json = serde_json::to_string_pretty(data).context("Failed to serialize to JSON")?;
-            println!("{json}");
+async fn health_session(
+    client: &FlowplaneClient,
+    team: &str,
+    session_id: &str,
+    output: &str,
+) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/ops/learning/{session_id}/health");
+    let response: serde_json::Value = client.get_json(&path).await?;
+
+    // The health endpoint returns MCP-style [{"text": "...", "type": "text"}] wrapper.
+    // Unwrap to get the actual health JSON inside the text field.
+    let health_data = if let Some(arr) = response.as_array() {
+        if let Some(text_str) = arr.first().and_then(|v| v.get("text")).and_then(|v| v.as_str()) {
+            serde_json::from_str::<serde_json::Value>(text_str).unwrap_or_else(|_| response.clone())
+        } else {
+            response.clone()
         }
-        "yaml" => {
-            let yaml = serde_yaml::to_string(data).context("Failed to serialize to YAML")?;
-            println!("{yaml}");
-        }
-        _ => {
-            anyhow::bail!("Unsupported output format: {}. Use 'json' or 'yaml'.", format);
+    } else {
+        response
+    };
+
+    if output == "table" {
+        print_health_table(&health_data);
+    } else {
+        print_output(&health_data, output)?;
+    }
+
+    Ok(())
+}
+
+fn print_health_table(data: &serde_json::Value) {
+    println!();
+    println!("Learning Session Health");
+    println!("{}", "-".repeat(50));
+
+    if let Some(status) = data.get("status").and_then(|v| v.as_str()) {
+        println!("  {:<20} {}", "Status", status);
+    }
+    if let Some(pattern) = data.get("route_pattern").and_then(|v| v.as_str()) {
+        println!("  {:<20} {}", "Route Pattern", pattern);
+    }
+    if let Some(diagnosis) = data.get("diagnosis").and_then(|v| v.as_str()) {
+        println!("  {:<20} {}", "Diagnosis", diagnosis);
+    }
+    if let Some(fix) = data.get("fix").and_then(|v| v.as_str()) {
+        println!("  {:<20} {}", "Fix", fix);
+    }
+
+    // Print checks array
+    if let Some(checks) = data.get("checks").and_then(|v| v.as_array()) {
+        println!();
+        println!("  Checks");
+        println!("  {}", "-".repeat(46));
+        for check in checks {
+            let name = check.get("check").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let result = check.get("result").and_then(|v| v.as_str()).unwrap_or("-");
+            let detail = check.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+            let icon = match result {
+                "OK" => "OK  ",
+                "WARN" => "WARN",
+                "FAIL" => "FAIL",
+                _ => "    ",
+            };
+            println!("    [{icon}] {name}: {detail}");
+            if let Some(hint) = check.get("hint").and_then(|v| v.as_str()) {
+                println!("           Hint: {hint}");
+            }
         }
     }
-    Ok(())
+    println!();
 }
 
 fn print_sessions_table(sessions: &[LearningSessionResponse]) {
@@ -455,12 +567,4 @@ fn print_sessions_table(sessions: &[LearningSessionResponse]) {
         );
     }
     println!();
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
 }

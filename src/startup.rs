@@ -5,6 +5,7 @@
 
 use crate::domain::UserId;
 use crate::errors::Result;
+use crate::storage::repositories::app_ids;
 use tracing::info;
 
 /// Check whether the Zitadel project has been configured.
@@ -132,6 +133,20 @@ pub async fn seed_dev_resources(pool: &sqlx::PgPool) -> Result<UserId> {
     .execute(pool)
     .await
     .map_err(|e| crate::Error::database(e, "seed dev dataplane".to_string()))?;
+
+    // 7. Enable stats dashboard app in dev mode (idempotent)
+    sqlx::query(
+        "INSERT INTO instance_apps (app_id, enabled, enabled_by, enabled_at, created_at, updated_at) \
+         VALUES ($1, 1, $2, $3, $4, $4) \
+         ON CONFLICT (app_id) DO NOTHING",
+    )
+    .bind(app_ids::STATS_DASHBOARD)
+    .bind(dev_email)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| crate::Error::database(e, "seed dev stats_dashboard app".to_string()))?;
 
     info!(
         user_id = %dev_user_id,

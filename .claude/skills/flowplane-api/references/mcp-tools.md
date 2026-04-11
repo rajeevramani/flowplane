@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-All 64 MCP tools grouped by category. Use via `tools/call` on the `/api/v1/mcp` endpoint.
+All 69 MCP tools grouped by category. Use via `tools/call` on the `/api/v1/mcp` endpoint.
 
 > **Dev mode note:** All tools (except `cp_list_filter_types` and `cp_get_filter_type`) require an explicit `"team": "default"` argument in dev mode. This is by design: `dev_authenticate` creates an `AuthContext` with `org:dev-org:admin` scope but no grants, so `extract_teams()` returns empty. The `default` team exists in the DB (seeded by `seed_dev_resources` at startup with id `dev-default-team-id`), but must be specified explicitly via the `team` tool argument. This keeps dev mode simple — one org, one team, one user.
 
@@ -12,7 +12,7 @@ All 64 MCP tools grouped by category. Use via `tools/call` on the `/api/v1/mcp` 
 | `cp_get_cluster` | Get cluster details + config | `name` (string) | — |
 | `cp_get_cluster_health` | Endpoint health summary | `name` (string) | — |
 | `cp_query_service` | Aggregate view: cluster + routes + listeners | `name` (string) | — |
-| `cp_create_cluster` | Create cluster with endpoints | `name` (string), `serviceName` (string), `endpoints` (array of `{address, port}`) | `connectTimeoutSeconds` (int), `lbPolicy` (enum: ROUND_ROBIN/LEAST_REQUEST/RANDOM/RING_HASH/MAGLEV), `useTls` (bool), `healthCheck` (object), `circuitBreakers` (object) |
+| `cp_create_cluster` | Create cluster with endpoints | `name` (string), `serviceName` (string), `endpoints` (array of `{host, port}`) | `connectTimeoutSeconds` (int), `lbPolicy` (enum: ROUND_ROBIN/LEAST_REQUEST/RANDOM/RING_HASH/MAGLEV), `useTls` (bool), `healthCheck` (object), `circuitBreakers` (object) |
 | `cp_update_cluster` | Update cluster config | `name` (string) | `serviceName`, `endpoints`, `connectTimeoutSeconds`, `lbPolicy`, `useTls`, `healthCheck`, `circuitBreakers` |
 | `cp_delete_cluster` | Delete cluster | `name` (string) | — |
 

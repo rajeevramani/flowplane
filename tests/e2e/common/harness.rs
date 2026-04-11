@@ -143,6 +143,8 @@ pub struct TestHarness {
     shared: Option<&'static SharedInfrastructure>,
     /// Envoy handle (owned if isolated, None if shared)
     envoy_owned: Option<EnvoyHandle>,
+    /// Per-test Envoy handle (for envoy_harness mode: shared CP + own Envoy)
+    envoy_per_test: Option<EnvoyHandle>,
     /// Mock services (owned if isolated)
     mocks_owned: Option<MockServices>,
     /// Temp directory for test artifacts (cleaned up on drop)
@@ -185,9 +187,13 @@ impl TestHarness {
         }
     }
 
-    /// Get reference to envoy handle if available
+    /// Get reference to envoy handle if available.
+    ///
+    /// Priority: per-test Envoy (envoy_harness) > owned Envoy (isolated) > shared Envoy.
     pub fn envoy(&self) -> Option<&EnvoyHandle> {
-        if let Some(shared) = self.shared {
+        if let Some(ref envoy) = self.envoy_per_test {
+            Some(envoy)
+        } else if let Some(shared) = self.shared {
             shared.envoy.as_ref()
         } else {
             self.envoy_owned.as_ref()
@@ -286,6 +292,14 @@ impl TestHarness {
     /// Check if this harness is running in dev auth mode.
     pub fn is_dev_mode(&self) -> bool {
         self.auth_mode == flowplane::config::AuthMode::Dev
+    }
+
+    /// Access the shared infrastructure (if using shared mode).
+    ///
+    /// Returns `None` in isolated mode. Use this to access multi-user
+    /// token helpers (`create_test_user`, `get_user_token`, etc.) in prod mode.
+    pub fn shared_infra(&self) -> Option<&'static SharedInfrastructure> {
+        self.shared
     }
 }
 
@@ -394,6 +408,7 @@ impl TestHarness {
             cp_owned: None,
             shared: Some(shared),
             envoy_owned: None,
+            envoy_per_test: None,
             mocks_owned: None,
             _temp_dir: None,
             db_url: shared.db_url.clone(),
@@ -575,13 +590,11 @@ impl TestHarness {
                 )
             }
             super::shared_infra::E2eAuthMode::Prod => {
-                // In prod isolated mode, there's no shared Zitadel/mock — token comes later
-                (
-                    String::new(),
-                    super::shared_infra::E2E_SHARED_TEAM.to_string(),
-                    "e2e-org".to_string(),
-                    flowplane::config::AuthMode::Prod,
-                )
+                anyhow::bail!(
+                    "Isolated mode is not supported for prod auth. \
+                     Use shared mode (the default) for prod E2E tests. \
+                     Isolated mode requires its own Zitadel container, which is not yet implemented."
+                );
             }
         };
 
@@ -590,6 +603,7 @@ impl TestHarness {
             cp_owned: Some(cp),
             shared: None,
             envoy_owned: envoy,
+            envoy_per_test: None,
             mocks_owned: Some(mocks),
             _temp_dir: Some(temp_dir),
             db_url,
@@ -697,7 +711,15 @@ impl TestHarness {
     ///
     /// In shared mode, this is a no-op (shared infra lives for entire test run).
     /// In isolated mode, this shuts down owned components.
+    /// Per-test Envoy (envoy_harness mode) is always shut down.
     pub async fn shutdown(mut self) {
+        // Always shut down per-test Envoy (envoy_harness mode)
+        if let Some(mut envoy) = self.envoy_per_test.take() {
+            info!("Shutting down per-test Envoy");
+            envoy.shutdown();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
         if self.is_shared {
             // Shared infrastructure is never shut down by individual tests
             info!("Test harness using shared infrastructure - no shutdown needed");
@@ -736,14 +758,65 @@ fn unique_listener_port(test_name: &str) -> u16 {
     20000 + (hash % 10000) as u16
 }
 
-/// Quick harness startup for simple tests
-pub async fn quick_harness(test_name: &str) -> anyhow::Result<TestHarness> {
-    TestHarness::start(TestHarnessConfig::new(test_name)).await
-}
-
 /// Dev-mode harness (shared, API-only)
 pub async fn dev_harness(test_name: &str) -> anyhow::Result<TestHarness> {
     TestHarness::start(TestHarnessConfig::new(test_name).without_envoy()).await
+}
+
+/// Per-test Envoy harness: shared CP + DB, but a fresh Envoy per test.
+///
+/// Each test gets its own Envoy process with unique admin/listener ports and a
+/// unique team name. The Envoy connects to the shared CP via xDS. This provides:
+/// - Clean config_dump (only this test's resources)
+/// - No port exhaustion (per-test port allocation)
+/// - No state leakage between tests
+/// - Deterministic absence verification after delete
+///
+/// The Envoy process is killed when the harness is dropped.
+pub async fn envoy_harness(test_name: &str) -> anyhow::Result<TestHarness> {
+    // Start with shared CP, no shared Envoy
+    let mut harness = TestHarness::start(TestHarnessConfig::new(test_name).without_envoy()).await?;
+
+    // Bail early if Envoy binary isn't available
+    if !EnvoyHandle::is_available() {
+        anyhow::bail!("Envoy binary not found — envoy_harness requires Envoy on PATH");
+    }
+
+    // Allocate unique ports for this test's Envoy using bind-test to avoid collisions
+    let mut port_alloc = super::ports::PortAllocator::for_test(&format!("envoy_{}", test_name));
+    let admin_port = port_alloc.reserve_labeled("envoy_admin");
+    let listener_port = port_alloc.reserve_labeled("envoy_listener");
+    let listener_secondary = port_alloc.reserve_labeled("envoy_listener2");
+    // Drop allocator to release the ports before Envoy binds them
+    drop(port_alloc);
+
+    // Use the shared team (which already has a dataplane, user membership, etc.)
+    // The per-test isolation comes from having a fresh Envoy process, not a separate team.
+    let team = &harness.team;
+
+    // Spawn per-test Envoy connecting to shared xDS with the shared team's metadata
+    let envoy_config = EnvoyConfig::new(admin_port, super::shared_infra::SHARED_XDS_PORT)
+        .with_node_id(test_name)
+        .with_metadata(serde_json::json!({ "team": team }));
+
+    let envoy = EnvoyHandle::start(envoy_config)?;
+    with_timeout(TestTimeout::startup("Per-test Envoy ready"), async { envoy.wait_ready().await })
+        .await?;
+    info!(
+        test = %test_name,
+        admin_port,
+        listener_port,
+        team = %team,
+        "Per-test Envoy ready"
+    );
+
+    // Update harness with per-test Envoy and ports
+    harness.envoy_per_test = Some(envoy);
+    harness.ports.envoy_admin = admin_port;
+    harness.ports.listener = listener_port;
+    harness.ports.listener_secondary = listener_secondary;
+
+    Ok(harness)
 }
 
 /// Harness with auth mocks for JWT tests

@@ -4,6 +4,10 @@
 //! API definition management, native resource management via HTTP client, and the
 //! `serve` subcommand that starts the control plane server.
 
+pub mod admin;
+pub mod agent;
+pub mod apply;
+pub mod audit;
 pub mod auth;
 pub mod client;
 pub mod clusters;
@@ -11,7 +15,9 @@ pub mod compose;
 pub mod compose_runner;
 pub mod config;
 pub mod config_cmd;
+pub mod config_file;
 pub mod credentials;
+pub mod dataplane;
 pub mod expose;
 pub mod filter;
 pub mod import;
@@ -19,12 +25,24 @@ pub mod learn;
 pub mod list;
 pub mod listeners;
 pub mod logs;
+pub mod mcp_tools;
+pub mod mtls;
+pub mod org;
 pub mod output;
+pub mod reports;
+pub mod route_views;
 pub mod routes;
 pub mod schema;
 pub mod secrets;
+pub mod stats;
 pub mod status;
 pub mod teams;
+pub mod topology;
+pub mod trace;
+pub mod validate;
+pub mod vhost;
+pub mod wasm;
+pub mod xds;
 
 use std::sync::Arc;
 
@@ -130,6 +148,12 @@ EXAMPLES:
         command: clusters::ClusterCommands,
     },
 
+    /// Dataplane management commands
+    Dataplane {
+        #[command(subcommand)]
+        command: dataplane::DataplaneCommands,
+    },
+
     /// Listener management commands
     Listener {
         #[command(subcommand)]
@@ -152,6 +176,12 @@ EXAMPLES:
     Team {
         #[command(subcommand)]
         command: teams::TeamCommands,
+    },
+
+    /// Virtual host management commands
+    Vhost {
+        #[command(subcommand)]
+        command: vhost::VhostCommands,
     },
 
     /// Expose a local service through the gateway
@@ -210,6 +240,25 @@ EXAMPLES:
         command: secrets::SecretCommands,
     },
 
+    /// System and cluster statistics
+    Stats {
+        #[command(subcommand)]
+        command: stats::StatsCommands,
+    },
+
+    /// Aggregated route views across listeners and clusters
+    #[command(name = "route-views")]
+    RouteViews {
+        #[command(subcommand)]
+        command: route_views::RouteViewsCommands,
+    },
+
+    /// Operational reports
+    Reports {
+        #[command(subcommand)]
+        command: reports::ReportsCommands,
+    },
+
     /// Show system status or lookup a specific listener
     Status {
         /// Listener name to look up (omit for system overview)
@@ -219,8 +268,73 @@ EXAMPLES:
     /// Run diagnostic health checks
     Doctor,
 
+    /// Trace a request path through the gateway
+    Trace(trace::TraceArgs),
+
+    /// Show gateway configuration topology
+    Topology(topology::TopologyArgs),
+
+    /// Validate gateway configuration
+    Validate(validate::ValidateArgs),
+
+    /// xDS sync status and NACK inspection
+    Xds {
+        #[command(subcommand)]
+        command: xds::XdsCommands,
+    },
+
+    /// Audit log of resource changes
+    #[command(subcommand_required = false)]
+    Audit {
+        #[command(subcommand)]
+        command: Option<audit::AuditCommands>,
+    },
+
     /// List exposed services
     List,
+
+    /// MCP tool management commands (list tools, enable/disable on routes)
+    #[command(name = "mcp")]
+    McpTools {
+        #[command(subcommand)]
+        command: mcp_tools::McpToolsCommands,
+    },
+
+    /// Custom WASM filter management commands
+    Wasm {
+        #[command(subcommand)]
+        command: wasm::WasmCommands,
+    },
+
+    /// Platform administration commands (requires admin:all scope)
+    Admin {
+        #[command(subcommand)]
+        command: admin::AdminCommands,
+    },
+
+    /// mTLS status and configuration
+    Mtls {
+        #[command(subcommand)]
+        command: mtls::MtlsCommands,
+    },
+
+    /// Proxy certificate management (mTLS)
+    Cert {
+        #[command(subcommand)]
+        command: mtls::CertCommands,
+    },
+
+    /// Organization management (platform admin)
+    Org {
+        #[command(subcommand)]
+        command: org::OrgCommands,
+    },
+
+    /// Agent management (org-scoped machine identities)
+    Agent {
+        #[command(subcommand)]
+        command: agent::AgentCommands,
+    },
 
     /// View local dev stack logs
     Logs {
@@ -228,7 +342,9 @@ EXAMPLES:
         #[arg(short, long)]
         follow: bool,
     },
-    // MCP is available via HTTP at /api/v1/mcp (no CLI command needed)
+
+    /// Apply declarative resource manifests (create or update)
+    Apply(apply::ApplyArgs),
 }
 
 #[derive(Subcommand)]
@@ -358,6 +474,11 @@ async fn run_cli_commands(
             let team = config::resolve_team(team_flag)?;
             clusters::handle_cluster_command(command, &client, &team).await?
         }
+        Commands::Dataplane { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            dataplane::handle_dataplane_command(command, &client, &team).await?
+        }
         Commands::Listener { command } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
@@ -383,6 +504,11 @@ async fn run_cli_commands(
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             teams::handle_team_command(command, &client).await?
         }
+        Commands::Vhost { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            vhost::handle_vhost_command(command, &client, &team).await?
+        }
         Commands::Filter { command } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
@@ -392,6 +518,21 @@ async fn run_cli_commands(
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
             let team = config::resolve_team(team_flag)?;
             secrets::handle_secret_command(command, &client, &team).await?
+        }
+        Commands::Stats { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            stats::handle_stats_command(command, &client, &team).await?
+        }
+        Commands::RouteViews { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            route_views::handle_route_views_command(command, &client, &team).await?
+        }
+        Commands::Reports { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            reports::handle_reports_command(command, &client, &team).await?
         }
         Commands::Status { name } => {
             let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
@@ -411,6 +552,74 @@ async fn run_cli_commands(
         Commands::Logs { follow } => {
             let resolved_base_url = config::resolve_base_url(base_url);
             logs::handle_logs_command(&resolved_base_url, follow).await?
+        }
+        Commands::Trace(args) => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            trace::handle_trace_command(args, &client, &team).await?
+        }
+        Commands::Topology(args) => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            topology::handle_topology_command(args, &client, &team).await?
+        }
+        Commands::Validate(args) => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            validate::handle_validate_command(args, &client, &team).await?
+        }
+        Commands::Xds { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            xds::handle_xds_command(command, &client, &team).await?
+        }
+        Commands::McpTools { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            mcp_tools::handle_mcp_tools_command(command, &client, &team).await?
+        }
+        Commands::Wasm { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            wasm::handle_wasm_command(command, &client, &team).await?
+        }
+        Commands::Admin { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            admin::handle_admin_command(command, &client).await?
+        }
+        Commands::Mtls { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            mtls::handle_mtls_command(command, &client).await?
+        }
+        Commands::Cert { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            mtls::handle_cert_command(command, &client, &team).await?
+        }
+        Commands::Org { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            org::handle_org_command(command, &client).await?
+        }
+        Commands::Agent { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            agent::handle_agent_command(command, &client).await?
+        }
+        Commands::Audit { command } => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            let cmd = command.unwrap_or(audit::AuditCommands::List {
+                resource_type: None,
+                action: None,
+                since: None,
+                limit: 20,
+                output: "table".to_string(),
+            });
+            audit::handle_audit_command(cmd, &client, &team).await?
+        }
+        Commands::Apply(args) => {
+            let client = create_http_client(token, token_file, base_url, timeout, verbose)?;
+            let team = config::resolve_team(team_flag)?;
+            apply::handle_apply_command(args, &client, &team).await?
         }
     }
 
@@ -839,19 +1048,10 @@ fn print_migrations_table(migrations: &[MigrationInfo]) {
         println!(
             "{:<15} {:<50} {:<25} {:<10}",
             migration.version,
-            truncate_string(&migration.description, 48),
+            output::truncate(&migration.description, 48),
             migration.installed_on.format("%Y-%m-%d %H:%M:%S"),
             migration.execution_time
         );
-    }
-}
-
-/// Truncate a string to a maximum length
-fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
     }
 }
 

@@ -142,6 +142,30 @@ async fn insert_default_grants_tx(
     Ok(())
 }
 
+/// Resolve an organization by ID or name.
+///
+/// The admin API routes use `{id}` in the path, but CLI users pass org names.
+/// This helper tries ID lookup first, then falls back to name lookup, allowing
+/// both to work transparently.
+async fn resolve_org_by_id_or_name(
+    repo: &dyn OrganizationRepository,
+    id_or_name: &str,
+) -> Result<crate::auth::organization::Organization, ApiError> {
+    // If the input looks like a UUID, try ID lookup first
+    if uuid::Uuid::parse_str(id_or_name).is_ok() {
+        let org_id = OrgId::from_string(id_or_name.to_string());
+        if let Some(org) = repo.get_organization_by_id(&org_id).await.map_err(ApiError::from)? {
+            return Ok(org);
+        }
+    }
+
+    // Fall back to (or start with) name lookup
+    repo.get_organization_by_name(id_or_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))
+}
+
 /// Helper to create OrganizationRepository from ApiState.
 fn org_repository_for_state(state: &ApiState) -> Result<Arc<dyn OrganizationRepository>, ApiError> {
     let cluster_repo = state
@@ -364,20 +388,43 @@ pub async fn admin_list_organizations(
     Extension(context): Extension<AuthContext>,
     Query(query): Query<PaginationQuery>,
 ) -> Result<Json<PaginatedResponse<OrganizationResponse>>, ApiError> {
-    require_admin(&context)?;
-
     let (limit, offset) = query.clamp(100);
-
     let repo = org_repository_for_state(&state)?;
-    let organizations = repo.list_organizations(limit, offset).await.map_err(ApiError::from)?;
-    let total = repo.count_organizations().await.map_err(ApiError::from)?;
 
-    Ok(Json(PaginatedResponse::new(
-        organizations.into_iter().map(|o| o.into()).collect(),
-        total,
-        limit,
-        offset,
-    )))
+    // Platform admin sees all orgs; non-admin users see only their own orgs
+    if has_admin_bypass(&context) {
+        let (organizations, total) =
+            tokio::join!(repo.list_organizations(limit, offset), repo.count_organizations(),);
+        let organizations = organizations.map_err(ApiError::from)?;
+        let total = total.map_err(ApiError::from)?;
+        Ok(Json(PaginatedResponse::new(
+            organizations.into_iter().map(|o| o.into()).collect(),
+            total,
+            limit,
+            offset,
+        )))
+    } else {
+        // Non-admin: return only orgs the user has membership in (single batch query)
+        let user_id = context
+            .user_id
+            .as_ref()
+            .ok_or_else(|| ApiError::unauthorized("Authentication required"))?;
+        let membership_repo = org_membership_repository_for_state(&state)?;
+        let memberships =
+            membership_repo.list_user_memberships(user_id).await.map_err(ApiError::from)?;
+
+        let org_ids: Vec<&str> = memberships.iter().map(|m| m.org_id.as_str()).collect();
+        let all_orgs = repo.get_organizations_by_ids(&org_ids).await.map_err(ApiError::from)?;
+        let total = all_orgs.len() as i64;
+        let orgs: Vec<OrganizationResponse> = all_orgs
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .map(|o| o.into())
+            .collect();
+
+        Ok(Json(PaginatedResponse::new(orgs, total, limit, offset)))
+    }
 }
 
 /// Get an organization by ID (admin or org admin).
@@ -401,15 +448,9 @@ pub async fn admin_get_organization(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<OrganizationResponse>, ApiError> {
-    let org_id = OrgId::from_string(id);
-
-    // Resolve org first to get name for auth check
+    // Resolve org by ID or name (CLI passes names, Swagger/UI passes UUIDs)
     let repo = org_repository_for_state(&state)?;
-    let org = repo
-        .get_organization_by_id(&org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+    let org = resolve_org_by_id_or_name(repo.as_ref(), &id).await?;
 
     require_admin_or_org_admin(&context, &org.name)?;
 
@@ -442,20 +483,14 @@ pub async fn admin_update_organization(
 ) -> Result<Json<OrganizationResponse>, ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
-    let org_id = OrgId::from_string(id);
-
-    // Resolve org first to get name for auth check
+    // Resolve org by ID or name
     let repo = org_repository_for_state(&state)?;
-    let existing_org = repo
-        .get_organization_by_id(&org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+    let existing_org = resolve_org_by_id_or_name(repo.as_ref(), &id).await?;
 
     require_org_admin_only(&context, &existing_org.name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
-    let org = repo.update_organization(&org_id, payload).await.map_err(ApiError::from)?;
+    let org = repo.update_organization(&existing_org.id, payload).await.map_err(ApiError::from)?;
 
     Ok(Json(org.into()))
 }
@@ -488,20 +523,33 @@ pub async fn admin_delete_organization(
     // Platform admin only — org admins cannot delete their own org
     require_admin(&context)?;
 
-    let org_id = OrgId::from_string(id);
-
+    // Resolve org by ID or name
     let repo = org_repository_for_state(&state)?;
-    // Verify org exists (returns 404 if not)
-    repo.get_organization_by_id(&org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+    let org = resolve_org_by_id_or_name(repo.as_ref(), &id).await?;
 
     // Collect org member user_ids BEFORE deletion (cascade will remove memberships)
     let membership_repo = org_membership_repository_for_state(&state)?;
-    let org_members = membership_repo.list_org_members(&org_id).await.map_err(ApiError::from)?;
+    let org_members = membership_repo.list_org_members(&org.id).await.map_err(ApiError::from)?;
 
-    repo.delete_organization(&org_id).await.map_err(ApiError::from)?;
+    // Cascade-delete all teams in the org. The teams FK on organizations uses
+    // ON DELETE RESTRICT, so we must remove teams first. This is safe because
+    // admin_create_organization auto-creates a default team, and users expect
+    // org delete to clean up everything the org create produced.
+    let pool = pool_for_state(&state)?;
+    let team_repo = Arc::new(SqlxTeamRepository::new(pool.clone()));
+    let org_teams = team_repo.list_teams_by_org(&org.id).await.map_err(ApiError::from)?;
+    for team in &org_teams {
+        // Team delete may fail if team has resources (clusters, routes, etc.)
+        // which is the intended safeguard — don't silently destroy user data.
+        team_repo.delete_team(&team.id).await.map_err(|e| {
+            ApiError::Conflict(format!(
+                "Cannot delete organization: team '{}' has resources. Remove team resources first. ({})",
+                team.name, e
+            ))
+        })?;
+    }
+
+    repo.delete_organization(&org.id).await.map_err(ApiError::from)?;
 
     // Evict permission cache for all former org members
     if let Some(ref cache) = state.permission_cache {
@@ -539,20 +587,14 @@ pub async fn admin_list_org_members(
     Extension(context): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<ListOrgMembersResponse>, ApiError> {
-    let org_id = OrgId::from_string(id);
-
-    // Resolve org to get its name for auth check
+    // Resolve org by ID or name
     let org_repo = org_repository_for_state(&state)?;
-    let org = org_repo
-        .get_organization_by_id(&org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+    let org = resolve_org_by_id_or_name(org_repo.as_ref(), &id).await?;
 
     require_admin_or_org_admin(&context, &org.name)?;
 
     let membership_repo = org_membership_repository_for_state(&state)?;
-    let members = membership_repo.list_org_members(&org_id).await.map_err(ApiError::from)?;
+    let members = membership_repo.list_org_members(&org.id).await.map_err(ApiError::from)?;
 
     Ok(Json(ListOrgMembersResponse { members: members.into_iter().map(|m| m.into()).collect() }))
 }
@@ -584,15 +626,10 @@ pub async fn admin_add_org_member(
 ) -> Result<(StatusCode, Json<crate::auth::organization::OrgMembershipResponse>), ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
-    let org_id = OrgId::from_string(id);
-
-    // Resolve org
+    // Resolve org by ID or name
     let org_repo = org_repository_for_state(&state)?;
-    let org = org_repo
-        .get_organization_by_id(&org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+    let org = resolve_org_by_id_or_name(org_repo.as_ref(), &id).await?;
+    let org_id = org.id.clone();
 
     require_org_admin_only(&context, &org.name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
@@ -750,15 +787,10 @@ pub async fn admin_invite_org_member(
 ) -> Result<(StatusCode, Json<InviteOrgMemberResponse>), ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
-    let org_id = OrgId::from_string(id);
-
-    // Resolve org
+    // Resolve org by ID or name
     let org_repo = org_repository_for_state(&state)?;
-    let org = org_repo
-        .get_organization_by_id(&org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+    let org = resolve_org_by_id_or_name(org_repo.as_ref(), &id).await?;
+    let org_id = org.id.clone();
 
     // Platform admin CAN invite (e.g. first org admin), org admin can invite their own org
     require_admin_or_org_admin(&context, &org.name)?;
@@ -1011,16 +1043,11 @@ pub async fn admin_update_org_member_role(
 ) -> Result<Json<crate::auth::organization::OrgMembershipResponse>, ApiError> {
     payload.validate().map_err(ApiError::from)?;
 
-    let org_id = OrgId::from_string(id);
     let target_user_id = UserId::from_string(user_id);
 
-    // Resolve org
+    // Resolve org by ID or name
     let org_repo = org_repository_for_state(&state)?;
-    let org = org_repo
-        .get_organization_by_id(&org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+    let org = resolve_org_by_id_or_name(org_repo.as_ref(), &id).await?;
 
     require_org_admin_only(&context, &org.name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
@@ -1034,7 +1061,7 @@ pub async fn admin_update_org_member_role(
     // Update role atomically (repository enforces last-owner constraint via transaction)
     let membership_repo = org_membership_repository_for_state(&state)?;
     let updated = membership_repo
-        .update_membership_role(&target_user_id, &org_id, payload.role, &grant_pairs, &created_by)
+        .update_membership_role(&target_user_id, &org.id, payload.role, &grant_pairs, &created_by)
         .await
         .map_err(ApiError::from)?;
 
@@ -1071,23 +1098,18 @@ pub async fn admin_remove_org_member(
     Extension(context): Extension<AuthContext>,
     Path((id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let org_id = OrgId::from_string(id);
     let target_user_id = UserId::from_string(user_id);
 
-    // Resolve org
+    // Resolve org by ID or name
     let org_repo = org_repository_for_state(&state)?;
-    let org = org_repo
-        .get_organization_by_id(&org_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::NotFound("Organization not found".to_string()))?;
+    let org = resolve_org_by_id_or_name(org_repo.as_ref(), &id).await?;
 
     require_org_admin_only(&context, &org.name)
         .map_err(|_| ApiError::forbidden("Organization admin privileges required"))?;
 
     // Delete atomically (repository enforces last-owner constraint via transaction)
     let membership_repo = org_membership_repository_for_state(&state)?;
-    membership_repo.delete_membership(&target_user_id, &org_id).await.map_err(ApiError::from)?;
+    membership_repo.delete_membership(&target_user_id, &org.id).await.map_err(ApiError::from)?;
 
     // Evict permission cache so next request picks up new permissions
     if let Some(ref cache) = state.permission_cache {

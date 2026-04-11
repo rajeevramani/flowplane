@@ -1,18 +1,20 @@
-//! Phase 3 CLI E2E tests — dev mode
+//! CLI E2E tests — expose, unexpose, list, status, filter, learn, doctor (dev mode)
 //!
-//! Tests the CLI commands added in Phase 3: expose, unexpose, list, status,
-//! filter, learn, doctor. All tests use the dev-mode harness (bearer token,
-//! no Zitadel) and the CliRunner subprocess driver.
+//! All tests use the dev-mode harness (bearer token, no Zitadel) and the
+//! CliRunner subprocess driver.
 //!
 //! ```bash
-//! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_phase3 -- --ignored --nocapture
+//! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e dev_cli_expose -- --ignored --nocapture
 //! # or: make test-e2e-dev
 //! ```
 
 use serde_json::json;
 
 use crate::common::cli_runner::CliRunner;
-use crate::common::harness::dev_harness;
+use crate::common::harness::{dev_harness, envoy_harness};
+use crate::common::test_helpers::{
+    parse_expose_port, verify_in_config_dump, verify_not_in_config_dump,
+};
 
 // ============================================================================
 // expose — with API verification
@@ -59,6 +61,9 @@ async fn dev_cli_expose_creates_backend_resources() {
         reqwest::StatusCode::OK,
         "route-config should exist after CLI expose"
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p3-res"]);
 }
 
 /// Exposing the same name+upstream twice should succeed both times (idempotent).
@@ -78,6 +83,9 @@ async fn dev_cli_expose_idempotent() {
 
     let second = cli.run(&["expose", "http://127.0.0.1:9999", "--name", "e2e-p3-idem"]).unwrap();
     second.assert_success();
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p3-idem"]);
 }
 
 /// Expose the same name but a different upstream — should fail or indicate a
@@ -114,6 +122,9 @@ async fn dev_cli_expose_conflict_different_upstream() {
          exit_code={}, stdout={}, stderr={}",
         second.exit_code, second.stdout, second.stderr
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p3-conflict"]);
 }
 
 /// Expose with a --path argument should succeed.
@@ -132,6 +143,9 @@ async fn dev_cli_expose_with_path() {
         .unwrap();
     output.assert_success();
     output.assert_stdout_contains("Exposed");
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-p3-path"]);
 }
 
 /// Expose without --name: the CLI should auto-generate a name from the upstream.
@@ -148,6 +162,12 @@ async fn dev_cli_expose_auto_name() {
     let output = cli.run(&["expose", "http://127.0.0.1:9999"]).unwrap();
     output.assert_success();
     output.assert_stdout_contains("Exposed");
+
+    // Cleanup: extract auto-generated name from output and unexpose
+    // The expose output contains "Exposed <name>", extract the name
+    if let Some(name) = output.stdout.split_whitespace().nth(1) {
+        let _ = cli.run(&["unexpose", name]);
+    }
 }
 
 // ============================================================================
@@ -270,7 +290,7 @@ async fn dev_cli_unexpose_idempotent() {
 /// `flowplane list` with no exposed services: should succeed.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_phase3_list() {
+async fn dev_cli_expose_list() {
     let harness = dev_harness("dev_cli_list").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
@@ -285,7 +305,7 @@ async fn dev_cli_phase3_list() {
 /// `flowplane status` system overview: should succeed and show resource info.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_phase3_status() {
+async fn dev_cli_expose_status() {
     let harness = dev_harness("dev_cli_status").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
@@ -304,7 +324,7 @@ async fn dev_cli_phase3_status() {
 /// `flowplane filter list`: should succeed (may return empty list).
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_phase3_filter_list() {
+async fn dev_cli_expose_filter_list() {
     let harness = dev_harness("dev_cli_filter_list").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
@@ -319,7 +339,7 @@ async fn dev_cli_phase3_filter_list() {
 /// `flowplane learn list`: should succeed (may return empty list).
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_phase3_learn_list() {
+async fn dev_cli_expose_learn_list() {
     let harness = dev_harness("dev_cli_learn_list").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
@@ -338,7 +358,7 @@ async fn dev_cli_phase3_learn_list() {
 /// `flowplane doctor`: should succeed and report CP health.
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
-async fn dev_cli_phase3_doctor() {
+async fn dev_cli_expose_doctor() {
     let harness = dev_harness("dev_cli_doctor").await.expect("harness should start");
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
@@ -422,6 +442,9 @@ async fn dev_cli_list_after_expose_shows_service() {
         "Expected list output to strip '-listener' suffix, but found it:\n{}",
         list.stdout
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-list-svc"]);
 }
 
 /// `flowplane status` with no argument shows system overview with resource info.
@@ -475,6 +498,9 @@ async fn dev_cli_status_specific_listener() {
         status.stdout,
         status.stderr
     );
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", "e2e-stat-svc"]);
 }
 
 // ============================================================================
@@ -654,5 +680,148 @@ async fn dev_cli_auth_whoami_shows_user() {
     assert!(
         !output.stdout.trim().is_empty(),
         "Expected whoami to print user info, got empty stdout"
+    );
+}
+
+// ============================================================================
+// expose / unexpose — with Envoy verification
+// ============================================================================
+
+/// Expose a service via CLI, then verify it appears in Envoy config_dump and
+/// that traffic flows through the proxy to the upstream echo service.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_expose_with_envoy_verification() {
+    let harness = envoy_harness("dev_cli_expose_envoy").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+    let echo = harness.echo_endpoint();
+
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let svc_name = format!("envoy-exp-{id}");
+    let host = format!("{svc_name}.local");
+
+    // Expose the echo service — let expose auto-allocate a port from the pool
+    let output = cli.run(&["expose", &echo, "--name", &svc_name]).unwrap();
+    output.assert_success();
+    output.assert_stdout_contains("Exposed");
+
+    // Parse the allocated port from expose output
+    let port = parse_expose_port(&output);
+
+    // Verify the cluster appears in Envoy config_dump via xDS
+    verify_in_config_dump(&harness, &svc_name).await;
+
+    // Verify traffic flows through Envoy to the echo upstream
+    let _ = harness.wait_for_route_on_port(port, &host, "/", 200).await;
+
+    // Cleanup: release port
+    let _ = cli.run(&["unexpose", &svc_name]);
+}
+
+/// Expose a service, verify traffic works, then unexpose it and verify resources
+/// are removed from Envoy and traffic stops flowing.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_unexpose_with_envoy_verification() {
+    let harness = envoy_harness("dev_cli_unexpose_envoy").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+    let echo = harness.echo_endpoint();
+
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let svc_name = format!("envoy-unexp-{id}");
+    let host = format!("{svc_name}.local");
+
+    // Expose the echo service — let expose auto-allocate a port
+    let expose = cli.run(&["expose", &echo, "--name", &svc_name]).unwrap();
+    expose.assert_success();
+
+    let port = parse_expose_port(&expose);
+
+    // Confirm it reached Envoy
+    verify_in_config_dump(&harness, &svc_name).await;
+
+    // Unexpose
+    let unexpose = cli.run(&["unexpose", &svc_name]).unwrap();
+    unexpose.assert_success();
+
+    // Verify the resource is gone from Envoy config_dump (polls with retry)
+    verify_not_in_config_dump(&harness, &svc_name).await;
+
+    // Verify traffic no longer flows (should get an error or non-200)
+    let result = harness.proxy_get_on_port(port, &host, "/").await;
+    match result {
+        Err(_) => { /* connection refused or timeout — expected */ }
+        Ok((status, _)) => {
+            assert_ne!(
+                status, 200,
+                "Expected non-200 status after unexpose, but got 200 — route still active"
+            );
+        }
+    }
+}
+
+/// Full lifecycle: expose → verify traffic flows → unexpose → verify traffic stops.
+/// Exercises the complete user journey through Envoy.
+#[tokio::test]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
+async fn dev_cli_expose_unexpose_lifecycle_envoy() {
+    let harness = envoy_harness("dev_cli_lifecycle_envoy").await.expect("harness should start");
+    if !harness.is_dev_mode() {
+        eprintln!("SKIP: not in dev mode");
+        return;
+    }
+    let cli = CliRunner::from_harness(&harness).unwrap();
+    let echo = harness.echo_endpoint();
+
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let svc_name = format!("lifecycle-envoy-{id}");
+    let host = format!("{svc_name}.local");
+
+    // === Phase 1: Expose (auto-allocate port) ===
+    let expose = cli.run(&["expose", &echo, "--name", &svc_name]).unwrap();
+    expose.assert_success();
+    expose.assert_stdout_contains("Exposed");
+
+    let port = parse_expose_port(&expose);
+
+    // === Phase 2: Verify config + traffic ===
+    verify_in_config_dump(&harness, &svc_name).await;
+    let _ = harness.wait_for_route_on_port(port, &host, "/", 200).await;
+
+    // Also verify via `list` that the service appears
+    let list = cli.run(&["list"]).unwrap();
+    list.assert_success();
+    list.assert_stdout_contains(&svc_name);
+
+    // === Phase 3: Unexpose ===
+    let unexpose = cli.run(&["unexpose", &svc_name]).unwrap();
+    unexpose.assert_success();
+
+    // === Phase 4: Verify removal (polls with retry) ===
+    verify_not_in_config_dump(&harness, &svc_name).await;
+
+    // Traffic should stop
+    let result = harness.proxy_get_on_port(port, &host, "/").await;
+    match result {
+        Err(_) => { /* expected — connection refused or route gone */ }
+        Ok((status, _)) => {
+            assert_ne!(status, 200, "Traffic should not return 200 after unexpose");
+        }
+    }
+
+    // List should no longer show the service
+    let list_after = cli.run(&["list"]).unwrap();
+    list_after.assert_success();
+    assert!(
+        !list_after.stdout.contains(&svc_name),
+        "Service should not appear in list after unexpose"
     );
 }

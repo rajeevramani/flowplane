@@ -8,6 +8,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use super::client::FlowplaneClient;
+use super::output::{print_output, truncate};
 
 #[derive(Subcommand)]
 pub enum SchemaCommands {
@@ -62,6 +63,25 @@ pub enum SchemaCommands {
 
         /// Output format
         #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
+
+    /// Compare two schema versions
+    #[command(
+        long_about = "Compare two aggregated schema versions to see differences.",
+        after_help = "EXAMPLES:\n    # Compare two specific schemas\n    flowplane schema compare 5 --with 3\n\n    # Diff output\n    flowplane schema compare 5 --with 3 -o diff"
+    )]
+    Compare {
+        /// Schema ID to compare
+        #[arg(value_name = "ID")]
+        id: i64,
+
+        /// Schema ID to compare against
+        #[arg(long, value_name = "ID")]
+        with: i64,
+
+        /// Output format
+        #[arg(short, long, default_value = "json", value_parser = ["json", "diff"])]
         output: String,
     },
 
@@ -183,6 +203,9 @@ pub async fn handle_schema_command(
                 print_output(&schema, &output)?;
             }
         }
+        SchemaCommands::Compare { id, with: with_version, output } => {
+            compare_schemas(client, team, id, with_version, &output).await?;
+        }
         SchemaCommands::Export {
             session,
             id,
@@ -276,10 +299,40 @@ pub async fn export_schemas(
         }
         ids
     } else if all {
+        let has_session = session.is_some();
         let schemas =
             list_schemas(client, team, min_confidence, None, None, true, None, None, session)
                 .await?;
         if schemas.is_empty() {
+            // When exporting from a specific session with no schemas (no traffic captured),
+            // emit a minimal empty OpenAPI spec instead of erroring.
+            if has_session {
+                let empty_spec = serde_json::json!({
+                    "openapi": "3.1.0",
+                    "info": { "title": title, "version": version },
+                    "paths": {}
+                });
+                match output {
+                    Some(ref file_path) => {
+                        let content = if file_path.ends_with(".json") {
+                            serde_json::to_string_pretty(&empty_spec)
+                                .context("Failed to serialize to JSON")?
+                        } else {
+                            serde_yaml::to_string(&empty_spec)
+                                .context("Failed to serialize to YAML")?
+                        };
+                        std::fs::write(file_path, &content)
+                            .with_context(|| format!("Failed to write to {file_path}"))?;
+                        eprintln!("Exported empty OpenAPI spec to {file_path} (no schemas found for session)");
+                    }
+                    None => {
+                        let yaml = serde_yaml::to_string(&empty_spec)
+                            .context("Failed to serialize to YAML")?;
+                        print!("{yaml}");
+                    }
+                }
+                return Ok(());
+            }
             anyhow::bail!("No schemas found. Run a learning session first.");
         }
         schemas.iter().map(|s| s.id).collect()
@@ -322,6 +375,34 @@ pub async fn export_schemas(
             // Stdout — default to YAML (more readable for humans)
             let yaml = serde_yaml::to_string(&spec).context("Failed to serialize to YAML")?;
             print!("{yaml}");
+        }
+    }
+
+    Ok(())
+}
+
+async fn compare_schemas(
+    client: &FlowplaneClient,
+    team: &str,
+    id: i64,
+    with_version: i64,
+    output: &str,
+) -> Result<()> {
+    let path =
+        format!("/api/v1/teams/{team}/aggregated-schemas/{id}/compare?withVersion={with_version}");
+
+    let response: serde_json::Value = client.get_json(&path).await?;
+
+    match output {
+        "diff" => {
+            // Print as human-readable diff
+            let yaml = serde_yaml::to_string(&response).context("Failed to serialize to YAML")?;
+            println!("{yaml}");
+        }
+        _ => {
+            let json =
+                serde_json::to_string_pretty(&response).context("Failed to serialize to JSON")?;
+            println!("{json}");
         }
     }
 
@@ -439,29 +520,4 @@ fn print_schema_detail(s: &AggregatedSchemaResponse) {
         }
     }
     println!();
-}
-
-fn print_output<T: Serialize>(data: &T, format: &str) -> Result<()> {
-    match format {
-        "json" => {
-            let json = serde_json::to_string_pretty(data).context("Failed to serialize to JSON")?;
-            println!("{json}");
-        }
-        "yaml" => {
-            let yaml = serde_yaml::to_string(data).context("Failed to serialize to YAML")?;
-            println!("{yaml}");
-        }
-        _ => {
-            anyhow::bail!("Unsupported output format: {}. Use 'json', 'yaml', or 'table'.", format);
-        }
-    }
-    Ok(())
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
 }

@@ -35,33 +35,34 @@ use super::{
         get_secret_handler, rotate_secret_handler,
     },
     handlers::{
-        add_team_member, admin_add_org_member, admin_create_organization, admin_create_team,
-        admin_delete_organization, admin_delete_team, admin_get_organization, admin_get_team,
-        admin_invite_org_member, admin_list_org_members, admin_list_organizations,
-        admin_list_teams, admin_remove_org_member, admin_resource_summary_handler,
-        admin_update_org_member_role, admin_update_organization, admin_update_team,
-        apply_learned_schema_handler, attach_filter_handler, attach_filter_to_listener_handler,
-        attach_filter_to_route_rule_handler, attach_filter_to_virtual_host_handler,
-        auth_mode_handler, auth_session_handler, bootstrap_initialize_handler,
-        bootstrap_status_handler, bulk_disable_mcp_handler, bulk_enable_mcp_handler,
-        check_learned_schema_handler, compare_aggregated_schemas_handler, configure_filter_handler,
-        create_cluster_handler, create_filter_handler, create_learning_session_handler,
-        create_listener_handler, create_org_agent, create_org_team, create_principal_grant,
-        create_route_config_handler, dcr_register_handler, delete_cluster_handler,
-        delete_filter_handler, delete_learning_session_handler, delete_listener_handler,
-        delete_org_agent, delete_org_team, delete_principal_grant, delete_route_config_handler,
-        detach_filter_from_listener_handler, detach_filter_from_route_rule_handler,
-        detach_filter_from_virtual_host_handler, detach_filter_handler, disable_mcp_handler,
-        enable_mcp_handler, export_aggregated_schema_handler, export_multiple_schemas_handler,
-        expose_handler, generate_certificate_handler, get_aggregated_schema_handler,
-        get_app_handler, get_certificate_handler, get_cluster_handler, get_current_org,
-        get_filter_handler, get_filter_status_handler, get_filter_type_handler,
-        get_learning_session_handler, get_listener_handler, get_mcp_status_handler,
-        get_mcp_tool_handler, get_mtls_status_handler, get_route_config_handler,
-        get_route_stats_handler, get_stats_cluster_handler, get_stats_clusters_handler,
-        get_stats_enabled_handler, get_stats_overview_handler, health_handler,
-        install_filter_handler, list_aggregated_schemas_handler, list_all_scopes_handler,
-        list_apps_handler, list_audit_logs, list_certificates_handler, list_clusters_handler,
+        activate_learning_session_handler, add_team_member, admin_add_org_member,
+        admin_create_organization, admin_create_team, admin_delete_organization, admin_delete_team,
+        admin_get_organization, admin_get_team, admin_invite_org_member, admin_list_org_members,
+        admin_list_organizations, admin_list_teams, admin_remove_org_member,
+        admin_resource_summary_handler, admin_update_org_member_role, admin_update_organization,
+        admin_update_team, apply_learned_schema_handler, attach_filter_handler,
+        attach_filter_to_listener_handler, attach_filter_to_route_rule_handler,
+        attach_filter_to_virtual_host_handler, auth_mode_handler, auth_session_handler,
+        bootstrap_initialize_handler, bootstrap_status_handler, bulk_disable_mcp_handler,
+        bulk_enable_mcp_handler, check_learned_schema_handler, compare_aggregated_schemas_handler,
+        configure_filter_handler, create_cluster_handler, create_filter_handler,
+        create_learning_session_handler, create_listener_handler, create_org_agent,
+        create_org_team, create_principal_grant, create_route_config_handler, dcr_register_handler,
+        delete_cluster_handler, delete_filter_handler, delete_learning_session_handler,
+        delete_listener_handler, delete_org_agent, delete_org_team, delete_principal_grant,
+        delete_route_config_handler, detach_filter_from_listener_handler,
+        detach_filter_from_route_rule_handler, detach_filter_from_virtual_host_handler,
+        detach_filter_handler, disable_mcp_handler, enable_mcp_handler,
+        export_aggregated_schema_handler, export_multiple_schemas_handler, expose_handler,
+        generate_certificate_handler, get_aggregated_schema_handler, get_app_handler,
+        get_certificate_handler, get_cluster_handler, get_current_org, get_filter_handler,
+        get_filter_status_handler, get_filter_type_handler, get_learning_session_handler,
+        get_listener_handler, get_mcp_status_handler, get_mcp_tool_handler,
+        get_mtls_status_handler, get_route_config_handler, get_route_stats_handler,
+        get_stats_cluster_handler, get_stats_clusters_handler, get_stats_enabled_handler,
+        get_stats_overview_handler, health_handler, install_filter_handler,
+        list_aggregated_schemas_handler, list_all_scopes_handler, list_apps_handler,
+        list_audit_logs, list_certificates_handler, list_clusters_handler,
         list_filter_configurations_handler, list_filter_installations_handler,
         list_filter_types_handler, list_filters_handler, list_learning_sessions_handler,
         list_listener_filters_handler, list_listeners_handler, list_mcp_tools_handler,
@@ -472,6 +473,7 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/learning-sessions", post(create_learning_session_handler))
         .route("/api/v1/teams/{team}/learning-sessions/{id}", get(get_learning_session_handler))
         .route("/api/v1/teams/{team}/learning-sessions/{id}", delete(delete_learning_session_handler))
+        .route("/api/v1/teams/{team}/learning-sessions/{id}/activate", post(activate_learning_session_handler))
         .route("/api/v1/teams/{team}/learning-sessions/{id}/stop", post(stop_learning_session_handler))
         // Dataplane endpoints (team-scoped Envoy instances with gateway_host)
         .route("/api/v1/dataplanes", get(list_all_dataplanes_handler))
@@ -487,6 +489,14 @@ pub fn build_router_with_registry(
         .route("/api/v1/teams/{team}/aggregated-schemas/{id}/compare", get(compare_aggregated_schemas_handler))
         .route("/api/v1/teams/{team}/aggregated-schemas/{id}/export", get(export_aggregated_schema_handler))
         .route("/api/v1/teams/{team}/aggregated-schemas/export", post(export_multiple_schemas_handler))
+        // Ops diagnostic endpoints (team-scoped)
+        .route("/api/v1/teams/{team}/ops/trace", get(super::handlers::ops::ops_trace_handler))
+        .route("/api/v1/teams/{team}/ops/topology", get(super::handlers::ops::ops_topology_handler))
+        .route("/api/v1/teams/{team}/ops/validate", get(super::handlers::ops::ops_validate_handler))
+        .route("/api/v1/teams/{team}/ops/xds/status", get(super::handlers::ops::ops_xds_status_handler))
+        .route("/api/v1/teams/{team}/ops/xds/nacks", get(super::handlers::ops::ops_nack_history_handler))
+        .route("/api/v1/teams/{team}/ops/audit", get(super::handlers::ops::ops_audit_handler))
+        .route("/api/v1/teams/{team}/ops/learning/{id}/health", get(super::handlers::ops::ops_learning_health_handler))
         // Reporting endpoints
         .route("/api/v1/reports/route-flows", get(list_route_flows_handler))
         // Auth session endpoint (any authenticated user — returns DB-sourced permissions)

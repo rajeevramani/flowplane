@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::client::FlowplaneClient;
+use super::config_file;
+use super::output::{print_output, truncate};
 
 #[derive(Subcommand)]
 pub enum TeamCommands {
@@ -23,7 +25,7 @@ pub enum TeamCommands {
         #[arg(long)]
         org: String,
 
-        /// Path to JSON file with team spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -92,7 +94,7 @@ pub enum TeamCommands {
         #[arg(value_name = "TEAM")]
         name: String,
 
-        /// Path to JSON file with update spec
+        /// Path to YAML or JSON file with resource spec
         #[arg(short, long, value_name = "FILE")]
         file: PathBuf,
 
@@ -144,10 +146,11 @@ pub struct ListOrgTeamsResponse {
     pub teams: Vec<TeamResponse>,
 }
 
-/// List teams response (admin)
+/// List teams response (admin) — matches PaginatedResponse<Team> from API
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAdminTeamsResponse {
+    #[serde(alias = "items")]
     pub teams: Vec<TeamResponse>,
     pub total: i64,
     pub limit: i64,
@@ -184,16 +187,17 @@ async fn create_team(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let url = format!("/api/v1/orgs/{}/teams", org);
     let response: TeamResponse = client.post_json(&url, &body).await?;
 
-    print_output(&response, output)?;
+    if output == "table" {
+        print_teams_table(&[response]);
+    } else {
+        print_output(&response, output)?;
+    }
     Ok(())
 }
 
@@ -268,8 +272,8 @@ fn print_teams_table(teams: &[TeamResponse]) {
     for team in teams {
         println!(
             "{:<20} {:<30} {:<12} {:<25}",
-            truncate_string(&team.name, 18),
-            truncate_string(&team.display_name, 28),
+            truncate(&team.name, 18),
+            truncate(&team.display_name, 28),
             team.status,
             team.created_at.chars().take(19).collect::<String>()
         );
@@ -288,7 +292,11 @@ async fn get_team(client: &FlowplaneClient, org: &str, name: &str, output: &str)
         .find(|t| t.name == name)
         .ok_or_else(|| anyhow::anyhow!("Team '{}' not found in org '{}'", name, org))?;
 
-    print_output(&team, output)?;
+    if output == "table" {
+        print_teams_table(&[team]);
+    } else {
+        print_output(&team, output)?;
+    }
     Ok(())
 }
 
@@ -299,16 +307,17 @@ async fn update_team(
     file: PathBuf,
     output: &str,
 ) -> Result<()> {
-    let contents = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read file: {}", file.display()))?;
-
-    let body: serde_json::Value =
-        serde_json::from_str(&contents).context("Failed to parse JSON from file")?;
+    let mut body = config_file::load_config_file(&file)?;
+    config_file::strip_kind_field(&mut body);
 
     let url = format!("/api/v1/orgs/{}/teams/{}", org, name);
-    let response: TeamResponse = client.put_json(&url, &body).await?;
+    let response: TeamResponse = client.patch_json(&url, &body).await?;
 
-    print_output(&response, output)?;
+    if output == "table" {
+        print_teams_table(&[response]);
+    } else {
+        print_output(&response, output)?;
+    }
     Ok(())
 }
 
@@ -325,32 +334,8 @@ async fn delete_team(client: &FlowplaneClient, org: &str, name: &str, yes: bool)
     }
 
     let url = format!("/api/v1/orgs/{}/teams/{}", org, name);
-    client.delete(&url).send().await.context("Failed to delete team")?;
+    client.delete_no_content(&url).await?;
 
     println!("Team '{}' deleted successfully from org '{}'", name, org);
     Ok(())
-}
-
-fn print_output<T: Serialize>(data: &T, output: &str) -> Result<()> {
-    match output {
-        "yaml" => {
-            let yaml =
-                serde_yaml::to_string(data).context("Failed to serialize response to YAML")?;
-            println!("{}", yaml);
-        }
-        _ => {
-            let json = serde_json::to_string_pretty(data)
-                .context("Failed to serialize response to JSON")?;
-            println!("{}", json);
-        }
-    }
-    Ok(())
-}
-
-fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
 }

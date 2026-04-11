@@ -104,6 +104,8 @@ Args (with port filter): { "path": "/api/v1/users", "port": 10000 }
 
 **Output shows:** Each resolution step with match/no-match status, the matched resources, and the final destination or failure point.
 
+**CLI equivalent:** `flowplane trace <path> [--port N] [-o json|table]`
+
 ### `ops_topology`
 
 **What it does:** Returns the complete gateway layout — all listeners, route configs, clusters, and their relationships. Detects orphaned resources (clusters not referenced by any route, unbound route configs).
@@ -113,6 +115,8 @@ Args (with port filter): { "path": "/api/v1/users", "port": 10000 }
 ```
 Tool: ops_topology
 ```
+
+**CLI equivalent:** `flowplane topology [-o json|table]`
 
 ### `ops_config_validate`
 
@@ -128,6 +132,8 @@ Tool: ops_topology
 Tool: ops_config_validate
 ```
 
+**CLI equivalent:** `flowplane validate [-o json|table]`
+
 ### `ops_audit_query`
 
 **What it does:** Queries the audit log for recent operations — creates, updates, deletes. Shows what changed, when, and by whom.
@@ -140,6 +146,8 @@ Args: { "resourceType": "clusters", "action": "delete", "limit": 10 }
 ```
 
 > **Params:** All optional. `resourceType` (string), `action` (string: create/update/delete), `limit` (int, default 20, max 100). No `since`/`until`/`operation` params.
+
+**CLI equivalent:** `flowplane audit list [--resource-type TYPE] [--action ACTION] [--since ISO] [--limit N] [-o json|table]`
 
 ### `devops_get_deployment_status`
 
@@ -171,6 +179,8 @@ Args: { "dataplaneName": "my-envoy" }
 
 **Output shows:** Each resource type's last ACK/NACK status, version info, and NACK error details.
 
+**CLI equivalent:** `flowplane xds status [-o json|table]`
+
 ### `ops_nack_history`
 
 **What it does:** Queries recent NACK events — times when Envoy rejected a config push. Filterable by dataplane, resource type, and time range.
@@ -185,6 +195,8 @@ Args: { "dataplaneName": "my-envoy", "typeUrl": "CDS", "since": "2025-01-27T00:0
 > **Params:** All optional. `limit` (int, default 10, max 100), `dataplaneName` (string), `typeUrl` (string: CDS/RDS/LDS/EDS), `since` (ISO 8601 string). Note: camelCase `dataplaneName` and `typeUrl`, not snake_case.
 
 **Output shows:** NACK events with timestamps, resource type, the rejected version, and error details.
+
+**CLI equivalent:** `flowplane xds nacks [--limit N] [-o json|table]`
 
 ### `cp_query_service`
 
@@ -477,6 +489,18 @@ These tools provide read-only access to all gateway resources.
 |------|-------------|
 | `cp_list_dataplanes` | List registered Envoy instances |
 | `cp_get_dataplane` | Get dataplane config and connection status |
+
+### CLI Diagnostics
+
+| CLI Command | MCP Equivalent |
+|-------------|----------------|
+| `flowplane trace <path>` | `ops_trace_request` |
+| `flowplane topology` | `ops_topology` |
+| `flowplane validate` | `ops_config_validate` |
+| `flowplane xds status` | `ops_xds_delivery_status` |
+| `flowplane xds nacks` | `ops_nack_history` |
+| `flowplane audit list` | `ops_audit_query` |
+| `flowplane learn health <session>` | (MCP: `cp_learning_session_health`) |
 
 ## 5. Key Principles
 

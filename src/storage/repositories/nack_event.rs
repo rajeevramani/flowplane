@@ -166,24 +166,41 @@ impl NackEventRepository {
     }
 
     /// Lists NACK events for a specific dataplane within a team.
-    #[instrument(skip(self), fields(team = %team, dataplane = %dataplane_name, limit = ?limit), name = "db_list_nack_events_by_dataplane")]
+    #[instrument(skip(self), fields(team = %team, dataplane = %dataplane_name, since = ?since, limit = ?limit), name = "db_list_nack_events_by_dataplane")]
     pub async fn list_by_dataplane(
         &self,
         team: &str,
         dataplane_name: &str,
+        since: Option<DateTime<Utc>>,
         limit: Option<i32>,
     ) -> Result<Vec<NackEventData>> {
         let limit = limit.unwrap_or(100).min(1000);
 
-        let rows = sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-            "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
-             FROM xds_nack_events WHERE team = $1 AND dataplane_name = $2 ORDER BY created_at DESC LIMIT $3"
-        )
-        .bind(team)
-        .bind(dataplane_name)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
+        let rows = match since {
+            Some(since_time) => {
+                sqlx::query_as::<sqlx::Postgres, NackEventRow>(
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                     FROM xds_nack_events WHERE team = $1 AND dataplane_name = $2 AND created_at >= $3 ORDER BY created_at DESC LIMIT $4"
+                )
+                .bind(team)
+                .bind(dataplane_name)
+                .bind(since_time)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<sqlx::Postgres, NackEventRow>(
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                     FROM xds_nack_events WHERE team = $1 AND dataplane_name = $2 ORDER BY created_at DESC LIMIT $3"
+                )
+                .bind(team)
+                .bind(dataplane_name)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
         .map_err(|e| {
             tracing::error!(error = %e, team = %team, dataplane = %dataplane_name, "Failed to list NACK events by dataplane");
             FlowplaneError::Database {
@@ -196,24 +213,41 @@ impl NackEventRepository {
     }
 
     /// Lists NACK events for a specific xDS resource type within a team.
-    #[instrument(skip(self), fields(team = %team, type_url = %type_url, limit = ?limit), name = "db_list_nack_events_by_type_url")]
+    #[instrument(skip(self), fields(team = %team, type_url = %type_url, since = ?since, limit = ?limit), name = "db_list_nack_events_by_type_url")]
     pub async fn list_by_type_url(
         &self,
         team: &str,
         type_url: &str,
+        since: Option<DateTime<Utc>>,
         limit: Option<i32>,
     ) -> Result<Vec<NackEventData>> {
         let limit = limit.unwrap_or(100).min(1000);
 
-        let rows = sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-            "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
-             FROM xds_nack_events WHERE team = $1 AND type_url = $2 ORDER BY created_at DESC LIMIT $3"
-        )
-        .bind(team)
-        .bind(type_url)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
+        let rows = match since {
+            Some(since_time) => {
+                sqlx::query_as::<sqlx::Postgres, NackEventRow>(
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                     FROM xds_nack_events WHERE team = $1 AND type_url = $2 AND created_at >= $3 ORDER BY created_at DESC LIMIT $4"
+                )
+                .bind(team)
+                .bind(type_url)
+                .bind(since_time)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<sqlx::Postgres, NackEventRow>(
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                     FROM xds_nack_events WHERE team = $1 AND type_url = $2 ORDER BY created_at DESC LIMIT $3"
+                )
+                .bind(team)
+                .bind(type_url)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
         .map_err(|e| {
             tracing::error!(error = %e, team = %team, type_url = %type_url, "Failed to list NACK events by type_url");
             FlowplaneError::Database {
@@ -415,7 +449,8 @@ mod tests {
         .await
         .expect("insert");
 
-        let results = repo.list_by_dataplane("test-team", "dp-alpha", None).await.expect("list");
+        let results =
+            repo.list_by_dataplane("test-team", "dp-alpha", None, None).await.expect("list");
         assert_eq!(results.len(), 2, "should only see dp-alpha events");
         assert!(results.iter().all(|e| e.dataplane_name == "dp-alpha"));
     }
@@ -432,7 +467,7 @@ mod tests {
         repo.insert(make_request("test-team", "dp-1", lds_url, "lds err")).await.expect("insert");
         repo.insert(make_request("test-team", "dp-2", cds_url, "cds err2")).await.expect("insert");
 
-        let results = repo.list_by_type_url("test-team", cds_url, None).await.expect("list");
+        let results = repo.list_by_type_url("test-team", cds_url, None, None).await.expect("list");
         assert_eq!(results.len(), 2, "should only see CDS events");
         assert!(results.iter().all(|e| e.type_url == cds_url));
     }
@@ -454,7 +489,7 @@ mod tests {
         let results = repo.list_by_team("team-y", None, None).await.expect("list");
         assert!(results.is_empty(), "team-y should not see team-x events");
 
-        let results = repo.list_by_dataplane("team-y", "dp-1", None).await.expect("list");
+        let results = repo.list_by_dataplane("team-y", "dp-1", None, None).await.expect("list");
         assert!(results.is_empty(), "team-y should not see team-x dataplane events");
     }
 
@@ -502,5 +537,73 @@ mod tests {
 
         let results = repo.list_recent("test-team", None, Some(3)).await.expect("list");
         assert_eq!(results.len(), 3, "should respect limit");
+    }
+
+    #[tokio::test]
+    async fn test_list_by_dataplane_with_since() {
+        let db = TestDatabase::new("nack_repo_dp_since").await;
+        let repo = NackEventRepository::new(db.pool.clone());
+
+        // Insert events
+        repo.insert(make_request(
+            "test-team",
+            "dp-1",
+            "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+            "old err",
+        ))
+        .await
+        .expect("insert");
+
+        let cutoff = Utc::now();
+        // Small delay to ensure timestamp ordering
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        repo.insert(make_request(
+            "test-team",
+            "dp-1",
+            "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+            "new err",
+        ))
+        .await
+        .expect("insert");
+
+        // Without since: should get both
+        let all = repo.list_by_dataplane("test-team", "dp-1", None, None).await.expect("list");
+        assert_eq!(all.len(), 2);
+
+        // With since: should only get the newer event
+        let filtered =
+            repo.list_by_dataplane("test-team", "dp-1", Some(cutoff), None).await.expect("list");
+        assert_eq!(filtered.len(), 1, "since filter should exclude old events");
+        assert_eq!(filtered[0].error_message, "new err");
+    }
+
+    #[tokio::test]
+    async fn test_list_by_type_url_with_since() {
+        let db = TestDatabase::new("nack_repo_type_since").await;
+        let repo = NackEventRepository::new(db.pool.clone());
+
+        let cds_url = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
+
+        repo.insert(make_request("test-team", "dp-1", cds_url, "old cds err"))
+            .await
+            .expect("insert");
+
+        let cutoff = Utc::now();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        repo.insert(make_request("test-team", "dp-2", cds_url, "new cds err"))
+            .await
+            .expect("insert");
+
+        // Without since: should get both
+        let all = repo.list_by_type_url("test-team", cds_url, None, None).await.expect("list");
+        assert_eq!(all.len(), 2);
+
+        // With since: should only get the newer event
+        let filtered =
+            repo.list_by_type_url("test-team", cds_url, Some(cutoff), None).await.expect("list");
+        assert_eq!(filtered.len(), 1, "since filter should exclude old events");
+        assert_eq!(filtered[0].error_message, "new cds err");
     }
 }

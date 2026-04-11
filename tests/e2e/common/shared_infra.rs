@@ -386,6 +386,28 @@ impl SharedInfrastructure {
             .await?;
             info!(admin_port = SHARED_ENVOY_ADMIN_PORT, "Shared Envoy ready");
 
+            // Update the default team's envoy_admin_port so the stats API
+            // can reach Envoy at the correct port in the test environment.
+            {
+                use flowplane::storage::create_pool;
+                use sqlx::Executor;
+                let db_cfg = flowplane::config::DatabaseConfig {
+                    url: db_url.clone(),
+                    auto_migrate: false,
+                    max_connections: 2,
+                    min_connections: 1,
+                    ..Default::default()
+                };
+                let pool = create_pool(&db_cfg).await?;
+                pool.execute(
+                    sqlx::query("UPDATE teams SET envoy_admin_port = $1 WHERE name = 'default'")
+                        .bind(SHARED_ENVOY_ADMIN_PORT as i64),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to update team envoy_admin_port: {}", e))?;
+                info!(port = SHARED_ENVOY_ADMIN_PORT, "Updated default team envoy_admin_port");
+            }
+
             Some(envoy)
         } else {
             info!("Envoy binary not found - tests will skip proxy verification");
@@ -567,6 +589,64 @@ impl SharedInfrastructure {
             info!(count = deleted, "Deleted stale dataplanes");
         }
 
+        // Create tenant org, shared team, and dataplane for CLI/E2E tests.
+        // Platform org is governance-only — resource operations need a tenant org.
+        info!("Creating tenant org and shared team for E2E tests...");
+        let tenant_org =
+            with_timeout(TestTimeout::default_with_label("Create e2e-tenant org"), async {
+                api.create_organization_idempotent(
+                    &superadmin_token,
+                    "e2e-tenant",
+                    "E2E Tenant Org",
+                    Some("Tenant org for E2E tests"),
+                )
+                .await
+            })
+            .await?;
+        let tenant_org_id = tenant_org.id;
+        let tenant_org_name = tenant_org.name;
+        info!(org = %tenant_org_name, id = %tenant_org_id, "Tenant org ready");
+
+        // Make superadmin an org admin of the tenant org so org-scoped endpoints work
+        let session = api.get_auth_session(&superadmin_token).await?;
+        super::api_client::ensure_org_admin_via_db(&db_url, &session.user_id, &tenant_org_id)
+            .await?;
+        info!(user_id = %session.user_id, org = %tenant_org_name, "Superadmin org admin membership set");
+
+        // Wait briefly for permission cache to expire (TTL=2s in E2E mode)
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // Create shared team in the tenant org
+        let shared_team =
+            with_timeout(TestTimeout::default_with_label("Create shared team"), async {
+                api.create_team_idempotent(
+                    &superadmin_token,
+                    E2E_SHARED_TEAM,
+                    Some("Shared team for E2E tests"),
+                    &tenant_org_id,
+                )
+                .await
+            })
+            .await?;
+        info!(team = %shared_team.name, "Shared team created");
+
+        // Create dataplane for shared team
+        let _dataplane =
+            with_timeout(TestTimeout::default_with_label("Create shared dataplane"), async {
+                api.create_dataplane_idempotent(
+                    &superadmin_token,
+                    E2E_SHARED_TEAM,
+                    &super::api_client::CreateDataplaneRequest {
+                        name: format!("{}-dataplane", E2E_SHARED_TEAM),
+                        gateway_host: Some("127.0.0.1".to_string()),
+                        description: Some("Shared dataplane for E2E tests".to_string()),
+                    },
+                )
+                .await
+            })
+            .await?;
+        info!("Shared dataplane created");
+
         // Start Envoy if available
         let (envoy, mtls_envoy_client_cert) = if EnvoyHandle::is_available() {
             let mut envoy_config = EnvoyConfig::new(SHARED_ENVOY_ADMIN_PORT, SHARED_XDS_PORT)
@@ -620,7 +700,7 @@ impl SharedInfrastructure {
             auth_mode: E2eAuthMode::Prod,
             auth_token: superadmin_token,
             team: E2E_SHARED_TEAM.to_string(),
-            org: "platform".to_string(),
+            org: tenant_org_name,
             auth_config: E2eAuthConfig::Zitadel(zitadel_config.clone()),
             zitadel_config,
             mtls_ca,

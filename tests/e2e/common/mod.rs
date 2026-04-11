@@ -20,6 +20,7 @@ pub mod ports;
 pub mod resource_setup;
 pub mod shared_infra;
 pub mod stats;
+pub mod test_helpers;
 pub mod timeout;
 pub mod zitadel;
 
@@ -27,11 +28,15 @@ pub use api_client::*;
 pub use cli_runner::{CliOutput, CliRunner};
 pub use control_plane::ControlPlaneHandle;
 pub use envoy::EnvoyHandle;
-pub use harness::{dev_harness, TestHarness, TestHarnessConfig};
+pub use harness::{dev_harness, envoy_harness, TestHarness, TestHarnessConfig};
 pub use mocks::MockServices;
 pub use ports::PortAllocator;
 pub use resource_setup::{
     ClusterConfig, FilterConfig, ListenerConfig, ResourceSetup, RouteConfig, TestResources,
 };
 pub use shared_infra::{E2eAuthConfig, E2eAuthMode, SharedInfrastructure, SHARED_LISTENER_PORT};
+pub use test_helpers::{
+    create_chain_for_cluster, create_chain_for_route, verify_in_config_dump,
+    verify_not_in_config_dump, verify_traffic, write_temp_file,
+};
 pub use timeout::{with_timeout, TestTimeout};

@@ -136,6 +136,7 @@ pub trait OrganizationRepository: Send + Sync {
     async fn get_organization_by_name(&self, name: &str) -> Result<Option<Organization>>;
     async fn list_organizations(&self, limit: i64, offset: i64) -> Result<Vec<Organization>>;
     async fn count_organizations(&self) -> Result<i64>;
+    async fn get_organizations_by_ids(&self, ids: &[&str]) -> Result<Vec<Organization>>;
     async fn update_organization(
         &self,
         id: &OrgId,
@@ -282,6 +283,25 @@ impl OrganizationRepository for SqlxOrganizationRepository {
             })?;
 
         Ok(count)
+    }
+
+    #[instrument(skip(self, ids), name = "db_get_organizations_by_ids")]
+    async fn get_organizations_by_ids(&self, ids: &[&str]) -> Result<Vec<Organization>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, OrganizationRow>(
+            "SELECT * FROM organizations WHERE id = ANY($1) ORDER BY created_at DESC",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FlowplaneError::Database {
+            source: e,
+            context: "Failed to fetch organizations by IDs".to_string(),
+        })?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
     }
 
     #[instrument(skip(self, update), fields(org_id = %id), name = "db_update_organization")]

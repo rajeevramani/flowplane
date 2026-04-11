@@ -40,6 +40,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::auth::models::AuthError;
 use crate::domain::SecretValidationError;
 use crate::errors::FlowplaneError;
+use crate::mcp::error::McpError;
 
 /// Custom JSON extractor that converts deserialization errors to JSON 400 responses
 /// instead of Axum's default text/plain rejection.
@@ -67,6 +68,30 @@ where
                 }
                 _ => ApiError::BadRequest("Invalid request body".to_string()),
             }),
+        }
+    }
+}
+
+/// Custom Query extractor that converts deserialization errors to JSON 400 responses
+/// instead of Axum's default text/plain rejection.
+pub struct JsonQuery<T>(pub T);
+
+impl<T, S> axum::extract::FromRequestParts<S> for JsonQuery<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match axum::extract::Query::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Query(value)) => Ok(JsonQuery(value)),
+            Err(rejection) => {
+                Err(ApiError::BadRequest(format!("Invalid query parameters: {}", rejection)))
+            }
         }
     }
 }
@@ -295,6 +320,69 @@ impl From<SecretValidationError> for ApiError {
     }
 }
 
+/// Converts MCP [`McpError`] to API-layer [`ApiError`].
+///
+/// Maps MCP tool errors to appropriate HTTP status codes so REST ops handlers
+/// can reuse service functions that return `McpError`.
+impl From<McpError> for ApiError {
+    fn from(err: McpError) -> Self {
+        match err {
+            McpError::InvalidParams(msg) | McpError::ValidationError(msg) => {
+                ApiError::BadRequest(msg)
+            }
+            McpError::ResourceNotFound(msg)
+            | McpError::ToolNotFound(msg)
+            | McpError::MethodNotFound(msg)
+            | McpError::PromptNotFound(msg) => ApiError::NotFound(msg),
+            McpError::Forbidden(msg) => ApiError::Forbidden(msg),
+            McpError::Conflict(msg) => ApiError::Conflict(msg),
+            McpError::ParseError(msg) | McpError::InvalidRequest(msg) => ApiError::BadRequest(msg),
+            McpError::DatabaseError(e) => ApiError::Internal(format!("Database error: {}", e)),
+            McpError::SerializationError(e) => {
+                ApiError::BadRequest(format!("Serialization error: {}", e))
+            }
+            McpError::InternalError(msg)
+            | McpError::GatewayError(msg)
+            | McpError::IoError(msg)
+            | McpError::Configuration(msg) => ApiError::Internal(msg),
+            McpError::NotInitialized => {
+                ApiError::ServiceUnavailable("Service not initialized".to_string())
+            }
+            McpError::ConnectionLimitExceeded { team, limit } => ApiError::TooManyRequests {
+                message: format!("Connection limit ({}) exceeded for team: {}", limit, team),
+                retry_after_seconds: 30,
+            },
+            McpError::UnsupportedProtocolVersion { client, .. } => {
+                ApiError::BadRequest(format!("Unsupported protocol version: {}", client))
+            }
+            McpError::InvalidOrigin(msg) => ApiError::Forbidden(msg),
+            McpError::MissingOrigin => {
+                ApiError::BadRequest("Missing required Origin header".to_string())
+            }
+            McpError::MalformedSessionId(msg) => {
+                ApiError::BadRequest(format!("Malformed session ID: {}", msg))
+            }
+            McpError::InvalidEventId(msg) => {
+                ApiError::BadRequest(format!("Invalid event ID: {}", msg))
+            }
+        }
+    }
+}
+
+/// Converts [`OpsServiceError`] to API-layer [`ApiError`].
+///
+/// Maps ops service diagnostic errors to appropriate HTTP status codes.
+impl From<crate::services::ops_service::OpsServiceError> for ApiError {
+    fn from(err: crate::services::ops_service::OpsServiceError) -> Self {
+        match err {
+            crate::services::ops_service::OpsServiceError::InvalidParam(msg) => {
+                ApiError::BadRequest(msg)
+            }
+            crate::services::ops_service::OpsServiceError::Internal(msg) => ApiError::Internal(msg),
+        }
+    }
+}
+
 /// Converts [`McpServiceError`] to API-layer [`ApiError`].
 ///
 /// Maps MCP service errors to appropriate HTTP status codes.
@@ -428,5 +516,72 @@ mod tests {
             !body_str.contains("agent_grants"),
             "database errors should not leak table names, got: {body_str}"
         );
+    }
+
+    #[test]
+    fn mcp_invalid_params_maps_to_bad_request() {
+        let err: ApiError = McpError::InvalidParams("missing field".to_string()).into();
+        assert!(matches!(err, ApiError::BadRequest(msg) if msg == "missing field"));
+    }
+
+    #[test]
+    fn mcp_validation_error_maps_to_bad_request() {
+        let err: ApiError = McpError::ValidationError("bad input".to_string()).into();
+        assert!(matches!(err, ApiError::BadRequest(msg) if msg == "bad input"));
+    }
+
+    #[test]
+    fn mcp_resource_not_found_maps_to_not_found() {
+        let err: ApiError = McpError::ResourceNotFound("cluster 'x'".to_string()).into();
+        assert!(matches!(err, ApiError::NotFound(msg) if msg == "cluster 'x'"));
+    }
+
+    #[test]
+    fn mcp_tool_not_found_maps_to_not_found() {
+        let err: ApiError = McpError::ToolNotFound("bad_tool".to_string()).into();
+        assert!(matches!(err, ApiError::NotFound(msg) if msg == "bad_tool"));
+    }
+
+    #[test]
+    fn mcp_internal_error_maps_to_internal() {
+        let err: ApiError = McpError::InternalError("boom".to_string()).into();
+        assert!(matches!(err, ApiError::Internal(msg) if msg == "boom"));
+    }
+
+    #[test]
+    fn mcp_gateway_error_maps_to_internal() {
+        let err: ApiError = McpError::GatewayError("envoy down".to_string()).into();
+        assert!(matches!(err, ApiError::Internal(msg) if msg == "envoy down"));
+    }
+
+    #[test]
+    fn mcp_forbidden_maps_to_forbidden() {
+        let err: ApiError = McpError::Forbidden("no access".to_string()).into();
+        assert!(matches!(err, ApiError::Forbidden(msg) if msg == "no access"));
+    }
+
+    #[test]
+    fn mcp_conflict_maps_to_conflict() {
+        let err: ApiError = McpError::Conflict("already exists".to_string()).into();
+        assert!(matches!(err, ApiError::Conflict(msg) if msg == "already exists"));
+    }
+
+    #[test]
+    fn mcp_not_initialized_maps_to_service_unavailable() {
+        let err: ApiError = McpError::NotInitialized.into();
+        assert!(matches!(err, ApiError::ServiceUnavailable(_)));
+    }
+
+    #[test]
+    fn mcp_connection_limit_maps_to_too_many_requests() {
+        let err: ApiError =
+            McpError::ConnectionLimitExceeded { team: "eng".to_string(), limit: 10 }.into();
+        assert!(matches!(err, ApiError::TooManyRequests { .. }));
+    }
+
+    #[test]
+    fn mcp_parse_error_maps_to_bad_request() {
+        let err: ApiError = McpError::ParseError("bad json".to_string()).into();
+        assert!(matches!(err, ApiError::BadRequest(msg) if msg == "bad json"));
     }
 }

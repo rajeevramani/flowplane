@@ -16,7 +16,7 @@ use serde_json::json;
 
 use crate::common::{
     api_client::{setup_envoy_context, simple_cluster, simple_listener, simple_route, ApiClient},
-    harness::{TestHarness, TestHarnessConfig},
+    harness::envoy_harness,
     timeout::{with_timeout, TestTimeout},
 };
 
@@ -67,14 +67,7 @@ async fn delete_secret(api_url: &str, token: &str, team: &str, secret_id: &str) 
 #[tokio::test]
 #[ignore = "requires RUN_E2E=1"]
 async fn dev_sds_secret_delivery() {
-    let harness = TestHarness::start(TestHarnessConfig::new("dev_sds_secret_delivery"))
-        .await
-        .expect("Failed to start harness");
-
-    if !harness.has_envoy() {
-        println!("Envoy not available, skipping SDS delivery test");
-        return;
-    }
+    let harness = envoy_harness("dev_sds_secret_delivery").await.expect("harness should start");
 
     let api = ApiClient::new(harness.api_url());
     let ctx =
@@ -210,7 +203,7 @@ async fn dev_sds_secret_delivery() {
     // Step 5: Verify the secret is delivered to Envoy via SDS.
     // Check that Envoy's config_dump contains the secret name.
     // The control plane pushes secrets to Envoy when a filter references them.
-    let envoy = harness.envoy().expect("Envoy should be available (checked above)");
+    let envoy = harness.envoy().expect("Envoy should be available");
 
     // Wait for the secret name to appear in Envoy's configuration
     let wait_result = envoy.wait_for_config_content(secret_name).await;

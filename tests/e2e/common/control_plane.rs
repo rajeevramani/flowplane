@@ -145,6 +145,19 @@ impl ControlPlaneHandle {
         ensure_default_gateway_resources(&state).await?;
         info!("Default gateway resources created");
 
+        // Initialize LearningSessionService so learn stop/activate/export work in E2E tests
+        {
+            use flowplane::services::LearningSessionService;
+            use flowplane::storage::repositories::LearningSessionRepository;
+
+            let learning_session_repo = LearningSessionRepository::new(pool.clone());
+            let learning_session_service = Arc::new(
+                LearningSessionService::new(learning_session_repo).with_xds_state(state.clone()),
+            );
+            state.set_learning_session_service(learning_session_service);
+            info!("Learning session service initialized for E2E tests");
+        }
+
         // Ensure platform resources exist (platform org + team) and seed superadmin
         // This mirrors what main.rs does on startup
         use flowplane::api::handlers::bootstrap::{ensure_platform_resources, seed_superadmin};

@@ -7,7 +7,7 @@
 //! FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 cargo test --test e2e test_dev_mode -- --ignored --nocapture
 //! ```
 
-use crate::common::harness::dev_harness;
+use crate::common::harness::{dev_harness, envoy_harness};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -125,15 +125,10 @@ async fn dev_expose_lifecycle() {
 async fn dev_expose_routes_traffic_through_envoy() {
     use std::time::Duration;
 
-    let harness = dev_harness("dev_envoy_routing").await.expect("harness should start");
+    let harness = envoy_harness("dev_envoy_routing").await.expect("harness should start");
 
     if !harness.is_dev_mode() {
         eprintln!("SKIP: not in dev mode");
-        return;
-    }
-
-    if !harness.has_envoy() {
-        eprintln!("SKIP: Envoy binary not available — cannot verify proxy routing");
         return;
     }
 

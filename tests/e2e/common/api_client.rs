@@ -1752,7 +1752,11 @@ impl ApiClient {
 /// This helper inserts an org membership directly into the DB (idempotent via
 /// ON CONFLICT DO NOTHING) so the platform admin can operate as org admin
 /// within tenant orgs created for E2E tests.
-async fn ensure_org_admin_via_db(db_url: &str, user_id: &str, org_id: &str) -> anyhow::Result<()> {
+pub async fn ensure_org_admin_via_db(
+    db_url: &str,
+    user_id: &str,
+    org_id: &str,
+) -> anyhow::Result<()> {
     use sqlx::PgPool;
 
     let pool = PgPool::connect(db_url).await?;

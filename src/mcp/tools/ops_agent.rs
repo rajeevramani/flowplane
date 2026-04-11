@@ -7,13 +7,8 @@
 use crate::domain::OrgId;
 use crate::mcp::error::McpError;
 use crate::mcp::protocol::{Tool, ToolCallResult};
-use crate::storage::repositories::{
-    AuditLogFilters, AuditLogRepository, ClusterRepository, DataplaneRepository,
-    NackEventRepository, ReportingRepository,
-};
+use crate::services::ops_service::{self, OpsServiceError};
 use crate::storage::DbPool;
-use crate::xds::{ClusterSpec, HealthCheckSpec};
-use chrono::DateTime;
 use serde_json::{json, Value};
 use tracing::instrument;
 
@@ -220,6 +215,14 @@ Authorization: Requires audit:read scope (NOT covered by cp:read)."#,
 // validate_team_in_org is shared — use super::validate_team_in_org
 use super::validate_team_in_org;
 
+/// Convert OpsServiceError to McpError.
+fn ops_err_to_mcp(e: OpsServiceError) -> McpError {
+    match e {
+        OpsServiceError::InvalidParam(msg) => McpError::InvalidParams(msg),
+        OpsServiceError::Internal(msg) => McpError::InternalError(msg),
+    }
+}
+
 /// Execute ops_trace_request: trace a request path through the gateway.
 #[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_ops_trace_request")]
 pub async fn execute_ops_trace_request(
@@ -228,7 +231,6 @@ pub async fn execute_ops_trace_request(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    // Validate team belongs to caller's org
     if let Some(oid) = org_id {
         validate_team_in_org(db_pool, team, oid).await?;
     }
@@ -237,54 +239,20 @@ pub async fn execute_ops_trace_request(
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| McpError::InvalidParams("'path' is required".to_string()))?;
-
-    // Input validation (R6): max 2048 chars, must start with '/', reject null bytes
-    if path.len() > 2048 {
-        return Err(McpError::InvalidParams(
-            "'path' exceeds maximum length of 2048 characters".to_string(),
-        ));
-    }
-    if !path.starts_with('/') {
-        return Err(McpError::InvalidParams("'path' must start with '/'".to_string()));
-    }
-    if path.contains('\0') {
-        return Err(McpError::InvalidParams("'path' must not contain null bytes".to_string()));
-    }
-
     let port = args.get("port").and_then(|v| v.as_i64());
 
-    let repo = ReportingRepository::new(db_pool.clone());
-    let result = repo
-        .trace_request_path(team, path, port)
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to trace request path: {}", e)))?;
-
-    let port_desc = port.map(|p| format!(" on port {}", p)).unwrap_or_default();
-
-    let (message, unmatched_reason) = if result.matches.is_empty() {
-        let reason = format!("No route matches path '{}'{} for the current team", path, port_desc);
-        (format!("No routes match path '{}'{}", path, port_desc), Some(reason))
-    } else {
-        (
-            format!(
-                "Found {} route(s) matching path '{}'{}",
-                result.matches.len(),
-                path,
-                port_desc
-            ),
-            None,
-        )
-    };
+    let result =
+        ops_service::trace_request(db_pool, team, path, port).await.map_err(ops_err_to_mcp)?;
 
     let output = json!({
         "success": true,
-        "path": path,
-        "port": port,
-        "match_count": result.matches.len(),
+        "path": result.path,
+        "port": result.port,
+        "match_count": result.match_count,
         "matches": result.matches,
         "endpoints": result.endpoints,
-        "unmatched_reason": unmatched_reason,
-        "message": message
+        "unmatched_reason": result.unmatched_reason,
+        "message": result.message
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -299,7 +267,6 @@ pub async fn execute_ops_topology(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    // Validate team belongs to caller's org
     if let Some(oid) = org_id {
         validate_team_in_org(db_pool, team, oid).await?;
     }
@@ -309,185 +276,27 @@ pub async fn execute_ops_topology(
     let limit = args.get("limit").and_then(|v| v.as_i64());
     let include_details = args.get("includeDetails").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let repo = ReportingRepository::new(db_pool.clone());
-    let result = repo
-        .full_topology(team, scope, name, limit)
+    let result = ops_service::topology(db_pool, team, scope, name, limit, include_details)
         .await
-        .map_err(|e| McpError::InternalError(format!("Failed to get topology: {}", e)))?;
+        .map_err(ops_err_to_mcp)?;
 
-    let message = format!(
-        "Topology: {} listeners, {} route_configs, {} clusters, {} routes ({} orphan clusters, {} orphan route_configs){}",
-        result.summary.listener_count,
-        result.summary.route_config_count,
-        result.summary.cluster_count,
-        result.summary.route_count,
-        result.summary.orphan_cluster_count,
-        result.summary.orphan_route_config_count,
-        if result.truncated { " [TRUNCATED]" } else { "" }
-    );
+    let mut output = json!({
+        "success": true,
+        "scope": result.scope,
+        "name": result.name,
+        "orphan_clusters": result.orphan_clusters,
+        "orphan_route_configs": result.orphan_route_configs,
+        "summary": result.summary,
+        "truncated": result.truncated,
+        "message": result.message
+    });
 
-    // When include_details=false (default), omit rows for token efficiency (<120 tokens).
-    // Orphans are always included since they're the most actionable part.
-    let output = if include_details {
-        json!({
-            "success": true,
-            "scope": scope.unwrap_or("full"),
-            "name": name,
-            "rows": result.rows,
-            "orphan_clusters": result.orphan_clusters,
-            "orphan_route_configs": result.orphan_route_configs,
-            "summary": result.summary,
-            "truncated": result.truncated,
-            "message": message
-        })
-    } else {
-        json!({
-            "success": true,
-            "scope": scope.unwrap_or("full"),
-            "name": name,
-            "orphan_clusters": result.orphan_clusters,
-            "orphan_route_configs": result.orphan_route_configs,
-            "summary": result.summary,
-            "truncated": result.truncated,
-            "message": message
-        })
-    };
+    if let Some(rows) = &result.rows {
+        output["rows"] = json!(rows);
+    }
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
     Ok(ToolCallResult::text(text))
-}
-
-/// Check health check thresholds in a cluster's configuration JSON.
-/// Returns issues for health checks with missing or zero thresholds.
-fn check_health_check_thresholds(cluster_name: &str, configuration: &str) -> Vec<Value> {
-    let mut issues = Vec::new();
-
-    let spec: ClusterSpec = match serde_json::from_str(configuration) {
-        Ok(s) => s,
-        Err(_) => return issues, // can't parse — skip
-    };
-
-    for (i, hc) in spec.health_checks.iter().enumerate() {
-        let (healthy_threshold, unhealthy_threshold) = match hc {
-            HealthCheckSpec::Http { healthy_threshold, unhealthy_threshold, .. } => {
-                (healthy_threshold, unhealthy_threshold)
-            }
-            HealthCheckSpec::Tcp { healthy_threshold, unhealthy_threshold, .. } => {
-                (healthy_threshold, unhealthy_threshold)
-            }
-        };
-
-        if healthy_threshold.is_none() || *healthy_threshold == Some(0) {
-            issues.push(json!({
-                "severity": "error",
-                "category": "proto_violation",
-                "message": format!(
-                    "Cluster '{}' health check #{}: missing or zero healthy_threshold — Envoy will NACK this config",
-                    cluster_name, i + 1
-                ),
-                "resource": cluster_name
-            }));
-        }
-
-        if unhealthy_threshold.is_none() || *unhealthy_threshold == Some(0) {
-            issues.push(json!({
-                "severity": "error",
-                "category": "proto_violation",
-                "message": format!(
-                    "Cluster '{}' health check #{}: missing or zero unhealthy_threshold — Envoy will NACK this config",
-                    cluster_name, i + 1
-                ),
-                "resource": cluster_name
-            }));
-        }
-    }
-
-    issues
-}
-
-/// Check required fields that Envoy enforces at the proto level.
-/// Returns issues for clusters with empty endpoints, invalid endpoints,
-/// and health check misconfigurations.
-fn check_cluster_required_fields(cluster_name: &str, configuration: &str) -> Vec<Value> {
-    let mut issues = Vec::new();
-
-    let spec: ClusterSpec = match serde_json::from_str(configuration) {
-        Ok(s) => s,
-        Err(_) => {
-            issues.push(json!({
-                "severity": "error",
-                "category": "proto_violation",
-                "message": format!(
-                    "Cluster '{}': configuration JSON is malformed — Envoy cannot parse this",
-                    cluster_name
-                ),
-                "resource": cluster_name
-            }));
-            return issues;
-        }
-    };
-
-    // Empty endpoints — Envoy needs at least one endpoint in ClusterLoadAssignment
-    if spec.endpoints.is_empty() {
-        issues.push(json!({
-            "severity": "error",
-            "category": "proto_violation",
-            "message": format!(
-                "Cluster '{}': no endpoints defined — Envoy will have no backends to route to",
-                cluster_name
-            ),
-            "resource": cluster_name
-        }));
-    }
-
-    // Invalid endpoint format — can't resolve to host:port
-    for (i, ep) in spec.endpoints.iter().enumerate() {
-        if ep.to_host_port().is_none() {
-            issues.push(json!({
-                "severity": "error",
-                "category": "proto_violation",
-                "message": format!(
-                    "Cluster '{}' endpoint #{} '{}': invalid format — must be 'host:port'",
-                    cluster_name, i + 1, ep
-                ),
-                "resource": cluster_name
-            }));
-        }
-    }
-
-    // Health check HTTP with empty path — Envoy requires a non-empty path
-    for (i, hc) in spec.health_checks.iter().enumerate() {
-        if let HealthCheckSpec::Http { path, interval_seconds, timeout_seconds, .. } = hc {
-            if path.is_empty() {
-                issues.push(json!({
-                    "severity": "error",
-                    "category": "proto_violation",
-                    "message": format!(
-                        "Cluster '{}' health check #{}: HTTP health check has empty path — Envoy requires a path (e.g., '/healthz')",
-                        cluster_name, i + 1
-                    ),
-                    "resource": cluster_name
-                }));
-            }
-
-            // timeout > interval — Envoy rejects or behaves unexpectedly
-            if let (Some(timeout), Some(interval)) = (timeout_seconds, interval_seconds) {
-                if timeout > interval {
-                    issues.push(json!({
-                        "severity": "warning",
-                        "category": "proto_violation",
-                        "message": format!(
-                            "Cluster '{}' health check #{}: timeout ({}s) exceeds interval ({}s) — health checks may overlap or Envoy may reject",
-                            cluster_name, i + 1, timeout, interval
-                        ),
-                        "resource": cluster_name
-                    }));
-                }
-            }
-        }
-    }
-
-    issues
 }
 
 /// Execute ops_config_validate: validate gateway configuration.
@@ -498,143 +307,26 @@ pub async fn execute_ops_config_validate(
     org_id: Option<&OrgId>,
     _args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    // Validate team belongs to caller's org
     if let Some(oid) = org_id {
         validate_team_in_org(db_pool, team, oid).await?;
     }
 
-    let repo = ReportingRepository::new(db_pool.clone());
+    let result = ops_service::config_validate(db_pool, team).await.map_err(ops_err_to_mcp)?;
 
-    // Get topology with orphan detection
-    let topology = repo
-        .full_topology(team, None, None, Some(200))
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to validate config: {}", e)))?;
-
-    let mut issues: Vec<Value> = Vec::new();
-
-    // Check for orphan clusters
-    for orphan in &topology.orphan_clusters {
-        issues.push(json!({
-            "severity": "warning",
-            "category": "orphan_cluster",
-            "message": format!("Cluster '{}' (service: {}) is not referenced by any route_config — it receives no traffic", orphan.name, orphan.service_name),
-            "resource": orphan.name
-        }));
-    }
-
-    // Check for orphan route configs
-    for orphan in &topology.orphan_route_configs {
-        issues.push(json!({
-            "severity": "warning",
-            "category": "orphan_route_config",
-            "message": format!("Route config '{}' (path: {}, cluster: {}) is not bound to any listener — its routes are unreachable", orphan.name, orphan.path_prefix, orphan.cluster_name),
-            "resource": orphan.name
-        }));
-    }
-
-    // Check for listeners with no route configs
-    for row in &topology.rows {
-        if row.route_config_name.is_none() {
-            // Check if this listener is already reported (avoid duplicates)
-            let already_reported = issues.iter().any(|i| {
-                i.get("category").and_then(|c| c.as_str()) == Some("empty_listener")
-                    && i.get("resource").and_then(|r| r.as_str()) == Some(&row.listener_name)
-            });
-            if !already_reported {
-                issues.push(json!({
-                    "severity": "warning",
-                    "category": "empty_listener",
-                    "message": format!("Listener '{}' ({}:{}) has no route configs bound — it cannot route traffic", row.listener_name, row.listener_address, row.listener_port.map(|p| p.to_string()).unwrap_or_else(|| "?".to_string())),
-                    "resource": row.listener_name
-                }));
-            }
-        }
-    }
-
-    // --- Proto violation checks ---
-    let cluster_repo = ClusterRepository::new(db_pool.clone());
-    let clusters =
-        cluster_repo.list_by_teams(&[team.to_string()], true, Some(500), Some(0)).await.map_err(
-            |e| McpError::InternalError(format!("Failed to list clusters for validation: {}", e)),
-        )?;
-
-    for cluster in &clusters {
-        // Health check threshold checks (missing/zero thresholds → Envoy NACK)
-        let mut hc_issues = check_health_check_thresholds(&cluster.name, &cluster.configuration);
-        issues.append(&mut hc_issues);
-
-        // Required field checks (empty endpoints, invalid format, HC path/timeout)
-        let mut rf_issues = check_cluster_required_fields(&cluster.name, &cluster.configuration);
-        issues.append(&mut rf_issues);
-    }
-
-    // --- xDS delivery: recent NACK warnings ---
-    let nack_repo = NackEventRepository::new(db_pool.clone());
-    let recent_nacks = nack_repo
-        .list_recent(team, None, Some(5))
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to query recent NACKs: {}", e)))?;
-
-    for nack in &recent_nacks {
-        let resource_names: Option<Vec<String>> =
-            nack.resource_names.as_ref().and_then(|r| serde_json::from_str(r).ok());
-
-        issues.push(json!({
-            "severity": "warning",
-            "category": "xds_delivery",
-            "message": format!(
-                "NACK from '{}' on {} at {}: {}",
-                nack.dataplane_name,
-                type_url_to_label(&nack.type_url),
-                nack.created_at.to_rfc3339(),
-                nack.error_message
-            ),
-            "resource": resource_names.as_ref().and_then(|r| r.first().cloned()).unwrap_or_else(|| nack.dataplane_name.clone())
-        }));
-    }
-
-    let warning_count = issues.iter().filter(|i| i["severity"] == "warning").count();
-    let error_count = issues.iter().filter(|i| i["severity"] == "error").count();
-    let proto_violation_count = issues
-        .iter()
-        .filter(|i| i.get("category").and_then(|c| c.as_str()) == Some("proto_violation"))
-        .count();
-    let nack_count = recent_nacks.len();
-    let valid = issues.is_empty();
-
-    let next_step = if error_count > 0 {
-        "Fix proto_violation errors first — these will cause Envoy to NACK the config. Use cp_get_cluster to inspect affected clusters, then cp_update_cluster to fix.".to_string()
-    } else if nack_count > 0 {
-        "Recent NACKs detected. Use ops_nack_history to see full error details, then ops_xds_delivery_status to check current delivery state.".to_string()
-    } else if warning_count > 0 {
-        "Warnings found (orphan resources or connectivity gaps). Use ops_topology to see the full resource graph and identify unused resources.".to_string()
-    } else {
-        "Configuration looks good. No issues detected.".to_string()
-    };
-
+    let valid = result.valid;
     let output = json!({
         "success": true,
         "valid": valid,
-        "issues": issues,
-        "summary": {
-            "total_issues": issues.len(),
-            "warnings": warning_count,
-            "errors": error_count,
-            "proto_violations": proto_violation_count,
-            "recent_nacks": nack_count,
-            "listeners": topology.summary.listener_count,
-            "route_configs": topology.summary.route_config_count,
-            "clusters": topology.summary.cluster_count,
-            "routes": topology.summary.route_count
-        },
+        "issues": result.issues,
+        "summary": result.summary,
         "message": if valid {
             "Configuration is valid — no issues detected".to_string()
         } else {
             format!("Found {} issue(s): {} error(s), {} warning(s) ({} proto violations, {} recent NACKs)",
-                issues.len(), error_count, warning_count, proto_violation_count, nack_count)
+                result.summary.total_issues, result.summary.errors, result.summary.warnings,
+                result.summary.proto_violations, result.summary.recent_nacks)
         },
-        "next_step": next_step
+        "next_step": result.next_step
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -649,49 +341,26 @@ pub async fn execute_ops_audit_query(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    let resource_type = args.get("resourceType").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let action = args.get("action").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let limit =
-        args.get("limit").and_then(|v| v.as_i64()).map(|v| (v as i32).min(100)).or(Some(20));
+    let resource_type = args.get("resourceType").and_then(|v| v.as_str());
+    let action = args.get("action").and_then(|v| v.as_str());
+    let limit = args.get("limit").and_then(|v| v.as_i64());
 
-    // Force team_id and org_id from session — cannot be overridden by caller
-    let filters = AuditLogFilters {
+    let result = ops_service::audit_query(
+        db_pool,
+        team,
+        org_id.map(|o| o.as_str()),
         resource_type,
         action,
-        user_id: None, // No user_id filter exposed — PII protection
-        org_id: org_id.map(|o| o.to_string()),
-        team_id: Some(team.to_string()),
-        start_date: None,
-        end_date: None,
-    };
+        limit,
+    )
+    .await
+    .map_err(ops_err_to_mcp)?;
 
-    let repo = AuditLogRepository::new(db_pool.clone());
-    let entries = repo
-        .query_logs(Some(filters), limit, Some(0))
-        .await
-        .map_err(|e| McpError::InternalError(format!("Failed to query audit logs: {}", e)))?;
-
-    // Convert to PII-stripped summaries
-    let summaries: Vec<Value> = entries
-        .into_iter()
-        .map(|entry| {
-            json!({
-                "id": entry.id,
-                "resource_type": entry.resource_type,
-                "resource_id": entry.resource_id,
-                "resource_name": entry.resource_name,
-                "action": entry.action,
-                "created_at": entry.created_at.to_rfc3339()
-            })
-        })
-        .collect();
-
-    let count = summaries.len();
     let output = json!({
         "success": true,
-        "entries": summaries,
-        "count": count,
-        "message": format!("Found {} audit log entries", count)
+        "entries": result.entries,
+        "count": result.count,
+        "message": result.message
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -798,21 +467,6 @@ Authorization: Requires cp:read scope."#,
 // EXECUTE: ops_xds_delivery_status
 // =============================================================================
 
-/// Map a full xDS type URL to a short resource type label.
-fn type_url_to_label(type_url: &str) -> &str {
-    if type_url.contains("Cluster") {
-        "CDS"
-    } else if type_url.contains("RouteConfiguration") {
-        "RDS"
-    } else if type_url.contains("Listener") {
-        "LDS"
-    } else if type_url.contains("ClusterLoadAssignment") {
-        "EDS"
-    } else {
-        type_url
-    }
-}
-
 /// Execute ops_xds_delivery_status: show per-dataplane xDS delivery health.
 #[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_ops_xds_delivery_status")]
 pub async fn execute_ops_xds_delivery_status(
@@ -821,132 +475,22 @@ pub async fn execute_ops_xds_delivery_status(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    // Validate team belongs to caller's org
     if let Some(oid) = org_id {
         validate_team_in_org(db_pool, team, oid).await?;
     }
 
     let dataplane_filter = args.get("dataplaneName").and_then(|v| v.as_str());
 
-    let dataplane_repo = DataplaneRepository::new(db_pool.clone());
-    let nack_repo = NackEventRepository::new(db_pool.clone());
-
-    // Get dataplanes for this team
-    let dataplanes = match dataplane_filter {
-        Some(name) => match dataplane_repo.get_by_name(team, name).await {
-            Ok(Some(dp)) => vec![dp],
-            Ok(None) => vec![],
-            Err(e) => {
-                return Err(McpError::InternalError(format!("Failed to get dataplane: {}", e)));
-            }
-        },
-        None => dataplane_repo
-            .list_by_team(team, Some(100), Some(0))
-            .await
-            .map_err(|e| McpError::InternalError(format!("Failed to list dataplanes: {}", e)))?,
-    };
-
-    let known_types = ["CDS", "RDS", "LDS"];
-    let mut dataplane_statuses = Vec::new();
-    let mut nack_count = 0;
-
-    for dp in &dataplanes {
-        // Get latest NACK per type_url for this dataplane
-        let latest_nacks = nack_repo.latest_per_type_url(team, &dp.name).await.map_err(|e| {
-            McpError::InternalError(format!(
-                "Failed to get NACK status for dataplane '{}': {}",
-                dp.name, e
-            ))
-        })?;
-
-        let mut resource_types = json!({});
-        let mut has_nack = false;
-
-        // Build a map of type_url label → nack event
-        let mut nack_map = std::collections::HashMap::new();
-        for nack in &latest_nacks {
-            let label = type_url_to_label(&nack.type_url);
-            nack_map.insert(label.to_string(), nack);
-        }
-
-        // Report status for each known resource type
-        for type_label in &known_types {
-            if let Some(nack) = nack_map.get(*type_label) {
-                has_nack = true;
-                let resource_names: Option<Vec<String>> =
-                    nack.resource_names.as_ref().and_then(|r| serde_json::from_str(r).ok());
-
-                resource_types[type_label] = json!({
-                    "status": "NACK",
-                    "error_message": nack.error_message,
-                    "error_code": nack.error_code,
-                    "resource_names": resource_names,
-                    "version_rejected": nack.version_rejected,
-                    "nacked_at": nack.created_at.to_rfc3339()
-                });
-            } else {
-                resource_types[type_label] = json!({
-                    "status": "ACK"
-                });
-            }
-        }
-
-        // Include any unexpected type_urls not in the known set
-        for nack in &latest_nacks {
-            let label = type_url_to_label(&nack.type_url);
-            if !known_types.contains(&label) {
-                has_nack = true;
-                resource_types[label] = json!({
-                    "status": "NACK",
-                    "error_message": nack.error_message,
-                    "error_code": nack.error_code,
-                    "nacked_at": nack.created_at.to_rfc3339()
-                });
-            }
-        }
-
-        if has_nack {
-            nack_count += 1;
-        }
-
-        dataplane_statuses.push(json!({
-            "name": dp.name,
-            "resource_types": resource_types
-        }));
-    }
-
-    let total = dataplanes.len();
-    let healthy = total - nack_count;
-
-    let message = if dataplanes.is_empty() {
-        "No dataplanes found for this team".to_string()
-    } else if nack_count == 0 {
-        format!("All {} dataplane(s) healthy — no NACK events recorded", total)
-    } else {
-        format!(
-            "{} of {} dataplane(s) have NACK events — Envoy rejected configuration",
-            nack_count, total
-        )
-    };
-
-    let next_step = if dataplanes.is_empty() {
-        "Create a dataplane first, then bootstrap an Envoy instance to connect to it."
-    } else if nack_count > 0 {
-        "Use ops_nack_history to see full NACK details, then ops_config_validate to find the root cause."
-    } else {
-        "All dataplanes are healthy. No action needed."
-    };
+    let result = ops_service::xds_delivery_status(db_pool, team, dataplane_filter)
+        .await
+        .map_err(ops_err_to_mcp)?;
 
     let output = json!({
         "success": true,
-        "dataplanes": dataplane_statuses,
-        "summary": {
-            "total_dataplanes": total,
-            "healthy": healthy,
-            "nacked": nack_count
-        },
-        "message": message,
-        "next_step": next_step
+        "dataplanes": result.dataplanes,
+        "summary": result.summary,
+        "message": result.message,
+        "next_step": result.next_step
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -957,17 +501,6 @@ pub async fn execute_ops_xds_delivery_status(
 // EXECUTE: ops_nack_history
 // =============================================================================
 
-/// Expand short-form type labels to full xDS type URLs.
-fn expand_type_url(input: &str) -> String {
-    match input.to_uppercase().as_str() {
-        "CDS" => "type.googleapis.com/envoy.config.cluster.v3.Cluster".to_string(),
-        "RDS" => "type.googleapis.com/envoy.config.route.v3.RouteConfiguration".to_string(),
-        "LDS" => "type.googleapis.com/envoy.config.listener.v3.Listener".to_string(),
-        "EDS" => "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment".to_string(),
-        _ => input.to_string(), // assume it's already a full type URL
-    }
-}
-
 /// Execute ops_nack_history: query recent NACK events.
 #[instrument(skip(db_pool, args), fields(team = %team), name = "mcp_execute_ops_nack_history")]
 pub async fn execute_ops_nack_history(
@@ -976,89 +509,25 @@ pub async fn execute_ops_nack_history(
     org_id: Option<&OrgId>,
     args: Value,
 ) -> Result<ToolCallResult, McpError> {
-    // Validate team belongs to caller's org
     if let Some(oid) = org_id {
         validate_team_in_org(db_pool, team, oid).await?;
     }
 
-    let limit =
-        args.get("limit").and_then(|v| v.as_i64()).map(|v| (v as i32).min(100)).unwrap_or(10);
+    let limit = args.get("limit").and_then(|v| v.as_i64());
     let dataplane_name = args.get("dataplaneName").and_then(|v| v.as_str());
     let type_url_filter = args.get("typeUrl").and_then(|v| v.as_str());
     let since_str = args.get("since").and_then(|v| v.as_str());
 
-    // Parse `since` timestamp if provided
-    let since = match since_str {
-        Some(s) => {
-            let parsed: DateTime<chrono::Utc> = s.parse().map_err(|_| {
-                McpError::InvalidParams(format!(
-                    "Invalid 'since' timestamp '{}' — expected ISO 8601 format (e.g., 2026-02-25T00:00:00Z)",
-                    s
-                ))
-            })?;
-            Some(parsed)
-        }
-        None => None,
-    };
-
-    let nack_repo = NackEventRepository::new(db_pool.clone());
-
-    // Choose the most specific query method based on filters
-    let events =
-        if let Some(dp_name) = dataplane_name {
-            nack_repo.list_by_dataplane(team, dp_name, Some(limit)).await.map_err(|e| {
-                McpError::InternalError(format!("Failed to query NACK events: {}", e))
-            })?
-        } else if let Some(tu) = type_url_filter {
-            let full_url = expand_type_url(tu);
-            nack_repo.list_by_type_url(team, &full_url, Some(limit)).await.map_err(|e| {
-                McpError::InternalError(format!("Failed to query NACK events: {}", e))
-            })?
-        } else {
-            nack_repo.list_recent(team, since, Some(limit)).await.map_err(|e| {
-                McpError::InternalError(format!("Failed to query NACK events: {}", e))
-            })?
-        };
-
-    // Apply `since` filter client-side for dataplane/type_url queries (those methods don't accept since)
-    let events: Vec<_> =
-        if since.is_some() && (dataplane_name.is_some() || type_url_filter.is_some()) {
-            let since_time = since.as_ref().copied();
-            events.into_iter().filter(|e| since_time.is_none_or(|s| e.created_at >= s)).collect()
-        } else {
-            events
-        };
-
-    let formatted: Vec<Value> = events
-        .iter()
-        .map(|e| {
-            let resource_names: Option<Vec<String>> =
-                e.resource_names.as_ref().and_then(|r| serde_json::from_str(r).ok());
-
-            json!({
-                "timestamp": e.created_at.to_rfc3339(),
-                "dataplane_name": e.dataplane_name,
-                "resource_type": type_url_to_label(&e.type_url),
-                "error_message": e.error_message,
-                "error_code": e.error_code,
-                "resource_names": resource_names,
-                "version_rejected": e.version_rejected
-            })
-        })
-        .collect();
-
-    let count = formatted.len();
-    let message = if count == 0 {
-        "No NACK events found matching the filters".to_string()
-    } else {
-        format!("Found {} NACK event(s)", count)
-    };
+    let result =
+        ops_service::nack_history(db_pool, team, dataplane_name, type_url_filter, since_str, limit)
+            .await
+            .map_err(ops_err_to_mcp)?;
 
     let output = json!({
         "success": true,
-        "events": formatted,
-        "count": count,
-        "message": message
+        "events": result.events,
+        "count": result.count,
+        "message": result.message
     });
 
     let text = serde_json::to_string_pretty(&output).map_err(McpError::SerializationError)?;
@@ -2116,125 +1585,6 @@ mod tests {
             McpError::InvalidParams(msg) => assert!(msg.contains("Invalid 'since' timestamp")),
             other => panic!("expected InvalidParams, got: {:?}", other),
         }
-    }
-
-    // ========================================================================
-    // expand_type_url unit tests
-    // ========================================================================
-
-    #[test]
-    fn test_expand_type_url_short_forms() {
-        assert!(expand_type_url("CDS").contains("Cluster"));
-        assert!(expand_type_url("cds").contains("Cluster")); // case insensitive
-        assert!(expand_type_url("RDS").contains("RouteConfiguration"));
-        assert!(expand_type_url("LDS").contains("Listener"));
-        assert!(expand_type_url("EDS").contains("ClusterLoadAssignment"));
-    }
-
-    #[test]
-    fn test_expand_type_url_passthrough() {
-        let full = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
-        assert_eq!(expand_type_url(full), full);
-    }
-
-    // ========================================================================
-    // check_health_check_thresholds unit tests
-    // ========================================================================
-
-    #[test]
-    fn test_check_health_check_thresholds_valid() {
-        let config = r#"{"endpoints": [{"host": "127.0.0.1", "port": 8080}], "healthChecks": [{"type": "http", "path": "/health", "healthy_threshold": 2, "unhealthy_threshold": 3}]}"#;
-        let issues = check_health_check_thresholds("test-cluster", config);
-        assert!(issues.is_empty(), "valid thresholds should produce no issues");
-    }
-
-    #[test]
-    fn test_check_health_check_thresholds_missing() {
-        // Health check with no thresholds — should produce errors
-        let config = r#"{"endpoints": [{"host": "127.0.0.1", "port": 8080}], "healthChecks": [{"type": "http", "path": "/health"}]}"#;
-        let issues = check_health_check_thresholds("test-cluster", config);
-        assert_eq!(issues.len(), 2, "missing both thresholds should produce 2 errors");
-        assert!(issues.iter().all(|i| i["category"] == "proto_violation"));
-        assert!(issues.iter().all(|i| i["severity"] == "error"));
-    }
-
-    #[test]
-    fn test_check_health_check_thresholds_zero() {
-        let config = r#"{"endpoints": [{"host": "127.0.0.1", "port": 8080}], "healthChecks": [{"type": "http", "path": "/health", "healthy_threshold": 0, "unhealthy_threshold": 0}]}"#;
-        let issues = check_health_check_thresholds("test-cluster", config);
-        assert_eq!(issues.len(), 2, "zero thresholds should produce 2 errors");
-    }
-
-    #[test]
-    fn test_check_health_check_thresholds_no_health_checks() {
-        let config = r#"{"endpoints": [{"host": "127.0.0.1", "port": 8080}]}"#;
-        let issues = check_health_check_thresholds("test-cluster", config);
-        assert!(issues.is_empty(), "no health checks = no issues");
-    }
-
-    #[test]
-    fn test_check_health_check_thresholds_invalid_json() {
-        let issues = check_health_check_thresholds("test-cluster", "not json");
-        assert!(issues.is_empty(), "unparseable config should be skipped gracefully");
-    }
-
-    // ========================================================================
-    // check_cluster_required_fields tests
-    // ========================================================================
-
-    #[test]
-    fn test_check_cluster_required_fields_valid() {
-        let config = r#"{"endpoints": [{"host": "127.0.0.1", "port": 8080}]}"#;
-        let issues = check_cluster_required_fields("test-cluster", config);
-        assert!(issues.is_empty(), "valid cluster should produce no issues");
-    }
-
-    #[test]
-    fn test_check_cluster_required_fields_empty_endpoints() {
-        let config = r#"{"endpoints": []}"#;
-        let issues = check_cluster_required_fields("test-cluster", config);
-        assert_eq!(issues.len(), 1, "empty endpoints should produce 1 error");
-        assert_eq!(issues[0]["category"], "proto_violation");
-        assert_eq!(issues[0]["severity"], "error");
-        assert!(issues[0]["message"].as_str().unwrap_or("").contains("no endpoints"));
-    }
-
-    #[test]
-    fn test_check_cluster_required_fields_invalid_endpoint() {
-        let config = r#"{"endpoints": ["not-a-valid-endpoint"]}"#;
-        let issues = check_cluster_required_fields("test-cluster", config);
-        assert!(
-            issues.iter().any(|i| i["message"].as_str().unwrap_or("").contains("invalid format")),
-            "invalid endpoint format should be detected"
-        );
-    }
-
-    #[test]
-    fn test_check_cluster_required_fields_empty_http_hc_path() {
-        let config = r#"{"endpoints": [{"host": "127.0.0.1", "port": 8080}], "healthChecks": [{"type": "http", "path": ""}]}"#;
-        let issues = check_cluster_required_fields("test-cluster", config);
-        assert!(
-            issues.iter().any(|i| i["message"].as_str().unwrap_or("").contains("empty path")),
-            "empty HTTP health check path should be detected"
-        );
-    }
-
-    #[test]
-    fn test_check_cluster_required_fields_timeout_exceeds_interval() {
-        let config = r#"{"endpoints": [{"host": "127.0.0.1", "port": 8080}], "healthChecks": [{"type": "http", "path": "/health", "timeout_seconds": 10, "interval_seconds": 5}]}"#;
-        let issues = check_cluster_required_fields("test-cluster", config);
-        assert!(
-            issues.iter().any(|i| i["message"].as_str().unwrap_or("").contains("timeout")),
-            "timeout > interval should be detected"
-        );
-    }
-
-    #[test]
-    fn test_check_cluster_required_fields_malformed_json() {
-        let issues = check_cluster_required_fields("test-cluster", "not json");
-        assert_eq!(issues.len(), 1, "malformed JSON should produce 1 error");
-        assert_eq!(issues[0]["category"], "proto_violation");
-        assert!(issues[0]["message"].as_str().unwrap_or("").contains("malformed"));
     }
 
     // ========================================================================

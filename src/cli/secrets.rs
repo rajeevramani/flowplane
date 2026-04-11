@@ -7,6 +7,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use super::client::FlowplaneClient;
+use super::output::{print_output, truncate};
 
 #[derive(Subcommand)]
 pub enum SecretCommands {
@@ -89,6 +90,25 @@ pub enum SecretCommands {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Rotate a secret (bump version with new config)
+    #[command(
+        long_about = "Rotate a secret by ID, bumping its version.\n\nProvide new configuration to replace the secret value during rotation.",
+        after_help = "EXAMPLES:\n    # Rotate with new config\n    flowplane secret rotate abc-123 --config '{\"secret\": \"new-base64-value\"}'\n\n    # Rotate and output as JSON\n    flowplane secret rotate abc-123 --config '{\"secret\": \"new-base64-value\"}' -o json"
+    )]
+    Rotate {
+        /// Secret ID to rotate
+        #[arg(value_name = "SECRET_ID")]
+        secret_id: String,
+
+        /// New configuration as JSON string (required)
+        #[arg(long)]
+        config: String,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
 }
 
 /// Secret response matching the API response shape
@@ -150,6 +170,9 @@ pub async fn handle_secret_command(
         }
         SecretCommands::Delete { secret_id, yes } => {
             delete_secret(client, team, &secret_id, yes).await?
+        }
+        SecretCommands::Rotate { secret_id, config, output } => {
+            rotate_secret(client, team, &secret_id, &config, &output).await?
         }
     }
 
@@ -281,20 +304,26 @@ async fn delete_secret(
     Ok(())
 }
 
-fn print_output<T: Serialize>(data: &T, format: &str) -> Result<()> {
-    match format {
-        "json" => {
-            let json = serde_json::to_string_pretty(data).context("Failed to serialize to JSON")?;
-            println!("{json}");
-        }
-        "yaml" => {
-            let yaml = serde_yaml::to_string(data).context("Failed to serialize to YAML")?;
-            println!("{yaml}");
-        }
-        _ => {
-            anyhow::bail!("Unsupported output format: {}. Use 'json' or 'yaml'.", format);
-        }
+async fn rotate_secret(
+    client: &FlowplaneClient,
+    team: &str,
+    secret_id: &str,
+    config: &str,
+    output: &str,
+) -> Result<()> {
+    let value: serde_json::Value =
+        serde_json::from_str(config).context("Invalid JSON in --config")?;
+    let body = serde_json::json!({ "configuration": value });
+
+    let path = format!("/api/v1/teams/{team}/secrets/{secret_id}/rotate");
+    let response: SecretResponse = client.post_json(&path, &body).await?;
+
+    if output == "table" {
+        print_secrets_table(&[response]);
+    } else {
+        print_output(&response, output)?;
     }
+
     Ok(())
 }
 
@@ -324,14 +353,6 @@ fn print_secrets_table(secrets: &[SecretResponse]) {
         );
     }
     println!();
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
 }
 
 /// Inject the `type` tag from `--type` flag into the config JSON object.

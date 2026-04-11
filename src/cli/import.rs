@@ -7,9 +7,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::client::FlowplaneClient;
+use super::output::{print_output, truncate};
 
 /// Paginated response wrapper for dataplane listing
 #[derive(Debug, Deserialize)]
@@ -36,6 +37,35 @@ pub enum ImportCommands {
         #[arg(long)]
         port: Option<u16>,
     },
+
+    /// List all imports for the team
+    List {
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "table", value_parser = ["json", "yaml", "table"])]
+        output: String,
+    },
+
+    /// Get details of a specific import
+    Get {
+        /// Import ID
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// Output format (json, yaml, or table)
+        #[arg(short, long, default_value = "json", value_parser = ["json", "yaml"])]
+        output: String,
+    },
+
+    /// Delete an import and its associated resources
+    Delete {
+        /// Import ID
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 /// Response from the import API (matches backend ImportResponse)
@@ -51,6 +81,43 @@ struct ImportResponse {
     listener_name: Option<String>,
 }
 
+/// Response from list imports endpoint
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListImportsResponse {
+    imports: Vec<ImportSummary>,
+}
+
+/// Summary of a single import
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportSummary {
+    id: String,
+    spec_name: String,
+    spec_version: Option<String>,
+    team: String,
+    listener_name: Option<String>,
+    imported_at: String,
+    updated_at: String,
+}
+
+/// Detailed import response
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportDetailsResponse {
+    id: String,
+    spec_name: String,
+    spec_version: Option<String>,
+    spec_checksum: Option<String>,
+    team: String,
+    listener_name: Option<String>,
+    imported_at: String,
+    updated_at: String,
+    route_count: usize,
+    cluster_count: usize,
+    listener_count: usize,
+}
+
 pub async fn handle_import_command(
     client: &FlowplaneClient,
     team: &str,
@@ -60,6 +127,9 @@ pub async fn handle_import_command(
         ImportCommands::Openapi { file, name, port } => {
             handle_openapi_import(client, team, &file, name.as_deref(), port).await
         }
+        ImportCommands::List { output } => list_imports(client, team, &output).await,
+        ImportCommands::Get { id, output } => get_import(client, &id, &output).await,
+        ImportCommands::Delete { id, yes } => delete_import(client, &id, yes).await,
     }
 }
 
@@ -146,6 +216,68 @@ async fn handle_openapi_import(
     }
 
     Ok(())
+}
+
+async fn list_imports(client: &FlowplaneClient, team: &str, output: &str) -> Result<()> {
+    let path = format!("/api/v1/teams/{team}/openapi/imports");
+    let response: ListImportsResponse = client.get_json(&path).await?;
+
+    if output == "table" {
+        print_imports_table(&response.imports);
+    } else {
+        print_output(&response.imports, output)?;
+    }
+
+    Ok(())
+}
+
+async fn get_import(client: &FlowplaneClient, id: &str, output: &str) -> Result<()> {
+    let path = format!("/api/v1/openapi/imports/{id}");
+    let response: ImportDetailsResponse = client.get_json(&path).await?;
+
+    print_output(&response, output)?;
+
+    Ok(())
+}
+
+async fn delete_import(client: &FlowplaneClient, id: &str, yes: bool) -> Result<()> {
+    if !yes {
+        println!("Are you sure you want to delete import '{id}'? This will also delete associated routes, clusters, and listeners. (y/N)");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled");
+            return Ok(());
+        }
+    }
+
+    let path = format!("/api/v1/openapi/imports/{id}");
+    client.delete_no_content(&path).await?;
+
+    println!("Import '{id}' deleted successfully");
+    Ok(())
+}
+
+fn print_imports_table(imports: &[ImportSummary]) {
+    if imports.is_empty() {
+        println!("No imports found");
+        return;
+    }
+
+    println!();
+    println!("{:<38} {:<25} {:<15} {:<25}", "ID", "Name", "Team", "Imported At");
+    println!("{}", "-".repeat(103));
+
+    for imp in imports {
+        println!(
+            "{:<38} {:<25} {:<15} {:<25}",
+            truncate(&imp.id, 36),
+            truncate(&imp.spec_name, 23),
+            truncate(&imp.team, 13),
+            truncate(&imp.imported_at, 23),
+        );
+    }
+    println!();
 }
 
 #[cfg(test)]

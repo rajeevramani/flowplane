@@ -97,7 +97,7 @@ Three tool calls via `POST /api/v1/mcp`:
     "arguments": {
       "name": "demo",
       "serviceName": "demo-service",
-      "endpoints": [{"address": "httpbin", "port": 80}],
+      "endpoints": [{"host": "httpbin", "port": 80}],
       "team": "default"
     }
   }

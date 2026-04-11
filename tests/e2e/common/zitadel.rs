@@ -721,5 +721,8 @@ pub fn set_cp_env_vars(config: &ZitadelTestConfig) {
     std::env::set_var("FLOWPLANE_ZITADEL_ADMIN_URL", &config.base_url);
     std::env::set_var("FLOWPLANE_SUPERADMIN_EMAIL", SUPERADMIN_EMAIL);
     std::env::set_var("FLOWPLANE_SUPERADMIN_INITIAL_PASSWORD", SUPERADMIN_PASSWORD);
+    // Short permission cache TTL for E2E tests so DB-inserted org memberships
+    // take effect quickly without waiting for the default 60s expiry.
+    std::env::set_var("FLOWPLANE_PERMISSION_CACHE_TTL_SECS", "2");
     info!("CP environment variables set for Zitadel at {}", config.base_url);
 }

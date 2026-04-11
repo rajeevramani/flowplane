@@ -385,14 +385,14 @@ test-ui-report: ## Open Playwright HTML test report
 
 test-e2e-dev: ## Dev mode E2E tests (bearer token, no Zitadel)
 	@echo "$(CYAN)Running dev-mode E2E tests...$(RESET)"
-	FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1; \
+	FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e -- dev_ --ignored --nocapture --test-threads=1; \
 	TEST_EXIT=$$?; \
 	$(MAKE) test-cleanup; \
 	exit $$TEST_EXIT
 
 test-e2e-prod: ## Prod mode E2E tests (real Zitadel, multi-user)
 	@echo "$(CYAN)Running prod-mode E2E tests...$(RESET)"
-	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e -- --ignored --nocapture --test-threads=1; \
+	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e -- prod_ --ignored --nocapture --test-threads=1; \
 	TEST_EXIT=$$?; \
 	$(MAKE) test-cleanup; \
 	exit $$TEST_EXIT
