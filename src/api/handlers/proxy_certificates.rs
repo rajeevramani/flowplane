@@ -88,6 +88,7 @@ pub struct CertificateMetadata {
     pub proxy_id: String,
     pub spiffe_uri: String,
     pub serial_number: String,
+    pub status: String,
     pub issued_at: String,
     pub expires_at: String,
     pub is_valid: bool,
@@ -104,11 +105,23 @@ impl From<ProxyCertificateData> for CertificateMetadata {
         let is_expired = data.is_expired();
         let is_revoked = data.is_revoked();
 
+        let status = if is_revoked {
+            "revoked"
+        } else if is_expired {
+            "expired"
+        } else if is_valid {
+            "valid"
+        } else {
+            "unknown"
+        }
+        .to_string();
+
         Self {
             id: data.id.to_string(),
             proxy_id: data.proxy_id,
             spiffe_uri: data.spiffe_uri,
             serial_number: data.serial_number,
+            status,
             issued_at: data.issued_at.to_rfc3339(),
             expires_at: data.expires_at.to_rfc3339(),
             is_valid,

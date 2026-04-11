@@ -712,7 +712,14 @@ pub async fn activate_learning_session_handler(
     // Verify team access
     verify_team_access(session.clone(), &team_scopes).await?;
 
-    // Use the learning session service to activate
+    // Completed sessions are already fully aggregated — return them as-is.
+    // The CLI `learn activate` on a completed session confirms schemas are applied.
+    if session.status == LearningSessionStatus::Completed {
+        let response = session_response_from_data(session);
+        return Ok(Json(response));
+    }
+
+    // For pending sessions, use the learning session service to activate (pending → active)
     let learning_service = state
         .xds_state
         .get_learning_session_service()

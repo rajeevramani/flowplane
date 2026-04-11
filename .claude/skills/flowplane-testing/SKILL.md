@@ -4,7 +4,7 @@ description: How to write and run tests for Flowplane code. Three test layers, a
 license: Apache-2.0
 metadata:
   author: rajeevramani
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Flowplane Testing
@@ -74,7 +74,7 @@ tests/e2e/
     zitadel.rs        — Zitadel container lifecycle + OIDC token acquisition
     api_client.rs     — Typed HTTP client for Flowplane API
     mocks.rs          — Mock services (Echo, Auth0, ext_authz)
-    ports.rs          — Port allocation
+    ports.rs          — Port allocation (PortAllocator with bind-testing)
     stats.rs          — Envoy stats parsing
     filter_configs.rs — Type-safe filter configuration builders
     timeout.rs        — Timeout utilities and retry logic
@@ -86,11 +86,17 @@ tests/e2e/
     test_routing.rs
     test_sds_delivery.rs
     test_cli_subprocess.rs
-    test_cli_phase3.rs
-    test_cli_phase3_prod.rs
-    test_cli_phase4.rs
-    test_cli_phase5.rs    — Scaffold E2E tests (30 tests: cluster, route, listener, 10 filter types)
-    test_cli_ops.rs       — Ops diagnostic commands (trace, topology, validate, xds, audit, admin)
+    test_cli_expose.rs      — Expose, unexpose, list, status, filter list, learn list, doctor (dev mode)
+    test_cli_expose_prod.rs — Same as expose but prod mode JWT
+    test_cli_views.rs       — Dataplane, vhost, filter types, import, stats, route-views, schema, reports
+    test_cli_scaffold.rs    — mTLS/cert, admin, MCP tools, WASM, apply, scaffold
+    test_cli_ops.rs         — Ops diagnostic commands (trace, topology, validate, xds, audit, admin)
+    test_cli_ops_envoy.rs   — Ops commands requiring Envoy (config_dump verification)
+    test_cli_deletes.rs     — Delete/cleanup operations
+    test_cli_learn.rs       — Learning session lifecycle
+    test_cli_reads.rs       — Read-only CLI commands
+    test_cli_secrets.rs     — Secret management
+    test_cli_import.rs      — Import operations
   full/               — Full E2E tests (feature-specific)
     test_11_bootstrap.rs
     test_12_header_mutation.rs
@@ -110,16 +116,55 @@ tests/e2e/
     test_26_grant_enforcement.rs
 ```
 
+**File renames (2026-04):** `test_cli_phase3.rs` -> `test_cli_expose.rs`, `test_cli_phase3_prod.rs` -> `test_cli_expose_prod.rs`, `test_cli_phase4.rs` -> `test_cli_views.rs`, `test_cli_phase5.rs` -> `test_cli_scaffold.rs`.
+
 ### Conventions
-- **Dev mode tests:** Use `dev_harness()` (API-only) or `quick_harness()` (with Envoy), test name **must** start with `dev_`
+- **Dev mode tests:** Use `dev_harness()` (API-only) or `envoy_harness()` (with per-test Envoy), test name **must** start with `dev_`
 - **Prod mode tests:** Use shared harness (default), test name **must** start with `prod_`
 - **Gating:** All E2E tests use `#[ignore]` + `RUN_E2E=1` env var
 - **Filtering:** `make test-e2e-dev` filters to `dev_` prefix only, `make test-e2e-prod` filters to `prod_` prefix only
 - **Isolated mode:** Only supported for dev auth. Prod isolated mode is explicitly unsupported (will bail with error)
+- **Resource naming:** Tests MUST use unique resource names with UUID prefix to avoid collisions in the shared DB. See "Resource Naming" section below.
 
-### Harness Types
-- **`dev_harness()`** — API-only, no Envoy. Use for tests that only verify CLI → API (error handling, basic CRUD).
-- **`quick_harness()`** — Starts Envoy with dedicated ports. Use for tests that verify the full pipeline: CLI → API → xDS → Envoy config_dump → traffic.
+### Harness Types — Three Modes
+
+| Harness | Shared CP | Per-test Envoy | Use When |
+|---|---|---|---|
+| `dev_harness(name)` | Yes | No | API-only tests: CLI -> API error handling, basic CRUD, reads |
+| `envoy_harness(name)` | Yes | Yes | Tests that verify config_dump or traffic through Envoy |
+| `TestHarnessConfig::new(name).isolated()` | No (own CP) | Yes (own Envoy) | Tests needing their own DB/CP (rare, slowest) |
+
+- **`dev_harness(name)`** — Shared control plane, no Envoy. Use for tests that only verify CLI -> API (error handling, basic CRUD, reads). Fastest.
+- **`envoy_harness(name)`** — Shared control plane + fresh Envoy spawned per test. Use for tests that verify the full pipeline: CLI -> API -> xDS -> Envoy config_dump -> traffic. Replaces the old `quick_harness()` (which has been removed).
+- **Isolated mode** via `TestHarnessConfig::new(name).isolated()` — Own CP, own Envoy, own DB. Slowest. Use only when tests require a clean database state.
+
+**`quick_harness()` is removed.** All tests have been migrated to either `dev_harness()` or `envoy_harness()`. Do not use `quick_harness()`.
+
+### Dev Mode Constraints
+
+Dev mode runs a single team (`default`) with a single dataplane (`dev-dataplane`). Important rules:
+- Do NOT create new teams in dev mode — there is only `default`.
+- Per-test Envoy (from `envoy_harness`) connects to the shared xDS server with the shared team's metadata.
+- All tests share the same DB, so resource name uniqueness is critical.
+
+### Resource Naming (Required)
+
+All E2E tests MUST use unique resource names to avoid collisions when tests run in parallel against the shared team's DB. Use a UUID prefix:
+
+```rust
+let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+let cluster_name = format!("{id}-my-cluster");
+let route_name = format!("{id}-my-route");
+let listener_name = format!("{id}-my-listener");
+```
+
+Do NOT use hardcoded names like `"test-cluster"` or `"my-route"` — these will collide with other tests.
+
+### Port Allocation
+
+`envoy_harness()` uses `PortAllocator::for_test()` with bind-testing to avoid port collisions. No hardcoded port ranges. The allocator binds to port 0, reads the OS-assigned port, then releases it for Envoy to use.
+
+Do NOT hardcode ports in E2E tests. Always get ports from the harness or allocator.
 
 ### TestHarness Pattern (API-only)
 ```rust
@@ -129,7 +174,10 @@ async fn dev_my_feature_test() {
     let harness = dev_harness("test_name").await.expect("harness should start");
     let cli = CliRunner::from_harness(&harness).unwrap();
 
-    let output = cli.run(&["cluster", "get", "my-cluster"]).unwrap();
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
+    let name = format!("{id}-my-cluster");
+
+    let output = cli.run(&["cluster", "get", &name]).unwrap();
     output.assert_success();
 }
 ```
@@ -139,18 +187,20 @@ async fn dev_my_feature_test() {
 #[tokio::test]
 #[ignore]
 async fn dev_my_feature_with_envoy() {
-    let harness = quick_harness("test_name").await.expect("harness should start");
+    let harness = envoy_harness("test_name").await.expect("harness should start");
     let cli = CliRunner::from_harness(&harness).unwrap();
+
+    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
 
     // Create resource via CLI
     let output = cli.run(&["cluster", "create", "-f", file_path]).unwrap();
     output.assert_success();
 
     // Verify resource reached Envoy via xDS
-    verify_in_config_dump(&harness, "my-cluster").await;
+    verify_in_config_dump(&harness, &format!("{id}-my-cluster")).await;
 
     // Verify traffic flows through Envoy
-    verify_traffic(&harness, "my-domain.local", "/test").await;
+    verify_traffic(&harness, &format!("{id}-my-domain.local"), "/test").await;
 }
 ```
 
@@ -159,12 +209,13 @@ async fn dev_my_feature_with_envoy() {
 These are re-exported from `crate::common` — import via `use crate::common::test_helpers::*`:
 
 - **`write_temp_file(content, extension)`** — Creates a named temp file for CLI input (`-f` flag). Caller must hold the return value to keep file alive.
-- **`verify_in_config_dump(harness, name)`** — Polls Envoy admin config_dump until named resource appears (30s timeout). Skips gracefully if Envoy unavailable.
+- **`verify_in_config_dump(harness, name)`** — Polls Envoy admin config_dump until named resource appears (30s timeout, 500ms interval). Skips gracefully if Envoy unavailable.
+- **`verify_not_in_config_dump(harness, name)`** — Polls Envoy admin config_dump until named resource is absent (30s timeout, 500ms interval). Use after delete operations.
 - **`verify_traffic(harness, domain, path)`** — Sends traffic through Envoy, asserts 200 + non-empty body. Skips gracefully if Envoy unavailable.
 - **`create_chain_for_cluster(harness, cluster, prefix)`** — Creates route config + listener via API to complete Envoy chain for a CLI-created cluster. Returns `(route_name, domain)`.
 - **`create_chain_for_route(harness, route, prefix, domain)`** — Creates listener for a CLI-created route config. Returns domain.
 
-### Test-file-local Helpers (in `test_cli_phase5.rs`)
+### Test-file-local Helpers (in `test_cli_scaffold.rs`)
 - **`scaffold_and_create()`** — Scaffolds resource, replaces placeholders, writes temp file, runs create.
 - **`create_filter_test_chain()`** — Creates cluster + route + listener chain for filter E2E tests.
 - **`attach_filter_to_listener()`** — Attaches filter to listener via CLI.
@@ -177,7 +228,7 @@ For prod-mode tests that need multiple users with different team roles:
 #[tokio::test]
 #[ignore]
 async fn prod_team_isolation_via_cli() {
-    let harness = quick_harness("isolation_test").await.unwrap();
+    let harness = envoy_harness("isolation_test").await.unwrap();
     if harness.is_dev_mode() { return; }
 
     let shared = harness.shared_infra().expect("prod uses shared mode");
@@ -213,6 +264,12 @@ These violations get tests rejected in code review.
 5. **Do not skip error paths.** Every API endpoint needs tests for: wrong input format, missing required fields, wrong HTTP method, wrong auth, misspelled paths.
 
 6. **Do not let the implementer be the sole integration test author.** The implementer has blind spots — they test what they built, not what users do.
+
+7. **Do not use hardcoded resource names in E2E tests.** Always use UUID-prefixed names. Hardcoded names cause flaky failures when tests run in parallel.
+
+8. **Do not hardcode ports in E2E tests.** Use `PortAllocator::for_test()` or get ports from the harness.
+
+9. **Do not use `quick_harness()`.** It has been removed. Use `dev_harness()` or `envoy_harness()` instead.
 
 ## 4. Running Tests
 

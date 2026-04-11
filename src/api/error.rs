@@ -72,6 +72,30 @@ where
     }
 }
 
+/// Custom Query extractor that converts deserialization errors to JSON 400 responses
+/// instead of Axum's default text/plain rejection.
+pub struct JsonQuery<T>(pub T);
+
+impl<T, S> axum::extract::FromRequestParts<S> for JsonQuery<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match axum::extract::Query::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Query(value)) => Ok(JsonQuery(value)),
+            Err(rejection) => {
+                Err(ApiError::BadRequest(format!("Invalid query parameters: {}", rejection)))
+            }
+        }
+    }
+}
+
 /// Validate that a resource name doesn't contain control characters (including null bytes)
 /// that would cause database errors.  Returns `Ok(())` if the name is safe for DB lookup,
 /// or an appropriate `ApiError::NotFound` if it contains invalid characters.

@@ -298,10 +298,48 @@ pub async fn export_schemas(
         }
         ids
     } else if all {
-        let schemas =
-            list_schemas(client, team, min_confidence, None, None, true, None, None, session)
-                .await?;
+        let schemas = list_schemas(
+            client,
+            team,
+            min_confidence,
+            None,
+            None,
+            true,
+            None,
+            None,
+            session.clone(),
+        )
+        .await?;
         if schemas.is_empty() {
+            // When exporting from a specific session with no schemas (no traffic captured),
+            // emit a minimal empty OpenAPI spec instead of erroring.
+            if session.is_some() {
+                let empty_spec = serde_json::json!({
+                    "openapi": "3.1.0",
+                    "info": { "title": title, "version": version },
+                    "paths": {}
+                });
+                match output {
+                    Some(ref file_path) => {
+                        let content = if file_path.ends_with(".json") {
+                            serde_json::to_string_pretty(&empty_spec)
+                                .context("Failed to serialize to JSON")?
+                        } else {
+                            serde_yaml::to_string(&empty_spec)
+                                .context("Failed to serialize to YAML")?
+                        };
+                        std::fs::write(file_path, &content)
+                            .with_context(|| format!("Failed to write to {file_path}"))?;
+                        eprintln!("Exported empty OpenAPI spec to {file_path} (no schemas found for session)");
+                    }
+                    None => {
+                        let yaml = serde_yaml::to_string(&empty_spec)
+                            .context("Failed to serialize to YAML")?;
+                        print!("{yaml}");
+                    }
+                }
+                return Ok(());
+            }
             anyhow::bail!("No schemas found. Run a learning session first.");
         }
         schemas.iter().map(|s| s.id).collect()

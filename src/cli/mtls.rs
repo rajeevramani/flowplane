@@ -77,6 +77,10 @@ pub enum CertCommands {
         #[arg(value_name = "ID")]
         id: String,
 
+        /// Reason for revocation
+        #[arg(long, default_value = "Revoked via CLI")]
+        reason: String,
+
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
@@ -137,7 +141,9 @@ pub async fn handle_cert_command(
         CertCommands::List { output } => list_certs(client, team, &output).await?,
         CertCommands::Get { id, output } => get_cert(client, team, &id, &output).await?,
         CertCommands::Create { file, output } => create_cert(client, team, file, &output).await?,
-        CertCommands::Revoke { id, yes } => revoke_cert(client, team, &id, yes).await?,
+        CertCommands::Revoke { id, reason, yes } => {
+            revoke_cert(client, team, &id, &reason, yes).await?
+        }
     }
     Ok(())
 }
@@ -200,7 +206,13 @@ async fn create_cert(
     Ok(())
 }
 
-async fn revoke_cert(client: &FlowplaneClient, team: &str, id: &str, yes: bool) -> Result<()> {
+async fn revoke_cert(
+    client: &FlowplaneClient,
+    team: &str,
+    id: &str,
+    reason: &str,
+    yes: bool,
+) -> Result<()> {
     if !yes {
         println!(
             "Are you sure you want to revoke certificate '{}'? This cannot be undone. (y/N)",
@@ -215,7 +227,7 @@ async fn revoke_cert(client: &FlowplaneClient, team: &str, id: &str, yes: bool) 
     }
 
     let path = format!("/api/v1/teams/{team}/proxy-certificates/{id}/revoke");
-    let body = serde_json::json!({});
+    let body = serde_json::json!({"reason": reason});
     let response: serde_json::Value = client.post_json(&path, &body).await?;
 
     println!("Certificate '{}' revoked successfully", id);

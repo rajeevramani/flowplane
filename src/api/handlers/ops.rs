@@ -8,6 +8,8 @@ use axum::{
     extract::{Path, Query, State},
     Extension, Json,
 };
+
+use crate::api::error::JsonQuery;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -78,7 +80,7 @@ pub async fn ops_trace_handler(
     State(state): State<ApiState>,
     Extension(auth_context): Extension<AuthContext>,
     Path(TeamPath { team }): Path<TeamPath>,
-    Query(query): Query<TraceQuery>,
+    JsonQuery(query): JsonQuery<TraceQuery>,
 ) -> Result<Json<Value>, ApiError> {
     require_resource_access_resolved(&state, &auth_context, "routes", "read", Some(&team)).await?;
     let pool = get_db_pool(&state)?;
