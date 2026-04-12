@@ -451,7 +451,6 @@ fn scaffold_filter_to_writer(
             .context("Failed to serialize scaffold to JSON")?;
         writeln!(writer, "{json}").context("Failed to write scaffold JSON")?;
     } else {
-        let properties = extract_properties(&type_info.config_schema);
         writeln!(writer, "# Scaffold for filter type: {filter_type}")?;
         writeln!(writer, "# {}", type_info.description)?;
         writeln!(writer, "kind: Filter")?;
@@ -461,12 +460,7 @@ fn scaffold_filter_to_writer(
         writeln!(writer, "config:")?;
         writeln!(writer, "  type: \"{}\"", filter_type)?;
         writeln!(writer, "  config:")?;
-        for (key, desc, default_val) in &properties {
-            if let Some(d) = desc {
-                writeln!(writer, "    # {d}")?;
-            }
-            writeln!(writer, "    {key}: {default_val}")?;
-        }
+        write_yaml_from_schema(writer, &type_info.config_schema, 4)?;
     }
 
     Ok(())
@@ -557,7 +551,139 @@ fn build_value_from_schema(schema: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Write YAML output by walking the schema and emitting comments from descriptions
+/// alongside recursively-built default values. This produces the same values as the
+/// JSON scaffold path (build_value_from_schema) but with human-readable comments.
+fn write_yaml_from_schema(
+    writer: &mut impl Write,
+    config_schema: &Option<serde_json::Value>,
+    indent: usize,
+) -> Result<()> {
+    let schema = match config_schema {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    write_yaml_object_fields(writer, schema, indent)
+}
+
+/// Recursively write YAML fields for an object schema node.
+fn write_yaml_object_fields(
+    writer: &mut impl Write,
+    schema: &serde_json::Value,
+    indent: usize,
+) -> Result<()> {
+    let properties = match schema.get("properties").and_then(|p| p.as_object()) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    let pad = " ".repeat(indent);
+
+    for (key, prop) in properties {
+        let is_required = required.contains(&key.as_str());
+        let has_default = prop.get("default").is_some();
+        let has_required_children = prop.get("required").is_some();
+
+        // Same inclusion logic as build_value_from_schema for objects
+        if !is_required && !has_default && !has_required_children {
+            continue;
+        }
+
+        write_yaml_field(writer, key, prop, &pad, indent)?;
+    }
+
+    // If no fields matched (no required/default/required_children), include all properties.
+    // This handles flat schemas like header_mutation where no field is individually required.
+    let any_written = properties.iter().any(|(key, prop)| {
+        let is_required = required.contains(&key.as_str());
+        let has_default = prop.get("default").is_some();
+        let has_required_children = prop.get("required").is_some();
+        is_required || has_default || has_required_children
+    });
+    if !any_written {
+        for (key, prop) in properties {
+            write_yaml_field(writer, key, prop, &pad, indent)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Write a single YAML field with its description comment and recursively expanded value.
+fn write_yaml_field(
+    writer: &mut impl Write,
+    key: &str,
+    prop: &serde_json::Value,
+    pad: &str,
+    indent: usize,
+) -> Result<()> {
+    if let Some(desc) = prop.get("description").and_then(|d| d.as_str()) {
+        writeln!(writer, "{pad}# {desc}")?;
+    }
+
+    let type_str = prop.get("type").and_then(|t| t.as_str()).unwrap_or("string");
+    match type_str {
+        "object" if prop.get("properties").is_some() => {
+            writeln!(writer, "{pad}{key}:")?;
+            write_yaml_object_fields(writer, prop, indent + 2)?;
+        }
+        "array" => {
+            if let Some(items_schema) = prop.get("items") {
+                let items_type =
+                    items_schema.get("type").and_then(|t| t.as_str()).unwrap_or("string");
+                if items_type == "object" && items_schema.get("properties").is_some() {
+                    writeln!(writer, "{pad}{key}:")?;
+                    write_yaml_array_object_item(writer, items_schema, indent + 2)?;
+                } else {
+                    let example = build_value_from_schema(items_schema);
+                    writeln!(writer, "{pad}{key}:")?;
+                    writeln!(writer, "{pad}  - {}", yaml_value_str(&example))?;
+                }
+            } else {
+                writeln!(writer, "{pad}{key}: []")?;
+            }
+        }
+        _ => {
+            let value = build_value_from_schema(prop);
+            writeln!(writer, "{pad}{key}: {}", yaml_value_str(&value))?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a single example array item with `- key: value` YAML syntax.
+fn write_yaml_array_object_item(
+    writer: &mut impl Write,
+    items_schema: &serde_json::Value,
+    indent: usize,
+) -> Result<()> {
+    let properties = match items_schema.get("properties").and_then(|p| p.as_object()) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+
+    let pad = " ".repeat(indent);
+    let mut first = true;
+    for (key, prop) in properties {
+        let value = build_value_from_schema(prop);
+        if first {
+            writeln!(writer, "{pad}- {key}: {}", yaml_value_str(&value))?;
+            first = false;
+        } else {
+            writeln!(writer, "{pad}  {key}: {}", yaml_value_str(&value))?;
+        }
+    }
+    Ok(())
+}
+
 /// Extract properties as (key, description, yaml_default_string) tuples
+#[allow(dead_code)]
 fn extract_properties(
     config_schema: &Option<serde_json::Value>,
 ) -> Vec<(String, Option<String>, String)> {

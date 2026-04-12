@@ -255,6 +255,9 @@ pub async fn create_learning_session_handler(
         Some(generated)
     };
 
+    // Keep a copy for error messages (session_name is moved into create_request)
+    let session_name_for_error = session_name.clone();
+
     // Create session using resolved team ID
     let create_request = CreateLearningSessionRequest {
         team: team_id,
@@ -271,6 +274,18 @@ pub async fn create_learning_session_handler(
     };
 
     let created = session_repo.create(create_request).await.map_err(|e| {
+        // Catch unique constraint violation (duplicate session name)
+        if let crate::errors::FlowplaneError::Database { ref source, .. } = e {
+            if let Some(db_err) = source.as_database_error() {
+                if db_err.code().is_some_and(|c| c.as_ref() == "23505") {
+                    let name = session_name_for_error.as_deref().unwrap_or("unknown");
+                    return ApiError::Conflict(format!(
+                        "Learning session '{}' already exists for this team",
+                        name
+                    ));
+                }
+            }
+        }
         tracing::error!(error = %e, team = %team, "Failed to create learning session");
         ApiError::Internal(format!("Failed to create learning session: {}", e))
     })?;

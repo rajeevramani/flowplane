@@ -55,20 +55,21 @@ config_schema:
         max_tokens:
           type: integer
           title: Max Tokens
-          description: Maximum number of tokens in the bucket
+          description: Maximum number of tokens in the bucket (5 = 5 requests per fill interval)
           minimum: 1
-          default: 100
+          default: 5
         tokens_per_fill:
           type: integer
           title: Tokens Per Fill
           description: Number of tokens added per fill interval (defaults to max_tokens)
           minimum: 1
+          default: 5
         fill_interval_ms:
           type: integer
           title: Fill Interval (ms)
-          description: How often to add tokens to the bucket in milliseconds
+          description: How often to add tokens to the bucket in milliseconds (60000 = 1 minute)
           minimum: 1
-          default: 1000
+          default: 60000
     filter_enabled:
       type: object
       title: Filter Enabled

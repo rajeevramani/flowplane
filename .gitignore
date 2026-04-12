@@ -31,6 +31,7 @@ temp-enovy.yaml
 logs/
 *.pid
 *.seed
+tmp/
 
 # Database files (development)
 *.db
