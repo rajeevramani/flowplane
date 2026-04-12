@@ -203,8 +203,11 @@ Remote JWKS requires:
 
 ### Rules and requirements
 
-- **Rules** define which paths require JWT: `[{ "match": {"prefix": "/api"}, "requires": {"provider_name": "my-provider"} }]`
+- **Rules** define which paths require JWT: `[{ "match": {"path": {"Prefix": "/api"}}, "requires": {"type": "provider_name", "provider_name": "my-provider"} }]`
+- `match` wraps a `path` object — not a flat `{"prefix": ...}`. `PathMatch` variants are **capitalized**: `Prefix`, `Exact`, `Regex`, `Template`
+- `requires` uses tagged enum form: `{"type": "provider_name", "provider_name": "..."}`
 - A filter with **no rules** passes all traffic through unauthenticated
+- A rule with `requires` but no `match` causes Envoy to NACK the entire listener update (LDS rejection) — active listener stays on old config
 - Rules use **first-match** semantics (same as routes)
 
 ### Requirement map

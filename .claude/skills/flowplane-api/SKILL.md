@@ -362,10 +362,14 @@ Args: { "name": "api-rate-limit" }
 ```
 Check `listenerInstallations` or `routeConfigInstallations` arrays to confirm attachment. Note: the MCP `cp_get_filter` response includes these fields, but the CLI `flowplane filter get` output may not — use `cp_list_filter_attachments` as a fallback.
 
-> **JWT Auth Filters:** MUST include `rules` with match patterns. A JWT filter without rules does NOT enforce authentication — it passes all traffic through unauthenticated. Always include rules like:
+> **JWT Auth Filters:** MUST include `rules` with match patterns. A JWT filter without rules does NOT enforce authentication — it passes all traffic through unauthenticated. Envoy also NACKs rules without a `match` clause, which causes the entire listener update to fail silently (active listener stays on old config). Always include rules like:
 > ```json
-> "rules": [{"match": {"prefix": "/api"}, "requires": {"type": "provider_name", "provider_name": "my-provider"}}]
+> "rules": [{"match": {"path": {"Prefix": "/api"}}, "requires": {"type": "provider_name", "provider_name": "my-provider"}}]
 > ```
+> **Critical shape details:**
+> - `match` wraps a `path` object — not a flat `{"prefix": ...}`
+> - `PathMatch` variants are capitalized: `Prefix`, `Exact`, `Regex`, `Template`
+> - `requires` uses tagged enum form: `{"type": "provider_name", "provider_name": "..."}`
 
 > **Secrets (auth filters):** Filters that need credentials (`oauth2`, `jwt_auth`, `ext_authz`) can reference secrets by name. Note: `credential_injector` has an XDS module but is NOT a registered FilterType. Create the secret first, then reference it in the filter config. See the `flowplane-secrets` skill for the full workflow, CLI commands, MCP tools, and secret types.
 

@@ -91,7 +91,18 @@ Denominator values are snake_case: `hundred`, `ten_thousand`, `million`.
 }
 ```
 
-Rules are added separately. Match path uses `{"path": {"Prefix": "/api"}}` (capital P).
+**Rules** (without these, JWT is NOT enforced on any path):
+```yaml
+rules:
+  - match:
+      path:
+        Prefix: "/"          # capital P — PathMatch variants are Prefix/Exact/Regex/Template
+    requires:
+      type: "provider_name"   # tagged enum — always include "type"
+      provider_name: "auth0"
+```
+Rules missing a `match` clause cause Envoy to NACK the listener (LDS rejection) — the active listener silently stays on the old config.
+
 Local JWKS requires valid public keys — empty `{"keys":[]}` causes Envoy NACK.
 
 ### CORS
