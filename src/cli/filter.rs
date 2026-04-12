@@ -574,7 +574,20 @@ fn write_yaml_object_fields(
 ) -> Result<()> {
     let properties = match schema.get("properties").and_then(|p| p.as_object()) {
         Some(p) => p,
-        None => return Ok(()),
+        None => {
+            // Handle additionalProperties-only objects (maps)
+            if let Some(inner) = schema.get("additionalProperties") {
+                let pad = " ".repeat(indent);
+                writeln!(writer, "{pad}<your-key>:")?;
+                if inner.get("properties").is_some() {
+                    write_yaml_object_fields(writer, inner, indent + 2)?;
+                } else {
+                    let value = build_value_from_schema(inner);
+                    writeln!(writer, "{pad}  {}", yaml_value_str(&value))?;
+                }
+            }
+            return Ok(());
+        }
     };
 
     let required: Vec<&str> = schema
@@ -629,6 +642,17 @@ fn write_yaml_field(
 
     let type_str = prop.get("type").and_then(|t| t.as_str()).unwrap_or("string");
     match type_str {
+        "object" if prop.get("additionalProperties").is_some() => {
+            // Map type (e.g., providers: { "my-provider": { ... } })
+            // Emit a placeholder key with the inner object expanded
+            writeln!(writer, "{pad}{key}:")?;
+            let inner = prop.get("additionalProperties").unwrap();
+            let inner_pad = " ".repeat(indent + 2);
+            writeln!(writer, "{inner_pad}<your-provider-name>:")?;
+            if inner.get("properties").is_some() {
+                write_yaml_object_fields(writer, inner, indent + 4)?;
+            }
+        }
         "object" if prop.get("properties").is_some() => {
             writeln!(writer, "{pad}{key}:")?;
             write_yaml_object_fields(writer, prop, indent + 2)?;

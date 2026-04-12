@@ -53,12 +53,14 @@ config_schema:
         type: object
         title: Provider Configuration
         required:
+          - issuer
+          - audiences
           - jwks
         properties:
           issuer:
             type: string
             title: Issuer
-            description: The principal that issued the JWT (iss claim)
+            description: The principal that issued the JWT (iss claim), e.g. https://auth.example.com
           audiences:
             type: array
             title: Audiences
@@ -69,9 +71,6 @@ config_schema:
             type: object
             title: Subject Matcher
             description: Optional subject matcher for the JWT sub claim
-            required:
-              - type
-              - value
             properties:
               type:
                 type: string
@@ -120,28 +119,32 @@ config_schema:
                 type: object
                 title: Remote JWKS URI
                 description: Configuration for fetching JWKS from a remote endpoint
+                required:
+                  - uri
+                  - cluster
                 properties:
                   uri:
                     type: string
                     title: JWKS URI
-                    description: The URL to fetch the JWKS from
+                    description: The URL to fetch the JWKS from (e.g. https://auth.example.com/.well-known/jwks.json)
                     format: uri
                   cluster:
                     type: string
                     title: Cluster Name
-                    description: The cluster to use for fetching the JWKS
+                    description: The TLS cluster to use for fetching the JWKS (must exist, useTls=true)
                     x-field-type: cluster_selector
                   timeout_ms:
                     type: integer
                     title: Timeout (ms)
                     description: Request timeout in milliseconds
-                    default: 1000
+                    default: 5000
                     minimum: 1
               cache_duration_seconds:
                 type: integer
                 title: Cache Duration (seconds)
-                description: How long to cache the JWKS before refetching
+                description: How long to cache the JWKS before refetching (seconds)
                 minimum: 0
+                default: 300
               async_fetch:
                 type: object
                 title: Async Fetch
@@ -342,10 +345,7 @@ config_schema:
     filter_state_rules:
       type: object
       title: Filter State Rules
-      description: Optional filter-level requirement selector driven by filter state
-      required:
-        - name
-        - requires
+      description: Optional filter-level requirement selector driven by filter state (advanced — most users don't need this)
       properties:
         name:
           type: string
