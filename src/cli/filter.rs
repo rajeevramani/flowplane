@@ -453,6 +453,23 @@ fn scaffold_filter_to_writer(
     } else {
         writeln!(writer, "# Scaffold for filter type: {filter_type}")?;
         writeln!(writer, "# {}", type_info.description)?;
+
+        // Render instructions block from the schema if present
+        if let Some(instructions) = type_info.extra.get("instructions").and_then(|v| v.as_str()) {
+            writeln!(writer, "#")?;
+            writeln!(writer, "# ============================================================")?;
+            writeln!(writer, "# IMPORTANT — read before editing:")?;
+            writeln!(writer, "# ============================================================")?;
+            for line in instructions.lines() {
+                if line.is_empty() {
+                    writeln!(writer, "#")?;
+                } else {
+                    writeln!(writer, "# {line}")?;
+                }
+            }
+            writeln!(writer, "# ============================================================")?;
+        }
+
         writeln!(writer, "kind: Filter")?;
         writeln!(writer, "name: \"<your-filter-name>\"")?;
         writeln!(writer, "filterType: \"{}\"", filter_type)?;

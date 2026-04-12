@@ -70,6 +70,10 @@ pub struct FilterTypeInfo {
     /// UI hints for per-route form generation (if available)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_route_ui_hints: Option<FilterTypeUiHints>,
+
+    /// Agent instructions for contextual guidance (prerequisites, gotchas, examples)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 /// UI hints for filter form generation.
@@ -193,6 +197,7 @@ pub async fn list_filter_types_handler(
                 ui_hints,
                 per_route_config_schema: schema.per_route_config_schema.clone(),
                 per_route_ui_hints: None,
+                instructions: schema.instructions.clone(),
             }
         })
         .collect();
@@ -278,6 +283,7 @@ pub async fn get_filter_type_handler(
         ui_hints,
         per_route_config_schema: schema.per_route_config_schema.clone(),
         per_route_ui_hints: None,
+        instructions: schema.instructions.clone(),
     };
 
     Ok(Json(filter_info))
@@ -343,6 +349,7 @@ mod tests {
             ui_hints: None,
             per_route_config_schema: None,
             per_route_ui_hints: None,
+            instructions: None,
         };
 
         let json = serde_json::to_string(&info).expect("serialize");

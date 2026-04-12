@@ -362,7 +362,11 @@ Args: { "name": "api-rate-limit" }
 ```
 Check `listenerInstallations` or `routeConfigInstallations` arrays to confirm attachment. Note: the MCP `cp_get_filter` response includes these fields, but the CLI `flowplane filter get` output may not — use `cp_list_filter_attachments` as a fallback.
 
-> **JWT Auth Filters:** MUST include `rules` with match patterns. A JWT filter without rules does NOT enforce authentication — it passes all traffic through unauthenticated. Envoy also NACKs rules without a `match` clause, which causes the entire listener update to fail silently (active listener stays on old config). Always include rules like:
+> **JWT Auth Filters:**
+>
+> **Prerequisite — JWKS cluster MUST exist first:** Remote JWKS requires a TLS cluster pointing to the IDP (e.g., `auth0.com:443`). Check `cp_list_clusters` first and reuse an existing IDP cluster if one exists. Otherwise create one with `useTls=true` BEFORE creating the JWT filter. If the JWKS cluster is missing or NACKed (by any bad cluster in the same CDS batch), the JWT filter cannot fetch keys and ALL protected requests return 401.
+>
+> **Rules are required:** A JWT filter without `rules` does NOT enforce authentication — it passes all traffic through unauthenticated. Envoy also NACKs rules without a `match` clause, which causes the entire listener update to fail silently (active listener stays on old config). Always include rules like:
 > ```json
 > "rules": [{"match": {"path": {"Prefix": "/api"}}, "requires": {"type": "provider_name", "provider_name": "my-provider"}}]
 > ```
