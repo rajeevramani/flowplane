@@ -1,0 +1,287 @@
+// Flowplane Envoy Diagnostics Service
+//
+// Defines the gRPC contract between `flowplane-agent` (running alongside each
+// Envoy instance, reading `/config_dump` over loopback) and the Flowplane
+// control plane. The agent streams diagnostic reports back to the CP over an
+// outbound, authenticated gRPC connection — same direction as xDS, same
+// SPIFFE identity model.
+//
+// # Scope discipline (fp-hsk epic)
+//
+// The MVP for this service is WARMING FAILURE DETECTION ONLY. The agent is a
+// strategic long-term asset and scope creep is inevitable (cert rotation,
+// liveness heartbeats, telemetry relay, traffic capture for learning). None of
+// those features are in the MVP. However, this proto MUST be forward-compatible
+// so those features can be added as additive RPCs / additive `oneof` variants
+// WITHOUT breaking any MVP agent client already deployed in the field.
+//
+// # Extension model — read before modifying
+//
+// 1. **Versioned envelope.** Every client → server message is wrapped in
+//    `DiagnosticsReport`, which carries a `schema_version` and a `oneof payload`.
+//    Adding a new report type is an additive `oneof` variant. Breaking changes
+//    bump the package to `flowplane.diagnostics.v2`.
+//
+// 2. **Reserved field numbers.** Field numbers on the envelope `oneof` are
+//    partitioned by category. Future variants MUST take numbers from the
+//    reserved ranges below — do not renumber existing fields, ever.
+//
+//      10 - 19   reserved for state reports (listener/cluster/route warming)
+//      20 - 29   reserved for lifecycle signals (heartbeat, shutdown, ready)
+//      30 - 39   reserved for identity / credential ops (cert rotation req/ack)
+//      40 - 49   reserved for telemetry relay (counters, histograms)
+//      50 - 59   reserved for traffic capture (future replacement for ALS-based learning)
+//      60 - 99   reserved for unknown-future use
+//
+// 3. **Graceful forward compatibility.** A newer agent talking to an older CP
+//    will still succeed: the CP drops payload variants it does not understand
+//    and responds with an `Ack` whose `status = UNKNOWN_PAYLOAD`. This is the
+//    authoritative forward-compat mechanism — do NOT rely on decoder-level
+//    unknown-field preservation, which is implementation-dependent across
+//    prost/tonic releases.
+//
+// 4. **Bidirectional streaming.** All RPCs in this service are bidi streams.
+//    This lets the CP push flow-control / backpressure hints in the Ack
+//    channel later without a new RPC. Agents MUST handle Acks out of order.
+
+syntax = "proto3";
+
+package flowplane.diagnostics.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// -----------------------------------------------------------------------------
+// Service
+// -----------------------------------------------------------------------------
+
+// EnvoyDiagnosticsService receives out-of-band diagnostic reports from
+// flowplane-agent instances running next to Envoy proxies.
+//
+// The stream is strictly ADVISORY — agent unavailability must NEVER degrade
+// the CP's xDS path. Stream NACK handling in `src/xds/services/stream.rs` is
+// the authoritative source for xDS errors; this service is purely for errors
+// that Envoy surfaces only via `/config_dump` (e.g. listener warming failures).
+service EnvoyDiagnosticsService {
+  // ReportDiagnostics is the single catch-all MVP RPC. The client streams
+  // `DiagnosticsReport` envelopes; the server streams back `Ack` messages.
+  //
+  // Using a single RPC (rather than one RPC per payload type) is a deliberate
+  // extensibility choice: new report variants become new `oneof` arms on the
+  // envelope without requiring new RPCs, which in turn means no new client
+  // method stubs and no compatibility window where half the fleet has a new
+  // RPC and half does not.
+  //
+  // Documented (not compiler-enforced) RPC name reservations for v1. proto3
+  // cannot reserve RPC names — these are a convention; do not use them for
+  // other purposes in this service:
+  //   - ReportDiagnostics       (this RPC)
+  //   - RotateCredentials       (reserved for future cert rotation workflow)
+  //   - CaptureTraffic          (reserved for future learning replacement)
+  rpc ReportDiagnostics(stream DiagnosticsReport) returns (stream Ack);
+}
+
+// -----------------------------------------------------------------------------
+// Envelope
+// -----------------------------------------------------------------------------
+
+// DiagnosticsReport is the versioned envelope wrapping every client → server
+// message. The envelope itself is stable; new report variants are added as new
+// `oneof payload` arms.
+message DiagnosticsReport {
+  // Monotonically increasing schema version for this envelope. MVP is 1.
+  // Bumped ONLY when adding a new top-level field to this envelope message
+  // (not when adding a new `oneof` variant — those are additive by design).
+  // The CP MUST accept any schema_version <= its own known max and SHOULD
+  // log-and-accept unknown higher versions (forward compatibility).
+  uint32 schema_version = 1;
+
+  // Globally unique id for this report, assigned by the agent. Used by the
+  // server in the corresponding `Ack.report_id` so agents can correlate.
+  // Format: ULID or UUIDv7 recommended; server treats as opaque string.
+  string report_id = 2;
+
+  // Identity of the reporting dataplane. The CP authenticates the stream via
+  // SPIFFE (see `src/xds/services/mtls.rs`) and MUST verify that this field
+  // matches the authenticated identity — agents cannot report on behalf of
+  // other dataplanes.
+  string dataplane_id = 3;
+
+  // Wall-clock time at which the agent observed / generated this report.
+  google.protobuf.Timestamp observed_at = 4;
+
+  // Reserved envelope fields (do not reuse):
+  //   5: future `agent_version` string (agent binary semver)
+  //   6: future `trace_context` (W3C traceparent for correlation)
+  //   7: future `sequence_number` for strict per-stream ordering
+  //   8: future `envoy_build_label` (reported Envoy version)
+  //   9: reserved
+  reserved 5 to 9;
+
+  // The actual report payload. Field numbers are partitioned by category —
+  // see the "Reserved field numbers" section in the file header.
+  oneof payload {
+    // ----- 10-19: state reports ---------------------------------------------
+    // MVP: listener warming / runtime state report.
+    ListenerStateReport listener_state = 10;
+
+    // Reserved for future state reports. DO NOT assign these numbers to
+    // unrelated variants.
+    //   11: ClusterStateReport    (warming/drain state for CDS resources)
+    //   12: RouteConfigStateReport (RDS resources)
+    //   13: SecretStateReport     (SDS resources)
+    //   14-19: reserved for additional state report types
+
+    // ----- 20-29: lifecycle signals -----------------------------------------
+    // Reserved for lifecycle messages:
+    //   20: HeartbeatReport       (liveness ping, `last_config_verify` refresh)
+    //   21: AgentReadyReport      (one-shot on agent start)
+    //   22: AgentShutdownReport   (graceful shutdown signal)
+    //   23-29: reserved
+
+    // ----- 30-39: identity / credential ops ---------------------------------
+    // Reserved for certificate rotation workflow:
+    //   30: CertRotationRequest   (agent asks CP for a new cert bundle)
+    //   31: CertRotationAck       (agent confirms new cert in use)
+    //   32-39: reserved
+
+    // ----- 40-49: telemetry relay -------------------------------------------
+    // Reserved for telemetry:
+    //   40: StatsSnapshot         (periodic Envoy stats delta)
+    //   41: RuntimeSnapshot       (`/runtime` dump)
+    //   42-49: reserved
+
+    // ----- 50-59: traffic capture -------------------------------------------
+    // Reserved for agent-side traffic capture (potential future replacement
+    // for the ALS-based learning path in `access_log_service.rs`):
+    //   50: RequestSample
+    //   51: ResponseSample
+    //   52-59: reserved
+
+    // ----- 60-99: reserved for unknown-future use ---------------------------
+  }
+
+  // Explicit proto3 reservation for the payload oneof number space. Field
+  // numbers 11-99 are not-yet-defined variants; reserving them here makes any
+  // accidental reuse a proto compile error.
+  reserved 11 to 19;
+  reserved 20 to 29;
+  reserved 30 to 39;
+  reserved 40 to 49;
+  reserved 50 to 59;
+  reserved 60 to 99;
+}
+
+// -----------------------------------------------------------------------------
+// Payload: ListenerStateReport (MVP)
+// -----------------------------------------------------------------------------
+
+// ResourceType identifies which xDS resource a state report is about. Even
+// though MVP only uses LISTENER, the enum is defined up-front so that
+// ClusterStateReport etc. (reserved payload numbers 11-13) can reuse the same
+// type without a proto3 breaking change.
+enum ResourceType {
+  RESOURCE_TYPE_UNSPECIFIED = 0;
+  RESOURCE_TYPE_LISTENER = 1;
+  RESOURCE_TYPE_CLUSTER = 2;
+  RESOURCE_TYPE_ROUTE_CONFIG = 3;
+  RESOURCE_TYPE_SECRET = 4;
+  // 5-15 reserved for future xDS resource types (ENDPOINT, SCOPED_ROUTE, etc.)
+  reserved 5 to 15;
+}
+
+// ListenerStateReport describes a single xDS resource's last-known state as
+// observed from Envoy's `/config_dump` admin endpoint. For the MVP this is
+// used specifically to surface LISTENER WARMING FAILURES, which Envoy ACKs on
+// the xDS stream but then rejects internally during warmup — errors that today
+// are invisible to the control plane.
+//
+// The message is named "ListenerStateReport" because listeners are the MVP
+// target, but the schema supports cluster/route/secret state too (see
+// `resource_type`). Future payload numbers 11-13 will wrap this same message
+// type under different `oneof` arms if we want strong type separation; until
+// then, the `resource_type` discriminator is sufficient.
+message ListenerStateReport {
+  // Which xDS resource class this report pertains to. MVP agents MUST set
+  // this to RESOURCE_TYPE_LISTENER.
+  ResourceType resource_type = 1;
+
+  // Envoy's name for the resource (matches `Listener.name` in LDS, etc.).
+  string resource_name = 2;
+
+  // Human-readable error message as reported by Envoy, verbatim. Typically
+  // the contents of `envoy.admin.v3.UpdateFailureState.details` — e.g. the
+  // exact proto validation error for a malformed filter config. Empty string
+  // means "no error; this is an informational state snapshot".
+  string error_details = 3;
+
+  // Timestamp of Envoy's most recent update attempt for this resource, as
+  // reported in `/config_dump`. Use google.protobuf.Timestamp — NEVER a
+  // formatted string, to avoid timezone/locale ambiguity.
+  google.protobuf.Timestamp last_update_attempt = 4;
+
+  // Stable hash of the failed config snapshot (e.g. sha256 of the rejected
+  // `Any` bytes). Used on the CP side to de-duplicate: if the agent reports
+  // the same `failed_config_hash` for the same `dataplane_id` + `resource_name`
+  // on a subsequent cycle, the CP treats it as "still failing" rather than
+  // persisting a new row. Empty string means "no failed config" (informational).
+  string failed_config_hash = 5;
+
+  // Reserved fields on ListenerStateReport:
+  //   6: future `version_info` (xDS version string from DiscoveryResponse)
+  //   7: future `nonce` (xDS response nonce that produced this state)
+  //   8: future `warming_duration_ms` (how long the resource was warming)
+  //   9: future `previous_resource_hash` (what rolled back to)
+  //   10: reserved
+  reserved 6 to 10;
+}
+
+// -----------------------------------------------------------------------------
+// Server → Client: Ack
+// -----------------------------------------------------------------------------
+
+// Ack is the server's response to a `DiagnosticsReport`. Agents MUST handle
+// Acks arriving out of order (the server is permitted to batch / reorder).
+message Ack {
+  // Report ids being acknowledged. The server MAY coalesce multiple reports
+  // into a single Ack (repeated field) for efficiency.
+  repeated string report_id = 1;
+
+  // Per-Ack status.
+  AckStatus status = 2;
+
+  // Optional human-readable detail (typically only set when status != OK).
+  string message = 3;
+
+  // Reserved:
+  //   4: future `retry_after_ms` hint (backpressure signal)
+  //   5: future `drop_until` timestamp (stop sending this report type)
+  //   6-9: reserved
+  reserved 4 to 9;
+}
+
+enum AckStatus {
+  ACK_STATUS_UNSPECIFIED = 0;
+
+  // Report was accepted and persisted (or intentionally deduped).
+  ACK_STATUS_OK = 1;
+
+  // Report was well-formed but the CP does not recognise the payload
+  // variant. Agents SHOULD stop sending that variant until they reconnect.
+  // This is how forward compatibility degrades gracefully.
+  ACK_STATUS_UNKNOWN_PAYLOAD = 2;
+
+  // Report was malformed (missing required fields, invalid timestamps, etc.)
+  // — agent should treat this as a bug and log loudly, NOT retry.
+  ACK_STATUS_INVALID = 3;
+
+  // Transient server-side failure. Agent MAY retry with backoff.
+  ACK_STATUS_RETRY = 4;
+
+  // The authenticated SPIFFE identity is not permitted to report for the
+  // `dataplane_id` in the envelope. Agent MUST NOT retry — this is a
+  // misconfiguration that requires operator intervention.
+  ACK_STATUS_UNAUTHORIZED = 5;
+
+  // 6-15 reserved for future status codes.
+  reserved 6 to 15;
+}

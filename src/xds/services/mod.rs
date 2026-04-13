@@ -1,5 +1,6 @@
 pub mod access_log_service;
 mod database;
+pub mod diagnostics_proto;
 pub mod ext_proc_service;
 mod minimal;
 pub mod mtls;
