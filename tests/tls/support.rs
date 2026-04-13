@@ -33,6 +33,7 @@ impl TestCertificateFiles {
         Self::from_params(params)
     }
 
+    #[allow(dead_code)]
     pub fn with_expiration(not_after: time::OffsetDateTime) -> anyhow::Result<Self> {
         let mut params =
             CertificateParams::new(vec!["localhost".into()]).context("build certificate params")?;
@@ -67,6 +68,7 @@ impl TestCertificateFiles {
     }
 
     /// Generate a mismatched key PEM alongside the certificate.
+    #[allow(dead_code)]
     pub fn mismatched_key(&self) -> anyhow::Result<PathBuf> {
         let key_pair = KeyPair::generate().context("generate mismatched key")?;
         let path = self.temp_dir.path().join("mismatched_key.pem");
@@ -98,6 +100,7 @@ pub struct TestCertificateAuthority {
     #[allow(dead_code)]
     temp_dir: TempDir,
     /// Path to CA certificate file
+    #[allow(dead_code)]
     pub ca_cert_path: PathBuf,
 }
 
@@ -308,6 +311,7 @@ impl TestCertificateAuthority {
     ///
     /// # Returns
     /// The team name if the URI matches the expected format, None otherwise.
+    #[allow(dead_code)]
     pub fn parse_team_from_spiffe_uri(uri: &str) -> Option<String> {
         // Expected format: spiffe://flowplane.local/team/{team}/proxy/{proxy}
         let parts: Vec<&str> = uri.split('/').collect();

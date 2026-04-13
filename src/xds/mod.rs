@@ -29,10 +29,12 @@ use envoy_types::pb::envoy::service::accesslog::v3::access_log_service_server::A
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::AggregatedDiscoveryServiceServer;
 use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
 
+use crate::xds::services::diagnostics_proto::envoy_diagnostics_service_server::EnvoyDiagnosticsServiceServer;
+
 pub use cluster_spec::*;
 pub use services::{
-    DatabaseAggregatedDiscoveryService, FlowplaneAccessLogService, FlowplaneExtProcService,
-    MinimalAggregatedDiscoveryService,
+    DatabaseAggregatedDiscoveryService, FlowplaneAccessLogService, FlowplaneDiagnosticsService,
+    FlowplaneExtProcService, MinimalAggregatedDiscoveryService,
 };
 pub use state::XdsState;
 
@@ -156,8 +158,23 @@ where
         Arc::new(service)
     };
 
+    // Build the diagnostics service if we have a DB pool + NACK repository. This
+    // service is strictly advisory — it runs alongside the xDS stream but is
+    // fully independent: its failure modes cannot affect the xDS path.
+    let diagnostics_service = match (&state.pool, &state.nack_event_repository) {
+        (Some(pool), Some(nack_repo)) => {
+            let dataplane_repo =
+                crate::storage::repositories::DataplaneRepository::new(pool.clone());
+            Some(FlowplaneDiagnosticsService::new(nack_repo.clone(), dataplane_repo, pool.clone()))
+        }
+        _ => {
+            info!("Diagnostics service not wired: DB pool or nack repository unavailable");
+            None
+        }
+    };
+
     // Apply gRPC tracing layer for automatic instrumentation
-    let server = server_builder
+    let mut router = server_builder
         .layer(GrpcTracingLayer::new())
         .add_service(AggregatedDiscoveryServiceServer::new(ads_service))
         .add_service(AccessLogServiceServer::new(
@@ -167,8 +184,14 @@ where
         .add_service(ExternalProcessorServer::new(
             // Clone the service (shares the inner Arc<RwLock<...>> for body capture state)
             (*ext_proc_service).clone(),
-        ))
-        .serve_with_shutdown(addr, shutdown_signal);
+        ));
+
+    if let Some(diag) = diagnostics_service {
+        router = router.add_service(EnvoyDiagnosticsServiceServer::new(diag));
+        info!("EnvoyDiagnosticsService registered on xDS server");
+    }
+
+    let server = router.serve_with_shutdown(addr, shutdown_signal);
 
     info!(
         address = %addr,
