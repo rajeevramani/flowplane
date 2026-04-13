@@ -198,6 +198,8 @@ Args: { "dataplaneName": "my-envoy", "typeUrl": "CDS", "since": "2025-01-27T00:0
 
 **CLI equivalent:** `flowplane xds nacks [--limit N] [-o json|table]`
 
+> **Note:** NACK events now carry a `source` field — `stream` for inline xDS rejections, `warming_report` for admin-side warming failures captured by `flowplane-agent`. If a dataplane has no warming-report entries, it may simply mean no agent is reporting; check `flowplane xds status` for the `NOT MONITORED` indicator. See section 6 "Diagnostics Agent" below.
+
 ### `cp_query_service`
 
 **What it does:** Aggregate view of a single service: its cluster, endpoints, route configs that reference it, and listeners those route configs are bound to. Full picture for one service.
@@ -313,26 +315,42 @@ Proactive validation to catch issues before they affect traffic.
 
 ### "xDS Delivery Failure"
 
-Config looks correct in the DB but Envoy isn't applying it. The control plane is pushing config, but Envoy is rejecting (NACKing) it.
+Config looks correct in the DB but Envoy isn't applying it. There are **two distinct rejection classes**, and `flowplane xds nacks` is now the authoritative source for both:
 
-1. **Check delivery status:**
+| Class | How Envoy reports it | Source label |
+|---|---|---|
+| **Stream NACK** | Inline `error_detail` on the xDS DiscoveryResponse | `source=stream` |
+| **Warming failure** | Silent — Envoy ACKs the message, warming fails internally, error lands only in admin `/config_dump` | `source=warming_report` |
+
+Warming failures are only captured when `flowplane-agent` is running alongside Envoy (see section 6 "Diagnostics Agent"). Without the agent, `flowplane xds nacks` will be empty even when Envoy is rejecting every update, because the CP has no visibility into admin-only errors.
+
+**Diagnosis:**
+
+1. **Check agent liveness first.** If `flowplane xds status` shows this dataplane as `NOT MONITORED` (no recent `last_config_verify`), you are in degraded mode — only stream NACKs are visible. Install the agent (see `examples/deployment/`) before trusting an empty nack list.
+   ```
+   flowplane xds status
+   ```
+
+2. **Query the NACK history — authoritative for both classes:**
+   ```
+   flowplane xds nacks --limit 10
+   ```
+   Each row is labeled with `source` (`stream` vs `warming_report`). The first NACK is usually the root cause; later ones may be cascading effects.
+
+3. **Cross-check delivery status (MCP):**
    ```
    ops_xds_delivery_status { "dataplaneName": "my-envoy" }
    ```
-   Look for any resource types showing NACK status. The error message tells you what Envoy rejected.
+   Confirms which resource type (CDS/RDS/LDS/EDS) is in NACK state.
 
-2. **Get NACK history:**
-   ```
-   ops_nack_history { "dataplaneName": "my-envoy", "typeUrl": "CDS", "limit": 10 }
-   ```
-   Find the first NACK — that's usually the root cause. Later NACKs may be cascading effects.
+4. **Identify the bad resource.** The NACK error message typically names the specific resource. Warming failures are particularly common with auth filters (OAuth2 missing `signout_path`, JWT auth with bad JWKS URI, ext_authz with unreachable cluster).
 
-3. **Identify the bad resource:** The NACK error message typically names the specific resource (cluster, listener, route config) that has invalid configuration.
-
-4. **Fix or remove the bad resource** using the `flowplane-api` skill, then verify delivery recovers:
+5. **Fix or remove the bad resource** via the `flowplane-api` skill, then verify recovery:
    ```
-   ops_xds_delivery_status { "dataplaneName": "my-envoy" }
+   flowplane xds nacks --limit 5
+   flowplane xds status
    ```
+   `last_config_verify` should advance and the NACK should drop off the list.
 
 ### "Auth filter remote fetch failed"
 
@@ -520,6 +538,72 @@ These tools provide read-only access to all gateway resources.
 6. **`ops_trace_request` is a DB diagnostic.** It traces how routing *would* resolve based on stored config. It does NOT send real HTTP traffic through the gateway. For live testing, the user must send actual requests via curl or a traffic generator.
 
 7. **Never hardcode team names.** Team context comes from the bearer token or `?team=` query parameter. Skills should be team-agnostic.
+
+## 6. Diagnostics Agent (`flowplane-agent`)
+
+### What it is
+
+`flowplane-agent` is a small standalone binary that ships in the same release artifact as `flowplane` (single download, two binaries). It runs alongside each Envoy instance, polls the local Envoy admin `/config_dump` over loopback, walks the dynamic listener / cluster / route config error states, and streams the reports to the control plane over an authenticated outbound gRPC connection.
+
+### Why it exists
+
+Envoy has two rejection classes and the control plane only sees one without the agent:
+
+1. **Stream NACK** — Envoy rejects the DiscoveryResponse inline with `error_detail`. The CP captures this on the xDS stream, no agent needed.
+2. **Listener warming failure** — Envoy ACKs the stream message, then internally tries to warm the new listener, warming fails, the listener is discarded, and the error is written **only** to admin `/config_dump` under `error_state`. Without the agent, the CP is blind to this and `flowplane xds nacks` returns empty even when every update is being rejected.
+
+The agent's job is to surface that second class.
+
+### Optional but strongly recommended
+
+The agent is **not mandatory**. You can evaluate Flowplane in stream-NACK-only mode and stream NACKs will continue to work exactly as today.
+
+For production traffic, the agent is strongly recommended. Without it:
+
+- Listener warming failures are invisible (common with OAuth2, JWT auth, ext_authz misconfigurations)
+- Cluster warming failures are invisible (DNS resolution, EDS bootstrap)
+- `flowplane xds status` shows the affected dataplane as `NOT_MONITORED`
+- The CP logs an INFO once on dataplane registration when no agent has ever reported
+
+### How to tell if it is working
+
+```
+$ flowplane xds status
+```
+
+A fresh `last_config_verify` (within the last poll interval, default 10s) means the agent is alive and reporting. A `NOT_MONITORED` indicator means no agent has reported for this dataplane — degraded mode.
+
+### Deployment
+
+See [`examples/deployment/`](../../../examples/deployment/) for ready-to-use templates:
+
+| Target | File |
+|---|---|
+| Helm sidecar (same pod as Envoy) | `examples/deployment/helm/envoy-with-flowplane-agent.yaml` |
+| Docker Compose (`network_mode: service:envoy`) | `examples/deployment/docker-compose/docker-compose-agent.yml` |
+| systemd unit (sandboxed, non-root) | `examples/deployment/systemd/flowplane-agent.service` |
+
+All examples use the same-network-namespace pattern so admin remains on `127.0.0.1`.
+
+### Security model — read this before deploying
+
+- **Envoy admin (`:9901` by default) is privileged.** It exposes `/quitquitquit`, `/drain_listeners`, `/runtime_modify`, and other endpoints that can stop the proxy or alter its runtime behavior. **Never expose 9901 across a network.** All deployment examples bind admin to `127.0.0.1` only and the agent is the only process that talks to it.
+- **The agent only calls `GET /config_dump`.** It never POSTs, never performs runtime ops, never calls any other admin endpoint. If the admin URL is set to a non-loopback address the agent logs a WARN on startup.
+- **Same network namespace.** Helm uses a single pod (shared loopback); Compose uses `network_mode: "service:envoy"`; systemd assumes Envoy on the same host. No example crosses a network boundary to reach admin.
+- **SPIFFE identity.** The agent authenticates to the CP with an mTLS cert whose SAN encodes its `dataplane_id`. The CP rejects reports for any other dataplane at the service boundary.
+- **One-way protocol.** The diagnostics stream is agent → CP only, error reports only. The agent has no write path to gateway configuration.
+- **Sandboxed user.** All examples run the agent as a non-root, non-privileged user with read-only filesystem where the runtime supports it (`runAsNonRoot: true` in K8s, `User=flowplane-agent` + extensive `Protect*` directives in systemd).
+
+### What about "I don't want a sidecar"?
+
+The obvious alternative — having the CP poll Envoy admin directly — is architecturally wrong for prod and is explicitly NOT supported:
+
+- Exposes `:9901` across networks, a serious security regression
+- NAT/firewall hostile (CP and dataplanes are typically in different networks)
+- Doesn't scale (N dataplanes × poll interval = constant admin load)
+- Istio's Pilot deliberately does not do this — it ships `pilot-agent` alongside each Envoy instead
+
+If your topology can't tolerate a sidecar, run in stream-NACK-only mode and accept the visibility gap.
 
 ## References
 

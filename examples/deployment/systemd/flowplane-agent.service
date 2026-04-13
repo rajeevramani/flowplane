@@ -1,0 +1,94 @@
+[Unit]
+# flowplane-agent — listener warming failure detector for VM-based Envoy
+# deployments.
+#
+# This unit assumes Envoy is also running on the same host (typical VM
+# deployment pattern). Envoy admin must be bound to 127.0.0.1:9901 and
+# nothing else — see the security note in the flowplane-ops skill.
+
+Description=Flowplane diagnostics agent (Envoy warming failure reporter)
+Documentation=https://github.com/your-org/flowplane
+After=network-online.target envoy.service
+Wants=network-online.target
+# Soft dependency: agent should follow Envoy's lifecycle but its absence
+# must NEVER block Envoy from starting or serving traffic.
+PartOf=envoy.service
+
+[Service]
+Type=simple
+
+# Non-root, sandboxed user. Create with:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin flowplane-agent
+User=flowplane-agent
+Group=flowplane-agent
+
+ExecStart=/usr/local/bin/flowplane-agent
+
+# --- Environment ---------------------------------------------------------
+# All flags double as env vars — the systemd unit picks env. Override via
+# /etc/flowplane-agent/agent.env (EnvironmentFile below) so this unit file
+# stays untouched across upgrades.
+
+# Loopback only. Do NOT set this to a non-loopback address — the agent will
+# log a WARN on startup if you do, because exposing Envoy admin (9901) across
+# a network is a serious security regression.
+Environment=FLOWPLANE_AGENT_ENVOY_ADMIN_URL=http://127.0.0.1:9901
+
+# Poll cadence. 10s is a reasonable default.
+Environment=FLOWPLANE_AGENT_POLL_INTERVAL_SECS=10
+
+# Bounded local buffer if CP is briefly unreachable.
+Environment=FLOWPLANE_AGENT_QUEUE_CAP=256
+
+# Per-host configuration (CP endpoint, dataplane ID, SPIFFE cert paths).
+# Create this file with mode 0640, owned root:flowplane-agent.
+EnvironmentFile=/etc/flowplane-agent/agent.env
+
+# --- Restart behavior ----------------------------------------------------
+Restart=on-failure
+RestartSec=5s
+# Don't enter a rapid-crash loop on startup misconfig — back off and stay
+# down so an operator notices.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# --- Sandboxing ----------------------------------------------------------
+# The agent only needs:
+#   - HTTP GET to 127.0.0.1:9901
+#   - outbound gRPC to the CP
+#   - read access to its SPIFFE cert
+# Lock everything else down.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap
+
+# Only IPv4/IPv6 sockets needed (no unix domain, no netlink, no packet).
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# Read-only access to SPIFFE cert directory.
+ReadOnlyPaths=/var/run/spiffe
+
+# --- Logging -------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=flowplane-agent
+
+[Install]
+WantedBy=multi-user.target

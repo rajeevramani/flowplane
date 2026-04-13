@@ -1,0 +1,37 @@
+# Example values for the Envoy + flowplane-agent sidecar template.
+# Pair with envoy-with-flowplane-agent.yaml.
+
+replicaCount: 1
+
+envoy:
+  image:
+    repository: envoyproxy/envoy
+    tag: v1.31-latest
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+flowplaneAgent:
+  image:
+    # The agent ships in the same release artifact as the flowplane control
+    # plane — single download, two binaries. Build a minimal image with just
+    # the flowplane-agent binary on top of a distroless base.
+    repository: ghcr.io/your-org/flowplane-agent
+    tag: "0.3.0"
+  # gRPC endpoint of the control plane diagnostics service. mTLS only.
+  # NOTE: the diagnostics service is multiplexed onto the same gRPC server
+  # as xDS, so the port matches FLOWPLANE_XDS_PORT (default 18000).
+  cpEndpoint: "https://flowplane-cp.flowplane.svc.cluster.local:18000"
+  # REQUIRED: stable per-release dataplane identifier, injected into the pod
+  # labels and read by the agent via Downward API. Do not leave empty.
+  dataplaneId: "prod-edge-1"
+
+spiffe:
+  # Secret containing tls.crt, tls.key, ca.crt with SAN encoding the
+  # dataplane identity. Provision via cert-manager, SPIRE csi-driver, or
+  # whatever your cluster already uses.
+  secretName: envoy-spiffe-cert

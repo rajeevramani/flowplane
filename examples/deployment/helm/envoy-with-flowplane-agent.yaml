@@ -1,0 +1,163 @@
+# Helm template fragment: Envoy + flowplane-agent sidecar
+#
+# Drop into your existing Envoy chart's `templates/deployment.yaml`, or use as
+# a starting point for a new chart. The agent runs as a sidecar in the SAME
+# pod as Envoy so they share a network namespace — Envoy admin (9901) stays on
+# 127.0.0.1 and is never exposed outside the pod.
+#
+# Why same-pod (not separate Deployment):
+#   - Shared loopback: agent reaches admin on 127.0.0.1:9901 with no Service,
+#     no NetworkPolicy carve-out, and no risk of cross-pod admin access.
+#   - Lifecycle coupling: agent and envoy are scheduled, scaled, and evicted
+#     together. An orphaned agent reporting for a dead envoy is impossible.
+#   - SPIFFE identity: pod ServiceAccount maps 1:1 to dataplane identity.
+#
+# This file is illustrative — it is NOT a complete chart. Wire it into your
+# own values.yaml with whatever templating conventions you already use.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "envoy.fullname" . }}
+  labels:
+    {{- include "envoy.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "envoy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "envoy.selectorLabels" . | nindent 8 }}
+        # REQUIRED: stable per-pod dataplane identifier. The agent container
+        # reads this via Downward API below and passes it as
+        # FLOWPLANE_AGENT_DATAPLANE_ID. Set per environment — e.g. via Helm
+        # values or a templated function based on the release name + pod
+        # ordinal. Do NOT leave empty; the agent will refuse to start.
+        dataplane-id: {{ .Values.flowplaneAgent.dataplaneId | required "flowplaneAgent.dataplaneId is required" | quote }}
+    spec:
+      serviceAccountName: {{ include "envoy.serviceAccountName" . }}
+      containers:
+
+        # --- Envoy proxy ---------------------------------------------------
+        - name: envoy
+          image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
+          args:
+            - --config-path
+            - /etc/envoy/bootstrap.yaml
+            - --log-level
+            - info
+          ports:
+            - name: http
+              containerPort: 10000
+              protocol: TCP
+            # NOTE: admin port is intentionally NOT listed here.
+            # Admin must remain loopback-only inside the pod.
+          volumeMounts:
+            - name: envoy-bootstrap
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: spiffe-certs
+              mountPath: /var/run/spiffe
+              readOnly: true
+          resources:
+            {{- toYaml .Values.envoy.resources | nindent 12 }}
+
+        # --- flowplane-agent sidecar --------------------------------------
+        # Optional but strongly recommended in prod. Without it, listener
+        # warming failures are invisible — `flowplane xds nacks` will only
+        # show stream-level NACKs, and `flowplane xds status` will report
+        # this dataplane as NOT MONITORED.
+        - name: flowplane-agent
+          image: "{{ .Values.flowplaneAgent.image.repository }}:{{ .Values.flowplaneAgent.image.tag }}"
+          # The agent is a thin process — minimal CPU/memory footprint.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          # Run as a non-root, non-privileged user. The agent only needs:
+          #   - outbound TCP to the control plane gRPC endpoint
+          #   - HTTP GET to 127.0.0.1:9901/config_dump
+          # No filesystem writes, no privilege escalation.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # Loopback only. Do NOT change this to a non-loopback address —
+            # the agent will log a WARN on startup if you do, because exposing
+            # Envoy admin across a network is a serious security regression.
+            - name: FLOWPLANE_AGENT_ENVOY_ADMIN_URL
+              value: "http://127.0.0.1:9901"
+
+            # Outbound gRPC endpoint of the Flowplane control plane. The agent
+            # initiates the connection — no inbound port needs to be opened
+            # on the dataplane side.
+            - name: FLOWPLANE_AGENT_CP_ENDPOINT
+              value: "{{ .Values.flowplaneAgent.cpEndpoint }}"
+
+            # Stable identity for this dataplane. Must match the dataplane row
+            # in the control plane (created by `flowplane dataplane create`
+            # or via the bootstrapper). The SPIFFE cert SAN must agree.
+            - name: FLOWPLANE_AGENT_DATAPLANE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['dataplane-id']
+
+            # Poll cadence. 10s is a reasonable default. Lower (2-5s) for CI
+            # pipelines that need fast feedback, higher (30-60s) for steady
+            # state where update churn is rare.
+            - name: FLOWPLANE_AGENT_POLL_INTERVAL_SECS
+              value: "10"
+
+            # SPIFFE mTLS material. Reuses whatever cert delivery mechanism
+            # you already use for Envoy (cert-manager, SPIRE, csi-driver,
+            # etc.). Cert SAN must encode the dataplane identity.
+            - name: FLOWPLANE_AGENT_TLS_CERT_PATH
+              value: "/var/run/spiffe/tls.crt"
+            - name: FLOWPLANE_AGENT_TLS_KEY_PATH
+              value: "/var/run/spiffe/tls.key"
+            - name: FLOWPLANE_AGENT_TLS_CA_PATH
+              value: "/var/run/spiffe/ca.crt"
+
+            # Bounded local buffer if the CP endpoint is briefly unreachable.
+            # Oldest reports are dropped on overflow (and the drop is logged).
+            - name: FLOWPLANE_AGENT_QUEUE_CAP
+              value: "256"
+          volumeMounts:
+            - name: spiffe-certs
+              mountPath: /var/run/spiffe
+              readOnly: true
+
+      volumes:
+        - name: envoy-bootstrap
+          configMap:
+            name: {{ include "envoy.fullname" . }}-bootstrap
+        - name: spiffe-certs
+          secret:
+            secretName: {{ .Values.spiffe.secretName }}
+
+# --- Verifying the agent is working ------------------------------------------
+#
+# After applying this manifest:
+#
+#   $ flowplane xds status
+#
+# should list this dataplane with a recent `last_config_verify` timestamp.
+# A dataplane shown as `NOT MONITORED` means no agent has ever reported for
+# it — the deployment is in degraded mode and warming failures will not be
+# surfaced. Check the agent container logs:
+#
+#   $ kubectl logs <pod> -c flowplane-agent
+#
+# Common first-time issues:
+#   - SPIFFE cert SAN does not match FLOWPLANE_AGENT_DATAPLANE_ID
+#   - CP endpoint unreachable (NetworkPolicy / firewall)
+#   - Dataplane row does not exist in the CP (create it before scheduling)

@@ -1,0 +1,133 @@
+# Docker Compose: Envoy + flowplane-agent on the same network
+#
+# Models a prod-style topology where the dataplane (Envoy + agent) and the
+# control plane sit on different Docker networks, but agent and Envoy share
+# a network namespace so admin stays loopback-only.
+#
+# Usage (assumes the flowplane control plane is already running and reachable
+# at flowplane-cp:18000 over an external network named `flowplane-cp-net`):
+#
+#   docker network create flowplane-cp-net   # if not already created
+#   docker compose -f docker-compose-agent.yml up -d
+#
+# Verify within ~15 seconds:
+#
+#   flowplane xds status
+#       → this dataplane shows a fresh last_config_verify timestamp
+#
+#   flowplane xds nacks --limit 5
+#       → empty (no warming failures); intentionally introduce one to test
+#
+# Tear down:
+#
+#   docker compose -f docker-compose-agent.yml down
+
+services:
+  # ---- Envoy + flowplane-agent (sidecar pattern) -------------------------
+  #
+  # The agent uses `network_mode: "service:envoy"` so it shares Envoy's
+  # network namespace. This is the Compose equivalent of a Kubernetes pod:
+  # both containers see 127.0.0.1 as the same loopback, so the agent can
+  # reach Envoy admin without exposing port 9901 to any other service.
+  #
+  # WARNING: Do NOT publish 9901 in the `ports:` section below. The admin
+  # API is privileged (it has /quitquitquit, /drain_listeners, /runtime_modify
+  # and friends). The agent IS the admin client — nothing else should be.
+
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    container_name: prod-envoy
+    entrypoint: ["/usr/local/bin/envoy"]
+    command:
+      - --config-path
+      - /etc/envoy/bootstrap.yaml
+      - --log-level
+      - info
+    volumes:
+      - ./envoy-bootstrap.yaml:/etc/envoy/bootstrap.yaml:ro
+      - ./spiffe:/var/run/spiffe:ro
+    ports:
+      - "10000:10000"   # data-plane HTTP listener
+      # 9901 is intentionally NOT published. Loopback-only.
+    networks:
+      - dataplane-net
+      - flowplane-cp-net   # outbound to CP (xDS + diagnostics)
+    restart: unless-stopped
+    # Required so flowplane-agent's `depends_on: condition: service_healthy`
+    # waits for Envoy's admin listener before the sidecar shares its
+    # network namespace. /ready is the standard Envoy readiness endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9901/ready || exit 1"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+      start_period: 5s
+
+  flowplane-agent:
+    image: ghcr.io/your-org/flowplane-agent:0.3.0
+    container_name: prod-flowplane-agent
+    # Share Envoy's network namespace. 127.0.0.1:9901 inside this container
+    # is the same loopback the envoy container sees.
+    network_mode: "service:envoy"
+    depends_on:
+      envoy:
+        condition: service_healthy
+    user: "65532:65532"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+    environment:
+      # Loopback only. Never point this at a non-loopback address — the agent
+      # logs a WARN on startup if you do, because exposing 9901 across a
+      # network is a serious regression.
+      FLOWPLANE_AGENT_ENVOY_ADMIN_URL: "http://127.0.0.1:9901"
+
+      # Outbound gRPC to the control plane. mTLS, SPIFFE identity.
+      FLOWPLANE_AGENT_CP_ENDPOINT: "https://flowplane-cp:18000"
+
+      # Stable identity. Must match the dataplane row in the CP.
+      FLOWPLANE_AGENT_DATAPLANE_ID: "prod-edge-1"
+
+      # Poll cadence — 10s is the default. Lower for CI, higher for steady
+      # state.
+      FLOWPLANE_AGENT_POLL_INTERVAL_SECS: "10"
+
+      # SPIFFE mTLS material. SAN must encode the dataplane identity above.
+      FLOWPLANE_AGENT_TLS_CERT_PATH: "/var/run/spiffe/tls.crt"
+      FLOWPLANE_AGENT_TLS_KEY_PATH: "/var/run/spiffe/tls.key"
+      FLOWPLANE_AGENT_TLS_CA_PATH: "/var/run/spiffe/ca.crt"
+
+      # Bounded local buffer if CP is briefly unreachable. Oldest dropped
+      # on overflow (and the drop is logged).
+      FLOWPLANE_AGENT_QUEUE_CAP: "256"
+
+      RUST_LOG: "info"
+    volumes:
+      - ./spiffe:/var/run/spiffe:ro
+    restart: unless-stopped
+
+networks:
+  dataplane-net:
+    driver: bridge
+  flowplane-cp-net:
+    external: true
+
+# --- Degraded mode ----------------------------------------------------------
+#
+# To experience the no-agent fallback for yourself: comment out the
+# `flowplane-agent` service block above and `docker compose up -d` again.
+#
+# You should see:
+#   1. `flowplane xds status` lists this dataplane with a `NOT MONITORED`
+#      indicator (no recent last_config_verify).
+#   2. The control plane logs a one-time INFO on dataplane registration
+#      mentioning that warming failures will not be surfaced and pointing at
+#      these install docs.
+#   3. Stream-level NACKs still work — `flowplane xds nacks` will still
+#      capture inline rejects on the xDS stream — but listener WARMING
+#      failures (a different rejection class that surfaces only in admin
+#      /config_dump) will be invisible.
+#
+# This is the "stream-NACK-only" mode. It is acceptable for evaluation. It
+# is not recommended for production traffic.
