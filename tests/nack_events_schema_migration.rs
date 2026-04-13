@@ -12,9 +12,7 @@
 mod common;
 
 use common::test_db::TestDatabase;
-use flowplane::storage::repositories::{
-    CreateNackEventRequest, NackEventRepository, NackSource,
-};
+use flowplane::storage::repositories::{CreateNackEventRequest, NackEventRepository, NackSource};
 
 // ---------- Raw-SQL helpers ----------
 
@@ -79,16 +77,10 @@ async fn raw_insert(
 #[tokio::test]
 async fn warming_report_with_null_nonce_and_version_is_accepted() {
     let db = TestDatabase::new("nack_warming_null").await;
-    let rows = raw_insert(
-        &db.pool,
-        "row-warming-1",
-        Some("warming_report"),
-        None,
-        None,
-        Some("hash-abc"),
-    )
-    .await
-    .expect("warming_report with null nonce/version must succeed");
+    let rows =
+        raw_insert(&db.pool, "row-warming-1", Some("warming_report"), None, None, Some("hash-abc"))
+            .await
+            .expect("warming_report with null nonce/version must succeed");
     assert_eq!(rows, 1);
 
     // Roundtrip: verify the row is readable and the columns are what we wrote.
@@ -123,10 +115,7 @@ async fn invalid_source_value_is_rejected_by_check_constraint() {
         None,
     )
     .await;
-    assert!(
-        result.is_err(),
-        "CHECK constraint should reject source='not_a_real_source'"
-    );
+    assert!(result.is_err(), "CHECK constraint should reject source='not_a_real_source'");
     // PostgreSQL unique/check violations come back as database errors.
     // We assert the error mentions the check constraint to avoid false
     // positives from other errors (e.g. connection failures).
@@ -152,12 +141,11 @@ async fn default_source_backfill_is_stream_when_column_omitted() {
     .expect("insert without source should succeed via DEFAULT");
     assert_eq!(rows, 1);
 
-    let source: String =
-        sqlx::query_scalar("SELECT source FROM xds_nack_events WHERE id = $1")
-            .bind("row-default")
-            .fetch_one(&db.pool)
-            .await
-            .expect("row should be readable");
+    let source: String = sqlx::query_scalar("SELECT source FROM xds_nack_events WHERE id = $1")
+        .bind("row-default")
+        .fetch_one(&db.pool)
+        .await
+        .expect("row should be readable");
     assert_eq!(
         source, "stream",
         "DEFAULT 'stream' must backfill rows that omit source (migration spec)"
@@ -169,16 +157,9 @@ async fn stream_source_with_null_nonce_is_accepted_post_migration() {
     // Pre-migration nonce was NOT NULL. The migration drops NOT NULL for
     // both sources, so a stream-source row with NULL nonce must now insert.
     let db = TestDatabase::new("nack_stream_null_nonce").await;
-    let rows = raw_insert(
-        &db.pool,
-        "row-stream-null-nonce",
-        Some("stream"),
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("stream source with null nonce/version must succeed");
+    let rows = raw_insert(&db.pool, "row-stream-null-nonce", Some("stream"), None, None, None)
+        .await
+        .expect("stream source with null nonce/version must succeed");
     assert_eq!(rows, 1);
 }
 
@@ -186,26 +167,13 @@ async fn stream_source_with_null_nonce_is_accepted_post_migration() {
 async fn duplicate_non_null_dedup_hash_is_rejected() {
     let db = TestDatabase::new("nack_dedup_dup").await;
 
-    raw_insert(
-        &db.pool,
-        "row-dedup-1",
-        Some("warming_report"),
-        None,
-        None,
-        Some("same-hash"),
-    )
-    .await
-    .expect("first warming_report must insert");
+    raw_insert(&db.pool, "row-dedup-1", Some("warming_report"), None, None, Some("same-hash"))
+        .await
+        .expect("first warming_report must insert");
 
-    let second = raw_insert(
-        &db.pool,
-        "row-dedup-2",
-        Some("warming_report"),
-        None,
-        None,
-        Some("same-hash"),
-    )
-    .await;
+    let second =
+        raw_insert(&db.pool, "row-dedup-2", Some("warming_report"), None, None, Some("same-hash"))
+            .await;
 
     assert!(
         second.is_err(),
@@ -235,12 +203,11 @@ async fn multiple_rows_with_null_dedup_hash_are_allowed() {
         .unwrap_or_else(|e| panic!("row {i} with NULL dedup_hash must insert: {e:?}"));
     }
 
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM xds_nack_events WHERE dedup_hash IS NULL",
-    )
-    .fetch_one(&db.pool)
-    .await
-    .expect("count query should succeed");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM xds_nack_events WHERE dedup_hash IS NULL")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count query should succeed");
     assert_eq!(count, 3, "partial unique index must NOT fire on NULL values");
 }
 
@@ -315,10 +282,7 @@ async fn nonce_and_version_rejected_columns_are_nullable() {
     .expect("information_schema query should succeed");
 
     for (col, nullable) in &rows {
-        assert_eq!(
-            nullable, "YES",
-            "column {col} must be nullable after migration"
-        );
+        assert_eq!(nullable, "YES", "column {col} must be nullable after migration");
     }
     assert_eq!(rows.len(), 3, "expected nonce, version_rejected, dedup_hash");
 }
@@ -349,9 +313,7 @@ async fn repository_insert_warming_report_with_nones_succeeds() {
         dedup_hash: Some("unique-warming-hash".to_string()),
     };
 
-    repo.insert(req)
-        .await
-        .expect("repository must accept warming_report with None nonce/version");
+    repo.insert(req).await.expect("repository must accept warming_report with None nonce/version");
 
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM xds_nack_events
@@ -415,9 +377,7 @@ async fn repository_insert_duplicate_dedup_hash_surfaces_error() {
         dedup_hash: Some("dup-hash-xyz".to_string()),
     };
 
-    repo.insert(build("dp-a"))
-        .await
-        .expect("first insert must succeed");
+    repo.insert(build("dp-a")).await.expect("first insert must succeed");
     let second = repo.insert(build("dp-b")).await;
     assert!(
         second.is_err(),
