@@ -105,6 +105,11 @@ pub struct XdsDeliverySummary {
 }
 
 /// A single formatted NACK event.
+///
+/// `source` distinguishes a stream-side ADS NACK (`"stream"`) from a warming
+/// failure scraped by the dataplane agent (`"warming_report"`). For warming
+/// reports `nonce` and `version_rejected` are typically `None` — render them
+/// as `-` in human output and `null` in JSON.
 #[derive(Debug, Clone, Serialize)]
 pub struct NackEventFormatted {
     pub timestamp: String,
@@ -114,6 +119,8 @@ pub struct NackEventFormatted {
     pub error_code: i64,
     pub resource_names: Option<Vec<String>>,
     pub version_rejected: Option<String>,
+    pub nonce: Option<String>,
+    pub source: String,
 }
 
 /// Result of querying NACK history.
@@ -156,6 +163,37 @@ pub enum OpsServiceError {
 // =============================================================================
 // Helper functions
 // =============================================================================
+
+/// Default flowplane-agent diagnostics poll interval (seconds). Reports older
+/// than `2 * AGENT_POLL_INTERVAL_SECS` are considered stale.
+pub(crate) const AGENT_POLL_INTERVAL_SECS: i64 = 30;
+
+/// Classify the agent liveness signal for a dataplane based on its most recent
+/// `last_config_verify` timestamp.
+///
+/// - `NOT_MONITORED` — no agent has ever reported (`last_config_verify` is `None`).
+/// - `STALE`         — most recent report is older than `2 * poll_interval_secs`.
+/// - `OK`            — most recent report is within `2 * poll_interval_secs`.
+///
+/// `now` is passed in so callers can drive the function deterministically from
+/// tests; production callers pass `chrono::Utc::now()`.
+pub(crate) fn classify_agent_status(
+    last_config_verify: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    poll_interval_secs: i64,
+) -> &'static str {
+    match last_config_verify {
+        None => "NOT_MONITORED",
+        Some(ts) => {
+            let age = now.signed_duration_since(ts);
+            if age <= chrono::Duration::seconds(poll_interval_secs.saturating_mul(2)) {
+                "OK"
+            } else {
+                "STALE"
+            }
+        }
+    }
+}
 
 /// Map a full xDS type URL to a short resource type label.
 fn type_url_to_label(type_url: &str) -> &str {
@@ -691,9 +729,18 @@ pub async fn xds_delivery_status(
             nack_count += 1;
         }
 
+        let agent_status = classify_agent_status(
+            dp.last_config_verify,
+            chrono::Utc::now(),
+            AGENT_POLL_INTERVAL_SECS,
+        );
+        let last_config_verify_str = dp.last_config_verify.map(|ts| ts.to_rfc3339());
+
         dataplane_statuses.push(json!({
             "name": dp.name,
-            "resource_types": resource_types
+            "resource_types": resource_types,
+            "last_config_verify": last_config_verify_str,
+            "agent_status": agent_status,
         }));
     }
 
@@ -787,6 +834,8 @@ pub async fn nack_history(
                 error_code: e.error_code,
                 resource_names,
                 version_rejected: e.version_rejected.clone(),
+                nonce: e.nonce.clone(),
+                source: e.source.as_str().to_string(),
             }
         })
         .collect();
@@ -856,6 +905,63 @@ pub async fn audit_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ========================================================================
+    // classify_agent_status unit tests
+    // ========================================================================
+
+    #[test]
+    fn classify_agent_status_returns_not_monitored_when_never_reported() {
+        let now = Utc::now();
+        assert_eq!(classify_agent_status(None, now, 30), "NOT_MONITORED");
+    }
+
+    #[test]
+    fn classify_agent_status_returns_ok_when_recent() {
+        let now = Utc::now();
+        let recent = now - chrono::Duration::seconds(15);
+        assert_eq!(classify_agent_status(Some(recent), now, 30), "OK");
+    }
+
+    #[test]
+    fn classify_agent_status_returns_ok_at_exactly_two_intervals() {
+        let now = Utc::now();
+        let edge = now - chrono::Duration::seconds(60);
+        assert_eq!(classify_agent_status(Some(edge), now, 30), "OK");
+    }
+
+    #[test]
+    fn classify_agent_status_returns_stale_just_past_two_intervals() {
+        let now = Utc::now();
+        let stale = now - chrono::Duration::seconds(61);
+        assert_eq!(classify_agent_status(Some(stale), now, 30), "STALE");
+    }
+
+    #[test]
+    fn classify_agent_status_returns_stale_when_far_in_the_past() {
+        let now = Utc::now();
+        let ancient = now - chrono::Duration::days(7);
+        assert_eq!(classify_agent_status(Some(ancient), now, 30), "STALE");
+    }
+
+    #[test]
+    fn classify_agent_status_handles_clock_skew_future_timestamp_as_ok() {
+        // A future timestamp (clock skew between agent and CP) should not be
+        // misreported as STALE — the report is, if anything, fresher than now.
+        let now = Utc::now();
+        let future = now + chrono::Duration::seconds(5);
+        assert_eq!(classify_agent_status(Some(future), now, 30), "OK");
+    }
+
+    #[test]
+    fn classify_agent_status_respects_custom_poll_interval() {
+        let now = Utc::now();
+        let ts = now - chrono::Duration::seconds(150);
+        // poll=10 → window=20 → 150s old is STALE
+        assert_eq!(classify_agent_status(Some(ts), now, 10), "STALE");
+        // poll=120 → window=240 → 150s old is OK
+        assert_eq!(classify_agent_status(Some(ts), now, 120), "OK");
+    }
 
     // ========================================================================
     // expand_type_url unit tests

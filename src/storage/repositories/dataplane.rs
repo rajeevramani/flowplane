@@ -23,6 +23,7 @@ struct DataplaneRow {
     pub certificate_expires_at: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub last_config_verify: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Dataplane configuration data returned from the repository.
@@ -41,6 +42,10 @@ pub struct DataplaneData {
     pub certificate_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Wall-clock time of the most recent diagnostics report received from the
+    /// flowplane-agent for this dataplane. `None` if no agent has ever reported.
+    /// Used by `flowplane xds status` to determine agent liveness.
+    pub last_config_verify: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl From<DataplaneRow> for DataplaneData {
@@ -61,6 +66,7 @@ impl From<DataplaneRow> for DataplaneData {
             certificate_expires_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            last_config_verify: row.last_config_verify,
         }
     }
 }
@@ -150,7 +156,7 @@ impl DataplaneRepository {
     #[instrument(skip(self), fields(dataplane_id = %id), name = "db_get_dataplane_by_id")]
     pub async fn get_by_id(&self, id: &DataplaneId) -> Result<DataplaneData> {
         let row = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
-            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at, d.last_config_verify \
              FROM dataplanes d LEFT JOIN teams t ON d.team = t.id WHERE d.id = $1"
         )
         .bind(id)
@@ -176,7 +182,7 @@ impl DataplaneRepository {
     #[instrument(skip(self), fields(dataplane_name = %name, team = %team), name = "db_get_dataplane_by_name")]
     pub async fn get_by_name(&self, team: &str, name: &str) -> Result<Option<DataplaneData>> {
         let row = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
-            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at, d.last_config_verify \
              FROM dataplanes d LEFT JOIN teams t ON d.team = t.id WHERE d.team = $1 AND d.name = $2"
         )
         .bind(team)
@@ -206,7 +212,7 @@ impl DataplaneRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
-            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at, d.last_config_verify \
              FROM dataplanes d LEFT JOIN teams t ON d.team = t.id WHERE d.team = $1 ORDER BY d.created_at DESC LIMIT $2 OFFSET $3"
         )
         .bind(team)
@@ -251,7 +257,7 @@ impl DataplaneRepository {
             .join(", ");
 
         let query_str = format!(
-            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at, d.last_config_verify \
              FROM dataplanes d LEFT JOIN teams t ON d.team = t.id \
              WHERE d.team IN ({}) \
              ORDER BY d.created_at DESC \
@@ -291,7 +297,7 @@ impl DataplaneRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
-            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at, d.last_config_verify \
              FROM dataplanes d LEFT JOIN teams t ON d.team = t.id ORDER BY d.created_at DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
@@ -498,7 +504,7 @@ impl DataplaneRepository {
         let threshold_str = threshold.to_rfc3339();
 
         let rows = sqlx::query_as::<sqlx::Postgres, DataplaneRow>(
-            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at \
+            "SELECT d.id, d.team, t.name as team_name, d.name, d.gateway_host, d.description, d.certificate_serial, d.certificate_expires_at, d.created_at, d.updated_at, d.last_config_verify \
              FROM dataplanes d LEFT JOIN teams t ON d.team = t.id \
              WHERE d.certificate_expires_at IS NOT NULL \
                AND d.certificate_expires_at <= $1 \

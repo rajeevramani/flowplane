@@ -126,14 +126,26 @@ fn print_xds_status_table(data: &serde_json::Value) {
 
     print_table_header(&[
         ("Dataplane", 25),
+        ("Agent", 14),
+        ("Last Verify", 22),
         ("Type", 6),
         ("Status", 10),
         ("Version", 12),
-        ("Error", 40),
+        ("Error", 28),
     ]);
 
     for dp in &dataplanes {
         let dataplane = dp.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+        let agent_status = dp
+            .get("agent_status")
+            .or_else(|| dp.get("agentStatus"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
+        let last_verify = dp
+            .get("last_config_verify")
+            .or_else(|| dp.get("lastConfigVerify"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
 
         if let Some(resource_types) = dp.get("resource_types").and_then(|v| v.as_object()) {
             let mut types: Vec<_> = resource_types.keys().collect();
@@ -149,12 +161,14 @@ fn print_xds_status_table(data: &serde_json::Value) {
                     .unwrap_or("");
 
                 println!(
-                    "{:<25} {:<6} {:<10} {:<12} {}",
+                    "{:<25} {:<14} {:<22} {:<6} {:<10} {:<12} {}",
                     truncate(dataplane, 23),
+                    truncate(agent_status, 12),
+                    truncate(last_verify, 20),
                     xds_type,
                     status,
                     truncate(version, 10),
-                    truncate(error, 38),
+                    truncate(error, 26),
                 );
             }
         } else {
@@ -168,14 +182,27 @@ fn print_xds_status_table(data: &serde_json::Value) {
             let error = dp.get("error").and_then(|v| v.as_str()).unwrap_or("");
 
             println!(
-                "{:<25} {:<6} {:<10} {:<12} {}",
+                "{:<25} {:<14} {:<22} {:<6} {:<10} {:<12} {}",
                 truncate(dataplane, 23),
+                truncate(agent_status, 12),
+                truncate(last_verify, 20),
                 xds_type,
                 status,
                 truncate(version, 10),
-                truncate(error, 38),
+                truncate(error, 26),
             );
         }
+    }
+    if dataplanes
+        .iter()
+        .any(|dp| dp.get("agent_status").and_then(|v| v.as_str()) == Some("NOT_MONITORED"))
+    {
+        println!();
+        println!(
+            "Hint: dataplanes marked NOT_MONITORED have never reported via the \
+             flowplane-agent diagnostics service. Install or start the agent on \
+             each dataplane to surface warming failures."
+        );
     }
     println!();
 }
@@ -196,10 +223,11 @@ fn print_xds_nacks_table(data: &serde_json::Value) {
 
     print_table_header(&[
         ("Timestamp", 25),
-        ("Dataplane", 25),
+        ("Source", 16),
+        ("Dataplane", 22),
         ("Type", 6),
         ("Version", 12),
-        ("Error", 40),
+        ("Error", 32),
     ]);
 
     for item in &items {
@@ -208,26 +236,40 @@ fn print_xds_nacks_table(data: &serde_json::Value) {
             .or_else(|| item.get("createdAt"))
             .and_then(|v| v.as_str())
             .unwrap_or("-");
-        let dataplane = item.get("dataplane").and_then(|v| v.as_str()).unwrap_or("-");
+        let source = item.get("source").and_then(|v| v.as_str()).unwrap_or("stream");
+        let dataplane = item
+            .get("dataplane_name")
+            .or_else(|| item.get("dataplane"))
+            .or_else(|| item.get("dataplaneName"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
         let xds_type = item
-            .get("type")
+            .get("resource_type")
+            .or_else(|| item.get("type"))
             .or_else(|| item.get("xdsType"))
             .and_then(|v| v.as_str())
             .unwrap_or("-");
-        let version = item.get("version").and_then(|v| v.as_str()).unwrap_or("-");
+        // version_rejected may be null for warming_report rows — render as "-"
+        let version = item
+            .get("version_rejected")
+            .or_else(|| item.get("version"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("-");
         let error = item
-            .get("error")
+            .get("error_message")
+            .or_else(|| item.get("error"))
             .or_else(|| item.get("errorMessage"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
         println!(
-            "{:<25} {:<25} {:<6} {:<12} {}",
+            "{:<25} {:<16} {:<22} {:<6} {:<12} {}",
             truncate(timestamp, 23),
-            truncate(dataplane, 23),
+            truncate(source, 14),
+            truncate(dataplane, 20),
             xds_type,
             truncate(version, 10),
-            truncate(error, 38),
+            truncate(error, 30),
         );
     }
     println!();
