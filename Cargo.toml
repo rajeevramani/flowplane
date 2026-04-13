@@ -1,3 +1,8 @@
+[workspace]
+members = ["crates/flowplane-agent"]
+resolver = "2"
+default-members = ["."]
+
 [package]
 name = "flowplane"
 version = "0.2.2"
