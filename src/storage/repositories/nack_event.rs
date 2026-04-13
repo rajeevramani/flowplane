@@ -8,7 +8,55 @@ use crate::storage::DbPool;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::fmt;
 use tracing::instrument;
+
+/// Origin of a NACK event.
+///
+/// `Stream` corresponds to a classic xDS stream-level NACK (Envoy rejected a
+/// DiscoveryResponse inline with `error_detail`). `WarmingReport` corresponds
+/// to a warming failure surfaced by the dataplane-side agent from Envoy's
+/// `/config_dump` `error_state`. The two sources have different required
+/// fields — warming reports have no nonce or version — which is why nonce and
+/// version_rejected are nullable at the DB layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NackSource {
+    Stream,
+    WarmingReport,
+}
+
+impl NackSource {
+    /// String representation persisted to the `source` column. MUST match the
+    /// values accepted by the CHECK constraint in the `xds_nack_events` table.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NackSource::Stream => "stream",
+            NackSource::WarmingReport => "warming_report",
+        }
+    }
+
+    /// Parses a value read from the database. Unknown values produce an error
+    /// rather than silently mapping to a default — the CHECK constraint should
+    /// make this unreachable in practice, but we treat it as a hard failure to
+    /// surface schema drift.
+    pub fn from_db_str(value: &str) -> Result<Self> {
+        match value {
+            "stream" => Ok(NackSource::Stream),
+            "warming_report" => Ok(NackSource::WarmingReport),
+            other => Err(FlowplaneError::internal(format!(
+                "unknown nack_events source value: {}",
+                other
+            ))),
+        }
+    }
+}
+
+impl fmt::Display for NackSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// Internal database row structure for NACK events.
 #[derive(Debug, Clone, FromRow)]
@@ -17,12 +65,14 @@ struct NackEventRow {
     pub team: String,
     pub dataplane_name: String,
     pub type_url: String,
-    pub version_rejected: String,
-    pub nonce: String,
+    pub version_rejected: Option<String>,
+    pub nonce: Option<String>,
     pub error_code: i64,
     pub error_message: String,
     pub node_id: Option<String>,
     pub resource_names: Option<String>,
+    pub source: String,
+    pub dedup_hash: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -33,18 +83,22 @@ pub struct NackEventData {
     pub team: String,
     pub dataplane_name: String,
     pub type_url: String,
-    pub version_rejected: String,
-    pub nonce: String,
+    pub version_rejected: Option<String>,
+    pub nonce: Option<String>,
     pub error_code: i64,
     pub error_message: String,
     pub node_id: Option<String>,
     pub resource_names: Option<String>,
+    pub source: NackSource,
+    pub dedup_hash: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
-impl From<NackEventRow> for NackEventData {
-    fn from(row: NackEventRow) -> Self {
-        Self {
+impl TryFrom<NackEventRow> for NackEventData {
+    type Error = FlowplaneError;
+
+    fn try_from(row: NackEventRow) -> Result<Self> {
+        Ok(Self {
             id: row.id,
             team: row.team,
             dataplane_name: row.dataplane_name,
@@ -55,23 +109,31 @@ impl From<NackEventRow> for NackEventData {
             error_message: row.error_message,
             node_id: row.node_id,
             resource_names: row.resource_names,
+            source: NackSource::from_db_str(&row.source)?,
+            dedup_hash: row.dedup_hash,
             created_at: row.created_at,
-        }
+        })
     }
 }
 
 /// Request to create a new NACK event.
+///
+/// `nonce` and `version_rejected` are optional because warming-report sources
+/// do not carry that information. For `source = NackSource::Stream` the caller
+/// should populate them from the rejected DiscoveryRequest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateNackEventRequest {
     pub team: String,
     pub dataplane_name: String,
     pub type_url: String,
-    pub version_rejected: String,
-    pub nonce: String,
+    pub version_rejected: Option<String>,
+    pub nonce: Option<String>,
     pub error_code: i64,
     pub error_message: String,
     pub node_id: Option<String>,
     pub resource_names: Option<String>,
+    pub source: NackSource,
+    pub dedup_hash: Option<String>,
 }
 
 /// Repository for xDS NACK event persistence.
@@ -93,8 +155,8 @@ impl NackEventRepository {
         let now = Utc::now();
 
         sqlx::query(
-            "INSERT INTO xds_nack_events (id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+            "INSERT INTO xds_nack_events (id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
         )
         .bind(&id)
         .bind(&request.team)
@@ -106,6 +168,8 @@ impl NackEventRepository {
         .bind(&request.error_message)
         .bind(&request.node_id)
         .bind(&request.resource_names)
+        .bind(request.source.as_str())
+        .bind(&request.dedup_hash)
         .bind(now)
         .execute(&self.pool)
         .await
@@ -130,6 +194,8 @@ impl NackEventRepository {
             error_message: request.error_message,
             node_id: request.node_id,
             resource_names: request.resource_names,
+            source: request.source,
+            dedup_hash: request.dedup_hash,
             created_at: now,
         })
     }
@@ -146,7 +212,7 @@ impl NackEventRepository {
         let offset = offset.unwrap_or(0);
 
         let rows = sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-            "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+            "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at \
              FROM xds_nack_events WHERE team = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
         )
         .bind(team)
@@ -162,7 +228,7 @@ impl NackEventRepository {
             }
         })?;
 
-        Ok(rows.into_iter().map(NackEventData::from).collect())
+        rows.into_iter().map(NackEventData::try_from).collect()
     }
 
     /// Lists NACK events for a specific dataplane within a team.
@@ -179,7 +245,7 @@ impl NackEventRepository {
         let rows = match since {
             Some(since_time) => {
                 sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at \
                      FROM xds_nack_events WHERE team = $1 AND dataplane_name = $2 AND created_at >= $3 ORDER BY created_at DESC LIMIT $4"
                 )
                 .bind(team)
@@ -191,7 +257,7 @@ impl NackEventRepository {
             }
             None => {
                 sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at \
                      FROM xds_nack_events WHERE team = $1 AND dataplane_name = $2 ORDER BY created_at DESC LIMIT $3"
                 )
                 .bind(team)
@@ -209,7 +275,7 @@ impl NackEventRepository {
             }
         })?;
 
-        Ok(rows.into_iter().map(NackEventData::from).collect())
+        rows.into_iter().map(NackEventData::try_from).collect()
     }
 
     /// Lists NACK events for a specific xDS resource type within a team.
@@ -226,7 +292,7 @@ impl NackEventRepository {
         let rows = match since {
             Some(since_time) => {
                 sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at \
                      FROM xds_nack_events WHERE team = $1 AND type_url = $2 AND created_at >= $3 ORDER BY created_at DESC LIMIT $4"
                 )
                 .bind(team)
@@ -238,7 +304,7 @@ impl NackEventRepository {
             }
             None => {
                 sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at \
                      FROM xds_nack_events WHERE team = $1 AND type_url = $2 ORDER BY created_at DESC LIMIT $3"
                 )
                 .bind(team)
@@ -256,7 +322,7 @@ impl NackEventRepository {
             }
         })?;
 
-        Ok(rows.into_iter().map(NackEventData::from).collect())
+        rows.into_iter().map(NackEventData::try_from).collect()
     }
 
     /// Lists recent NACK events for a team, optionally filtered by a start time.
@@ -272,7 +338,7 @@ impl NackEventRepository {
         let rows = match since {
             Some(since_time) => {
                 sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at \
                      FROM xds_nack_events WHERE team = $1 AND created_at >= $2 ORDER BY created_at DESC LIMIT $3"
                 )
                 .bind(team)
@@ -283,7 +349,7 @@ impl NackEventRepository {
             }
             None => {
                 sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+                    "SELECT id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at \
                      FROM xds_nack_events WHERE team = $1 ORDER BY created_at DESC LIMIT $2"
                 )
                 .bind(team)
@@ -300,7 +366,7 @@ impl NackEventRepository {
             }
         })?;
 
-        Ok(rows.into_iter().map(NackEventData::from).collect())
+        rows.into_iter().map(NackEventData::try_from).collect()
     }
 
     /// Gets the most recent NACK per xDS resource type for a specific dataplane.
@@ -314,7 +380,7 @@ impl NackEventRepository {
         dataplane_name: &str,
     ) -> Result<Vec<NackEventData>> {
         let rows = sqlx::query_as::<sqlx::Postgres, NackEventRow>(
-            "SELECT DISTINCT ON (type_url) id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, created_at \
+            "SELECT DISTINCT ON (type_url) id, team, dataplane_name, type_url, version_rejected, nonce, error_code, error_message, node_id, resource_names, source, dedup_hash, created_at \
              FROM xds_nack_events WHERE team = $1 AND dataplane_name = $2 ORDER BY type_url, created_at DESC"
         )
         .bind(team)
@@ -329,7 +395,7 @@ impl NackEventRepository {
             }
         })?;
 
-        Ok(rows.into_iter().map(NackEventData::from).collect())
+        rows.into_iter().map(NackEventData::try_from).collect()
     }
 
     /// Returns the database pool.
@@ -354,12 +420,14 @@ mod tests {
             team: team.to_string(),
             dataplane_name: dataplane.to_string(),
             type_url: type_url.to_string(),
-            version_rejected: "v1".to_string(),
-            nonce: "nonce-1".to_string(),
+            version_rejected: Some("v1".to_string()),
+            nonce: Some("nonce-1".to_string()),
             error_code: 2,
             error_message: error.to_string(),
             node_id: Some("envoy-node-1".to_string()),
             resource_names: Some(r#"["my-cluster"]"#.to_string()),
+            source: NackSource::Stream,
+            dedup_hash: None,
         }
     }
 

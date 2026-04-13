@@ -113,7 +113,7 @@ pub struct NackEventFormatted {
     pub error_message: String,
     pub error_code: i64,
     pub resource_names: Option<Vec<String>>,
-    pub version_rejected: String,
+    pub version_rejected: Option<String>,
 }
 
 /// Result of querying NACK history.

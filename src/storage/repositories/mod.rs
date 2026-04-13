@@ -82,7 +82,7 @@ pub use listener_route_config::{ListenerRouteConfigData, ListenerRouteConfigRepo
 pub use mcp_tool::{
     CreateMcpToolRequest, McpToolData, McpToolRepository, McpToolWithGateway, UpdateMcpToolRequest,
 };
-pub use nack_event::{CreateNackEventRequest, NackEventData, NackEventRepository};
+pub use nack_event::{CreateNackEventRequest, NackEventData, NackEventRepository, NackSource};
 pub use organization::{
     OrgMembershipRepository, OrganizationRepository, SqlxOrgMembershipRepository,
     SqlxOrganizationRepository,

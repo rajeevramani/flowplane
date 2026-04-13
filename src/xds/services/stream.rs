@@ -59,7 +59,7 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::Status;
 use tracing::{debug, error, info, warn};
 
-use crate::storage::repositories::nack_event::CreateNackEventRequest;
+use crate::storage::repositories::nack_event::{CreateNackEventRequest, NackSource};
 use crate::xds::state::XdsState;
 use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
@@ -499,12 +499,14 @@ where
                                                 team: String::new(), // Filled by persist_nack_event
                                                 dataplane_name: node_id.clone().unwrap_or_else(|| "unknown".to_string()),
                                                 type_url: discovery_request.type_url.clone(),
-                                                version_rejected: last_snapshot.as_ref().map(|s| s.version.as_ref().to_string()).unwrap_or_else(|| "unknown".to_string()),
-                                                nonce: discovery_request.response_nonce.clone(),
+                                                version_rejected: Some(last_snapshot.as_ref().map(|s| s.version.as_ref().to_string()).unwrap_or_else(|| "unknown".to_string())),
+                                                nonce: Some(discovery_request.response_nonce.clone()),
                                                 error_code: error_detail.code as i64,
                                                 error_message: error_detail.message.clone(),
                                                 node_id: node_id.clone(),
                                                 resource_names,
+                                                source: NackSource::Stream,
+                                                dedup_hash: None,
                                             },
                                         );
                                     }
@@ -892,12 +894,14 @@ where
                                                     team: String::new(), // Filled by persist_nack_event
                                                     dataplane_name: delta_node_id.clone().unwrap_or_else(|| "unknown".to_string()),
                                                     type_url: delta_request.type_url.clone(),
-                                                    version_rejected: "unknown".to_string(), // Delta protocol doesn't track version the same way
-                                                    nonce: delta_request.response_nonce.clone(),
+                                                    version_rejected: Some("unknown".to_string()), // Delta protocol doesn't track version the same way
+                                                    nonce: Some(delta_request.response_nonce.clone()),
                                                     error_code: error_detail.code as i64,
                                                     error_message: error_detail.message.clone(),
                                                     node_id: delta_node_id,
                                                     resource_names,
+                                                    source: NackSource::Stream,
+                                                    dedup_hash: None,
                                                 },
                                             );
                                         }
