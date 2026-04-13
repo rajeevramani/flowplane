@@ -7,6 +7,13 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tracing::{info, warn};
+
+use super::agent_supervisor::{
+    agent_log_path, agent_pid_path, find_agent_binary, kill_agent_from_pid_file,
+    spawn_agent_detached, wait_for_envoy_admin, AgentSpawnSpec, DEV_DATAPLANE_ID,
+    DISABLE_AGENT_ENV,
+};
 
 /// Embedded dev-mode compose file (checked into the repo root).
 const DEV_COMPOSE_YAML: &str = include_str!("../../docker-compose-dev.yml");
@@ -378,6 +385,13 @@ pub fn handle_init_with_runner(
     // Wait for the control plane to become healthy
     wait_for_healthy(60)?;
 
+    // Spawn the dataplane diagnostics agent alongside Envoy. Best-effort:
+    // failures here must NOT abort the dev harness — stream NACKs still work
+    // without warming-failure reporting.
+    if with_envoy {
+        try_spawn_dev_agent(&source_dir);
+    }
+
     // Write credentials
     let home = home_dir()?;
     crate::auth::dev_token::write_credentials_file(&token, &home)?;
@@ -440,6 +454,13 @@ pub fn handle_down_with_runner(
         );
     }
 
+    // Best-effort: terminate the dev-mode flowplane-agent before tearing down
+    // the compose stack so it doesn't spin trying to reach a dying CP.
+    let pid_path = agent_pid_path(&home.join(".flowplane"));
+    if let Err(err) = kill_agent_from_pid_file(&pid_path) {
+        warn!(error = %err, "failed to terminate dev-mode flowplane-agent — ignoring");
+    }
+
     eprintln!("Stopping services...");
     runner.compose_down(&compose_path, "flowplane", volumes)?;
 
@@ -449,6 +470,71 @@ pub fn handle_down_with_runner(
     }
 
     Ok(())
+}
+
+/// Spawn `flowplane-agent` as a detached host subprocess attached to the dev
+/// Envoy admin port. All failures are logged and swallowed.
+fn try_spawn_dev_agent(source_dir: &Path) {
+    if std::env::var(DISABLE_AGENT_ENV).is_ok() {
+        info!(opt_out = DISABLE_AGENT_ENV, "skipping flowplane-agent spawn (opt-out set)");
+        eprintln!("flowplane-agent: skipped ({} is set)", DISABLE_AGENT_ENV);
+        return;
+    }
+
+    let binary = match find_agent_binary() {
+        Some(b) => b,
+        None => {
+            warn!(
+                "flowplane-agent binary not found — warming failure detection disabled. \
+                 Build it with `cargo build -p flowplane-agent` (or set FLOWPLANE_AGENT_BIN \
+                 to an explicit path) and re-run `flowplane init`."
+            );
+            eprintln!(
+                "flowplane-agent: binary not found — skipping warming failure detection.\n  \
+                 Build with: cargo build -p flowplane-agent"
+            );
+            return;
+        }
+    };
+
+    // Wait briefly for the Envoy admin port to come up so the agent's first
+    // poll has something to read. We don't fail if it never appears.
+    if let Err(err) = wait_for_envoy_admin("127.0.0.1:9901", 30) {
+        warn!(error = %err, "wait_for_envoy_admin failed — spawning agent anyway");
+    }
+
+    let home = match home_dir() {
+        Ok(h) => h,
+        Err(err) => {
+            warn!(error = %err, "could not resolve home dir for agent pid file — skipping agent spawn");
+            return;
+        }
+    };
+    let fp_dir = home.join(".flowplane");
+    let pid_path = agent_pid_path(&fp_dir);
+
+    // Clean up any stale agent from a previous run before spawning a new one.
+    if let Err(err) = kill_agent_from_pid_file(&pid_path) {
+        warn!(error = %err, "could not clean up stale agent pid file — continuing");
+    }
+
+    let logs_dir = source_dir.join("data").join("logs");
+    let spec = AgentSpawnSpec::dev_defaults();
+
+    match spawn_agent_detached(&binary, &spec, &logs_dir, &pid_path) {
+        Ok(pid) => {
+            let log = agent_log_path(&logs_dir, DEV_DATAPLANE_ID);
+            info!(pid, log = %log.display(), "spawned flowplane-agent");
+            eprintln!("flowplane-agent: started (pid {}, log {})", pid, log.display());
+        }
+        Err(err) => {
+            warn!(
+                error = %err,
+                "failed to spawn flowplane-agent — warming failure detection disabled"
+            );
+            eprintln!("flowplane-agent: failed to start — {err}");
+        }
+    }
 }
 
 #[cfg(test)]

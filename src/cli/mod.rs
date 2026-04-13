@@ -6,6 +6,7 @@
 
 pub mod admin;
 pub mod agent;
+pub mod agent_supervisor;
 pub mod apply;
 pub mod audit;
 pub mod auth;
