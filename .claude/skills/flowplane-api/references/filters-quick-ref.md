@@ -250,6 +250,17 @@ Status code matcher: `{"type": "exact", "code": 503}` or `{"type": "range", "min
 
 ### OAuth2
 
+**Prerequisites — create these BEFORE the filter, or Envoy NACKs the listener:**
+
+1. **IDP cluster** (with `useTls: true`) for `token_endpoint.cluster`
+2. **Token secret** — your IDP client secret as a `generic_secret`
+3. **HMAC secret** — random 32-byte signing key for OAuth2 cookies:
+   ```bash
+   HMAC=$(openssl rand -base64 32)
+   flowplane secret create --name oauth-hmac --type generic_secret \
+     --config "{\"type\":\"generic_secret\",\"secret\":\"$HMAC\"}"
+   ```
+
 ```json
 {
   "name": "my-oauth2",
@@ -265,7 +276,8 @@ Status code matcher: `{"type": "exact", "code": 503}` or `{"type": "range", "min
       "authorization_endpoint": "https://auth.example.com/authorize",
       "credentials": {
         "client_id": "my-app",
-        "token_secret": { "type": "sds", "name": "oauth2-client-secret" }
+        "token_secret": { "name": "oauth2-client-secret" },
+        "hmac_secret": { "name": "oauth-hmac" }
       },
       "redirect_uri": "https://app.example.com/callback",
       "redirect_path": "/callback",
@@ -281,7 +293,11 @@ Status code matcher: `{"type": "exact", "code": 503}` or `{"type": "range", "min
 }
 ```
 
-OAuth2 is **listener-only** — per-route config is not supported. Hardcodes `hmac-secret` SDS name for cookie signing.
+**Critical shape details:**
+- `token_secret` is `{ "name": "..." }` — no `type` field (despite older docs)
+- `hmac_secret` is **required** since v0.2.3 — referenced like `token_secret`
+- `signout_path` is **required** by Envoy proto validation, even if you don't expose a signout flow — set it to `/signout` if unsure
+- OAuth2 is **listener-only** — per-route config is not supported. Use `pass_through_matcher` to bypass paths like `/healthz`
 
 ## REST API Operations
 

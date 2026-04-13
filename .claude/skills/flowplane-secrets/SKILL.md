@@ -155,34 +155,47 @@ Filters reference secrets by name. The secret must exist before creating the fil
 
 | Filter | Secret Field | Secret Type | Purpose |
 |---|---|---|---|
-| `oauth2` | `token_secret.name` | `generic_secret` | Client secret for OAuth2 flow |
+| `oauth2` | `credentials.token_secret.name` | `generic_secret` | Client secret for OAuth2 flow (your IDP credential) |
+| `oauth2` | `credentials.hmac_secret.name` | `generic_secret` | **REQUIRED** — random 32-byte key for signing OAuth2 cookies |
 | `jwt_auth` | `jwks` (Sds variant) | `generic_secret` | JWKS key material via SDS |
 | `ext_authz` | `auth_secret.name` | `generic_secret` | Auth service API key/token |
 | `ext_authz` | `tls_secret.name` | `tls_certificate` | mTLS cert for auth service |
 | ~~`credential_injector`~~ | `secret_ref.name` | `generic_secret` | **NOT a FilterType** — XDS module exists but cannot be created via API. Use `header_mutation` instead. |
 
-### Workflow: Secret + Filter
+### Workflow: OAuth2 (needs TWO secrets)
+
+OAuth2 needs both a client secret (your IDP credential) and an HMAC secret (random key for signing cookies). Both must exist BEFORE the filter is created or Envoy NACKs the listener.
 
 ```bash
-# 1. Create the secret
-flowplane secret create --name oauth-secret --type generic_secret \
-  --config '{"type":"generic_secret","secret":"c2VjcmV0LXZhbHVl"}'
+# 1. Create the IDP client secret (base64-encode the value first)
+CLIENT_SECRET_B64=$(echo -n "your-real-client-secret" | base64)
+flowplane secret create --name oauth-client-secret --type generic_secret \
+  --config "{\"type\":\"generic_secret\",\"secret\":\"$CLIENT_SECRET_B64\"}"
 
-# 2. Create filter referencing it (via MCP)
-# Tool: cp_create_filter
-# Args: { "filterType": "oauth2", "config": { "type": "oauth2", "config": {
-#   "token_endpoint": "https://auth.example.com/oauth/token",
-#   "authorization_endpoint": "https://auth.example.com/authorize",
-#   "redirect_uri": "https://app.example.com/callback",
-#   "credentials": { "client_id": "my-app" },
-#   "token_secret": { "name": "oauth-secret" },
-#   "forward_bearer_token": true
-# }}}
+# 2. Generate and create the HMAC signing key (random 32 bytes, base64)
+HMAC=$(openssl rand -base64 32)
+flowplane secret create --name oauth-hmac --type generic_secret \
+  --config "{\"type\":\"generic_secret\",\"secret\":\"$HMAC\"}"
 
-# 3. Rotate when needed
-curl -X POST .../secrets/{id}/rotate -d '{"configuration":{"type":"generic_secret","secret":"bmV3LXNlY3JldA=="}}'
-# Envoy receives updated secret automatically via SDS
+# 3. Create the filter referencing BOTH secrets
+# YAML config:
+#   credentials:
+#     client_id: "my-app"
+#     token_secret:
+#       name: "oauth-client-secret"
+#     hmac_secret:
+#       name: "oauth-hmac"
+#   redirect_uri: "https://app.example.com/callback"
+#   signout_path: "/signout"      # also required by Envoy
+flowplane filter create -f oauth2.yaml
+
+# 4. Rotate the HMAC key (forces all users to re-authenticate)
+NEW_HMAC=$(openssl rand -base64 32)
+flowplane secret rotate <hmac-secret-id> \
+  --config "{\"type\":\"generic_secret\",\"secret\":\"$NEW_HMAC\"}"
 ```
+
+> **Why two secrets?** The token secret is your IDP credential (Auth0, Okta, etc.) that Flowplane forwards to the IDP. The HMAC secret is a separate random key Envoy uses to sign and verify OAuth2 cookies, detecting tampering. Different lifecycles, different rotation schedules.
 
 ## 9. External Backends (Vault/AWS/GCP)
 

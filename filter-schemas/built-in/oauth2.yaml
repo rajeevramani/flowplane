@@ -23,16 +23,29 @@ instructions: |
   NO PER-ROUTE SUPPORT — configured globally on the listener only.
   Requires HTTPS (cookies use ;secure flag).
 
-  PREREQUISITES:
-  - token_endpoint requires a cluster that can reach the IDP
-  - Check cp_list_clusters first — reuse an existing IDP cluster if one exists
-  - If no cluster exists, create one with useTls=true before creating the filter
+  PREREQUISITES (create these BEFORE the filter, or the listener NACKs):
+  1. IDP cluster — token_endpoint needs a cluster that can reach the IDP
+     - Check cp_list_clusters first; reuse an existing one if possible
+     - Otherwise create with useTls=true
+  2. Token secret — your IDP client secret as a generic_secret
+     - flowplane secret create --name <name> --type generic_secret \
+         --config '{"type":"generic_secret","secret":"<base64-of-client-secret>"}'
+  3. HMAC secret — random 32-byte signing key for OAuth2 cookies
+     - HMAC=$(openssl rand -base64 32)
+     - flowplane secret create --name <hmac-name> --type generic_secret \
+         --config "{\"type\":\"generic_secret\",\"secret\":\"$HMAC\"}"
 
-  REQUIRED:
-  - token_endpoint (cluster + URI)
+  REQUIRED config fields (Envoy NACKs the listener if any are missing):
+  - token_endpoint (uri + cluster)
   - authorization_endpoint
-  - credentials (client_id, token_secret, hmac_secret)
-  - redirect_uri (callback path)
+  - credentials.client_id
+  - credentials.token_secret.name (refers to the IDP client secret from step 2)
+  - credentials.hmac_secret.name (refers to the HMAC secret from step 3)
+  - redirect_uri
+  - signout_path (Envoy proto validation requires this — even if you don't use signout)
+
+  GOTCHA: per-route exemptions don't work for OAuth2. Use pass_through_matcher
+  on the filter itself to bypass paths like /healthz or /api/public/. (callback path)
 
 config_schema:
   type: object
@@ -41,6 +54,7 @@ config_schema:
     - authorization_endpoint
     - credentials
     - redirect_uri
+    - signout_path
   properties:
     token_endpoint:
       type: object
@@ -69,19 +83,31 @@ config_schema:
       description: OAuth2 client credentials
       required:
         - client_id
+        - hmac_secret
       properties:
         client_id:
           type: string
           description: OAuth2 client ID
         token_secret:
           type: object
-          description: Token secret configuration (delivered via SDS)
+          description: Token secret configuration (delivered via SDS) — your IDP client secret
           required:
             - name
           properties:
             name:
               type: string
               description: Name of the SDS secret for the OAuth2 token
+              x-field-type: secret_selector
+              x-secret-type: generic_secret
+        hmac_secret:
+          type: object
+          description: HMAC secret for signing OAuth2 cookies (delivered via SDS) — random 32-byte key
+          required:
+            - name
+          properties:
+            name:
+              type: string
+              description: Name of the SDS secret containing the HMAC signing key
               x-field-type: secret_selector
               x-secret-type: generic_secret
         cookie_domain:

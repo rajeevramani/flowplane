@@ -153,6 +153,17 @@ impl Default for TokenSecretConfig {
     }
 }
 
+/// HMAC secret configuration for signing OAuth2 cookies (delivered via SDS).
+///
+/// The HMAC secret is used by Envoy to sign and verify the `_oauth_hmac` cookie
+/// that proves OAuth2 cookies haven't been tampered with. Generate a random
+/// 32-byte value and store it as a Flowplane `generic_secret`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HmacSecretConfig {
+    /// Name of the SDS secret containing the HMAC signing key
+    pub name: String,
+}
+
 /// OAuth2 credentials configuration
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct OAuth2CredentialsConfig {
@@ -161,6 +172,8 @@ pub struct OAuth2CredentialsConfig {
     /// Token secret configuration
     #[serde(default)]
     pub token_secret: Option<TokenSecretConfig>,
+    /// HMAC secret for signing OAuth2 cookies (REQUIRED — Envoy NACKs without it)
+    pub hmac_secret: HmacSecretConfig,
     /// Cookie domain for OAuth cookies
     #[serde(default)]
     pub cookie_domain: Option<String>,
@@ -275,6 +288,11 @@ impl OAuth2Config {
         if self.credentials.client_id.is_empty() {
             return Err(invalid_config("OAuth2 client_id is required"));
         }
+        if self.credentials.hmac_secret.name.is_empty() {
+            return Err(invalid_config(
+                "OAuth2 credentials.hmac_secret.name is required (Envoy uses it for cookie signing)",
+            ));
+        }
         if self.token_endpoint.uri.is_empty() {
             return Err(invalid_config("OAuth2 token_endpoint.uri is required"));
         }
@@ -286,6 +304,11 @@ impl OAuth2Config {
         }
         if self.redirect_uri.is_empty() {
             return Err(invalid_config("OAuth2 redirect_uri is required"));
+        }
+        if self.signout_path.as_ref().is_none_or(|p| p.is_empty()) {
+            return Err(invalid_config(
+                "OAuth2 signout_path is required (Envoy NACKs the listener without it)",
+            ));
         }
         Ok(())
     }
@@ -313,7 +336,7 @@ impl OAuth2Config {
             }),
             cookie_domain: self.credentials.cookie_domain.clone().unwrap_or_default(),
             token_formation: Some(TokenFormation::HmacSecret(build_sds_secret_config(
-                "hmac-secret",
+                &self.credentials.hmac_secret.name,
             ))),
         };
 
@@ -459,6 +482,7 @@ mod tests {
             credentials: OAuth2CredentialsConfig {
                 client_id: String::new(),
                 token_secret: None,
+                hmac_secret: HmacSecretConfig { name: String::new() },
                 cookie_domain: None,
                 cookie_names: None,
             },
@@ -490,6 +514,7 @@ mod tests {
             credentials: OAuth2CredentialsConfig {
                 client_id: "my-client-id".to_string(),
                 token_secret: Some(TokenSecretConfig { name: "oauth-secret".to_string() }),
+                hmac_secret: HmacSecretConfig { name: "oauth-hmac".to_string() },
                 cookie_domain: Some("example.com".to_string()),
                 cookie_names: None,
             },
@@ -562,12 +587,13 @@ mod tests {
             credentials: OAuth2CredentialsConfig {
                 client_id: "my-client-id".to_string(),
                 token_secret: Some(TokenSecretConfig { name: "oauth-secret".to_string() }),
+                hmac_secret: HmacSecretConfig { name: "oauth-hmac".to_string() },
                 cookie_domain: None,
                 cookie_names: None,
             },
             redirect_uri: "https://app.example.com/oauth2/callback".to_string(),
             redirect_path: "/oauth2/callback".to_string(),
-            signout_path: None,
+            signout_path: Some("/signout".to_string()),
             auth_scopes: vec!["openid".to_string()],
             auth_type: OAuth2AuthType::default(),
             forward_bearer_token: true,
