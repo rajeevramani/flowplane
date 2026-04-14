@@ -163,13 +163,11 @@ impl TestCtx {
             "FLOWPLANE_SOURCE_DIR",
             "FLOWPLANE_AGENT_BIN",
             "FLOWPLANE_DEV_DISABLE_AGENT",
-            "FLOWPLANE_DEV_TOKEN",
         ]);
         let home = tempfile::tempdir().expect("create tempdir for HOME");
         std::env::set_var("HOME", home.path());
         std::env::set_var("FLOWPLANE_SOURCE_DIR", env!("CARGO_MANIFEST_DIR"));
         std::env::remove_var("FLOWPLANE_DEV_DISABLE_AGENT");
-        std::env::remove_var("FLOWPLANE_DEV_TOKEN");
         std::env::set_var("FLOWPLANE_AGENT_BIN", agent_bin());
 
         let baseline_pids = pgrep_agent();

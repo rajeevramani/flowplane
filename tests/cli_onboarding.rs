@@ -222,48 +222,6 @@ mod security_guards {
 }
 
 // ---------------------------------------------------------------------------
-// Dev token cryptographic properties (fp-zcc.3 continued)
-// ---------------------------------------------------------------------------
-
-mod dev_token {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use flowplane::auth::dev_token::generate_dev_token;
-
-    #[test]
-    fn token_is_32_random_bytes_base64url() {
-        let token = generate_dev_token();
-        let raw = URL_SAFE_NO_PAD.decode(&token).expect("token should be valid base64url");
-        assert_eq!(raw.len(), 32, "token must be exactly 32 random bytes");
-    }
-
-    #[test]
-    fn tokens_are_unique_per_call() {
-        let tokens: Vec<String> = (0..100).map(|_| generate_dev_token()).collect();
-        let unique: std::collections::HashSet<&str> = tokens.iter().map(|s| s.as_str()).collect();
-        assert_eq!(unique.len(), tokens.len(), "100 tokens should all be unique");
-    }
-
-    #[test]
-    fn token_contains_only_url_safe_chars() {
-        for _ in 0..50 {
-            let t = generate_dev_token();
-            assert!(
-                t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-                "token contains non-URL-safe char: {t}"
-            );
-        }
-    }
-
-    #[test]
-    fn token_is_not_static_legacy_value() {
-        // Regression: guard against reverting to the old hardcoded string
-        for _ in 0..50 {
-            assert_ne!(generate_dev_token(), "fp_dev_token");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Credentials file permission tests (fp-zcc.3 — Unix only)
 // ---------------------------------------------------------------------------
 

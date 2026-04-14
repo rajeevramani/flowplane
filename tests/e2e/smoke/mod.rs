@@ -32,6 +32,8 @@ pub mod test_cli_team_org;
 pub mod test_cli_views;
 pub mod test_cli_wasm;
 pub mod test_dev_mode_smoke;
+pub mod test_dev_mtls_chain;
+pub mod test_dev_mtls_docker;
 pub mod test_prod_mode_smoke;
 pub mod test_routing;
 pub mod test_sds_delivery;

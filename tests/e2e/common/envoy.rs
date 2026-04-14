@@ -282,6 +282,80 @@ impl EnvoyHandle {
         Ok(String::from_utf8_lossy(bytes.chunk()).to_string())
     }
 
+    /// Poll Envoy /config_dump until a listener named `resource_name` reports
+    /// an `error_state` and return its `details` string.
+    ///
+    /// Walks `dynamic_active_listeners`, `dynamic_warming_listeners`, and
+    /// `dynamic_draining_listeners` inside the `listeners` config dump section.
+    /// Anti-cheating rule #4 gate: MUST assert on Envoy-visible error state,
+    /// not just the CP-side NACK event.
+    pub async fn wait_for_error_state(
+        &self,
+        resource_name: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<String> {
+        let start = std::time::Instant::now();
+        let mut last_seen: Option<String> = None;
+        while start.elapsed() < timeout {
+            let dump = self.get_config_dump().await?;
+            let v: serde_json::Value = match serde_json::from_str(&dump) {
+                Ok(v) => v,
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    continue;
+                }
+            };
+            if let Some(configs) = v.get("configs").and_then(|c| c.as_array()) {
+                for cfg in configs {
+                    let ty = cfg.get("@type").and_then(|s| s.as_str()).unwrap_or("");
+                    if !ty.contains("ListenersConfigDump") {
+                        continue;
+                    }
+                    for section in [
+                        "dynamic_active_listeners",
+                        "dynamic_warming_listeners",
+                        "dynamic_draining_listeners",
+                    ] {
+                        if let Some(arr) = cfg.get(section).and_then(|s| s.as_array()) {
+                            for entry in arr {
+                                let name = entry
+                                    .pointer("/listener/name")
+                                    .or_else(|| entry.pointer("/active_state/listener/name"))
+                                    .or_else(|| entry.get("name"))
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("");
+                                if name != resource_name {
+                                    continue;
+                                }
+                                if let Some(details) =
+                                    entry.pointer("/error_state/details").and_then(|s| s.as_str())
+                                {
+                                    if !details.is_empty() {
+                                        return Ok(details.to_string());
+                                    }
+                                }
+                                if let Some(details) = entry
+                                    .pointer("/active_state/error_state/details")
+                                    .and_then(|s| s.as_str())
+                                {
+                                    if !details.is_empty() {
+                                        return Ok(details.to_string());
+                                    }
+                                }
+                                last_seen = Some(format!("{entry}"));
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        anyhow::bail!(
+            "timed out waiting for Envoy error_state on listener {resource_name}; last entry seen: {:?}",
+            last_seen
+        )
+    }
+
     /// Get Envoy stats
     pub async fn get_stats(&self) -> anyhow::Result<String> {
         let client: Client<HttpConnector, Full<bytes::Bytes>> =
