@@ -12,16 +12,16 @@
 //! Handles proper startup ordering, health checks, and cleanup.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use tracing::info;
 
-use super::control_plane::{ControlPlaneConfig, ControlPlaneHandle};
-use super::envoy::{EnvoyConfig, EnvoyHandle, EnvoyXdsTlsConfig};
+use super::control_plane::ControlPlaneHandle;
+use super::envoy::{EnvoyConfig, EnvoyHandle};
 use super::mocks::MockServices;
 use super::ports::{PortAllocator, TestPorts};
 use super::shared_infra::SharedInfrastructure;
@@ -461,281 +461,126 @@ impl TestHarness {
         })
     }
 
-    /// Start with isolated infrastructure (slower but fully isolated)
-    #[cfg_attr(not(feature = "dev-oidc"), allow(unreachable_code, unused_variables))]
+    /// Start with isolated infrastructure (slower but fully isolated).
+    ///
+    /// Thin wrapper over `boot_cp`: allocates per-test ports, builds a
+    /// `CpBootConfig`, calls `boot_cp`, and moves the returned state into
+    /// a fresh `TestHarness`. Isolated-prod is unsupported and bails early.
     async fn start_isolated(config: TestHarnessConfig) -> anyhow::Result<Self> {
-        use crate::tls::support::TestCertificateAuthority;
+        // Isolated prod requires spinning up its own Zitadel container — not
+        // yet supported. Shared mode (the default) handles prod E2E.
+        let e2e_mode = super::shared_infra::e2e_auth_mode();
+        if matches!(e2e_mode, super::shared_infra::E2eAuthMode::Prod) {
+            anyhow::bail!(
+                "Isolated mode is not supported for prod auth. \
+                 Use shared mode (the default) for prod E2E tests. \
+                 Isolated mode requires its own Zitadel container, which is not yet implemented."
+            );
+        }
 
-        // Allocate ports
+        // Allocate per-test ports; release the reservations before servers
+        // bind so the listener sockets are free.
         let mut port_allocator = PortAllocator::for_test(&config.test_name);
         let ports = port_allocator.allocate_test_ports();
         info!(?ports, "Allocated ports for isolated test");
+        drop(port_allocator);
 
-        // Create temp directory for test artifacts (certs, etc.)
+        // Temp directory for misc per-test artifacts (kept alive for the
+        // lifetime of the harness).
         let temp_dir = tempfile::tempdir()?;
 
-        // Start PostgreSQL container for isolated E2E database
-        info!("Starting PostgreSQL container for isolated E2E test...");
-        let pg_container = Postgres::default()
-            .start()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to start PostgreSQL container: {}", e))?;
+        // Pick the mocks flavor from config knobs.
+        let mocks_flavor = if config.start_auth_mocks && config.start_ext_authz_mock {
+            super::shared_infra::MocksFlavor::All
+        } else if config.start_auth_mocks {
+            super::shared_infra::MocksFlavor::Auth
+        } else if config.start_ext_authz_mock {
+            super::shared_infra::MocksFlavor::ExtAuthz
+        } else {
+            super::shared_infra::MocksFlavor::Basic
+        };
 
-        let pg_host = pg_container
-            .get_host()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get PostgreSQL container host: {}", e))?;
-        let pg_port = pg_container
-            .get_host_port_ipv4(5432)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get PostgreSQL container port: {}", e))?;
-        let db_url = format!("postgresql://postgres:postgres@{}:{}/postgres", pg_host, pg_port);
-        info!(db_url = %db_url, "PostgreSQL container ready for isolated E2E test");
+        // Envoy node metadata team: explicit override wins, otherwise the
+        // shared-team default (preserves pre-refactor isolated behavior —
+        // tests that hit the seeded "default" team pass `mtls_team` via
+        // `with_mtls_identity`).
+        let envoy_team = config
+            .mtls_team
+            .clone()
+            .unwrap_or_else(|| super::shared_infra::E2E_SHARED_TEAM.to_string());
 
-        // In isolated DEV mode, make sure FLOWPLANE_AUTH_MODE=dev is set
-        // BEFORE the CP starts. The CP boots its own mock OIDC internally
-        // when in dev mode (requires the `dev-oidc` feature). The test-side
-        // mock + token is minted further below once we know we're in dev
-        // mode so it can be stashed in the returned TestHarness.
-        if matches!(super::shared_infra::e2e_auth_mode(), super::shared_infra::E2eAuthMode::Dev) {
-            std::env::set_var("FLOWPLANE_AUTH_MODE", "dev");
-        }
+        let boot_config = super::shared_infra::CpBootConfig {
+            auth_mode: e2e_mode,
+            test_name: config.test_name.clone(),
+            ports: super::shared_infra::CpBootPorts {
+                api: ports.api,
+                xds: ports.xds,
+                envoy_admin: ports.envoy_admin,
+                listener: ports.listener,
+            },
+            enable_mtls: config.enable_mtls,
+            enable_envoy: config.start_envoy,
+            mtls_team: config.mtls_team.clone(),
+            mtls_proxy_id: config.mtls_proxy_id.clone(),
+            envoy_team,
+            mocks_flavor,
+            update_team_admin_port: false,
+        };
 
-        // Generate mTLS certificates if enabled
-        let (mtls_cert_paths, xds_tls_config, mtls_ca, mtls_server_cert, mtls_client_cert) =
-            if config.enable_mtls {
-                info!("Initializing mTLS for isolated test");
+        let booted = super::shared_infra::boot_cp(boot_config).await?;
 
-                // Rustls requires a process-level CryptoProvider before any
-                // TlsAcceptor is built. SharedInfrastructure installs this
-                // on init; the isolated path must do the same or the CP xDS
-                // server panics on startup. (fp-6yj)
-                use rustls::crypto::{ring, CryptoProvider};
-                if CryptoProvider::get_default().is_none() {
-                    let _ = ring::default_provider().install_default();
-                }
-
-                let ca = TestCertificateAuthority::new(
-                    "Flowplane E2E Isolated Test CA",
-                    time::Duration::days(1),
-                )?;
-
-                // Issue server cert for CP
-                // NOTE: server_cert and client_cert must be stored in TestHarness to keep
-                // their TempDirs alive - otherwise the cert files get deleted!
-                let server_cert = ca.issue_server_cert(&["localhost"], time::Duration::days(1))?;
-
-                // Issue client cert for Envoy
-                let team_name = config
-                    .mtls_team
-                    .clone()
-                    .unwrap_or_else(|| super::shared_infra::unique_team_name(&config.test_name));
-                let proxy_id =
-                    config.mtls_proxy_id.clone().unwrap_or_else(|| "test-proxy".to_string());
-                let spiffe_uri = TestCertificateAuthority::build_spiffe_uri(
-                    "flowplane.local",
-                    &team_name,
-                    &proxy_id,
-                )?;
-
-                info!(
-                    test = %config.test_name,
-                    team = %team_name,
-                    spiffe_uri = %spiffe_uri,
-                    "Generated mTLS certificates for isolated test"
-                );
-
-                let client_cert =
-                    ca.issue_client_cert(&spiffe_uri, &proxy_id, time::Duration::days(1))?;
-
-                let cert_paths = MtlsCertPaths {
+        // Rebuild MtlsCertPaths from the cert bundle returned by boot_cp so
+        // tests can access CA / client cert paths via `TestHarness::mtls_certs()`.
+        let mtls_cert_paths = match (
+            booted.mtls_ca.as_deref(),
+            booted.mtls_server_cert.as_ref(),
+            booted.mtls_envoy_client_cert.as_ref(),
+            booted.mtls_spiffe_uri.as_ref(),
+        ) {
+            (Some(ca), Some(server_cert), Some(client_cert), Some(spiffe_uri)) => {
+                Some(MtlsCertPaths {
                     ca_cert_path: ca.ca_cert_path.clone(),
                     server_cert_path: server_cert.cert_path.clone(),
                     server_key_path: server_cert.key_path.clone(),
                     client_cert_path: client_cert.cert_path.clone(),
                     client_key_path: client_cert.key_path.clone(),
-                    spiffe_uri,
-                };
-
-                let xds_tls = flowplane::config::XdsTlsConfig {
-                    cert_path: server_cert.cert_path.to_string_lossy().to_string(),
-                    key_path: server_cert.key_path.to_string_lossy().to_string(),
-                    client_ca_path: Some(ca.ca_cert_path.to_string_lossy().to_string()),
-                    require_client_cert: true,
-                };
-
-                (Some(cert_paths), Some(xds_tls), Some(ca), Some(server_cert), Some(client_cert))
-            } else {
-                (None, None, None, None, None)
-            };
-
-        // Start mock services
-        let mocks = if config.start_auth_mocks && config.start_ext_authz_mock {
-            MockServices::start_all().await
-        } else if config.start_auth_mocks {
-            MockServices::start_with_auth().await
-        } else if config.start_ext_authz_mock {
-            MockServices::start_with_ext_authz().await
-        } else {
-            MockServices::start_basic().await
-        };
-        info!(echo = %mocks.echo_endpoint(), "Mock services started");
-
-        // Drop the port allocator to release the reserved ports before servers bind
-        drop(port_allocator);
-
-        // For isolated dev mode we must create the mock OIDC server BEFORE
-        // starting the CP, then wire it into ControlPlaneConfig via
-        // `with_dev_oidc_mock`. The CP will derive its ZitadelAuthState from
-        // this mock (see build_dev_auth_state) and skip spawning its own —
-        // ensuring tokens minted here validate against the same signing key
-        // the CP uses.
-        let e2e_mode_pre = super::shared_infra::e2e_auth_mode();
-        #[cfg(feature = "dev-oidc")]
-        let mock_oidc_handle: Option<
-            std::sync::Arc<flowplane::dev::oidc_server::MockOidcServer>,
-        > = if matches!(e2e_mode_pre, super::shared_infra::E2eAuthMode::Dev) {
-            use flowplane::dev::oidc_server::{MockOidcConfig, MockOidcServer};
-            let mock = MockOidcServer::start(MockOidcConfig::default())
-                .await
-                .map_err(|e| anyhow::anyhow!("failed to start mock OIDC: {e}"))?;
-            Some(std::sync::Arc::new(mock))
-        } else {
-            None
+                    spiffe_uri: spiffe_uri.clone(),
+                })
+            }
+            _ => None,
         };
 
-        // Start control plane with optional TLS
-        let mut cp_config =
-            ControlPlaneConfig::new(db_url.clone(), ports.api, ports.xds, ports.listener);
-        if let Some(tls) = xds_tls_config {
-            cp_config = cp_config.with_xds_tls(tls);
-        }
-        #[cfg(feature = "dev-oidc")]
-        if let Some(ref mock) = mock_oidc_handle {
-            cp_config = cp_config.with_dev_oidc_mock(mock.clone());
-        }
-
-        let cp = with_timeout(TestTimeout::startup("Starting control plane"), async {
-            ControlPlaneHandle::start(cp_config).await
-        })
-        .await?;
-
-        // Wait for CP to be ready
-        with_timeout(TestTimeout::startup("Control plane ready"), async { cp.wait_ready().await })
-            .await?;
-        info!(api = %cp.api_addr, xds = %cp.xds_addr, "Control plane ready");
-
-        // In isolated dev mode, seed dev org/team/user so the mock-issued JWT
-        // (sub=DEV_USER_SUB) resolves to a real user row. Without this the
-        // `authenticate` middleware's JIT upsert would still succeed but the
-        // user would have no team memberships, which breaks any test that
-        // exercises resource-scoped endpoints.
-        if matches!(e2e_mode_pre, super::shared_infra::E2eAuthMode::Dev) {
-            use flowplane::storage::create_pool;
-            let db_cfg = flowplane::config::DatabaseConfig {
-                url: db_url.clone(),
-                auto_migrate: false,
-                max_connections: 2,
-                min_connections: 1,
-                ..Default::default()
-            };
-            let pool = create_pool(&db_cfg).await?;
-            flowplane::startup::seed_dev_resources(&pool)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to seed dev resources: {}", e))?;
-            info!("Dev resources seeded for isolated harness");
-        }
-
-        // Start Envoy if available and requested
-        let envoy = if config.start_envoy && EnvoyHandle::is_available() {
-            // Configure Envoy with team metadata for xDS authorization
-            // Use the shared team name so Envoy can see test resources
-            let envoy_team = config
-                .mtls_team
-                .clone()
-                .unwrap_or_else(|| super::shared_infra::E2E_SHARED_TEAM.to_string());
-            let mut envoy_config = EnvoyConfig::new(ports.envoy_admin, ports.xds)
-                .with_metadata(serde_json::json!({ "team": envoy_team }));
-
-            // Configure Envoy with mTLS client certificates if enabled
-            if let Some(ref cert_paths) = mtls_cert_paths {
-                let tls_config = EnvoyXdsTlsConfig {
-                    ca_cert: cert_paths.ca_cert_path.clone(),
-                    client_cert: Some(cert_paths.client_cert_path.clone()),
-                    client_key: Some(cert_paths.client_key_path.clone()),
-                };
-                envoy_config = envoy_config.with_xds_tls(tls_config);
-            }
-
-            let envoy = EnvoyHandle::start(envoy_config)?;
-
-            with_timeout(TestTimeout::startup("Envoy ready"), async { envoy.wait_ready().await })
-                .await?;
-            info!(admin_port = ports.envoy_admin, "Envoy ready");
-
-            Some(envoy)
-        } else {
-            if config.start_envoy {
-                info!("Envoy binary not found - skipping Envoy startup");
-            }
-            None
+        let auth_mode = match booted.auth_mode {
+            super::shared_infra::E2eAuthMode::Dev => flowplane::config::AuthMode::Dev,
+            super::shared_infra::E2eAuthMode::Prod => flowplane::config::AuthMode::Prod,
         };
 
-        // Mint the test JWT from the SAME mock that the CP trusts (built
-        // pre-CP above). Task 5b: one mock, one signing key, one token.
-        let (auth_token, team, org, auth_mode) = match e2e_mode_pre {
-            super::shared_infra::E2eAuthMode::Dev => {
-                #[cfg(feature = "dev-oidc")]
-                {
-                    let mock = mock_oidc_handle
-                        .as_ref()
-                        .expect("dev mode should have built mock_oidc_handle");
-                    let token = mock
-                        .issue_token_for_sub(flowplane::auth::dev_token::DEV_USER_SUB)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("failed to issue mock OIDC token: {e}"))?;
-                    (
-                        token,
-                        "default".to_string(),
-                        "dev-org".to_string(),
-                        flowplane::config::AuthMode::Dev,
-                    )
-                }
-                #[cfg(not(feature = "dev-oidc"))]
-                {
-                    anyhow::bail!("Dev mode E2E tests require the `dev-oidc` cargo feature");
-                }
-            }
-            super::shared_infra::E2eAuthMode::Prod => {
-                anyhow::bail!(
-                    "Isolated mode is not supported for prod auth. \
-                     Use shared mode (the default) for prod E2E tests. \
-                     Isolated mode requires its own Zitadel container, which is not yet implemented."
-                );
-            }
-        };
+        // `mtls_ca` is returned as `Arc<TestCertificateAuthority>` from boot_cp
+        // but `TestHarness::_mtls_ca` is `Option<TestCertificateAuthority>`.
+        // Unwrap the Arc back into the inner value (safe — we own the only ref).
+        let mtls_ca_owned = booted.mtls_ca.and_then(|arc| Arc::try_unwrap(arc).ok());
 
         Ok(Self {
             ports,
-            cp_owned: Some(cp),
+            cp_owned: Some(booted.cp),
             shared: None,
-            envoy_owned: envoy,
+            envoy_owned: booted.envoy,
             envoy_per_test: None,
-            mocks_owned: Some(mocks),
+            mocks_owned: Some(booted.mocks),
             _temp_dir: Some(temp_dir),
-            db_url,
+            db_url: booted.db_url,
             is_shared: false,
-            auth_token,
-            team,
-            org,
+            auth_token: booted.auth_token,
+            team: booted.team,
+            org: booted.org,
             auth_mode,
             mtls_cert_paths,
-            _mtls_ca: mtls_ca,
-            _mtls_server_cert: mtls_server_cert,
-            _mtls_client_cert: mtls_client_cert,
-            _pg_container: Some(pg_container),
+            _mtls_ca: mtls_ca_owned,
+            _mtls_server_cert: booted.mtls_server_cert,
+            _mtls_client_cert: booted.mtls_envoy_client_cert,
+            _pg_container: Some(booted.pg_container),
             #[cfg(feature = "dev-oidc")]
-            _mock_oidc: mock_oidc_handle,
+            _mock_oidc: booted.mock_oidc,
         })
     }
 

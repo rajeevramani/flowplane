@@ -1,8 +1,8 @@
 # fp-4n5 Task 5b — Two-mocks fix + harness collapse (in progress)
 
 Date: 2026-04-15
-Author: implementer5
-Status: **Part 1 landed; Part 2 pending (handoff)**
+Author: implementer5 (Part 1), implementer6 (Part 2)
+Status: **Part 1 + Part 2 landed**
 
 # What
 
@@ -60,7 +60,139 @@ Production caller (`run_server`) passes `None` as the override — no behavior c
 - **`FLOWPLANE_AUTH_MODE=dev` env var still set** in both isolated and shared dev paths before CP boot. This is NOT `FLOWPLANE_ZITADEL_*` (grep gate only covers those); it is the top-level auth-mode selector and is the documented way to boot CP in dev mode. Left untouched.
 - **`ControlPlaneConfig` lost `Debug`**. No callers formatted the struct; a couple use sites do pattern-matching on fields but do not call `{:?}`. Confirmed via grep before the drop.
 
-# Part 2 — handoff (NOT DONE in this commit)
+# Part 2 — Completed (implementer6)
+
+The four parallel CP boot paths are now a single `boot_cp(CpBootConfig) -> BootedCp`
+function in `tests/e2e/common/shared_infra.rs`. Callers:
+
+- **Shared infra**: `build_shared_infra()` (private) → `SharedInfrastructure::get_or_init()`
+  (public — kept the existing method name instead of the handoff's proposed
+  `get_or_init_shared` to avoid churning 30+ test-file callers). Runs
+  `cleanup_stale_processes()`, constructs `CpBootConfig` with fixed
+  `SHARED_*` ports, calls `boot_cp`, moves `pg_container` /
+  `zitadel_container` into the `SHARED_PG_CONTAINER` / `SHARED_ZITADEL_CONTAINER`
+  statics, then assembles the `SharedInfrastructure` struct from the
+  remaining `BootedCp` fields. `FLOWPLANE_E2E_MTLS=1` opt-in preserved
+  (prod-only, matching previous behavior).
+
+- **Isolated**: `TestHarness::start_isolated()` is now a thin wrapper that
+  allocates per-test ports via `PortAllocator`, bails early on prod auth
+  (error message matching the pre-refactor text), builds a `CpBootConfig`
+  with `update_team_admin_port: false`, calls `boot_cp`, rebuilds
+  `MtlsCertPaths` from the returned CA + certs + SPIFFE URI, and moves
+  `BootedCp` fields into `TestHarness` slots. Isolated-mode Envoy team
+  metadata preserved via `envoy_team = config.mtls_team.unwrap_or(E2E_SHARED_TEAM)`.
+
+## The ONE branching point
+
+Inside `boot_cp`, the only `match` is on `cfg.auth_mode` (Dev | Prod). It
+branches on the identity issuer — mock OIDC server vs real Zitadel
+container — and nothing else. Port allocation, mTLS opt-in, envoy team,
+mocks flavor, and the `update_team_admin_port` behavior are all driven by
+`CpBootConfig` fields. Dev mode sets the process env vars
+(`FLOWPLANE_AUTH_MODE=dev`, `FLOWPLANE_COOKIE_SECURE=false`,
+`FLOWPLANE_BASE_URL=…`). Prod mode sets the Zitadel vars via
+`zitadel::set_cp_env_vars`. Neither path mutates `FLOWPLANE_ZITADEL_*`
+directly (grep gate in `src/auth/middleware.rs` still holds — 0 hits).
+
+## Invariants preserved
+
+- **rustls CryptoProvider install** — happens unconditionally at the top
+  of `boot_cp`, before any TlsAcceptor can be built. fp-6yj root cause
+  eliminated: every CP boot now passes through the same install line.
+- **`seed_dev_resources`** — runs in the Dev arm after `cp.wait_ready()`,
+  so both shared-dev and isolated-dev paths seed org/team/user/dataplane.
+- **Single mock OIDC instance** — Part 1's `with_dev_oidc_mock` wiring is
+  centralized in `boot_cp`'s Dev arm. One `Arc<MockOidcServer>` is built,
+  the CP trusts it (via `ControlPlaneConfig::with_dev_oidc_mock`), and
+  the same Arc mints the test token (`issue_token_for_sub(DEV_USER_SUB)`).
+- **Isolated-prod bail** — preserved verbatim in `start_isolated` before
+  any work is done (grep the original text in the new code to confirm a
+  byte-for-byte match).
+- **FLOWPLANE_E2E_MTLS=1 shared opt-in** — preserved in `build_shared_infra`,
+  gated on `auth_mode == Prod` to match the pre-refactor scoping.
+- **`cleanup_stale_processes`** — called by `build_shared_infra` before
+  boot. Isolated mode doesn't need it (fresh testcontainer PG each run).
+- **Testcontainer PG cleanup** — unchanged; still handled by the
+  `cleanup_stale_processes` docker-filter block.
+- **`teams.envoy_admin_port` update** — still happens in shared-dev mode
+  after envoy starts. Now driven by `cfg.update_team_admin_port &&
+  cfg.auth_mode == Dev` in `start_envoy_if_available`. Shared infra sets
+  `update_team_admin_port: true`; isolated passes `false`.
+
+## BootedCp fields (actual shape that shipped)
+
+Matches the handoff list with one addition: `mtls_spiffe_uri:
+Option<String>`. Necessary so that isolated mode can expose `MtlsCertPaths`
+(which carries the SPIFFE URI) to tests without re-deriving it. Shared
+mode ignores the field. Flagged here per the deviation protocol.
+
+## Helper functions
+
+Three small private helpers keep `boot_cp` from becoming unreadable:
+
+- `issue_mtls_material(&cfg)` — generates CA + server cert + client cert
+  and builds `XdsTlsConfig`. Returns all five components as a tuple or
+  `(None,None,None,None,None)` if `enable_mtls == false`.
+- `start_mocks(flavor)` — dispatches on `MocksFlavor` to the right
+  `MockServices` constructor.
+- `start_envoy_if_available(&cfg, envoy_team, client_cert, ca, db_url)` —
+  skips when disabled/unavailable, builds `EnvoyConfig` with optional mTLS,
+  waits ready, and runs the `teams.envoy_admin_port` update for shared-dev.
+
+These helpers don't introduce new branching on auth_mode — they take
+plain data. The identity-issuer match stays inside `boot_cp` itself.
+
+## Deviations from the handoff doc
+
+1. **Method name**: handoff proposed `get_or_init_shared`. Kept
+   `SharedInfrastructure::get_or_init` unchanged — there are 30+ callers
+   across `tests/e2e/full/**` and renaming them would balloon the diff
+   into Task 5c's territory. The method body is the new wrapper over
+   `boot_cp`; the signature is unchanged.
+2. **`initialize()` dispatcher removed**: replaced with an inline call to
+   `build_shared_infra()` (free async fn) inside the `INIT_ONCE.call_once`
+   block. Cleaner than two nested `impl` methods.
+3. **`mtls_spiffe_uri` field on `BootedCp`**: added for the isolated
+   `MtlsCertPaths` reconstruction path. See above.
+4. **`CpBootConfig::mocks_flavor`**: handoff left mocks flavor implicit.
+   Made explicit because shared mode always wants `All` while isolated
+   mode picks based on `start_auth_mocks` / `start_ext_authz_mock` knobs.
+5. **`CpBootConfig::update_team_admin_port`**: handoff didn't mention the
+   `teams.envoy_admin_port` UPDATE that shared-dev runs post-envoy. Made
+   explicit so isolated mode can opt out (no `default` team in isolated
+   prod, though isolated dev would also work — kept opt-out for safety).
+6. **`mtls_ca` ownership in isolated mode**: `boot_cp` returns
+   `Arc<TestCertificateAuthority>` for uniformity with shared mode.
+   Isolated mode unwraps the Arc via `Arc::try_unwrap` to store the inner
+   value in `TestHarness._mtls_ca: Option<TestCertificateAuthority>`.
+   Safe because boot_cp holds the only ref at that point.
+
+## Line count + cargo gates
+
+- `tests/e2e/common/shared_infra.rs`: 906 → ~980 LOC (boot_cp + helpers +
+  types + new wrapper).
+- `tests/e2e/common/harness.rs`: 972 → ~760 LOC (start_isolated shrank
+  from ~275 LOC to ~110 LOC; removed unused imports).
+- `cargo fmt && cargo build --all-targets` → only pre-existing
+  `tests/cli_onboarding.rs` errors (Task 5c scope). No new errors.
+- `cargo build --all-targets --features dev-oidc` → same. No new errors.
+
+## What's left for Task 5c
+
+Task 5c is the test-file rewrite that collapses the `#[cfg(feature =
+"dev-oidc")]` gates and stops importing `generate_dev_token`. The files
+listed in the team-lead brief — `cli_onboarding`, `dev_auth_*`,
+`compose_runner_test`, `dev_agent_supervisor`, `phase2_adversarial`,
+`phase25_onboarding`, `test_dev_mtls_chain` — still need their token
+acquisition updated to use the harness-minted token. The new
+`TestHarness.auth_token` field already carries the right value for
+dev-mode e2e tests; Task 5c just has to wire callers to it instead of
+calling the removed `generate_dev_token`.
+
+---
+
+# Part 2 handoff (original spec, now obsoleted by the Part 2 section above)
 
 Per deviation request sent to team-lead on 2026-04-15, Part 2 (the `boot_cp` 4→2 collapse) is deferred to a fresh implementer to avoid context exhaustion. Three implementers have already burned out on fp-4n5, and attempting a ~400-500 LOC monolithic function rewrite on top of Part 1 in the same session carries a high risk of a half-done refactor landing on Task 5c's doorstep.
 
