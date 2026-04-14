@@ -36,7 +36,9 @@ use crate::tls::support::TestCertificateAuthority;
 /// E2E test auth mode — determines how SharedInfrastructure initializes auth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum E2eAuthMode {
-    /// Dev mode: no Zitadel, bearer token auth via FLOWPLANE_DEV_TOKEN
+    /// Dev mode: no Zitadel, JWTs minted by an in-process mock OIDC server. The
+    /// CP's `authenticate` middleware validates mock-signed tokens via the same
+    /// Zitadel validator used in prod.
     Dev,
     /// Prod mode with real Zitadel container
     Prod,
@@ -401,8 +403,13 @@ pub(crate) async fn boot_cp(cfg: CpBootConfig) -> anyhow::Result<BootedCp> {
 
             // mTLS for dev is rare but supported in isolated mode. Generate
             // per-boot CA + server cert + client cert if requested.
-            let (xds_tls_config, mtls_ca, mtls_server_cert, envoy_client_cert, mtls_spiffe_uri) =
-                issue_mtls_material(&cfg)?;
+            let MtlsMaterial {
+                tls_config: xds_tls_config,
+                ca: mtls_ca,
+                server_cert: mtls_server_cert,
+                client_cert: envoy_client_cert,
+                spiffe_uri: mtls_spiffe_uri,
+            } = issue_mtls_material(&cfg)?;
 
             // Mock services for the test.
             let mocks = start_mocks(cfg.mocks_flavor).await;
@@ -516,8 +523,13 @@ pub(crate) async fn boot_cp(cfg: CpBootConfig) -> anyhow::Result<BootedCp> {
             zitadel::set_cp_env_vars(&zitadel_config);
 
             // mTLS material.
-            let (xds_tls_config, mtls_ca, mtls_server_cert, envoy_client_cert, mtls_spiffe_uri) =
-                issue_mtls_material(&cfg)?;
+            let MtlsMaterial {
+                tls_config: xds_tls_config,
+                ca: mtls_ca,
+                server_cert: mtls_server_cert,
+                client_cert: envoy_client_cert,
+                spiffe_uri: mtls_spiffe_uri,
+            } = issue_mtls_material(&cfg)?;
 
             // Mock services.
             let mocks = start_mocks(cfg.mocks_flavor).await;
@@ -682,19 +694,27 @@ pub(crate) async fn boot_cp(cfg: CpBootConfig) -> anyhow::Result<BootedCp> {
     }
 }
 
+/// Bundle of mTLS material produced by [`issue_mtls_material`]. All fields are
+/// `None` when `cfg.enable_mtls` is false.
+struct MtlsMaterial {
+    tls_config: Option<flowplane::config::XdsTlsConfig>,
+    ca: Option<Arc<TestCertificateAuthority>>,
+    server_cert: Option<crate::tls::support::TestCertificateFiles>,
+    client_cert: Option<crate::tls::support::TestCertificateFiles>,
+    spiffe_uri: Option<String>,
+}
+
 /// Issue the mTLS CA + server cert + envoy client cert if `cfg.enable_mtls`
-/// is set. Returns `(None, None, None, None)` otherwise.
-fn issue_mtls_material(
-    cfg: &CpBootConfig,
-) -> anyhow::Result<(
-    Option<flowplane::config::XdsTlsConfig>,
-    Option<Arc<TestCertificateAuthority>>,
-    Option<crate::tls::support::TestCertificateFiles>,
-    Option<crate::tls::support::TestCertificateFiles>,
-    Option<String>,
-)> {
+/// is set. Returns an empty [`MtlsMaterial`] otherwise.
+fn issue_mtls_material(cfg: &CpBootConfig) -> anyhow::Result<MtlsMaterial> {
     if !cfg.enable_mtls {
-        return Ok((None, None, None, None, None));
+        return Ok(MtlsMaterial {
+            tls_config: None,
+            ca: None,
+            server_cert: None,
+            client_cert: None,
+            spiffe_uri: None,
+        });
     }
 
     let ca_name = format!("Flowplane E2E Test CA ({})", cfg.test_name);
@@ -721,7 +741,13 @@ fn issue_mtls_material(
         "Generated mTLS certificates"
     );
 
-    Ok((Some(xds_tls), Some(Arc::new(ca)), Some(server_cert), Some(client_cert), Some(spiffe_uri)))
+    Ok(MtlsMaterial {
+        tls_config: Some(xds_tls),
+        ca: Some(Arc::new(ca)),
+        server_cert: Some(server_cert),
+        client_cert: Some(client_cert),
+        spiffe_uri: Some(spiffe_uri),
+    })
 }
 
 async fn start_mocks(flavor: MocksFlavor) -> MockServices {
