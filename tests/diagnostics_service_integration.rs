@@ -847,3 +847,88 @@ async fn failure_isolation_mixed_valid_and_invalid_burst() {
         "all 10 valid reports must persist; invalid ones must not"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression: touch_last_config_verify must not update rows when the SPIFFE
+// team name does not resolve to a real teams row.
+//
+// This catches the class of bug fixed in 2026-04-14-fp-4n5-dataplanes-team-id-mismatch.md:
+// if touch_last_config_verify is reverted to a naive `WHERE name = $2 AND team = $3`
+// (without joining teams), OR regressed to drop the team filter entirely, it will
+// spuriously set last_config_verify on a row whose owning team name does not match
+// the authed identity. This test asserts the observable invariant: a report from a
+// client whose SPIFFE URI embeds a non-existent team name must NOT leave
+// last_config_verify set on the seeded dataplane, no matter what other filtering
+// the impl does. Last_config_verify is a trust signal — leaking updates across
+// team-name mismatch would lie about monitoring status.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn touch_last_config_verify_ignores_reports_from_unknown_team_name() {
+    let harness = Harness::start("diag_unknown_team").await;
+    let proxy = "dp-unknown-team";
+    // Seed a dataplane owned by the real test team (team_id in the column).
+    seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
+
+    // Issue a cert whose SPIFFE URI carries a team NAME that does not exist in
+    // the teams table. The trust_domain + proxy_id match the seeded row, so any
+    // filter keyed only on dataplane name would still find the row.
+    let bogus_team_name = "team-that-does-not-exist-xyz";
+    let cert = harness.issue_client_cert_for(bogus_team_name, proxy);
+    let client_result = harness.client_with_cert(&cert).await;
+
+    // The service is allowed to reject this at connect time, at envelope validation,
+    // or accept and no-op the UPDATE. All three are acceptable outcomes. The
+    // UNACCEPTABLE outcome is: last_config_verify gets set on the seeded row.
+    if let Ok(mut client) = client_result {
+        let report = make_report(proxy, "listener-x", "boom", "h1");
+        // Ignore both stream errors and Ack statuses — we only care about DB state.
+        let _ = send_and_collect(&mut client, vec![report]).await;
+    }
+
+    assert!(
+        !dataplane_has_last_config_verify(&harness.pool, proxy).await,
+        "last_config_verify must NOT be set when the SPIFFE team name does not \
+         resolve to a row in the teams table (regression guard for \
+         fp-4n5 dataplanes.team id/name mismatch fix)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Forward regression: touch_last_config_verify MUST update the row when the
+// SPIFFE team name is the real seeded team name. This is the exact behaviour
+// that was silently broken before the Task 1 fix — reverting the fix must make
+// this test fail. The pre-existing `updates_last_config_verify_on_successful_report`
+// covers this path, but this test pins the invariant with an explicit name
+// referencing the regression class so it is not accidentally weakened.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn touch_last_config_verify_resolves_spiffe_team_name_to_team_id() {
+    let harness = Harness::start("diag_spiffe_name_resolution").await;
+    let proxy = "dp-name-resolution";
+    seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
+
+    // Sanity: pre-condition the column is NULL so we know the assertion below
+    // reflects a real write, not stale state from harness setup.
+    assert!(
+        !dataplane_has_last_config_verify(&harness.pool, proxy).await,
+        "precondition: last_config_verify must start NULL"
+    );
+
+    // SPIFFE URI carries the team NAME (e.g. "test-team"), not the UUID team_id.
+    // The server must resolve name → id when checking ownership before updating
+    // last_config_verify.
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
+    let mut client = harness.client_with_cert(&cert).await.expect("connect");
+
+    let report = make_report(proxy, "listener-x", "boom", "h1");
+    let acks = send_and_collect(&mut client, vec![report]).await.expect("stream ok");
+    assert_eq!(acks[0].status, AckStatus::Ok as i32);
+
+    assert!(
+        dataplane_has_last_config_verify(&harness.pool, proxy).await,
+        "last_config_verify must be set when SPIFFE team name matches a real teams row \
+         (forward regression guard for fp-4n5 dataplanes.team id/name mismatch fix)"
+    );
+}
