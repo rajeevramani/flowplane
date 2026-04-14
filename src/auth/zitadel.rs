@@ -77,6 +77,22 @@ impl ZitadelConfig {
         });
         Some(Self { issuer, project_id, audience, jwks_url, userinfo_url })
     }
+
+    /// Build a `ZitadelConfig` from a running in-process mock OIDC server.
+    ///
+    /// Used by `AuthMode::Dev` to wire the Zitadel middleware against the
+    /// embedded mock issuer. The mock must already have bound its ephemeral
+    /// port so `jwks_url()` returns a usable URL.
+    #[cfg(feature = "dev-oidc")]
+    pub fn from_mock(mock: &crate::dev::oidc_server::MockOidcServer) -> Self {
+        Self {
+            issuer: mock.issuer.clone(),
+            project_id: mock.project_id.clone(),
+            audience: mock.audience.clone(),
+            jwks_url: mock.jwks_url(),
+            userinfo_url: mock.userinfo_endpoint(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

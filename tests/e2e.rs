@@ -36,10 +36,6 @@ pub mod tls {
     pub use super::tls_support as support;
 }
 
-// Mock OIDC provider (shared with other test crates)
-#[path = "common/mock_oidc.rs"]
-pub mod mock_oidc;
-
 // Shared test infrastructure
 #[path = "e2e/common/mod.rs"]
 pub mod common;

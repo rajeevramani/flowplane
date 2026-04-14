@@ -396,15 +396,16 @@ mod oidc_credentials {
     }
 }
 
+#[cfg(feature = "dev-oidc")]
 mod oidc_mock_flows {
-    use super::common::mock_oidc::{MockOidcConfig, MockOidcServer};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use flowplane::dev::oidc_server::{MockOidcConfig, MockOidcServer};
     use sha2::{Digest, Sha256};
 
     /// Full PKCE round-trip against mock OIDC: discovery → authorize → token exchange → valid JWT.
     #[tokio::test]
     async fn pkce_full_roundtrip() {
-        let server = MockOidcServer::start(MockOidcConfig::default()).await;
+        let server = MockOidcServer::start(MockOidcConfig::default()).await.unwrap();
         let client =
             reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 
@@ -487,7 +488,7 @@ mod oidc_mock_flows {
     /// Device code flow against mock OIDC: device_authorize → poll token → get tokens.
     #[tokio::test]
     async fn device_code_flow() {
-        let server = MockOidcServer::start(MockOidcConfig::default()).await;
+        let server = MockOidcServer::start(MockOidcConfig::default()).await.unwrap();
         let client = reqwest::Client::new();
 
         // Step 1: Discovery
@@ -540,7 +541,7 @@ mod oidc_mock_flows {
     /// Token refresh: exchange a refresh_token for a new access_token.
     #[tokio::test]
     async fn token_refresh_flow() {
-        let server = MockOidcServer::start(MockOidcConfig::default()).await;
+        let server = MockOidcServer::start(MockOidcConfig::default()).await.unwrap();
         let client =
             reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 
@@ -623,7 +624,7 @@ mod oidc_mock_flows {
     /// PKCE with wrong code_verifier should fail.
     #[tokio::test]
     async fn pkce_wrong_verifier_rejected() {
-        let server = MockOidcServer::start(MockOidcConfig::default()).await;
+        let server = MockOidcServer::start(MockOidcConfig::default()).await.unwrap();
         let client =
             reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
 
@@ -737,7 +738,7 @@ mod envoy_bootstrap {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let result = flowplane::cli::compose::write_envoy_bootstrap();
+        let result = flowplane::cli::compose::write_envoy_bootstrap(false);
 
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
@@ -756,7 +757,7 @@ mod envoy_bootstrap {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let path = flowplane::cli::compose::write_envoy_bootstrap().unwrap();
+        let path = flowplane::cli::compose::write_envoy_bootstrap(false).unwrap();
 
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
@@ -778,7 +779,7 @@ mod envoy_bootstrap {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let path = flowplane::cli::compose::write_envoy_bootstrap().unwrap();
+        let path = flowplane::cli::compose::write_envoy_bootstrap(false).unwrap();
 
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
@@ -796,7 +797,7 @@ mod envoy_bootstrap {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let path = flowplane::cli::compose::write_envoy_bootstrap().unwrap();
+        let path = flowplane::cli::compose::write_envoy_bootstrap(false).unwrap();
 
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
@@ -814,7 +815,7 @@ mod envoy_bootstrap {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let path = flowplane::cli::compose::write_envoy_bootstrap().unwrap();
+        let path = flowplane::cli::compose::write_envoy_bootstrap(false).unwrap();
 
         if let Some(h) = original_home {
             std::env::set_var("HOME", h);
@@ -840,10 +841,10 @@ mod envoy_bootstrap {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
-        let p1 = flowplane::cli::compose::write_envoy_bootstrap().unwrap();
+        let p1 = flowplane::cli::compose::write_envoy_bootstrap(false).unwrap();
         let c1 = std::fs::read_to_string(&p1).unwrap();
 
-        let p2 = flowplane::cli::compose::write_envoy_bootstrap().unwrap();
+        let p2 = flowplane::cli::compose::write_envoy_bootstrap(false).unwrap();
         let c2 = std::fs::read_to_string(&p2).unwrap();
 
         if let Some(h) = original_home {

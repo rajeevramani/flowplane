@@ -1779,7 +1779,7 @@ mod tests {
     // Dev auth context acceptance tests
     // =========================================================
 
-    /// Construct the exact AuthContext that `dev_authenticate` produces.
+    /// Construct an org-admin AuthContext mirroring a dev-mode JWT.
     fn dev_auth_context() -> AuthContext {
         AuthContext::new(
             crate::domain::TokenId::from_str_unchecked("dev-token-id"),

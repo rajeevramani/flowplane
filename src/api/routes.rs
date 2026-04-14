@@ -10,9 +10,8 @@ use axum::{
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::auth::middleware::{
-    authenticate, dev_authenticate, ensure_dynamic_scopes, DevAuthState,
-};
+use crate::auth::middleware::{authenticate, ensure_dynamic_scopes};
+use crate::auth::zitadel::ZitadelAuthState;
 use crate::domain::SharedFilterSchemaRegistry;
 use crate::observability::trace_http_requests;
 use crate::services::stats_cache::{StatsCache, StatsCacheConfig};
@@ -218,12 +217,13 @@ fn build_cors_layer() -> CorsLayer {
 }
 
 pub fn build_router(state: Arc<XdsState>) -> Router {
-    build_router_with_registry(state, None)
+    build_router_with_registry(state, None, None)
 }
 
 pub fn build_router_with_registry(
     state: Arc<XdsState>,
     filter_schema_registry: Option<SharedFilterSchemaRegistry>,
+    zitadel_override: Option<ZitadelAuthState>,
 ) -> Router {
     // Create stats cache with default config (10 second TTL, 100 max entries)
     let stats_cache = Arc::new(StatsCache::new(StatsCacheConfig::default()));
@@ -259,49 +259,41 @@ pub fn build_router_with_registry(
     // Create Zitadel admin client for user provisioning (invite endpoint)
     let zitadel_admin = crate::auth::zitadel_admin::ZitadelAdminClient::from_env().map(Arc::new);
 
-    let auth_mode = std::env::var("FLOWPLANE_AUTH_MODE").unwrap_or_default();
-
-    let (auth_layer, api_permission_cache) =
-        if auth_mode == "dev" {
-            let dev_state = DevAuthState::from_env();
-            tracing::info!("Dev mode authentication enabled");
-            (
-                tower::util::Either::Left(tower::util::Either::Left(
-                    middleware::from_fn_with_state(dev_state, dev_authenticate),
-                )),
-                None,
-            )
-        } else {
-            match crate::auth::zitadel::ZitadelConfig::from_env() {
-                Some(zitadel_config) => {
-                    tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
-                    let pool = state.pool.clone().expect(
-                        "DB pool required for Zitadel auth middleware — start with --database",
-                    );
-                    let auth_rate_limiter =
-                        Arc::new(crate::api::rate_limit::RateLimiter::auth_from_env());
-                    let zitadel_state = crate::auth::zitadel::ZitadelAuthState {
-                        jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
-                        config: std::sync::Arc::new(zitadel_config),
-                        pool,
-                        permission_cache: permission_cache.clone(),
-                        auth_rate_limiter,
-                    };
-                    (
-                        tower::util::Either::Left(tower::util::Either::Right(
-                            middleware::from_fn_with_state(zitadel_state, authenticate),
-                        )),
-                        Some(permission_cache),
-                    )
-                }
-                None => {
-                    tracing::warn!(
-                    "Zitadel not configured — starting in degraded mode (auth endpoints return 503)"
-                );
-                    (tower::util::Either::Right(middleware::from_fn(reject_all_auth)), None)
-                }
+    // Dev mode and prod mode both authenticate through the same Zitadel JWT path.
+    // In dev the caller (start_api_server) spawns an in-process mock OIDC server
+    // and passes a ready ZitadelAuthState in via `zitadel_override`. In prod the
+    // config is resolved from environment variables.
+    let resolved_zitadel_state = match zitadel_override {
+        Some(state) => Some(state),
+        None => crate::auth::zitadel::ZitadelConfig::from_env().map(|zitadel_config| {
+            tracing::info!(issuer = %zitadel_config.issuer, "Zitadel JWT auth enabled");
+            let pool = state
+                .pool
+                .clone()
+                .expect("DB pool required for Zitadel auth middleware — start with --database");
+            let auth_rate_limiter = Arc::new(crate::api::rate_limit::RateLimiter::auth_from_env());
+            crate::auth::zitadel::ZitadelAuthState {
+                jwks_cache: crate::auth::zitadel::JwksCache::new(&zitadel_config),
+                config: std::sync::Arc::new(zitadel_config),
+                pool,
+                permission_cache: permission_cache.clone(),
+                auth_rate_limiter,
             }
-        };
+        }),
+    };
+
+    let (auth_layer, api_permission_cache) = match resolved_zitadel_state {
+        Some(zitadel_state) => (
+            tower::util::Either::Left(middleware::from_fn_with_state(zitadel_state, authenticate)),
+            Some(permission_cache),
+        ),
+        None => {
+            tracing::warn!(
+                "Zitadel not configured — starting in degraded mode (auth endpoints return 503)"
+            );
+            (tower::util::Either::Right(middleware::from_fn(reject_all_auth)), None)
+        }
+    };
 
     let api_state = ApiState {
         xds_state: state.clone(),

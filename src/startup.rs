@@ -36,7 +36,7 @@ pub async fn handle_first_time_startup() -> Result<()> {
 /// All inserts are idempotent (`ON CONFLICT DO NOTHING`). Safe to call on every
 /// startup — rows that already exist are silently skipped.
 ///
-/// Returns the dev user's `UserId` (matches the `DevAuthState` identity).
+/// Returns the dev user's `UserId` (matches the JWT `sub` minted by the dev mock OIDC).
 pub async fn seed_dev_resources(pool: &sqlx::PgPool) -> Result<UserId> {
     let dev_user_id = UserId::from_str_unchecked("dev-user-id");
     let dev_org_id = "dev-org-id";

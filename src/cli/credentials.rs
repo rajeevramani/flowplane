@@ -4,6 +4,6 @@
 //! provides convenient access from the CLI layer.
 
 pub use crate::auth::dev_token::{
-    read_credentials_file, read_credentials_from_path, resolve_or_generate_dev_token,
-    write_credentials_file, write_credentials_to_path,
+    read_credentials_file, read_credentials_from_path, write_credentials_file,
+    write_credentials_to_path,
 };
