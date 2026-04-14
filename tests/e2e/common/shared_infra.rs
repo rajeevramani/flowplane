@@ -216,6 +216,12 @@ pub struct SharedInfrastructure {
     /// Envoy client certificate for mTLS (kept alive to prevent TempDir cleanup)
     #[allow(dead_code)]
     mtls_envoy_client_cert: Option<crate::tls::support::TestCertificateFiles>,
+    /// Mock OIDC issuer kept alive for the duration of the dev-mode test run.
+    /// None in prod mode. Gated behind `dev-oidc` since the type only exists
+    /// when that feature is on.
+    #[cfg(feature = "dev-oidc")]
+    #[allow(dead_code)]
+    mock_oidc: Option<flowplane::dev::oidc_server::MockOidcServer>,
 }
 
 impl SharedInfrastructure {
@@ -295,6 +301,7 @@ impl SharedInfrastructure {
     }
 
     /// Dev mode initialization: no Zitadel, bearer token auth.
+    #[cfg_attr(not(feature = "dev-oidc"), allow(unreachable_code, unused_variables))]
     async fn initialize_dev() -> anyhow::Result<SharedInfrastructure> {
         info!("Dev mode: skipping Zitadel, using bearer token auth");
 
@@ -320,12 +327,37 @@ impl SharedInfrastructure {
 
         let _ = SHARED_PG_CONTAINER.set(container);
 
-        // Generate dev token and set env vars BEFORE starting CP
-        let dev_token = flowplane::auth::dev_token::generate_dev_token();
+        // Set auth mode BEFORE starting CP. The CP boots its own mock OIDC
+        // internally when FLOWPLANE_AUTH_MODE=dev (requires dev-oidc feature).
         std::env::set_var("FLOWPLANE_AUTH_MODE", "dev");
-        std::env::set_var("FLOWPLANE_DEV_TOKEN", &dev_token);
         std::env::set_var("FLOWPLANE_COOKIE_SECURE", "false");
         std::env::set_var("FLOWPLANE_BASE_URL", format!("http://localhost:{}", SHARED_API_PORT));
+
+        // Start a side-car mock OIDC in the test process so we can mint a JWT
+        // that tests send as the bearer token. NOTE(fp-4n5 task 5a): the CP
+        // currently spawns its own mock internally, so tokens issued here are
+        // NOT validated by the CP — the harness collapse in task 5b will
+        // unify the two. For now this keeps the test binary compiling and
+        // preserves the public shape of the harness auth_token field.
+        #[cfg(feature = "dev-oidc")]
+        let (mock_oidc, dev_token): (
+            Option<flowplane::dev::oidc_server::MockOidcServer>,
+            String,
+        ) = {
+            use flowplane::dev::oidc_server::{MockOidcConfig, MockOidcServer};
+            let mock = MockOidcServer::start(MockOidcConfig::default())
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to start mock OIDC server: {e}"))?;
+            let token = mock
+                .issue_token_for_sub(flowplane::auth::dev_token::DEV_USER_SUB)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to issue mock OIDC token: {e}"))?;
+            (Some(mock), token)
+        };
+        #[cfg(not(feature = "dev-oidc"))]
+        let dev_token: String = {
+            return Err(anyhow::anyhow!("Dev mode E2E tests require the `dev-oidc` cargo feature"));
+        };
 
         // Start mock services
         let mocks = MockServices::start_all().await;
@@ -436,6 +468,8 @@ impl SharedInfrastructure {
             mtls_ca: None,
             mtls_server_cert: None,
             mtls_envoy_client_cert: None,
+            #[cfg(feature = "dev-oidc")]
+            mock_oidc,
         })
     }
 
@@ -706,6 +740,8 @@ impl SharedInfrastructure {
             mtls_ca,
             mtls_server_cert,
             mtls_envoy_client_cert,
+            #[cfg(feature = "dev-oidc")]
+            mock_oidc: None,
         })
     }
 

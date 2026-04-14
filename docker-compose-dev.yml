@@ -1,10 +1,13 @@
 # Flowplane Dev Mode — Local development without Zitadel
 #
 # Usage:
-#   FLOWPLANE_DEV_TOKEN=<token> docker compose -f docker-compose-dev.yml up -d
+#   docker compose -f docker-compose-dev.yml up -d
 #
-# The FLOWPLANE_DEV_TOKEN env var must be set before running.
-# Use `flowplane init` to generate and start automatically.
+# The CP boots a local mock OIDC issuer (dev-oidc feature) and writes a
+# dev JWT to /var/flowplane/credentials via FLOWPLANE_CREDENTIALS_PATH.
+# That path is bind-mounted to ~/.flowplane on the host so the flowplane
+# CLI and other host-side clients can read the credential back.
+# Use `flowplane init` to drive this automatically.
 
 services:
   # PostgreSQL database
@@ -42,8 +45,9 @@ services:
       FLOWPLANE_DATABASE_AUTO_MIGRATE: "true"
       # Auth — hardcoded dev mode (never from host env)
       FLOWPLANE_AUTH_MODE: dev
-      # Token — passed through from host (set by flowplane init)
-      FLOWPLANE_DEV_TOKEN: ${FLOWPLANE_DEV_TOKEN}
+      # Credentials file — CP writes a JWT here for host-side clients (fp-4n5).
+      # Points at the bind-mounted /var/flowplane directory below.
+      FLOWPLANE_CREDENTIALS_PATH: /var/flowplane/credentials
       # Server
       FLOWPLANE_API_BIND_ADDRESS: 0.0.0.0
       FLOWPLANE_API_PORT: 8080
@@ -53,6 +57,11 @@ services:
       FLOWPLANE_COOKIE_SECURE: "false"
       # Secret Encryption (replaced with generated key at init time)
       FLOWPLANE_SECRET_ENCRYPTION_KEY: __FLOWPLANE_DEV_ENCRYPTION_KEY__
+      # Dev mTLS (fp-u54.6): same env vars prod uses, replaced at init time
+      # with container-side paths under the /etc/flowplane/certs/ bind mount.
+      FLOWPLANE_XDS_TLS_CERT_PATH: __FLOWPLANE_XDS_TLS_CERT_PATH__
+      FLOWPLANE_XDS_TLS_KEY_PATH: __FLOWPLANE_XDS_TLS_KEY_PATH__
+      FLOWPLANE_XDS_TLS_CLIENT_CA_PATH: __FLOWPLANE_XDS_TLS_CLIENT_CA_PATH__
       # Envoy admin (for stats dashboard — uses Docker network hostname)
       ENVOY_ADMIN_BASE_URL: "http://flowplane-envoy"
       # Logging
@@ -60,6 +69,16 @@ services:
     ports:
       - "8080:8080"
       - "18000:18000"
+    volumes:
+      # Dev mTLS material (fp-u54.6). Mirrors the Envoy mount so both services
+      # see the same PKI at the same path. The CP reads
+      # FLOWPLANE_XDS_TLS_{CERT,KEY,CLIENT_CA}_PATH env vars (set above) which
+      # point inside this mount.
+      - ${HOME}/.flowplane/certs/:/etc/flowplane/certs/:ro
+      # Credentials bind mount (fp-4n5). CP writes a dev JWT to
+      # /var/flowplane/credentials on boot; host-side clients (flowplane CLI)
+      # read it back via the same bind-mounted path under ~/.flowplane.
+      - ${HOME}/.flowplane/:/var/flowplane/:rw
     depends_on:
       flowplane-pg:
         condition: service_healthy
@@ -94,6 +113,7 @@ services:
         condition: service_healthy
     volumes:
       - ${HOME}/.flowplane/envoy/:/etc/envoy/:ro
+      - ${HOME}/.flowplane/certs/:/etc/flowplane/certs/:ro
     networks:
       - flowplane-network
     restart: unless-stopped

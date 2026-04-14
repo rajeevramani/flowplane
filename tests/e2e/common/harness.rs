@@ -67,6 +67,10 @@ pub struct TestHarnessConfig {
     pub use_shared: bool,
     /// Enable mTLS for xDS connection (requires FLOWPLANE_E2E_MTLS=1 in shared mode)
     pub enable_mtls: bool,
+    /// Override SPIFFE team component in mTLS client cert (isolated mode only)
+    pub mtls_team: Option<String>,
+    /// Override SPIFFE proxy_id component in mTLS client cert (isolated mode only)
+    pub mtls_proxy_id: Option<String>,
 }
 
 impl TestHarnessConfig {
@@ -79,6 +83,8 @@ impl TestHarnessConfig {
             start_ext_authz_mock: false,
             use_shared: true,   // Default to shared mode
             enable_mtls: false, // Default to no mTLS
+            mtls_team: None,
+            mtls_proxy_id: None,
         }
     }
 
@@ -104,6 +110,21 @@ impl TestHarnessConfig {
     /// ```
     pub fn with_mtls(mut self) -> Self {
         self.enable_mtls = true;
+        self
+    }
+
+    /// Override the SPIFFE identity (team + proxy_id) baked into the mTLS
+    /// client cert. Only honored in isolated mode. When unset, isolated mode
+    /// uses a hashed unique team name, which will NOT match seeded dev
+    /// resources — set this to ("default", "dev-dataplane") for dev-mTLS tests
+    /// that rely on the seeded team.
+    pub fn with_mtls_identity(
+        mut self,
+        team: impl Into<String>,
+        proxy_id: impl Into<String>,
+    ) -> Self {
+        self.mtls_team = Some(team.into());
+        self.mtls_proxy_id = Some(proxy_id.into());
         self
     }
 
@@ -175,6 +196,11 @@ pub struct TestHarness {
     /// PostgreSQL container (kept alive in isolated mode)
     #[allow(dead_code)]
     _pg_container: Option<ContainerAsync<Postgres>>,
+    /// Mock OIDC issuer used to mint the dev JWT in isolated mode. Kept
+    /// alive for the lifetime of the harness so the issuer doesn't abort.
+    #[cfg(feature = "dev-oidc")]
+    #[allow(dead_code)]
+    _mock_oidc: Option<flowplane::dev::oidc_server::MockOidcServer>,
 }
 
 impl TestHarness {
@@ -245,6 +271,13 @@ impl TestHarness {
     /// the same certificates (e.g., for testing certificate validation).
     pub fn mtls_certs(&self) -> Option<&MtlsCertPaths> {
         self.mtls_cert_paths.as_ref()
+    }
+
+    /// Access the isolated-mode mTLS CA so tests can mint additional client
+    /// certs (e.g. for a second subprocess like flowplane-agent) with custom
+    /// SPIFFE identities. Returns None in shared mode.
+    pub fn mtls_ca(&self) -> Option<&crate::tls::support::TestCertificateAuthority> {
+        self._mtls_ca.as_ref()
     }
 
     // ========================================================================
@@ -423,10 +456,13 @@ impl TestHarness {
             _mtls_server_cert: None,
             _mtls_client_cert: None,
             _pg_container: None,
+            #[cfg(feature = "dev-oidc")]
+            _mock_oidc: None,
         })
     }
 
     /// Start with isolated infrastructure (slower but fully isolated)
+    #[cfg_attr(not(feature = "dev-oidc"), allow(unreachable_code, unused_variables))]
     async fn start_isolated(config: TestHarnessConfig) -> anyhow::Result<Self> {
         use crate::tls::support::TestCertificateAuthority;
 
@@ -456,10 +492,28 @@ impl TestHarness {
         let db_url = format!("postgresql://postgres:postgres@{}:{}/postgres", pg_host, pg_port);
         info!(db_url = %db_url, "PostgreSQL container ready for isolated E2E test");
 
+        // In isolated DEV mode, make sure FLOWPLANE_AUTH_MODE=dev is set
+        // BEFORE the CP starts. The CP boots its own mock OIDC internally
+        // when in dev mode (requires the `dev-oidc` feature). The test-side
+        // mock + token is minted further below once we know we're in dev
+        // mode so it can be stashed in the returned TestHarness.
+        if matches!(super::shared_infra::e2e_auth_mode(), super::shared_infra::E2eAuthMode::Dev) {
+            std::env::set_var("FLOWPLANE_AUTH_MODE", "dev");
+        }
+
         // Generate mTLS certificates if enabled
         let (mtls_cert_paths, xds_tls_config, mtls_ca, mtls_server_cert, mtls_client_cert) =
             if config.enable_mtls {
                 info!("Initializing mTLS for isolated test");
+
+                // Rustls requires a process-level CryptoProvider before any
+                // TlsAcceptor is built. SharedInfrastructure installs this
+                // on init; the isolated path must do the same or the CP xDS
+                // server panics on startup. (fp-6yj)
+                use rustls::crypto::{ring, CryptoProvider};
+                if CryptoProvider::get_default().is_none() {
+                    let _ = ring::default_provider().install_default();
+                }
 
                 let ca = TestCertificateAuthority::new(
                     "Flowplane E2E Isolated Test CA",
@@ -472,11 +526,16 @@ impl TestHarness {
                 let server_cert = ca.issue_server_cert(&["localhost"], time::Duration::days(1))?;
 
                 // Issue client cert for Envoy
-                let team_name = super::shared_infra::unique_team_name(&config.test_name);
+                let team_name = config
+                    .mtls_team
+                    .clone()
+                    .unwrap_or_else(|| super::shared_infra::unique_team_name(&config.test_name));
+                let proxy_id =
+                    config.mtls_proxy_id.clone().unwrap_or_else(|| "test-proxy".to_string());
                 let spiffe_uri = TestCertificateAuthority::build_spiffe_uri(
                     "flowplane.local",
                     &team_name,
-                    "test-proxy",
+                    &proxy_id,
                 )?;
 
                 info!(
@@ -487,7 +546,7 @@ impl TestHarness {
                 );
 
                 let client_cert =
-                    ca.issue_client_cert(&spiffe_uri, "test-proxy", time::Duration::days(1))?;
+                    ca.issue_client_cert(&spiffe_uri, &proxy_id, time::Duration::days(1))?;
 
                 let cert_paths = MtlsCertPaths {
                     ca_cert_path: ca.ca_cert_path.clone(),
@@ -546,10 +605,12 @@ impl TestHarness {
         let envoy = if config.start_envoy && EnvoyHandle::is_available() {
             // Configure Envoy with team metadata for xDS authorization
             // Use the shared team name so Envoy can see test resources
-            let mut envoy_config =
-                EnvoyConfig::new(ports.envoy_admin, ports.xds).with_metadata(serde_json::json!({
-                    "team": super::shared_infra::E2E_SHARED_TEAM
-                }));
+            let envoy_team = config
+                .mtls_team
+                .clone()
+                .unwrap_or_else(|| super::shared_infra::E2E_SHARED_TEAM.to_string());
+            let mut envoy_config = EnvoyConfig::new(ports.envoy_admin, ports.xds)
+                .with_metadata(serde_json::json!({ "team": envoy_team }));
 
             // Configure Envoy with mTLS client certificates if enabled
             if let Some(ref cert_paths) = mtls_cert_paths {
@@ -575,19 +636,42 @@ impl TestHarness {
             None
         };
 
-        // Determine auth mode and token for isolated mode
+        // Determine auth mode and token for isolated mode.
+        //
+        // In dev mode we spin up a local mock OIDC issuer (dev-oidc feature)
+        // and mint a JWT for DEV_USER_SUB. Task 5a note: the CP spawns its
+        // OWN mock internally, so this token is not actually verified by
+        // the CP yet — the harness collapse in task 5b wires both sides to
+        // a single mock. This change just keeps the test binary compiling
+        // after `generate_dev_token` was removed in task 4.
         let e2e_mode = super::shared_infra::e2e_auth_mode();
+        #[cfg(feature = "dev-oidc")]
+        #[allow(unused_assignments)]
+        let mut mock_oidc_handle: Option<flowplane::dev::oidc_server::MockOidcServer> = None;
         let (auth_token, team, org, auth_mode) = match e2e_mode {
             super::shared_infra::E2eAuthMode::Dev => {
-                // In dev isolated mode, the token was set in env by CP startup
-                let token = std::env::var("FLOWPLANE_DEV_TOKEN")
-                    .unwrap_or_else(|_| "isolated-dev-token".to_string());
-                (
-                    token,
-                    "default".to_string(),
-                    "dev-org".to_string(),
-                    flowplane::config::AuthMode::Dev,
-                )
+                #[cfg(feature = "dev-oidc")]
+                {
+                    use flowplane::dev::oidc_server::{MockOidcConfig, MockOidcServer};
+                    let mock = MockOidcServer::start(MockOidcConfig::default())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("failed to start mock OIDC: {e}"))?;
+                    let token = mock
+                        .issue_token_for_sub(flowplane::auth::dev_token::DEV_USER_SUB)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("failed to issue mock OIDC token: {e}"))?;
+                    mock_oidc_handle = Some(mock);
+                    (
+                        token,
+                        "default".to_string(),
+                        "dev-org".to_string(),
+                        flowplane::config::AuthMode::Dev,
+                    )
+                }
+                #[cfg(not(feature = "dev-oidc"))]
+                {
+                    anyhow::bail!("Dev mode E2E tests require the `dev-oidc` cargo feature");
+                }
             }
             super::shared_infra::E2eAuthMode::Prod => {
                 anyhow::bail!(
@@ -617,6 +701,8 @@ impl TestHarness {
             _mtls_server_cert: mtls_server_cert,
             _mtls_client_cert: mtls_client_cert,
             _pg_container: Some(pg_container),
+            #[cfg(feature = "dev-oidc")]
+            _mock_oidc: mock_oidc_handle,
         })
     }
 
