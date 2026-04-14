@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
-use common::test_db::{TestDatabase, TEST_TEAM_ID};
+use common::test_db::{TestDatabase, TEAM_A_NAME, TEST_TEAM_ID, TEST_TEAM_NAME};
 
 use flowplane::storage::repositories::{
     CreateDataplaneRequest, DataplaneRepository, NackEventRepository,
@@ -403,7 +403,7 @@ async fn valid_report_persists_with_warming_report_source() {
     let harness = Harness::start("diag_happy").await;
     let proxy = "dp-happy-1";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let report =
@@ -437,7 +437,7 @@ async fn computes_server_side_hash_when_client_hash_empty() {
     let harness = Harness::start("diag_server_hash").await;
     let proxy = "dp-server-hash";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let report = make_report(proxy, "listener-x", "err-details-x", "");
@@ -456,7 +456,7 @@ async fn updates_last_config_verify_on_successful_report() {
     let proxy = "dp-last-verify";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
 
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let report = make_report(proxy, "listener-ok", "boom", "h1");
@@ -473,7 +473,7 @@ async fn empty_error_details_is_informational_and_persists_nothing() {
     let harness = Harness::start("diag_informational").await;
     let proxy = "dp-info";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let report = make_report(proxy, "listener-info", "", "");
@@ -489,7 +489,7 @@ async fn empty_error_details_is_informational_and_persists_nothing() {
 #[tokio::test]
 async fn cert_dataplane_id_mismatch_is_unauthorized() {
     let harness = Harness::start("diag_mismatch").await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, "dp-real");
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, "dp-real");
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     // Envelope claims a different dataplane_id than the cert's proxy_id.
@@ -524,8 +524,10 @@ async fn cert_dataplane_id_mismatch_is_unauthorized() {
 #[tokio::test]
 async fn different_teams_cannot_cross_report() {
     let harness = Harness::start("diag_cross_team").await;
-    let team_a = TEST_TEAM_ID;
-    let team_b = "00000000-0000-0000-0000-000000000002"; // seeded team-a id; distinct from TEST_TEAM_ID
+    // SPIFFE URI carries team **names** (see `touch_last_config_verify`
+    // doc / decision doc 2026-04-14-fp-4n5-dataplanes-team-id-mismatch.md).
+    let team_a = TEST_TEAM_NAME;
+    let team_b = TEAM_A_NAME; // seeded "team-a" — distinct from "test-team"
     let cert_a = harness.issue_client_cert_for(team_a, "dp-team-a");
     let mut client_a = harness.client_with_cert(&cert_a).await.expect("connect");
 
@@ -606,7 +608,7 @@ async fn cert_without_spiffe_san_cannot_report() {
 async fn schema_version_zero_is_invalid() {
     let harness = Harness::start("diag_schema0").await;
     let proxy = "dp-schema0";
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let mut report = make_report(proxy, "l", "err", "h1");
@@ -619,7 +621,7 @@ async fn schema_version_zero_is_invalid() {
 #[tokio::test]
 async fn empty_dataplane_id_is_invalid() {
     let harness = Harness::start("diag_empty_dp").await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, "dp-ok");
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, "dp-ok");
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let mut report = make_report("", "l", "err", "h1");
@@ -645,7 +647,7 @@ async fn empty_dataplane_id_is_invalid() {
 async fn empty_report_id_is_invalid() {
     let harness = Harness::start("diag_empty_rid").await;
     let proxy = "dp-rid";
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let mut report = make_report(proxy, "l", "err", "h1");
@@ -659,7 +661,7 @@ async fn empty_report_id_is_invalid() {
 async fn empty_payload_is_invalid() {
     let harness = Harness::start("diag_empty_payload").await;
     let proxy = "dp-nopay";
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let report = DiagnosticsReport {
@@ -681,7 +683,7 @@ async fn duplicate_reports_dedupe_to_one_row() {
     let harness = Harness::start("diag_dup").await;
     let proxy = "dp-dup";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let r1 = make_report(proxy, "listener-z", "exact-same-error", "dup-hash-1");
@@ -697,7 +699,7 @@ async fn different_timestamps_same_failure_still_dedupe() {
     let harness = Harness::start("diag_ts_dedup").await;
     let proxy = "dp-ts-dedup";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let mut r1 = make_report(proxy, "listener-ts", "same-error", "ts-hash");
@@ -725,7 +727,7 @@ async fn different_error_details_yield_separate_rows() {
     let harness = Harness::start("diag_two_errors").await;
     let proxy = "dp-two-err";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let r1 = make_report(proxy, "listener-multi", "err-one", "");
@@ -740,7 +742,7 @@ async fn concurrent_identical_reports_produce_one_row() {
     let harness = Harness::start("diag_concurrent").await;
     let proxy = "dp-race";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
 
     let harness_ref = &harness;
     let cert_ref = &cert;
@@ -796,7 +798,7 @@ async fn report_for_unknown_dataplane_still_persists_nack_row() {
     let harness = Harness::start("diag_unknown_dp").await;
     let proxy = "dp-unregistered";
     // Note: no seed_dataplane call.
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     let report = make_report(proxy, "listener-unreg", "some-error", "unreg-hash");
@@ -814,7 +816,7 @@ async fn failure_isolation_mixed_valid_and_invalid_burst() {
     let harness = Harness::start("diag_burst").await;
     let proxy = "dp-burst";
     seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
-    let cert = harness.issue_client_cert_for(TEST_TEAM_ID, proxy);
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
     let mut client = harness.client_with_cert(&cert).await.expect("connect");
 
     // 10 valid (distinct errors → distinct rows), 10 invalid (schema_version=0)

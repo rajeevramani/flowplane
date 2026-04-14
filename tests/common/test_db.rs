@@ -20,6 +20,15 @@ pub const TEST_TEAM_ID: &str = "00000000-0000-0000-0000-000000000001";
 pub const TEAM_A_ID: &str = "00000000-0000-0000-0000-000000000002";
 pub const TEAM_B_ID: &str = "00000000-0000-0000-0000-000000000003";
 
+/// Team NAMES (not ids) corresponding to the seeded team rows. SPIFFE URIs
+/// embed team **names**, not ids — the `dataplanes.team` column stores the
+/// id and `touch_last_config_verify` joins `teams` to resolve name → id.
+/// Tests that mint client certs via `issue_client_cert_for` must pass one
+/// of these name constants, not the `*_TEAM_ID` UUIDs.
+pub const TEST_TEAM_NAME: &str = "test-team";
+pub const TEAM_A_NAME: &str = "team-a";
+pub const TEAM_B_NAME: &str = "team-b";
+
 /// Predictable organization ID for seed data.
 /// All seeded teams belong to this organization.
 pub const TEST_ORG_ID: &str = "00000000-0000-0000-0000-0000000000a1";

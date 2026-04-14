@@ -178,15 +178,27 @@ impl FlowplaneDiagnosticsService {
     /// Best-effort update of `dataplanes.last_config_verify`. Failures are
     /// logged and swallowed so that an audit-column failure cannot mask or
     /// fail a NACK persist (or vice versa).
-    async fn touch_last_config_verify(&self, dataplane_name: &str, team: &str) {
+    ///
+    /// `team_name` is the team name extracted from the agent's SPIFFE URI
+    /// (see `extract_client_identity`). The `dataplanes.team` column stores a
+    /// team **id** (FK to `teams.id`) after migration
+    /// `20260207000002_switch_team_fk_to_team_id.sql`, so this query joins
+    /// `teams` to resolve name → id rather than comparing a name against an
+    /// id column (which silently matches zero rows — see decision doc
+    /// `specs/decisions/2026-04-14-fp-4n5-dataplanes-team-id-mismatch.md`).
+    async fn touch_last_config_verify(&self, dataplane_name: &str, team_name: &str) {
         let now = chrono::Utc::now();
         let res = sqlx::query(
-            "UPDATE dataplanes SET last_config_verify = $1, updated_at = $1 \
-             WHERE name = $2 AND team = $3",
+            "UPDATE dataplanes \
+             SET last_config_verify = $1, updated_at = $1 \
+             FROM teams \
+             WHERE dataplanes.team = teams.id \
+               AND dataplanes.name = $2 \
+               AND teams.name = $3",
         )
         .bind(now)
         .bind(dataplane_name)
-        .bind(team)
+        .bind(team_name)
         .execute(&self.pool)
         .await;
 
@@ -194,22 +206,31 @@ impl FlowplaneDiagnosticsService {
             Ok(r) if r.rows_affected() > 0 => {
                 debug!(
                     dataplane = %dataplane_name,
-                    team = %team,
+                    team = %team_name,
                     "Updated last_config_verify"
                 );
             }
             Ok(_) => {
-                debug!(
+                // Zero rows affected means either (a) the dataplane row has
+                // not been registered yet for this team (legitimate during
+                // agent-first bring-up) or (b) a schema/identity drift we
+                // want to surface loudly. We intentionally warn (not debug)
+                // so operators see silent-failure modes in `flowplane xds
+                // status` — the bug this fix closed was invisible for weeks
+                // because the equivalent log line was at debug level.
+                warn!(
                     dataplane = %dataplane_name,
-                    team = %team,
-                    "last_config_verify update matched no rows (dataplane not registered?)"
+                    team = %team_name,
+                    "last_config_verify update matched zero rows — dataplane \
+                     either not yet registered for this team or SPIFFE team \
+                     does not resolve to a known team row"
                 );
             }
             Err(e) => {
                 warn!(
                     error = %e,
                     dataplane = %dataplane_name,
-                    team = %team,
+                    team = %team_name,
                     "Best-effort last_config_verify update failed — continuing"
                 );
             }
