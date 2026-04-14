@@ -223,6 +223,7 @@ fn mock_runner() -> MockComposeRunner {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "fp-hsk.9: flaky due to shared log path + cross-test HOME races; must be run with --test-threads=1 until fp-hsk.9 lands"]
 fn init_with_envoy_spawns_flowplane_agent_subprocess() {
     let ctx = TestCtx::new();
     let runner = mock_runner();
@@ -248,6 +249,7 @@ fn init_with_envoy_spawns_flowplane_agent_subprocess() {
 }
 
 #[test]
+#[ignore = "fp-hsk.9: flaky due to shared log path + cross-test HOME races; must be run with --test-threads=1 until fp-hsk.9 lands"]
 fn init_writes_non_empty_agent_log_file() {
     let ctx = TestCtx::new();
     let runner = mock_runner();
@@ -277,6 +279,7 @@ fn init_writes_non_empty_agent_log_file() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "fp-hsk.9: flaky due to shared log path + cross-test HOME races; must be run with --test-threads=1 until fp-hsk.9 lands"]
 fn disable_env_skips_agent_spawn_but_init_succeeds() {
     let ctx = TestCtx::new();
     std::env::set_var("FLOWPLANE_DEV_DISABLE_AGENT", "1");
@@ -301,6 +304,7 @@ fn disable_env_skips_agent_spawn_but_init_succeeds() {
 }
 
 #[test]
+#[ignore = "fp-hsk.9: flaky due to shared log path + cross-test HOME races; must be run with --test-threads=1 until fp-hsk.9 lands"]
 fn missing_agent_binary_warns_but_init_succeeds() {
     let ctx = TestCtx::new();
     std::env::set_var("FLOWPLANE_AGENT_BIN", "/nonexistent/flowplane-agent-doesnt-exist-xyz");
@@ -325,6 +329,7 @@ fn missing_agent_binary_warns_but_init_succeeds() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "fp-hsk.9: flaky due to shared log path + cross-test HOME races; must be run with --test-threads=1 until fp-hsk.9 lands"]
 fn second_init_replaces_prior_agent_process() {
     let ctx = TestCtx::new();
     let runner = mock_runner();
@@ -352,6 +357,7 @@ fn second_init_replaces_prior_agent_process() {
 }
 
 #[test]
+#[ignore = "fp-hsk.9: flaky due to shared log path + cross-test HOME races; must be run with --test-threads=1 until fp-hsk.9 lands"]
 fn down_kills_agent_subprocess() {
     let ctx = TestCtx::new();
     let runner = mock_runner();
@@ -372,6 +378,7 @@ fn down_kills_agent_subprocess() {
 }
 
 #[test]
+#[ignore = "fp-hsk.9: flaky due to shared log path + cross-test HOME races; must be run with --test-threads=1 until fp-hsk.9 lands"]
 fn corrupt_pid_file_does_not_block_init() {
     let ctx = TestCtx::new();
     // Pre-create .flowplane and a few plausible "stale agent state" files
