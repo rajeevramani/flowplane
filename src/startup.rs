@@ -3,6 +3,7 @@
 //! Displays a setup banner when the Zitadel project is not configured,
 //! and seeds dev-mode resources when running in `AuthMode::Dev`.
 
+use crate::auth::dev_token::{DEV_USER_EMAIL, DEV_USER_SUB};
 use crate::domain::UserId;
 use crate::errors::Result;
 use crate::storage::repositories::app_ids;
@@ -39,7 +40,7 @@ pub async fn handle_first_time_startup() -> Result<()> {
 pub async fn seed_dev_resources(pool: &sqlx::PgPool) -> Result<UserId> {
     let dev_user_id = UserId::from_str_unchecked("dev-user-id");
     let dev_org_id = "dev-org-id";
-    let dev_email = "dev@flowplane.local";
+    let dev_email = DEV_USER_EMAIL;
     let now = chrono::Utc::now();
 
     // 1. Create dev org (idempotent)
@@ -78,11 +79,12 @@ pub async fn seed_dev_resources(pool: &sqlx::PgPool) -> Result<UserId> {
     // 3. Create dev user (idempotent)
     sqlx::query(
         "INSERT INTO users (id, email, password_hash, name, status, is_admin, user_type, zitadel_sub, created_at, updated_at) \
-         VALUES ($1, $2, '', 'Dev User', 'active', false, 'human', 'dev-sub', $3, $4) \
+         VALUES ($1, $2, '', 'Dev User', 'active', false, 'human', $3, $4, $5) \
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(dev_user_id.to_string())
     .bind(dev_email)
+    .bind(DEV_USER_SUB)
     .bind(now)
     .bind(now)
     .execute(pool)

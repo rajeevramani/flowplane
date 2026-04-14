@@ -17,6 +17,7 @@ use crate::auth::authorization::{
     action_from_request, require_resource_access, resource_from_path,
 };
 use crate::auth::cache::{CachedPermissionSnapshot, CachedPermissions};
+use crate::auth::dev_token::DEV_USER_EMAIL;
 use crate::auth::models::{AgentContext, AuthContext, AuthError};
 use crate::auth::permissions::load_permissions;
 use crate::auth::zitadel::{fetch_user_email, validate_jwt_extract_sub, ZitadelAuthState};
@@ -313,7 +314,7 @@ pub async fn dev_authenticate(
         token_id,
         "dev-token".to_string(),
         state.user_id.clone(),
-        "dev@flowplane.local".to_string(),
+        DEV_USER_EMAIL.to_string(),
         vec!["org:dev-org:admin".to_string()],
     );
     context = context.with_org(org_id, "dev-org".to_string());
@@ -432,7 +433,7 @@ mod tests {
             token_id,
             "dev-token".to_string(),
             user_id,
-            "dev@flowplane.local".to_string(),
+            DEV_USER_EMAIL.to_string(),
             vec!["org:dev-org:admin".to_string()],
         )
         .with_org(org_id, "dev-org".to_string())
@@ -483,7 +484,7 @@ mod tests {
     #[test]
     fn dev_synthetic_context_has_user_email() {
         let ctx = dev_synthetic_context();
-        assert_eq!(ctx.user_email.as_deref(), Some("dev@flowplane.local"));
+        assert_eq!(ctx.user_email.as_deref(), Some(DEV_USER_EMAIL));
     }
 
     /// Acceptance test: org-admin dev context can read clusters in the default team.

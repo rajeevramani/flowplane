@@ -18,6 +18,19 @@ const TOKEN_RAW_BYTES: usize = 32;
 /// Credentials filename inside the flowplane directory.
 const CREDENTIALS_FILE: &str = "credentials";
 
+/// Canonical `sub` claim value for the dev-mode seeded user.
+///
+/// Referenced by both `src/startup.rs::seed_dev_resources` (which inserts
+/// the row) and the dev-mode OIDC mock server (which must issue tokens
+/// whose `sub` matches the seeded user). Keeping the constant here in
+/// `src/auth/dev_token.rs` rather than `src/startup.rs` avoids a
+/// dev-module → startup-module dependency edge when the OIDC mock lands.
+pub const DEV_USER_SUB: &str = "dev-sub";
+
+/// Canonical email for the dev-mode seeded user. Paired with
+/// `DEV_USER_SUB` — same rationale for the location.
+pub const DEV_USER_EMAIL: &str = "dev@flowplane.local";
+
 /// Generate a cryptographically random URL-safe bearer token.
 ///
 /// Returns a base64url-encoded string (no padding) of at least 32 random bytes.
