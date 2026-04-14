@@ -368,4 +368,93 @@ mod tests {
         });
         assert!(extract_sub(&numeric_sub).is_err());
     }
+
+    // Adversarial: ZitadelConfig::from_mock must faithfully propagate the
+    // mock's post-bind fields. The critical invariant is jwks_url pointing
+    // at the ephemeral bind URL (architect's day-1 warning in
+    // specs/decisions/2026-04-14-fp-4n5-pre-implementation.md §G1): if
+    // from_mock captures a pre-configured constant instead of the live
+    // mock.jwks_url(), token validation silently fails against a wrong
+    // endpoint. This test forces a non-default audience so the check is
+    // not a tautology on Default.
+    #[cfg(feature = "dev-oidc")]
+    #[tokio::test]
+    async fn from_mock_propagates_post_bind_fields() {
+        use crate::dev::oidc_server::{MockOidcConfig, MockOidcServer};
+
+        let config = MockOidcConfig {
+            project_id: "from-mock-project-xyz".to_string(),
+            audience: "from-mock-audience-42".to_string(),
+            ..Default::default()
+        };
+        let mock = MockOidcServer::start(config).await.expect("mock start");
+
+        let cfg = ZitadelConfig::from_mock(&mock);
+
+        // Issuer is derived from the ephemeral bind URL, so we assert
+        // field equality with the mock's own value rather than a constant.
+        assert_eq!(
+            cfg.issuer, mock.issuer,
+            "ZitadelConfig.issuer must mirror mock.issuer (post-bind, ephemeral port)"
+        );
+        assert_eq!(
+            cfg.project_id, "from-mock-project-xyz",
+            "project_id must propagate from MockOidcConfig"
+        );
+        assert_eq!(
+            cfg.audience, "from-mock-audience-42",
+            "audience must propagate from MockOidcConfig"
+        );
+        assert_eq!(
+            cfg.jwks_url,
+            mock.jwks_url(),
+            "jwks_url MUST equal mock.jwks_url() — capturing a pre-bind constant \
+             here silently breaks JWT validation against the ephemeral port"
+        );
+
+        // Sanity: the jwks_url must contain the ephemeral port (not 0 and
+        // not any default). The architect's G1 warning was specifically
+        // about constructing from_mock before the listener bound. A URL
+        // without a numeric port after the colon would indicate we
+        // captured a placeholder.
+        assert!(
+            cfg.jwks_url.starts_with("http://127.0.0.1:")
+                || cfg.jwks_url.starts_with("http://localhost:"),
+            "jwks_url should target loopback mock server, got: {}",
+            cfg.jwks_url
+        );
+        let port_part = cfg
+            .jwks_url
+            .trim_start_matches("http://127.0.0.1:")
+            .trim_start_matches("http://localhost:");
+        let port_end = port_part.find('/').unwrap_or(port_part.len());
+        let port_str = &port_part[..port_end];
+        let port: u16 = port_str.parse().expect("jwks_url must carry a numeric port");
+        assert!(port > 0, "ephemeral port must be non-zero");
+    }
+
+    // Adversarial: two sequential mocks must produce distinct jwks_urls
+    // (distinct ephemeral ports). Catches regressions where from_mock
+    // would cache or memoize the jwks_url and reuse a stale port across
+    // mock instances.
+    #[cfg(feature = "dev-oidc")]
+    #[tokio::test]
+    async fn from_mock_distinct_instances_have_distinct_jwks_urls() {
+        use crate::dev::oidc_server::{MockOidcConfig, MockOidcServer};
+
+        let mock_a = MockOidcServer::start(MockOidcConfig::default()).await.unwrap();
+        let mock_b = MockOidcServer::start(MockOidcConfig::default()).await.unwrap();
+
+        let cfg_a = ZitadelConfig::from_mock(&mock_a);
+        let cfg_b = ZitadelConfig::from_mock(&mock_b);
+
+        assert_ne!(
+            cfg_a.jwks_url, cfg_b.jwks_url,
+            "two distinct mock servers must yield distinct jwks_urls"
+        );
+        assert_ne!(
+            cfg_a.issuer, cfg_b.issuer,
+            "two distinct mock servers must yield distinct issuers"
+        );
+    }
 }
