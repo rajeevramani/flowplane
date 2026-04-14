@@ -51,6 +51,11 @@ integration-tests = []
 # Enable with: cargo test --features postgres_tests
 postgres_tests = []
 
+# Dev-mode mock OIDC server — lifted from tests/common/mock_oidc.rs so the
+# control plane can stand up a local OIDC issuer without requiring Zitadel.
+# Only compiled into binaries that opt in (dev builds, test binaries).
+dev-oidc = ["dep:rsa"]
+
 [dependencies]
 # Core async runtime
 tokio = { version = "1.47.1", features = ["full"] }
@@ -98,6 +103,9 @@ bcrypt = "0.17"
 ring = "0.17.14"
 base64 = "0.22"
 rand = "0.8"
+# Pure-Rust RSA keygen for the dev-oidc mock provider (gated by `dev-oidc`).
+# `dep:rsa` is only activated when that feature is enabled.
+rsa = { version = "0.9", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 simple_asn1 = "0.6"
 tokio-rustls = "0.26"
@@ -145,7 +153,7 @@ dotenvy = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # X.509 certificate parsing for mTLS identity extraction
-x509-parser = "0.16"
+x509-parser = { version = "0.16", features = ["verify"] }
 
 # Utilities
 uuid = { version = "1.0", features = ["v4", "fast-rng", "serde"] }
@@ -159,6 +167,11 @@ utoipa = { version = "5.4.0", features = ["macros", "chrono"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 num_cpus = "1.17.0"
 
+# Dev mode mTLS ephemeral cert generation (src/cli/dev_certs.rs). Used at
+# runtime by `flowplane init` to build a local SPIFFE PKI for Envoy, the
+# flowplane-agent, and the control plane. Also used from tests.
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+
 [dev-dependencies]
 tokio-test = "0.4"
 axum-test = "16.4.0"
@@ -166,7 +179,6 @@ tracing-test = "0.2.5"
 reserve-port = "2.3"
 proptest = "1.5"
 hyper-rustls = "0.27"
-rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 tempfile = "3.14"
 which = "6.0"
 rustls-pemfile = "2.1"

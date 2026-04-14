@@ -26,6 +26,8 @@ pub mod api;
 pub mod auth;
 pub mod cli;
 pub mod config;
+#[cfg(feature = "dev-oidc")]
+pub mod dev;
 pub mod domain;
 pub mod errors;
 pub mod internal_api;
