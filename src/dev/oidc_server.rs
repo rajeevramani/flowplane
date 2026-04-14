@@ -1310,6 +1310,81 @@ mod tests {
         assert_eq!(server.active_refresh_token_count().await, 1);
     }
 
+    // Adversarial round-trip: pure-Rust keygen -> JWT sign -> JWKS publish ->
+    // external decode with custom audience/sub. Independent coverage from
+    // `test_issued_token_validates_with_jwks` (which uses default config):
+    // this one forces a non-default audience, a non-default sub, verifies
+    // alg=RS256 in the header, and asserts iss/aud/sub are all the
+    // customised values. Fails if the pure-Rust `rsa` crate's PKCS#1 DER
+    // output is subtly incompatible with `EncodingKey::from_rsa_der`, or if
+    // the JWKS modulus base64url encoding does not round-trip.
+    #[tokio::test]
+    async fn adversarial_round_trip_custom_audience_and_sub() {
+        let config = MockOidcConfig {
+            audience: "adversarial-aud-42".to_string(),
+            ..Default::default()
+        };
+        let server = MockOidcServer::start(config).await.unwrap();
+
+        // Custom sub with characters that would break a naive encoder
+        // (colon, slash, plus, equals) — JWT spec allows any UTF-8 in the
+        // sub claim, so this exercises the JSON serializer end-to-end.
+        let custom_sub = "user://adversarial+sub=42";
+        let token = server.issue_token_for_sub(custom_sub).await.unwrap();
+
+        // Header must declare RS256 and a kid that matches the JWKS entry.
+        let header = jsonwebtoken::decode_header(&token).unwrap();
+        assert_eq!(header.alg, Algorithm::RS256, "mock must sign with RS256");
+        let kid = header.kid.clone().expect("header must carry kid");
+
+        // Fetch JWKS from the server's ephemeral bind URL and find the key.
+        let jwks_resp = reqwest::get(server.jwks_url()).await.unwrap();
+        let jwks: jsonwebtoken::jwk::JwkSet = jwks_resp.json().await.unwrap();
+        let jwk = jwks.find(&kid).expect("JWKS must expose the signing key");
+
+        // Decode the modulus/exponent from the JWKS JWK entry (base64url).
+        // If the rsa crate's PublicKeyParts -> base64url path differs from
+        // what jsonwebtoken expects on the verify side, from_rsa_components
+        // will either fail or produce a key that rejects the signature.
+        let decoding_key = match &jwk.algorithm {
+            jsonwebtoken::jwk::AlgorithmParameters::RSA(rsa) => {
+                jsonwebtoken::DecodingKey::from_rsa_components(&rsa.n, &rsa.e).unwrap()
+            }
+            _ => panic!("JWKS key must be RSA"),
+        };
+
+        let mut validation = jsonwebtoken::Validation::new(Algorithm::RS256);
+        validation.set_issuer(&[&server.issuer]);
+        validation.set_audience(&["adversarial-aud-42"]);
+
+        let token_data = jsonwebtoken::decode::<serde_json::Value>(
+            &token,
+            &decoding_key,
+            &validation,
+        )
+        .expect("token must verify against JWKS public key");
+
+        assert_eq!(token_data.claims["sub"], custom_sub);
+        assert_eq!(token_data.claims["aud"], "adversarial-aud-42");
+        assert_eq!(token_data.claims["iss"], server.issuer);
+
+        // Negative half: swap to an issuer that the server did NOT use. The
+        // same key must now reject the token (catches regressions where
+        // validation is silently skipped).
+        let mut wrong_issuer_validation = jsonwebtoken::Validation::new(Algorithm::RS256);
+        wrong_issuer_validation.set_issuer(&["https://not-the-mock.invalid"]);
+        wrong_issuer_validation.set_audience(&["adversarial-aud-42"]);
+        let wrong_issuer_result = jsonwebtoken::decode::<serde_json::Value>(
+            &token,
+            &decoding_key,
+            &wrong_issuer_validation,
+        );
+        assert!(
+            wrong_issuer_result.is_err(),
+            "token with server.issuer must not validate under a different issuer"
+        );
+    }
+
     #[tokio::test]
     async fn test_expired_tokens_failure_mode() {
         let config =
