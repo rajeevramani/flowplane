@@ -483,37 +483,174 @@ fn route_with_error(name: &str, details: &str, ts: &str) -> Value {
 
 // --- Envoy admin parsing -----------------------------------------------------
 
+// fp-084: a healthy Envoy must still produce one first-contact envelope so
+// CP-side `dataplanes.last_config_verify` flips off NULL and operators can
+// distinguish "agent never connected" from "agent healthy". After that single
+// envelope, steady-state healthy polls must remain silent (no spam).
+
 #[tokio::test(flavor = "multi_thread")]
-async fn empty_config_dump_sends_no_reports() {
+async fn empty_config_dump_emits_exactly_one_first_contact_envelope() {
+    // Pre-fp-084 behavior was: zero envelopes ever for empty config_dump.
+    // Post-fix: exactly one first-contact envelope, then silence regardless of
+    // how many additional poll cycles run.
     let admin = AdminState::new(vec![AdminResponse::Json(json!({"configs": []}))]);
     let admin_port = spawn_admin(admin.clone()).await;
     let (cp_port, cp) = spawn_cp().await;
 
     let _agent = spawn_agent(admin_port, cp_port, "dp-empty", 1, &[]);
 
-    // Give the agent 4 seconds: it should hit admin at least twice and still
-    // send zero reports.
-    wait_admin_hits(&admin, 2, Duration::from_secs(6)).await;
+    // Wait for the first envelope to land so we don't false-fail on a slow
+    // CI scheduler before the agent has had time to push.
+    wait_reports(&cp, 1, Duration::from_secs(15)).await;
+    // Then run for several MORE poll cycles to prove no re-emit happens.
+    let now_hits = admin.hits().await;
+    wait_admin_hits(&admin, now_hits + 4, Duration::from_secs(10)).await;
     sleep(Duration::from_secs(1)).await;
 
     let reports = cp.reports().await;
-    assert!(reports.is_empty(), "empty config dump must not produce reports, got {reports:?}");
-    assert!(admin.hits().await >= 2, "agent should have polled at least twice");
+    assert_eq!(
+        reports.len(),
+        1,
+        "fp-084: empty config_dump must emit exactly one first-contact envelope across multiple polls; got {reports:?}"
+    );
+    assert!(admin.hits().await >= 4, "agent should have polled at least four times");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn healthy_listener_sends_no_reports() {
+async fn healthy_listener_emits_exactly_one_first_contact_envelope() {
+    // Pre-fp-084: zero envelopes for a healthy listener (the bug).
+    // Post-fix: exactly one first-contact envelope, then silence.
     let dump = listeners_dump(vec![listener_healthy("lst_healthy")]);
     let admin = AdminState::new(vec![AdminResponse::Json(dump)]);
     let admin_port = spawn_admin(admin.clone()).await;
     let (cp_port, cp) = spawn_cp().await;
 
     let _agent = spawn_agent(admin_port, cp_port, "dp-healthy", 1, &[]);
-    wait_admin_hits(&admin, 2, Duration::from_secs(6)).await;
+    wait_admin_hits(&admin, 4, Duration::from_secs(8)).await;
     sleep(Duration::from_secs(1)).await;
 
-    let reports = cp.listener_reports().await;
-    assert!(reports.is_empty(), "healthy listener should not report; got {reports:?}");
+    let total = cp.reports().await;
+    assert_eq!(
+        total.len(),
+        1,
+        "fp-084: healthy listener must produce exactly one envelope (the first-contact one) across >=4 polls; got {total:?}"
+    );
+
+    // The single envelope must NOT be a phantom listener-error report — its
+    // ListenerStateReport (if any) must have empty error_details so the
+    // CP's `persist_listener_state` short-circuits before NACK insert.
+    let listener = cp.listener_reports().await;
+    if let Some(r) = listener.first() {
+        assert!(
+            r.error_details.is_empty(),
+            "first-contact envelope must not carry a fake error_details; got {:?}",
+            r.error_details
+        );
+    }
+}
+
+// fp-084 scenario A: even in a single poll cycle, the agent must enqueue ONE
+// envelope when Envoy is healthy. Catches a regression that reverts the fix
+// (count would be 0).
+#[tokio::test(flavor = "multi_thread")]
+async fn fp084_first_contact_envelope_sent_within_first_poll_cycle_when_healthy() {
+    let dump = listeners_dump(vec![listener_healthy("lst_only")]);
+    let admin = AdminState::new(vec![AdminResponse::Json(dump)]);
+    let admin_port = spawn_admin(admin.clone()).await;
+    let (cp_port, cp) = spawn_cp().await;
+    let _agent = spawn_agent(admin_port, cp_port, "dp-fp084-a", 1, &[]);
+
+    // After the first poll has clearly happened (admin hit observed), give a
+    // generous grace period for the queue→stream hop, then assert a report
+    // landed on the CP. Total budget bounded so the test fails fast on a
+    // regression.
+    wait_admin_hits(&admin, 1, Duration::from_secs(8)).await;
+    let got = wait_reports(&cp, 1, Duration::from_secs(5)).await;
+    assert!(
+        !got.is_empty(),
+        "fp-084 regression: healthy Envoy in cycle 1 produced no first-contact envelope (got 0 reports); \
+         CP would treat the dataplane as NOT_MONITORED forever"
+    );
+}
+
+// fp-084 scenario B: from cycle 2 onward, no additional envelopes when state
+// is still healthy. Catches a regression that makes first-contact periodic.
+#[tokio::test(flavor = "multi_thread")]
+async fn fp084_first_contact_envelope_not_resent_across_steady_state_polls() {
+    let dump = listeners_dump(vec![listener_healthy("lst_only")]);
+    let admin = AdminState::new(vec![AdminResponse::Json(dump)]);
+    let admin_port = spawn_admin(admin.clone()).await;
+    let (cp_port, cp) = spawn_cp().await;
+    let _agent = spawn_agent(admin_port, cp_port, "dp-fp084-b", 1, &[]);
+
+    // Wait for at least one envelope to land (cycle 1 first-contact).
+    wait_reports(&cp, 1, Duration::from_secs(8)).await;
+    let after_first = cp.reports().await.len();
+    assert_eq!(
+        after_first, 1,
+        "expected exactly one envelope after first cycle; got {after_first}"
+    );
+
+    // Let several MORE poll cycles run; queue→stream hop is fast, so any
+    // additional envelopes would land within seconds.
+    let hits_now = admin.hits().await;
+    wait_admin_hits(&admin, hits_now + 4, Duration::from_secs(8)).await;
+    sleep(Duration::from_secs(1)).await;
+
+    let final_count = cp.reports().await.len();
+    assert_eq!(
+        final_count, 1,
+        "fp-084 regression: first-contact envelope was re-emitted on a later healthy poll; \
+         expected exactly 1 envelope total across all healthy cycles, got {final_count}"
+    );
+}
+
+// fp-084 scenario C: existing error-reporting behavior must still work after
+// the first-contact envelope. Catches a regression that breaks normal NACK
+// propagation while implementing the fix.
+#[tokio::test(flavor = "multi_thread")]
+async fn fp084_first_contact_does_not_suppress_later_error_envelopes() {
+    // First two responses healthy → first-contact emits a single envelope.
+    // Third response (and beyond) injects an error → existing reporting kicks in.
+    let healthy = listeners_dump(vec![listener_healthy("lst_health")]);
+    let broken = listeners_dump(vec![listener_with_error(
+        "lst_broken",
+        "delayed-cycle warming failure",
+        "2026-04-14T00:00:00Z",
+    )]);
+    let admin = AdminState::new(vec![
+        AdminResponse::Json(healthy.clone()),
+        AdminResponse::Json(healthy),
+        AdminResponse::Json(broken),
+    ]);
+    let admin_port = spawn_admin(admin.clone()).await;
+    let (cp_port, cp) = spawn_cp().await;
+    let _agent = spawn_agent(admin_port, cp_port, "dp-fp084-c", 1, &[]);
+
+    // Wait for the broken cycle to surface its error report.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut got_error = false;
+    while Instant::now() < deadline {
+        let listener = cp.listener_reports().await;
+        if listener.iter().any(|r| r.resource_name == "lst_broken") {
+            got_error = true;
+            break;
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        got_error,
+        "fp-084 regression: agent failed to deliver an error report from cycle 3 (existing behavior broken)"
+    );
+
+    // Total envelopes should be at least 2 (first-contact + the error report).
+    let total = cp.reports().await;
+    assert!(
+        total.len() >= 2,
+        "expected first-contact envelope + error envelope; got only {} envelope(s): {:?}",
+        total.len(),
+        total
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

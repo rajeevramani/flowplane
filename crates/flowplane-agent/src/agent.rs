@@ -24,6 +24,7 @@ pub async fn run_poll_loop(
     tick.tick().await;
 
     let mut seen_hashes: HashSet<String> = HashSet::new();
+    let mut first_contact_sent = false;
 
     loop {
         tick.tick().await;
@@ -66,6 +67,25 @@ pub async fn run_poll_loop(
                     }
 
                     seen_hashes = new_seen;
+
+                    // First-contact envelope: ensures the CP observes at least one
+                    // report per dataplane so `dataplanes.last_config_verify` leaves
+                    // NULL and `classify_agent_status` can distinguish "healthy" from
+                    // "never connected". Only emitted when no error reports were
+                    // pushed this cycle — error reports already touch last_config_verify
+                    // CP-side, so a second empty envelope would be redundant and could
+                    // race with the error batch.
+                    if !first_contact_sent && emitted == 0 {
+                        let report = build_first_contact_report(&cfg.dataplane_id);
+                        if queue.push(report).await {
+                            warn!(
+                                queue_cap = cfg.queue_cap,
+                                "agent queue full — dropped oldest diagnostic report to make room"
+                            );
+                        }
+                        info!("sent first-contact diagnostics envelope to CP");
+                    }
+                    first_contact_sent = true;
                 }
                 Err(e) => {
                     warn!(error = %e, "failed to parse /config_dump JSON");
@@ -84,6 +104,28 @@ async fn fetch_config_dump(
 ) -> Result<String, reqwest::Error> {
     let url = format!("{}/config_dump", admin_url.trim_end_matches('/'));
     http.get(&url).send().await?.error_for_status()?.text().await
+}
+
+fn build_first_contact_report(dataplane_id: &str) -> DiagnosticsReport {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    let observed_at = Some(prost_types::Timestamp {
+        seconds: now.as_secs() as i64,
+        nanos: now.subsec_nanos() as i32,
+    });
+    let state = ListenerStateReport {
+        resource_type: ResourceType::Listener as i32,
+        resource_name: String::new(),
+        error_details: String::new(),
+        last_update_attempt: None,
+        failed_config_hash: String::new(),
+    };
+    DiagnosticsReport {
+        schema_version: 1,
+        report_id: uuid::Uuid::new_v4().to_string(),
+        dataplane_id: dataplane_id.to_string(),
+        observed_at,
+        payload: Some(Payload::ListenerState(state)),
+    }
 }
 
 fn build_report(dataplane_id: &str, entry: &ErrorEntry, hash: String) -> DiagnosticsReport {
