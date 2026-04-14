@@ -170,6 +170,16 @@ impl TestCtx {
         std::env::remove_var("FLOWPLANE_DEV_DISABLE_AGENT");
         std::env::set_var("FLOWPLANE_AGENT_BIN", agent_bin());
 
+        // Seed a dummy credentials file at the path compose::init falls back to
+        // when FLOWPLANE_CREDENTIALS_PATH is unset (HOME/.flowplane/credentials).
+        // A real CP writes this during startup; MockComposeRunner is a no-op,
+        // so we stand in for that side effect here.
+        let cred_path = home.path().join(".flowplane").join("credentials");
+        std::fs::create_dir_all(cred_path.parent().expect("credentials path has parent"))
+            .expect("create .flowplane dir in tempdir HOME");
+        std::fs::write(&cred_path, b"ZmFrZS1oZWFkZXI.ZmFrZS1wYXlsb2Fk.ZmFrZS1zaWc")
+            .expect("seed dummy credentials file");
+
         let baseline_pids = pgrep_agent();
         let pre_log_files = agent_log_files();
 
