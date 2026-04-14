@@ -14,4 +14,6 @@ pub mod server;
 #[cfg(test)]
 pub mod test_utils;
 
+#[cfg(feature = "dev-oidc")]
+pub use server::build_dev_auth_state;
 pub use server::start_api_server;

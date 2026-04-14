@@ -10,7 +10,10 @@ use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 use tracing::{error, info};
 
+use flowplane::auth::zitadel::ZitadelAuthState;
 use flowplane::config::{ApiServerConfig, DatabaseConfig, SimpleXdsConfig, XdsResourceConfig};
+#[cfg(feature = "dev-oidc")]
+use flowplane::dev::oidc_server::MockOidcServer;
 use flowplane::openapi::defaults::ensure_default_gateway_resources;
 use flowplane::secrets::SecretBackendRegistry;
 use flowplane::storage::{create_pool, run_migrations};
@@ -19,7 +22,7 @@ use flowplane::xds::{start_database_xds_server_with_state, XdsState};
 use super::timeout::{retry_with_timeout, STARTUP_TIMEOUT};
 
 /// Control plane configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ControlPlaneConfig {
     /// PostgreSQL database URL
     pub db_url: String,
@@ -31,6 +34,13 @@ pub struct ControlPlaneConfig {
     pub default_listener_port: u16,
     /// TLS configuration for xDS server (optional)
     pub xds_tls: Option<flowplane::config::XdsTlsConfig>,
+    /// Pre-running mock OIDC server whose JWKS the CP should trust in dev
+    /// mode. When Some, `start()` derives a `ZitadelAuthState` from this mock
+    /// and passes it to `start_api_server` as an override, preventing the CP
+    /// from spawning its OWN internal mock (which would issue keys that
+    /// don't match the tokens this mock mints for tests).
+    #[cfg(feature = "dev-oidc")]
+    pub dev_oidc_mock: Option<Arc<MockOidcServer>>,
 }
 
 impl ControlPlaneConfig {
@@ -42,12 +52,23 @@ impl ControlPlaneConfig {
             xds_addr: SocketAddr::from(([127, 0, 0, 1], xds_port)),
             default_listener_port,
             xds_tls: None,
+            #[cfg(feature = "dev-oidc")]
+            dev_oidc_mock: None,
         }
     }
 
     /// Add mTLS configuration for xDS server
     pub fn with_xds_tls(mut self, tls: flowplane::config::XdsTlsConfig) -> Self {
         self.xds_tls = Some(tls);
+        self
+    }
+
+    /// Attach a pre-running dev mock OIDC server. See [`dev_oidc_mock`] for the
+    /// motivation — this wires the CP to trust the test-owned mock instead of
+    /// spawning its own.
+    #[cfg(feature = "dev-oidc")]
+    pub fn with_dev_oidc_mock(mut self, mock: Arc<MockOidcServer>) -> Self {
+        self.dev_oidc_mock = Some(mock);
         self
     }
 }
@@ -109,6 +130,7 @@ impl ControlPlaneHandle {
             },
             tls: config.xds_tls,
             envoy_admin: Default::default(),
+            auth_mode: Default::default(),
         };
 
         // Set env vars BEFORE XdsState::with_database() — it reads them during init
@@ -197,9 +219,31 @@ impl ControlPlaneHandle {
         };
         let api_state = state.clone();
         let api_addr_clone = config.api_addr;
+
+        // Build the Zitadel auth state from the caller-supplied mock OIDC
+        // (dev-oidc feature) so the CP's `authenticate` middleware validates
+        // tokens against the same signing key the test harness used to mint
+        // them. Without this the CP would spawn its own mock in
+        // `start_api_server` and the two instances would use different RSA
+        // keys — every test request would fail JWT validation.
+        let zitadel_override: Option<ZitadelAuthState> = {
+            #[cfg(feature = "dev-oidc")]
+            {
+                config
+                    .dev_oidc_mock
+                    .as_ref()
+                    .map(|mock| flowplane::api::build_dev_auth_state(mock.as_ref(), pool.clone()))
+            }
+            #[cfg(not(feature = "dev-oidc"))]
+            {
+                None
+            }
+        };
+
         let api_handle = tokio::spawn(async move {
             info!(addr = %api_addr_clone, "Starting API server for E2E test");
-            let result = flowplane::api::start_api_server(api_cfg, api_state).await;
+            let result =
+                flowplane::api::start_api_server(api_cfg, api_state, zitadel_override).await;
             if let Err(ref e) = result {
                 error!(error = %e, "API server failed");
                 let _ = api_error_tx.send(Some(e.to_string()));

@@ -200,7 +200,7 @@ pub struct TestHarness {
     /// alive for the lifetime of the harness so the issuer doesn't abort.
     #[cfg(feature = "dev-oidc")]
     #[allow(dead_code)]
-    _mock_oidc: Option<flowplane::dev::oidc_server::MockOidcServer>,
+    _mock_oidc: Option<std::sync::Arc<flowplane::dev::oidc_server::MockOidcServer>>,
 }
 
 impl TestHarness {
@@ -584,11 +584,35 @@ impl TestHarness {
         // Drop the port allocator to release the reserved ports before servers bind
         drop(port_allocator);
 
+        // For isolated dev mode we must create the mock OIDC server BEFORE
+        // starting the CP, then wire it into ControlPlaneConfig via
+        // `with_dev_oidc_mock`. The CP will derive its ZitadelAuthState from
+        // this mock (see build_dev_auth_state) and skip spawning its own —
+        // ensuring tokens minted here validate against the same signing key
+        // the CP uses.
+        let e2e_mode_pre = super::shared_infra::e2e_auth_mode();
+        #[cfg(feature = "dev-oidc")]
+        let mock_oidc_handle: Option<
+            std::sync::Arc<flowplane::dev::oidc_server::MockOidcServer>,
+        > = if matches!(e2e_mode_pre, super::shared_infra::E2eAuthMode::Dev) {
+            use flowplane::dev::oidc_server::{MockOidcConfig, MockOidcServer};
+            let mock = MockOidcServer::start(MockOidcConfig::default())
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to start mock OIDC: {e}"))?;
+            Some(std::sync::Arc::new(mock))
+        } else {
+            None
+        };
+
         // Start control plane with optional TLS
         let mut cp_config =
             ControlPlaneConfig::new(db_url.clone(), ports.api, ports.xds, ports.listener);
         if let Some(tls) = xds_tls_config {
             cp_config = cp_config.with_xds_tls(tls);
+        }
+        #[cfg(feature = "dev-oidc")]
+        if let Some(ref mock) = mock_oidc_handle {
+            cp_config = cp_config.with_dev_oidc_mock(mock.clone());
         }
 
         let cp = with_timeout(TestTimeout::startup("Starting control plane"), async {
@@ -600,6 +624,27 @@ impl TestHarness {
         with_timeout(TestTimeout::startup("Control plane ready"), async { cp.wait_ready().await })
             .await?;
         info!(api = %cp.api_addr, xds = %cp.xds_addr, "Control plane ready");
+
+        // In isolated dev mode, seed dev org/team/user so the mock-issued JWT
+        // (sub=DEV_USER_SUB) resolves to a real user row. Without this the
+        // `authenticate` middleware's JIT upsert would still succeed but the
+        // user would have no team memberships, which breaks any test that
+        // exercises resource-scoped endpoints.
+        if matches!(e2e_mode_pre, super::shared_infra::E2eAuthMode::Dev) {
+            use flowplane::storage::create_pool;
+            let db_cfg = flowplane::config::DatabaseConfig {
+                url: db_url.clone(),
+                auto_migrate: false,
+                max_connections: 2,
+                min_connections: 1,
+                ..Default::default()
+            };
+            let pool = create_pool(&db_cfg).await?;
+            flowplane::startup::seed_dev_resources(&pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to seed dev resources: {}", e))?;
+            info!("Dev resources seeded for isolated harness");
+        }
 
         // Start Envoy if available and requested
         let envoy = if config.start_envoy && EnvoyHandle::is_available() {
@@ -636,31 +681,19 @@ impl TestHarness {
             None
         };
 
-        // Determine auth mode and token for isolated mode.
-        //
-        // In dev mode we spin up a local mock OIDC issuer (dev-oidc feature)
-        // and mint a JWT for DEV_USER_SUB. Task 5a note: the CP spawns its
-        // OWN mock internally, so this token is not actually verified by
-        // the CP yet — the harness collapse in task 5b wires both sides to
-        // a single mock. This change just keeps the test binary compiling
-        // after `generate_dev_token` was removed in task 4.
-        let e2e_mode = super::shared_infra::e2e_auth_mode();
-        #[cfg(feature = "dev-oidc")]
-        #[allow(unused_assignments)]
-        let mut mock_oidc_handle: Option<flowplane::dev::oidc_server::MockOidcServer> = None;
-        let (auth_token, team, org, auth_mode) = match e2e_mode {
+        // Mint the test JWT from the SAME mock that the CP trusts (built
+        // pre-CP above). Task 5b: one mock, one signing key, one token.
+        let (auth_token, team, org, auth_mode) = match e2e_mode_pre {
             super::shared_infra::E2eAuthMode::Dev => {
                 #[cfg(feature = "dev-oidc")]
                 {
-                    use flowplane::dev::oidc_server::{MockOidcConfig, MockOidcServer};
-                    let mock = MockOidcServer::start(MockOidcConfig::default())
-                        .await
-                        .map_err(|e| anyhow::anyhow!("failed to start mock OIDC: {e}"))?;
+                    let mock = mock_oidc_handle
+                        .as_ref()
+                        .expect("dev mode should have built mock_oidc_handle");
                     let token = mock
                         .issue_token_for_sub(flowplane::auth::dev_token::DEV_USER_SUB)
                         .await
                         .map_err(|e| anyhow::anyhow!("failed to issue mock OIDC token: {e}"))?;
-                    mock_oidc_handle = Some(mock);
                     (
                         token,
                         "default".to_string(),

@@ -221,7 +221,7 @@ pub struct SharedInfrastructure {
     /// when that feature is on.
     #[cfg(feature = "dev-oidc")]
     #[allow(dead_code)]
-    mock_oidc: Option<flowplane::dev::oidc_server::MockOidcServer>,
+    mock_oidc: Option<Arc<flowplane::dev::oidc_server::MockOidcServer>>,
 }
 
 impl SharedInfrastructure {
@@ -333,21 +333,21 @@ impl SharedInfrastructure {
         std::env::set_var("FLOWPLANE_COOKIE_SECURE", "false");
         std::env::set_var("FLOWPLANE_BASE_URL", format!("http://localhost:{}", SHARED_API_PORT));
 
-        // Start a side-car mock OIDC in the test process so we can mint a JWT
-        // that tests send as the bearer token. NOTE(fp-4n5 task 5a): the CP
-        // currently spawns its own mock internally, so tokens issued here are
-        // NOT validated by the CP — the harness collapse in task 5b will
-        // unify the two. For now this keeps the test binary compiling and
-        // preserves the public shape of the harness auth_token field.
+        // Start a mock OIDC provider that the CP will trust (via
+        // `with_dev_oidc_mock` below) AND that this test process uses to mint
+        // JWTs. Task 5b: one mock, two consumers — tokens issued here are
+        // signed with the exact same key the CP's `authenticate` middleware
+        // validates against.
         #[cfg(feature = "dev-oidc")]
         let (mock_oidc, dev_token): (
-            Option<flowplane::dev::oidc_server::MockOidcServer>,
+            Option<Arc<flowplane::dev::oidc_server::MockOidcServer>>,
             String,
         ) = {
             use flowplane::dev::oidc_server::{MockOidcConfig, MockOidcServer};
             let mock = MockOidcServer::start(MockOidcConfig::default())
                 .await
                 .map_err(|e| anyhow::anyhow!("failed to start mock OIDC server: {e}"))?;
+            let mock = Arc::new(mock);
             let token = mock
                 .issue_token_for_sub(flowplane::auth::dev_token::DEV_USER_SUB)
                 .await
@@ -363,13 +363,20 @@ impl SharedInfrastructure {
         let mocks = MockServices::start_all().await;
         info!(echo = %mocks.echo_endpoint(), "Mock services started");
 
-        // Start control plane (no mTLS in dev mode for simplicity)
-        let cp_config = ControlPlaneConfig::new(
+        // Start control plane (no mTLS in dev mode for simplicity).
+        // Wire the test-owned mock OIDC so the CP validates against the same
+        // signing key we minted `dev_token` with.
+        #[allow(unused_mut)]
+        let mut cp_config = ControlPlaneConfig::new(
             db_url.clone(),
             SHARED_API_PORT,
             SHARED_XDS_PORT,
             SHARED_LISTENER_PORT,
         );
+        #[cfg(feature = "dev-oidc")]
+        if let Some(ref mock) = mock_oidc {
+            cp_config = cp_config.with_dev_oidc_mock(mock.clone());
+        }
 
         let cp = with_timeout(TestTimeout::startup("Starting shared control plane"), async {
             ControlPlaneHandle::start(cp_config).await

@@ -32,6 +32,28 @@ struct DevAuthBundle {
     _mock: crate::dev::oidc_server::MockOidcServer,
 }
 
+/// Build a `ZitadelAuthState` from an already-running mock OIDC server and the
+/// CP's database pool. Extracted so tests that own the mock externally (e.g.
+/// the e2e harness) can build the same state and pass it in as a
+/// `zitadel_override`, guaranteeing that the mock signing their tokens is the
+/// SAME mock the CP validates against.
+#[cfg(feature = "dev-oidc")]
+pub fn build_dev_auth_state(
+    mock: &crate::dev::oidc_server::MockOidcServer,
+    pool: crate::storage::DbPool,
+) -> ZitadelAuthState {
+    let zitadel_config = ZitadelConfig::from_mock(mock);
+    let auth_rate_limiter = Arc::new(crate::api::rate_limit::RateLimiter::auth_from_env());
+    let permission_cache = Arc::new(crate::auth::cache::PermissionCache::from_env());
+    ZitadelAuthState {
+        jwks_cache: JwksCache::new(&zitadel_config),
+        config: Arc::new(zitadel_config),
+        pool,
+        permission_cache,
+        auth_rate_limiter,
+    }
+}
+
 #[cfg(feature = "dev-oidc")]
 async fn start_dev_mock_oidc(state: &Arc<XdsState>) -> crate::Result<DevAuthBundle> {
     use crate::dev::oidc_server::{MockOidcConfig, MockOidcServer};
@@ -40,18 +62,9 @@ async fn start_dev_mock_oidc(state: &Arc<XdsState>) -> crate::Result<DevAuthBund
         .map_err(|e| Error::config(format!("failed to start dev mock OIDC server: {e}")))?;
     info!(issuer = %mock.issuer, "Dev mode: mock OIDC server started");
 
-    let zitadel_config = ZitadelConfig::from_mock(&mock);
     let pool =
         state.pool.clone().ok_or_else(|| Error::config("DB pool required for dev auth state"))?;
-    let auth_rate_limiter = Arc::new(crate::api::rate_limit::RateLimiter::auth_from_env());
-    let permission_cache = Arc::new(crate::auth::cache::PermissionCache::from_env());
-    let auth_state = ZitadelAuthState {
-        jwks_cache: JwksCache::new(&zitadel_config),
-        config: Arc::new(zitadel_config),
-        pool,
-        permission_cache,
-        auth_rate_limiter,
-    };
+    let auth_state = build_dev_auth_state(&mock, pool);
 
     if let Ok(path) = std::env::var("FLOWPLANE_CREDENTIALS_PATH") {
         match mock.issue_token().await {
@@ -72,7 +85,11 @@ async fn start_dev_mock_oidc(state: &Arc<XdsState>) -> crate::Result<DevAuthBund
     Ok(DevAuthBundle { auth_state, _mock: mock })
 }
 
-pub async fn start_api_server(config: ApiServerConfig, state: Arc<XdsState>) -> crate::Result<()> {
+pub async fn start_api_server(
+    config: ApiServerConfig,
+    state: Arc<XdsState>,
+    zitadel_override: Option<ZitadelAuthState>,
+) -> crate::Result<()> {
     let addr: SocketAddr = format!("{}:{}", config.bind_address, config.port)
         .parse()
         .map_err(|e| Error::config(format!("Invalid API address: {}", e)))?;
@@ -110,26 +127,39 @@ pub async fn start_api_server(config: ApiServerConfig, state: Arc<XdsState>) -> 
     let auth_mode = crate::config::AuthMode::from_env()
         .map_err(|e| Error::config(format!("invalid FLOWPLANE_AUTH_MODE: {e}")))?;
 
+    // If caller supplied a pre-built `ZitadelAuthState` (e.g. the e2e harness
+    // that wants its own mock to be the SAME one the CP validates against),
+    // skip spawning an in-process mock and use the override directly.
+    // Otherwise, in dev mode, spawn our own mock and derive the state from it.
     #[cfg(feature = "dev-oidc")]
-    let dev_bundle =
-        if auth_mode == AuthMode::Dev { Some(start_dev_mock_oidc(&state).await?) } else { None };
+    let dev_bundle = if zitadel_override.is_none() && auth_mode == AuthMode::Dev {
+        Some(start_dev_mock_oidc(&state).await?)
+    } else {
+        None
+    };
 
     #[cfg(not(feature = "dev-oidc"))]
     {
-        if auth_mode == AuthMode::Dev {
+        if zitadel_override.is_none() && auth_mode == AuthMode::Dev {
             return Err(Error::config(
                 "FLOWPLANE_AUTH_MODE=dev requires a build with the `dev-oidc` cargo feature enabled",
             ));
         }
     }
 
-    #[cfg(feature = "dev-oidc")]
-    let zitadel_override = dev_bundle.as_ref().map(|b| b.auth_state.clone());
-    #[cfg(not(feature = "dev-oidc"))]
-    let zitadel_override: Option<ZitadelAuthState> = None;
+    let effective_override: Option<ZitadelAuthState> = zitadel_override.or_else(|| {
+        #[cfg(feature = "dev-oidc")]
+        {
+            dev_bundle.as_ref().map(|b| b.auth_state.clone())
+        }
+        #[cfg(not(feature = "dev-oidc"))]
+        {
+            None
+        }
+    });
 
     let router: Router =
-        build_router_with_registry(state, Some(filter_schema_registry), zitadel_override);
+        build_router_with_registry(state, Some(filter_schema_registry), effective_override);
 
     let listener = TcpListener::bind(addr)
         .await

@@ -19,6 +19,7 @@ pub mod config_cmd;
 pub mod config_file;
 pub mod credentials;
 pub mod dataplane;
+pub mod dev_certs;
 pub mod expose;
 pub mod filter;
 pub mod import;
@@ -930,7 +931,7 @@ pub async fn run_server(dev: bool) -> crate::Result<()> {
     };
 
     let api_state = state.clone();
-    let api_task = async move { start_api_server(api_config, api_state).await };
+    let api_task = async move { start_api_server(api_config, api_state, None).await };
 
     if let Err(e) = try_join!(xds_task, api_task) {
         error!("Control plane services terminated with error: {}", e);
