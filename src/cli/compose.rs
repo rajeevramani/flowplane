@@ -490,8 +490,10 @@ pub fn handle_init_with_runner(
     // Credentials are written by the control plane itself on startup via the
     // `~/.flowplane` bind mount declared in docker-compose-dev.yml. Verify the
     // file is present — surface a clear error if the CP failed to write it.
-    let home = home_dir()?;
-    let cred_path = home.join(".flowplane").join("credentials");
+    let cred_path = match std::env::var_os("FLOWPLANE_CREDENTIALS_PATH") {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => home_dir()?.join(".flowplane").join("credentials"),
+    };
     if !cred_path.exists() {
         anyhow::bail!(
             "control plane did not write credentials file at {}: check CP logs",
