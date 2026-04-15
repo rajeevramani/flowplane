@@ -24,12 +24,28 @@ pub const DEV_DATAPLANE_ID: &str = "dev-dataplane";
 /// Default Envoy admin URL exposed on the host by the dev compose stack.
 pub const DEV_ENVOY_ADMIN_URL: &str = "http://127.0.0.1:9901";
 
-/// Default Flowplane CP endpoint exposed on the host by the dev compose stack.
-/// Same gRPC port that Envoy uses for xDS — diagnostics service is multiplexed.
+/// Default Flowplane CP endpoint (plaintext) — used when dev mTLS material is
+/// not available. When fp-u54 dev mTLS is active, the spec's `cp_endpoint` is
+/// flipped to `https://127.0.0.1:18000` by [`AgentSpawnSpec::with_dev_mtls`].
 pub const DEV_CP_ENDPOINT: &str = "http://127.0.0.1:18000";
+
+/// HTTPS form of the dev CP endpoint, used when dev mTLS is active.
+pub const DEV_CP_ENDPOINT_TLS: &str = "https://127.0.0.1:18000";
 
 /// Default poll interval (seconds) for the dev-mode agent.
 pub const DEV_POLL_INTERVAL_SECS: u64 = 10;
+
+/// Absolute host paths to the dev mTLS material the agent should present to
+/// the control plane. Populated by [`AgentSpawnSpec::with_dev_mtls`] when
+/// fp-u54 dev mTLS is active, and serialized into
+/// `FLOWPLANE_AGENT_TLS_CERT_PATH` / `_KEY_PATH` / `_CA_PATH` by
+/// [`build_agent_env`].
+#[derive(Debug, Clone)]
+pub struct AgentTlsPaths {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    pub ca_path: PathBuf,
+}
 
 /// Inputs needed to construct the agent subprocess environment.
 #[derive(Debug, Clone)]
@@ -38,6 +54,10 @@ pub struct AgentSpawnSpec {
     pub cp_endpoint: String,
     pub dataplane_id: String,
     pub poll_interval_secs: u64,
+    /// When `Some`, the agent is launched with mTLS material and an `https://`
+    /// CP endpoint. When `None`, the agent connects to the CP over plaintext.
+    /// Dev-only — prod never calls this path.
+    pub tls: Option<AgentTlsPaths>,
 }
 
 impl AgentSpawnSpec {
@@ -48,7 +68,27 @@ impl AgentSpawnSpec {
             cp_endpoint: DEV_CP_ENDPOINT.to_string(),
             dataplane_id: DEV_DATAPLANE_ID.to_string(),
             poll_interval_secs: DEV_POLL_INTERVAL_SECS,
+            tls: None,
         }
+    }
+
+    /// Attach dev-mode mTLS material from [`crate::cli::dev_certs::DevCertPaths`].
+    ///
+    /// Flips the CP endpoint scheme from `http://` to `https://` — the agent
+    /// must talk to the CP over the same mTLS channel Envoy uses, and the xDS
+    /// server in dev mode rejects plaintext when mTLS is active (see fp-u54.2).
+    ///
+    /// The three path fields are absolute host paths; the agent is a host
+    /// process (not inside the Envoy container), so no container path
+    /// translation is needed.
+    pub fn with_dev_mtls(mut self, certs: &crate::cli::dev_certs::DevCertPaths) -> Self {
+        self.cp_endpoint = DEV_CP_ENDPOINT_TLS.to_string();
+        self.tls = Some(AgentTlsPaths {
+            cert_path: certs.agent_cert.clone(),
+            key_path: certs.agent_key.clone(),
+            ca_path: certs.ca_cert.clone(),
+        });
+        self
     }
 }
 
@@ -56,12 +96,23 @@ impl AgentSpawnSpec {
 ///
 /// Kept pure (no IO) so it can be unit tested.
 pub fn build_agent_env(spec: &AgentSpawnSpec) -> Vec<(String, String)> {
-    vec![
+    let mut env = vec![
         ("FLOWPLANE_AGENT_ENVOY_ADMIN_URL".to_string(), spec.envoy_admin_url.clone()),
         ("FLOWPLANE_AGENT_CP_ENDPOINT".to_string(), spec.cp_endpoint.clone()),
         ("FLOWPLANE_AGENT_DATAPLANE_ID".to_string(), spec.dataplane_id.clone()),
         ("FLOWPLANE_AGENT_POLL_INTERVAL_SECS".to_string(), spec.poll_interval_secs.to_string()),
-    ]
+    ];
+
+    if let Some(tls) = &spec.tls {
+        env.push((
+            "FLOWPLANE_AGENT_TLS_CERT_PATH".to_string(),
+            tls.cert_path.display().to_string(),
+        ));
+        env.push(("FLOWPLANE_AGENT_TLS_KEY_PATH".to_string(), tls.key_path.display().to_string()));
+        env.push(("FLOWPLANE_AGENT_TLS_CA_PATH".to_string(), tls.ca_path.display().to_string()));
+    }
+
+    env
 }
 
 /// Locate the `flowplane-agent` binary.
@@ -274,6 +325,7 @@ mod tests {
             cp_endpoint: "http://127.0.0.1:28000".to_string(),
             dataplane_id: "weird-name".to_string(),
             poll_interval_secs: 3,
+            tls: None,
         };
         let env = build_agent_env(&spec);
         let map: std::collections::HashMap<_, _> = env.into_iter().collect();
@@ -281,6 +333,52 @@ mod tests {
         assert_eq!(map.get("FLOWPLANE_AGENT_CP_ENDPOINT").unwrap(), "http://127.0.0.1:28000");
         assert_eq!(map.get("FLOWPLANE_AGENT_DATAPLANE_ID").unwrap(), "weird-name");
         assert_eq!(map.get("FLOWPLANE_AGENT_POLL_INTERVAL_SECS").unwrap(), "3");
+    }
+
+    #[test]
+    fn build_agent_env_without_tls_has_no_tls_vars() {
+        let spec = AgentSpawnSpec::dev_defaults();
+        let env = build_agent_env(&spec);
+        let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+        assert!(!map.contains_key("FLOWPLANE_AGENT_TLS_CERT_PATH"));
+        assert!(!map.contains_key("FLOWPLANE_AGENT_TLS_KEY_PATH"));
+        assert!(!map.contains_key("FLOWPLANE_AGENT_TLS_CA_PATH"));
+        assert_eq!(
+            map.get("FLOWPLANE_AGENT_CP_ENDPOINT").map(String::as_str),
+            Some(DEV_CP_ENDPOINT),
+            "plaintext endpoint when tls is None"
+        );
+    }
+
+    #[test]
+    fn build_agent_env_with_tls_emits_paths_and_https_endpoint() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("certs");
+        let certs = crate::cli::dev_certs::generate_dev_certs(&root).unwrap();
+
+        let spec = AgentSpawnSpec::dev_defaults().with_dev_mtls(&certs);
+        let env = build_agent_env(&spec);
+        let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+
+        assert_eq!(
+            map.get("FLOWPLANE_AGENT_CP_ENDPOINT").map(String::as_str),
+            Some(DEV_CP_ENDPOINT_TLS),
+            "with_dev_mtls must flip CP endpoint to https"
+        );
+        assert!(map.get("FLOWPLANE_AGENT_CP_ENDPOINT").unwrap().starts_with("https://"));
+        assert_eq!(
+            map.get("FLOWPLANE_AGENT_TLS_CERT_PATH").unwrap(),
+            &certs.agent_cert.display().to_string()
+        );
+        assert_eq!(
+            map.get("FLOWPLANE_AGENT_TLS_KEY_PATH").unwrap(),
+            &certs.agent_key.display().to_string()
+        );
+        assert_eq!(
+            map.get("FLOWPLANE_AGENT_TLS_CA_PATH").unwrap(),
+            &certs.ca_cert.display().to_string()
+        );
+        assert_eq!(map.len(), 7, "exactly 4 base vars + 3 tls vars");
     }
 
     #[test]

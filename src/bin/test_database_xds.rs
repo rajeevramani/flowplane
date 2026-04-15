@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         tls: None,
         envoy_admin: Default::default(),
+        auth_mode: Default::default(),
     };
 
     // Test 4: Start Database-Enabled XDS Server (with timeout)

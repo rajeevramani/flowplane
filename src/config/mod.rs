@@ -68,6 +68,13 @@ pub struct SimpleXdsConfig {
     pub resources: XdsResourceConfig,
     pub tls: Option<XdsTlsConfig>,
     pub envoy_admin: EnvoyAdminConfig,
+    /// Global auth mode plumbed from `Config::auth_mode`. Available for future
+    /// consumers in `src/xds/`; currently informational. TLS is env-var-driven
+    /// via `FLOWPLANE_XDS_TLS_*` — there is no auto-load gated on this field.
+    ///
+    /// Defaults to `AuthMode::Prod` so any future consumer that forgets to wire
+    /// it cannot silently enable dev-only behaviour in production.
+    pub auth_mode: AuthMode,
 }
 
 /// Configuration for Envoy admin interface in bootstrap config.
@@ -146,6 +153,7 @@ impl Default for SimpleXdsConfig {
             resources: XdsResourceConfig::default(),
             tls: None,
             envoy_admin: EnvoyAdminConfig::default(),
+            auth_mode: AuthMode::Prod,
         }
     }
 }
@@ -280,6 +288,7 @@ impl Config {
                     port: envoy_admin_port,
                     access_log_path: envoy_admin_access_log_path,
                 },
+                auth_mode,
             },
             api: ApiServerConfig {
                 bind_address: api_bind_address,

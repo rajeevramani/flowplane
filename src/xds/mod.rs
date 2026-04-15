@@ -216,7 +216,16 @@ where
 }
 
 fn configure_server_builder(mut builder: Server, config: &SimpleXdsConfig) -> Result<Server> {
-    if let Some(tls_config) = build_server_tls_config(config)? {
+    // Unified TLS path (fp-u54.6): dev and prod both run through
+    // `build_server_tls_config`. The control plane enables mTLS iff
+    // `FLOWPLANE_XDS_TLS_*` env vars are set. In dev mode, `flowplane init`
+    // points those env vars at the ephemeral PKI under `~/.flowplane/certs/`;
+    // in prod, operators point them at their own PKI. There is no auto-load,
+    // no dev/prod branch, and no filesystem lookup in this code path —
+    // prod-safety is architectural, not a code gate.
+    let tls_config = build_server_tls_config(config)?;
+
+    if let Some(tls_config) = tls_config {
         builder = builder.tls_config(tls_config).map_err(|e| {
             crate::Error::transport(format!("Failed to apply xDS TLS configuration: {}", e))
         })?;
