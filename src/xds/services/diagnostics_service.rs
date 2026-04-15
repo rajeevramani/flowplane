@@ -34,6 +34,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info, warn};
 
+use crate::errors::FlowplaneError;
 use crate::storage::repositories::{
     CreateNackEventRequest, DataplaneRepository, NackEventRepository, NackSource,
 };
@@ -296,17 +297,27 @@ impl FlowplaneDiagnosticsService {
 
         match self.nack_events.insert(request).await {
             Ok(_) => ReportOutcome::ok(),
+            Err(FlowplaneError::Database { ref source, .. })
+                if matches!(
+                    source,
+                    sqlx::Error::Database(db_err) if db_err.code().as_deref() == Some("23505")
+                ) =>
+            {
+                // Unique-violation on xds_nack_events_dedup_hash_idx is
+                // idempotent success: the winning INSERT already persisted
+                // the row with the correct data (same dedup_hash, same
+                // resource info), and there is no updated_at column to
+                // refresh. Race-safe: two concurrent inserts with the same
+                // dedup_hash → one wins, the other takes this path.
+                debug!(
+                    dataplane = %envelope_dataplane_id,
+                    "Dedup hit on warming NACK (23505 on dedup_hash) — idempotent OK"
+                );
+                ReportOutcome::ok()
+            }
             Err(e) => {
-                let msg = format!("{}", e);
-                // Unique-violation on dedup_hash is idempotent success: the
-                // agent is reporting the same failure we already persisted.
-                if msg.contains("duplicate key") || msg.contains("23505") {
-                    debug!(dataplane = %envelope_dataplane_id, "Dedup hit on warming NACK — treating as OK");
-                    ReportOutcome::ok()
-                } else {
-                    error!(error = %e, dataplane = %envelope_dataplane_id, "Failed to persist warming NACK");
-                    ReportOutcome::retry("failed to persist NACK")
-                }
+                error!(error = %e, dataplane = %envelope_dataplane_id, "Failed to persist warming NACK");
+                ReportOutcome::retry("failed to persist NACK")
             }
         }
     }

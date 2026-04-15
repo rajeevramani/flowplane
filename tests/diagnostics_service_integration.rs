@@ -934,21 +934,19 @@ async fn touch_last_config_verify_resolves_spiffe_team_name_to_team_id() {
 }
 
 // ---------------------------------------------------------------------------
-// fp-hsk.8.1 L2 gap tests (tests 3+4 deferred to fp-a98x — product bugs found)
+// fp-hsk.8.1 L2 gap tests (tests 1-4 complete — tests 3+4 landed with fp-a98x fix)
 //
 // Written from proto contract + existing harness conventions only. Author did
 // NOT read the diagnostics_service implementation.
 //
 // The existing `cert_without_spiffe_san_cannot_report` conflates "wrong CA"
-// with "no SPIFFE SAN". The tests below separate expiry and foreign-CA trust-
+// with "no SPIFFE SAN". Tests 1+2 below separate expiry and foreign-CA trust-
 // chain rejection into independent cases.
 //
-// Two additional adversarial tests — `replay_same_report_id_is_idempotent`
-// and `two_empty_hash_reports_dedup_via_server_side_hash` — were written in
-// the same session and revealed a P0 bug in the persist path (PG 23505 maps
-// to ACK_STATUS_RETRY instead of ACK_STATUS_OK for legitimate dedup
-// collisions). Their source is preserved as acceptance criteria on fp-a98x
-// and will be re-added once the persist-path fix lands.
+// Tests 3+4 (`replay_same_report_id_is_idempotent` and
+// `two_empty_hash_reports_dedup_via_server_side_hash`) pinned a P0 bug in the
+// persist path where PG 23505 was mapped to ACK_STATUS_RETRY instead of
+// ACK_STATUS_OK for legitimate dedup collisions. Fixed in fp-a98x.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1047,5 +1045,114 @@ async fn foreign_ca_cert_with_valid_spiffe_is_rejected() {
         count_rows_for_dataplane(&harness.pool, proxy).await,
         0,
         "foreign-CA cert must not cause any nack row to be persisted"
+    );
+}
+
+#[tokio::test]
+async fn replay_same_report_id_is_idempotent() {
+    let harness = Harness::start("diag_replay").await;
+    let proxy = "dp-replay";
+    seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
+
+    // Build a single legitimate report. Clone it byte-for-byte (same report_id,
+    // same failed_config_hash, same envelope) to simulate an agent reconnect
+    // that re-sends an in-flight report it didn't see acked. Per the proto
+    // contract, replay of the same report_id must be idempotent — the second
+    // send must also receive AckStatus::Ok and must NOT insert a second row.
+    let report = make_report(proxy, "listener-replay", "boom-replay", "hash-replay");
+
+    // First send on a fresh stream.
+    let mut client1 = harness.client_with_cert(&cert).await.expect("connect #1");
+    let acks1 =
+        send_and_collect(&mut client1, vec![report.clone()]).await.expect("first stream ok");
+    assert!(!acks1.is_empty(), "expected at least one ack on first send");
+    assert_eq!(
+        acks1[0].status,
+        AckStatus::Ok as i32,
+        "first send must be OK, got status={} message={:?}",
+        acks1[0].status,
+        acks1[0].message
+    );
+    assert_eq!(
+        count_rows_for_dataplane(&harness.pool, proxy).await,
+        1,
+        "first send must persist exactly one row"
+    );
+
+    // Replay the EXACT same report on a new stream (agent reconnect scenario).
+    let mut client2 = harness.client_with_cert(&cert).await.expect("connect #2");
+    let acks2 = send_and_collect(&mut client2, vec![report]).await.expect("second stream ok");
+    assert!(!acks2.is_empty(), "expected at least one ack on replay");
+    if acks2[0].status != AckStatus::Ok as i32 {
+        panic!(
+            "replay of same report_id must be idempotent OK per proto contract \
+             (got status={} message={:?}); rejecting a legitimate reconnect replay \
+             as INVALID or RETRY would stall warming-failure detection after any agent reconnect",
+            acks2[0].status, acks2[0].message
+        );
+    }
+    assert_eq!(
+        count_rows_for_dataplane(&harness.pool, proxy).await,
+        1,
+        "replay must not insert a second row — idempotency requires exactly one row"
+    );
+}
+
+#[tokio::test]
+async fn two_empty_hash_reports_dedup_via_server_side_hash() {
+    let harness = Harness::start("diag_empty_hash_dedup").await;
+    let proxy = "dp-empty-hash-dedup";
+    seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
+    let cert = harness.issue_client_cert_for(TEST_TEAM_NAME, proxy);
+    let mut client = harness.client_with_cert(&cert).await.expect("connect");
+
+    // Two reports with empty `failed_config_hash` (forcing the server-side hash
+    // path), identical listener_name + error_details + dataplane, distinct
+    // report_id, and distinct last_update_attempt timestamps. The server MUST
+    // compute the same dedup hash for both and collapse them into a single row.
+    //
+    // Existing `duplicate_reports_dedupe_to_one_row` + `different_timestamps_same_failure_still_dedupe`
+    // both use CLIENT-provided hashes; this is the ONLY test that exercises the
+    // empty-hash → server-side compute_dedup_hash dedup path across two reports.
+    let r1 = make_report(proxy, "listener-empty-hash", "same-error-details-x", "");
+    let mut r2 = r1.clone();
+    r2.report_id = Uuid::new_v4().to_string();
+    if let Some(Payload::ListenerState(ref mut ls)) = r2.payload {
+        ls.last_update_attempt = Some(ts_offset(60));
+    }
+
+    let acks = send_and_collect(&mut client, vec![r1, r2]).await.expect("stream ok");
+    assert!(acks.len() >= 2, "expected at least two acks for two reports, got {}", acks.len());
+    assert_eq!(
+        acks[0].status,
+        AckStatus::Ok as i32,
+        "first empty-hash report must be Ok, got status={} message={:?}",
+        acks[0].status,
+        acks[0].message
+    );
+    assert_eq!(
+        acks[1].status,
+        AckStatus::Ok as i32,
+        "second empty-hash report must be Ok, got status={} message={:?}",
+        acks[1].status,
+        acks[1].message
+    );
+
+    assert_eq!(
+        count_rows_for_dataplane(&harness.pool, proxy).await,
+        1,
+        "server-side dedup hash must collapse two empty-`failed_config_hash` reports \
+         with identical logical content into exactly one row; if DB has 2 rows the \
+         server-side hash path is broken"
+    );
+
+    // Sanity: confirm the one row's dedup_hash is non-empty (server computed it).
+    let hashes = dedup_hashes_for_dataplane(&harness.pool, proxy).await;
+    assert_eq!(hashes.len(), 1, "expected exactly one dedup row");
+    let h = hashes[0].clone().expect("server must populate dedup_hash");
+    assert!(
+        !h.is_empty(),
+        "server-computed dedup_hash must be non-empty (empty hash = broken server-side hash path)"
     );
 }
