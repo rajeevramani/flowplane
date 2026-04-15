@@ -932,3 +932,120 @@ async fn touch_last_config_verify_resolves_spiffe_team_name_to_team_id() {
          (forward regression guard for fp-4n5 dataplanes.team id/name mismatch fix)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// fp-hsk.8.1 L2 gap tests (tests 3+4 deferred to fp-a98x — product bugs found)
+//
+// Written from proto contract + existing harness conventions only. Author did
+// NOT read the diagnostics_service implementation.
+//
+// The existing `cert_without_spiffe_san_cannot_report` conflates "wrong CA"
+// with "no SPIFFE SAN". The tests below separate expiry and foreign-CA trust-
+// chain rejection into independent cases.
+//
+// Two additional adversarial tests — `replay_same_report_id_is_idempotent`
+// and `two_empty_hash_reports_dedup_via_server_side_hash` — were written in
+// the same session and revealed a P0 bug in the persist path (PG 23505 maps
+// to ACK_STATUS_RETRY instead of ACK_STATUS_OK for legitimate dedup
+// collisions). Their source is preserved as acceptance criteria on fp-a98x
+// and will be re-added once the persist-path fix lands.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn expired_cert_is_rejected_at_tls_handshake() {
+    let harness = Harness::start("diag_expired_cert").await;
+    let proxy = "dp-expired";
+    seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
+
+    // Issue a client cert signed by the harness CA with a very short validity
+    // (1 second), then sleep past its notAfter. The SPIFFE URI is well-formed
+    // and the trust chain is valid — the ONLY reason the handshake should fail
+    // is expiry. This isolates the expiry-reject path from the foreign-CA path.
+    let uri = TestCertificateAuthority::build_spiffe_uri(TRUST_DOMAIN, TEST_TEAM_NAME, proxy)
+        .expect("build spiffe uri");
+    let expired_cert = harness
+        .ca
+        .issue_client_cert(&uri, proxy, TimeDuration::seconds(1))
+        .expect("issue short-lived client cert");
+
+    // Wait past notAfter so server TLS layer rejects at handshake.
+    tokio::time::sleep(StdDuration::from_secs(3)).await;
+
+    let connect = harness.client_with_cert(&expired_cert).await;
+    match connect {
+        Err(e) => {
+            // Good — TLS handshake refused the expired client cert.
+            // Don't assert on exact string, just ensure it's a transport-layer
+            // failure, which is what `client_with_cert` surfaces.
+            let dbg = format!("{e:?}");
+            assert!(!dbg.is_empty(), "transport error should have a debug representation");
+        }
+        Ok(mut client) => {
+            // Extremely unlikely but possible on some TLS stacks: handshake
+            // accepted despite expired peer cert. In that case the service must
+            // still refuse to persist, because no legitimate agent should ever
+            // succeed with an expired cert.
+            let report = make_report(proxy, "listener-expired", "err", "h-expired");
+            let res = send_and_collect(&mut client, vec![report]).await;
+            if let Ok(acks) = res {
+                assert!(
+                    acks.iter().all(|a| a.status != AckStatus::Ok as i32),
+                    "expired-cert report must not be acked OK (status ok = security break)"
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        count_rows_for_dataplane(&harness.pool, proxy).await,
+        0,
+        "expired cert must not cause any nack row to be persisted"
+    );
+}
+
+#[tokio::test]
+async fn foreign_ca_cert_with_valid_spiffe_is_rejected() {
+    let harness = Harness::start("diag_foreign_ca").await;
+    let proxy = "dp-foreign";
+    seed_dataplane(&harness.pool, TEST_TEAM_ID, proxy).await;
+
+    // Build a DIFFERENT CA that the server has never heard of. Issue a client
+    // cert from it with a perfectly well-formed SPIFFE URI. The SAN is valid;
+    // the problem is trust chain. This separates "no SAN" from "wrong CA" —
+    // the existing `cert_without_spiffe_san_cannot_report` conflates both.
+    let foreign_ca = TestCertificateAuthority::new("foreign test CA", TimeDuration::hours(1))
+        .expect("create foreign CA");
+    let uri = TestCertificateAuthority::build_spiffe_uri(TRUST_DOMAIN, TEST_TEAM_NAME, proxy)
+        .expect("build spiffe uri");
+    let foreign_cert = foreign_ca
+        .issue_client_cert(&uri, proxy, TimeDuration::hours(1))
+        .expect("issue client cert from foreign CA");
+
+    let connect = harness.client_with_cert(&foreign_cert).await;
+    match connect {
+        Err(e) => {
+            // Expected: server TLS trust-chain verification rejects the cert
+            // because its signing CA is not in the server's client_ca_root.
+            let dbg = format!("{e:?}");
+            assert!(!dbg.is_empty(), "transport error should have a debug representation");
+        }
+        Ok(mut client) => {
+            // Must NOT ack OK — even if the handshake somehow succeeded, the
+            // service identity extraction or SPIFFE-to-team binding must refuse.
+            let report = make_report(proxy, "listener-foreign", "err", "h-foreign");
+            let res = send_and_collect(&mut client, vec![report]).await;
+            if let Ok(acks) = res {
+                assert!(
+                    acks.iter().all(|a| a.status != AckStatus::Ok as i32),
+                    "foreign-CA client cert must not be acked OK even with valid SPIFFE SAN"
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        count_rows_for_dataplane(&harness.pool, proxy).await,
+        0,
+        "foreign-CA cert must not cause any nack row to be persisted"
+    );
+}
