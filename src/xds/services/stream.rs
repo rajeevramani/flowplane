@@ -187,12 +187,19 @@ async fn resolve_dataplane_name(pool: &crate::storage::DbPool, node_id: &str) ->
 /// Failures are logged but do not affect stream processing.
 /// Resolves the human-readable dataplane name from the Envoy node ID
 /// so that NACK queries by dataplane name return correct results.
+///
+/// `team` here is the team NAME (extracted from Envoy node metadata or SPIFFE).
+/// The `xds_nack_events.team` column stores team **id** (FK to `teams.id`)
+/// after migration `20260415000001_unify_xds_nack_events_team_to_team_id.sql`,
+/// so this function resolves name → id via `XdsState::resolve_team_name`
+/// before inserting. Without this resolution the insert would either FK-fail
+/// or write a value that no team-id query could match (this was bug fp-4g4).
 fn persist_nack_event(
     state: &Arc<XdsState>,
     team: Option<String>,
     request: CreateNackEventRequest,
 ) {
-    let team = match team {
+    let team_name = match team {
         Some(t) => t,
         None => {
             warn!("Cannot persist NACK event: no team context for stream");
@@ -205,14 +212,22 @@ fn persist_nack_event(
         None => return, // No repository configured (file-based mode)
     };
 
+    let state = state.clone();
     let pool = state.pool.clone();
     let type_url = request.type_url.clone();
     tokio::spawn(async move {
+        let team_id = match state.resolve_team_name(&team_name).await {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(error = %e, team = %team_name, "Cannot persist NACK event: team name does not resolve to a team id");
+                return;
+            }
+        };
         let dataplane_name = match pool {
             Some(ref p) => resolve_dataplane_name(p, &request.dataplane_name).await,
             None => request.dataplane_name.clone(),
         };
-        let request = CreateNackEventRequest { team, dataplane_name, ..request };
+        let request = CreateNackEventRequest { team: team_id, dataplane_name, ..request };
         if let Err(e) = repo.insert(request).await {
             warn!(error = %e, type_url = %type_url, "Failed to persist NACK event to database");
         }

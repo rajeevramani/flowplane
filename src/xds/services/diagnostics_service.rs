@@ -238,6 +238,26 @@ impl FlowplaneDiagnosticsService {
         }
     }
 
+    /// Resolve a team NAME (from SPIFFE) to its team **id** (UUID) via the
+    /// `teams` table. Returns `None` if the team does not exist. The
+    /// `xds_nack_events.team` column is a FK to `teams(id)` after migration
+    /// `20260415000001_unify_xds_nack_events_team_to_team_id.sql`, so any
+    /// insert path that starts from a team name MUST go through this
+    /// resolution or the insert will FK-fail.
+    async fn resolve_team_id(&self, team_name: &str) -> Option<String> {
+        match sqlx::query_scalar::<_, String>("SELECT id FROM teams WHERE name = $1")
+            .bind(team_name)
+            .fetch_optional(&self.pool)
+            .await
+        {
+            Ok(opt) => opt,
+            Err(e) => {
+                warn!(error = %e, team = %team_name, "Failed to resolve team name to id");
+                None
+            }
+        }
+    }
+
     /// Persist a `ListenerStateReport` as a `warming_report` NACK event.
     async fn persist_listener_state(
         &self,
@@ -279,8 +299,20 @@ impl FlowplaneDiagnosticsService {
             report.failed_config_hash.clone()
         };
 
+        let team_id = match self.resolve_team_id(team).await {
+            Some(id) => id,
+            None => {
+                warn!(
+                    dataplane = %envelope_dataplane_id,
+                    team = %team,
+                    "Cannot persist warming NACK: SPIFFE team name does not resolve to a team row"
+                );
+                return ReportOutcome::retry("team name does not resolve");
+            }
+        };
+
         let request = CreateNackEventRequest {
-            team: team.to_string(),
+            team: team_id,
             dataplane_name: envelope_dataplane_id.to_string(),
             type_url,
             version_rejected: None,

@@ -59,6 +59,12 @@ impl fmt::Display for NackSource {
 }
 
 /// Internal database row structure for NACK events.
+///
+/// `team` is the team **id** (FK to `teams.id`) after migration
+/// `20260415000001_unify_xds_nack_events_team_to_team_id.sql`. The column was
+/// previously a TEXT team name with no FK; the rename was made to fix fp-4g4,
+/// where the insert path wrote names while the query path read ids and
+/// therefore matched zero rows.
 #[derive(Debug, Clone, FromRow)]
 struct NackEventRow {
     pub id: String,
@@ -121,6 +127,11 @@ impl TryFrom<NackEventRow> for NackEventData {
 /// `nonce` and `version_rejected` are optional because warming-report sources
 /// do not carry that information. For `source = NackSource::Stream` the caller
 /// should populate them from the rejected DiscoveryRequest.
+///
+/// `team` is the team **id** (FK to `teams.id`), NOT the team name. Callers
+/// that hold a team name (e.g. SPIFFE-extracted) MUST resolve it via
+/// `XdsState::resolve_team_name` (or equivalent SQL lookup on `teams`) before
+/// constructing this request — otherwise the insert will FK-fail. See fp-4g4.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateNackEventRequest {
     pub team: String,
@@ -437,14 +448,14 @@ mod tests {
         let repo = NackEventRepository::new(db.pool.clone());
 
         let req = make_request(
-            "test-team",
+            crate::storage::test_helpers::TEST_TEAM_ID,
             "dp-1",
             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
             "threshold missing",
         );
         let event = repo.insert(req).await.expect("insert should succeed");
 
-        assert_eq!(event.team, "test-team");
+        assert_eq!(event.team, crate::storage::test_helpers::TEST_TEAM_ID);
         assert_eq!(event.dataplane_name, "dp-1");
         assert_eq!(event.error_message, "threshold missing");
         assert!(!event.id.is_empty());
@@ -457,7 +468,7 @@ mod tests {
 
         // Insert 2 events for team-a, 1 for team-b
         repo.insert(make_request(
-            "test-team",
+            crate::storage::test_helpers::TEST_TEAM_ID,
             "dp-1",
             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
             "err1",
@@ -465,7 +476,7 @@ mod tests {
         .await
         .expect("insert");
         repo.insert(make_request(
-            "test-team",
+            crate::storage::test_helpers::TEST_TEAM_ID,
             "dp-2",
             "type.googleapis.com/envoy.config.listener.v3.Listener",
             "err2",
@@ -473,7 +484,7 @@ mod tests {
         .await
         .expect("insert");
         repo.insert(make_request(
-            "other-team",
+            crate::storage::test_helpers::TEAM_A_ID,
             "dp-3",
             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
             "err3",
@@ -481,10 +492,12 @@ mod tests {
         .await
         .expect("insert");
 
-        let results =
-            repo.list_by_team("test-team", None, None).await.expect("list should succeed");
+        let results = repo
+            .list_by_team(crate::storage::test_helpers::TEST_TEAM_ID, None, None)
+            .await
+            .expect("list should succeed");
         assert_eq!(results.len(), 2, "should only see test-team events");
-        assert!(results.iter().all(|e| e.team == "test-team"));
+        assert!(results.iter().all(|e| e.team == crate::storage::test_helpers::TEST_TEAM_ID));
     }
 
     #[tokio::test]
@@ -493,7 +506,7 @@ mod tests {
         let repo = NackEventRepository::new(db.pool.clone());
 
         repo.insert(make_request(
-            "test-team",
+            crate::storage::test_helpers::TEST_TEAM_ID,
             "dp-alpha",
             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
             "err1",
@@ -501,7 +514,7 @@ mod tests {
         .await
         .expect("insert");
         repo.insert(make_request(
-            "test-team",
+            crate::storage::test_helpers::TEST_TEAM_ID,
             "dp-alpha",
             "type.googleapis.com/envoy.config.listener.v3.Listener",
             "err2",
@@ -509,7 +522,7 @@ mod tests {
         .await
         .expect("insert");
         repo.insert(make_request(
-            "test-team",
+            crate::storage::test_helpers::TEST_TEAM_ID,
             "dp-beta",
             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
             "err3",
@@ -517,8 +530,10 @@ mod tests {
         .await
         .expect("insert");
 
-        let results =
-            repo.list_by_dataplane("test-team", "dp-alpha", None, None).await.expect("list");
+        let results = repo
+            .list_by_dataplane(crate::storage::test_helpers::TEST_TEAM_ID, "dp-alpha", None, None)
+            .await
+            .expect("list");
         assert_eq!(results.len(), 2, "should only see dp-alpha events");
         assert!(results.iter().all(|e| e.dataplane_name == "dp-alpha"));
     }
@@ -531,11 +546,35 @@ mod tests {
         let cds_url = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
         let lds_url = "type.googleapis.com/envoy.config.listener.v3.Listener";
 
-        repo.insert(make_request("test-team", "dp-1", cds_url, "cds err")).await.expect("insert");
-        repo.insert(make_request("test-team", "dp-1", lds_url, "lds err")).await.expect("insert");
-        repo.insert(make_request("test-team", "dp-2", cds_url, "cds err2")).await.expect("insert");
+        repo.insert(make_request(
+            crate::storage::test_helpers::TEST_TEAM_ID,
+            "dp-1",
+            cds_url,
+            "cds err",
+        ))
+        .await
+        .expect("insert");
+        repo.insert(make_request(
+            crate::storage::test_helpers::TEST_TEAM_ID,
+            "dp-1",
+            lds_url,
+            "lds err",
+        ))
+        .await
+        .expect("insert");
+        repo.insert(make_request(
+            crate::storage::test_helpers::TEST_TEAM_ID,
+            "dp-2",
+            cds_url,
+            "cds err2",
+        ))
+        .await
+        .expect("insert");
 
-        let results = repo.list_by_type_url("test-team", cds_url, None, None).await.expect("list");
+        let results = repo
+            .list_by_type_url(crate::storage::test_helpers::TEST_TEAM_ID, cds_url, None, None)
+            .await
+            .expect("list");
         assert_eq!(results.len(), 2, "should only see CDS events");
         assert!(results.iter().all(|e| e.type_url == cds_url));
     }
@@ -546,7 +585,7 @@ mod tests {
         let repo = NackEventRepository::new(db.pool.clone());
 
         repo.insert(make_request(
-            "team-x",
+            crate::storage::test_helpers::TEAM_A_ID,
             "dp-1",
             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
             "secret error",
@@ -554,11 +593,17 @@ mod tests {
         .await
         .expect("insert");
 
-        let results = repo.list_by_team("team-y", None, None).await.expect("list");
-        assert!(results.is_empty(), "team-y should not see team-x events");
+        let results = repo
+            .list_by_team(crate::storage::test_helpers::TEAM_B_ID, None, None)
+            .await
+            .expect("list");
+        assert!(results.is_empty(), "team-b should not see team-a events");
 
-        let results = repo.list_by_dataplane("team-y", "dp-1", None, None).await.expect("list");
-        assert!(results.is_empty(), "team-y should not see team-x dataplane events");
+        let results = repo
+            .list_by_dataplane(crate::storage::test_helpers::TEAM_B_ID, "dp-1", None, None)
+            .await
+            .expect("list");
+        assert!(results.is_empty(), "team-b should not see team-a dataplane events");
     }
 
     #[tokio::test]
@@ -570,15 +615,35 @@ mod tests {
         let lds_url = "type.googleapis.com/envoy.config.listener.v3.Listener";
 
         // Insert 2 CDS events and 1 LDS event for the same dataplane
-        repo.insert(make_request("test-team", "dp-1", cds_url, "old cds error"))
-            .await
-            .expect("insert");
-        repo.insert(make_request("test-team", "dp-1", cds_url, "new cds error"))
-            .await
-            .expect("insert");
-        repo.insert(make_request("test-team", "dp-1", lds_url, "lds error")).await.expect("insert");
+        repo.insert(make_request(
+            crate::storage::test_helpers::TEST_TEAM_ID,
+            "dp-1",
+            cds_url,
+            "old cds error",
+        ))
+        .await
+        .expect("insert");
+        repo.insert(make_request(
+            crate::storage::test_helpers::TEST_TEAM_ID,
+            "dp-1",
+            cds_url,
+            "new cds error",
+        ))
+        .await
+        .expect("insert");
+        repo.insert(make_request(
+            crate::storage::test_helpers::TEST_TEAM_ID,
+            "dp-1",
+            lds_url,
+            "lds error",
+        ))
+        .await
+        .expect("insert");
 
-        let results = repo.latest_per_type_url("test-team", "dp-1").await.expect("latest");
+        let results = repo
+            .latest_per_type_url(crate::storage::test_helpers::TEST_TEAM_ID, "dp-1")
+            .await
+            .expect("latest");
         assert_eq!(results.len(), 2, "should have one entry per type_url");
 
         // Verify we got the latest CDS (not the old one)
@@ -594,7 +659,7 @@ mod tests {
 
         for i in 0..5 {
             repo.insert(make_request(
-                "test-team",
+                crate::storage::test_helpers::TEST_TEAM_ID,
                 "dp-1",
                 "type.googleapis.com/envoy.config.cluster.v3.Cluster",
                 &format!("err {}", i),
@@ -603,7 +668,10 @@ mod tests {
             .expect("insert");
         }
 
-        let results = repo.list_recent("test-team", None, Some(3)).await.expect("list");
+        let results = repo
+            .list_recent(crate::storage::test_helpers::TEST_TEAM_ID, None, Some(3))
+            .await
+            .expect("list");
         assert_eq!(results.len(), 3, "should respect limit");
     }
 
@@ -614,7 +682,7 @@ mod tests {
 
         // Insert events
         repo.insert(make_request(
-            "test-team",
+            crate::storage::test_helpers::TEST_TEAM_ID,
             "dp-1",
             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
             "old err",
@@ -627,7 +695,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         repo.insert(make_request(
-            "test-team",
+            crate::storage::test_helpers::TEST_TEAM_ID,
             "dp-1",
             "type.googleapis.com/envoy.config.cluster.v3.Cluster",
             "new err",
@@ -636,14 +704,59 @@ mod tests {
         .expect("insert");
 
         // Without since: should get both
-        let all = repo.list_by_dataplane("test-team", "dp-1", None, None).await.expect("list");
+        let all = repo
+            .list_by_dataplane(crate::storage::test_helpers::TEST_TEAM_ID, "dp-1", None, None)
+            .await
+            .expect("list");
         assert_eq!(all.len(), 2);
 
         // With since: should only get the newer event
-        let filtered =
-            repo.list_by_dataplane("test-team", "dp-1", Some(cutoff), None).await.expect("list");
+        let filtered = repo
+            .list_by_dataplane(
+                crate::storage::test_helpers::TEST_TEAM_ID,
+                "dp-1",
+                Some(cutoff),
+                None,
+            )
+            .await
+            .expect("list");
         assert_eq!(filtered.len(), 1, "since filter should exclude old events");
         assert_eq!(filtered[0].error_message, "new err");
+    }
+
+    /// fp-4g4 regression: an insert followed by `list_by_team` using the same
+    /// team **id** must return the row. Before the migration, the repo stored
+    /// team NAMES while the handler queried by team id, so this round-trip
+    /// returned an empty list for any caller that resolved name → id first
+    /// (which `flowplane xds nacks` does). This test would have caught the
+    /// bug at compile-and-test time. Do not delete.
+    #[tokio::test]
+    async fn fp_4g4_round_trip_by_team_id() {
+        let db = TestDatabase::new("nack_repo_fp4g4").await;
+        let repo = NackEventRepository::new(db.pool.clone());
+
+        let team_id = crate::storage::test_helpers::TEST_TEAM_ID;
+        let inserted = repo
+            .insert(make_request(
+                team_id,
+                "dp-warming",
+                "type.googleapis.com/envoy.config.listener.v3.Listener",
+                "warming failed: bind() EADDRINUSE",
+            ))
+            .await
+            .expect("insert should succeed against teams.id FK");
+
+        assert_eq!(inserted.team, team_id, "row stores team_id, not team name");
+
+        let listed = repo.list_by_team(team_id, None, None).await.expect("list");
+        assert_eq!(
+            listed.len(),
+            1,
+            "list_by_team(<team_id>) must return rows inserted with the same team_id — \
+             this is the exact contract that broke in fp-4g4"
+        );
+        assert_eq!(listed[0].id, inserted.id);
+        assert_eq!(listed[0].error_message, "warming failed: bind() EADDRINUSE");
     }
 
     #[tokio::test]
@@ -653,24 +766,44 @@ mod tests {
 
         let cds_url = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
 
-        repo.insert(make_request("test-team", "dp-1", cds_url, "old cds err"))
-            .await
-            .expect("insert");
+        repo.insert(make_request(
+            crate::storage::test_helpers::TEST_TEAM_ID,
+            "dp-1",
+            cds_url,
+            "old cds err",
+        ))
+        .await
+        .expect("insert");
 
         let cutoff = Utc::now();
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        repo.insert(make_request("test-team", "dp-2", cds_url, "new cds err"))
-            .await
-            .expect("insert");
+        repo.insert(make_request(
+            crate::storage::test_helpers::TEST_TEAM_ID,
+            "dp-2",
+            cds_url,
+            "new cds err",
+        ))
+        .await
+        .expect("insert");
 
         // Without since: should get both
-        let all = repo.list_by_type_url("test-team", cds_url, None, None).await.expect("list");
+        let all = repo
+            .list_by_type_url(crate::storage::test_helpers::TEST_TEAM_ID, cds_url, None, None)
+            .await
+            .expect("list");
         assert_eq!(all.len(), 2);
 
         // With since: should only get the newer event
-        let filtered =
-            repo.list_by_type_url("test-team", cds_url, Some(cutoff), None).await.expect("list");
+        let filtered = repo
+            .list_by_type_url(
+                crate::storage::test_helpers::TEST_TEAM_ID,
+                cds_url,
+                Some(cutoff),
+                None,
+            )
+            .await
+            .expect("list");
         assert_eq!(filtered.len(), 1, "since filter should exclude old events");
         assert_eq!(filtered[0].error_message, "new cds err");
     }
