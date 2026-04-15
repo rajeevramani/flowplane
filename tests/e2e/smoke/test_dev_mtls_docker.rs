@@ -82,7 +82,8 @@ async fn dev_mtls_docker_harness(test_name: &str) -> anyhow::Result<TestHarness>
     let cfg = TestHarnessConfig::new(test_name)
         .isolated()
         .with_mtls()
-        .with_mtls_identity("default", "dev-dataplane");
+        .with_mtls_identity("default", "dev-dataplane")
+        .with_envoy_node_id("team=default/dp-dev-dataplane-id");
     let harness = TestHarness::start(cfg).await?;
 
     // Seed dev resources (default team, dev-dataplane row) directly against the
@@ -383,10 +384,11 @@ async fn dev_mtls_docker_warming_failure_error_state() {
         "name": listener_name,
         "address": "0.0.0.0",
         "port": harness.ports.listener_secondary,
+        "dataplaneId": "dev-dataplane-id",
         "filterChains": [{
             "filters": [{
                 "name": "envoy.filters.network.tcp_proxy",
-                "type": "tcp_proxy",
+                "type": "tcpProxy",
                 "cluster": "nonexistent-cluster-for-warming-failure"
             }]
         }]
