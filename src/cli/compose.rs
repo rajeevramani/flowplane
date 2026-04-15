@@ -324,7 +324,7 @@ admin:
       port_value: 9901
 node:
   cluster: dev-cluster
-  id: team=default/dp-dev
+  id: team=default/dp-dev-dataplane-id
   metadata:
     dataplane_name: dev-dataplane
     gateway_host: envoy
