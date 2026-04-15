@@ -1283,3 +1283,151 @@ async fn ack_status_invalid_not_retried_indefinitely() {
     );
     assert!(!reports.is_empty(), "agent should at least try once");
 }
+
+// --- SIGSTOP/SIGCONT reconnect-after-pause (fp-hsk.8.2) -----------------------
+
+// Minimal libc::kill binding — matches the precedent in
+// `src/cli/agent_supervisor.rs:255-262`. Avoids adding a new dep.
+#[cfg(unix)]
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+// Signal numbers differ between Linux and macOS.
+#[cfg(all(unix, target_os = "linux"))]
+const SIG_STOP: i32 = 19;
+#[cfg(all(unix, target_os = "linux"))]
+const SIG_CONT: i32 = 18;
+#[cfg(all(unix, target_os = "macos"))]
+const SIG_STOP: i32 = 17;
+#[cfg(all(unix, target_os = "macos"))]
+const SIG_CONT: i32 = 19;
+
+/// RAII guard: always send SIGCONT on drop, even on panic. A leaked SIGSTOPped
+/// child will hang subsequent test runs by holding onto ports.
+#[cfg(unix)]
+struct SigcontGuard(i32);
+#[cfg(unix)]
+impl Drop for SigcontGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = kill(self.0, SIG_CONT);
+        }
+    }
+}
+
+// fp-hsk.8.2: when the running flowplane-agent is paused with SIGSTOP and then
+// resumed with SIGCONT, the agent must (a) not crash, (b) resume polling Envoy,
+// and (c) flush fresh reports to the CP. Complements
+// `cp_connection_reset_agent_reconnects` which covers reconnect-after-kill but
+// NOT stop-then-resume.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_paused_with_sigstop_then_resumed_eventually_flushes_reports() {
+    // Seed admin with many distinct listener errors so the agent has an endless
+    // supply of new (non-deduped) reports to send. With poll_interval=1s, hit N
+    // returns response N-1, and the last response is reused forever.
+    let mut responses: Vec<AdminResponse> = Vec::with_capacity(40);
+    for i in 0..40 {
+        responses.push(AdminResponse::Json(listeners_dump(vec![listener_with_error(
+            &format!("lst_pause_{i}"),
+            &format!("pause-err {i}"),
+            &format!("2026-04-15T00:00:{i:02}Z"),
+        )])));
+    }
+    let admin = AdminState::new(responses);
+    let admin_port = spawn_admin(admin.clone()).await;
+    let (cp_port, cp) = spawn_cp().await;
+
+    let agent_proc = spawn_agent(admin_port, cp_port, "dp-sigstop", 1, &[]);
+
+    // CRITICAL (trap 2): capture PID into a local `i32` BEFORE any await that
+    // might reap the child. `tokio::process::Child::id()` returns None after
+    // reap, and we need the PID for SIGCONT on the drop-guard path too.
+    let pid: i32 =
+        agent_proc.child.id().expect("agent child must have a live PID at spawn time") as i32;
+
+    // RAII drop-guard: SIGCONT is sent unconditionally on scope exit (including
+    // panic) so a failed assertion never leaves a frozen child behind.
+    let _sigcont_guard = SigcontGuard(pid);
+
+    // 1. Prove the agent is alive and talking to the CP before we pause it.
+    //    Wait for at least 2 reports (first-contact envelope + at least one
+    //    error report).
+    let initial = wait_reports(&cp, 2, Duration::from_secs(15)).await;
+    assert!(
+        initial.len() >= 2,
+        "agent must produce reports before SIGSTOP; got only {}",
+        initial.len()
+    );
+
+    let reports_before = cp.reports().await.len();
+    let hits_before = admin.hits().await;
+
+    // 2. SIGSTOP. The agent's kernel state becomes TASK_STOPPED — no syscalls,
+    //    no tokio work, no polling.
+    unsafe {
+        let rc = kill(pid, SIG_STOP);
+        assert_eq!(rc, 0, "kill(SIGSTOP) syscall must succeed; returned {rc}");
+    }
+
+    // 3. Real wall-clock delay while frozen. Use tokio::time::sleep — THIS task
+    //    is still running; only the child is paused. 2 seconds is plenty given
+    //    poll_interval=1s.
+    sleep(Duration::from_secs(2)).await;
+
+    // During the stopped window the agent should not have made additional
+    // admin requests. One extra hit is tolerated for a request already in
+    // flight when the signal landed.
+    let hits_during = admin.hits().await;
+    assert!(
+        hits_during <= hits_before + 1,
+        "admin hits grew while agent was SIGSTOPped: before={hits_before}, during={hits_during}"
+    );
+
+    // 4. SIGCONT. Agent resumes exactly where it was.
+    unsafe {
+        let rc = kill(pid, SIG_CONT);
+        assert_eq!(rc, 0, "kill(SIGCONT) syscall must succeed; returned {rc}");
+    }
+
+    // 5. Wait for at least one NEW report post-resume. This is the core
+    //    assertion: the agent must keep working after a stop/resume cycle
+    //    without crashing, hanging, or corrupting its state.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut final_reports = cp.reports().await;
+    while Instant::now() < deadline && final_reports.len() <= reports_before {
+        sleep(Duration::from_millis(200)).await;
+        final_reports = cp.reports().await;
+    }
+    assert!(
+        final_reports.len() > reports_before,
+        "agent must flush new reports after SIGCONT; had {} before pause, have {} after resume",
+        reports_before,
+        final_reports.len()
+    );
+
+    // 6. Admin must be getting polled again (proves the poll loop itself is
+    //    alive, not just a queued flush).
+    let hits_after = admin.hits().await;
+    assert!(
+        hits_after > hits_during,
+        "admin hits should grow after SIGCONT; during={hits_during}, after={hits_after}"
+    );
+
+    // 7. Envelope integrity — no corruption across the pause boundary.
+    //    All reports must still parse, carry the configured dataplane_id, the
+    //    MVP schema_version, and a non-empty report_id. Report IDs must be
+    //    unique (no duplicate emission from the stopped period).
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    for r in &final_reports {
+        assert_eq!(r.dataplane_id, "dp-sigstop", "envelope dataplane_id preserved");
+        assert_eq!(r.schema_version, 1, "envelope schema_version preserved");
+        assert!(!r.report_id.is_empty(), "envelope report_id must be set");
+        assert!(
+            seen_ids.insert(r.report_id.clone()),
+            "duplicate report_id across reports: {:?}",
+            r.report_id
+        );
+    }
+}
