@@ -280,6 +280,11 @@ pub(crate) struct CpBootConfig {
     /// Envoy node metadata `team` value. For shared-dev use `"default"`; for
     /// shared-prod use `E2E_SHARED_TEAM`; isolated callers may override.
     pub envoy_team: String,
+    /// Optional override for the Envoy xDS node_id. When `None`, the
+    /// `EnvoyConfig` default (`e2e-dataplane`) is used. Isolated callers that
+    /// need stream-path dataplane resolution should pass the fp-nb2k shape
+    /// `team=<team>/dp-<dataplane_id>`.
+    pub envoy_node_id: Option<String>,
     /// Which mock services bundle to start.
     pub mocks_flavor: MocksFlavor,
     /// Update `teams.envoy_admin_port` to the envoy admin port after envoy
@@ -776,6 +781,9 @@ async fn start_envoy_if_available(
 
     let mut envoy_config = EnvoyConfig::new(cfg.ports.envoy_admin, cfg.ports.xds)
         .with_metadata(serde_json::json!({ "team": envoy_team }));
+    if let Some(node_id) = cfg.envoy_node_id.as_deref() {
+        envoy_config = envoy_config.with_node_id(node_id);
+    }
 
     if let (Some(client_cert), Some(ca)) = (client_cert, ca) {
         let tls_config = EnvoyXdsTlsConfig {
@@ -1008,6 +1016,7 @@ async fn build_shared_infra() -> anyhow::Result<SharedInfrastructure> {
         mtls_team: None,
         mtls_proxy_id: Some("shared-envoy".to_string()),
         envoy_team,
+        envoy_node_id: None,
         mocks_flavor: MocksFlavor::All,
         update_team_admin_port: true,
     };

@@ -71,6 +71,13 @@ pub struct TestHarnessConfig {
     pub mtls_team: Option<String>,
     /// Override SPIFFE proxy_id component in mTLS client cert (isolated mode only)
     pub mtls_proxy_id: Option<String>,
+    /// Override Envoy node_id (isolated mode only). When set, the per-harness
+    /// Envoy registers with this xDS node id instead of the default
+    /// `e2e-dataplane`. Use the fp-nb2k canonical shape
+    /// `team=<team>/dp-<dataplane_id>` so the stream-path parser in
+    /// `parse_dataplane_id_from_node_id` resolves the row and persists NACK
+    /// events under the normalized dataplane name.
+    pub envoy_node_id: Option<String>,
 }
 
 impl TestHarnessConfig {
@@ -85,7 +92,16 @@ impl TestHarnessConfig {
             enable_mtls: false, // Default to no mTLS
             mtls_team: None,
             mtls_proxy_id: None,
+            envoy_node_id: None,
         }
+    }
+
+    /// Override the Envoy node_id for isolated mode. Pass the fp-nb2k-canonical
+    /// shape `team=<team>/dp-<dataplane_id>` so the stream-path parser
+    /// resolves the streaming Envoy to a seeded dataplane row by id.
+    pub fn with_envoy_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.envoy_node_id = Some(node_id.into());
+        self
     }
 
     /// Use isolated infrastructure (slower but fully isolated)
@@ -523,6 +539,7 @@ impl TestHarness {
             mtls_team: config.mtls_team.clone(),
             mtls_proxy_id: config.mtls_proxy_id.clone(),
             envoy_team,
+            envoy_node_id: config.envoy_node_id.clone(),
             mocks_flavor,
             update_team_admin_port: false,
         };
