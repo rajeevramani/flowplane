@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1.4
 #
-# Combined Dockerfile with cargo-chef optimization
-# Builds both UI and backend with optimized caching
+# Multi-stage Dockerfile for Flowplane (UI + backend).
 #
 # Build (default - no cloud features):
 #   DOCKER_BUILDKIT=1 docker build -t flowplane .
@@ -33,58 +32,51 @@ COPY ui/ ./
 # Build static files
 RUN npm run build
 
-# Cargo Chef Planner Stage
-FROM rust:1.89-slim AS chef
-RUN cargo install cargo-chef
-WORKDIR /app
+# Backend build stage
+FROM rust:1.92-slim AS builder
 
-# Plan dependencies - creates recipe.json
-FROM chef AS planner
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-RUN cargo chef prepare --recipe-path recipe.json
+# Cargo features compiled into the image.
+#
+# Default is `dev-oidc` so `flowplane init` (which boots via
+# docker-compose-dev.yml with FLOWPLANE_AUTH_MODE=dev) works out of the box —
+# dev mode hard-refuses startup without this feature (fp-4n5).
+#
+# Prod deployers override explicitly, e.g.:
+#   docker build --build-arg CARGO_FEATURES=gcp -t flowplane:gcp .
+ARG CARGO_FEATURES="dev-oidc"
 
-# Build dependencies (cached layer)
-FROM chef AS builder
-
-# Build argument for Cargo features (e.g., "gcp" for GCP deployment)
-ARG CARGO_FEATURES=""
-
-# Install system dependencies for building
+# Install system dependencies for building. protobuf-compiler is required by
+# build.rs (tonic-prost-build compiles proto/flowplane/diagnostics/v1/*.proto,
+# added in d479996 for the EnvoyDiagnosticsService scaffold).
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libpq-dev \
+    protobuf-compiler \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=planner /app/recipe.json recipe.json
+WORKDIR /app
 
-# Build dependencies with BuildKit cache mounts
-# This layer is cached and only rebuilds when Cargo.toml/Cargo.lock change
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    if [ -n "$CARGO_FEATURES" ]; then \
-        cargo chef cook --release --features "$CARGO_FEATURES" --recipe-path recipe.json; \
-    else \
-        cargo chef cook --release --recipe-path recipe.json; \
-    fi
-
-# Build application
-COPY Cargo.toml Cargo.lock ./
+# Copy source tree. BuildKit cache mounts below keep the cargo registry and
+# target directory warm across rebuilds, so incremental builds stay fast
+# without cargo-chef (whose 0.1.77 parser choked on newer crate manifests —
+# see fp-n237).
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
+COPY crates ./crates
+COPY proto ./proto
 COPY migrations ./migrations
 COPY filter-schemas ./filter-schemas
 COPY docker-compose-dev.yml ./
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    if [ -n "$CARGO_FEATURES" ]; then \
-        cargo build --release --features "$CARGO_FEATURES"; \
+# Cache mounts intentionally omitted: podman/buildah's cache mount semantics
+# diverge from BuildKit and produced corrupted crate extractions in practice
+# (see fp-n237). Build from scratch each time — reliable beats fast here.
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+        cargo build --release --bin flowplane --features "$CARGO_FEATURES"; \
     else \
-        cargo build --release; \
+        cargo build --release --bin flowplane; \
     fi && \
     cp target/release/flowplane /app/flowplane
 
