@@ -319,43 +319,30 @@ impl ExtAuthzConfig {
                 });
 
                 let authorization_response = http.authorization_response.as_ref().map(|resp| {
+                    let to_list_matcher = |headers: &[String]| -> Option<envoy_types::pb::envoy::r#type::matcher::v3::ListStringMatcher> {
+                        if headers.is_empty() {
+                            None
+                        } else {
+                            Some(envoy_types::pb::envoy::r#type::matcher::v3::ListStringMatcher {
+                                patterns: headers
+                                    .iter()
+                                    .map(|h| {
+                                        envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+                                            match_pattern: Some(
+                                                envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Exact(
+                                                    h.clone(),
+                                                ),
+                                            ),
+                                            ignore_case: false,
+                                        }
+                                    })
+                                    .collect(),
+                            })
+                        }
+                    };
                     AuthorizationResponse {
-                        allowed_upstream_headers: Some(
-                            envoy_types::pb::envoy::r#type::matcher::v3::ListStringMatcher {
-                                patterns: resp
-                                    .allowed_upstream_headers
-                                    .iter()
-                                    .map(|h| {
-                                        envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
-                                            match_pattern: Some(
-                                                envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Exact(
-                                                    h.clone(),
-                                                ),
-                                            ),
-                                            ignore_case: false,
-                                        }
-                                    })
-                                    .collect(),
-                            },
-                        ),
-                        allowed_client_headers: Some(
-                            envoy_types::pb::envoy::r#type::matcher::v3::ListStringMatcher {
-                                patterns: resp
-                                    .allowed_client_headers
-                                    .iter()
-                                    .map(|h| {
-                                        envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
-                                            match_pattern: Some(
-                                                envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Exact(
-                                                    h.clone(),
-                                                ),
-                                            ),
-                                            ignore_case: false,
-                                        }
-                                    })
-                                    .collect(),
-                            },
-                        ),
+                        allowed_upstream_headers: to_list_matcher(&resp.allowed_upstream_headers),
+                        allowed_client_headers: to_list_matcher(&resp.allowed_client_headers),
                         ..Default::default()
                     }
                 });

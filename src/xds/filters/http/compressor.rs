@@ -264,7 +264,7 @@ impl CompressorConfig {
             envoy_types::pb::envoy::extensions::filters::http::compressor::v3::compressor::CommonDirectionConfig {
                 enabled: Some(RuntimeFeatureFlag {
                     default_value: Some(BoolValue { value: true }),
-                    runtime_key: String::new(),
+                    runtime_key: "envoy.filters.http.compressor.enabled".to_string(),
                 }),
                 min_content_length: common_config.min_content_length.map(|v| UInt32Value { value: v }),
                 content_type: common_config.content_type.clone(),
