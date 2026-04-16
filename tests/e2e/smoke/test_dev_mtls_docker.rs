@@ -21,8 +21,6 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
-
 use crate::common::cli_runner::CliRunner;
 use crate::common::harness::{TestHarness, TestHarnessConfig};
 use crate::tls::support::{TestCertificateAuthority, TestCertificateFiles};
@@ -350,111 +348,6 @@ async fn dev_mtls_docker_envoy_xds_acks() {
         "no positive xDS update_success / connected_state seen; lines: {:?}",
         seen
     );
-}
-
-// ---------------------------------------------------------------------------
-// D. Warming failure end-to-end (rule #4 gate)
-// ---------------------------------------------------------------------------
-
-/// Insert a listener row that references a non-existent route_config. Envoy
-/// warming will stall waiting for the RDS response, and because the listener
-/// was never marked ready, the agent's /config_dump poll will surface a
-/// warming entry. If /config_dump exposes an error_state for the listener
-/// (e.g. missing filter), assertion succeeds; otherwise we file the gap as a
-/// bd bug and fail loudly.
-///
-/// NOTE: this is the hardest scenario because we cannot read the xds source.
-/// We push config via the normal API and rely on observable Envoy behavior.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires RUN_E2E=1"]
-async fn dev_mtls_docker_warming_failure_error_state() {
-    let harness = dev_mtls_docker_harness("warming_failure").await.unwrap();
-    assert!(harness.has_envoy(), "warming_failure requires a real Envoy");
-
-    let cli = CliRunner::from_harness(&harness).unwrap();
-    let (mut agent, _cert) = spawn_agent(&harness, "warming").unwrap();
-    let _ = wait_for_agent_ok(&cli, Duration::from_secs(20)).await;
-
-    // Create a listener that references a cluster which does not exist.
-    // API validation may or may not catch this ahead of Envoy; we want the
-    // listener to actually reach Envoy so warming fires.
-    let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
-    let listener_name = format!("{id}-warming-bad-cluster");
-    let body = json!({
-        "name": listener_name,
-        "address": "0.0.0.0",
-        "port": harness.ports.listener_secondary,
-        "dataplaneId": "dev-dataplane-id",
-        "filterChains": [{
-            "filters": [{
-                "name": "envoy.filters.network.tcp_proxy",
-                "type": "tcpProxy",
-                "cluster": "nonexistent-cluster-for-warming-failure"
-            }]
-        }]
-    });
-    let resp = harness.authed_post("/api/v1/teams/default/listeners", &body).await.unwrap();
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        // API rejected. Record and continue — log the observation so the team
-        // can triage whether validation should be more permissive.
-        eprintln!(
-            "WARN fp-u54.5 test D: listener create rejected by API ({}): {}. \
-             This means warming can't be triggered via API; file bd bug and \
-             rely on agent-initiated report instead.",
-            status, text
-        );
-
-        // Assert we still got a clean NACKs endpoint (even if empty).
-        let out = cli.run(&["xds", "nacks", "--limit", "5", "--output", "json"]).unwrap();
-        assert_eq!(
-            out.exit_code, 0,
-            "xds nacks CLI failed: stdout={} stderr={}",
-            out.stdout, out.stderr
-        );
-
-        // Flag this as a gap — agent is up but we can't drive a warming failure
-        // purely from the API. Test FAILS so it blocks fp-hsk.8.
-        panic!(
-            "fp-u54.5 D unmet: API rejects intentionally-broken listener so \
-             warming-failure path can't be exercised end-to-end. File bd bug."
-        );
-    }
-
-    // If the listener was accepted, wait for Envoy to surface error_state.
-    let envoy = harness.envoy().unwrap();
-    let details = envoy
-        .wait_for_error_state(&listener_name, Duration::from_secs(20))
-        .await
-        .unwrap_or_else(|e| panic!("Envoy never reported error_state for {listener_name}: {e}"));
-    assert!(!details.is_empty(), "error_state.details should be populated for bad listener");
-
-    // CP-side: NACK event should have landed via either stream or warming_report.
-    let start = Instant::now();
-    let mut found = false;
-    while start.elapsed() < Duration::from_secs(20) {
-        let out = cli.run(&["xds", "nacks", "--limit", "20", "--output", "json"]).unwrap();
-        if out.exit_code == 0 {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out.stdout) {
-                let events =
-                    v.get("events").and_then(|x| x.as_array()).cloned().unwrap_or_default();
-                if events.iter().any(|e| {
-                    e.get("dataplane_name")
-                        .or_else(|| e.get("dataplaneName"))
-                        .and_then(|s| s.as_str())
-                        == Some("dev-dataplane")
-                }) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    assert!(found, "no NACK event surfaced for dev-dataplane within 20s");
-    assert!(agent.is_running(), "agent died during warming failure test");
 }
 
 // ---------------------------------------------------------------------------

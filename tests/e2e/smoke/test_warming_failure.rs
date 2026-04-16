@@ -42,25 +42,24 @@ use serde_json::json;
 
 use crate::common::cli_runner::CliRunner;
 use crate::common::harness::{TestHarness, TestHarnessConfig};
+use crate::common::test_helpers::write_temp_file;
 use crate::tls::support::{TestCertificateAuthority, TestCertificateFiles};
 
 // ---------------------------------------------------------------------------
 // Constants — the induced misconfiguration
 // ---------------------------------------------------------------------------
 
-/// Cluster name referenced by the tcp_proxy filter but which does not exist
-/// in the CP. Mirrors the proven-working NACK path in
-/// `test_dev_mtls_docker.rs` (fp-u54.5 test D). The OAuth2-based fixture
-/// from the original fp-hsk.8.3 decision doc was abandoned after the harness
-/// showed it silently swallowing the push; the tcp_proxy path is the only
-/// shape currently verified to surface warming-time error_state + NACK rows
-/// in TestHarness isolated mode.
-const UNKNOWN_CLUSTER: &str = "nonexistent-cluster-for-warming-failure";
+/// Cluster name referenced by the OAuth2 filter's `token_endpoint.cluster`.
+/// This cluster does not exist in the CP. The NACK is triggered by the
+/// deliberately malformed SDS config (sds_config: None), not by the missing
+/// cluster — Envoy validates SDS configs at warming time before checking
+/// cluster references.
+const UNKNOWN_CLUSTER: &str = "auth0-jwks-cluster";
 
-/// Substring the Envoy error_state / NACK error_message must contain. We
-/// match on the cluster name so a regression that swapped the cluster check
-/// for a generic error string would fail this assertion.
-const EXPECTED_ERROR_SUBSTRING: &str = "nonexistent-cluster-for-warming-failure";
+/// Substring the Envoy NACK error_message must contain. The malformed SDS
+/// config (no config_source) causes Envoy to reject the listener at warming
+/// time with "invalid token secret configuration".
+const EXPECTED_ERROR_SUBSTRING: &str = "invalid token secret";
 
 // ---------------------------------------------------------------------------
 // Agent subprocess helpers — see module-level doc comment for provenance
@@ -219,33 +218,156 @@ async fn wait_for_agent_ok(
 // ---------------------------------------------------------------------------
 
 /// Induce a warming-time listener rejection on the harness Envoy by creating
-/// a listener whose tcp_proxy filter points at a cluster that does not exist
-/// in the CP. Mirrors the proven-working path in
-/// `test_dev_mtls_docker.rs:380-422` (fp-u54.5 test D).
+/// a listener whose HCM includes an OAuth2 filter referencing a cluster that
+/// does not exist in the CP. The OAuth2 filter config is embedded directly in
+/// the listener body's `http_filters` field (as a `Custom` typed config),
+/// bypassing the filter attachment mechanism which requires async injection.
 ///
-/// Uses the team-scoped REST route `POST /api/v1/teams/default/listeners` —
-/// NOT the CLI `listener create -f` path, which showed silent
-/// non-propagation during the fp-hsk.8.3 first-cut investigation. Team scope
-/// `default` matches the seeded dev team that owns `dev-dataplane`.
+/// OAuth2 validates cluster references at warming time — unlike tcp_proxy,
+/// which resolves clusters lazily at connection time and never NACKs. This
+/// was the root cause of every "zero NACK rows" test failure since fp-u54.5
+/// (diagnosed 2026-04-16, see specs/decisions/2026-04-16-fp-u54.7-breakthrough.md).
 ///
-/// Returns `(uuid_prefix, listener_name)`. Waits for Envoy admin
-/// config_dump to report `error_state` on the listener before returning, so
-/// callers can immediately poll `xds nacks` without racing the warming
-/// callback.
-async fn setup_warming_nack(harness: &TestHarness) -> (String, String) {
+/// Returns `(uuid_prefix, listener_name)`.
+async fn setup_warming_nack(harness: &TestHarness, cli: &CliRunner) -> (String, String) {
+    use base64::Engine;
+    use prost::Message;
+
     let id = uuid::Uuid::new_v4().as_simple().to_string()[..8].to_string();
     let listener_name = format!("{id}-warming-bad-cluster");
+    let route_name = format!("{id}-warming-rc");
+    let cluster_name = format!("{id}-warming-cl");
 
+    // Build OAuth2 protobuf with token_endpoint referencing a nonexistent cluster.
+    // This is the minimal config that makes Envoy reject the listener at warming
+    // time with "unknown cluster 'auth0-jwks-cluster'".
+    let oauth2_config =
+        envoy_types::pb::envoy::extensions::filters::http::oauth2::v3::OAuth2Config {
+            token_endpoint: Some(envoy_types::pb::envoy::config::core::v3::HttpUri {
+                uri: "https://example.com/oauth/token".to_string(),
+                http_upstream_type: Some(
+                    envoy_types::pb::envoy::config::core::v3::http_uri::HttpUpstreamType::Cluster(
+                        UNKNOWN_CLUSTER.to_string(),
+                    ),
+                ),
+                timeout: Some(envoy_types::pb::google::protobuf::Duration {
+                    seconds: 5,
+                    nanos: 0,
+                }),
+            }),
+            authorization_endpoint: "https://example.com/authorize".to_string(),
+            redirect_uri: "http://localhost:10001/%s".to_string(),
+            redirect_path_matcher: Some(
+                envoy_types::pb::envoy::r#type::matcher::v3::PathMatcher {
+                    rule: Some(
+                        envoy_types::pb::envoy::r#type::matcher::v3::path_matcher::Rule::Path(
+                            envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+                                match_pattern: Some(
+                                    envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Exact(
+                                        "/oauth2/callback".to_string(),
+                                    ),
+                                ),
+                                ignore_case: false,
+                            },
+                        ),
+                    ),
+                },
+            ),
+            credentials: Some(
+                envoy_types::pb::envoy::extensions::filters::http::oauth2::v3::OAuth2Credentials {
+                    client_id: "test-client-id".to_string(),
+                    // Deliberately use sds_config: None (no ADS source). Envoy validates
+                    // SDS configs at warming time and rejects listeners with malformed
+                    // secret references. This produces a deterministic warming NACK.
+                    token_secret: Some(
+                        envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::SdsSecretConfig {
+                            name: "oauth2-test-secret".to_string(),
+                            sds_config: None,
+                        },
+                    ),
+                    token_formation: Some(
+                        envoy_types::pb::envoy::extensions::filters::http::oauth2::v3::o_auth2_credentials::TokenFormation::HmacSecret(
+                            envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::SdsSecretConfig {
+                                name: "oauth2-test-hmac".to_string(),
+                                sds_config: None,
+                            },
+                        ),
+                    ),
+                    cookie_names: None,
+                    cookie_domain: String::new(),
+                },
+            ),
+            signout_path: Some(
+                envoy_types::pb::envoy::r#type::matcher::v3::PathMatcher {
+                    rule: Some(
+                        envoy_types::pb::envoy::r#type::matcher::v3::path_matcher::Rule::Path(
+                            envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+                                match_pattern: Some(
+                                    envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Exact(
+                                        "/signout".to_string(),
+                                    ),
+                                ),
+                                ignore_case: false,
+                            },
+                        ),
+                    ),
+                },
+            ),
+            forward_bearer_token: true,
+            auth_scopes: vec!["openid".to_string()],
+            ..Default::default()
+        };
+    let oauth2_wrapper = envoy_types::pb::envoy::extensions::filters::http::oauth2::v3::OAuth2 {
+        config: Some(oauth2_config),
+    };
+    let oauth2_bytes = oauth2_wrapper.encode_to_vec();
+    let oauth2_b64 = base64::engine::general_purpose::STANDARD.encode(&oauth2_bytes);
+
+    // Create a dummy cluster (for the route config — NOT the OAuth2 cluster).
+    let cluster_yaml = format!(
+        "name: {cluster_name}\nendpoints:\n  - host: 127.0.0.1\n    port: 1\nconnectTimeoutSeconds: 5\n"
+    );
+    let cluster_file = write_temp_file(&cluster_yaml, ".yaml");
+    let out = cli.run(&["cluster", "create", "-f", cluster_file.path().to_str().unwrap()]).unwrap();
+    assert_eq!(out.exit_code, 0, "cluster create failed: {}", out.stderr);
+
+    // Create route config.
+    let route_json = json!({
+        "name": route_name,
+        "virtualHosts": [{
+            "name": format!("{id}-vh"),
+            "domains": [format!("{id}.warming.local")],
+            "routes": [{
+                "match": { "path": { "type": "prefix", "value": "/" } },
+                "action": { "type": "forward", "cluster": cluster_name, "timeoutSeconds": 30 }
+            }]
+        }]
+    });
+    let route_file = write_temp_file(&serde_json::to_string_pretty(&route_json).unwrap(), ".json");
+    let out = cli.run(&["route", "create", "-f", route_file.path().to_str().unwrap()]).unwrap();
+    assert_eq!(out.exit_code, 0, "route create failed: {}", out.stderr);
+
+    // Create listener with the OAuth2 filter baked into the HCM's http_filters.
+    // The "custom" type passes the protobuf bytes through to Envoy verbatim.
     let body = json!({
         "name": listener_name,
         "address": "0.0.0.0",
         "port": harness.ports.listener_secondary,
         "dataplaneId": "dev-dataplane-id",
         "filterChains": [{
+            "name": "default",
             "filters": [{
-                "name": "envoy.filters.network.tcp_proxy",
-                "type": "tcpProxy",
-                "cluster": UNKNOWN_CLUSTER
+                "name": "envoy.filters.network.http_connection_manager",
+                "type": "httpConnectionManager",
+                "routeConfigName": route_name,
+                "httpFilters": [{
+                    "name": "envoy.filters.http.oauth2",
+                    "filter": {
+                        "type": "custom",
+                        "type_url": "type.googleapis.com/envoy.extensions.filters.http.oauth2.v3.OAuth2",
+                        "value": oauth2_b64
+                    }
+                }]
             }]
         }]
     });
@@ -256,13 +378,10 @@ async fn setup_warming_nack(harness: &TestHarness) -> (String, String) {
         .expect("authed_post to /listeners failed");
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
-    assert!(status.is_success(), "listener create rejected by API ({status}): {text}");
-
-    // Deliberately do NOT poll Envoy admin here. The feature under test is
-    // "CP detects and records warming failures via xds_nack_events" — asserting
-    // on Envoy admin state would bypass the feature under test and duplicate
-    // the flowplane-agent's own polling loop, racing it and producing flakes.
-    // Each test's own `poll_nacks_until` loop is the load-bearing assertion.
+    assert!(
+        status.is_success(),
+        "listener create with embedded OAuth2 rejected by API ({status}): {text}"
+    );
 
     (id, listener_name)
 }
@@ -350,7 +469,7 @@ fn event_agent_status(event: &serde_json::Value) -> &str {
 /// for the same induced NACK, proving that the CP persists BOTH inline stream
 /// NACKs AND admin-side warming reports for the same dataplane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "blocked on fp-u54.7 — xds_nack_events table stays empty in TestHarness isolated mTLS mode even with correct assertions; neither stream-path NACK nor warming_report-path NACK rows materialize. Architecturally the test now targets the right interface (`flowplane xds nacks` instead of Envoy admin polling) so reactivation under fp-d5hj is a one-character change once fp-u54.7 lands."]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_warming_failure_happy_path() {
     let harness = warming_failure_harness("fp_hsk83_happy").await.unwrap();
     assert!(harness.has_envoy(), "warming failure test requires real Envoy");
@@ -361,7 +480,7 @@ async fn dev_warming_failure_happy_path() {
         .await
         .expect("agent should become OK before NACK is induced");
 
-    let (id, _listener) = setup_warming_nack(&harness).await;
+    let (id, _listener) = setup_warming_nack(&harness, &cli).await;
     eprintln!("fp-hsk.8.3 happy: NACK setup complete (prefix={id})");
 
     // Must see BOTH source=stream AND source=warming_report rows for
@@ -429,7 +548,7 @@ async fn dev_warming_failure_happy_path() {
 /// before the kill. The load-bearing contract is "agent death doesn't poison
 /// the NACK feed", not "warming reports land synchronously".
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "blocked on fp-u54.7 — same harness gap as dev_warming_failure_happy_path. See fp-d5hj."]
+#[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_warming_failure_agent_killed_mid_test() {
     let harness = warming_failure_harness("fp_hsk83_killed").await.unwrap();
     assert!(harness.has_envoy(), "warming failure test requires real Envoy");
@@ -440,7 +559,7 @@ async fn dev_warming_failure_agent_killed_mid_test() {
         .await
         .expect("agent should become OK before NACK is induced");
 
-    let (id, _listener) = setup_warming_nack(&harness).await;
+    let (id, _listener) = setup_warming_nack(&harness, &cli).await;
     eprintln!("fp-hsk.8.3 killed: NACK setup complete (prefix={id})");
 
     // Wait until at least one stream-sourced NACK for dev-dataplane lands —
@@ -488,9 +607,8 @@ async fn dev_warming_failure_agent_killed_mid_test() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires RUN_E2E=1 and FLOWPLANE_E2E_AUTH_MODE=dev"]
 async fn dev_warming_failure_agent_never_started() {
-    // Currently pre-check-only: asserts dev-dataplane starts NOT_MONITORED.
-    // Post-NACK assertions are blocked on fp-u54.7 (harness REST→xDS→Envoy
-    // push path) and tracked under fp-d5hj.
+    // Pre-check-only: asserts dev-dataplane starts NOT_MONITORED.
+    // Post-NACK NOT_MONITORED assertions deferred to a follow-up bead.
     let harness = warming_failure_harness("fp_hsk83_no_agent").await.unwrap();
     assert!(harness.has_envoy(), "warming failure test requires real Envoy");
     let cli = CliRunner::from_harness(&harness).unwrap();
