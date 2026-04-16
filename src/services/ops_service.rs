@@ -169,11 +169,15 @@ pub enum OpsServiceError {
 pub(crate) const AGENT_POLL_INTERVAL_SECS: i64 = 30;
 
 /// Classify the agent liveness signal for a dataplane based on its most recent
-/// `last_config_verify` timestamp.
+/// `last_config_verify` timestamp and whether there are active NACK errors.
 ///
 /// - `NOT_MONITORED` — no agent has ever reported (`last_config_verify` is `None`).
-/// - `STALE`         — most recent report is older than `2 * poll_interval_secs`.
-/// - `OK`            — most recent report is within `2 * poll_interval_secs`.
+/// - `OK` — agent reported at least once, and either no active NACKs
+///   (silence is healthy — the agent only sends envelopes on errors, not
+///   periodic heartbeats) or the last report is within `2 * poll_interval_secs`.
+/// - `STALE` — there are active NACKs but the last report is older than
+///   `2 * poll_interval_secs` (the agent may have stopped reporting while
+///   errors persist).
 ///
 /// `now` is passed in so callers can drive the function deterministically from
 /// tests; production callers pass `chrono::Utc::now()`.
@@ -181,10 +185,18 @@ pub(crate) fn classify_agent_status(
     last_config_verify: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
     poll_interval_secs: i64,
+    has_active_nacks: bool,
 ) -> &'static str {
     match last_config_verify {
         None => "NOT_MONITORED",
         Some(ts) => {
+            // No active errors → the agent has nothing to report. Silence is
+            // healthy per the fp-hsk design: agents report failures, not
+            // heartbeats.
+            if !has_active_nacks {
+                return "OK";
+            }
+            // Active NACKs exist — check if the agent is still reporting.
             let age = now.signed_duration_since(ts);
             if age <= chrono::Duration::seconds(poll_interval_secs.saturating_mul(2)) {
                 "OK"
@@ -733,6 +745,7 @@ pub async fn xds_delivery_status(
             dp.last_config_verify,
             chrono::Utc::now(),
             AGENT_POLL_INTERVAL_SECS,
+            has_nack,
         );
         let last_config_verify_str = dp.last_config_verify.map(|ts| ts.to_rfc3339());
 
@@ -913,54 +926,64 @@ mod tests {
     #[test]
     fn classify_agent_status_returns_not_monitored_when_never_reported() {
         let now = Utc::now();
-        assert_eq!(classify_agent_status(None, now, 30), "NOT_MONITORED");
+        assert_eq!(classify_agent_status(None, now, 30, false), "NOT_MONITORED");
+        assert_eq!(classify_agent_status(None, now, 30, true), "NOT_MONITORED");
     }
 
     #[test]
     fn classify_agent_status_returns_ok_when_recent() {
         let now = Utc::now();
         let recent = now - chrono::Duration::seconds(15);
-        assert_eq!(classify_agent_status(Some(recent), now, 30), "OK");
+        assert_eq!(classify_agent_status(Some(recent), now, 30, false), "OK");
+        assert_eq!(classify_agent_status(Some(recent), now, 30, true), "OK");
     }
 
     #[test]
     fn classify_agent_status_returns_ok_at_exactly_two_intervals() {
         let now = Utc::now();
         let edge = now - chrono::Duration::seconds(60);
-        assert_eq!(classify_agent_status(Some(edge), now, 30), "OK");
+        assert_eq!(classify_agent_status(Some(edge), now, 30, false), "OK");
+        assert_eq!(classify_agent_status(Some(edge), now, 30, true), "OK");
     }
 
     #[test]
-    fn classify_agent_status_returns_stale_just_past_two_intervals() {
+    fn classify_agent_status_returns_stale_only_with_active_nacks() {
         let now = Utc::now();
         let stale = now - chrono::Duration::seconds(61);
-        assert_eq!(classify_agent_status(Some(stale), now, 30), "STALE");
+        // With active NACKs → STALE (agent should be reporting but isn't)
+        assert_eq!(classify_agent_status(Some(stale), now, 30, true), "STALE");
+        // Without NACKs → OK (silence is healthy, agent has nothing to report)
+        assert_eq!(classify_agent_status(Some(stale), now, 30, false), "OK");
     }
 
     #[test]
-    fn classify_agent_status_returns_stale_when_far_in_the_past() {
+    fn classify_agent_status_no_nacks_ok_even_when_ancient() {
         let now = Utc::now();
         let ancient = now - chrono::Duration::days(7);
-        assert_eq!(classify_agent_status(Some(ancient), now, 30), "STALE");
+        // No NACKs → agent connected once, nothing to report → OK indefinitely
+        assert_eq!(classify_agent_status(Some(ancient), now, 30, false), "OK");
+        // With NACKs → agent should be reporting errors → STALE
+        assert_eq!(classify_agent_status(Some(ancient), now, 30, true), "STALE");
     }
 
     #[test]
     fn classify_agent_status_handles_clock_skew_future_timestamp_as_ok() {
-        // A future timestamp (clock skew between agent and CP) should not be
-        // misreported as STALE — the report is, if anything, fresher than now.
         let now = Utc::now();
         let future = now + chrono::Duration::seconds(5);
-        assert_eq!(classify_agent_status(Some(future), now, 30), "OK");
+        assert_eq!(classify_agent_status(Some(future), now, 30, false), "OK");
+        assert_eq!(classify_agent_status(Some(future), now, 30, true), "OK");
     }
 
     #[test]
     fn classify_agent_status_respects_custom_poll_interval() {
         let now = Utc::now();
         let ts = now - chrono::Duration::seconds(150);
-        // poll=10 → window=20 → 150s old is STALE
-        assert_eq!(classify_agent_status(Some(ts), now, 10), "STALE");
-        // poll=120 → window=240 → 150s old is OK
-        assert_eq!(classify_agent_status(Some(ts), now, 120), "OK");
+        // poll=10 → window=20 → 150s old + NACKs = STALE
+        assert_eq!(classify_agent_status(Some(ts), now, 10, true), "STALE");
+        // poll=120 → window=240 → 150s old + NACKs = OK (within window)
+        assert_eq!(classify_agent_status(Some(ts), now, 120, true), "OK");
+        // No NACKs → always OK regardless of interval
+        assert_eq!(classify_agent_status(Some(ts), now, 10, false), "OK");
     }
 
     // ========================================================================
