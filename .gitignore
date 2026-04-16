@@ -54,6 +54,9 @@ book/
 docs/build/
 docs/adr/
 
+# Decision docs (working-tree only, not committed)
+specs/decisions/
+
 # Test coverage and reports
 coverage/
 *.profraw
@@ -173,3 +176,7 @@ deploy
 
 # Dolt database files (added by bd init)
 .dolt/
+
+# MemPalace / entity files
+mempalace.yaml
+entities.json
