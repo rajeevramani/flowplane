@@ -2955,10 +2955,14 @@ connectTimeoutSeconds: 5
                     "client_id": "e2e-test-client",
                     "token_secret": {
                         "name": "e2e-oauth-secret"
+                    },
+                    "hmac_secret": {
+                        "name": "e2e-oauth-hmac"
                     }
                 },
                 "redirect_uri": "https://app.example.com/oauth2/callback",
-                "redirect_path": "/oauth2/callback"
+                "redirect_path": "/oauth2/callback",
+                "signout_path": "/signout"
             }
         }
     });
