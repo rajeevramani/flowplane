@@ -131,7 +131,6 @@ services:
       - info
     ports:
       - "10000:10000"  # Envoy listener (proxy to httpbin)
-      - "9901:9901"    # Envoy admin interface
     depends_on:
       control-plane:
         condition: service_healthy

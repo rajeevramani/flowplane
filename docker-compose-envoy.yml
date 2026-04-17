@@ -24,7 +24,6 @@ services:
     ports:
       - "10000:10000"  # Default HTTP listener
       - "10001-10020:10001-10020"  # Dynamic listener range
-      - "9901:9901"    # Admin interface
     depends_on:
       control-plane:
         condition: service_healthy

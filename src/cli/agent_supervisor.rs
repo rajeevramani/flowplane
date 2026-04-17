@@ -133,8 +133,13 @@ pub fn find_agent_binary() -> Option<PathBuf> {
     }
 
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let candidate = parent.join("flowplane-agent");
+        // Try the raw exe path first, then canonicalize to resolve macOS symlinks
+        // (e.g. cargo install creates symlinks in ~/.cargo/bin/)
+        let dirs_to_try = std::iter::once(exe.clone())
+            .chain(exe.canonicalize().ok())
+            .filter_map(|p| p.parent().map(|d| d.to_path_buf()));
+        for dir in dirs_to_try {
+            let candidate = dir.join("flowplane-agent");
             if candidate.is_file() {
                 return Some(candidate);
             }

@@ -107,7 +107,6 @@ services:
     ports:
       - "10000:10000"
       - "10001-10020:10001-10020"
-      - "9901:9901"
     depends_on:
       control-plane:
         condition: service_healthy
