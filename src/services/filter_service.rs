@@ -480,7 +480,18 @@ impl FilterService {
             let mut db_span = create_operation_span("db.listener_filters.insert", SpanKind::Client);
             db_span.set_attribute(KeyValue::new("db.operation", "INSERT"));
             db_span.set_attribute(KeyValue::new("db.table", "listener_filters"));
-            repository.attach_to_listener(listener_id, filter_id, order).await?;
+            match repository.attach_to_listener(listener_id, filter_id, order).await {
+                Ok(()) => {}
+                Err(Error::Conflict { .. }) => {
+                    // Already attached — treat as idempotent success
+                    info!(
+                        listener_id = %listener_id,
+                        filter_id = %filter_id,
+                        "Filter already attached to listener, skipping"
+                    );
+                }
+                Err(e) => return Err(e),
+            }
             drop(db_span);
 
             info!(
