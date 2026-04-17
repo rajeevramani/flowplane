@@ -82,26 +82,24 @@ paths:
     let spec_file = write_temp_file(&spec, ".yaml");
     let spec_path = spec_file.path().to_str().expect("valid utf-8 path");
 
-    // Use port in the auto-allocatable range (10001-10020) to avoid conflicts
-    let port: u16 = 10018;
-
-    // Import the OpenAPI spec (use longer timeout — import may take time)
+    // Let the server auto-allocate a port to avoid collisions with other tests
     let import_out = cli
         .run_with_timeout(
-            &[
-                "import",
-                "openapi",
-                spec_path,
-                "--name",
-                "e2e-import-full",
-                "--port",
-                &port.to_string(),
-            ],
+            &["import", "openapi", spec_path, "--name", "e2e-import-full"],
             std::time::Duration::from_secs(60),
         )
         .unwrap();
     import_out.assert_success();
     import_out.assert_stdout_contains("Import E2E API");
+
+    // Look up the auto-allocated port from the listener
+    let listener_out = cli.run(&["listener", "get", "e2e-import-full-listener", "-o", "json"]).unwrap();
+    listener_out.assert_success();
+    let listener_json: serde_json::Value =
+        serde_json::from_str(&listener_out.stdout).expect("listener get should return JSON");
+    let port = listener_json["port"]
+        .as_u64()
+        .expect("listener should have a port") as u16;
 
     // Parse the import ID from output (line: "  Import ID:        <uuid>")
     let import_id = import_out

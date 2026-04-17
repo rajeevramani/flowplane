@@ -485,8 +485,10 @@ async fn dev_warming_failure_happy_path() {
 
     // Must see BOTH source=stream AND source=warming_report rows for
     // dev-dataplane. Warming reports can take up to poll_interval (2s) +
-    // write latency, so allow 30s.
-    let events = poll_nacks_until(&cli, Duration::from_secs(30), |events| {
+    // write latency + agent startup. Allow 60s to accommodate slow CI
+    // and Docker environments where the agent may take longer to start
+    // polling Envoy admin.
+    let events = poll_nacks_until(&cli, Duration::from_secs(60), |events| {
         let dev: Vec<_> = events.iter().filter(|e| event_for_dev_dataplane(e)).collect();
         let has_stream = dev.iter().any(|e| event_source(e) == "stream");
         let has_warming = dev.iter().any(|e| event_source(e) == "warming_report");
