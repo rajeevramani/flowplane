@@ -21,6 +21,8 @@ SPA_REDIRECT_DEV="http://localhost:5173/auth/callback"
 SPA_POST_LOGOUT_DOCKER="http://localhost:8080/login"
 SPA_POST_LOGOUT_DEV="http://localhost:5173/login"
 
+CLI_APP_NAME="Flowplane CLI"
+
 # Colors
 CYAN='\033[36m'
 GREEN='\033[32m'
@@ -212,6 +214,41 @@ create_spa_app() {
   fi
 }
 
+# ── Create CLI native application ─────────────────────────────────
+# Separate native app for CLI: supports device code grant and
+# localhost redirect URIs on any port (devMode=true).
+create_cli_app() {
+  log "Creating native CLI application '${CLI_APP_NAME}'..."
+  api POST "/management/v1/projects/${PROJECT_ID}/apps/oidc" "{
+    \"name\": \"${CLI_APP_NAME}\",
+    \"redirectUris\": [\"http://localhost/callback\", \"http://127.0.0.1/callback\"],
+    \"postLogoutRedirectUris\": [],
+    \"responseTypes\": [\"OIDC_RESPONSE_TYPE_CODE\"],
+    \"grantTypes\": [\"OIDC_GRANT_TYPE_AUTHORIZATION_CODE\", \"OIDC_GRANT_TYPE_DEVICE_CODE\"],
+    \"appType\": \"OIDC_APP_TYPE_NATIVE\",
+    \"authMethodType\": \"OIDC_AUTH_METHOD_TYPE_NONE\",
+    \"accessTokenType\": \"OIDC_TOKEN_TYPE_JWT\",
+    \"devMode\": true
+  }"
+
+  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+    CLI_CLIENT_ID=$(echo "$BODY" | jq -r '.clientId')
+    ok "CLI app created (clientId: ${CLI_CLIENT_ID})"
+  elif [ "$HTTP_CODE" = "409" ] || echo "$BODY" | grep -qi "already exists"; then
+    # Find existing app
+    api POST "/management/v1/projects/${PROJECT_ID}/apps/_search" '{"queries":[]}'
+    CLI_CLIENT_ID=$(echo "$BODY" | jq -r ".result[] | select(.name==\"${CLI_APP_NAME}\") | .oidcConfig.clientId" 2>/dev/null | head -1)
+    if [ -z "$CLI_CLIENT_ID" ] || [ "$CLI_CLIENT_ID" = "null" ]; then
+      fail "CLI app exists but could not find its client ID"
+      exit 1
+    fi
+    skip "CLI app '${CLI_APP_NAME}' (clientId: ${CLI_CLIENT_ID})"
+  else
+    fail "Create CLI app failed (HTTP ${HTTP_CODE}): ${BODY}"
+    exit 1
+  fi
+}
+
 # ── Create Action: add email to access tokens ─────────────────────
 # Zitadel access tokens omit email by default. This Action adds it
 # for human users so audit trails have the real email address.
@@ -287,6 +324,7 @@ ZITADEL_ADMIN_PAT=${ZITADEL_PAT}
 FLOWPLANE_ZITADEL_PROJECT_ID=${PROJECT_ID}
 FLOWPLANE_ZITADEL_ADMIN_PAT=${ZITADEL_PAT}
 FLOWPLANE_ZITADEL_SPA_CLIENT_ID=${SPA_CLIENT_ID}
+FLOWPLANE_ZITADEL_CLI_CLIENT_ID=${CLI_CLIENT_ID}
 FLOWPLANE_SECRET_ENCRYPTION_KEY=${ENCRYPTION_KEY}
 EOF
   chmod 600 "${PROJECT_DIR}/.env.zitadel"
@@ -331,6 +369,7 @@ main() {
 
   PROJECT_ID=""
   SPA_CLIENT_ID=""
+  CLI_CLIENT_ID=""
 
   wait_for_zitadel
   read_pat
@@ -338,6 +377,7 @@ main() {
   grant_login_client_role
   create_project
   create_spa_app
+  create_cli_app
   create_email_action
 
   generate_encryption_key

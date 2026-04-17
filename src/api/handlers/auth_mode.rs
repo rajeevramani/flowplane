@@ -42,7 +42,10 @@ pub async fn auth_mode_handler() -> (StatusCode, Json<AuthModeResponse>) {
     let (oidc_issuer, oidc_client_id) = if mode == "prod" {
         (
             std::env::var("FLOWPLANE_ZITADEL_ISSUER").ok(),
-            std::env::var("FLOWPLANE_OIDC_CLIENT_ID").ok(),
+            // Prefer CLI-specific client ID; fall back to SPA client ID
+            std::env::var("FLOWPLANE_ZITADEL_CLI_CLIENT_ID")
+                .or_else(|_| std::env::var("FLOWPLANE_ZITADEL_SPA_CLIENT_ID"))
+                .ok(),
         )
     } else {
         (None, None)
@@ -96,7 +99,8 @@ mod tests {
         let mut env = EnvGuard::new();
         env.set("FLOWPLANE_AUTH_MODE", "prod");
         env.remove("FLOWPLANE_ZITADEL_ISSUER");
-        env.remove("FLOWPLANE_OIDC_CLIENT_ID");
+        env.remove("FLOWPLANE_ZITADEL_CLI_CLIENT_ID");
+        env.remove("FLOWPLANE_ZITADEL_SPA_CLIENT_ID");
 
         let (status, Json(response)) = auth_mode_handler().await;
         assert_eq!(status, StatusCode::OK);
@@ -121,18 +125,35 @@ mod tests {
 
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
-    async fn test_auth_mode_prod_includes_oidc_info() {
+    async fn test_auth_mode_prod_includes_cli_client_id() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let mut env = EnvGuard::new();
         env.set("FLOWPLANE_AUTH_MODE", "prod");
         env.set("FLOWPLANE_ZITADEL_ISSUER", "https://auth.example.com");
-        env.set("FLOWPLANE_OIDC_CLIENT_ID", "test-client-id");
+        env.set("FLOWPLANE_ZITADEL_CLI_CLIENT_ID", "cli-client-id");
+        env.remove("FLOWPLANE_ZITADEL_SPA_CLIENT_ID");
 
         let (status, Json(response)) = auth_mode_handler().await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response.auth_mode, "prod");
         assert_eq!(response.oidc_issuer.as_deref(), Some("https://auth.example.com"));
-        assert_eq!(response.oidc_client_id.as_deref(), Some("test-client-id"));
+        assert_eq!(response.oidc_client_id.as_deref(), Some("cli-client-id"));
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn test_auth_mode_prod_falls_back_to_spa_client_id() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let mut env = EnvGuard::new();
+        env.set("FLOWPLANE_AUTH_MODE", "prod");
+        env.set("FLOWPLANE_ZITADEL_ISSUER", "https://auth.example.com");
+        env.remove("FLOWPLANE_ZITADEL_CLI_CLIENT_ID");
+        env.set("FLOWPLANE_ZITADEL_SPA_CLIENT_ID", "spa-client-id");
+
+        let (status, Json(response)) = auth_mode_handler().await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response.auth_mode, "prod");
+        assert_eq!(response.oidc_client_id.as_deref(), Some("spa-client-id"));
     }
 
     #[test]

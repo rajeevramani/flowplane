@@ -173,11 +173,11 @@ mod auth_mode {
         let _guard = crate::ENV_MUTEX.lock().unwrap();
         let orig_mode = std::env::var("FLOWPLANE_AUTH_MODE").ok();
         let orig_issuer = std::env::var("FLOWPLANE_ZITADEL_ISSUER").ok();
-        let orig_client = std::env::var("FLOWPLANE_OIDC_CLIENT_ID").ok();
+        let orig_client = std::env::var("FLOWPLANE_ZITADEL_CLI_CLIENT_ID").ok();
 
         std::env::set_var("FLOWPLANE_AUTH_MODE", "prod");
         std::env::set_var("FLOWPLANE_ZITADEL_ISSUER", "https://auth.test.com");
-        std::env::set_var("FLOWPLANE_OIDC_CLIENT_ID", "test-client-42");
+        std::env::set_var("FLOWPLANE_ZITADEL_CLI_CLIENT_ID", "test-client-42");
 
         let (status, axum::Json(resp)) =
             flowplane::api::handlers::auth_mode::auth_mode_handler().await;
@@ -192,8 +192,8 @@ mod auth_mode {
             None => std::env::remove_var("FLOWPLANE_ZITADEL_ISSUER"),
         }
         match orig_client {
-            Some(v) => std::env::set_var("FLOWPLANE_OIDC_CLIENT_ID", v),
-            None => std::env::remove_var("FLOWPLANE_OIDC_CLIENT_ID"),
+            Some(v) => std::env::set_var("FLOWPLANE_ZITADEL_CLI_CLIENT_ID", v),
+            None => std::env::remove_var("FLOWPLANE_ZITADEL_CLI_CLIENT_ID"),
         }
 
         assert_eq!(status, axum::http::StatusCode::OK);

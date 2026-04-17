@@ -168,16 +168,25 @@ pub fn resolve_token(
     // 2. Check --token-file flag
     if let Some(token_file) = token_file_flag {
         debug!("Reading token from file: {}", token_file.display());
-        let token = std::fs::read_to_string(&token_file)
-            .with_context(|| format!("Failed to read token file: {}", token_file.display()))?
-            .trim()
-            .to_string();
+        let content = std::fs::read_to_string(&token_file)
+            .with_context(|| format!("Failed to read token file: {}", token_file.display()))?;
+        let trimmed = content.trim().to_string();
 
-        if token.is_empty() {
+        if trimmed.is_empty() {
             anyhow::bail!("Token file is empty: {}", token_file.display());
         }
 
-        return Ok(token);
+        // Support both JSON (OIDC credentials) and plain-text token formats
+        if trimmed.starts_with('{') {
+            if let Ok(creds) =
+                serde_json::from_str::<super::auth::OidcCredentials>(&trimmed)
+            {
+                debug!("Parsed OIDC credentials from token file");
+                return Ok(creds.access_token);
+            }
+        }
+
+        return Ok(trimmed);
     }
 
     // 3. Check credentials file (supports both OIDC JSON and plain-text formats)
