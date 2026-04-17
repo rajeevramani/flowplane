@@ -82,24 +82,31 @@ paths:
     let spec_file = write_temp_file(&spec, ".yaml");
     let spec_path = spec_file.path().to_str().expect("valid utf-8 path");
 
-    // Let the server auto-allocate a port to avoid collisions with other tests
+    // Find a free port in 10001-10020 by listing existing listeners
+    let list_out = cli.run(&["listener", "list", "-o", "json"]).unwrap();
+    let used_ports: std::collections::HashSet<u16> = serde_json::from_str::<serde_json::Value>(&list_out.stdout)
+        .ok()
+        .and_then(|v| v["items"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|l| l["port"].as_u64().map(|p| p as u16))
+        .collect();
+    let port = (10001..=10020)
+        .find(|p| !used_ports.contains(p))
+        .expect("no free port in 10001-10020 range");
+
     let import_out = cli
         .run_with_timeout(
-            &["import", "openapi", spec_path, "--name", "e2e-import-full"],
+            &[
+                "import", "openapi", spec_path,
+                "--name", "e2e-import-full",
+                "--port", &port.to_string(),
+            ],
             std::time::Duration::from_secs(60),
         )
         .unwrap();
     import_out.assert_success();
     import_out.assert_stdout_contains("Import E2E API");
-
-    // Look up the auto-allocated port from the listener
-    let listener_out = cli.run(&["listener", "get", "e2e-import-full-listener", "-o", "json"]).unwrap();
-    listener_out.assert_success();
-    let listener_json: serde_json::Value =
-        serde_json::from_str(&listener_out.stdout).expect("listener get should return JSON");
-    let port = listener_json["port"]
-        .as_u64()
-        .expect("listener should have a port") as u16;
 
     // Parse the import ID from output (line: "  Import ID:        <uuid>")
     let import_id = import_out
