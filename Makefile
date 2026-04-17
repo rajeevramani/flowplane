@@ -385,8 +385,7 @@ test-ui-report: ## Open Playwright HTML test report
 
 test-e2e-dev: ## Dev mode E2E tests (bearer token, no Zitadel)
 	@echo "$(CYAN)Running dev-mode E2E tests...$(RESET)"
-	@echo "$(CYAN)Compiling E2E test binary (fail-fast on build errors)...$(RESET)"
-	@cargo test -p flowplane --features dev-oidc --test e2e --no-run 2>&1 || \
+	cargo test -p flowplane --features dev-oidc --test e2e --no-run || \
 		{ echo "$(RED)E2E compilation failed. Fix build errors before running tests.$(RESET)"; exit 1; }
 	FLOWPLANE_E2E_AUTH_MODE=dev RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --features dev-oidc --test e2e -- dev_ --ignored --nocapture --test-threads=1; \
 	TEST_EXIT=$$?; \
@@ -395,8 +394,7 @@ test-e2e-dev: ## Dev mode E2E tests (bearer token, no Zitadel)
 
 test-e2e-prod: ## Prod mode E2E tests (real Zitadel, multi-user)
 	@echo "$(CYAN)Running prod-mode E2E tests...$(RESET)"
-	@echo "$(CYAN)Compiling E2E test binary (fail-fast on build errors)...$(RESET)"
-	@cargo test -p flowplane --test e2e --no-run 2>&1 || \
+	cargo test -p flowplane --test e2e --no-run || \
 		{ echo "$(RED)E2E compilation failed. Fix build errors before running tests.$(RESET)"; exit 1; }
 	RUN_E2E=1 RUST_LOG=info cargo test -p flowplane --test e2e -- prod_ --ignored --nocapture --test-threads=1; \
 	TEST_EXIT=$$?; \
