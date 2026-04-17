@@ -93,10 +93,9 @@ const LISTENER_PORT_MAX: u16 = 10020;
 /// Panics if all 20 ports are exhausted.
 pub fn find_free_listener_port(cli: &crate::common::cli_runner::CliRunner) -> u16 {
     let list_out = cli.run(&["listener", "list", "-o", "json"]).expect("listener list should run");
+    // CLI `listener list -o json` outputs a bare JSON array, not a paginated wrapper
     let used_ports: std::collections::HashSet<u16> =
-        serde_json::from_str::<serde_json::Value>(&list_out.stdout)
-            .ok()
-            .and_then(|v| v["items"].as_array().cloned())
+        serde_json::from_str::<Vec<serde_json::Value>>(&list_out.stdout)
             .unwrap_or_default()
             .iter()
             .filter_map(|l| l["port"].as_u64().map(|p| p as u16))
