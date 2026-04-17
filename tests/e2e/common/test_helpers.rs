@@ -83,6 +83,29 @@ pub async fn verify_traffic(harness: &TestHarness, domain: &str, path: &str) {
     assert!(!body.is_empty(), "Proxied response body should not be empty");
 }
 
+/// Envoy listener port range used by `expose` and `import openapi`.
+const LISTENER_PORT_MIN: u16 = 10001;
+const LISTENER_PORT_MAX: u16 = 10020;
+
+/// Find the first free Envoy listener port in the 10001-10020 range.
+///
+/// Queries existing listeners via CLI and returns a port not currently in use.
+/// Panics if all 20 ports are exhausted.
+pub fn find_free_listener_port(cli: &crate::common::cli_runner::CliRunner) -> u16 {
+    let list_out = cli.run(&["listener", "list", "-o", "json"]).expect("listener list should run");
+    let used_ports: std::collections::HashSet<u16> =
+        serde_json::from_str::<serde_json::Value>(&list_out.stdout)
+            .ok()
+            .and_then(|v| v["items"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|l| l["port"].as_u64().map(|p| p as u16))
+            .collect();
+    (LISTENER_PORT_MIN..=LISTENER_PORT_MAX)
+        .find(|p| !used_ports.contains(p))
+        .expect("no free Envoy listener port in 10001-10020 range")
+}
+
 /// Create a route config + listener via the API to complete the Envoy chain
 /// for a cluster that was already created via CLI.
 ///

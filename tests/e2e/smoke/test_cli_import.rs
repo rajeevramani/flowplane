@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
 use crate::common::harness::envoy_harness;
-use crate::common::test_helpers::{verify_in_config_dump, write_temp_file};
+use crate::common::test_helpers::{find_free_listener_port, verify_in_config_dump, write_temp_file};
 
 /// Create a dataplane via CLI for tests that need one as a prerequisite.
 fn create_dataplane_via_cli(cli: &CliRunner, name: &str) {
@@ -82,18 +82,8 @@ paths:
     let spec_file = write_temp_file(&spec, ".yaml");
     let spec_path = spec_file.path().to_str().expect("valid utf-8 path");
 
-    // Find a free port in 10001-10020 by listing existing listeners
-    let list_out = cli.run(&["listener", "list", "-o", "json"]).unwrap();
-    let used_ports: std::collections::HashSet<u16> = serde_json::from_str::<serde_json::Value>(&list_out.stdout)
-        .ok()
-        .and_then(|v| v["items"].as_array().cloned())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|l| l["port"].as_u64().map(|p| p as u16))
-        .collect();
-    let port = (10001..=10020)
-        .find(|p| !used_ports.contains(p))
-        .expect("no free port in 10001-10020 range");
+    // Find a free Envoy listener port to avoid collisions
+    let port = find_free_listener_port(&cli);
 
     let import_out = cli
         .run_with_timeout(
