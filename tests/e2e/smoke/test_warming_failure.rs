@@ -484,57 +484,47 @@ async fn dev_warming_failure_happy_path() {
     eprintln!("fp-hsk.8.3 happy: NACK setup complete (prefix={id})");
 
     // Must see BOTH source=stream AND source=warming_report rows for
-    // dev-dataplane. Warming reports can take up to poll_interval (2s) +
-    // write latency + agent startup. Allow 60s to accommodate slow CI
-    // and Docker environments where the agent may take longer to start
-    // polling Envoy admin.
+    // dev-dataplane with the expected error substring. Filter by error
+    // content to ignore stale NACKs from unrelated listeners (e.g.
+    // default-gateway-listener port bind failures). Allow 60s for slow
+    // CI and Docker environments.
+    let is_relevant = |e: &&serde_json::Value| -> bool {
+        event_for_dev_dataplane(e)
+            && event_error_message(e).contains(EXPECTED_ERROR_SUBSTRING)
+    };
     let events = poll_nacks_until(&cli, Duration::from_secs(60), |events| {
-        let dev: Vec<_> = events.iter().filter(|e| event_for_dev_dataplane(e)).collect();
-        let has_stream = dev.iter().any(|e| event_source(e) == "stream");
-        let has_warming = dev.iter().any(|e| event_source(e) == "warming_report");
+        let relevant: Vec<_> = events.iter().filter(is_relevant).collect();
+        let has_stream = relevant.iter().any(|e| event_source(e) == "stream");
+        let has_warming = relevant.iter().any(|e| event_source(e) == "warming_report");
         has_stream && has_warming
     })
     .await;
 
     assert!(agent.is_running(), "agent died during happy-path NACK window");
 
-    // Harvest dev-dataplane events and apply strict per-source assertions.
+    // Harvest relevant events only (matching dataplane + expected error).
     let dev_events: Vec<_> =
-        events.iter().filter(|e| event_for_dev_dataplane(e)).cloned().collect();
+        events.iter().filter(|e| is_relevant(e)).cloned().collect();
     assert!(
         dev_events.len() >= 2,
-        "expected at least 2 NACK events for dev-dataplane (1 stream + 1 warming); got {}:\n{}",
+        "expected at least 2 NACK events for dev-dataplane with '{}'; got {}:\n{}",
+        EXPECTED_ERROR_SUBSTRING,
         dev_events.len(),
         serde_json::to_string_pretty(&dev_events).unwrap_or_default()
     );
 
-    let stream_event = dev_events
+    let _stream_event = dev_events
         .iter()
         .find(|e| event_source(e) == "stream")
-        .expect("stream-sourced NACK event must exist");
-    assert!(
-        event_error_message(stream_event).contains(EXPECTED_ERROR_SUBSTRING),
-        "stream NACK error_message should mention unknown cluster; got {:?}",
-        event_error_message(stream_event)
-    );
+        .expect("stream-sourced NACK event with expected error must exist");
 
-    let warming_event = dev_events
+    let _warming_event = dev_events
         .iter()
         .find(|e| event_source(e) == "warming_report")
-        .expect("warming_report-sourced NACK event must exist");
-    assert!(
-        event_error_message(warming_event).contains(EXPECTED_ERROR_SUBSTRING),
-        "warming NACK error_message should mention unknown cluster; got {:?}",
-        event_error_message(warming_event)
-    );
+        .expect("warming_report-sourced NACK event with expected error must exist");
 
-    // TODO(fp-yak9): assert events[0].agent_status == "OK" once heartbeat
-    // design bug is fixed. Currently the agent only sends envelopes on
-    // first-contact + new errors, so classify_agent_status decays to STALE
-    // within 60s of quiescence. Asserting "OK" today would race the decay;
-    // asserting "STALE" would codify the bug as expected behavior.
-    // assert_eq!(event_agent_status(stream_event), "OK");
-    // assert_eq!(event_agent_status(warming_event), "OK");
+    // TODO(fp-yak9): assert agent_status == "OK" once heartbeat design bug
+    // is fixed. Currently the agent decays to STALE within 60s of quiescence.
 
     agent.kill();
 }
