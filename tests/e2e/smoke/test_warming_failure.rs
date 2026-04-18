@@ -554,33 +554,36 @@ async fn dev_warming_failure_agent_killed_mid_test() {
     let (id, _listener) = setup_warming_nack(&harness, &cli).await;
     eprintln!("fp-hsk.8.3 killed: NACK setup complete (prefix={id})");
 
-    // Wait until at least one stream-sourced NACK for dev-dataplane lands —
-    // we want to kill the agent AFTER the stream push is observably committed
-    // so the test is deterministic about what "survived" the kill.
+    // Wait until at least one stream-sourced NACK with the expected error
+    // lands for dev-dataplane. Filter by error content to skip stale NACKs
+    // from unrelated listeners (e.g. default-gateway-listener port conflicts).
     let _ = poll_nacks_until(&cli, Duration::from_secs(20), |events| {
-        events.iter().any(|e| event_for_dev_dataplane(e) && event_source(e) == "stream")
+        events.iter().any(|e| {
+            event_for_dev_dataplane(e)
+                && event_source(e) == "stream"
+                && event_error_message(e).contains(EXPECTED_ERROR_SUBSTRING)
+        })
     })
     .await;
 
     agent.kill();
     assert!(!agent.is_running(), "agent must be stopped after kill()");
 
-    // After killing, the stream row must still be visible. Re-fetch to prove
-    // it's durable and not coming from a cached response.
+    // After killing, the relevant stream row must still be visible.
     let events_post = fetch_nack_events(&cli, "50");
     let stream_rows: Vec<_> = events_post
         .iter()
-        .filter(|e| event_for_dev_dataplane(e) && event_source(e) == "stream")
+        .filter(|e| {
+            event_for_dev_dataplane(e)
+                && event_source(e) == "stream"
+                && event_error_message(e).contains(EXPECTED_ERROR_SUBSTRING)
+        })
         .collect();
     assert!(
         !stream_rows.is_empty(),
-        "stream NACK row must survive agent death; events:\n{}",
+        "stream NACK row with '{}' must survive agent death; all events:\n{}",
+        EXPECTED_ERROR_SUBSTRING,
         serde_json::to_string_pretty(&events_post).unwrap_or_default()
-    );
-    assert!(
-        stream_rows.iter().any(|e| event_error_message(e).contains(EXPECTED_ERROR_SUBSTRING)),
-        "at least one surviving stream row must mention unknown cluster; rows:\n{}",
-        serde_json::to_string_pretty(&stream_rows).unwrap_or_default()
     );
 
     // TODO(fp-yak9): assert surviving event agent_status == "OK" once fixed.
