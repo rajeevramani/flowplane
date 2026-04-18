@@ -135,10 +135,7 @@ impl ClusterRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cluster_name = %request.name, "Failed to create cluster");
-            FlowplaneError::classify_db_error(
-                e,
-                format!("Cluster '{}' already exists or violates a constraint", request.name),
-            )
+            FlowplaneError::classify_db_error(e, format!("Cluster '{}'", request.name))
         })?;
 
         if result.rows_affected() == 0 {

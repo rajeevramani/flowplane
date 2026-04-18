@@ -181,17 +181,25 @@ impl From<FlowplaneError> for InternalError {
             }
             FlowplaneError::Conflict { message, .. } => InternalError::conflict(message),
             FlowplaneError::ConstraintViolation { message, source } => {
-                // Differentiate constraint types by PostgreSQL error code
+                // Differentiate constraint types by PostgreSQL error code.
+                // The `message` is a neutral resource context from the repo (e.g.
+                // "Route config 'X'") so we can compose natural sentences per code.
                 if let Some(db_err) = source.as_database_error() {
                     if let Some(code) = db_err.code() {
                         return match code.as_ref() {
                             // FK violation: referenced resource doesn't exist
                             "23503" => InternalError::validation(format!(
-                                "Referenced resource does not exist: {}",
+                                "{} references a resource that does not exist",
                                 message
                             )),
-                            // Unique, not-null, check violations → conflict
-                            _ => InternalError::conflict(message),
+                            // Unique violation: resource already exists
+                            "23505" => {
+                                InternalError::conflict(format!("{} already exists", message))
+                            }
+                            // NOT NULL / CHECK / other → generic conflict
+                            _ => {
+                                InternalError::conflict(format!("{} constraint violation", message))
+                            }
                         };
                     }
                 }

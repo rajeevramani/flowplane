@@ -69,10 +69,15 @@ impl RouteConfigOperations {
             )));
         }
 
-        // 2. Summarize the configuration for storage
+        // 2. Pre-flight: verify every referenced cluster exists. This produces a 400 with
+        //    the specific missing cluster names instead of surfacing an opaque FK violation.
+        validate_referenced_clusters(&self.xds_state, &req.config).await?;
+
+        // 3. Summarize the configuration for storage
         let (path_prefix, cluster_summary) = summarize_config(&req.config);
 
-        // 3. Call service layer
+        // 4. Call service layer. FlowplaneError -> InternalError conversion already distinguishes
+        //    unique violations (409) from FK violations (400) via PostgreSQL error codes.
         let service = RouteService::new(self.xds_state.clone());
         let created = service
             .create_route(
@@ -83,17 +88,7 @@ impl RouteConfigOperations {
                 resolved_team,
             )
             .await
-            .map_err(|e| {
-                let err_str = e.to_string();
-                if err_str.contains("already exists")
-                    || err_str.contains("UNIQUE constraint")
-                    || err_str.contains("unique constraint")
-                {
-                    InternalError::already_exists("Route config", &req.name)
-                } else {
-                    InternalError::from(e)
-                }
-            })?;
+            .map_err(InternalError::from)?;
 
         // 4. Sync route hierarchy if available
         if let Err(e) = self.sync_route_hierarchy(&created, &req.config).await {
@@ -196,22 +191,19 @@ impl RouteConfigOperations {
         // 1. Get existing route config and verify access
         let _existing = self.get(name, auth).await?;
 
-        // 2. Summarize the new configuration
+        // 2. Pre-flight: verify every referenced cluster exists (returns 400 with missing names).
+        validate_referenced_clusters(&self.xds_state, &req.config).await?;
+
+        // 3. Summarize the new configuration
         let (path_prefix, cluster_summary) = summarize_config(&req.config);
 
-        // 3. Update via service layer
+        // 4. Update via service layer. Existence check ran at step 1 (self.get), so remaining
+        //    errors flow through typed FlowplaneError -> InternalError conversion.
         let service = RouteService::new(self.xds_state.clone());
         let updated = service
             .update_route(name, path_prefix, cluster_summary, req.config.clone())
             .await
-            .map_err(|e| {
-                let err_str = e.to_string();
-                if err_str.contains("not found") {
-                    InternalError::not_found("Route config", name)
-                } else {
-                    InternalError::from(e)
-                }
-            })?;
+            .map_err(InternalError::from)?;
 
         // 4. Sync route hierarchy if available
         if let Err(e) = self.sync_route_hierarchy(&updated, &req.config).await {
@@ -296,6 +288,68 @@ impl RouteConfigOperations {
                 .map_err(|e| InternalError::internal(e.to_string()))?;
         }
         Ok(())
+    }
+}
+
+/// Collect every cluster name referenced by a route config payload (deduplicated).
+///
+/// Walks all virtual hosts / routes / actions and picks up cluster references from
+/// both MCP shapes (`{"type":"forward","cluster":"x"}` / `{"type":"weighted","clusters":[...]}`)
+/// and internal shapes (`{"Cluster":{"name":"x"}}` / `{"WeightedClusters":{"clusters":[...]}}`).
+fn collect_referenced_clusters(config: &Value) -> std::collections::BTreeSet<String> {
+    let mut clusters = std::collections::BTreeSet::new();
+    let virtual_hosts = config.get("virtual_hosts").or_else(|| config.get("virtualHosts"));
+    if let Some(hosts) = virtual_hosts.and_then(|h| h.as_array()) {
+        for host in hosts {
+            if let Some(routes) = host.get("routes").and_then(|r| r.as_array()) {
+                for route in routes {
+                    extract_clusters_from_route(route, &mut clusters);
+                }
+            }
+        }
+    }
+    clusters
+}
+
+/// Verify every cluster referenced by the route config exists before attempting the insert.
+///
+/// Without this, missing-cluster references surface as FK violations from the database,
+/// which were historically misclassified by brittle substring matching on error text.
+/// Returning a 400 naming the missing clusters produces a far clearer error than the
+/// opaque "constraint violation" the DB would emit.
+async fn validate_referenced_clusters(
+    xds_state: &XdsState,
+    config: &Value,
+) -> Result<(), InternalError> {
+    let Some(cluster_repo) = xds_state.cluster_repository.as_ref() else {
+        // No repository means we're in a harness that doesn't need cluster validation
+        // (e.g. unit tests). The DB FK (when present) remains a safety net.
+        return Ok(());
+    };
+
+    let referenced = collect_referenced_clusters(config);
+    if referenced.is_empty() {
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+    for name in &referenced {
+        let exists = cluster_repo
+            .exists_by_name(name)
+            .await
+            .map_err(|e| InternalError::database(e.to_string()))?;
+        if !exists {
+            missing.push(name.clone());
+        }
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(InternalError::validation(format!(
+            "Referenced cluster(s) do not exist: {}",
+            missing.join(", ")
+        )))
     }
 }
 
@@ -693,6 +747,122 @@ mod tests {
         let internal_weighted = transform_action(&mcp_weighted);
         let expected = json!({"WeightedClusters": {"clusters": [{"name": "stable", "weight": 90}, {"name": "canary", "weight": 10}]}});
         assert_eq!(internal_weighted, expected);
+    }
+
+    #[test]
+    fn test_collect_referenced_clusters_empty_config() {
+        let config = json!({"virtualHosts": []});
+        assert!(collect_referenced_clusters(&config).is_empty());
+    }
+
+    #[test]
+    fn test_collect_referenced_clusters_empty_when_no_cluster_key() {
+        // Redirect actions have no cluster reference
+        let config = json!({
+            "virtualHosts": [{
+                "name": "vh",
+                "domains": ["*"],
+                "routes": [{
+                    "name": "r1",
+                    "match": {"path": {"type": "prefix", "value": "/"}},
+                    "action": {"type": "redirect", "hostRedirect": "example.com"}
+                }]
+            }]
+        });
+        assert!(collect_referenced_clusters(&config).is_empty());
+    }
+
+    #[test]
+    fn test_collect_referenced_clusters_mcp_forward() {
+        let config = json!({
+            "virtualHosts": [{
+                "name": "vh",
+                "domains": ["*"],
+                "routes": [{
+                    "name": "r1",
+                    "match": {"path": {"type": "prefix", "value": "/api"}},
+                    "action": {"type": "forward", "cluster": "api-cluster"}
+                }]
+            }]
+        });
+        let clusters = collect_referenced_clusters(&config);
+        assert_eq!(clusters.len(), 1);
+        assert!(clusters.contains("api-cluster"));
+    }
+
+    #[test]
+    fn test_collect_referenced_clusters_mcp_weighted() {
+        let config = json!({
+            "virtualHosts": [{
+                "name": "vh",
+                "domains": ["*"],
+                "routes": [{
+                    "name": "r1",
+                    "match": {"path": {"type": "prefix", "value": "/"}},
+                    "action": {"type": "weighted", "clusters": [
+                        {"name": "stable", "weight": 90},
+                        {"name": "canary", "weight": 10}
+                    ]}
+                }]
+            }]
+        });
+        let clusters = collect_referenced_clusters(&config);
+        assert_eq!(clusters.len(), 2);
+        assert!(clusters.contains("stable"));
+        assert!(clusters.contains("canary"));
+    }
+
+    #[test]
+    fn test_collect_referenced_clusters_dedupes_across_routes_and_vhosts() {
+        let config = json!({
+            "virtualHosts": [
+                {
+                    "name": "vh1",
+                    "domains": ["a.example"],
+                    "routes": [
+                        {"match": {"path": {"type": "prefix", "value": "/"}},
+                         "action": {"type": "forward", "cluster": "shared"}},
+                        {"match": {"path": {"type": "prefix", "value": "/v2"}},
+                         "action": {"type": "forward", "cluster": "shared"}}
+                    ]
+                },
+                {
+                    "name": "vh2",
+                    "domains": ["b.example"],
+                    "routes": [{
+                        "match": {"path": {"type": "prefix", "value": "/"}},
+                        "action": {"type": "forward", "cluster": "shared"}
+                    }]
+                }
+            ]
+        });
+        let clusters = collect_referenced_clusters(&config);
+        assert_eq!(clusters.len(), 1);
+        assert!(clusters.contains("shared"));
+    }
+
+    #[test]
+    fn test_collect_referenced_clusters_internal_shape() {
+        // The same walker must work on the internal (Rust-enum-serialized) shape too,
+        // since update paths sometimes pass already-transformed configs.
+        let config = json!({
+            "virtual_hosts": [{
+                "name": "vh",
+                "domains": ["*"],
+                "routes": [
+                    {"match": {"path": {"Prefix": "/"}},
+                     "action": {"Cluster": {"name": "internal-cluster"}}},
+                    {"match": {"path": {"Prefix": "/w"}},
+                     "action": {"WeightedClusters": {"clusters": [
+                         {"name": "wc-a", "weight": 1}
+                     ]}}}
+                ]
+            }]
+        });
+        let clusters = collect_referenced_clusters(&config);
+        assert_eq!(clusters.len(), 2);
+        assert!(clusters.contains("internal-cluster"));
+        assert!(clusters.contains("wc-a"));
     }
 
     #[test]

@@ -489,8 +489,7 @@ async fn dev_warming_failure_happy_path() {
     // default-gateway-listener port bind failures). Allow 60s for slow
     // CI and Docker environments.
     let is_relevant = |e: &&serde_json::Value| -> bool {
-        event_for_dev_dataplane(e)
-            && event_error_message(e).contains(EXPECTED_ERROR_SUBSTRING)
+        event_for_dev_dataplane(e) && event_error_message(e).contains(EXPECTED_ERROR_SUBSTRING)
     };
     let events = poll_nacks_until(&cli, Duration::from_secs(60), |events| {
         let relevant: Vec<_> = events.iter().filter(is_relevant).collect();
@@ -503,8 +502,7 @@ async fn dev_warming_failure_happy_path() {
     assert!(agent.is_running(), "agent died during happy-path NACK window");
 
     // Harvest relevant events only (matching dataplane + expected error).
-    let dev_events: Vec<_> =
-        events.iter().filter(|e| is_relevant(e)).cloned().collect();
+    let dev_events: Vec<_> = events.iter().filter(|e| is_relevant(e)).cloned().collect();
     assert!(
         dev_events.len() >= 2,
         "expected at least 2 NACK events for dev-dataplane with '{}'; got {}:\n{}",

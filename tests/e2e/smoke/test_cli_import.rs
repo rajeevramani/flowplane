@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use crate::common::cli_runner::CliRunner;
 use crate::common::harness::envoy_harness;
-use crate::common::test_helpers::{find_free_listener_port, verify_in_config_dump, write_temp_file};
+use crate::common::test_helpers::{
+    find_free_listener_port, verify_in_config_dump, write_temp_file,
+};
 
 /// Create a dataplane via CLI for tests that need one as a prerequisite.
 fn create_dataplane_via_cli(cli: &CliRunner, name: &str) {
@@ -88,9 +90,13 @@ paths:
     let import_out = cli
         .run_with_timeout(
             &[
-                "import", "openapi", spec_path,
-                "--name", "e2e-import-full",
-                "--port", &port.to_string(),
+                "import",
+                "openapi",
+                spec_path,
+                "--name",
+                "e2e-import-full",
+                "--port",
+                &port.to_string(),
             ],
             std::time::Duration::from_secs(60),
         )

@@ -1320,10 +1320,8 @@ mod tests {
     // the JWKS modulus base64url encoding does not round-trip.
     #[tokio::test]
     async fn adversarial_round_trip_custom_audience_and_sub() {
-        let config = MockOidcConfig {
-            audience: "adversarial-aud-42".to_string(),
-            ..Default::default()
-        };
+        let config =
+            MockOidcConfig { audience: "adversarial-aud-42".to_string(), ..Default::default() };
         let server = MockOidcServer::start(config).await.unwrap();
 
         // Custom sub with characters that would break a naive encoder
@@ -1357,12 +1355,9 @@ mod tests {
         validation.set_issuer(&[&server.issuer]);
         validation.set_audience(&["adversarial-aud-42"]);
 
-        let token_data = jsonwebtoken::decode::<serde_json::Value>(
-            &token,
-            &decoding_key,
-            &validation,
-        )
-        .expect("token must verify against JWKS public key");
+        let token_data =
+            jsonwebtoken::decode::<serde_json::Value>(&token, &decoding_key, &validation)
+                .expect("token must verify against JWKS public key");
 
         assert_eq!(token_data.claims["sub"], custom_sub);
         assert_eq!(token_data.claims["aud"], "adversarial-aud-42");

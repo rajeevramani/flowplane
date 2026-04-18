@@ -178,9 +178,7 @@ pub fn resolve_token(
 
         // Support both JSON (OIDC credentials) and plain-text token formats
         if trimmed.starts_with('{') {
-            if let Ok(creds) =
-                serde_json::from_str::<super::auth::OidcCredentials>(&trimmed)
-            {
+            if let Ok(creds) = serde_json::from_str::<super::auth::OidcCredentials>(&trimmed) {
                 debug!("Parsed OIDC credentials from token file");
                 return Ok(creds.access_token);
             }

@@ -341,10 +341,7 @@ async fn dev_cli_delete_route() {
     // the listener port should fail (connection refused), not return 200.
     let port = harness.ports.listener;
     let result = harness.wait_for_route_on_port(port, &domain, "/test", 200).await;
-    assert!(
-        result.is_err(),
-        "traffic should NOT route after listener+route deletion, but got 200"
-    );
+    assert!(result.is_err(), "traffic should NOT route after listener+route deletion, but got 200");
 }
 
 // ============================================================================

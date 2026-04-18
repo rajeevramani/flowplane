@@ -243,13 +243,7 @@ impl ListenerRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, listener_name = %request.name, "Failed to create listener");
-            FlowplaneError::classify_db_error(
-                e,
-                format!(
-                    "Listener '{}' already exists or violates a constraint",
-                    request.name
-                ),
-            )
+            FlowplaneError::classify_db_error(e, format!("Listener '{}'", request.name))
         })?;
 
         if result.rows_affected() == 0 {

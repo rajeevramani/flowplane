@@ -213,13 +213,7 @@ impl RouteConfigRepository {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, route_config_name = %request.name, "Failed to create route config");
-            FlowplaneError::classify_db_error(
-                e,
-                format!(
-                    "Route config '{}' already exists or violates a constraint",
-                    request.name
-                ),
-            )
+            FlowplaneError::classify_db_error(e, format!("Route config '{}'", request.name))
         })?;
 
         if result.rows_affected() == 0 {
