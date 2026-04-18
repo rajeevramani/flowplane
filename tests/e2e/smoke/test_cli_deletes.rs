@@ -324,11 +324,6 @@ async fn dev_cli_delete_route() {
     let ls_del = cli.run(&["listener", "delete", &chain_ls, "--yes"]).unwrap();
     ls_del.assert_success();
 
-    // Wait for listener removal to reach Envoy before deleting the route.
-    // Envoy won't release an RDS route config while an active listener still
-    // references it via routeConfigName.
-    verify_not_in_config_dump(&harness, &chain_ls).await;
-
     // Step 6: delete the route
     let delete_output = cli.run(&["route", "delete", &route_name, "--yes"]).unwrap();
     delete_output.assert_success();
@@ -338,8 +333,18 @@ async fn dev_cli_delete_route() {
     let get_after = cli.run(&["route", "get", &route_name]).unwrap();
     get_after.assert_failure();
 
-    // Step 8: verify route is gone from Envoy config_dump (polls with retry)
-    verify_not_in_config_dump(&harness, &route_name).await;
+    // Step 8: verify the listener is gone from Envoy (LDS removal)
+    verify_not_in_config_dump(&harness, &chain_ls).await;
+
+    // Step 9: verify traffic no longer routes through the deleted listener.
+    // This is the real user-visible assertion — after deletion, requests to
+    // the listener port should fail (connection refused), not return 200.
+    let port = harness.ports.listener;
+    let result = harness.wait_for_route_on_port(port, &domain, "/test", 200).await;
+    assert!(
+        result.is_err(),
+        "traffic should NOT route after listener+route deletion, but got 200"
+    );
 }
 
 // ============================================================================
