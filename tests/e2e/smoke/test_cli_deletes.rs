@@ -324,6 +324,11 @@ async fn dev_cli_delete_route() {
     let ls_del = cli.run(&["listener", "delete", &chain_ls, "--yes"]).unwrap();
     ls_del.assert_success();
 
+    // Wait for listener removal to reach Envoy before deleting the route.
+    // Envoy won't release an RDS route config while an active listener still
+    // references it via routeConfigName.
+    verify_not_in_config_dump(&harness, &chain_ls).await;
+
     // Step 6: delete the route
     let delete_output = cli.run(&["route", "delete", &route_name, "--yes"]).unwrap();
     delete_output.assert_success();
