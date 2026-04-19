@@ -33,6 +33,7 @@ pub mod test_cli_views;
 pub mod test_cli_wasm;
 pub mod test_dev_mode_smoke;
 pub mod test_dev_mtls_docker;
+#[cfg(feature = "dev-oidc")]
 pub mod test_fp4n5_adversarial;
 pub mod test_prod_mode_smoke;
 pub mod test_route_config_validation;
