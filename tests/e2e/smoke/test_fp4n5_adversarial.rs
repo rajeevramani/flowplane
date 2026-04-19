@@ -1,4 +1,3 @@
-#![cfg(feature = "dev-oidc")]
 //! Adversarial smoke tests for fp-4n5 (unified dev/prod auth via dev OIDC mock).
 //!
 //! * Test a — a JWT signed by an unrelated mock OIDC instance must be rejected
