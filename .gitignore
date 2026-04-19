@@ -54,8 +54,8 @@ book/
 docs/build/
 docs/adr/
 
-# Decision docs (working-tree only, not committed)
-specs/decisions/
+# Specs docs (working-tree only, not committed)
+specs/
 
 # Test coverage and reports
 coverage/

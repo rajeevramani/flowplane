@@ -19,7 +19,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
 # Build the CLI application
-RUN cargo build --release --bin flowplane-cli
+RUN cargo build --release --bin flowplane
 
 # Runtime stage
 FROM debian:trixie-slim
@@ -37,7 +37,7 @@ RUN useradd -r -s /bin/false -m -d /app flowplane
 WORKDIR /app
 
 # Copy the binary from builder stage
-COPY --from=builder /app/target/release/flowplane-cli /usr/local/bin/flowplane
+COPY --from=builder /app/target/release/flowplane /usr/local/bin/flowplane
 
 # Change ownership
 RUN chown -R flowplane:flowplane /app

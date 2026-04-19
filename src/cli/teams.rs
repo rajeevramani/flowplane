@@ -18,7 +18,7 @@ pub enum TeamCommands {
     /// Create a new team
     #[command(
         long_about = "Create a new team for multi-tenant resource isolation.\n\nTeams provide boundaries for resources and user access control.",
-        after_help = "EXAMPLES:\n    # Create a team from JSON file\n    flowplane-cli team create --org acme-corp --file team-spec.json\n\n    # Create with YAML output\n    flowplane-cli team create --org acme-corp --file team.json --output yaml"
+        after_help = "EXAMPLES:\n    # Create a team from JSON file\n    flowplane team create --org acme-corp --file team-spec.json\n\n    # Create with YAML output\n    flowplane team create --org acme-corp --file team.json --output yaml"
     )]
     Create {
         /// Organization name
@@ -37,7 +37,7 @@ pub enum TeamCommands {
     /// List teams in an organization
     #[command(
         long_about = "List all teams in an organization.\n\nRequires org-admin or platform-admin privileges.",
-        after_help = "EXAMPLES:\n    # List teams in an org\n    flowplane-cli team list --org acme-corp\n\n    # List with table output\n    flowplane-cli team list --org acme-corp --output table\n\n    # Platform admin: list all teams across orgs\n    flowplane-cli team list --admin"
+        after_help = "EXAMPLES:\n    # List teams in an org\n    flowplane team list --org acme-corp\n\n    # List with table output\n    flowplane team list --org acme-corp --output table\n\n    # Platform admin: list all teams across orgs\n    flowplane team list --admin"
     )]
     List {
         /// Organization name
@@ -64,7 +64,7 @@ pub enum TeamCommands {
     /// Get details of a specific team
     #[command(
         long_about = "Retrieve detailed information about a specific team.",
-        after_help = "EXAMPLES:\n    # Get team details\n    flowplane-cli team get --org acme-corp engineering\n\n    # Get with YAML output\n    flowplane-cli team get --org acme-corp engineering --output yaml"
+        after_help = "EXAMPLES:\n    # Get team details\n    flowplane team get --org acme-corp engineering\n\n    # Get with YAML output\n    flowplane team get --org acme-corp engineering --output yaml"
     )]
     Get {
         /// Organization name
@@ -83,7 +83,7 @@ pub enum TeamCommands {
     /// Update an existing team
     #[command(
         long_about = "Update an existing team with new settings.\n\nProvide a JSON file with the updated team fields.",
-        after_help = "EXAMPLES:\n    # Update a team\n    flowplane-cli team update --org acme-corp engineering --file updated-team.json"
+        after_help = "EXAMPLES:\n    # Update a team\n    flowplane team update --org acme-corp engineering --file updated-team.json"
     )]
     Update {
         /// Organization name
@@ -106,7 +106,7 @@ pub enum TeamCommands {
     /// Delete a team
     #[command(
         long_about = "Delete a specific team from the system.\n\nWARNING: This will fail if the team owns any resources due to foreign key constraints.",
-        after_help = "EXAMPLES:\n    # Delete a team (with confirmation prompt)\n    flowplane-cli team delete --org acme-corp engineering\n\n    # Delete without confirmation\n    flowplane-cli team delete --org acme-corp engineering --yes"
+        after_help = "EXAMPLES:\n    # Delete a team (with confirmation prompt)\n    flowplane team delete --org acme-corp engineering\n\n    # Delete without confirmation\n    flowplane team delete --org acme-corp engineering --yes"
     )]
     Delete {
         /// Organization name

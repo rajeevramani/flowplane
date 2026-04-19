@@ -95,7 +95,7 @@ help: ## Show this help message
 	@echo "  $(CYAN)make build$(RESET)           - Build combined Docker image"
 	@echo "  $(CYAN)make build-backend$(RESET)   - Build backend-only image (optimized)"
 	@echo "  $(CYAN)make build-ui$(RESET)        - Build frontend-only image"
-	@echo "  $(CYAN)make build-cli$(RESET)       - Build flowplane-cli binary"
+	@echo "  $(CYAN)make build-cli$(RESET)       - Build flowplane binary (compat target)"
 	@echo ""
 	@echo "$(GREEN)Operations:$(RESET)"
 	@echo "  $(CYAN)make down$(RESET)            - Stop all services"
@@ -338,11 +338,11 @@ build-ui: ## Build frontend-only Docker image
 	$(DOCKER) build -f Dockerfile.ui -t $(UI_IMAGE):$(VERSION) -t $(UI_IMAGE):latest .
 	@echo "$(GREEN)Image built: $(UI_IMAGE):$(VERSION)$(RESET)"
 
-build-cli: ## Build the CLI binary (flowplane-cli)
-	@echo "$(CYAN)Building flowplane-cli...$(RESET)"
-	cargo build --release --bin flowplane-cli
-	@echo "$(GREEN)CLI built: target/release/flowplane-cli$(RESET)"
-	@echo "  Run: ./target/release/flowplane-cli --help"
+build-cli: ## Build the flowplane binary (compat target)
+	@echo "$(CYAN)Building flowplane...$(RESET)"
+	cargo build --release --bin flowplane
+	@echo "$(GREEN)Binary built: target/release/flowplane$(RESET)"
+	@echo "  Run: ./target/release/flowplane --help"
 
 # =============================================================================
 # Development Targets

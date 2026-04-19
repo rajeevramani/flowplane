@@ -71,7 +71,6 @@ jobs:
         run: |
           mkdir -p flowplane-${{ matrix.target }}
           cp target/${{ matrix.target }}/release/flowplane flowplane-${{ matrix.target }}/
-          cp target/${{ matrix.target }}/release/flowplane-cli flowplane-${{ matrix.target }}/
           cp -r migrations flowplane-${{ matrix.target }}/
           mkdir -p flowplane-${{ matrix.target }}/ui
           cp -r ui/build flowplane-${{ matrix.target }}/ui/
