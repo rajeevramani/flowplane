@@ -87,10 +87,19 @@ pub async fn verify_traffic(harness: &TestHarness, domain: &str, path: &str) {
 const LISTENER_PORT_MIN: u16 = 10001;
 const LISTENER_PORT_MAX: u16 = 10020;
 
-/// Find the first free Envoy listener port in the 10001-10020 range.
+/// Find a free Envoy listener port that both the CP and the host agree is unused.
 ///
-/// Queries existing listeners via CLI and returns a port not currently in use.
-/// Panics if all 20 ports are exhausted.
+/// A port is usable only when (a) the CP has no listener assigned to it AND
+/// (b) the host can actually bind it. The host-bind probe is required because
+/// the CP-only view misses ports held by external host processes — e.g. on
+/// macOS + Podman, `gvproxy` holds 10001-10020 for VM port forwarding via
+/// dual-stack IPv6 sockets; Envoy accepts the xDS listener but silently fails
+/// to bind, so the listener appears in `config_dump` yet no traffic is served.
+///
+/// Tries the primary 10001-10020 range first (matches the CP's expose port
+/// pool in `src/api/handlers/expose.rs`). Falls back to 20001-20100 when the
+/// primary range is fully held — raw listener creation is not constrained to
+/// the expose pool so this lets the test exercise traffic in that case.
 pub fn find_free_listener_port(cli: &crate::common::cli_runner::CliRunner) -> u16 {
     let list_out = cli.run(&["listener", "list", "-o", "json"]).expect("listener list should run");
     // CLI `listener list -o json` outputs a bare JSON array, not a paginated wrapper
@@ -100,9 +109,20 @@ pub fn find_free_listener_port(cli: &crate::common::cli_runner::CliRunner) -> u1
             .iter()
             .filter_map(|l| l["port"].as_u64().map(|p| p as u16))
             .collect();
-    (LISTENER_PORT_MIN..=LISTENER_PORT_MAX)
-        .find(|p| !used_ports.contains(p))
-        .expect("no free Envoy listener port in 10001-10020 range")
+
+    let is_usable =
+        |p: &u16| !used_ports.contains(p) && std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok();
+
+    if let Some(p) = (LISTENER_PORT_MIN..=LISTENER_PORT_MAX).find(is_usable) {
+        return p;
+    }
+    if let Some(p) = (20001..=20100).find(is_usable) {
+        return p;
+    }
+    panic!(
+        "no bindable Envoy listener port in {}-{} or 20001-20100 — check host for processes holding these ports (e.g. podman gvproxy on macOS)",
+        LISTENER_PORT_MIN, LISTENER_PORT_MAX
+    )
 }
 
 /// Create a route config + listener via the API to complete the Envoy chain
