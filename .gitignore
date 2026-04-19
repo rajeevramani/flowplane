@@ -64,9 +64,8 @@ coverage/
 *.gcda
 
 # Claude Code specific (if you want to keep these private)
-.claude/
-!.claude/skills/
-!.claude/skills/**
+.claude/settings.local.json
+.agents/
 CLAUDE.md
 CLAUDE.md.backup
 CLAUDE.md.bak
