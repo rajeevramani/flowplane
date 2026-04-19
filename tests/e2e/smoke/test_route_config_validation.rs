@@ -128,9 +128,6 @@ async fn dev_route_config_duplicate_name_returns_409_already_exists() {
     let text = second.text().await.unwrap_or_default();
 
     assert_eq!(status.as_u16(), 409, "expected 409 for duplicate, got {status}: {text}");
-    assert!(
-        text.contains("already exists"),
-        "expected 'already exists' wording, got: {text}"
-    );
+    assert!(text.contains("already exists"), "expected 'already exists' wording, got: {text}");
     assert!(text.contains(&rc_name), "expected route config name in message: {text}");
 }
