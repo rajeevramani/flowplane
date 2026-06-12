@@ -6,6 +6,10 @@
 
 pub mod error;
 pub mod id;
+pub mod identity;
 
 pub use error::{DomainError, DomainResult, ErrorCode};
-pub use id::{OrgId, RequestId, TeamId};
+pub use id::{AgentId, AuditEntryId, GrantId, MembershipId, OrgId, RequestId, TeamId, UserId};
+pub use identity::{
+    validate_name, Agent, AgentKind, EntityStatus, OrgRole, Organization, Team, User,
+};

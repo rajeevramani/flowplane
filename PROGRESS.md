@@ -45,6 +45,13 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S1.8 CI: fmt, clippy -D warnings, tests w/ Postgres, cargo audit/deny
   - [x] S1 exit: request_id in error body + log + trace; traceparent inherited; boots on fresh PG; TLS verified
 - [ ] S2 Identity, teams, authz backbone
+  - [x] S2.1 schema 0002 (orgs/teams/users/agents/memberships/grants/audit/bootstrap) + domain types
+  - [ ] S2.2 authz decision engine (pure, table-driven, property tests vs spec/05 §3.1)
+  - [ ] S2.3 OIDC JWT validation (provider-agnostic, JWKS cache) + dev mock OIDC + gating + seeding
+  - [ ] S2.4 TeamScope repos (identity) + audit writer (incl. denials)
+  - [ ] S2.5 REST wiring: auth middleware, whoami, bootstrap one-shot flow
+  - [ ] S2.6 per-tenant write throttle
+  - [ ] S2 exit: authz property tests (3 invariants), cross-org 404, denial audit rows, real-PG integration
 - [ ] S3 Gateway domain + storage + outbox events
 - [ ] S4 REST API core + OpenAPI generation (+ v1 contract diff)
 - [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine

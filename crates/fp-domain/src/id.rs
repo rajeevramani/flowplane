@@ -66,6 +66,26 @@ domain_id!(
     /// Correlates one API request across error body, logs, and traces (spec/10 §8a).
     RequestId
 );
+domain_id!(
+    /// Identifies a human user.
+    UserId
+);
+domain_id!(
+    /// Identifies a machine identity (agent).
+    AgentId
+);
+domain_id!(
+    /// Identifies a grant row.
+    GrantId
+);
+domain_id!(
+    /// Identifies an audit-log entry.
+    AuditEntryId
+);
+domain_id!(
+    /// Identifies a membership row (org or team).
+    MembershipId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
