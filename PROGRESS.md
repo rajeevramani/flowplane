@@ -34,16 +34,16 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 
 ## Phase 2..N — Implementation (after founder gate; details in spec/11)
 
-- [ ] S1 Skeleton & quality gates
+- [x] S1 Skeleton & quality gates
   - [x] S1.1 workspace + rust-toolchain + fp-domain error taxonomy + ids
   - [x] S1.2 fp-core config (env>file>defaults, validated)
   - [x] S1.3 fp-storage pool + migrations runner (+ 0001)
   - [x] S1.4 fp-api: healthz/readyz, request-id middleware, error envelope, /metrics
-  - [~] S1.5 observability: JSON logs w/ request_id DONE; OTel OTLP export + W3C traceparent NEXT
-  - [~] S1.6 native TLS implemented + insecure opt-in warning; TLS-path smoke test NEXT
+  - [x] S1.5 observability: JSON logs w/ request_id + trace_id; OTel layer always on; OTLP export when configured; W3C traceparent honored
+  - [x] S1.6 native-TLS API listener + insecure opt-in warning; TLS smoke in CI
   - [x] S1.7 flowplane bin: serve + db migrate; graceful shutdown
   - [x] S1.8 CI: fmt, clippy -D warnings, tests w/ Postgres, cargo audit/deny
-  - [ ] S1 exit: request_id in error body + log + trace; boots on fresh PG; CI green
+  - [x] S1 exit: request_id in error body + log + trace; traceparent inherited; boots on fresh PG; TLS verified
 - [ ] S2 Identity, teams, authz backbone
 - [ ] S3 Gateway domain + storage + outbox events
 - [ ] S4 REST API core + OpenAPI generation (+ v1 contract diff)

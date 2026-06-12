@@ -21,6 +21,10 @@ fp-core = { workspace = true }
 fp-domain = { workspace = true }
 fp-storage = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 rustls = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

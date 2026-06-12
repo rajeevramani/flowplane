@@ -13,6 +13,8 @@ fp-core = { workspace = true }
 fp-domain = { workspace = true }
 fp-storage = { workspace = true }
 metrics = { workspace = true }
+opentelemetry = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
