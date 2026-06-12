@@ -24,6 +24,7 @@ fp-api = { workspace = true }
 fp-core = { workspace = true }
 fp-domain = { workspace = true }
 fp-storage = { workspace = true }
+fp-xds = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }

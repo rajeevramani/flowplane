@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 pub struct ServerConfig {
     /// REST + MCP listen address.
     pub api_addr: SocketAddr,
+    /// xDS gRPC listen address (ADS/SDS + capture services).
+    pub xds_addr: SocketAddr,
     /// PostgreSQL connection URL. Required.
     pub database_url: String,
     /// Maximum DB pool connections.
@@ -69,6 +71,7 @@ pub enum LogFormat {
 #[serde(deny_unknown_fields)]
 struct FileConfig {
     api_addr: Option<String>,
+    xds_addr: Option<String>,
     database_url: Option<String>,
     db_max_connections: Option<u32>,
     api_tls_cert: Option<String>,
@@ -121,6 +124,16 @@ impl ServerConfig {
                 "FLOWPLANE_API_ADDR \"{api_addr_raw}\" is not a valid socket address"
             ))
             .with_hint("use host:port, e.g. 0.0.0.0:8080")
+        })?;
+
+        let xds_addr_raw = get("FLOWPLANE_XDS_ADDR")
+            .map(str::to_owned)
+            .or(file.xds_addr)
+            .unwrap_or_else(|| "0.0.0.0:18000".to_string());
+        let xds_addr: SocketAddr = xds_addr_raw.parse().map_err(|_| {
+            DomainError::invalid_config(format!(
+                "FLOWPLANE_XDS_ADDR \"{xds_addr_raw}\" is not a valid socket address"
+            ))
         })?;
 
         let database_url = get("FLOWPLANE_DATABASE_URL")
@@ -248,6 +261,7 @@ impl ServerConfig {
 
         Ok(Self {
             api_addr,
+            xds_addr,
             database_url,
             db_max_connections,
             api_tls,

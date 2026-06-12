@@ -649,6 +649,7 @@ dependencies = [
  "fp-core",
  "fp-domain",
  "fp-storage",
+ "fp-xds",
  "metrics-exporter-prometheus",
  "opentelemetry",
  "opentelemetry-otlp",

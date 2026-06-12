@@ -57,6 +57,51 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
+    // xDS pipeline: snapshot cache fed by the outbox consumer; ADS server.
+    let (xds_shutdown_tx, xds_shutdown_rx) = tokio::sync::watch::channel(false);
+    let snapshot_cache = fp_xds::snapshot::SnapshotCache::new();
+    {
+        let cache = snapshot_cache.clone();
+        let consumer_pool = pool.clone();
+        tokio::spawn(async move {
+            let handler_pool = consumer_pool.clone();
+            let result = fp_storage::outbox::run_consumer(
+                consumer_pool,
+                fp_xds::snapshot::XDS_CONSUMER,
+                move |events| {
+                    let cache = cache.clone();
+                    let pool = handler_pool.clone();
+                    async move { fp_xds::snapshot::handle_events(&cache, &pool, events).await }
+                },
+                xds_shutdown_rx,
+            )
+            .await;
+            if let Err(e) = result {
+                tracing::error!("xds outbox consumer exited with error: {e}");
+            }
+        });
+    }
+    if config.dev_mode {
+        // Production mTLS + cert-registry resolver lands in S5.4; until then the xDS
+        // listener only starts in dev mode (node-id trust is dev-only).
+        let cache = snapshot_cache.clone();
+        let xds_addr = config.xds_addr;
+        tokio::spawn(async move {
+            if let Err(e) = fp_xds::server::serve_plaintext(
+                xds_addr,
+                cache,
+                std::sync::Arc::new(fp_xds::ads::NodeIdTeamResolver),
+                std::future::pending(),
+            )
+            .await
+            {
+                tracing::error!("xds server exited: {e}");
+            }
+        });
+    } else {
+        tracing::warn!("xDS listener disabled until mTLS identity is configured (S5.4)");
+    }
+
     let state = fp_api::AppState {
         pool,
         prometheus,
@@ -103,6 +148,7 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
+    let _ = xds_shutdown_tx.send(true);
     if let Some(provider) = otel_provider {
         if let Err(e) = provider.shutdown() {
             tracing::warn!("OTel provider shutdown reported an error: {e}");
