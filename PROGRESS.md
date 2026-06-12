@@ -67,7 +67,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S4 milestone ping to founder (Q-007) — sent 2026-06-12
 - [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine
   - [x] S5.1 envoy-types translation: cluster (sorted endpoints, explicit TLS, HC/CB/outlier), route-config (exact/prefix/template, order-preserving), listener (HCM+RDS over ADS); determinism tests
-  - [ ] S5.2 per-team snapshot cache, outbox-driven rebuild, per-type versions
+  - [x] S5.2 per-team snapshot cache: outbox-driven rebuilds, per-type versions with byte-diff suppression, team isolation test, watch-channel change signal
   - [ ] S5.3 ADS SOTW server, node identity, make-before-break ordering
   - [ ] S5.4 mTLS + SPIFFE cert registry binding + revocation stream-kill
   - [ ] S5.5 ACK/NACK + per-resource quarantine + degraded status surfaced

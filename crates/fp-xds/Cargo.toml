@@ -10,8 +10,17 @@ publish.workspace = true
 [dependencies]
 envoy-types = { workspace = true }
 fp-domain = { workspace = true }
+fp-storage = { workspace = true }
+metrics = { workspace = true }
 prost = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+fp-core = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

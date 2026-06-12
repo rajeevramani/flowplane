@@ -2,4 +2,5 @@
 //! Translation is deterministic by construction — inputs are sorted, no HashMap iteration
 //! reaches any encoded output (kills v1's version-churn class, spec/04 §8.6).
 
+pub mod snapshot;
 pub mod translate;
