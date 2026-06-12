@@ -15,12 +15,12 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 - [x] `spec/00-system-overview.md` — what Flowplane is, subsystems, data flow
 - [x] `spec/01-api-contract.md` — every REST endpoint + exact OpenAPI artifact + drift analysis
 - [x] `spec/02-mcp-tools.md` — MCP server, 82 static tools + dynamic api_*, authz, transport
-- [ ] `spec/03-domain-model.md` — entities, invariants, team isolation, DB schema (`migrations/`)
+- [x] `spec/03-domain-model.md` — 36 tables from 100 migrations, invariants, isolation gaps
 - [ ] `spec/04-xds.md` — listener/route/cluster/filter generation, SDS/secrets
 - [x] `spec/05-auth.md` — identity model, JWT flows, check_resource_access decision table
-- [ ] `spec/06-learning.md` — learning pipeline end to end + traffic-first gap analysis
+- [x] `spec/06-learning.md` — pipeline end to end, traffic-first gap analysis, capture security
 - [x] `spec/07-cli-and-workflows.md` — v1 CLI surface + UI workflow inventory with v2 fates
-- [ ] `spec/09-prior-art.md` — Envoy AI Gateway + Envoy Gateway survey; AI-gateway requirements input
+- [x] `spec/09-prior-art.md` — Envoy Gateway/AI Gateway survey, token metering, borrow/reject calls
 - [ ] `spec/08a-security-and-tenancy.md` — threat model, tenancy spec, authn/authz matrix, abuse cases
 - [ ] `spec/08-architecture-critique.md` — v1 critique; trace the learning↔MCP↔xDS seams
 - [ ] Phase 0 exit: all specs done → **STOP, notify founder for review gate**
