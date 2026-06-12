@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/fp-domain", "crates/fp-core", "crates/fp-storage", "crates/fp-api", "crates/flowplane"]
+members = ["crates/fp-domain", "crates/fp-core", "crates/fp-storage", "crates/fp-api", "crates/fp-xds", "crates/flowplane"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,12 +14,15 @@ fp-domain = { path = "crates/fp-domain" }
 fp-core = { path = "crates/fp-core" }
 fp-storage = { path = "crates/fp-storage" }
 fp-api = { path = "crates/fp-api" }
+fp-xds = { path = "crates/fp-xds" }
 
 anyhow = "1"
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
+envoy-types = "0.7"
+prost = "0.14"
 metrics = "0.24"
 opentelemetry = "0.32"
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic"] }

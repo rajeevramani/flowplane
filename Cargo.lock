@@ -566,6 +566,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "envoy-types"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70fcc316ff523491f9d801252e8b4386de1cf783e24dbb849ebfb9130a201978"
+dependencies = [
+ "futures-core",
+ "prost",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -760,6 +772,16 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "fp-xds"
+version = "0.1.0"
+dependencies = [
+ "envoy-types",
+ "fp-domain",
+ "prost",
+ "tracing",
 ]
 
 [[package]]
@@ -2929,6 +2951,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -2937,6 +2960,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "socket2",
  "sync_wrapper",
  "tokio",
  "tokio-stream",
