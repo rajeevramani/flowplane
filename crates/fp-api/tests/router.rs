@@ -27,6 +27,7 @@ async fn test_app() -> Option<axum::Router> {
         pool,
         prometheus,
         version: "test",
+        validator: None,
     }))
 }
 

@@ -23,9 +23,23 @@ pub async fn run() -> anyhow::Result<()> {
     fp_storage::migrate(&pool).await?;
     tracing::info!("database connected and migrations applied");
 
-    if config.dev_mode {
-        setup_dev_mode(&pool).await?;
-    }
+    let validator: Option<std::sync::Arc<fp_core::OidcValidator>> = if config.dev_mode {
+        Some(setup_dev_mode(&pool).await?)
+    } else if let Some(oidc) = &config.oidc {
+        tracing::info!(issuer = %oidc.issuer, "OIDC authentication enabled");
+        Some(std::sync::Arc::new(fp_core::OidcValidator::new(
+            fp_core::OidcConfig {
+                issuer: oidc.issuer.clone(),
+                audience: oidc.audience.clone(),
+                jwks_uri: oidc.jwks_uri.clone(),
+            },
+        )))
+    } else {
+        tracing::warn!(
+            "no OIDC issuer configured and dev mode off — authenticated endpoints return 503"
+        );
+        None
+    };
 
     let prometheus = PrometheusBuilder::new()
         .install_recorder()
@@ -35,6 +49,7 @@ pub async fn run() -> anyhow::Result<()> {
         pool,
         prometheus,
         version: crate::VERSION,
+        validator,
     };
     let router = fp_api::build_router(state);
 
@@ -94,7 +109,9 @@ pub async fn migrate_only() -> anyhow::Result<()> {
 /// Dev-mode startup: triple-gated (config flag + build feature + release ack), then seeds
 /// dev resources and boots the in-process issuer (spec/10 §4a).
 #[cfg(feature = "dev-oidc")]
-async fn setup_dev_mode(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+async fn setup_dev_mode(
+    pool: &sqlx::PgPool,
+) -> anyhow::Result<std::sync::Arc<fp_core::OidcValidator>> {
     if !cfg!(debug_assertions) {
         let ack = std::env::var("FLOWPLANE_DEV_MODE_ACK").unwrap_or_default();
         if ack != "yes-this-is-not-production" {
@@ -111,11 +128,18 @@ async fn setup_dev_mode(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     // Dev-only by triple gate: the token grants access to the seeded local instance only
     // and dies with this process (per-boot key).
     tracing::warn!(dev_token = %token, "dev bearer token (valid 1h, this boot only)");
-    Ok(())
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .map_err(|e| anyhow::anyhow!("dev jwks load: {e}"))?;
+    Ok(std::sync::Arc::new(validator))
 }
 
 #[cfg(not(feature = "dev-oidc"))]
-async fn setup_dev_mode(_pool: &sqlx::PgPool) -> anyhow::Result<()> {
+async fn setup_dev_mode(
+    _pool: &sqlx::PgPool,
+) -> anyhow::Result<std::sync::Arc<fp_core::OidcValidator>> {
     Err(anyhow::anyhow!(
         "FLOWPLANE_DEV_MODE=true but this binary was built without the dev-oidc feature \
          (release artifact); use a development build or configure a real OIDC issuer"

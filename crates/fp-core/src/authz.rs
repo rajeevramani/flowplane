@@ -44,6 +44,10 @@ impl GrantSet {
     pub fn is_empty(&self) -> bool {
         self.grants.is_empty()
     }
+
+    pub fn len(&self) -> usize {
+        self.grants.len()
+    }
 }
 
 /// Snapshot of who is asking. Loaded once per request by the auth middleware.

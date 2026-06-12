@@ -49,7 +49,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S2.2 authz decision engine (pure, table-driven, exhaustive invariant tests vs spec/05 §3.1)
   - [x] S2.3 OIDC JWT validation (provider-agnostic, JWKS cache) + dev issuer (same validation path) + triple gating + seeding
   - [x] S2.4 TeamScope pattern, identity repos + principal loader, audit writer (incl. denials), keystone tenancy integration tests
-  - [ ] S2.5 REST wiring: auth middleware, whoami, bootstrap one-shot flow
+  - [~] S2.5 auth middleware + whoami + OIDC config + authn-failure audit DONE; bootstrap one-shot flow NEXT
   - [ ] S2.6 per-tenant write throttle
   - [ ] S2 exit: authz property tests (3 invariants), cross-org 404, denial audit rows, real-PG integration
 - [ ] S3 Gateway domain + storage + outbox events

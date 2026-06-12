@@ -35,6 +35,16 @@ pub struct ServerConfig {
     /// Dev mode: in-process OIDC issuer + seeded resources. Requires the `dev-oidc` build
     /// feature AND, in release builds, an explicit acknowledgment env var (spec/10 §4a).
     pub dev_mode: bool,
+    /// OIDC issuer for production auth (any compliant IdP, Q-004). `None` + !dev_mode =
+    /// degraded mode: authenticated endpoints answer 503 with a configuration hint.
+    pub oidc: Option<OidcSettings>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OidcSettings {
+    pub issuer: String,
+    pub audience: String,
+    pub jwks_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +73,9 @@ struct FileConfig {
     api_tls_key: Option<String>,
     api_insecure: Option<bool>,
     dev_mode: Option<bool>,
+    oidc_issuer: Option<String>,
+    oidc_audience: Option<String>,
+    oidc_jwks_uri: Option<String>,
     log_format: Option<LogFormat>,
     log_filter: Option<String>,
     otlp_endpoint: Option<String>,
@@ -194,6 +207,34 @@ impl ServerConfig {
             None => file.dev_mode.unwrap_or(false),
         };
 
+        let oidc_issuer = get("FLOWPLANE_OIDC_ISSUER")
+            .map(str::to_owned)
+            .or(file.oidc_issuer);
+        let oidc_audience = get("FLOWPLANE_OIDC_AUDIENCE")
+            .map(str::to_owned)
+            .or(file.oidc_audience);
+        let oidc = match (oidc_issuer, oidc_audience) {
+            (Some(issuer), Some(audience)) => Some(OidcSettings {
+                issuer,
+                audience,
+                jwks_uri: get("FLOWPLANE_OIDC_JWKS_URI")
+                    .map(str::to_owned)
+                    .or(file.oidc_jwks_uri),
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(DomainError::invalid_config(
+                    "FLOWPLANE_OIDC_ISSUER and FLOWPLANE_OIDC_AUDIENCE must be set together",
+                ))
+            }
+        };
+        if dev_mode && oidc.is_some() {
+            return Err(DomainError::invalid_config(
+                "FLOWPLANE_DEV_MODE and FLOWPLANE_OIDC_* are mutually exclusive",
+            )
+            .with_hint("dev mode brings its own in-process issuer"));
+        }
+
         Ok(Self {
             api_addr,
             database_url,
@@ -204,6 +245,7 @@ impl ServerConfig {
             log_filter,
             otlp_endpoint,
             dev_mode,
+            oidc,
         })
     }
 }
