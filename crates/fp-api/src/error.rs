@@ -8,7 +8,7 @@ use serde::Serialize;
 
 /// The wire envelope. Stable contract: agents branch on `code`, humans read `message`/`hint`,
 /// operators grep `request_id`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ErrorBody {
     pub code: &'static str,
     pub message: String,

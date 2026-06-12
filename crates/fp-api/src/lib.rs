@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod error;
 pub mod middleware;
+pub mod resources;
 pub mod routes;
 pub mod state;
 pub mod throttle;

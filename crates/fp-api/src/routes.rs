@@ -11,9 +11,70 @@ use axum::{Json, Router};
 use fp_domain::{DomainError, RequestId};
 use serde::Serialize;
 
+/// Base OpenAPI document; paths and schemas are contributed by the `routes!`
+/// registrations below — the router and the document cannot drift (spec/10 §9).
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(
+        title = "Flowplane",
+        description = "Envoy control plane with a learning loop. Errors are always \
+                       {code, message, hint?, details?, request_id}.",
+    ),
+    modifiers(&SecurityAddon)
+)]
+struct ApiDoc;
+
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearerAuth",
+            SecurityScheme::Http(HttpBuilder::new().scheme(HttpAuthScheme::Bearer).build()),
+        );
+        openapi.security = Some(vec![utoipa::openapi::security::SecurityRequirement::new::<
+            _,
+            _,
+            &str,
+        >("bearerAuth", [])]);
+    }
+}
+
+/// Build the OpenAPI router + document for the secured /api/v1 surface.
+fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
+    use crate::resources::{clusters, listeners, route_configs};
+    use utoipa_axum::router::OpenApiRouter;
+    use utoipa_axum::routes;
+
+    OpenApiRouter::with_openapi(<ApiDoc as utoipa::OpenApi>::openapi())
+        .routes(routes!(whoami))
+        .routes(routes!(clusters::list, clusters::create))
+        .routes(routes!(clusters::get, clusters::update, clusters::delete))
+        .routes(routes!(listeners::list, listeners::create))
+        .routes(routes!(
+            listeners::get,
+            listeners::update,
+            listeners::delete
+        ))
+        .routes(routes!(route_configs::list, route_configs::create))
+        .routes(routes!(
+            route_configs::get,
+            route_configs::update,
+            route_configs::delete
+        ))
+        .split_for_parts()
+}
+
+/// The generated OpenAPI document for this build (public for the contract-diff tooling).
+pub fn openapi_document() -> utoipa::openapi::OpenApi {
+    secured_api().1
+}
+
 pub fn build_router(state: AppState) -> Router {
-    let secured = Router::new()
-        .route("/api/v1/auth/whoami", get(whoami))
+    let (api_router, openapi) = secured_api();
+    let secured = api_router
         // Throttle inside auth so the PrincipalCtx is available for tenant keying.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -24,10 +85,18 @@ pub fn build_router(state: AppState) -> Router {
             crate::auth::authenticate,
         ));
 
+    let openapi = std::sync::Arc::new(openapi);
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_endpoint))
+        .route(
+            "/api-docs/openapi.json",
+            get(move || {
+                let doc = openapi.clone();
+                async move { Json(doc.as_ref().clone()) }
+            }),
+        )
         .route("/api/v1/bootstrap/status", get(bootstrap_status))
         .route(
             "/api/v1/bootstrap/initialize",
@@ -39,7 +108,7 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct WhoAmI {
     user_id: String,
     platform_admin: bool,
@@ -51,6 +120,11 @@ struct WhoAmI {
 }
 
 /// Identity echo: the authenticated principal as the authorization engine sees it.
+#[utoipa::path(get, path = "/api/v1/auth/whoami", tag = "Auth",
+    responses(
+        (status = 200, body = WhoAmI),
+        (status = 401, body = crate::error::ErrorBody),
+    ))]
 async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI> {
     match ctx {
         fp_core::PrincipalCtx::User {

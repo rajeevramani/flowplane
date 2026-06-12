@@ -19,7 +19,7 @@ pub struct Listener {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListenerSpec {
     /// Bind address: IPv4, bare IPv6, or hostname (v1 rules; `*.` wildcard prefix allowed).

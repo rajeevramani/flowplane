@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 axum = { workspace = true }
+chrono = { workspace = true }
 fp-core = { workspace = true }
 fp-domain = { workspace = true }
 fp-storage = { workspace = true }
@@ -21,8 +22,12 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
+fp-core = { workspace = true, features = ["dev-oidc"] }
 http-body-util = { workspace = true }
 uuid = { workspace = true }
 tower = { workspace = true, features = ["util"] }

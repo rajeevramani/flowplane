@@ -26,7 +26,7 @@ pub struct Cluster {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterSpec {
     pub endpoints: Vec<Endpoint>,
@@ -50,7 +50,7 @@ fn default_connect_timeout() -> u32 {
     5
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
     pub host: String,
@@ -60,7 +60,7 @@ pub struct Endpoint {
     pub weight: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum LbPolicy {
     #[default]
@@ -70,7 +70,7 @@ pub enum LbPolicy {
     RingHash,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HealthCheck {
     /// HTTP path probed; must start with `/`, no `..`, ≤200 chars.
@@ -91,7 +91,7 @@ fn default_threshold() -> u32 {
     3
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CircuitBreaker {
     /// Each 1–10000.
@@ -103,7 +103,7 @@ pub struct CircuitBreaker {
     pub max_retries: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutlierDetection {
     /// 1–1000.

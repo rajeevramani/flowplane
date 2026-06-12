@@ -59,6 +59,12 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S3.4 per-tenant quotas (framework + clusters limit, quota test)
   - [x] S3 exit: concurrent 409 + no lost update, transactional events, cross-org 404, quota, referential guards (cluster/rc deletion blocked with dependents named), no orphaned refs
 - [ ] S4 REST API core + OpenAPI generation (+ v1 contract diff)
+  - [x] S4.1 gateway-resource endpoints (clusters/listeners/route-configs CRUD, If-Match revisions, uniform Page envelope)
+  - [x] S4.2 OpenAPI generated from routes! registrations (single declaration site); /api-docs/openapi.json; parity pin test
+  - [x] S4.3 HTTP CRUD integration test through real bearer auth (201/409/400-hint/409-revision/200/204/404 envelopes)
+  - [ ] S4.4 identity/org/team/agent/grant endpoints
+  - [ ] S4.5 v1↔v2 OpenAPI contract diff -> DECISIONS; agent-usability smoke from the doc alone
+  - [ ] S4 milestone ping to founder (Q-007)
 - [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine
 - [ ] S6 Secrets/SDS, proxy certs, dataplanes
 - [ ] S7 CLI core (+ commands for S2–S6)
