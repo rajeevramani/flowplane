@@ -114,12 +114,20 @@ SpecVersions, refreshed by events; structured tool errors with recovery hints. C
 tools/list descriptions; cross-tenant tool access adversarial suite; tool staleness test (spec
 republish regenerates).
 
+**Depth knobs (pre-agreed, recorded here so schedule pressure cuts depth, never capability or
+security):** S5 filter catalog may ship as the ~8 demonstrably-used filters with the rest
+following behind the same IR seam; S10 Bedrock translator may trail the other providers; RLS
+global rate limiting may ship CP-side-enforced first. The loop, tenancy, and the adversarial
+exits are never the knob.
+
 **S12 — Hardening & v1.0.** Observability completion per 10 §8a (alert pack over the metric
 families fixed in S1–S11, dashboards-as-docs, GenAI semconv verification); failure-mode suite (kill Postgres mid-write, restart Envoy, restart CP under
 load — no loss/orphans/panics); load sanity; full adversarial pass per 08a §4 across REST, MCP,
 CLI, learned specs, generated routes, xDS; `docs/production-readiness.md`; operator docs
 (install/upgrade incl. bare-metal/VM/compose/ECS/K8s parity per D-004, config reference,
-runbook, backup/restore drill, CLI workflow guide); `REWRITE-REPORT.md`; tag `v1.0.0`.
+runbook, backup/restore drill, CLI workflow guide); scripted seeded demo walkthrough
+(first-contact → full loop → MCP client, doubles as smoke test); `REWRITE-REPORT.md`; tag
+`v1.0.0`.
 **Exit:** definition-of-done list in the mission prompt — every box checked.
 
 ## Coverage check

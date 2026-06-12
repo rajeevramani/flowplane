@@ -147,7 +147,7 @@ observed ──aggregation──▶ learned ──operator review──▶ revie
 | Tenant isolation (data) | `TeamScope`-typed repos, SQL predicates, composite FKs (§4) | per-slice adversarial exits + S12 full 08a §4 pass |
 | Tenant isolation (data plane) | per-team xDS snapshots from cert-bound identity (§5) | S5 adversarial cert test |
 | Tenant isolation (capture) | team-scoped injection + per-message team binding (§6) | S8 capture-poaching test |
-| AuthN | OIDC JWT (Zitadel; mock OIDC in dev) — bearer-only | S2 |
+| AuthN | provider-agnostic OIDC JWT (any IdP; Zitadel provisioning behind a trait, Q-004; mock OIDC in dev) — bearer-only | S2 |
 | AuthZ | one table-driven decision engine, declared `(resource, action)` per route/tool (§4, §9) | S2 property tests vs spec/05 §3.1 |
 | Audit | every mutation + denials + auth failures, request-id linked (08a §6) | S2 + each slice's mutations |
 | Approval gates | lifecycle: nothing < `reviewed` becomes config/tools (§3.2); `--dry-run` everywhere | S9 approval-bypass test |

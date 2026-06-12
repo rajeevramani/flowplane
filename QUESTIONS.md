@@ -39,3 +39,31 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
   3. Keep a minimal web status page — contradicts the no-UI scope decision.
 - **Recommendation:** Option 1; v1.0 ships Prometheus-consumable metrics anyway (production
   readiness), so charts belong there. Proceeding per D-003 unless vetoed.
+
+## Q-003: Design-partner profile — OPEN
+
+- **Decision needed:** Target environment, LLM providers in use, and rough scale (teams,
+  dataplanes, routes, traffic) of the design partner.
+- **Why it matters:** Sets packaging polish order (D-004 list), AI translator priority, and the
+  numeric load/hardening targets for S12.
+- **Recommendation / default if unanswered:** packaging = compose/VM → ECS → K8s; translators =
+  Anthropic + OpenAI + openai-compatible, Bedrock last; load targets = 10 teams, 20 dataplanes,
+  1k routes, 5k rps observed traffic, 100 rps LLM.
+
+## Q-004: Identity-provider coupling — OPEN (recommendation being adopted in S2)
+
+- **Decision needed:** Must customers run Zitadel, or any OIDC IdP?
+- **Options:** (1) **Provider-agnostic OIDC core; Zitadel-specific provisioning behind a trait,
+  shipped as the batteries-included default (recommended)** — design partners keep their
+  Okta/Entra/Keycloak; (2) Zitadel-required as v1 — simpler now, operational burden + sales
+  friction later.
+- **Recommendation:** Option 1; proceeding with it in S2 unless vetoed.
+
+## Q-005: v1 → v2 data migration — OPEN
+
+- **Decision needed:** Does any existing v1 deployment (demo environments, early users) need its
+  data migrated to v2?
+- **Options:** (1) **Greenfield, no migration tool (recommended; zero known v1 production
+  installs)**; (2) v1-import command added to S12 (real effort, only if a migrating install
+  exists).
+- **Recommendation:** Option 1 unless you name an install that must migrate.
