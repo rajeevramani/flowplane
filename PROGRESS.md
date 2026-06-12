@@ -97,7 +97,25 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         CDS→EDS→RDS→LDS; endpoint churn bumps ONLY the endpoints version (test-pinned); live
         Envoy E2E re-passed with EDS warming + post-restart pure-EDS endpoint switch
   - [ ] S5.8 filter catalog: the 16 v1 filter types re-specced through IR + per-route overrides
-        (needed by S8/S10; large — scheduled after S5.7)
+        (spec/04 §4; v2 = typed IR on listener/route specs, translated at build time — NO v1-style
+        post-hoc protobuf surgery)
+    - [ ] S5.8a domain: `fp-domain/gateway/filters.rs` — `HttpFilterSpec` closed enum
+          (serde tag "type"): start with the high-value set {cors, local_rate_limit,
+          header_mutation, jwt_auth, ext_authz, rbac, compressor, health_check}; validation per
+          spec/04 §4.1 field rules (wildcard-origin × credentials, max_age cap, etc.);
+          `ListenerSpec.http_filters: Vec<HttpFilterEntry>` + `RouteRule/VirtualHost
+          .filter_overrides` (per-route enum honoring spec/04 column: full/disable-only/
+          reference-only/none — oauth2 per-route NACKs, health_check listener-only)
+    - [ ] S5.8b translate: chain assembly (declared order, router auto-appended last, at most
+          one explicit router), typed_per_filter_config on vhosts/routes, jwt provider merge
+          (single filter, remote-JWKS clusters into CDS as in v1 §4.4.4 but at build time);
+          determinism tests + an Envoy-NACK-shape regression test per filter
+    - [ ] S5.8c remaining catalog {rate_limit, rate_limit_quota, ext_proc, oauth2,
+          credential_injector, custom_response, mcp, wasm} — wasm needs custom_wasm storage
+          (defer binary upload to S6 secrets-adjacent work if needed; record decision)
+    - [ ] S5.8d live Envoy E2E extension: listener with cors + local_rate_limit + jwt_auth
+          serves traffic, per-route disable verified (429 on one route, clean on the disabled
+          one)
   - [x] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
     - [x] xDS pipeline wired into `flowplane serve` (outbox consumer + dev-mode plaintext ADS listener)
     - [x] `scripts/e2e-envoy.sh` (real Envoy via docker, or Tetrate static binary fallback) — three
