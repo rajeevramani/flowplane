@@ -57,9 +57,15 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
-    // xDS pipeline: snapshot cache fed by the outbox consumer; ADS server.
+    // xDS pipeline: snapshot cache primed from the DB (restart safety), then kept fresh by
+    // the outbox consumer; ADS server.
     let (xds_shutdown_tx, xds_shutdown_rx) = tokio::sync::watch::channel(false);
     let snapshot_cache = fp_xds::snapshot::SnapshotCache::new();
+    let primed = snapshot_cache
+        .prime_all(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to prime xDS snapshot cache: {e}"))?;
+    tracing::info!(teams = primed, "xDS snapshot cache primed from database");
     {
         let cache = snapshot_cache.clone();
         let consumer_pool = pool.clone();

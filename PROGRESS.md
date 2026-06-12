@@ -71,12 +71,14 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S5.3 ADS SOTW server: subscribe/ACK/NACK state machine, live pushes from snapshot watch, make-before-break type order, honest delta-unimplemented; gRPC stream integration tests
   - [ ] S5.4 mTLS + SPIFFE cert registry binding + revocation stream-kill
   - [ ] S5.5 ACK/NACK + per-resource quarantine + degraded status surfaced
-  - [ ] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
+  - [x] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
     - [x] xDS pipeline wired into `flowplane serve` (outbox consumer + dev-mode plaintext ADS listener)
-    - [x] `scripts/e2e-envoy.sh`: real Envoy (docker, or Tetrate static binary fallback) joins over
-          ADS and serves REST-configured traffic — PASSED locally
-    - [ ] restart convergence (kill CP under churn, Envoy reconverges)
-    - [ ] cross-team isolation against a live Envoy
+    - [x] `scripts/e2e-envoy.sh` (real Envoy via docker, or Tetrate static binary fallback) — three
+          phases all PASSED: ADS join + traffic; CP restart with snapshot prime-from-DB (found and
+          fixed the empty-snapshot-wipes-dataplane restart bug); cross-team isolation (config_dump
+          clean + foreign listener port closed)
+    - [x] `SnapshotCache::prime_all` + regression test (fresh cache primed from DB byte-identical
+          to the event-driven one)
 - [ ] S6 Secrets/SDS, proxy certs, dataplanes
 - [ ] S7 CLI core (+ commands for S2–S6)
 - [ ] S8 Learning config-first

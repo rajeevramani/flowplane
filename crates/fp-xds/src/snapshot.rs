@@ -83,6 +83,19 @@ impl SnapshotCache {
         self.change_tx.subscribe()
     }
 
+    /// Prime the cache from the database at startup: rebuild every team that owns gateway
+    /// resources. Without this, a restarted control plane serves EMPTY snapshots to
+    /// reconnecting dataplanes (the outbox cursor is durable, so old events never replay)
+    /// and state-of-the-world delivery would wipe their config.
+    pub async fn prime_all(&self, pool: &PgPool) -> DomainResult<usize> {
+        let teams = fp_storage::repos::gateway::teams_with_gateway_resources(pool).await?;
+        let count = teams.len();
+        for team_id in teams {
+            self.rebuild_team(pool, team_id).await?;
+        }
+        Ok(count)
+    }
+
     /// Rebuild one team's snapshot from the database. Loads, translates, and swaps in the
     /// new sets, bumping each type's version only when its bytes changed.
     pub async fn rebuild_team(&self, pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
@@ -403,6 +416,20 @@ mod tests {
         assert_eq!(
             after.routes.version, routes_version,
             "route version untouched"
+        );
+
+        // Restart safety: a brand-new cache (fresh process, durable outbox cursor, so no
+        // event replay) primed from the DB must serve the same resources — never empty
+        // snapshots that would wipe a reconnecting dataplane.
+        let fresh = SnapshotCache::new();
+        fresh.prime_all(&pool).await.expect("prime");
+        let primed = fresh.team(team_a.id).await;
+        assert_eq!(primed.clusters.resources.len(), 1);
+        assert_eq!(primed.routes.resources.len(), 1);
+        assert_eq!(primed.listeners.resources.len(), 1);
+        assert_eq!(
+            primed.clusters.resources, after.clusters.resources,
+            "primed snapshot matches the event-driven one byte for byte"
         );
     }
 }
