@@ -12,15 +12,52 @@ use uuid::Uuid;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DomainEvent {
     // Gateway resources (S3+; payloads carry ids as plain UUIDs for stable wire shape)
-    ClusterUpserted { cluster_id: Uuid, name: String },
-    ClusterDeleted { cluster_id: Uuid, name: String },
-    RouteConfigUpserted { route_config_id: Uuid, name: String },
-    RouteConfigDeleted { route_config_id: Uuid, name: String },
-    ListenerUpserted { listener_id: Uuid, name: String },
-    ListenerDeleted { listener_id: Uuid, name: String },
+    ClusterUpserted {
+        cluster_id: Uuid,
+        name: String,
+    },
+    ClusterDeleted {
+        cluster_id: Uuid,
+        name: String,
+    },
+    RouteConfigUpserted {
+        route_config_id: Uuid,
+        name: String,
+    },
+    RouteConfigDeleted {
+        route_config_id: Uuid,
+        name: String,
+    },
+    ListenerUpserted {
+        listener_id: Uuid,
+        name: String,
+    },
+    ListenerDeleted {
+        listener_id: Uuid,
+        name: String,
+    },
     // Identity / governance
-    TeamCreated { team_id: Uuid, name: String },
-    TeamDeleted { team_id: Uuid, name: String },
+    TeamCreated {
+        team_id: Uuid,
+        name: String,
+    },
+    TeamDeleted {
+        team_id: Uuid,
+        name: String,
+    },
+    // Dataplanes / mTLS certificate registry (S5.4)
+    DataplaneCreated {
+        dataplane_id: Uuid,
+        name: String,
+    },
+    ProxyCertificateRegistered {
+        certificate_id: Uuid,
+        spiffe_uri: String,
+    },
+    ProxyCertificateRevoked {
+        certificate_id: Uuid,
+        spiffe_uri: String,
+    },
 }
 
 impl DomainEvent {
@@ -35,6 +72,9 @@ impl DomainEvent {
             Self::ListenerDeleted { .. } => "listener.deleted",
             Self::TeamCreated { .. } => "team.created",
             Self::TeamDeleted { .. } => "team.deleted",
+            Self::DataplaneCreated { .. } => "dataplane.created",
+            Self::ProxyCertificateRegistered { .. } => "proxy_certificate.registered",
+            Self::ProxyCertificateRevoked { .. } => "proxy_certificate.revoked",
         }
     }
 }

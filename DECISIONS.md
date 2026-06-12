@@ -144,3 +144,19 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
 - **Not-yet-mapped v1 surface:** secrets/dataplanes/certs (S6), learning/schemas (S8-S9),
   MCP management (S11), ops/stats (S6/S12), filters (S5), org-admin CRUD + agents (S4 wrap) —
   each lands with its owning slice and extends this diff; the systematic rules above bind them.
+
+## D-011: xDS listener is mTLS-or-off (no plaintext production mode, no boot hard-fail)
+
+- **Context:** v1 hard-failed boot when any xDS TLS path was missing (ADR
+  "cp-xds-mtls-non-negotiable"). v2 keeps mTLS non-negotiable but must also support
+  bring-up: the API has to be reachable to create dataplanes and certificates before any
+  dataplane exists (bootstrap ordering), and API-only deployments are legitimate.
+- **Options:** (a) hard-fail boot without xDS TLS (v1); (b) serve xDS plaintext with a
+  warning (rejected outright — violates spec/04 §1.2); (c) with TLS material configured →
+  mTLS listener; without it → no xDS listener at all, loud startup warning naming the
+  three FLOWPLANE_XDS_TLS_* variables; dev mode (triple-gated) keeps its plaintext
+  listener with node-id resolution.
+- **Decision:** (c). Fail-closed is preserved (no listener ≠ insecure listener) while the
+  control plane stays operable for bring-up. Partial TLS config (1 or 2 of the 3 paths) is
+  an invalid_config boot error, so a typo cannot silently disable xDS.
+- **Status:** decided (S5.4), founder can revisit at the S7 CLI review.

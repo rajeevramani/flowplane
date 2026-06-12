@@ -5,16 +5,18 @@
 //! surfaces speak one language.
 
 pub mod authz;
+pub mod dataplane;
 pub mod error;
 pub mod event;
 pub mod gateway;
 pub mod id;
 pub mod identity;
 
+pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate};
 pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
-    AgentId, AuditEntryId, ClusterId, GrantId, ListenerId, MembershipId, OrgId, RequestId,
-    RouteConfigId, TeamId, UserId,
+    AgentId, AuditEntryId, ClusterId, DataplaneId, GrantId, ListenerId, MembershipId, OrgId,
+    ProxyCertificateId, RequestId, RouteConfigId, TeamId, UserId,
 };
 pub use identity::{
     validate_name, Agent, AgentKind, EntityStatus, OrgRole, Organization, Team, User,

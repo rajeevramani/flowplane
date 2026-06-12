@@ -26,6 +26,9 @@ pub struct ServerConfig {
     pub db_max_connections: u32,
     /// TLS material for the API listener; `None` only when `api_insecure` is set (D-008).
     pub api_tls: Option<TlsConfig>,
+    /// mTLS material for the xDS listener (server cert/key + client CA). xDS only serves
+    /// over mTLS in production; `None` disables the listener outside dev mode (spec/04 §1.2).
+    pub xds_tls: Option<XdsTlsConfig>,
     /// Explicit opt-in to serve the API over plaintext. Logs a startup warning.
     pub api_insecure: bool,
     /// Log output format.
@@ -57,6 +60,14 @@ pub struct TlsConfig {
     pub key_path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct XdsTlsConfig {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    /// CA bundle that dataplane client certificates must chain to.
+    pub client_ca_path: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
@@ -76,6 +87,9 @@ struct FileConfig {
     db_max_connections: Option<u32>,
     api_tls_cert: Option<String>,
     api_tls_key: Option<String>,
+    xds_tls_cert: Option<String>,
+    xds_tls_key: Option<String>,
+    xds_tls_client_ca: Option<String>,
     api_insecure: Option<bool>,
     dev_mode: Option<bool>,
     oidc_issuer: Option<String>,
@@ -181,6 +195,31 @@ impl ServerConfig {
             }
         };
 
+        let xds_cert = get("FLOWPLANE_XDS_TLS_CERT")
+            .map(str::to_owned)
+            .or(file.xds_tls_cert);
+        let xds_key = get("FLOWPLANE_XDS_TLS_KEY")
+            .map(str::to_owned)
+            .or(file.xds_tls_key);
+        let xds_client_ca = get("FLOWPLANE_XDS_TLS_CLIENT_CA")
+            .map(str::to_owned)
+            .or(file.xds_tls_client_ca);
+        let xds_tls = match (xds_cert, xds_key, xds_client_ca) {
+            (Some(cert_path), Some(key_path), Some(client_ca_path)) => Some(XdsTlsConfig {
+                cert_path: cert_path.into(),
+                key_path: key_path.into(),
+                client_ca_path: client_ca_path.into(),
+            }),
+            (None, None, None) => None,
+            _ => {
+                return Err(DomainError::invalid_config(
+                    "FLOWPLANE_XDS_TLS_CERT, FLOWPLANE_XDS_TLS_KEY, and \
+                     FLOWPLANE_XDS_TLS_CLIENT_CA must be set together",
+                )
+                .with_hint("xDS mTLS needs the server identity AND the dataplane client CA"))
+            }
+        };
+
         let api_insecure = match get("FLOWPLANE_API_INSECURE") {
             Some(raw) => parse_bool("FLOWPLANE_API_INSECURE", raw)?,
             None => file.api_insecure.unwrap_or(false),
@@ -265,6 +304,7 @@ impl ServerConfig {
             database_url,
             db_max_connections,
             api_tls,
+            xds_tls,
             api_insecure,
             log_format,
             log_filter,
@@ -347,6 +387,34 @@ mod tests {
         let mut env = base_env();
         env.insert("FLOWPLANE_API_TLS_CERT".into(), "/tmp/c.pem".into());
         assert!(ServerConfig::resolve(&env, FileConfig::default()).is_err());
+    }
+
+    #[test]
+    fn xds_tls_paths_must_come_in_triples() {
+        for present in [
+            vec!["FLOWPLANE_XDS_TLS_CERT"],
+            vec!["FLOWPLANE_XDS_TLS_CERT", "FLOWPLANE_XDS_TLS_KEY"],
+            vec!["FLOWPLANE_XDS_TLS_CLIENT_CA"],
+        ] {
+            let mut env = base_env();
+            for key in &present {
+                env.insert((*key).into(), "/tmp/x.pem".into());
+            }
+            assert!(
+                ServerConfig::resolve(&env, FileConfig::default()).is_err(),
+                "partial xDS TLS config {present:?} must be rejected"
+            );
+        }
+        let mut env = base_env();
+        for key in [
+            "FLOWPLANE_XDS_TLS_CERT",
+            "FLOWPLANE_XDS_TLS_KEY",
+            "FLOWPLANE_XDS_TLS_CLIENT_CA",
+        ] {
+            env.insert(key.into(), "/tmp/x.pem".into());
+        }
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("full triple ok");
+        assert!(cfg.xds_tls.is_some());
     }
 
     #[test]

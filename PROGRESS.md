@@ -69,7 +69,19 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S5.1 envoy-types translation: cluster (sorted endpoints, explicit TLS, HC/CB/outlier), route-config (exact/prefix/template, order-preserving), listener (HCM+RDS over ADS); determinism tests
   - [x] S5.2 per-team snapshot cache: outbox-driven rebuilds, per-type versions with byte-diff suppression, team isolation test, watch-channel change signal
   - [x] S5.3 ADS SOTW server: subscribe/ACK/NACK state machine, live pushes from snapshot watch, make-before-break type order, honest delta-unimplemented; gRPC stream integration tests
-  - [ ] S5.4 mTLS + SPIFFE cert registry binding + revocation stream-kill
+  - [x] S5.4 mTLS + SPIFFE cert registry binding + revocation stream-kill
+    - [x] migration 0006: dataplanes + proxy_certificates (TIMESTAMPTZ, composite FKs,
+          globally-unique spiffe_uri); repos with fail-closed active-cert lookup in SQL
+    - [x] services: create_dataplane / register_certificate / revoke_certificate
+          (tx = row + event + audit; events: dataplane.created, proxy_certificate.{registered,revoked})
+    - [x] fp-xds: serve_mtls (tonic ServerTlsConfig + client CA), SPIFFE URI SAN extraction
+          (x509-parser), CertRegistryResolver (full-URI registry binding; SAN team text and
+          node.id never trusted), revocation broadcast bus kills live streams (fail-closed on lag)
+    - [x] serve wiring: xds_tls configured → mTLS listener any mode; else dev plaintext; else
+          listener off with warning (D-011); FLOWPLANE_XDS_TLS_{CERT,KEY,CLIENT_CA} all-or-none
+    - [x] integration tests over real TLS (openssl-minted PKI): registry team binding wins over
+          SAN/node-id claims; mid-stream revocation kill + reconnect rejection; unregistered,
+          expired, and certificate-less connections rejected
   - [ ] S5.5 ACK/NACK + per-resource quarantine + degraded status surfaced
   - [x] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
     - [x] xDS pipeline wired into `flowplane serve` (outbox consumer + dev-mode plaintext ADS listener)

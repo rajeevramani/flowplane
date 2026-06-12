@@ -98,6 +98,14 @@ domain_id!(
     /// Identifies a route configuration.
     RouteConfigId
 );
+domain_id!(
+    /// Identifies a registered dataplane (one Envoy instance).
+    DataplaneId
+);
+domain_id!(
+    /// Identifies a proxy certificate registry row (mTLS identity of a dataplane).
+    ProxyCertificateId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]

@@ -2,8 +2,10 @@
 //! (spec/10 §5). Responses come from the snapshot cache (no per-request DB reads); pushes
 //! follow make-before-break type ordering: clusters → routes → listeners.
 //!
-//! Team identity: S5.3 resolves the team via [`TeamResolver`]; the mTLS cert-registry
-//! resolver lands in S5.4 — node-id resolution is for tests and dev mode ONLY.
+//! Team identity: production resolution is the mTLS certificate registry
+//! ([`CertRegistryResolver`]) — the client cert's SPIFFE URI is looked up as a whole and
+//! the matched row's team is authoritative (SAN segments and node ids are never trusted,
+//! spec/04 §1.3). Node-id resolution is for tests and dev mode ONLY.
 
 use crate::snapshot::{SnapshotCache, CLUSTER_TYPE_URL, LISTENER_TYPE_URL, ROUTE_TYPE_URL};
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::{
@@ -20,40 +22,136 @@ use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
+use uuid::Uuid;
 
 /// Make-before-break push order (deletes are handled by SOTW full-set semantics).
 const TYPE_ORDER: [&str; 3] = [CLUSTER_TYPE_URL, ROUTE_TYPE_URL, LISTENER_TYPE_URL];
 
-/// Resolves the tenant a connecting dataplane belongs to.
-pub trait TeamResolver: Send + Sync + 'static {
-    /// `node_id` is Envoy's node.id; `peer_spiffe` is the SPIFFE URI SAN from the client
-    /// cert when mTLS is configured (S5.4).
-    fn resolve(&self, node_id: &str, peer_spiffe: Option<&str>) -> Result<TeamId, Status>;
+/// The authenticated identity of a connected dataplane.
+#[derive(Debug, Clone, Copy)]
+pub struct PeerIdentity {
+    pub team_id: TeamId,
+    /// The certificate-registry row backing this stream. Revocation of this id terminates
+    /// the stream. `None` only under the dev node-id resolver.
+    pub certificate_id: Option<Uuid>,
 }
 
-/// Dev/test resolver: trusts `team=<uuid>` in the node id. NEVER for production — the
-/// mTLS cert-registry resolver replaces it in S5.4.
+/// Resolves the tenant a connecting dataplane belongs to.
+#[tonic::async_trait]
+pub trait TeamResolver: Send + Sync + 'static {
+    /// `node_id` is Envoy's node.id (attribution only); `peer_spiffe` is the SPIFFE URI
+    /// SAN extracted from the verified client certificate when mTLS is configured.
+    async fn resolve(
+        &self,
+        node_id: &str,
+        peer_spiffe: Option<&str>,
+    ) -> Result<PeerIdentity, Status>;
+}
+
+/// Dev/test resolver: trusts `team=<uuid>` in the node id. NEVER for production.
 pub struct NodeIdTeamResolver;
 
+#[tonic::async_trait]
 impl TeamResolver for NodeIdTeamResolver {
-    fn resolve(&self, node_id: &str, _peer_spiffe: Option<&str>) -> Result<TeamId, Status> {
+    async fn resolve(
+        &self,
+        node_id: &str,
+        _peer_spiffe: Option<&str>,
+    ) -> Result<PeerIdentity, Status> {
         let team = node_id
             .split('/')
             .find_map(|part| part.strip_prefix("team="))
             .ok_or_else(|| Status::unauthenticated("node.id must carry team=<uuid>"))?;
-        TeamId::from_str(team)
-            .map_err(|_| Status::unauthenticated("node.id team segment is not a UUID"))
+        let team_id = TeamId::from_str(team)
+            .map_err(|_| Status::unauthenticated("node.id team segment is not a UUID"))?;
+        Ok(PeerIdentity {
+            team_id,
+            certificate_id: None,
+        })
+    }
+}
+
+/// Production resolver: the full SPIFFE URI keys a registry row that must be unrevoked
+/// and unexpired; the row's team is the stream's tenant. Every failure mode — no cert, no
+/// row, revoked, expired, registry unreachable — fails closed with one indistinct message
+/// (no oracle for which condition failed).
+pub struct CertRegistryResolver {
+    pool: sqlx::PgPool,
+}
+
+impl CertRegistryResolver {
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[tonic::async_trait]
+impl TeamResolver for CertRegistryResolver {
+    async fn resolve(
+        &self,
+        node_id: &str,
+        peer_spiffe: Option<&str>,
+    ) -> Result<PeerIdentity, Status> {
+        let Some(uri) = peer_spiffe else {
+            return Err(Status::unauthenticated(
+                "a client certificate with a SPIFFE URI SAN is required for xDS",
+            ));
+        };
+        match fp_storage::repos::dataplanes::find_active_certificate(&self.pool, uri).await {
+            Ok(Some(cert)) => {
+                tracing::info!(team = %cert.team_id, node = node_id,
+                    serial = %cert.serial_number, "dataplane authenticated via certificate registry");
+                Ok(PeerIdentity {
+                    team_id: cert.team_id,
+                    certificate_id: Some(cert.id.as_uuid()),
+                })
+            }
+            Ok(None) => Err(Status::unauthenticated(
+                "certificate is not registered, is revoked, or has expired",
+            )),
+            Err(e) => {
+                // Fail closed: a registry outage authenticates nobody.
+                tracing::error!("certificate registry lookup failed: {e}");
+                Err(Status::unauthenticated("certificate registry unavailable"))
+            }
+        }
+    }
+}
+
+/// Forward certificate revocations from an outbox batch onto the stream-kill bus. Wired
+/// next to the snapshot handler in the xDS outbox consumer.
+pub fn publish_revocations(
+    revocations: &tokio::sync::broadcast::Sender<Uuid>,
+    events: &[fp_storage::outbox::StoredEvent],
+) {
+    for stored in events {
+        if let fp_domain::event::DomainEvent::ProxyCertificateRevoked { certificate_id, .. } =
+            &stored.event
+        {
+            // Send fails only when no stream is subscribed — nothing to kill.
+            let _ = revocations.send(*certificate_id);
+        }
     }
 }
 
 pub struct AdsService {
     cache: Arc<SnapshotCache>,
     resolver: Arc<dyn TeamResolver>,
+    /// Broadcasts revoked certificate ids; streams bound to a revoked cert terminate.
+    revocations: tokio::sync::broadcast::Sender<Uuid>,
 }
 
 impl AdsService {
-    pub fn new(cache: Arc<SnapshotCache>, resolver: Arc<dyn TeamResolver>) -> Self {
-        Self { cache, resolver }
+    pub fn new(
+        cache: Arc<SnapshotCache>,
+        resolver: Arc<dyn TeamResolver>,
+        revocations: tokio::sync::broadcast::Sender<Uuid>,
+    ) -> Self {
+        Self {
+            cache,
+            resolver,
+            revocations,
+        }
     }
 
     pub fn into_server(self) -> AggregatedDiscoveryServiceServer<Self> {
@@ -100,17 +198,30 @@ impl AggregatedDiscoveryService for AdsService {
         &self,
         request: Request<Streaming<DiscoveryRequest>>,
     ) -> Result<Response<Self::StreamAggregatedResourcesStream>, Status> {
+        // SPIFFE URI from the TLS-verified client certificate (mTLS path); the extension
+        // is a test-only injection fallback.
         let peer_spiffe = request
-            .extensions()
-            .get::<crate::server::PeerSpiffe>()
-            .map(|p| p.0.clone());
+            .peer_certs()
+            .and_then(|certs| {
+                certs
+                    .first()
+                    .and_then(|der| crate::server::spiffe_uri_from_der(der.as_ref()))
+            })
+            .or_else(|| {
+                request
+                    .extensions()
+                    .get::<crate::server::PeerSpiffe>()
+                    .map(|p| p.0.clone())
+            });
         let mut inbound = request.into_inner();
         let cache = self.cache.clone();
         let resolver = self.resolver.clone();
+        let mut revocations = self.revocations.subscribe();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<DiscoveryResponse, Status>>(32);
 
         tokio::spawn(async move {
             let mut team: Option<TeamId> = None;
+            let mut certificate_id: Option<Uuid> = None;
             let mut states: HashMap<String, TypeState> = HashMap::new();
             let mut nonce_seq: u64 = 0;
             let mut changes = cache.watch();
@@ -134,11 +245,12 @@ impl AggregatedDiscoveryService for AdsService {
                                 .as_ref()
                                 .map(|n| n.id.as_str())
                                 .unwrap_or_default();
-                            match resolver.resolve(node_id, peer_spiffe.as_deref()) {
-                                Ok(resolved) => {
-                                    tracing::info!(team = %resolved, node = node_id,
+                            match resolver.resolve(node_id, peer_spiffe.as_deref()).await {
+                                Ok(identity) => {
+                                    tracing::info!(team = %identity.team_id, node = node_id,
                                         "dataplane connected");
-                                    team = Some(resolved);
+                                    team = Some(identity.team_id);
+                                    certificate_id = identity.certificate_id;
                                 }
                                 Err(status) => {
                                     let _ = tx.send(Err(status)).await;
@@ -181,6 +293,33 @@ impl AggregatedDiscoveryService for AdsService {
                             state.last_nonce = nonce;
                             if tx.send(Ok(response)).await.is_err() {
                                 return;
+                            }
+                        }
+                    }
+                    revoked = revocations.recv() => {
+                        match revoked {
+                            Ok(cert_id) => {
+                                if certificate_id == Some(cert_id) {
+                                    tracing::warn!(team = ?team, cert = %cert_id,
+                                        "terminating xDS stream: certificate revoked");
+                                    let _ = tx.send(Err(Status::permission_denied(
+                                        "certificate has been revoked",
+                                    ))).await;
+                                    return;
+                                }
+                            }
+                            // Lagged: we may have missed our own revocation — fail closed
+                            // for cert-bound streams; reconnect re-validates at the registry.
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                if certificate_id.is_some() {
+                                    let _ = tx.send(Err(Status::unavailable(
+                                        "revocation feed lagged; reconnect to re-validate",
+                                    ))).await;
+                                    return;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                return; // server shutting down
                             }
                         }
                     }
