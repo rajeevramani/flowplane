@@ -68,7 +68,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 - [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine
   - [x] S5.1 envoy-types translation: cluster (sorted endpoints, explicit TLS, HC/CB/outlier), route-config (exact/prefix/template, order-preserving), listener (HCM+RDS over ADS); determinism tests
   - [x] S5.2 per-team snapshot cache: outbox-driven rebuilds, per-type versions with byte-diff suppression, team isolation test, watch-channel change signal
-  - [ ] S5.3 ADS SOTW server, node identity, make-before-break ordering
+  - [x] S5.3 ADS SOTW server: subscribe/ACK/NACK state machine, live pushes from snapshot watch, make-before-break type order, honest delta-unimplemented; gRPC stream integration tests
   - [ ] S5.4 mTLS + SPIFFE cert registry binding + revocation stream-kill
   - [ ] S5.5 ACK/NACK + per-resource quarantine + degraded status surfaced
   - [ ] S5.6 live Envoy E2E (docker): join, route traffic, restart convergence, cross-team isolation
