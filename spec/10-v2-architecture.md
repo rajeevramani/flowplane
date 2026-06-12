@@ -219,6 +219,53 @@ observed ──aggregation──▶ learned ──operator review──▶ revie
   unavailable.
 - No `unwrap`/`expect` outside tests; panics = bugs; `#![deny(clippy::unwrap_used)]`.
 
+## 8a. Observability architecture (logging, tracing, metrics)
+
+Cross-cutting infrastructure established in **slice S1** (not retrofitted at hardening; S12
+only completes the alert pack and dashboards). All three signals are OTLP-exportable to any
+collector (D-004: no vendor or platform assumption); a deployment with no collector still gets
+JSON logs on stdout and a Prometheus `/metrics` endpoint.
+
+**Structured logging** (`tracing` crate, JSON to stdout):
+- Every log line carries: timestamp, level, target, `request_id`, and where present `team_id`,
+  `org_id`, `actor`, `trace_id`/`span_id`, `resource` ref. The `request_id` in every API error
+  body (§8) greps straight to its log lines — that correlation is the operator contract.
+- Levels are disciplined: ERROR = operator action likely required; WARN = degraded/retried;
+  INFO = lifecycle and mutation summaries; DEBUG/TRACE = development. `RUST_LOG`-style filter
+  via `FLOWPLANE_LOG` (env-first, D-005).
+- **Never logged:** secret values, credentials, captured request/response bodies, full JWTs.
+  Enforced by redaction at the serialization boundary plus a CI grep-test over log calls
+  (carried from S6 exit criteria).
+- Logs ≠ audit: the audit trail (08a §6) is a DB-backed, queryable, retained record of *who did
+  what*; logs are operational diagnostics. Events appear in both where they overlap, linked by
+  `request_id`.
+
+**Distributed tracing** (OpenTelemetry):
+- Spans cover the full causal chain, *including the async hops*: REST/MCP request → core
+  service → DB transaction → **outbox event (trace context stored on the event row)** →
+  consumer (xDS rebuild, tool generation, budget evaluation) → xDS push. A config change is
+  one trace from `PUT /clusters/x` to the Envoy ACK — this is the primary debugging story for
+  "why isn't my route live?".
+- Inbound `traceparent` honored (W3C trace context); CLI sends one per invocation so a failed
+  command's trace id is printable with `--verbose`.
+- Data-plane traffic tracing (Envoy → Jaeger/OTLP) is *Envoy's* concern, configured via
+  listener tracing settings the CP can enable per listener (as v1 supported); CP traces and
+  data-plane traces share nothing but the collector.
+- Learning/AI pipelines: capture-batch and inference spans sampled (head sampling, configurable
+  rate) to avoid per-request span cost on hot paths; AI-gateway requests follow GenAI OTel
+  semconv (`gen_ai.*` attributes, TTFT, time-per-output-token — spec/09 borrow).
+
+**Metrics** (Prometheus exposition + OTLP):
+- Golden set defined with the subsystem that owns it, label discipline `team` (bounded), never
+  per-request-path unbounded labels. Core families: API (rate/errors/latency by route class),
+  outbox (depth, consumer lag seconds — the readiness signal), xDS (connected dataplanes,
+  pushes, ACK/NACK, quarantined resources), learning (capture rate, queue depths, drops,
+  inference latency), AI (tokens by team/provider/model/type, budget utilization, failovers),
+  DB pool, auth (denials by code).
+- The **alert pack** (S12 deliverable, but metric names fixed from each owning slice):
+  outbox lag, NACK/quarantine count, dataplane disconnects, capture drop rate, budget
+  near-exhaustion, auth-denial spike, DB pool saturation.
+
 ## 9. Contract generation (fixes 08 §2 "detached artifacts")
 
 Route definitions (REST), tool definitions (MCP), and CLI command metadata each carry their
@@ -233,7 +280,7 @@ Single static binary (musl) + OCI image + compose bundle + systemd unit examples
 definition and K8s manifests as optional extras (D-004: ECS-class managed container platforms
 are first-class deployment targets — nothing may assume orchestrator-specific discovery,
 sidecar injection, or secret stores; everything works over plain TCP/HTTP + env vars). `/healthz` (liveness) and `/readyz` (DB + outbox lag + xDS serving)
-endpoints; Prometheus metrics + OTel traces; structured JSON logs with request ids; graceful
+endpoints; observability per §8a; graceful
 shutdown (drain xDS streams, flush outbox consumers, stop workers); migrations forward-only,
 run by `flowplane db migrate` or auto-on-boot (flag); backup = Postgres backup (documented
 restore drill); degradation: DB down → serve last xDS snapshots read-only, REST 503 with hint;

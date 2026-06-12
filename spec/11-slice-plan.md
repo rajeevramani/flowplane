@@ -25,9 +25,11 @@ owned by some slice.
 
 **S1 — Skeleton.** Workspace per 10 §2; config loading (env-first server config, validated);
 error taxonomy + `{code,message,hint,request_id}` envelope; sqlx migrations runner;
-`/healthz`+`/readyz`; structured logging + request ids; CI: fmt, clippy `-D warnings`, tests,
-sqlx-offline check, deny(unwrap). **Exit:** server boots against fresh Postgres, health green,
-CI green on a PR.
+`/healthz`+`/readyz`; observability foundation per 10 §8a (JSON `tracing` logging with
+request_id/team_id fields + redaction boundary, OTel tracing init + W3C propagation,
+Prometheus `/metrics` endpoint); CI: fmt, clippy `-D warnings`, tests, sqlx-offline check,
+deny(unwrap). **Exit:** server boots against fresh Postgres, health green, a request's
+request_id appears in error body + log line + trace, CI green on a PR.
 
 **S2 — Identity & tenancy backbone.** Orgs/teams/users/agents/memberships/grants schema
 (`team_id` naming, composite org/team FKs); Zitadel JWT validation + JWKS cache + dev-mode mock
@@ -37,7 +39,8 @@ spec/05 §3.1 decision table); `TeamScope`-typed repository pattern established;
 authz property tests pass incl. the three §3.2 invariants; cross-org returns 404; audit rows
 for denials; integration tests against real Postgres.
 
-**S3 — Gateway domain + storage + events.** Cluster/RouteConfig/VirtualHost/Route/Listener/
+**S3 — Gateway domain + storage + events.** Outbox rows carry trace context (10 §8a) so
+config-change traces span the async hop. Cluster/RouteConfig/VirtualHost/Route/Listener/
 Filter domain types + validation (carry spec/03 §7 business rules); normalized schema (no
 JSON+projection duals); per-team name uniqueness; optimistic locking everywhere; outbox table +
 dispatcher (LISTEN/NOTIFY + poll fallback, persisted cursors, SKIP LOCKED); quotas. **Exit:**
@@ -108,8 +111,8 @@ SpecVersions, refreshed by events; structured tool errors with recovery hints. C
 tools/list descriptions; cross-tenant tool access adversarial suite; tool staleness test (spec
 republish regenerates).
 
-**S12 — Hardening & v1.0.** Observability completion (Prometheus metrics + alert pack, OTel,
-GenAI semconv); failure-mode suite (kill Postgres mid-write, restart Envoy, restart CP under
+**S12 — Hardening & v1.0.** Observability completion per 10 §8a (alert pack over the metric
+families fixed in S1–S11, dashboards-as-docs, GenAI semconv verification); failure-mode suite (kill Postgres mid-write, restart Envoy, restart CP under
 load — no loss/orphans/panics); load sanity; full adversarial pass per 08a §4 across REST, MCP,
 CLI, learned specs, generated routes, xDS; `docs/production-readiness.md`; operator docs
 (install/upgrade incl. bare-metal/VM/compose/ECS/K8s parity per D-004, config reference,
