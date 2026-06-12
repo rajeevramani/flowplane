@@ -4,6 +4,7 @@
 //! crates — errors, identifiers, lifecycle states, event types — originates here so all
 //! surfaces speak one language.
 
+pub mod authz;
 pub mod error;
 pub mod id;
 pub mod identity;

@@ -46,7 +46,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S1 exit: request_id in error body + log + trace; traceparent inherited; boots on fresh PG; TLS verified
 - [ ] S2 Identity, teams, authz backbone
   - [x] S2.1 schema 0002 (orgs/teams/users/agents/memberships/grants/audit/bootstrap) + domain types
-  - [ ] S2.2 authz decision engine (pure, table-driven, property tests vs spec/05 §3.1)
+  - [x] S2.2 authz decision engine (pure, table-driven, exhaustive invariant tests vs spec/05 §3.1)
   - [ ] S2.3 OIDC JWT validation (provider-agnostic, JWKS cache) + dev mock OIDC + gating + seeding
   - [ ] S2.4 TeamScope repos (identity) + audit writer (incl. denials)
   - [ ] S2.5 REST wiring: auth middleware, whoami, bootstrap one-shot flow
