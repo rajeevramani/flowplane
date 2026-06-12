@@ -13,4 +13,6 @@ pub struct AppState {
     pub version: &'static str,
     /// `None` = auth not configured: authenticated endpoints answer 503 (degraded mode).
     pub validator: Option<Arc<OidcValidator>>,
+    /// Per-tenant write throttle (spec/10 §4a edge hardening).
+    pub write_throttle: Arc<crate::throttle::WriteThrottle>,
 }

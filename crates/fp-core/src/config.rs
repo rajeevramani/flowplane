@@ -38,6 +38,8 @@ pub struct ServerConfig {
     /// OIDC issuer for production auth (any compliant IdP, Q-004). `None` + !dev_mode =
     /// degraded mode: authenticated endpoints answer 503 with a configuration hint.
     pub oidc: Option<OidcSettings>,
+    /// Per-tenant mutating-request budget per minute (spec/10 §4a).
+    pub tenant_write_limit_per_minute: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -228,6 +230,15 @@ impl ServerConfig {
                 ))
             }
         };
+        let tenant_write_limit_per_minute = match get("FLOWPLANE_TENANT_WRITE_LIMIT_PER_MIN") {
+            Some(raw) => raw.parse().ok().filter(|v| *v >= 1).ok_or_else(|| {
+                DomainError::invalid_config(format!(
+                    "FLOWPLANE_TENANT_WRITE_LIMIT_PER_MIN \"{raw}\" is not a positive integer"
+                ))
+            })?,
+            None => 120,
+        };
+
         if dev_mode && oidc.is_some() {
             return Err(DomainError::invalid_config(
                 "FLOWPLANE_DEV_MODE and FLOWPLANE_OIDC_* are mutually exclusive",
@@ -246,6 +257,7 @@ impl ServerConfig {
             otlp_endpoint,
             dev_mode,
             oidc,
+            tenant_write_limit_per_minute,
         })
     }
 }

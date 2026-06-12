@@ -9,6 +9,7 @@ pub mod error;
 pub mod middleware;
 pub mod routes;
 pub mod state;
+pub mod throttle;
 
 pub use error::ApiError;
 pub use routes::build_router;

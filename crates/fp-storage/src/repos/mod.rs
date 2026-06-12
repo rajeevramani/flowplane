@@ -2,4 +2,5 @@
 //! governance tables are org-keyed with the same explicitness.
 
 pub mod audit;
+pub mod bootstrap;
 pub mod identity;

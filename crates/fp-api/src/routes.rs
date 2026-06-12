@@ -14,6 +14,11 @@ use serde::Serialize;
 pub fn build_router(state: AppState) -> Router {
     let secured = Router::new()
         .route("/api/v1/auth/whoami", get(whoami))
+        // Throttle inside auth so the PrincipalCtx is available for tenant keying.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::throttle::tenant_write_throttle,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::authenticate,
@@ -23,6 +28,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_endpoint))
+        .route("/api/v1/bootstrap/status", get(bootstrap_status))
+        .route(
+            "/api/v1/bootstrap/initialize",
+            axum::routing::post(bootstrap_initialize),
+        )
         .merge(secured)
         .fallback(not_found)
         .layer(axum::middleware::from_fn(request_id))
@@ -128,6 +138,77 @@ async fn readyz(
 
 async fn metrics_endpoint(State(state): State<AppState>) -> String {
     state.prometheus.render()
+}
+
+#[derive(Serialize)]
+struct BootstrapStatus {
+    initialized: bool,
+}
+
+/// Public: lets operators and the CLI see whether first-run setup is pending.
+async fn bootstrap_status(
+    State(state): State<AppState>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<BootstrapStatus>, ApiError> {
+    let initialized = fp_storage::repos::bootstrap::is_initialized(&state.pool)
+        .await
+        .map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(BootstrapStatus { initialized }))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootstrapInitialize {
+    org_name: String,
+    #[serde(default)]
+    org_display_name: String,
+    admin_subject: String,
+    #[serde(default)]
+    admin_email: String,
+}
+
+#[derive(Serialize)]
+struct BootstrapResult {
+    org_id: String,
+    admin_user_id: String,
+}
+
+/// Public endpoint guarded by the one-shot bootstrap token (Authorization: Bearer fpboot_…).
+async fn bootstrap_initialize(
+    State(state): State<AppState>,
+    Extension(rid): Extension<RequestId>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<BootstrapInitialize>,
+) -> Result<Json<BootstrapResult>, ApiError> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| {
+            ApiError::new(
+                fp_domain::DomainError::new(
+                    fp_domain::ErrorCode::Unauthorized,
+                    "missing bootstrap token",
+                )
+                .with_hint("pass the boot-logged token as: Authorization: Bearer fpboot_…"),
+                rid,
+            )
+        })?;
+    let (org_id, admin_user_id) = fp_storage::repos::bootstrap::initialize(
+        &state.pool,
+        token,
+        &body.org_name,
+        &body.org_display_name,
+        &body.admin_subject,
+        &body.admin_email,
+        rid,
+    )
+    .await
+    .map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(BootstrapResult {
+        org_id: org_id.to_string(),
+        admin_user_id: admin_user_id.to_string(),
+    }))
 }
 
 /// Unknown paths return the standard envelope, not HTML or plain text.

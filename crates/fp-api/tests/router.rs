@@ -28,6 +28,7 @@ async fn test_app() -> Option<axum::Router> {
         prometheus,
         version: "test",
         validator: None,
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(120)),
     }))
 }
 

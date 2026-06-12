@@ -45,11 +45,26 @@ pub async fn run() -> anyhow::Result<()> {
         .install_recorder()
         .context("failed to install Prometheus metrics recorder")?;
 
+    if !config.dev_mode {
+        if let Some(token) =
+            fp_storage::repos::bootstrap::issue_token_if_uninitialized(&pool).await?
+        {
+            tracing::warn!(
+                bootstrap_token = %token,
+                "instance is uninitialized — POST /api/v1/bootstrap/initialize with this \
+                 one-shot token (valid 24h, logged only once)"
+            );
+        }
+    }
+
     let state = fp_api::AppState {
         pool,
         prometheus,
         version: crate::VERSION,
         validator,
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(
+            config.tenant_write_limit_per_minute,
+        )),
     };
     let router = fp_api::build_router(state);
 
