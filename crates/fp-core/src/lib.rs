@@ -3,6 +3,8 @@
 
 pub mod authz;
 pub mod config;
+pub mod oidc;
 
 pub use authz::{check_resource_access, Decision, GrantSet, PrincipalCtx, Reason, TeamRef};
 pub use config::ServerConfig;
+pub use oidc::{OidcConfig, OidcValidator, ValidatedClaims};

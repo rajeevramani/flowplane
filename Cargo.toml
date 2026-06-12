@@ -35,6 +35,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net
 toml = "0.8"
 tower = "0.5"
 http-body-util = "0.1"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rsa = "0.9"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
