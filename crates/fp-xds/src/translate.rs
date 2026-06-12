@@ -176,7 +176,7 @@ pub fn route_config_to_proto(
                                     name: "envoy.path.match.uri_template.uri_template_matcher"
                                         .to_string(),
                                     typed_config: Some(any(
-                                        "type.googleapis.com/envoy.extensions.path.r#match.uri_template.v3.UriTemplateMatchConfig",
+                                        "type.googleapis.com/envoy.extensions.path.match.uri_template.v3.UriTemplateMatchConfig",
                                         &envoy_types::pb::envoy::extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig {
                                             path_template: template.clone(),
                                         },
@@ -434,5 +434,43 @@ mod tests {
                 .encode_to_vec()
         );
         drop(a);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod type_url_tests {
+    use super::*;
+    use fp_domain::gateway::route_config::{RouteAction, RouteRule, VirtualHost};
+
+    /// Rust raw-identifier syntax (`r#match`) must never leak into protobuf type URLs —
+    /// Envoy would NACK the resource (caught during S5.1 review).
+    #[test]
+    fn emitted_type_urls_are_valid_proto_paths() {
+        let spec = RouteConfigSpec {
+            virtual_hosts: vec![VirtualHost {
+                name: "default".into(),
+                domains: vec!["*".into()],
+                routes: vec![RouteRule {
+                    name: "templated".into(),
+                    matcher: PathMatch::Template {
+                        template: "/users/{id}".into(),
+                    },
+                    action: RouteAction {
+                        cluster: "c".into(),
+                        prefix_rewrite: None,
+                        template_rewrite: None,
+                        timeout_secs: 15,
+                    },
+                }],
+            }],
+        };
+        let proto = route_config_to_proto("rc", &spec).expect("translate");
+        let encoded = format!("{proto:?}");
+        assert!(
+            !encoded.contains("r#"),
+            "raw identifier leaked into a type URL"
+        );
+        assert!(encoded.contains("envoy.extensions.path.match.uri_template.v3"));
     }
 }
