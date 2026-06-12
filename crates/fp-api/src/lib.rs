@@ -8,6 +8,7 @@ pub mod auth;
 pub mod error;
 pub mod identity_api;
 pub mod middleware;
+pub mod orgs_api;
 pub mod resources;
 pub mod routes;
 pub mod state;

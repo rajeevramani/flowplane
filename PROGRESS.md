@@ -58,11 +58,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S3.3 schemas 0004/0005, repos for all three resources, normalized reference tracking, optimistic locking, per-team uniqueness + port uniqueness
   - [x] S3.4 per-tenant quotas (framework + clusters limit, quota test)
   - [x] S3 exit: concurrent 409 + no lost update, transactional events, cross-org 404, quota, referential guards (cluster/rc deletion blocked with dependents named), no orphaned refs
-- [ ] S4 REST API core + OpenAPI generation (+ v1 contract diff)
+- [x] S4 REST API core + OpenAPI generation (+ v1 contract diff)
   - [x] S4.1 gateway-resource endpoints (clusters/listeners/route-configs CRUD, If-Match revisions, uniform Page envelope)
   - [x] S4.2 OpenAPI generated from routes! registrations (single declaration site); /api-docs/openapi.json; parity pin test
   - [x] S4.3 HTTP CRUD integration test through real bearer auth (201/409/400-hint/409-revision/200/204/404 envelopes)
-  - [x] S4.4 team/member/grant endpoints (9 ops, org-admin gated, audited); org admin CRUD + agents endpoints carried to S4 wrap (noted in D-010)
+  - [x] S4.4 team/member/grant endpoints + org CRUD/member endpoints (32 ops total); agents endpoints deferred to S11 with the MCP agent auth path (one coherent unit)
   - [x] S4.5 contract diff recorded (D-010); agent smoke PASSED (doc-only workflow incl. If-Match discovery); `flowplane openapi` dump command
   - [x] S4 milestone ping to founder (Q-007) — sent 2026-06-12
 - [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine

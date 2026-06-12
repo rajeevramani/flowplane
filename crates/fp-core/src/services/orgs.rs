@@ -1,0 +1,231 @@
+//! Organization administration. Org CRUD is platform governance (decided by the engine on
+//! Resource::Organizations). Member management within an org is org-admin territory —
+//! platform admins are NOT admitted (spec/05 §3.2 invariant 1), with one carve-out: the
+//! platform admin may add the FIRST owner to an org they just created (provisioning).
+
+use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::{actor_of, deny_to_error};
+use fp_domain::authz::{Action, Resource};
+use fp_domain::{
+    DomainError, DomainResult, ErrorCode, OrgId, OrgRole, Organization, RequestId, UserId,
+};
+use fp_storage::repos::{audit, identity};
+use sqlx::PgPool;
+
+fn authorize_governance(ctx: &PrincipalCtx, action: Action) -> DomainResult<()> {
+    match check_resource_access(ctx, Resource::Organizations, action, None) {
+        Decision::Allow(_) => Ok(()),
+        Decision::Deny(reason) => Err(deny_to_error(Resource::Organizations, action, reason)),
+    }
+}
+
+fn org_audit(
+    ctx: &PrincipalCtx,
+    request_id: RequestId,
+    org_id: Option<OrgId>,
+    action: &str,
+    resource: String,
+) -> audit::AuditEntry {
+    let (actor_type, actor_id) = actor_of(ctx);
+    audit::AuditEntry {
+        request_id: Some(request_id),
+        actor_type,
+        actor_id,
+        actor_label: String::new(),
+        surface: audit::Surface::Rest,
+        action: action.into(),
+        resource,
+        org_id,
+        team_id: None,
+        outcome: audit::Outcome::Success,
+        detail: serde_json::json!({}),
+    }
+}
+
+pub async fn create_org(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    name: &str,
+    display_name: &str,
+    request_id: RequestId,
+) -> DomainResult<Organization> {
+    authorize_governance(ctx, Action::Create)?;
+    let org = identity::create_org(pool, name, display_name).await?;
+    audit::record_best_effort(
+        pool,
+        &org_audit(
+            ctx,
+            request_id,
+            Some(org.id),
+            "org.create",
+            format!("organizations/{name}"),
+        ),
+    )
+    .await;
+    Ok(org)
+}
+
+pub async fn list_orgs(pool: &PgPool, ctx: &PrincipalCtx) -> DomainResult<Vec<Organization>> {
+    authorize_governance(ctx, Action::Read)?;
+    identity::list_orgs(pool).await
+}
+
+pub async fn get_org(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+) -> DomainResult<Organization> {
+    authorize_governance(ctx, Action::Read)?;
+    identity::get_org(pool, org_id)
+        .await?
+        .ok_or_else(|| DomainError::new(ErrorCode::NotFound, "organization not found"))
+}
+
+pub async fn delete_org(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    authorize_governance(ctx, Action::Delete)?;
+    identity::delete_org(pool, org_id).await?;
+    audit::record_best_effort(
+        pool,
+        &org_audit(
+            ctx,
+            request_id,
+            Some(org_id),
+            "org.delete",
+            format!("organizations/{org_id}"),
+        ),
+    )
+    .await;
+    Ok(())
+}
+
+/// Who may manage members of `org_id`: an org admin of that same org, or — only while the
+/// org has no owner yet — the platform admin (first-owner provisioning).
+async fn authorize_member_admin(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+) -> DomainResult<()> {
+    if let PrincipalCtx::User {
+        org: Some((own, role)),
+        ..
+    } = ctx
+    {
+        if *own == org_id && role.is_org_admin() {
+            return Ok(());
+        }
+    }
+    if matches!(
+        ctx,
+        PrincipalCtx::User {
+            platform_admin: true,
+            ..
+        }
+    ) && identity::count_org_owners(pool, org_id).await? == 0
+    {
+        return Ok(());
+    }
+    Err(DomainError::new(
+        ErrorCode::Forbidden,
+        "member administration requires an org admin role in this organization",
+    ))
+}
+
+pub async fn add_org_member(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+    email: &str,
+    role: OrgRole,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    authorize_member_admin(pool, ctx, org_id).await?;
+    let user = identity::find_user_by_email(pool, email)
+        .await?
+        .ok_or_else(|| {
+            DomainError::not_found("user", email)
+                .with_hint("the user must sign in once before being added to an organization")
+        })?;
+    identity::add_org_membership(pool, user, org_id, role).await?;
+    audit::record_best_effort(
+        pool,
+        &org_audit(
+            ctx,
+            request_id,
+            Some(org_id),
+            "org.member.add",
+            format!("users/{email}:{}", role.as_str()),
+        ),
+    )
+    .await;
+    Ok(())
+}
+
+pub async fn list_org_members(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+) -> DomainResult<Vec<(UserId, String, String, String)>> {
+    // Own-org members may read the roster; platform admin may read any (governance read).
+    let allowed = match ctx {
+        PrincipalCtx::User {
+            org: Some((own, _)),
+            ..
+        } if *own == org_id => true,
+        PrincipalCtx::User {
+            platform_admin: true,
+            ..
+        } => true,
+        _ => false,
+    };
+    if !allowed {
+        return Err(DomainError::new(
+            ErrorCode::NotFound,
+            "organization not found",
+        ));
+    }
+    identity::list_org_members(pool, org_id).await
+}
+
+pub async fn remove_org_member(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+    user_id: UserId,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    authorize_member_admin(pool, ctx, org_id).await?;
+    // Never orphan an org: the last owner cannot be removed.
+    let members = identity::list_org_members(pool, org_id).await?;
+    let is_owner = members
+        .iter()
+        .any(|(id, _, _, role)| *id == user_id && role == "owner");
+    if is_owner && identity::count_org_owners(pool, org_id).await? <= 1 {
+        return Err(
+            DomainError::conflict("cannot remove the last owner of an organization")
+                .with_hint("promote another member to owner first"),
+        );
+    }
+    if !identity::remove_org_membership(pool, user_id, org_id).await? {
+        return Err(DomainError::new(
+            ErrorCode::NotFound,
+            "membership not found",
+        ));
+    }
+    audit::record_best_effort(
+        pool,
+        &org_audit(
+            ctx,
+            request_id,
+            Some(org_id),
+            "org.member.remove",
+            format!("users/{user_id}"),
+        ),
+    )
+    .await;
+    Ok(())
+}

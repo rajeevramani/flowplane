@@ -60,6 +60,19 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(identity_api::remove_member))
         .routes(routes!(identity_api::list_grants, identity_api::add_grant))
         .routes(routes!(identity_api::remove_grant))
+        .routes(routes!(
+            crate::orgs_api::list_orgs,
+            crate::orgs_api::create_org
+        ))
+        .routes(routes!(
+            crate::orgs_api::get_org,
+            crate::orgs_api::delete_org
+        ))
+        .routes(routes!(
+            crate::orgs_api::list_members,
+            crate::orgs_api::add_member
+        ))
+        .routes(routes!(crate::orgs_api::remove_member))
         .routes(routes!(clusters::list, clusters::create))
         .routes(routes!(clusters::get, clusters::update, clusters::delete))
         .routes(routes!(listeners::list, listeners::create))

@@ -3,6 +3,7 @@
 
 pub mod clusters;
 pub mod gateway;
+pub mod orgs;
 pub mod quota;
 pub mod teams;
 

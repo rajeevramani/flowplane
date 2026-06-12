@@ -465,3 +465,111 @@ pub async fn find_user_by_email(pool: &PgPool, email: &str) -> DomainResult<Opti
             .map_err(|e| DomainError::internal(format!("find user: {e}")))?;
     Ok(id.map(UserId::from))
 }
+
+pub async fn list_orgs(pool: &PgPool) -> DomainResult<Vec<Organization>> {
+    let rows = sqlx::query(
+        "SELECT id, name, display_name, status, created_at, updated_at \
+         FROM organizations WHERE status = 'active' ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list orgs: {e}")))?;
+    rows.iter().map(org_from_row).collect()
+}
+
+pub async fn get_org(pool: &PgPool, org_id: OrgId) -> DomainResult<Option<Organization>> {
+    let row = sqlx::query(
+        "SELECT id, name, display_name, status, created_at, updated_at \
+         FROM organizations WHERE id = $1",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get org: {e}")))?;
+    row.as_ref().map(org_from_row).transpose()
+}
+
+pub async fn resolve_org_by_name(pool: &PgPool, name: &str) -> DomainResult<Option<OrgId>> {
+    let id: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM organizations WHERE name = $1 AND status = 'active'")
+            .bind(name)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("resolve org: {e}")))?;
+    Ok(id.map(OrgId::from))
+}
+
+/// Delete an org. Refuses while teams exist (RESTRICT semantics with a helpful error).
+pub async fn delete_org(pool: &PgPool, org_id: OrgId) -> DomainResult<()> {
+    let teams: i64 = sqlx::query_scalar("SELECT count(*) FROM teams WHERE org_id = $1")
+        .bind(org_id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete org: count: {e}")))?;
+    if teams > 0 {
+        return Err(
+            DomainError::conflict(format!("organization still has {teams} team(s)"))
+                .with_hint("delete the org's teams first"),
+        );
+    }
+    let deleted = sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org_id.as_uuid())
+        .execute(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete org: {e}")))?;
+    if deleted.rows_affected() == 0 {
+        return Err(DomainError::new(
+            fp_domain::ErrorCode::NotFound,
+            "organization not found",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn list_org_members(
+    pool: &PgPool,
+    org_id: OrgId,
+) -> DomainResult<Vec<(UserId, String, String, String)>> {
+    let rows = sqlx::query(
+        "SELECT u.id, u.email, u.name, m.role FROM users u \
+         JOIN org_memberships m ON m.user_id = u.id WHERE m.org_id = $1 ORDER BY u.email",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list org members: {e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            (
+                UserId::from(r.get::<Uuid, _>("id")),
+                r.get("email"),
+                r.get("name"),
+                r.get("role"),
+            )
+        })
+        .collect())
+}
+
+pub async fn remove_org_membership(
+    pool: &PgPool,
+    user_id: UserId,
+    org_id: OrgId,
+) -> DomainResult<bool> {
+    let deleted = sqlx::query("DELETE FROM org_memberships WHERE user_id = $1 AND org_id = $2")
+        .bind(user_id.as_uuid())
+        .bind(org_id.as_uuid())
+        .execute(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("remove org membership: {e}")))?;
+    Ok(deleted.rows_affected() > 0)
+}
+
+/// Owners of an org (used to prevent removing the last owner).
+pub async fn count_org_owners(pool: &PgPool, org_id: OrgId) -> DomainResult<i64> {
+    sqlx::query_scalar("SELECT count(*) FROM org_memberships WHERE org_id = $1 AND role = 'owner'")
+        .bind(org_id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("count owners: {e}")))
+}
