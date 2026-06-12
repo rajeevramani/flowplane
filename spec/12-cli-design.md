@@ -58,7 +58,8 @@ flowplane
 ├── dataplane   list | get | create | update | delete | bootstrap | status
 │               cert    list | get | issue | revoke
 ├── learn       start | stop | list | get | health       (capture sessions)
-│               discover start|stop|status               (traffic-first discovery, opt-in)
+│               discover start|stop|status               (traffic-first; requires --upstream
+│                                                         or --to-host/--to-cidr allowlist)
 ├── ai          provider  list | get | create | update | delete | models
 │               route     list | get | create | update | delete
 │               budget    list | get | set | delete
@@ -146,9 +147,11 @@ orders  served  v2    14/14          14     dp-main ✓ (2s ago)
 ### 5.3 Traffic-first loop: discover → generate → approve → serve
 
 ```
-$ flowplane learn discover start --listener discovery --port 10099
-✓ discovery capture enabled for team payments (state: observing)
+$ flowplane learn discover start --port 10099 --to-cidr 10.2.0.0/16 --max-duration 24h
+✓ discovery listener active on :10099 for team payments (state: observing)
+   forwarding: host-routed (dynamic forward proxy), allowed destinations: 10.2.0.0/16
    note: observed traffic is data only — nothing becomes config without approval
+   direct traffic at :10099 (preserve Host headers) to begin observation
 $ flowplane learn discover status
 DISCOVERY  STATE      SAMPLES  CANDIDATE APIS
 active     observing  18 402   2  (billing-internal: 9 endpoints · partners: 4 endpoints)

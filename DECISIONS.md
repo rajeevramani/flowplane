@@ -64,3 +64,17 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   config file > defaults — uniformly for every value (token, team, org, base-url, timeout).
 - **Why better than v1:** v1 had three contradictory precedence orders across values; explicit
   flags silently losing to ambient env vars violates least surprise (gh/kubectl convention).
+
+## D-006: Discovery listener is a forwarding proxy with mandatory destination constraints
+
+- **Context:** Founder design review of the traffic-first transcript asked what the discovery
+  listener listens to and whether routes must exist first.
+- **Decision:** No user routes required. `learn discover start` materializes a Flowplane-owned
+  Envoy listener whose chain is capture + catch-all forwarding (explicit `--upstream`, or
+  host-routed dynamic forward proxy). Forwarding is mandatory (responses must be observed to
+  learn schemas/status/auth). Because a host-routed forwarder is an open-proxy/SSRF surface,
+  discovery refuses to start without `--upstream` or a destination allowlist; CP, loopback,
+  link-local, and cloud-metadata ranges are always denied; sessions have TTL + capture quotas.
+- **Why better than v1:** v1 could only black-hole unmatched traffic (request-only, useless
+  responses, spec/06 §9); v2 observes full exchanges safely and feeds upstream provenance into
+  route generation.

@@ -163,10 +163,25 @@ observed ──aggregation──▶ learned ──operator review──▶ revie
 
 - Both directions on the shared model: **config-first** (session targets an ApiDefinition or
   route set; capture → inference → aggregation → SpecVersion `learned`) and **traffic-first**
-  (a team-scoped *discovery listener* with explicit operator opt-in captures unmatched traffic;
-  aggregation produces an ApiDefinition with origin `discovered`; `flowplane routes generate
-  --from-spec` materializes a route/cluster **plan** — same planner as OpenAPI import — shown
-  via `--dry-run`, applied only on approval, entering the lifecycle at `reviewed`).
+  via a *discovery listener*:
+  - `learn discover start` materializes a **Flowplane-owned Envoy listener** (not a user
+    Listener resource; owned by the session, excluded from user resource lists, torn down on
+    stop). Filter chain: capture (team-scoped ALS+ExtProc) + a catch-all **forwarding stage** —
+    forwarding is mandatory because response observation (schemas, status codes, auth-scheme
+    detection) requires proxying traffic onward, not black-holing it (v1's gap, spec/06 §9).
+  - Two forwarding modes: `--upstream host:port` (recording reverse proxy in front of one
+    service) or host-routed via Envoy dynamic forward proxy (Host/SNI-keyed, runtime DNS) —
+    observations cluster by observed Host into separate candidate ApiDefinitions.
+  - **Open-proxy/SSRF hardening (binding):** discovery refuses to start without `--upstream`
+    or an explicit destination allowlist (`--to-host`/`--to-cidr`); the CP address,
+    loopback, link-local, and cloud-metadata ranges (169.254.0.0/16 incl. 169.254.169.254)
+    are always denied; sessions carry TTL (`--max-duration`) and capture quotas.
+  - Operators direct traffic at the discovery port themselves (DNS/LB cutover or client
+    config) — Flowplane observes only traffic addressed to it.
+  - Learned specs store **upstream provenance** (observed Host, SNI, resolved address, TLS)
+    per endpoint; `flowplane route generate --from-spec` uses it to plan the durable
+    cluster/route-config/listener (same planner as OpenAPI import), shown via `--dry-run`,
+    applied only on approval, entering the lifecycle at `reviewed`.
 - Poisoning resistance per 08a §4.3: frequency thresholds, cardinality caps + alerts,
   provenance per element, quarantine bucket, TTL'd intermediates, redaction by default.
 - Pipeline mechanics keep v1's good bones (worker pool, batched transactional writes,
