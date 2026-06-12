@@ -7,7 +7,9 @@
 //! the matched row's team is authoritative (SAN segments and node ids are never trusted,
 //! spec/04 §1.3). Node-id resolution is for tests and dev mode ONLY.
 
-use crate::snapshot::{SnapshotCache, CLUSTER_TYPE_URL, LISTENER_TYPE_URL, ROUTE_TYPE_URL};
+use crate::snapshot::{
+    SnapshotCache, CLUSTER_TYPE_URL, ENDPOINT_TYPE_URL, LISTENER_TYPE_URL, ROUTE_TYPE_URL,
+};
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::{
     AggregatedDiscoveryService, AggregatedDiscoveryServiceServer,
 };
@@ -24,8 +26,14 @@ use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
-/// Make-before-break push order (deletes are handled by SOTW full-set semantics).
-const TYPE_ORDER: [&str; 3] = [CLUSTER_TYPE_URL, ROUTE_TYPE_URL, LISTENER_TYPE_URL];
+/// Make-before-break push order (deletes are handled by SOTW full-set semantics):
+/// clusters warm before their endpoints arrive, routes before the listeners that bind them.
+const TYPE_ORDER: [&str; 4] = [
+    CLUSTER_TYPE_URL,
+    ENDPOINT_TYPE_URL,
+    ROUTE_TYPE_URL,
+    LISTENER_TYPE_URL,
+];
 
 /// The authenticated identity of a connected dataplane.
 #[derive(Debug, Clone, Copy)]

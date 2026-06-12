@@ -91,6 +91,13 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           GET /api/v1/teams/{team}/xds/nacks (Stats:Read; 33 documented ops)
     - [x] tests: quarantine semantics unit test; live-gRPC NACK → corrected push →
           persistence → fix-rejoins; metric fp_xds_quarantined_resources_total
+  - [x] S5.7 real EDS: IP-endpoint clusters reference EDS over ADS (hostname clusters stay
+        STRICT_DNS inline — Envoy never DNS-resolves EDS endpoints); ClusterLoadAssignment is a
+        fourth snapshot type with the same quarantine machinery; make-before-break order
+        CDS→EDS→RDS→LDS; endpoint churn bumps ONLY the endpoints version (test-pinned); live
+        Envoy E2E re-passed with EDS warming + post-restart pure-EDS endpoint switch
+  - [ ] S5.8 filter catalog: the 16 v1 filter types re-specced through IR + per-route overrides
+        (needed by S8/S10; large — scheduled after S5.7)
   - [x] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
     - [x] xDS pipeline wired into `flowplane serve` (outbox consumer + dev-mode plaintext ADS listener)
     - [x] `scripts/e2e-envoy.sh` (real Envoy via docker, or Tetrate static binary fallback) — three

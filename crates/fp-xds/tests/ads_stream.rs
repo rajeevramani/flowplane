@@ -167,13 +167,16 @@ async fn subscribe_receive_ack_and_live_push() {
         .await
         .expect("ack");
 
-    // Mutate the cluster; drain the outbox; the open stream must receive a push.
+    // Mutate the cluster (a cluster-level field — endpoint-only churn flows over EDS);
+    // drain the outbox; the open stream must receive a push.
+    let mut new_spec = cluster_spec("10.0.0.99");
+    new_spec.connect_timeout_secs = 9;
     fp_core::services::clusters::update_cluster(
         &pool,
         &ctx,
         team,
         &upstream,
-        cluster_spec("10.0.0.99"),
+        new_spec,
         1,
         RequestId::generate(),
     )
@@ -393,13 +396,16 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
     assert_eq!(persisted[0].quarantined_resources, vec![bad.clone()]);
     assert!(persisted[0].error_message.contains("constraint"));
 
-    // An operator fix clears the quarantine: the full set flows again.
+    // An operator fix (changing the cluster bytes) clears the quarantine: the full set
+    // flows again.
+    let mut fixed_spec = cluster_spec("10.0.0.67");
+    fixed_spec.connect_timeout_secs = 7;
     fp_core::services::clusters::update_cluster(
         &pool,
         &ctx,
         team,
         &bad,
-        cluster_spec("10.0.0.67"),
+        fixed_spec,
         1,
         RequestId::generate(),
     )

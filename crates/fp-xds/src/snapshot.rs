@@ -17,6 +17,8 @@ use tokio::sync::{watch, RwLock};
 pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.Cluster";
 pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
 pub const LISTENER_TYPE_URL: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
+pub const ENDPOINT_TYPE_URL: &str =
+    "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment";
 
 /// One resource type's serving state for one team (the external, per-stream view).
 #[derive(Debug, Clone, Default)]
@@ -30,6 +32,7 @@ pub struct ResourceSet {
 #[derive(Debug, Clone, Default)]
 pub struct TeamSnapshot {
     pub clusters: ResourceSet,
+    pub endpoints: ResourceSet,
     pub routes: ResourceSet,
     pub listeners: ResourceSet,
 }
@@ -38,6 +41,7 @@ impl TeamSnapshot {
     pub fn for_type_url(&self, type_url: &str) -> Option<&ResourceSet> {
         match type_url {
             CLUSTER_TYPE_URL => Some(&self.clusters),
+            ENDPOINT_TYPE_URL => Some(&self.endpoints),
             ROUTE_TYPE_URL => Some(&self.routes),
             LISTENER_TYPE_URL => Some(&self.listeners),
             _ => None,
@@ -164,6 +168,7 @@ impl TypeInternal {
 #[derive(Debug, Clone, Default)]
 struct TeamInternal {
     clusters: TypeInternal,
+    endpoints: TypeInternal,
     routes: TypeInternal,
     listeners: TypeInternal,
 }
@@ -172,6 +177,7 @@ impl TeamInternal {
     fn for_type_mut(&mut self, type_url: &str) -> Option<&mut TypeInternal> {
         match type_url {
             CLUSTER_TYPE_URL => Some(&mut self.clusters),
+            ENDPOINT_TYPE_URL => Some(&mut self.endpoints),
             ROUTE_TYPE_URL => Some(&mut self.routes),
             LISTENER_TYPE_URL => Some(&mut self.listeners),
             _ => None,
@@ -218,6 +224,7 @@ impl SnapshotCache {
             .get(&team_id)
             .map(|internal| TeamSnapshot {
                 clusters: internal.clusters.to_set(),
+                endpoints: internal.endpoints.to_set(),
                 routes: internal.routes.to_set(),
                 listeners: internal.listeners.to_set(),
             })
@@ -233,6 +240,7 @@ impl SnapshotCache {
         let mut out = Vec::new();
         for (type_url, state) in [
             (CLUSTER_TYPE_URL, &internal.clusters),
+            (ENDPOINT_TYPE_URL, &internal.endpoints),
             (ROUTE_TYPE_URL, &internal.routes),
             (LISTENER_TYPE_URL, &internal.listeners),
         ] {
@@ -317,6 +325,7 @@ impl SnapshotCache {
             fp_storage::repos::gateway::list_listeners(pool, team_id, 500, 0).await?;
 
         let mut cluster_named = Vec::with_capacity(clusters.len());
+        let mut endpoint_named = Vec::new();
         for cluster in &clusters {
             let proto = translate::cluster_to_proto(&cluster.name, &cluster.spec)?;
             cluster_named.push(NamedResource {
@@ -326,6 +335,18 @@ impl SnapshotCache {
                     value: proto.encode_to_vec(),
                 },
             });
+            // EDS clusters get their assignment as a separate resource: endpoint churn
+            // bumps only the endpoints version, never the cluster bytes (spec/10 §5).
+            if translate::cluster_uses_eds(&cluster.spec) {
+                let cla = translate::endpoints_to_proto(&cluster.name, &cluster.spec);
+                endpoint_named.push(NamedResource {
+                    name: cluster.name.clone(),
+                    any: Any {
+                        type_url: ENDPOINT_TYPE_URL.to_string(),
+                        value: cla.encode_to_vec(),
+                    },
+                });
+            }
         }
         let mut route_named = Vec::with_capacity(route_configs.len());
         for rc in &route_configs {
@@ -363,6 +384,7 @@ impl SnapshotCache {
             let entry = snapshots.entry(team_id).or_default();
             for (state, fresh) in [
                 (&mut entry.clusters, cluster_named),
+                (&mut entry.endpoints, endpoint_named),
                 (&mut entry.routes, route_named),
                 (&mut entry.listeners, listener_named),
             ] {
@@ -593,8 +615,10 @@ mod tests {
             "unchanged bytes, unchanged version"
         );
 
-        // A real update bumps ONLY the cluster set version.
+        // Endpoint churn is EDS-only: the endpoints version bumps, the cluster bytes (an
+        // EDS reference for IP endpoints) and routes stay untouched (spec/10 §5).
         let routes_version = again.routes.version;
+        let endpoints_version = again.endpoints.version;
         fp_core::services::clusters::update_cluster(
             &pool,
             &ctx_a,
@@ -617,9 +641,13 @@ mod tests {
         {}
         let after = cache.team(team_a.id).await;
         assert_eq!(
-            after.clusters.version,
-            cluster_version + 1,
-            "cluster version bumped"
+            after.clusters.version, cluster_version,
+            "endpoint churn must not rebuild the cluster"
+        );
+        assert_eq!(
+            after.endpoints.version,
+            endpoints_version + 1,
+            "endpoints version bumped"
         );
         assert_eq!(
             after.routes.version, routes_version,
@@ -659,12 +687,12 @@ mod tests {
         .await
         .expect("cluster");
         cache.rebuild_team(&pool, team.id).await.expect("rebuild");
-        let initial = cache.team(team.id).await.clusters;
+        let initial = cache.team(team.id).await.endpoints;
 
         // A NACK on the FIRST generation cannot be attributed: nothing is quarantined
         // (never blanket-quarantine a whole type).
         let quarantined = cache
-            .apply_nack(team.id, CLUSTER_TYPE_URL, "first push rejected")
+            .apply_nack(team.id, ENDPOINT_TYPE_URL, "first push rejected")
             .await;
         assert!(quarantined.is_empty(), "no previous generation, no blame");
         assert!(cache.degraded(team.id).await.is_empty());
@@ -683,13 +711,13 @@ mod tests {
         .await
         .expect("update");
         cache.rebuild_team(&pool, team.id).await.expect("rebuild");
-        let updated = cache.team(team.id).await.clusters;
+        let updated = cache.team(team.id).await.endpoints;
         assert_ne!(updated.resources, initial.resources);
 
         let quarantined = cache
             .apply_nack(
                 team.id,
-                CLUSTER_TYPE_URL,
+                ENDPOINT_TYPE_URL,
                 "Proto constraint validation failed",
             )
             .await;
@@ -697,7 +725,7 @@ mod tests {
         let degraded = cache.degraded(team.id).await;
         assert_eq!(degraded.len(), 1);
         assert_eq!(degraded[0].name, upstream);
-        let rolled_back = cache.team(team.id).await.clusters;
+        let rolled_back = cache.team(team.id).await.endpoints;
         assert!(
             rolled_back.version > updated.version,
             "quarantine produces a new pushable version"
@@ -710,14 +738,14 @@ mod tests {
         // Re-NACKing the corrected set must not loop: nothing new to quarantine.
         let version_after_rollback = rolled_back.version;
         let again = cache
-            .apply_nack(team.id, CLUSTER_TYPE_URL, "still unhappy")
+            .apply_nack(team.id, ENDPOINT_TYPE_URL, "still unhappy")
             .await;
         assert!(
             again.is_empty(),
             "rollback bytes match last-good: no new blame"
         );
         assert_eq!(
-            cache.team(team.id).await.clusters.version,
+            cache.team(team.id).await.endpoints.version,
             version_after_rollback
         );
 
@@ -738,7 +766,7 @@ mod tests {
             cache.degraded(team.id).await.is_empty(),
             "fix clears quarantine"
         );
-        let fixed = cache.team(team.id).await.clusters;
+        let fixed = cache.team(team.id).await.endpoints;
         assert_ne!(fixed.resources, initial.resources);
         assert_ne!(fixed.resources, updated.resources);
     }

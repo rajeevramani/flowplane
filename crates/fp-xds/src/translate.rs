@@ -45,12 +45,31 @@ fn socket_address(host: &str, port: u16) -> core::Address {
     }
 }
 
-/// Translate a validated ClusterSpec. Endpoints are sorted (host, port) for determinism.
-pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Cluster> {
+/// EDS only carries socket addresses — Envoy never DNS-resolves EDS endpoints. Clusters
+/// whose endpoints are all IP literals go over EDS (endpoint churn never touches cluster
+/// bytes, spec/10 §5); hostname endpoints stay STRICT_DNS with inline assignment.
+pub fn cluster_uses_eds(spec: &ClusterSpec) -> bool {
+    spec.endpoints
+        .iter()
+        .all(|e| e.host.parse::<std::net::IpAddr>().is_ok())
+}
+
+/// The ClusterLoadAssignment for an EDS cluster. Endpoints sorted (host, port).
+pub fn endpoints_to_proto(name: &str, spec: &ClusterSpec) -> ep::ClusterLoadAssignment {
+    ep::ClusterLoadAssignment {
+        cluster_name: name.to_string(),
+        endpoints: vec![ep::LocalityLbEndpoints {
+            lb_endpoints: sorted_lb_endpoints(spec),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+fn sorted_lb_endpoints(spec: &ClusterSpec) -> Vec<ep::LbEndpoint> {
     let mut endpoints = spec.endpoints.clone();
     endpoints.sort_by(|a, b| (a.host.as_str(), a.port).cmp(&(b.host.as_str(), b.port)));
-
-    let lb_endpoints: Vec<ep::LbEndpoint> = endpoints
+    endpoints
         .iter()
         .map(|endpoint| ep::LbEndpoint {
             host_identifier: Some(ep::lb_endpoint::HostIdentifier::Endpoint(ep::Endpoint {
@@ -60,8 +79,11 @@ pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Clu
             load_balancing_weight: endpoint.weight.map(u32_value),
             ..Default::default()
         })
-        .collect();
+        .collect()
+}
 
+/// Translate a validated ClusterSpec. Endpoints are sorted (host, port) for determinism.
+pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Cluster> {
     let lb_policy = match spec.lb_policy {
         LbPolicy::RoundRobin => exc::cluster::LbPolicy::RoundRobin,
         LbPolicy::LeastRequest => exc::cluster::LbPolicy::LeastRequest,
@@ -126,21 +148,38 @@ pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Clu
             ..Default::default()
         });
 
+    let (discovery_type, eds_cluster_config, load_assignment) = if cluster_uses_eds(spec) {
+        (
+            exc::cluster::DiscoveryType::Eds,
+            Some(exc::cluster::EdsClusterConfig {
+                eds_config: Some(core::ConfigSource {
+                    resource_api_version: core::ApiVersion::V3 as i32,
+                    config_source_specifier: Some(core::config_source::ConfigSourceSpecifier::Ads(
+                        core::AggregatedConfigSource {},
+                    )),
+                    ..Default::default()
+                }),
+                service_name: String::new(), // EDS resource name = cluster name
+            }),
+            None,
+        )
+    } else {
+        (
+            exc::cluster::DiscoveryType::StrictDns,
+            None,
+            Some(endpoints_to_proto(name, spec)),
+        )
+    };
+
     Ok(exc::Cluster {
         name: name.to_string(),
         connect_timeout: Some(duration(spec.connect_timeout_secs)),
         cluster_discovery_type: Some(exc::cluster::ClusterDiscoveryType::Type(
-            exc::cluster::DiscoveryType::StrictDns as i32,
+            discovery_type as i32,
         )),
+        eds_cluster_config,
         lb_policy: lb_policy as i32,
-        load_assignment: Some(ep::ClusterLoadAssignment {
-            cluster_name: name.to_string(),
-            endpoints: vec![ep::LocalityLbEndpoints {
-                lb_endpoints,
-                ..Default::default()
-            }],
-            ..Default::default()
-        }),
+        load_assignment,
         transport_socket,
         health_checks,
         circuit_breakers,
