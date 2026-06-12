@@ -66,9 +66,11 @@ resources, by construction test + adversarial cert test).
 **S6 — Secrets/SDS + dataplanes.** Encrypted-at-rest secrets (KEK + rotation procedure),
 write-only API, rotate; external references (env/Vault backends); SDS delivery; proxy-cert
 issue/revoke (rate-limited); dataplane registration + bootstrap generation + status;
-`fp-agent` warming reports (per-message team binding). **Exit:** TLS listener E2E with SDS
-rotation without restart; revoked cert stream-kill test; secret never appears in logs/responses
-(grep test).
+`fp-agent` warming reports + telemetry relay + heartbeats per D-007 (per-message team
+binding); per-team stats aggregation powering `/stats/*` and dataplane liveness. **Exit:** TLS
+listener E2E with SDS rotation without restart; revoked cert stream-kill test; secret never
+appears in logs/responses (grep test); stats E2E (traffic through Envoy → agent relay →
+`flowplane stats overview` shows it; kill agent → dataplane marked stale, no CP errors).
 
 **S7 — CLI core.** Framework per spec/12 §1–4: contexts/auth (PKCE+device-code), precedence
 D-005, output engine (table/json/yaml/wide, TTY detection), error rendering + exit codes,

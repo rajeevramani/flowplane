@@ -156,6 +156,11 @@ observed ──aggregation──▶ learned ──operator review──▶ revie
 - mTLS identity as v1 (SPIFFE SAN → cert registry row → team) plus: per-message team binding on
   ALS/ExtProc/diagnostics, revocation enforced on live streams, allowlist-scope via
   authenticated registry not node metadata.
+- **Dataplane analytics (D-007):** fp-agent relays curated Envoy stats (loopback admin scrape)
+  and liveness heartbeats over the outbound mTLS diagnostics stream, using the proto's reserved
+  telemetry/lifecycle ranges; the CP aggregates per team to power `stats *`, `dataplane
+  status`, `ops doctor`, and usage insights. CP never dials dataplane admin ports (v1 did —
+  removed); Envoy's /stats/prometheus remains for customer monitoring.
 - Capture injection scoped to the session's team listeners/routes only, with Envoy-side ALS
   filters where possible (kills the all-listener blast radius and 08a §4.1).
 

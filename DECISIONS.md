@@ -78,3 +78,20 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
 - **Why better than v1:** v1 could only black-hole unmatched traffic (request-only, useless
   responses, spec/06 §9); v2 observes full exchanges safely and feeds upstream provenance into
   route generation.
+
+## D-007: Dataplane analytics via agent telemetry relay (not CP admin-scrape)
+
+- **Context:** v1 serves `stats *` by scraping each Envoy's admin API over the network
+  (`stats_data_source.rs`) — requires CP→dataplane inbound reachability and off-box admin-port
+  exposure; breaks NAT'd/ECS environments (D-004) and is a security liability. The v1 agent
+  proto already reserves field ranges for heartbeats (20–29) and telemetry relay (40–49).
+- **Decision:** fp-agent scrapes Envoy admin on loopback only and streams a curated metric set
+  (request/response counters, response-code classes, latency histograms, connection gauges,
+  listener/cluster health) + liveness heartbeats to the CP over the existing outbound mTLS
+  diagnostics stream, using the reserved proto ranges. CP aggregates per team → powers
+  `flowplane stats`, `dataplane status`, `ops doctor`, and learning-loop usage insights.
+  Envoy's native /stats/prometheus stays available for customer monitoring stacks
+  (complementary). Envoy admin ports are never exposed off-box in v2.
+- **Why better than v1:** outbound-only connectivity works on bare metal/VM/ECS/K8s alike;
+  removes an entire attack surface; heartbeats give real liveness (v1 inferred it from xDS
+  stream state); founder-raised gap (2026-06-12).
