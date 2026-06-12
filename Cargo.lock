@@ -562,6 +562,7 @@ dependencies = [
  "fp-core",
  "fp-domain",
  "fp-storage",
+ "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
@@ -572,6 +573,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-opentelemetry",
+ "uuid",
 ]
 
 [[package]]

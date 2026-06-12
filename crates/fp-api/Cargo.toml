@@ -23,6 +23,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+http-body-util = { workspace = true }
+uuid = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 
 [lints]
