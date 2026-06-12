@@ -87,6 +87,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             route_configs::update,
             route_configs::delete
         ))
+        .routes(routes!(crate::xds_api::list_nacks))
         .split_for_parts()
 }
 

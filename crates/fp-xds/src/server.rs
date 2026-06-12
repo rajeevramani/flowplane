@@ -60,6 +60,7 @@ pub async fn serve_mtls(
     cache: Arc<SnapshotCache>,
     resolver: Arc<dyn TeamResolver>,
     revocations: tokio::sync::broadcast::Sender<Uuid>,
+    nack_pool: sqlx::PgPool,
     tls: &XdsTlsPaths,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> DomainResult<()> {
@@ -73,7 +74,7 @@ pub async fn serve_mtls(
         .identity(identity)
         .client_ca_root(client_ca);
 
-    let service = AdsService::new(cache, resolver, revocations).into_server();
+    let service = AdsService::new(cache, resolver, revocations, Some(nack_pool)).into_server();
     tracing::info!(%addr, "xDS ADS server starting (mTLS, certificate-registry binding)");
     tonic::transport::Server::builder()
         .tls_config(tls_config)
@@ -85,17 +86,19 @@ pub async fn serve_mtls(
 }
 
 /// Serve ADS on `addr` until `shutdown` resolves. Plaintext — dev/test wiring only;
-/// production uses [`serve_mtls`] and refuses to start without TLS material.
+/// production uses [`serve_mtls`] and refuses to start without TLS material. NACKs are
+/// persisted when a pool is supplied.
 pub async fn serve_plaintext(
     addr: SocketAddr,
     cache: Arc<SnapshotCache>,
     resolver: Arc<dyn TeamResolver>,
+    nack_pool: Option<sqlx::PgPool>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> DomainResult<()> {
     // The bus sender lives inside AdsService for the server's lifetime; plaintext mode has
     // no cert-bound streams so nothing ever publishes on it.
     let (revocations, _) = tokio::sync::broadcast::channel(16);
-    let service = AdsService::new(cache, resolver, revocations).into_server();
+    let service = AdsService::new(cache, resolver, revocations, nack_pool).into_server();
     tracing::info!(%addr, "xDS ADS server starting (plaintext dev mode)");
     tonic::transport::Server::builder()
         .add_service(service)

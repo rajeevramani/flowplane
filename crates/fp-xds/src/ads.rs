@@ -139,6 +139,8 @@ pub struct AdsService {
     resolver: Arc<dyn TeamResolver>,
     /// Broadcasts revoked certificate ids; streams bound to a revoked cert terminate.
     revocations: tokio::sync::broadcast::Sender<Uuid>,
+    /// NACK persistence (S5.5); `None` keeps NACK handling in-memory only (tests).
+    nack_pool: Option<sqlx::PgPool>,
 }
 
 impl AdsService {
@@ -146,11 +148,13 @@ impl AdsService {
         cache: Arc<SnapshotCache>,
         resolver: Arc<dyn TeamResolver>,
         revocations: tokio::sync::broadcast::Sender<Uuid>,
+        nack_pool: Option<sqlx::PgPool>,
     ) -> Self {
         Self {
             cache,
             resolver,
             revocations,
+            nack_pool,
         }
     }
 
@@ -217,10 +221,12 @@ impl AggregatedDiscoveryService for AdsService {
         let cache = self.cache.clone();
         let resolver = self.resolver.clone();
         let mut revocations = self.revocations.subscribe();
+        let nack_pool = self.nack_pool.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<DiscoveryResponse, Status>>(32);
 
         tokio::spawn(async move {
             let mut team: Option<TeamId> = None;
+            let mut node_label = String::new();
             let mut certificate_id: Option<Uuid> = None;
             let mut states: HashMap<String, TypeState> = HashMap::new();
             let mut nonce_seq: u64 = 0;
@@ -250,6 +256,7 @@ impl AggregatedDiscoveryService for AdsService {
                                     tracing::info!(team = %identity.team_id, node = node_id,
                                         "dataplane connected");
                                     team = Some(identity.team_id);
+                                    node_label = node_id.to_string();
                                     certificate_id = identity.certificate_id;
                                 }
                                 Err(status) => {
@@ -275,8 +282,32 @@ impl AggregatedDiscoveryService for AdsService {
                                 metrics::counter!("fp_xds_nacks_total").increment(1);
                                 tracing::warn!(team = %team_id, type_url,
                                     error = %error.message, "xDS NACK");
-                                // S5.5: quarantine + persistence. For now: keep serving the
-                                // last-known config; do not re-send unchanged bytes.
+                                // S5.5: quarantine what changed (serve last-good bytes) and
+                                // persist the event. The cache notification wakes this very
+                                // stream to push the corrected set.
+                                let quarantined = cache
+                                    .apply_nack(team_id, &type_url, &error.message)
+                                    .await;
+                                if let Some(pool) = &nack_pool {
+                                    let record = fp_storage::repos::xds_nacks::NackRecord {
+                                        team_id,
+                                        node_id: node_label.clone(),
+                                        type_url: type_url.clone(),
+                                        version_rejected: request.version_info.clone(),
+                                        error_message: error.message.clone(),
+                                        quarantined_resources: quarantined,
+                                    };
+                                    let pool = pool.clone();
+                                    // Best-effort, off the stream path.
+                                    tokio::spawn(async move {
+                                        if let Err(e) =
+                                            fp_storage::repos::xds_nacks::record(&pool, &record)
+                                                .await
+                                        {
+                                            tracing::error!("failed to persist NACK: {e}");
+                                        }
+                                    });
+                                }
                             }
                             state.subscribed = true;
                             continue;

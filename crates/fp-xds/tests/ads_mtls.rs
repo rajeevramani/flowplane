@@ -258,8 +258,9 @@ async fn start_server(
         serve_mtls(
             addr,
             cache,
-            Arc::new(CertRegistryResolver::new(pool)),
+            Arc::new(CertRegistryResolver::new(pool.clone())),
             bus,
+            pool,
             &tls,
             std::future::pending(),
         )

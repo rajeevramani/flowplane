@@ -13,6 +13,7 @@ pub mod resources;
 pub mod routes;
 pub mod state;
 pub mod throttle;
+pub mod xds_api;
 
 pub use error::ApiError;
 pub use routes::build_router;

@@ -18,12 +18,12 @@ pub const CLUSTER_TYPE_URL: &str = "type.googleapis.com/envoy.config.cluster.v3.
 pub const ROUTE_TYPE_URL: &str = "type.googleapis.com/envoy.config.route.v3.RouteConfiguration";
 pub const LISTENER_TYPE_URL: &str = "type.googleapis.com/envoy.config.listener.v3.Listener";
 
-/// One resource type's serving state for one team.
+/// One resource type's serving state for one team (the external, per-stream view).
 #[derive(Debug, Clone, Default)]
 pub struct ResourceSet {
-    /// Monotonic per-type version; bumps only when `resources` bytes change.
+    /// Monotonic per-type version; bumps only when the served bytes change.
     pub version: u64,
-    /// Encoded resources, sorted by name (deterministic responses).
+    /// Encoded resources, sorted by name (deterministic responses, post-quarantine).
     pub resources: Vec<Any>,
 }
 
@@ -45,9 +45,151 @@ impl TeamSnapshot {
     }
 }
 
+/// A translated resource with its name retained (NACK attribution + quarantine keying).
+#[derive(Debug, Clone, PartialEq)]
+struct NamedResource {
+    name: String,
+    any: Any,
+}
+
+/// A quarantined resource: its rejected bytes and the last bytes a dataplane accepted.
+#[derive(Debug, Clone)]
+struct Quarantined {
+    /// The encoded bytes that were NACKed; serving resumes only when they change.
+    offending: Vec<u8>,
+    /// Last-known-good encoding, served in place of the offending one (spec/10 §5).
+    /// `None` when the resource was new — then it is excluded entirely.
+    last_good: Option<Any>,
+    error: String,
+}
+
+/// Internal per-type state: latest two raw generations (for NACK attribution), the
+/// quarantine map, and the served (post-quarantine) set.
+#[derive(Debug, Clone, Default)]
+struct TypeInternal {
+    version: u64,
+    /// Latest translation from the database (pre-quarantine).
+    raw: Vec<NamedResource>,
+    /// Previous raw generation — what a NACKing dataplane last accepted, best effort.
+    raw_prev: Vec<NamedResource>,
+    quarantine: HashMap<String, Quarantined>,
+    served: Vec<NamedResource>,
+}
+
+impl TypeInternal {
+    /// Install a fresh raw generation, prune stale quarantine entries (resource deleted,
+    /// or its bytes changed = operator pushed a fix), and recompute the served set.
+    /// Returns true when the served bytes changed.
+    fn install_raw(&mut self, fresh: Vec<NamedResource>) -> bool {
+        if fresh != self.raw {
+            self.raw_prev = std::mem::replace(&mut self.raw, fresh);
+        }
+        let raw = &self.raw;
+        self.quarantine.retain(|name, q| {
+            raw.iter()
+                .any(|r| r.name == *name && r.any.value == q.offending)
+        });
+        self.recompute_served()
+    }
+
+    fn recompute_served(&mut self) -> bool {
+        let served: Vec<NamedResource> = self
+            .raw
+            .iter()
+            .filter_map(|r| match self.quarantine.get(&r.name) {
+                Some(q) if r.any.value == q.offending => {
+                    q.last_good.as_ref().map(|good| NamedResource {
+                        name: r.name.clone(),
+                        any: good.clone(),
+                    })
+                }
+                _ => Some(r.clone()),
+            })
+            .collect();
+        if served != self.served {
+            self.served = served;
+            self.version += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Quarantine what changed between the two raw generations. With no previous
+    /// generation (first push or post-restart prime) attribution is impossible — persist
+    /// only, quarantine nothing (wait-for-fix, never blanket-quarantine a whole type).
+    fn apply_nack(&mut self, error: &str) -> (Vec<String>, bool) {
+        if self.raw_prev.is_empty() {
+            return (Vec::new(), false);
+        }
+        let mut named = Vec::new();
+        for resource in &self.raw {
+            let previous = self.raw_prev.iter().find(|p| p.name == resource.name);
+            let changed = match previous {
+                Some(p) => p.any.value != resource.any.value,
+                None => true, // newly added
+            };
+            let already = self
+                .quarantine
+                .get(&resource.name)
+                .is_some_and(|q| q.offending == resource.any.value);
+            if changed && !already {
+                self.quarantine.insert(
+                    resource.name.clone(),
+                    Quarantined {
+                        offending: resource.any.value.clone(),
+                        last_good: previous.map(|p| p.any.clone()),
+                        error: error.to_string(),
+                    },
+                );
+                named.push(resource.name.clone());
+            }
+        }
+        let served_changed = if named.is_empty() {
+            false
+        } else {
+            self.recompute_served()
+        };
+        (named, served_changed)
+    }
+
+    fn to_set(&self) -> ResourceSet {
+        ResourceSet {
+            version: self.version,
+            resources: self.served.iter().map(|r| r.any.clone()).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct TeamInternal {
+    clusters: TypeInternal,
+    routes: TypeInternal,
+    listeners: TypeInternal,
+}
+
+impl TeamInternal {
+    fn for_type_mut(&mut self, type_url: &str) -> Option<&mut TypeInternal> {
+        match type_url {
+            CLUSTER_TYPE_URL => Some(&mut self.clusters),
+            ROUTE_TYPE_URL => Some(&mut self.routes),
+            LISTENER_TYPE_URL => Some(&mut self.listeners),
+            _ => None,
+        }
+    }
+}
+
+/// One quarantined (degraded) resource, as surfaced to status queries.
+#[derive(Debug, Clone)]
+pub struct DegradedResource {
+    pub type_url: String,
+    pub name: String,
+    pub error: String,
+}
+
 /// The cache: team → snapshot, plus a change signal streams can await.
 pub struct SnapshotCache {
-    snapshots: RwLock<HashMap<TeamId, TeamSnapshot>>,
+    snapshots: RwLock<HashMap<TeamId, TeamInternal>>,
     /// Bumped on every snapshot change; payload is the team that changed.
     change_tx: watch::Sender<(u64, Option<TeamId>)>,
     change_seq: std::sync::atomic::AtomicU64,
@@ -74,8 +216,69 @@ impl SnapshotCache {
             .read()
             .await
             .get(&team_id)
-            .cloned()
+            .map(|internal| TeamSnapshot {
+                clusters: internal.clusters.to_set(),
+                routes: internal.routes.to_set(),
+                listeners: internal.listeners.to_set(),
+            })
             .unwrap_or_default()
+    }
+
+    /// Currently quarantined (degraded) resources for a team, all types.
+    pub async fn degraded(&self, team_id: TeamId) -> Vec<DegradedResource> {
+        let snapshots = self.snapshots.read().await;
+        let Some(internal) = snapshots.get(&team_id) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (type_url, state) in [
+            (CLUSTER_TYPE_URL, &internal.clusters),
+            (ROUTE_TYPE_URL, &internal.routes),
+            (LISTENER_TYPE_URL, &internal.listeners),
+        ] {
+            for (name, q) in &state.quarantine {
+                out.push(DegradedResource {
+                    type_url: type_url.to_string(),
+                    name: name.clone(),
+                    error: q.error.clone(),
+                });
+            }
+        }
+        out.sort_by(|a, b| (&a.type_url, &a.name).cmp(&(&b.type_url, &b.name)));
+        out
+    }
+
+    /// A dataplane NACKed `type_url` for this team: quarantine the resources that changed
+    /// since the previous generation (served set falls back to their last-good bytes) and
+    /// return their names for persistence. Streams are notified when serving changed.
+    pub async fn apply_nack(&self, team_id: TeamId, type_url: &str, error: &str) -> Vec<String> {
+        let (named, changed) = {
+            let mut snapshots = self.snapshots.write().await;
+            let Some(state) = snapshots
+                .get_mut(&team_id)
+                .and_then(|t| t.for_type_mut(type_url))
+            else {
+                return Vec::new();
+            };
+            state.apply_nack(error)
+        };
+        if !named.is_empty() {
+            metrics::counter!("fp_xds_quarantined_resources_total").increment(named.len() as u64);
+            tracing::warn!(team = %team_id, type_url, resources = ?named,
+                "quarantined NACKed resources; serving last-good bytes");
+        }
+        if changed {
+            self.notify(team_id);
+        }
+        named
+    }
+
+    fn notify(&self, team_id: TeamId) {
+        let seq = self
+            .change_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let _ = self.change_tx.send((seq, Some(team_id)));
     }
 
     /// Subscribe to change notifications (streams re-check their team on wake).
@@ -113,23 +316,29 @@ impl SnapshotCache {
         let (listeners, _) =
             fp_storage::repos::gateway::list_listeners(pool, team_id, 500, 0).await?;
 
-        let mut cluster_any = Vec::with_capacity(clusters.len());
+        let mut cluster_named = Vec::with_capacity(clusters.len());
         for cluster in &clusters {
             let proto = translate::cluster_to_proto(&cluster.name, &cluster.spec)?;
-            cluster_any.push(Any {
-                type_url: CLUSTER_TYPE_URL.to_string(),
-                value: proto.encode_to_vec(),
+            cluster_named.push(NamedResource {
+                name: cluster.name.clone(),
+                any: Any {
+                    type_url: CLUSTER_TYPE_URL.to_string(),
+                    value: proto.encode_to_vec(),
+                },
             });
         }
-        let mut route_any = Vec::with_capacity(route_configs.len());
+        let mut route_named = Vec::with_capacity(route_configs.len());
         for rc in &route_configs {
             let proto = translate::route_config_to_proto(&rc.name, &rc.spec)?;
-            route_any.push(Any {
-                type_url: ROUTE_TYPE_URL.to_string(),
-                value: proto.encode_to_vec(),
+            route_named.push(NamedResource {
+                name: rc.name.clone(),
+                any: Any {
+                    type_url: ROUTE_TYPE_URL.to_string(),
+                    value: proto.encode_to_vec(),
+                },
             });
         }
-        let mut listener_any = Vec::with_capacity(listeners.len());
+        let mut listener_named = Vec::with_capacity(listeners.len());
         for listener in &listeners {
             // Listeners without a bound route config cannot serve; they stay out of the
             // snapshot rather than producing a NACK-able resource.
@@ -139,9 +348,12 @@ impl SnapshotCache {
                 continue;
             }
             let proto = translate::listener_to_proto(&listener.name, &listener.spec)?;
-            listener_any.push(Any {
-                type_url: LISTENER_TYPE_URL.to_string(),
-                value: proto.encode_to_vec(),
+            listener_named.push(NamedResource {
+                name: listener.name.clone(),
+                any: Any {
+                    type_url: LISTENER_TYPE_URL.to_string(),
+                    value: proto.encode_to_vec(),
+                },
             });
         }
 
@@ -149,16 +361,12 @@ impl SnapshotCache {
         {
             let mut snapshots = self.snapshots.write().await;
             let entry = snapshots.entry(team_id).or_default();
-            for (set, fresh) in [
-                (&mut entry.clusters, cluster_any),
-                (&mut entry.routes, route_any),
-                (&mut entry.listeners, listener_any),
+            for (state, fresh) in [
+                (&mut entry.clusters, cluster_named),
+                (&mut entry.routes, route_named),
+                (&mut entry.listeners, listener_named),
             ] {
-                if set.resources != fresh {
-                    set.resources = fresh;
-                    set.version += 1;
-                    changed = true;
-                }
+                changed |= state.install_raw(fresh);
             }
         }
 
@@ -431,5 +639,107 @@ mod tests {
             primed.clusters.resources, after.clusters.resources,
             "primed snapshot matches the event-driven one byte for byte"
         );
+    }
+
+    #[tokio::test]
+    async fn nack_quarantine_serves_last_good_until_a_fix_arrives() {
+        let Some((pool, team, _, ctx, _)) = world().await else {
+            return;
+        };
+        let cache = SnapshotCache::new();
+        let upstream = unique("upstream");
+        fp_core::services::clusters::create_cluster(
+            &pool,
+            &ctx,
+            team,
+            &upstream,
+            cluster_spec("10.0.0.1"),
+            RequestId::generate(),
+        )
+        .await
+        .expect("cluster");
+        cache.rebuild_team(&pool, team.id).await.expect("rebuild");
+        let initial = cache.team(team.id).await.clusters;
+
+        // A NACK on the FIRST generation cannot be attributed: nothing is quarantined
+        // (never blanket-quarantine a whole type).
+        let quarantined = cache
+            .apply_nack(team.id, CLUSTER_TYPE_URL, "first push rejected")
+            .await;
+        assert!(quarantined.is_empty(), "no previous generation, no blame");
+        assert!(cache.degraded(team.id).await.is_empty());
+
+        // Update the cluster, then a dataplane NACKs the new bytes: the changed resource
+        // is quarantined and serving falls back to the last-good bytes.
+        fp_core::services::clusters::update_cluster(
+            &pool,
+            &ctx,
+            team,
+            &upstream,
+            cluster_spec("10.0.0.2"),
+            1,
+            RequestId::generate(),
+        )
+        .await
+        .expect("update");
+        cache.rebuild_team(&pool, team.id).await.expect("rebuild");
+        let updated = cache.team(team.id).await.clusters;
+        assert_ne!(updated.resources, initial.resources);
+
+        let quarantined = cache
+            .apply_nack(
+                team.id,
+                CLUSTER_TYPE_URL,
+                "Proto constraint validation failed",
+            )
+            .await;
+        assert_eq!(quarantined, vec![upstream.clone()]);
+        let degraded = cache.degraded(team.id).await;
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(degraded[0].name, upstream);
+        let rolled_back = cache.team(team.id).await.clusters;
+        assert!(
+            rolled_back.version > updated.version,
+            "quarantine produces a new pushable version"
+        );
+        assert_eq!(
+            rolled_back.resources, initial.resources,
+            "served bytes are the last-good generation"
+        );
+
+        // Re-NACKing the corrected set must not loop: nothing new to quarantine.
+        let version_after_rollback = rolled_back.version;
+        let again = cache
+            .apply_nack(team.id, CLUSTER_TYPE_URL, "still unhappy")
+            .await;
+        assert!(
+            again.is_empty(),
+            "rollback bytes match last-good: no new blame"
+        );
+        assert_eq!(
+            cache.team(team.id).await.clusters.version,
+            version_after_rollback
+        );
+
+        // An operator fix (any byte change) clears the quarantine and serves fresh.
+        fp_core::services::clusters::update_cluster(
+            &pool,
+            &ctx,
+            team,
+            &upstream,
+            cluster_spec("10.0.0.3"),
+            2,
+            RequestId::generate(),
+        )
+        .await
+        .expect("fix");
+        cache.rebuild_team(&pool, team.id).await.expect("rebuild");
+        assert!(
+            cache.degraded(team.id).await.is_empty(),
+            "fix clears quarantine"
+        );
+        let fixed = cache.team(team.id).await.clusters;
+        assert_ne!(fixed.resources, initial.resources);
+        assert_ne!(fixed.resources, updated.resources);
     }
 }

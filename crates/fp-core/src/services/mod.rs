@@ -7,6 +7,7 @@ pub mod gateway;
 pub mod orgs;
 pub mod quota;
 pub mod teams;
+pub mod xds_status;
 
 use crate::authz::{PrincipalCtx, Reason};
 use fp_domain::authz::{Action, Resource};

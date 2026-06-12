@@ -82,7 +82,15 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
     - [x] integration tests over real TLS (openssl-minted PKI): registry team binding wins over
           SAN/node-id claims; mid-stream revocation kill + reconnect rejection; unregistered,
           expired, and certificate-less connections rejected
-  - [ ] S5.5 ACK/NACK + per-resource quarantine + degraded status surfaced
+  - [x] S5.5 ACK/NACK + per-resource quarantine + degraded status surfaced
+    - [x] snapshot cache holds named resources + one generation of history; NACK quarantines
+          exactly what changed (serves last-good bytes, or holds out new resources); operator
+          fix (any byte change) clears quarantine; first-generation NACKs persist-only (no
+          blanket quarantine); corrected set pushed on the same stream
+    - [x] migration 0007 xds_nack_events + repo (stream-side insert, org resolved in SQL);
+          GET /api/v1/teams/{team}/xds/nacks (Stats:Read; 33 documented ops)
+    - [x] tests: quarantine semantics unit test; live-gRPC NACK → corrected push →
+          persistence → fix-rejoins; metric fp_xds_quarantined_resources_total
   - [x] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
     - [x] xDS pipeline wired into `flowplane serve` (outbox consumer + dev-mode plaintext ADS listener)
     - [x] `scripts/e2e-envoy.sh` (real Envoy via docker, or Tetrate static binary fallback) — three

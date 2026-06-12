@@ -28,11 +28,12 @@ fn openapi_document_covers_every_registered_operation() {
     for item in paths.values() {
         operations += item.as_object().map(|o| o.len()).unwrap_or(0);
     }
-    // whoami + 3 resources x 5 + 9 team/member/grant + 7 org operations. Updating this pin
-    // is a deliberate speed bump when the surface changes: the doc IS the contract.
+    // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 1 xds-nacks operations.
+    // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
+    // the contract.
     assert_eq!(
-        operations, 32,
-        "expected 32 documented operations, got {operations}"
+        operations, 33,
+        "expected 33 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     for path in [

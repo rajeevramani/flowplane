@@ -104,12 +104,14 @@ pub async fn run() -> anyhow::Result<()> {
         };
         let resolver = std::sync::Arc::new(fp_xds::ads::CertRegistryResolver::new(pool.clone()));
         let revocations = revocation_tx.clone();
+        let nack_pool = pool.clone();
         tokio::spawn(async move {
             if let Err(e) = fp_xds::server::serve_mtls(
                 xds_addr,
                 cache,
                 resolver,
                 revocations,
+                nack_pool,
                 &tls,
                 std::future::pending(),
             )
@@ -121,11 +123,13 @@ pub async fn run() -> anyhow::Result<()> {
     } else if config.dev_mode {
         let cache = snapshot_cache.clone();
         let xds_addr = config.xds_addr;
+        let nack_pool = pool.clone();
         tokio::spawn(async move {
             if let Err(e) = fp_xds::server::serve_plaintext(
                 xds_addr,
                 cache,
                 std::sync::Arc::new(fp_xds::ads::NodeIdTeamResolver),
+                Some(nack_pool),
                 std::future::pending(),
             )
             .await
