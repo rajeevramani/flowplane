@@ -40,7 +40,7 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
 - **Recommendation:** Option 1; v1.0 ships Prometheus-consumable metrics anyway (production
   readiness), so charts belong there. Proceeding per D-003 unless vetoed.
 
-## Q-003: Design-partner profile — OPEN
+## Q-003: Design-partner profile — ANSWERED (founder: go with recommendation defaults, 2026-06-12)
 
 - **Decision needed:** Target environment, LLM providers in use, and rough scale (teams,
   dataplanes, routes, traffic) of the design partner.
@@ -50,7 +50,7 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
   Anthropic + OpenAI + openai-compatible, Bedrock last; load targets = 10 teams, 20 dataplanes,
   1k routes, 5k rps observed traffic, 100 rps LLM.
 
-## Q-004: Identity-provider coupling — OPEN (recommendation being adopted in S2)
+## Q-004: Identity-provider coupling — ANSWERED (founder approved Option 1, 2026-06-12)
 
 - **Decision needed:** Must customers run Zitadel, or any OIDC IdP?
 - **Options:** (1) **Provider-agnostic OIDC core; Zitadel-specific provisioning behind a trait,
@@ -59,7 +59,7 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
   friction later.
 - **Recommendation:** Option 1; proceeding with it in S2 unless vetoed.
 
-## Q-005: v1 → v2 data migration — OPEN
+## Q-005: v1 → v2 data migration — ANSWERED (founder approved Option 1: greenfield, 2026-06-12)
 
 - **Decision needed:** Does any existing v1 deployment (demo environments, early users) need its
   data migrated to v2?
@@ -67,3 +67,19 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
   installs)**; (2) v1-import command added to S12 (real effort, only if a migrating install
   exists).
 - **Recommendation:** Option 1 unless you name an install that must migrate.
+
+## Q-006: v2 repository license — PROCEEDED-PROVISIONAL
+
+- **Decision needed:** v1 is MIT; v2 has no LICENSE file. Business decision.
+- **Options:** (1) **No license file = all rights reserved; decide before any public release
+  (recommended)**; (2) MIT like v1 — adoption-friendly, gives the rewrite away; (3) BSL/fair-
+  source — middle ground, needs legal review.
+- **Proceeding with (1)**; flagged in production-readiness as a pre-release checklist item.
+
+## Q-007: Implementation review workflow — PROCEEDED-PROVISIONAL
+
+- **Decision needed:** How the founder reviews Phase 2 work.
+- **Options:** (1) **Single branch, commit-per-checkpoint, notify-only milestones after S4
+  (OpenAPI diff), S7 (CLI demo), S9 (loop E2E) (recommended)**; (2) PR per slice — formal but
+  costs founder time; (3) silent until done — risky.
+- **Proceeding with (1).**
