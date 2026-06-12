@@ -1,0 +1,30 @@
+[package]
+name = "flowplane"
+description = "Flowplane control plane and CLI binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "flowplane"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+axum-server = { workspace = true }
+clap = { workspace = true }
+fp-api = { workspace = true }
+fp-core = { workspace = true }
+fp-domain = { workspace = true }
+fp-storage = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

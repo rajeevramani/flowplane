@@ -1,0 +1,19 @@
+[package]
+name = "fp-storage"
+description = "Flowplane storage: SQLx repositories (team-scoped by construction), migrations, outbox."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[dependencies]
+fp-domain = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

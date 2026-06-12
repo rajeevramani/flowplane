@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = ["crates/fp-domain", "crates/fp-core", "crates/fp-storage", "crates/fp-api", "crates/flowplane"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license-file = "LICENSE-PENDING.md"
+publish = false
+
+[workspace.dependencies]
+fp-domain = { path = "crates/fp-domain" }
+fp-core = { path = "crates/fp-core" }
+fp-storage = { path = "crates/fp-storage" }
+fp-api = { path = "crates/fp-api" }
+
+anyhow = "1"
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.17", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "chrono", "uuid", "json", "macros"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
+toml = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"

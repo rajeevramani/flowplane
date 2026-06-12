@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: flowplane_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Tests (unit + integration against real PostgreSQL)
+        env:
+          FLOWPLANE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowplane_test
+        run: cargo test --workspace
+      - name: Boot smoke (fresh DB, plaintext opt-in, health + request-id checks)
+        env:
+          FLOWPLANE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowplane_test
+          FLOWPLANE_API_INSECURE: "true"
+          FLOWPLANE_API_ADDR: 127.0.0.1:8080
+        run: |
+          cargo build --bin flowplane
+          ./target/debug/flowplane serve &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          curl -fsS http://127.0.0.1:8080/readyz
+          # request id present on responses, echoed when supplied, and in error envelope
+          RID=$(curl -fsS -D - -o /dev/null http://127.0.0.1:8080/healthz | tr -d '\r' | awk -F': ' '/^x-request-id/ {print $2}')
+          test -n "$RID"
+          BODY=$(curl -fsS http://127.0.0.1:8080/nope || true)
+          echo "$BODY" | grep -q '"code":"not_found"'
+          echo "$BODY" | grep -q '"request_id"'
+          kill $SERVER_PID
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo-deny (licenses, advisories, bans)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

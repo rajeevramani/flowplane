@@ -68,7 +68,7 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
   exists).
 - **Recommendation:** Option 1 unless you name an install that must migrate.
 
-## Q-006: v2 repository license — PROCEEDED-PROVISIONAL
+## Q-006: v2 repository license — ANSWERED (founder approved Option 1, 2026-06-12)
 
 - **Decision needed:** v1 is MIT; v2 has no LICENSE file. Business decision.
 - **Options:** (1) **No license file = all rights reserved; decide before any public release
@@ -76,7 +76,7 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
   source — middle ground, needs legal review.
 - **Proceeding with (1)**; flagged in production-readiness as a pre-release checklist item.
 
-## Q-007: Implementation review workflow — PROCEEDED-PROVISIONAL
+## Q-007: Implementation review workflow — ANSWERED (founder approved Option 1, 2026-06-12)
 
 - **Decision needed:** How the founder reviews Phase 2 work.
 - **Options:** (1) **Single branch, commit-per-checkpoint, notify-only milestones after S4
