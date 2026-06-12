@@ -27,16 +27,25 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 
 ## Phase 1 — Target architecture (after founder gate)
 
-- [ ] `spec/10-v2-architecture.md` — modules, layering, loop integration design, lifecycle state machine
-- [ ] `spec/12-cli-design.md` — command tree, global flags, error style, worked transcripts (both loop directions)
-- [ ] `spec/11-slice-plan.md` — ordered vertical slices with exit criteria
-- [ ] Phase 1 exit: slice plan covers 100% of Phase 0 surface → **STOP, founder gate**
+- [x] `spec/10-v2-architecture.md` — workspace layering, ApiDefinition aggregate, lifecycle, outbox events
+- [x] `spec/12-cli-design.md` — command tree, output/error contracts, transcripts (both loop directions)
+- [x] `spec/11-slice-plan.md` — 12 slices with exit criteria + 100% coverage check
+- [x] Phase 1 exit → **STOPPED at founder gate (10, 11, 12 review)**
 
-## Phase 2..N — Implementation
+## Phase 2..N — Implementation (after founder gate; details in spec/11)
 
-Slices to be enumerated in `spec/11-slice-plan.md` (suggested shape: skeleton → auth/teams →
-domain+storage → REST → xDS → secrets/SDS → CLI core → learning both directions → AI gateway →
-MCP server → hardening). This section gets one checkbox per slice once the plan is written.
+- [ ] S1 Skeleton & quality gates
+- [ ] S2 Identity, teams, authz backbone
+- [ ] S3 Gateway domain + storage + outbox events
+- [ ] S4 REST API core + OpenAPI generation (+ v1 contract diff)
+- [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine
+- [ ] S6 Secrets/SDS, proxy certs, dataplanes
+- [ ] S7 CLI core (+ commands for S2–S6)
+- [ ] S8 Learning config-first
+- [ ] S9 Learning traffic-first
+- [ ] S10 AI gateway
+- [ ] S11 MCP server + tools
+- [ ] S12 Hardening, production readiness, v1.0.0 tag
 
 ## Notes
 
