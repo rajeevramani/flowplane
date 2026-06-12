@@ -7,6 +7,7 @@ pub mod config;
 pub mod dev;
 pub mod oidc;
 
-pub use authz::{check_resource_access, Decision, GrantSet, PrincipalCtx, Reason, TeamRef};
+pub use authz::{check_resource_access, Decision, GrantSet, PrincipalCtx, Reason};
 pub use config::ServerConfig;
+pub use fp_domain::authz::TeamRef;
 pub use oidc::{OidcConfig, OidcValidator, ValidatedClaims};

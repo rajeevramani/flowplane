@@ -14,18 +14,9 @@
 //! * Decisions return a [`Reason`] so audit rows can say *why* (08a §6 requires denials
 //!   to be audited with cause).
 
-use fp_domain::authz::{Action, Resource};
+use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::{AgentId, AgentKind, OrgId, OrgRole, TeamId, UserId};
 use std::collections::HashSet;
-
-/// A team reference with its owning org, as resolved from the database by the caller.
-/// Constructing one for a team that does not exist is the caller's bug; the storage layer
-/// returns `not_found` before the engine is consulted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TeamRef {
-    pub id: TeamId,
-    pub org_id: OrgId,
-}
 
 /// The principal's grant rows, keyed exactly like the `grants` table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

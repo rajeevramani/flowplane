@@ -4,6 +4,8 @@
 //! event outbox. Repository methods will require a `TeamScope` — there is no unscoped query
 //! API outside the platform-admin module (spec/10 §4).
 
+pub mod repos;
+pub mod scope;
 pub mod seed;
 
 use fp_domain::{DomainError, DomainResult};

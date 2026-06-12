@@ -6,7 +6,17 @@
 //! The decision engine itself lives in `fp-core::authz`.
 
 use crate::error::{DomainError, DomainResult};
+use crate::id::{OrgId, TeamId};
 use serde::{Deserialize, Serialize};
+
+/// A team reference carrying its owning org, as resolved from the database. The
+/// authorization engine takes this (not a bare TeamId) so the cross-org check is part of
+/// every decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TeamRef {
+    pub id: TeamId,
+    pub org_id: OrgId,
+}
 
 /// Every authorizable resource kind. The enum grows as slices add subsystems; variants are
 /// never removed or renamed (grant rows reference them by wire string).

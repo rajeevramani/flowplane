@@ -715,14 +715,17 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "fp-domain",
+ "fp-storage",
  "jsonwebtoken",
  "reqwest",
  "rsa",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -741,7 +744,9 @@ name = "fp-storage"
 version = "0.1.0"
 dependencies = [
  "fp-domain",
+ "metrics",
  "rustls",
+ "serde_json",
  "sqlx",
  "tokio",
  "tracing",

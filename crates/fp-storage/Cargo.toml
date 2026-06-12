@@ -9,7 +9,9 @@ publish.workspace = true
 
 [dependencies]
 fp-domain = { workspace = true }
+metrics = { workspace = true }
 rustls = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }

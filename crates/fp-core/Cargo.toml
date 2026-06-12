@@ -15,6 +15,7 @@ dev-oidc = ["dep:rsa"]
 [dependencies]
 chrono = { workspace = true }
 fp-domain = { workspace = true }
+fp-storage = { workspace = true }
 jsonwebtoken = { workspace = true }
 rsa = { workspace = true, optional = true }
 reqwest = { workspace = true }
@@ -26,6 +27,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 rsa = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true
