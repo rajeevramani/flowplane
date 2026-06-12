@@ -27,15 +27,16 @@ owned by some slice.
 error taxonomy + `{code,message,hint,request_id}` envelope; sqlx migrations runner;
 `/healthz`+`/readyz`; observability foundation per 10 §8a (JSON `tracing` logging with
 request_id/team_id fields + redaction boundary, OTel tracing init + W3C propagation,
-Prometheus `/metrics` endpoint); CI: fmt, clippy `-D warnings`, tests, sqlx-offline check,
-deny(unwrap). **Exit:** server boots against fresh Postgres, health green, a request's
+Prometheus `/metrics` endpoint); native-TLS-capable API listener (plaintext = explicit opt-in
+with warning, 10 §4a); CI: fmt, clippy `-D warnings`, tests, sqlx-offline check, deny(unwrap),
+cargo audit + cargo deny. **Exit:** server boots against fresh Postgres, health green, a request's
 request_id appears in error body + log line + trace, CI green on a PR.
 
 **S2 — Identity & tenancy backbone.** Orgs/teams/users/agents/memberships/grants schema
 (`team_id` naming, composite org/team FKs); Zitadel JWT validation + JWKS cache + dev-mode mock
 OIDC + seeding; `check_resource_access` as table-driven pure function (property tests vs
 spec/05 §3.1 decision table); `TeamScope`-typed repository pattern established; audit writer
-(incl. denials); per-tenant write throttle; bootstrap flow (one-shot expiring token). **Exit:**
+(incl. denials); per-tenant write throttle; bootstrap flow (one-shot expiring token); dev-mode feature+runtime gating per 10 §4a. **Exit:**
 authz property tests pass incl. the three §3.2 invariants; cross-org returns 404; audit rows
 for denials; integration tests against real Postgres.
 

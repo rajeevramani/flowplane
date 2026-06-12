@@ -95,3 +95,16 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
 - **Why better than v1:** outbound-only connectivity works on bare metal/VM/ECS/K8s alike;
   removes an entire attack surface; heartbeats give real liveness (v1 inferred it from xDS
   stream state); founder-raised gap (2026-06-12).
+
+## D-008: Native TLS on the API listener; bearer-only auth (no cookie/CSRF surface)
+
+- **Context:** v1 served REST/MCP on plaintext :8080 assuming LB termination, and carried a
+  BFF/cookie/CSRF stack for the SvelteKit UI. D-004 deployments (bare metal, ECS) may have no
+  fronting LB; v2 has no UI.
+- **Decision:** The v2 API listener supports native TLS (cert/key via config or secrets
+  subsystem); plaintext requires explicit opt-in that warns at startup. All auth is bearer
+  tokens on every surface — v1's BFF/cookie/CSRF machinery is deleted, not ported (MCP Origin
+  allowlist retained). Consolidated security architecture recorded as spec/10 §4a
+  (founder-raised, 2026-06-12).
+- **Why better than v1:** removes an entire browser-attack surface class; works without an LB
+  in any environment; smaller auth codebase with one path to test.

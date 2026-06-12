@@ -138,6 +138,45 @@ observed ──aggregation──▶ learned ──operator review──▶ revie
 - Per-tenant quotas (resources, sessions, capture volume, schema cardinality, write rate) in
   `fp-domain`, enforced in `fp-core`, configurable per team by platform admin.
 
+## 4a. Security architecture (consolidated; binding requirements in spec/08a)
+
+**Defense-in-depth summary** — where each property is enforced and where it is proven:
+
+| Property | Mechanism | Proven by |
+|---|---|---|
+| Tenant isolation (data) | `TeamScope`-typed repos, SQL predicates, composite FKs (§4) | per-slice adversarial exits + S12 full 08a §4 pass |
+| Tenant isolation (data plane) | per-team xDS snapshots from cert-bound identity (§5) | S5 adversarial cert test |
+| Tenant isolation (capture) | team-scoped injection + per-message team binding (§6) | S8 capture-poaching test |
+| AuthN | OIDC JWT (Zitadel; mock OIDC in dev) — bearer-only | S2 |
+| AuthZ | one table-driven decision engine, declared `(resource, action)` per route/tool (§4, §9) | S2 property tests vs spec/05 §3.1 |
+| Audit | every mutation + denials + auth failures, request-id linked (08a §6) | S2 + each slice's mutations |
+| Approval gates | lifecycle: nothing < `reviewed` becomes config/tools (§3.2); `--dry-run` everywhere | S9 approval-bypass test |
+
+**Transport security:**
+- xDS-family gRPC: mandatory mTLS, SPIFFE cert registry binding, live-stream revocation (§5).
+- REST/MCP API: **native TLS support on the API listener** (cert/key via config or the secrets
+  subsystem), because D-004 deployments may have no fronting LB; running plaintext requires an
+  explicit `--insecure-api` style opt-in that logs a startup warning. LB/proxy termination
+  remains the documented default for fleet deployments.
+- **No cookies, no sessions, no CSRF surface:** dropping the web UI removes v1's BFF/cookie/
+  CSRF machinery entirely; v2 is bearer-token-only on every surface (CLI, agents, MCP). MCP
+  Origin allowlist still enforced (08a §2.2.4).
+
+**Edge hardening (carried from v1's findings, on by default):** request body limits
+(per-route overrides where needed), per-tenant write throttle, security response headers,
+JSON-only error bodies, fail-closed degraded mode when auth infrastructure is unavailable.
+
+**Secrets:** encrypted at rest (KEK from env/file with documented rotation), write-only API,
+SDS-only delivery to owning team's dataplanes, one-shot reveals, audited access; AI provider
+credentials are typed secrets in the same subsystem (§7); never-log redaction boundary (§8a).
+
+**Dev-mode safety (08a §2.2.10):** dev auth/seeding compiled behind a feature flag *and*
+runtime-gated; a release build refuses dev mode unless an explicit
+`FLOWPLANE_DEV_MODE_ACK=yes-this-is-not-production` is set; bootstrap tokens one-shot+expiring.
+
+**Supply chain & release:** locked dependencies, `cargo audit`/`cargo deny` in CI (S1 gates),
+musl static binary, image signing + SBOM at release (S12); no telemetry/phone-home.
+
 ## 5. xDS subsystem (fixes 08 §2, spec/04 §8)
 
 - **Pipeline (adopted from Envoy Gateway, de-K8s'd per D-004):** domain snapshot → typed IR →
