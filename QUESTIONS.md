@@ -25,3 +25,17 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
   3. Flag-first uniformly including the server — unconventional for service deployment.
 - **Recommendation:** Option 1. The standard's intent reads as "no hardcoding, env-configurable
   deployments", not "flags lose to env". Will proceed with Option 1 in spec/12 unless vetoed.
+
+## Q-002: Cut UI-only visualization workflows? — OPEN (D-003 provisional)
+
+- **Decision needed:** Four v1 UI workflows are pure visualization (stats charts, admin KPI
+  dashboard, per-org drill-in widgets, password deep-link page). With no v2 UI, do we rebuild
+  their rendering in the CLI or cut it?
+- **Options:**
+  1. **Cut rendering, keep all data endpoints + CLI `--json`/`--watch`, add `admin health`
+     (recommended).** Operators visualize in Grafana; zero data loss, large effort savings.
+  2. Build rich TUI dashboards (`flowplane stats --dashboard`) — high effort, duplicates
+     Grafana, delays core slices.
+  3. Keep a minimal web status page — contradicts the no-UI scope decision.
+- **Recommendation:** Option 1; v1.0 ships Prometheus-consumable metrics anyway (production
+  readiness), so charts belong there. Proceeding per D-003 unless vetoed.

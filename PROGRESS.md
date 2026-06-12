@@ -22,8 +22,8 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 - [x] `spec/07-cli-and-workflows.md` — v1 CLI surface + UI workflow inventory with v2 fates
 - [x] `spec/09-prior-art.md` — Envoy Gateway/AI Gateway survey, token metering, borrow/reject calls
 - [x] `spec/08a-security-and-tenancy.md` — threat model, isolation inventory, abuse cases, v2 requirements
-- [ ] `spec/08-architecture-critique.md` — v1 critique; trace the learning↔MCP↔xDS seams
-- [ ] Phase 0 exit: all specs done → **STOP, notify founder for review gate**
+- [x] `spec/08-architecture-critique.md` — v1 critique, loop seams trace, change-difficulty index
+- [x] Phase 0 exit: all specs done → **STOPPED at founder review gate (08, 08a, 09)**
 
 ## Phase 1 — Target architecture (after founder gate)
 
