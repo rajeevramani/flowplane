@@ -53,6 +53,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S2.6 per-tenant write throttle (org-keyed, fail-closed keying, tenant-isolation test)
   - [x] S2 exit: invariant tests green, cross-org denied pre-grant, denial+authn audit rows, real-PG integration, live E2E (whoami + bootstrap)
 - [ ] S3 Gateway domain + storage + outbox events
+  - [x] S3.1 outbox: events table, transactional append, dispatcher (LISTEN/NOTIFY + poll, SKIP LOCKED cursors, trace ctx), crash-redelivery test
+  - [ ] S3.2 gateway domain types + validation (cluster/route-config/listener/filter)
+  - [ ] S3.3 schema 0004 + TeamScope repos, optimistic locking, per-team uniqueness
+  - [ ] S3.4 per-tenant quotas
+  - [ ] S3 exit: concurrent-update 409, outbox at-least-once after crash, quota test
 - [ ] S4 REST API core + OpenAPI generation (+ v1 contract diff)
 - [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine
 - [ ] S6 Secrets/SDS, proxy certs, dataplanes

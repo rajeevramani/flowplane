@@ -223,12 +223,13 @@ mod tests {
 
         // Right token: succeeds, marks initialized.
         let org_name = unique("platform");
+        let admin_subject = unique("sub-admin");
         let (org_id, admin) = initialize(
             &pool,
             &token,
             &org_name,
             "Platform",
-            "sub-admin",
+            &admin_subject,
             "a@p.test",
             RequestId::generate(),
         )
@@ -260,7 +261,7 @@ mod tests {
             .is_none());
 
         // The admin loads as platform admin through the standard principal loader.
-        let loaded = crate::repos::identity::load_principal(&pool, "sub-admin")
+        let loaded = crate::repos::identity::load_principal(&pool, &admin_subject)
             .await
             .expect("load")
             .expect("exists");
