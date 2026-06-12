@@ -637,22 +637,275 @@ instance_apps (
 
 ## 5. Repository layer (`src/storage/repositories/`)
 
-<!-- REPO-SECTION -->
+One repository module per table-cluster, 35 files. `repository_old.rs` is **dead code** (not
+imported). Persistence structs are `<Entity>Data` / `<Entity>Row` mirroring columns. Pool:
+`PgPool`, min_connections=2 (floor required: port-allocation lock + listener insert need 2
+concurrent conns), max=10 default (`src/storage/pool.rs`). Migrations tracked in
+`_flowplane_migrations` (version, description, checksum, execution_time, installed_at), each
+migration applied in its own transaction (`src/storage/migrations.rs`).
+
+### 5.1 Method surface (representative; per-repo detail)
+
+- **ClusterRepository** (`repositories/cluster.rs`): `create`, `get_by_id` (unscoped),
+  `get_by_id_scoped(id, Option<&[team_id]>)` (team predicate **in SQL** — IDOR defense,
+  fp-nw8b.21), `get_by_name` (unscoped, newest `version DESC`), `list(limit, offset)`
+  (unscoped), `list_by_teams(teams, …)` (`WHERE team IN (…) OR team IS NULL`),
+  `list_names_for_teams` (for case-insensitive name-collision checks),
+  `list_default_only` (`WHERE team IS NULL`), `update` (version+1), `delete`,
+  `delete_by_name`, `exists_by_name`, `count`, `pool()`.
+- **ListenerRepository** (`repositories/listener.rs`): same shape, plus
+  `find_by_address_port` (unscoped), `update_configuration` (version bump only),
+  `count_by_import`, and `occupied_ports()` — **uncapped** `SELECT DISTINCT port FROM
+  listeners WHERE port IS NOT NULL`; port allocators MUST use this instead of `list()`
+  because `list()` clamps to 1000 rows and would silently drop oldest listeners (fp-hxs6).
+- **RouteConfigRepository** (`repositories/route_config.rs`): same shape as clusters
+  (create/get/list/list_by_teams/list_default_only/update/delete/count_by_import).
+- **VirtualHostRepository / RouteRepository** (`repositories/virtual_host.rs`, `route.rs`):
+  CRUD keyed by parent (`list_by_route_config`, `list_by_virtual_host`,
+  `delete_by_route_config`, `delete_by_virtual_host`); `RouteRepository` adds
+  `find_routes_with_exposure` (external routes for agent grants) and
+  `get_routes_with_related_data` (joined query, avoids N+1). No team columns — scope is
+  inherited via parents.
+- **FilterRepository, SecretRepository, CustomWasmFilterRepository, McpToolRepository,
+  DataplaneRepository**: per-team CRUD (`UNIQUE(team,name)`), `list_by_teams`;
+  `DataplaneRepository` adds `create_tx` (used by team-provisioning),
+  `get_default_for_team`, `find_by_gateway_host`. Secrets are encrypted/decrypted in the
+  service layer (`SecretEncryption`); repository stores ciphertext+nonce only.
+- **TeamRepository** (`repositories/team.rs`): `create_team`/`create_team_tx`,
+  get by id/name/`(org,name)`, `resolve_id_in_org`, `resolve_team_ids`/`resolve_team_names`
+  (id↔name mapping for the team-as-id columns), `is_name_available_in_org`, list/update/delete.
+- **UserRepository** (`repositories/user.rs`): CRUD + `find_by_zitadel_sub`,
+  `upsert_from_jwt` (JIT provisioning), `find_machine_users_by_org`,
+  `list_machine_agents_with_teams_in_org`; membership inserts use
+  `INSERT … SELECT FROM UNNEST($1::text[],…) ON CONFLICT (user_id, team) DO NOTHING`
+  (batch, empty-array-safe).
+- **OrganizationRepository, GrantRepository, MachineUserRepository**: org CRUD with member
+  management; grant create/list-for-principal/delete/check-access scoped by org_id/team_id.
+- **RateLimitRepository** (`repositories/rate_limit.rs`): see §5.3/§6 — gold standard.
+- **AuditLogRepository** (`repositories/audit_log.rs`): append + `list`/`list_by_org`/
+  `list_by_team` with resource_type/action/time filters; severity derived at read time.
+- **NackEventRepository, ProxyCertificateRepository** (incl. `get_by_spiffe_uri` point
+  lookup), **LearningSessionRepository, InferredSchemaRepository,
+  AggregatedSchemaRepository, ImportMetadataRepository, ClusterReferencesRepository,
+  RouteMetadataRepository, InstanceAppRepository**: straightforward CRUD per their tables.
+- **ReportingRepository** (`repositories/reporting.rs`, read-only): topology/route-flow/
+  orphan-cluster/orphan-route-config queries joining across gateway tables.
+- **AdminGovernanceRepository / AdminSummaryRepository**: cross-org aggregates
+  (audit volume per org, filter-type counts, last activity, resource counts per team) —
+  intentionally cross-tenant, admin-scope-gated at the handler.
+
+### 5.2 Pagination
+
+`limit.unwrap_or(100).min(1000)`, `offset.unwrap_or(0)`, OFFSET-based (no cursors), typical
+ordering `created_at DESC` (audit/teams sometimes by name/updated_at). The 1000-row clamp is
+why `occupied_ports()` exists as a dedicated uncapped query.
+
+### 5.3 Transactions
+
+Most CRUD is single-statement autocommit. Explicit transactions exist for:
+
+| Flow | Invariant protected |
+|---|---|
+| `TeamRepository::create_team_tx` (`team.rs` ~L214) | team INSERT + envoy_admin_port allocation (`SELECT COALESCE(MAX(envoy_admin_port), $base - 1) + 1`) + caller-added memberships/grants/default dataplane commit or roll back together; rolled-back port is naturally re-issued |
+| `DataplaneRepository::create_tx` | default dataplane (`is_default=true`) co-provisioned atomically with team creation (invariant D8) |
+| Org creation (`organization.rs`) | org + initial team + memberships (UNNEST batch insert) |
+| `RateLimitRepository::begin_tx` + mutation methods taking `&mut Transaction` | rate-limit mutation and its audit-log INSERT share one tx; **if audit insert fails the mutation rolls back** ("§14.1 audit-rollback rule") |
+| User/membership/grant provisioning (`user.rs`, `grant.rs`, `machine_user.rs`) | JIT user + memberships + grants |
+
+Notably **not** transactional: gateway-resource update + `virtual_hosts`/`routes`/
+`cluster_endpoints` projection sync, and filter attach + `listener_auto_filters` maintenance
++ listener `update_configuration` — these are sequential statements (see §8).
+
+### 5.4 Versioning & concurrency in SQL
+
+- Gateway resources: read-modify-write — fetch row, `new_version = current.version + 1`,
+  `UPDATE … SET version = $new` **without** `WHERE version = $old`. Lost-update window under
+  concurrency (last writer wins, version still increments).
+- Rate limit: true optimistic locking — every UPDATE/soft-delete has
+  `WHERE id=$1 AND team=$2 AND org=$3 AND version=$expected`; 0 rows →
+  `MutationOutcome::VersionMismatch { current_version }` → HTTP 409 with current version.
+- Timestamps are **app-supplied** (`chrono::Utc::now()` bound on insert/update); the DB
+  defaults exist but are not relied on by repositories.
 
 ---
 
 ## 6. Team-isolation rules
 
-<!-- TEAM-SECTION -->
+### 6.1 Which tables carry team ownership
+
+| Tables | Team column | Nullability | FK target / on delete |
+|---|---|---|---|
+| `clusters`, `route_configs`, `listeners` | `team` (stores **team id**) | **NULLABLE** — NULL = shared/default resource visible to every team | teams(id) RESTRICT |
+| `filters`, `secrets`, `custom_wasm_filters` | `team` | NOT NULL | teams(id) RESTRICT |
+| `mcp_tools`, `dataplanes`, `import_metadata`, `learning_sessions`, `aggregated_api_schemas`, `xds_nack_events`, `user_team_memberships` | `team` | NOT NULL | teams(id) CASCADE |
+| `inferred_schemas` | `team` | NOT NULL | **NO FK** (dropped in `20260207000002`; relies on session CASCADE) |
+| `proxy_certificates` | `team_id` | NOT NULL | teams(id) CASCADE |
+| `grants` | `team_id` (+ `org_id`) | NOT NULL | teams(id) CASCADE |
+| `rate_limit_domains/policies/team_overrides` | `team` + `org` | NOT NULL | teams(id)/organizations(id) CASCADE + team-in-org trigger |
+| `audit_log` | `team_id` (+ `org_id`) | NULLABLE, **no FK** | — |
+
+**Tables with NO team column** (scope only derivable through joins):
+`cluster_endpoints` (→clusters), `virtual_hosts` (→route_configs), `routes`
+(→virtual_hosts→route_configs), all four filter junctions, `listener_route_configs`,
+`listener_auto_filters`, `cluster_references`, `route_metadata` (→routes),
+`instance_apps` (instance-global by design), `users`/`organizations` (tenancy roots).
+
+### 6.2 Which queries scope by team — and which DON'T
+
+Scoped-in-SQL (safe by construction):
+
+- `*Repository::list_by_teams(...)` — `WHERE team IN (…) OR team IS NULL` (clusters,
+  route_configs, listeners) / `WHERE team IN (…)` (filters, secrets, mcp_tools, dataplanes,
+  etc.). Empty team list short-circuits to `Ok(vec![])` **in Rust**, not SQL.
+- `ClusterRepository::get_by_id_scoped(id, teams)` — id + team predicate in one WHERE.
+- **All** RateLimitRepository reads/updates/soft-deletes: `WHERE id=$1 AND org=$2 AND
+  team=$3 [AND deleted_at IS NULL]`. Cross-tenant access yields 404 (never 403) —
+  the "404-vs-403 disclosure rule".
+- `audit_log` `list_by_org` / `list_by_team`.
+
+**UNSCOPED queries on team-owning tables — flag for security spec (spec/08):**
+
+| Method | Risk |
+|---|---|
+| `get_by_id` on clusters/listeners/route_configs/secrets/filters/dataplanes | returns any team's row given the UUID; tenant check happens in the **handler** (`verify_team_access()`), not SQL |
+| `get_by_name` on clusters/listeners/route_configs/secrets/filters | names are globally unique, so any team can probe existence of another team's resource name; handler must scope |
+| `list()` / `count()` / `exists_by_name()` / `delete_by_name()` on the same repos | unscoped admin/xDS paths; `delete_by_name` is an unscoped destructive operation |
+| `ListenerRepository::occupied_ports()`, `find_by_address_port()` | intentionally global (port allocation), leaks port occupancy across teams |
+| Reporting/AdminSummary/AdminGovernance queries | intentionally cross-tenant; gated only by admin scopes at handler |
+
+The v1 model is therefore **two-layer**: SQL-level isolation only for rate-limit (and
+`get_by_id_scoped`), handler-level `verify_team_access()` everywhere else. Single missed
+handler check = cross-tenant read/write. The v2 rewrite should make the
+scoped-predicate-in-SQL pattern (rate-limit style) the default for all team-owned tables.
+
+### 6.3 Org-level isolation
+
+Only `grants`, `rate_limit_*`, and `audit_log` carry `org_id`. Gateway resources are
+team-scoped only; org isolation is transitive via `teams.org_id` (NOT NULL, RESTRICT).
+The rate-limit tables additionally enforce team∈org with the
+`assert_team_belongs_to_org()` BEFORE INSERT/UPDATE trigger — no other table does
+(a `grants` row could in principle pair a team_id with the wrong org_id; only app code
+prevents it).
 
 ---
 
 ## 7. Shared validation (`src/validation/`)
 
-<!-- VALIDATION-SECTION -->
+### 7.1 Shared validators (`src/validation/mod.rs`)
+
+| Validator | Exact rule |
+|---|---|
+| `validate_name` | regex `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, length 1–100 (`RESOURCE_NAME_MAX_LEN = 100`). Error: "names must start with a lowercase letter and contain only lowercase letters, digits, and single hyphens between alphanumeric segments". Applied to teams, orgs, clusters, listeners, route configs, filters, dataplanes, scope segments. `name_string_schema()` emits the same rule as JSON Schema for MCP tools; parity tests pin it against UI constants. |
+| `validate_host` | regex `^[a-zA-Z0-9.-]+$` |
+| `validate_port_nonzero` | 1–65535 (upstream/endpoint ports) |
+| `validate_listener_port` | **≥ 1024** (`LISTENER_PORT_MIN = 1024`) — unprivileged-dataplane invariant; error "must be >= 1024 (privileged ports are forbidden)". Single source of truth shared by REST handlers and MCP tools. |
+| `validate_upstream` | no whitespace; expected `[http[s]://]host:port[/path]` |
+
+### 7.2 Business rules (`src/validation/business_rules/`)
+
+- **Cluster** (`business_rules/cluster.rs`):
+  - health check: `timeout_seconds` 1–60 **and < interval**, `interval_seconds` 1–300,
+    `healthy_threshold`/`unhealthy_threshold` 1–10; path must start with `/`, no `..`,
+    ≤ 200 chars.
+  - circuit breaker: max_connections/max_pending_requests/max_requests 1–10000,
+    max_retries ≤ 10.
+  - outlier detection: consecutive_5xx 1–1000, interval 1–300s, base_ejection 1–3600s,
+    max_ejection_percent 1–100, min_hosts 1–100.
+  - endpoint weights: cannot mix weighted and unweighted endpoints; each weight 1–1000;
+    total ≤ 10000.
+  - naming: reserved prefixes `envoy-`, `xds-`, `internal-`, `system-`; case-insensitive
+    uniqueness against `ClusterRepository::list_names_for_teams` (checked pre-insert in
+    handler — racy, no DB constraint; global `clusters.name UNIQUE` only catches exact case).
+- **Listener** (`business_rules/listener.rs`): address non-empty and valid IPv4 / bare IPv6
+  (no `[…]`) / hostname (labels 1–63 chars, alnum+hyphen, no edge hyphens, no `..`, `*.`
+  wildcard prefix allowed; malformed IPv4 like `256.…` rejected); port 1–65535 AND ≥ 1024.
+- **Route** (`business_rules/route.rs`): `uri_template_rewrite` only with UriTemplate
+  matching; `prefix_rewrite` never with UriTemplate; not both rewrites at once.
+  Virtual-host domains: 1–50 per vhost, each 1–253 chars, valid format or literal `"*"`,
+  case-insensitive deduplication.
+- Helpers (`business_rules/helpers.rs`): `is_valid_domain_format`, `is_valid_address_format`.
+
+### 7.3 Where validation is enforced (and where it isn't)
+
+- REST handlers (`src/api/handlers/clusters/…`) and MCP tools (`src/mcp/tools/…`) both call
+  business-rule validators directly before repository writes.
+- The internal API (`src/internal_api/clusters.rs`) validates via domain
+  `ClusterSpec::validate_model()`, **not** the validation module — different rule set.
+- **The `src/validation/requests/` layer is dead scaffolding**: `ValidatedCreateClusterRequest`
+  etc. (name ≤ 50, endpoints 1–20, etc.) reference custom validators
+  (`validate_cluster_name`, `validate_address`, `validate_listener_name`,
+  `validate_route_name`, `validate_lb_policy`, `validate_http_methods`,
+  `validate_path_with_match_type`, type `PathMatchType`) that **do not exist** in the
+  codebase, and the structs are never instantiated by handlers. Its limits also contradict
+  the live rules (name max 50 vs 100). Do **not** carry these structs into v2; carry the
+  business rules.
 
 ---
 
 ## 8. Gaps and smells (feeds spec/08)
 
-<!-- GAPS-SECTION -->
+1. **Handler-enforced tenancy.** Team isolation for most tables lives in handler-level
+   `verify_team_access()` calls over unscoped `get_by_id`/`get_by_name`/`list` SQL (§6.2).
+   One forgotten call = cross-tenant leak. Only rate-limit (and `get_by_id_scoped`) push the
+   predicate into SQL.
+2. **`team` column holds an ID but is named `team`.** After `20260207000002` every `team`
+   column stores `teams.id`; `proxy_certificates` uses `team_id`; `grants` uses `team_id`;
+   `xds_nack_events` was converted late (`20260415000001`) precisely because writer used the
+   name while reader used the id and `flowplane xds nacks` silently returned 0 rows. Naming
+   inconsistency caused a real bug; v2 should name the column `team_id` everywhere.
+3. **Global (not per-team) uniqueness of gateway resource names** (`clusters.name`,
+   `route_configs.name`, `listeners.name` UNIQUE): teams can squat/probe each other's names;
+   `get_by_name` is unscoped. Also a vestigial `UNIQUE(name, version)` from 2024 that no
+   longer means anything (no version history rows).
+4. **Read-modify-write version bumps without optimistic locking** on
+   clusters/route_configs/listeners/filters/secrets — concurrent updates silently lose one
+   write. Rate-limit shows the correct pattern (`WHERE version = $expected` → 409).
+5. **Denormalized JSON vs projection tables.** `route_configs.configuration` JSON and the
+   `virtual_hosts`/`routes` tables, and `clusters.configuration` vs `cluster_endpoints`, are
+   synchronized by sequential statements, not one transaction — crash mid-sync leaves the
+   projection stale. Same for filter attach → `listener_auto_filters` → listener
+   `update_configuration`.
+6. **`route_configs.cluster_name` legacy column** FK→`clusters(name)` ON DELETE **CASCADE**:
+   deleting a cluster silently deletes route configs (and their whole vhost/route tree).
+   Also FK-by-name while everything else is FK-by-id.
+7. **Nullable team = shared resource** on clusters/route_configs/listeners
+   (`team IS NULL` visible to all teams via `list_by_teams`'s `OR team IS NULL`). Implicit,
+   undocumented sharing semantics; consider an explicit visibility flag in v2.
+8. **`inferred_schemas.team` has no FK** (dropped in `20260207000002`) — orphanable.
+   `aggregated_api_schemas.previous_version_id` and `.session_id` have FKs with no ON DELETE
+   action, so deleting a learning session with surviving aggregated schemas fails (or rows
+   block deletion).
+9. **TEXT timestamps** in `proxy_certificates` (issued_at/expires_at/revoked_at/created_at)
+   and `dataplanes.certificate_expires_at` — string comparison for expiry queries.
+10. **`envoy_admin_port` allocation race**: `SELECT MAX(envoy_admin_port)+1` then INSERT
+    inside a tx; two concurrent team creations can pick the same port. The unique index
+    (`idx_teams_envoy_admin_port`) turns this into a constraint violation rather than silent
+    conflict, but there is no retry/advisory lock. Listener `(address, port)` has the same
+    check-then-insert shape, likewise rescued by its partial unique index (mapped to 409).
+11. **Cluster-name uniqueness check is case-insensitive in app code only** (DB UNIQUE is
+    case-sensitive) — TOCTOU window allows `Foo`/`foo` to coexist under concurrency.
+12. **Dead code shipped**: `src/storage/repository_old.rs` (unreferenced),
+    the entire `src/validation/requests/` layer (references nonexistent validator functions —
+    would panic/fail if ever wired), and contradictory limits between that layer and live
+    business rules.
+13. **Free-TEXT enums without CHECKs**: `users.status`, `teams.status`,
+    `learning_sessions.status`, `listeners.protocol`, `secrets.backend` rely on app
+    discipline; meanwhile sibling columns (org status, invitations role) did get CHECKs.
+    Inconsistent.
+14. **`filters.filter_type` CHECK intentionally dropped** (`20251210000001`) in favor of the
+    runtime `FilterSchemaRegistry`; DB accepts any string.
+15. **Duplicate FK** on `user_team_memberships.user_id` (declared inline in
+    `20251112000002` and again as `fk_user_team_memberships_user_id` in `20251116000002`).
+16. **`grants.created_by` FK has no ON DELETE action** — deleting any user who ever created
+    a grant fails until those grants are deleted; probably unintended.
+17. **`audit_log` org_id/team_id/user_id have no FKs** (deliberate, log must survive
+    deletes) but also no partitioning/retention policy — unbounded growth.
+18. **`instance_apps.enabled` is INTEGER 0/1**, while `mcp_tools.enabled` was migrated
+    INTEGER→BOOLEAN (`20260217000001`); same for historical INTEGER→BIGINT fixes — type
+    drift between Rust and DDL happened repeatedly; v2 should generate DDL from one source.
+19. **Migration churn as spec**: route hierarchy tables were renamed twice
+    (`routes`→`route_configs`, `route_rules`→`routes`) — any external SQL/tooling that says
+    "routes" must be checked against the post-rename meaning (a route RULE, not a route
+    config).
+20. **`users.password_hash NOT NULL`** survives even though auth moved to Zitadel
+    (`20260228100001`, `20260302000001`) — JIT-provisioned users need a placeholder hash.

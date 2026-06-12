@@ -307,7 +307,26 @@ of the REST slices.
 
 ## 4. Drift between route table and OpenAPI doc (v1 bugs to not repeat)
 
-_Filled from the generated artifact — see `§4 analysis` below._
+Measured by diffing the generated OpenAPI document against the operations actually registered in
+`build_router_with_registry` (test module excluded):
+
+- **Code registers 187 operations; the OpenAPI document describes 85.** 106 operations are
+  completely undocumented — including the entire org/team/member/grant surface, dataplanes,
+  proxy certificates, rate-limit domains/policies, ops diagnostics, stats, MCP management
+  (tools/enable/disable/bulk/apply-learned), expose/unexpose, filter attachment at every scope,
+  filter-types, admin apps/rate-limit/RLS endpoints, auth/session endpoints, and the MCP
+  protocol endpoint itself.
+- **4 operations are documented with the wrong method**: the doc claims `PUT` for
+  `/admin/teams/{id}`, `/teams/{team}/filters/{id}`, `/teams/{team}/custom-filters/{id}`, and
+  `/teams/{team}/secrets/{secret_id}`, while the code routes `PATCH`. A client generated from
+  v1's OpenAPI doc gets 405s on these.
+- Net: **the v1 OpenAPI document is true for less than half the API surface** — it covers the
+  original core-resource CRUD and learning endpoints and was not maintained as the surface grew.
+  An agent cannot operate v1 from its contract alone, which is precisely the v2 requirement.
+
+**v2 consequence (binding):** the OpenAPI document must be generated from the same source of
+truth as the router with a CI gate asserting route-table ↔ document parity (v1's `b1_admin_routes`
+drift-probe pattern, §`src/api/routes.rs` tests, shows the right idea applied to only 6 routes).
 
 ## 5. Gaps and smells (feeds spec/08)
 

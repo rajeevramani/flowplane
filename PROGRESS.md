@@ -13,11 +13,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 
 - [x] Clone v1 read-only, create PROGRESS/DECISIONS/QUESTIONS scaffolding
 - [x] `spec/00-system-overview.md` — what Flowplane is, subsystems, data flow
-- [ ] `spec/01-api-contract.md` — every REST endpoint from `src/api/`, `src/openapi/`
-- [ ] `spec/02-mcp-tools.md` — all MCP tool modules, schemas, authz, control_plane vs gateway_api
+- [x] `spec/01-api-contract.md` — every REST endpoint + exact OpenAPI artifact + drift analysis
+- [x] `spec/02-mcp-tools.md` — MCP server, 82 static tools + dynamic api_*, authz, transport
 - [ ] `spec/03-domain-model.md` — entities, invariants, team isolation, DB schema (`migrations/`)
 - [ ] `spec/04-xds.md` — listener/route/cluster/filter generation, SDS/secrets
-- [ ] `spec/05-auth.md` — Zitadel JWT flow, `check_resource_access()`, dev vs prod auth
+- [x] `spec/05-auth.md` — identity model, JWT flows, check_resource_access decision table
 - [ ] `spec/06-learning.md` — learning pipeline end to end + traffic-first gap analysis
 - [x] `spec/07-cli-and-workflows.md` — v1 CLI surface + UI workflow inventory with v2 fates
 - [ ] `spec/09-prior-art.md` — Envoy AI Gateway + Envoy Gateway survey; AI-gateway requirements input
