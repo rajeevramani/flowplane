@@ -17,6 +17,11 @@ chrono = { workspace = true }
 fp-domain = { workspace = true }
 fp-storage = { workspace = true }
 jsonwebtoken = { workspace = true }
+metrics = { workspace = true }
+opentelemetry = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
 rsa = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

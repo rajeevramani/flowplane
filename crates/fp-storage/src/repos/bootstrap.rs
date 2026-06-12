@@ -178,7 +178,7 @@ mod tests {
     use super::*;
 
     fn unique(prefix: &str) -> String {
-        format!("{prefix}-{}", &Uuid::now_v7().simple().to_string()[..12])
+        format!("{prefix}-{}", &Uuid::now_v7().simple().to_string()[20..])
     }
 
     #[tokio::test]

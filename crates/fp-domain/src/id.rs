@@ -86,6 +86,18 @@ domain_id!(
     /// Identifies a membership row (org or team).
     MembershipId
 );
+domain_id!(
+    /// Identifies a cluster (upstream backend definition).
+    ClusterId
+);
+domain_id!(
+    /// Identifies a listener.
+    ListenerId
+);
+domain_id!(
+    /// Identifies a route configuration.
+    RouteConfigId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]

@@ -13,7 +13,7 @@ use sqlx::PgPool;
 fn unique(prefix: &str) -> String {
     format!(
         "{prefix}-{}",
-        &uuid::Uuid::now_v7().simple().to_string()[..12]
+        &uuid::Uuid::now_v7().simple().to_string()[20..]
     )
 }
 
