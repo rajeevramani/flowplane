@@ -108,3 +108,16 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   (founder-raised, 2026-06-12).
 - **Why better than v1:** removes an entire browser-attack surface class; works without an LB
   in any environment; smaller auth codebase with one path to test.
+
+## D-009: CP and DP independently deployable (founder-confirmed constraint, 2026-06-12)
+
+- **Context:** Founder requires v1's property that control plane and data plane deploy,
+  scale, and upgrade independently.
+- **Decision:** Codified as spec/10 §10.1. The DP unit (Envoy + fp-agent) couples to the CP
+  through outbound mTLS gRPC only; separate deployment artifacts per plane; independent
+  lifecycle guarantees (DP serves last config through CP outages); documented Envoy
+  version-skew range; additive-only agent proto. S12 failure-mode suite explicitly tests
+  traffic through a full CP outage; operator docs ship separate CP and DP install guides.
+- **Why better than v1:** v1 had the property de facto (compose-dp bundle) minus one leak —
+  the CP dialed Envoy admin ports for stats (removed by D-007, which makes independence
+  strictly stronger: outbound-only connectivity from the DP).

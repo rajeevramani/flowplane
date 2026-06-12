@@ -320,6 +320,28 @@ The v1↔v2 OpenAPI diff (required by the plan) runs against `spec/01-api-contra
 
 ## 10. Operations (D-004; full review in docs/production-readiness.md at hardening)
 
+### 10.1 Deployment topology: CP and DP are independently deployable (v1 property, kept and strengthened)
+
+- **Coupling surface = one channel set:** the DP unit (Envoy + fp-agent) connects *outbound*
+  to the CP's gRPC endpoint (ADS/SDS, ALS/ExtProc, diagnostics/telemetry) over mTLS. Nothing
+  else: no shared filesystem, no DP database, and — per D-007 — the CP never dials the DP
+  (v1's CP→Envoy-admin scrape removed). DPs work behind NAT, across VPCs, at the edge.
+- **Artifacts:** CP and DP ship as separate deployables. CP: static binary / OCI image (+
+  PostgreSQL). DP bundle: Envoy image + fp-agent, with `flowplane dataplane bootstrap`
+  generating the Envoy bootstrap + cert material. Compose/ECS/K8s/systemd examples exist for
+  each *separately* (v1's docker-compose-dp.yml pattern, generalized).
+- **Independent lifecycles:** Envoy serves last-applied config through CP outages and rebuilds
+  from a fresh xDS push on reconnect; CP restarts/upgrades never interrupt data-plane traffic;
+  DP restarts/upgrades never touch the CP. Documented caveat: a brand-new DP cannot join while
+  the CP is down (no config cache of its own) — mitigated by CP HA, stated in the runbook.
+- **Version skew contract:** the CP documents a supported Envoy version range; the diagnostics
+  proto is additive-only (reserved ranges), so CP and DP upgrade on independent schedules in
+  either order within the range. Upgrade guide covers both directions.
+- **Topologies supported and tested:** all-in-one dev (`stack up`); central CP + N remote DPs
+  (per team / per network zone); CP multi-replica (outbox cursors via SKIP LOCKED, stateless
+  API, xDS streams rebalance on reconnect).
+
+
 Single static binary (musl) + OCI image + compose bundle + systemd unit examples; ECS task
 definition and K8s manifests as optional extras (D-004: ECS-class managed container platforms
 are first-class deployment targets — nothing may assume orchestrator-specific discovery,

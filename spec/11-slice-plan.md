@@ -124,7 +124,8 @@ exits are never the knob.
 families fixed in S1–S11, dashboards-as-docs, GenAI semconv verification); failure-mode suite (kill Postgres mid-write, restart Envoy, restart CP under
 load — no loss/orphans/panics); load sanity; full adversarial pass per 08a §4 across REST, MCP,
 CLI, learned specs, generated routes, xDS; `docs/production-readiness.md`; operator docs
-(install/upgrade incl. bare-metal/VM/compose/ECS/K8s parity per D-004, config reference,
+(separate CP and DP-bundle install/upgrade guides incl. bare-metal/VM/compose/ECS/K8s parity
+per D-004 and 10 §10.1, config reference,
 runbook, backup/restore drill, CLI workflow guide); scripted seeded demo walkthrough
 (first-contact → full loop → MCP client, doubles as smoke test); `REWRITE-REPORT.md`; tag
 `v1.0.0`.
