@@ -8,7 +8,7 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
 
 ---
 
-## Q-001: CLI config precedence — does "env > config file > CLI args" apply to the CLI client? — OPEN
+## Q-001: CLI config precedence — ANSWERED (founder approved Option 1, 2026-06-12)
 
 - **Decision needed:** The code standards state config precedence `env vars > config file > CLI
   args > defaults`. For the *server* this is normal 12-factor practice. Applied to the *CLI
@@ -26,7 +26,7 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
 - **Recommendation:** Option 1. The standard's intent reads as "no hardcoding, env-configurable
   deployments", not "flags lose to env". Will proceed with Option 1 in spec/12 unless vetoed.
 
-## Q-002: Cut UI-only visualization workflows? — OPEN (D-003 provisional)
+## Q-002: Cut UI-only visualization workflows? — ANSWERED (founder approved Option 1, 2026-06-12)
 
 - **Decision needed:** Four v1 UI workflows are pure visualization (stats charts, admin KPI
   dashboard, per-org drill-in widgets, password deep-link page). With no v2 UI, do we rebuild
