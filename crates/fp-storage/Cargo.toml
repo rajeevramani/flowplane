@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 fp-domain = { workspace = true }
+rustls = { workspace = true }
 sqlx = { workspace = true }
 tracing = { workspace = true }
 

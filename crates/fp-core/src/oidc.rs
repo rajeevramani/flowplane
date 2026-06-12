@@ -207,6 +207,9 @@ impl OidcValidator {
         };
 
         let mut validation = Validation::new(Algorithm::RS256);
+        // Explicit clock-skew tolerance (default would be 60s): 30s covers real NTP drift
+        // without stretching token lifetimes meaningfully.
+        validation.leeway = 30;
         validation.set_issuer(&[&self.config.issuer]);
         validation.set_audience(&[&self.config.audience]);
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);

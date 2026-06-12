@@ -11,8 +11,20 @@ use std::time::Duration;
 /// Embedded migrations, applied in order; forward-only (spec/10 §10).
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+/// Install a rustls crypto provider if none is set. Idempotent. Required because the
+/// dependency graph links both `ring` (sqlx, axum-server) and `aws-lc-rs` (reqwest) — with
+/// two providers present rustls has NO default until one is chosen, and Postgres TLS
+/// negotiation fails with a misleading pool timeout.
+pub fn ensure_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        // A racing install by another thread is fine — someone won; both are usable.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
 /// Connect a pool with sane timeouts. Fails with `unavailable` + hint, never hangs forever.
 pub async fn connect(database_url: &str, max_connections: u32) -> DomainResult<PgPool> {
+    ensure_crypto_provider();
     PgPoolOptions::new()
         .max_connections(max_connections)
         .acquire_timeout(Duration::from_secs(5))

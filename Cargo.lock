@@ -739,6 +739,7 @@ name = "fp-storage"
 version = "0.1.0"
 dependencies = [
  "fp-domain",
+ "rustls",
  "sqlx",
  "tokio",
  "tracing",
