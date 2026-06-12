@@ -121,3 +121,26 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
 - **Why better than v1:** v1 had the property de facto (compose-dp bundle) minus one leak —
   the CP dialed Envoy admin ports for stats (removed by D-007, which makes independence
   strictly stronger: outbound-only connectivity from the DP).
+
+## D-010: v2 REST contract — systematic divergences from v1 (S4 diff)
+
+- **Context:** S4 exit requires diffing the generated v2 OpenAPI document against v1's
+  (committed as spec/01-api-contract.v1-openapi.json). v1 documented 85 of ~187 real
+  operations with 4 wrong methods; v2 documents 100% by construction (router and document
+  split from one `routes!` declaration; parity pinned by test).
+- **Intentional differences (apply to every endpoint):**
+  1. Errors: `{code, message, hint?, details?, request_id}` with a stable closed code set —
+     replaces v1's `{error, message}`.
+  2. Optimistic concurrency everywhere: PATCH/DELETE require `If-Match: <revision>`; 409
+     `revision_mismatch` reports the current revision (v1: last-writer-wins, PUT/PATCH mixed).
+  3. PATCH uniformly for updates (v1 mixed PUT/PATCH; its doc claimed PUT for 4 PATCH routes).
+  4. Per-team resource names (v1: global uniqueness — cross-tenant name oracle, 08a §2.2.2).
+  5. Uniform `{items,total,limit,offset}` list envelope (v1: partial adoption).
+  6. Team/member/grant management moved from `/orgs/{org_name}/…` to caller-org-implied
+     `/api/v1/teams…` (one-org-per-user model makes the org segment redundant); platform
+     admins are NOT admitted to tenant administration on these paths (invariant 1).
+  7. `/api/v1/auth/whoami` replaces v1's UI-session-oriented `/api/v1/auth/session`; the
+     BFF/cookie endpoints are deleted, not ported (D-008).
+- **Not-yet-mapped v1 surface:** secrets/dataplanes/certs (S6), learning/schemas (S8-S9),
+  MCP management (S11), ops/stats (S6/S12), filters (S5), org-admin CRUD + agents (S4 wrap) —
+  each lands with its owning slice and extends this diff; the systematic rules above bind them.

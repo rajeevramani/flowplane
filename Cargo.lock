@@ -642,6 +642,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "rustls",
+ "serde_json",
  "sqlx",
  "tokio",
  "tracing",

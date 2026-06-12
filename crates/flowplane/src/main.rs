@@ -22,6 +22,8 @@ enum Command {
         #[command(subcommand)]
         command: DbCommand,
     },
+    /// Print the OpenAPI document this binary serves (the exact API contract).
+    Openapi,
 }
 
 #[derive(Subcommand)]
@@ -40,5 +42,14 @@ fn main() -> anyhow::Result<()> {
         Command::Db {
             command: DbCommand::Migrate,
         } => runtime.block_on(serve::migrate_only()),
+        Command::Openapi => {
+            let doc = fp_api::routes::openapi_document();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&doc)
+                    .map_err(|e| anyhow::anyhow!("serialize OpenAPI document: {e}"))?
+            );
+            Ok(())
+        }
     }
 }
