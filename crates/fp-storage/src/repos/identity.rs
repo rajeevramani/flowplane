@@ -313,3 +313,155 @@ fn map_unique_violation(e: sqlx::Error, kind: &str, name: &str) -> DomainError {
 fn is_fk_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23503"))
 }
+
+/// Teams of one org (governance read).
+pub async fn list_teams_for_org(pool: &PgPool, org_id: OrgId) -> DomainResult<Vec<Team>> {
+    let rows = sqlx::query(
+        "SELECT id, org_id, name, display_name, status, created_at, updated_at \
+         FROM teams WHERE org_id = $1 AND status = 'active' ORDER BY name",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list teams: {e}")))?;
+    rows.iter().map(team_from_row).collect()
+}
+
+/// Delete a team. Refuses while the team owns resources (counts reported in the error).
+pub async fn delete_team(pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
+    let (clusters, listeners, rcs): (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM clusters WHERE team_id = $1), \
+                (SELECT count(*) FROM listeners WHERE team_id = $1), \
+                (SELECT count(*) FROM route_configs WHERE team_id = $1)",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete team: counts: {e}")))?;
+    if clusters + listeners + rcs > 0 {
+        return Err(DomainError::conflict(format!(
+            "team still owns resources ({clusters} clusters, {listeners} listeners, {rcs} route configs)"
+        ))
+        .with_hint("delete the team's resources first"));
+    }
+    let deleted = sqlx::query("DELETE FROM teams WHERE id = $1")
+        .bind(team_id.as_uuid())
+        .execute(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete team: {e}")))?;
+    if deleted.rows_affected() == 0 {
+        return Err(DomainError::new(
+            fp_domain::ErrorCode::NotFound,
+            "team not found",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn add_team_membership(
+    pool: &PgPool,
+    user_id: UserId,
+    team_id: TeamId,
+) -> DomainResult<()> {
+    sqlx::query(
+        "INSERT INTO team_memberships (id, user_id, team_id) \
+         VALUES (gen_random_uuid(), $1, $2) ON CONFLICT (user_id, team_id) DO NOTHING",
+    )
+    .bind(user_id.as_uuid())
+    .bind(team_id.as_uuid())
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        if matches!(&e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23503")) {
+            DomainError::validation("user or team does not exist")
+        } else {
+            DomainError::internal(format!("add team membership: {e}"))
+        }
+    })?;
+    Ok(())
+}
+
+pub async fn list_team_members(
+    pool: &PgPool,
+    team_id: TeamId,
+) -> DomainResult<Vec<(UserId, String, String)>> {
+    let rows = sqlx::query(
+        "SELECT u.id, u.email, u.name FROM users u \
+         JOIN team_memberships m ON m.user_id = u.id WHERE m.team_id = $1 ORDER BY u.email",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list team members: {e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            (
+                UserId::from(r.get::<Uuid, _>("id")),
+                r.get("email"),
+                r.get("name"),
+            )
+        })
+        .collect())
+}
+
+pub async fn remove_team_membership(
+    pool: &PgPool,
+    user_id: UserId,
+    team_id: TeamId,
+) -> DomainResult<bool> {
+    let deleted = sqlx::query("DELETE FROM team_memberships WHERE user_id = $1 AND team_id = $2")
+        .bind(user_id.as_uuid())
+        .bind(team_id.as_uuid())
+        .execute(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("remove team membership: {e}")))?;
+    Ok(deleted.rows_affected() > 0)
+}
+
+/// Grants on one team (governance read for the grant surface).
+pub async fn list_grants_for_team(
+    pool: &PgPool,
+    team_id: TeamId,
+) -> DomainResult<Vec<(Uuid, Uuid, String, String)>> {
+    let rows = sqlx::query(
+        "SELECT id, principal_id, resource, action FROM grants \
+         WHERE team_id = $1 AND principal_type = 'user' ORDER BY resource, action",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list grants: {e}")))?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            (
+                r.get("id"),
+                r.get("principal_id"),
+                r.get("resource"),
+                r.get("action"),
+            )
+        })
+        .collect())
+}
+
+pub async fn delete_grant(pool: &PgPool, team_id: TeamId, grant_id: Uuid) -> DomainResult<bool> {
+    let deleted = sqlx::query("DELETE FROM grants WHERE id = $1 AND team_id = $2")
+        .bind(grant_id)
+        .bind(team_id.as_uuid())
+        .execute(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete grant: {e}")))?;
+    Ok(deleted.rows_affected() > 0)
+}
+
+/// Find an active user by email within callers' provisioned set (membership flows).
+pub async fn find_user_by_email(pool: &PgPool, email: &str) -> DomainResult<Option<UserId>> {
+    let id: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND status = 'active' LIMIT 1")
+            .bind(email)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("find user: {e}")))?;
+    Ok(id.map(UserId::from))
+}

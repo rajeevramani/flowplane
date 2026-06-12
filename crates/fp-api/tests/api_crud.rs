@@ -28,11 +28,11 @@ fn openapi_document_covers_every_registered_operation() {
     for item in paths.values() {
         operations += item.as_object().map(|o| o.len()).unwrap_or(0);
     }
-    // whoami + 3 resources x 5 operations. Adding an endpoint without updating this pin is
-    // a deliberate speed bump: the doc IS the contract.
+    // whoami + 3 resources x 5 + 9 team/member/grant operations. Updating this pin is a
+    // deliberate speed bump when the surface changes: the doc IS the contract.
     assert_eq!(
-        operations, 16,
-        "expected 16 documented operations, got {operations}"
+        operations, 25,
+        "expected 25 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     for path in [

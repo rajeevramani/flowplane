@@ -4,6 +4,7 @@
 pub mod clusters;
 pub mod gateway;
 pub mod quota;
+pub mod teams;
 
 use crate::authz::{PrincipalCtx, Reason};
 use fp_domain::authz::{Action, Resource};

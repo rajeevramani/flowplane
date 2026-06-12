@@ -44,12 +44,22 @@ impl utoipa::Modify for SecurityAddon {
 
 /// Build the OpenAPI router + document for the secured /api/v1 surface.
 fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
+    use crate::identity_api;
     use crate::resources::{clusters, listeners, route_configs};
     use utoipa_axum::router::OpenApiRouter;
     use utoipa_axum::routes;
 
     OpenApiRouter::with_openapi(<ApiDoc as utoipa::OpenApi>::openapi())
         .routes(routes!(whoami))
+        .routes(routes!(identity_api::list_teams, identity_api::create_team))
+        .routes(routes!(identity_api::delete_team))
+        .routes(routes!(
+            identity_api::list_members,
+            identity_api::add_member
+        ))
+        .routes(routes!(identity_api::remove_member))
+        .routes(routes!(identity_api::list_grants, identity_api::add_grant))
+        .routes(routes!(identity_api::remove_grant))
         .routes(routes!(clusters::list, clusters::create))
         .routes(routes!(clusters::get, clusters::update, clusters::delete))
         .routes(routes!(listeners::list, listeners::create))
