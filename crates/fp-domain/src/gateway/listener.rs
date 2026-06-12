@@ -30,6 +30,9 @@ pub struct ListenerSpec {
     /// bound; resolved and reference-tracked by the service layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route_config: Option<String>,
+    /// HTTP filter chain, in order (S5.8). The router filter is appended automatically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub http_filters: Vec<crate::gateway::filters::HttpFilterEntry>,
 }
 
 fn valid_hostname(address: &str) -> bool {
@@ -90,6 +93,7 @@ impl ListenerSpec {
         if let Some(rc) = &self.route_config {
             crate::identity::validate_name(rc)?;
         }
+        crate::gateway::filters::validate_filter_chain(&self.http_filters)?;
         Ok(())
     }
 }
@@ -104,6 +108,7 @@ mod tests {
             address: address.into(),
             port,
             route_config: None,
+            http_filters: Vec::new(),
         }
     }
 

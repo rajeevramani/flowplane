@@ -382,6 +382,7 @@ mod referential {
                 address: "0.0.0.0".into(),
                 port: 18443,
                 route_config: Some(rc_name.clone()),
+                http_filters: Vec::new(),
             },
             rid(),
         )
@@ -442,6 +443,7 @@ mod referential {
                     address: "0.0.0.0".into(),
                     port,
                     route_config: None,
+                    http_filters: Vec::new(),
                 },
                 rid(),
             )

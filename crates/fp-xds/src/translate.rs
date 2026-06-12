@@ -268,12 +268,167 @@ const ROUTER_TYPE_URL: &str = "type.googleapis.com/envoy.extensions.filters.http
 
 /// Translate a validated ListenerSpec. The HCM points at the bound route config via RDS
 /// (delivered over the same ADS stream).
+/// Translate one chain entry to an HCM HttpFilter (S5.8). Filters keep declared order;
+/// the router is appended by the caller.
+fn http_filter_to_proto(
+    entry: &fp_domain::gateway::filters::HttpFilterEntry,
+) -> DomainResult<hcm::HttpFilter> {
+    use envoy_types::pb::envoy::extensions::filters::http::header_mutation::v3 as hm;
+    use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3 as lrl;
+    use fp_domain::gateway::filters::HttpFilterSpec;
+
+    let (name, typed) = match &entry.filter {
+        HttpFilterSpec::Cors(_) => {
+            // The listener-level cors filter is an empty marker; the policy lives in
+            // per-route config, which lands with the override plumbing (S5.8b). Until
+            // then a cors chain entry would be a silent no-op — reject it loudly.
+            return Err(DomainError::validation(
+                "cors in the listener chain requires per-route policy support (not yet \
+                 available); remove it for now",
+            ));
+        }
+        HttpFilterSpec::LocalRateLimit(c) => {
+            let proto = lrl::LocalRateLimit {
+                stat_prefix: c.stat_prefix.clone(),
+                token_bucket: Some(envoy_types::pb::envoy::r#type::v3::TokenBucket {
+                    max_tokens: c.token_bucket.max_tokens,
+                    tokens_per_fill: Some(u32_value(
+                        c.token_bucket
+                            .tokens_per_fill
+                            .unwrap_or(c.token_bucket.max_tokens),
+                    )),
+                    fill_interval: Some(wkt::Duration {
+                        seconds: (c.token_bucket.fill_interval_ms / 1000) as i64,
+                        nanos: ((c.token_bucket.fill_interval_ms % 1000) * 1_000_000) as i32,
+                    }),
+                }),
+                status: c
+                    .status_code
+                    .map(|code| envoy_types::pb::envoy::r#type::v3::HttpStatus {
+                        code: i32::from(code),
+                    }),
+                // Enforce 100% by default (spec/04 §4.1: enabled/enforced default 100%).
+                filter_enabled: Some(core::RuntimeFractionalPercent {
+                    default_value: Some(envoy_types::pb::envoy::r#type::v3::FractionalPercent {
+                        numerator: 100,
+                        denominator: 0, // HUNDRED
+                    }),
+                    runtime_key: String::new(),
+                }),
+                filter_enforced: Some(core::RuntimeFractionalPercent {
+                    default_value: Some(envoy_types::pb::envoy::r#type::v3::FractionalPercent {
+                        numerator: 100,
+                        denominator: 0,
+                    }),
+                    runtime_key: String::new(),
+                }),
+                ..Default::default()
+            };
+            (
+                "envoy.filters.http.local_ratelimit",
+                any(
+                    "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
+                    &proto,
+                ),
+            )
+        }
+        HttpFilterSpec::HeaderMutation(c) => {
+            let proto = hm::HeaderMutation {
+                mutations: Some(hm::Mutations {
+                    request_mutations: c
+                        .request_headers_to_add
+                        .iter()
+                        .map(|hv| header_mutation_entry(hv, false))
+                        .chain(
+                            c.request_headers_to_remove
+                                .iter()
+                                .map(|k| header_removal_entry(k)),
+                        )
+                        .collect(),
+                    response_mutations: c
+                        .response_headers_to_add
+                        .iter()
+                        .map(|hv| header_mutation_entry(hv, false))
+                        .chain(
+                            c.response_headers_to_remove
+                                .iter()
+                                .map(|k| header_removal_entry(k)),
+                        )
+                        .collect(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            (
+                "envoy.filters.http.header_mutation",
+                any(
+                    "type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation",
+                    &proto,
+                ),
+            )
+        }
+    };
+    Ok(hcm::HttpFilter {
+        name: name.to_string(),
+        config_type: Some(hcm::http_filter::ConfigType::TypedConfig(typed)),
+        disabled: entry.disabled,
+        ..Default::default()
+    })
+}
+
+fn header_mutation_entry(
+    hv: &fp_domain::gateway::filters::HeaderValue,
+    _removal: bool,
+) -> envoy_types::pb::envoy::config::common::mutation_rules::v3::HeaderMutation {
+    use envoy_types::pb::envoy::config::common::mutation_rules::v3 as mr;
+    mr::HeaderMutation {
+        action: Some(mr::header_mutation::Action::Append(
+            core::HeaderValueOption {
+                header: Some(core::HeaderValue {
+                    key: hv.key.clone(),
+                    value: hv.value.clone(),
+                    ..Default::default()
+                }),
+                append_action: if hv.append {
+                    core::header_value_option::HeaderAppendAction::AppendIfExistsOrAdd as i32
+                } else {
+                    core::header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd as i32
+                },
+                ..Default::default()
+            },
+        )),
+    }
+}
+
+fn header_removal_entry(
+    key: &str,
+) -> envoy_types::pb::envoy::config::common::mutation_rules::v3::HeaderMutation {
+    use envoy_types::pb::envoy::config::common::mutation_rules::v3 as mr;
+    mr::HeaderMutation {
+        action: Some(mr::header_mutation::Action::Remove(key.to_string())),
+    }
+}
+
 pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::Listener> {
     let route_config_name = spec.route_config.clone().ok_or_else(|| {
         DomainError::validation(format!(
             "listener \"{name}\" has no route_config bound; it cannot serve traffic yet"
         ))
     })?;
+
+    // Chain: declared filters in order, router appended last (spec/04 §4.2).
+    let mut http_filters = Vec::with_capacity(spec.http_filters.len() + 1);
+    for entry in &spec.http_filters {
+        http_filters.push(http_filter_to_proto(entry)?);
+    }
+    http_filters.push(hcm::HttpFilter {
+        name: "envoy.filters.http.router".to_string(),
+        config_type: Some(hcm::http_filter::ConfigType::TypedConfig(any(
+            ROUTER_TYPE_URL,
+            &Router::default(),
+        ))),
+        ..Default::default()
+    });
 
     let manager = hcm::HttpConnectionManager {
         stat_prefix: name.to_string(),
@@ -289,14 +444,7 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
                 }),
             },
         )),
-        http_filters: vec![hcm::HttpFilter {
-            name: "envoy.filters.http.router".to_string(),
-            config_type: Some(hcm::http_filter::ConfigType::TypedConfig(any(
-                ROUTER_TYPE_URL,
-                &Router::default(),
-            ))),
-            ..Default::default()
-        }],
+        http_filters,
         ..Default::default()
     };
 
@@ -454,6 +602,7 @@ mod tests {
             address: "0.0.0.0".into(),
             port: 10001,
             route_config: None,
+            http_filters: Vec::new(),
         };
         assert!(listener_to_proto("edge", &unbound).is_err());
 
@@ -461,9 +610,11 @@ mod tests {
             address: "0.0.0.0".into(),
             port: 10001,
             route_config: Some("orders".into()),
+            http_filters: Vec::new(),
         };
         let proto = listener_to_proto("edge", &bound).expect("translate");
         assert_eq!(proto.filter_chains.len(), 1);
+
         let a = cluster_to_proto("x", &cluster_spec()).expect("t");
         let b = listener_to_proto("edge", &bound).expect("t");
         assert_eq!(
@@ -473,6 +624,89 @@ mod tests {
                 .encode_to_vec()
         );
         drop(a);
+    }
+
+    #[test]
+    fn filter_chain_keeps_order_router_last_and_cors_rejected() {
+        {
+            use fp_domain::gateway::filters::*;
+            let chain = vec![
+                HttpFilterEntry {
+                    filter: HttpFilterSpec::LocalRateLimit(LocalRateLimitConfig {
+                        stat_prefix: "edge".into(),
+                        token_bucket: TokenBucket {
+                            max_tokens: 10,
+                            tokens_per_fill: None,
+                            fill_interval_ms: 1000,
+                        },
+                        status_code: Some(429),
+                    }),
+                    disabled: false,
+                },
+                HttpFilterEntry {
+                    filter: HttpFilterSpec::HeaderMutation(HeaderMutationConfig {
+                        request_headers_to_add: vec![HeaderValue {
+                            key: "x-edge".into(),
+                            value: "1".into(),
+                            append: false,
+                        }],
+                        request_headers_to_remove: vec!["x-internal".into()],
+                        response_headers_to_add: vec![],
+                        response_headers_to_remove: vec![],
+                    }),
+                    disabled: true,
+                },
+            ];
+            let spec = ListenerSpec {
+                address: "0.0.0.0".into(),
+                port: 10001,
+                route_config: Some("orders".into()),
+                http_filters: chain,
+            };
+            let proto = listener_to_proto("edge", &spec).expect("translate");
+            let manager = match &proto.filter_chains[0].filters[0].config_type {
+                Some(lst::filter::ConfigType::TypedConfig(a)) => {
+                    hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
+                }
+                _ => panic!("expected typed HCM"),
+            };
+            let names: Vec<_> = manager
+                .http_filters
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect();
+            assert_eq!(
+                names,
+                vec![
+                    "envoy.filters.http.local_ratelimit",
+                    "envoy.filters.http.header_mutation",
+                    "envoy.filters.http.router"
+                ],
+                "declared order, router appended last"
+            );
+            assert!(manager.http_filters[1].disabled, "disabled flag carried");
+
+            // cors without per-route policy plumbing must fail loudly, not no-op.
+            let cors_spec = ListenerSpec {
+                address: "0.0.0.0".into(),
+                port: 10002,
+                route_config: Some("orders".into()),
+                http_filters: vec![HttpFilterEntry {
+                    filter: HttpFilterSpec::Cors(CorsConfig {
+                        allow_origin: vec![OriginMatcher::Exact {
+                            value: "https://a.example".into(),
+                        }],
+                        allow_methods: vec![],
+                        allow_headers: vec![],
+                        expose_headers: vec![],
+                        max_age_seconds: None,
+                        allow_credentials: false,
+                    }),
+                    disabled: false,
+                }],
+            };
+            assert!(listener_to_proto("edge2", &cors_spec).is_err());
+        }
     }
 }
 

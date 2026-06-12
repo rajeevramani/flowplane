@@ -99,13 +99,15 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [ ] S5.8 filter catalog: the 16 v1 filter types re-specced through IR + per-route overrides
         (spec/04 §4; v2 = typed IR on listener/route specs, translated at build time — NO v1-style
         post-hoc protobuf surgery)
-    - [ ] S5.8a domain: `fp-domain/gateway/filters.rs` — `HttpFilterSpec` closed enum
-          (serde tag "type"): start with the high-value set {cors, local_rate_limit,
-          header_mutation, jwt_auth, ext_authz, rbac, compressor, health_check}; validation per
-          spec/04 §4.1 field rules (wildcard-origin × credentials, max_age cap, etc.);
-          `ListenerSpec.http_filters: Vec<HttpFilterEntry>` + `RouteRule/VirtualHost
-          .filter_overrides` (per-route enum honoring spec/04 column: full/disable-only/
-          reference-only/none — oauth2 per-route NACKs, health_check listener-only)
+    - [~] S5.8a domain (first tranche DONE): `fp-domain/gateway/filters.rs` with
+          `HttpFilterSpec` {cors, local_rate_limit, header_mutation} + validation per spec/04
+          §4.1; `ListenerSpec.http_filters` chain (order semantic, one per type, validated);
+          chain translation in listener_to_proto (router auto-appended last, disabled flag
+          carried; local_rate_limit defaults enabled/enforced 100%); cors chain entries are
+          REJECTED until per-route policy plumbing exists (no silent no-op). REMAINING:
+          {jwt_auth, ext_authz, rbac, compressor, health_check} + per-route/vhost
+          `filter_overrides` on RouteRule/VirtualHost (disable + typed override per the
+          spec/04 per-route column; oauth2 per-route NACKs, health_check listener-only)
     - [ ] S5.8b translate: chain assembly (declared order, router auto-appended last, at most
           one explicit router), typed_per_filter_config on vhosts/routes, jwt provider merge
           (single filter, remote-JWKS clusters into CDS as in v1 §4.4.4 but at build time);

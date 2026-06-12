@@ -563,6 +563,7 @@ mod tests {
                 address: "0.0.0.0".into(),
                 port: 19200,
                 route_config: Some(rc.clone()),
+                http_filters: Vec::new(),
             },
             RequestId::generate(),
         )
