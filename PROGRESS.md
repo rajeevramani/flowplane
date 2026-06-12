@@ -19,7 +19,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 - [ ] `spec/04-xds.md` — listener/route/cluster/filter generation, SDS/secrets
 - [ ] `spec/05-auth.md` — Zitadel JWT flow, `check_resource_access()`, dev vs prod auth
 - [ ] `spec/06-learning.md` — learning pipeline end to end + traffic-first gap analysis
-- [ ] `spec/07-cli-and-workflows.md` — v1 CLI surface + UI workflow inventory with v2 fates
+- [x] `spec/07-cli-and-workflows.md` — v1 CLI surface + UI workflow inventory with v2 fates
 - [ ] `spec/09-prior-art.md` — Envoy AI Gateway + Envoy Gateway survey; AI-gateway requirements input
 - [ ] `spec/08a-security-and-tenancy.md` — threat model, tenancy spec, authn/authz matrix, abuse cases
 - [ ] `spec/08-architecture-critique.md` — v1 critique; trace the learning↔MCP↔xDS seams
