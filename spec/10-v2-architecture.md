@@ -1,0 +1,247 @@
+# 10 — Flowplane v2 Target Architecture
+
+The design authority for all implementation slices. It must be read with: spec/08 (the v1
+failures it fixes), spec/08a (binding security requirements), spec/09 (adopted/rejected prior
+art), and D-001..D-005. Constraint D-004 applies globally: **no orchestrator dependency anywhere**;
+every mechanism below runs identically on bare metal, VMs, plain containers, ECS-class managed
+platforms, or K8s.
+
+## 1. System shape
+
+Unchanged from v1 at the process level (it was right): one control-plane binary (`flowplane`)
+serving REST+MCP (:8080) and xDS-family gRPC (:18000) out-of-band of traffic; PostgreSQL as the
+single source of truth; Envoy as the only data plane; `flowplane-agent` sidecar for dataplane
+diagnostics; optional standalone RLS for global/token rate limiting. The CLI is the same binary
+(`flowplane` client subcommands talk REST).
+
+What changes is the **interior**: one shared domain model with explicit lifecycle, transactional
+domain events instead of DB polling, tenancy in the type system and the SQL, and contracts
+(OpenAPI, MCP registry, CLI reference) generated from the same definitions that serve traffic.
+
+## 2. Workspace and dependency rules
+
+Cargo workspace; layering enforced by crate boundaries (a violation is a compile error, not a
+review comment):
+
+```
+crates/
+  fp-domain      # entities, newtype IDs, lifecycle state machines, validation,
+                 # event TYPES, quota policy types. Depends on: nothing internal.
+  fp-storage     # SQLx repos (scoped-by-construction), migrations, outbox writer,
+                 # event reader. Depends on: fp-domain.
+  fp-core        # use-cases/services: the ONLY mutation path; transaction +
+                 # outbox orchestration; authorization decision engine.
+                 # Depends on: fp-domain, fp-storage.
+  fp-xds         # domain → IR → Envoy protos; ADS server; SDS; capture ingest
+                 # (ALS/ExtProc); diagnostics. Depends on: fp-domain, fp-core (read).
+  fp-learning    # inference, aggregation, spec generation, route materialization
+                 # planning. Depends on: fp-domain, fp-core.
+  fp-ai          # AI gateway: provider model, request/response translation contract,
+                 # token metering, budgets, failover policy. Depends on: fp-domain, fp-core.
+  fp-api         # axum REST + OpenAPI generation from the same route definitions.
+                 # Depends on: fp-core (+ feature views of others via fp-core only).
+  fp-mcp         # MCP server; tool registry generated from definitions shared with
+                 # fp-api. Depends on: fp-core.
+  fp-cli         # human surface; REST client only (no direct DB/core linkage except
+                 # `flowplane db migrate`). Depends on: fp-domain (types only).
+  flowplane      # bin: wires server (api+mcp+xds+workers) and CLI dispatch.
+  fp-agent       # bin: dataplane sidecar (as v1, re-specified in spec/04 §6).
+```
+
+Rules: surfaces (`fp-api`, `fp-mcp`, `fp-cli`) never touch `fp-storage` directly; `fp-xds`,
+`fp-learning`, `fp-ai` never call each other — they communicate only through domain events and
+`fp-core` services (kills 08 §2). `fp-domain` has no async, no IO, no SQLx.
+
+## 3. The shared domain model (fixes 08 §4)
+
+### 3.1 Central entity: `ApiDefinition`
+
+The loop's five views — routes serving traffic, observed traffic, learned schema, published
+spec, MCP tools — become **one aggregate** with linked projections, not five records joined by
+string conventions:
+
+- **`ApiDefinition`** (team-owned): a named API surface. Origin ∈ {`declared` (operator-created
+  routes), `imported` (OpenAPI), `discovered` (traffic-first)}. Owns:
+  - **`SpecVersion`s** — immutable versions of the API's schema (source: imported file or
+    aggregation over observations), each carrying lifecycle state and provenance (sample
+    counts, confidence, first/last seen — per element).
+  - **Gateway bindings** — FKs to the routes/clusters that serve it (a route may exist without
+    an ApiDefinition; attaching one is cheap and automatic for `expose`/import/generate paths).
+  - **MCP tool set** — generated projection of the *published* SpecVersion; never hand-edited
+    structurally (metadata like description/enabled is editable; schema is derived).
+- Gateway resources (`Cluster`, `RouteConfig`/`VirtualHost`/`Route`, `Listener`, `Filter`,
+  `Secret`, `Dataplane`) remain independently addressable team-scoped entities (v1's chain,
+  normalized — single representation, no JSON+projection dual writes; views are generated).
+- AI gateway entities (§7): `AiProvider`, `AiRoute`, `AiBudget` — same domain model, same
+  tenancy, same events.
+
+Identity: one `domain_id!`-style newtype per entity (UUIDv7 for index locality), `team_id`
+typed as `TeamId` everywhere. One human handle per resource type (name, unique **per team** —
+fixes 08a §2.2.2), UUID accepted as an alternate key on the API.
+
+### 3.2 Lifecycle state machine (per SpecVersion)
+
+```
+observed ──aggregation──▶ learned ──operator review──▶ reviewed ──publish──▶ published ──xDS ACK──▶ served
+   │                        │                             │                     │
+   └────── discard ◀────────┴──────────── reject ◀────────┘     unpublish ◀─────┘
+```
+
+- Transitions are domain methods emitting events; illegal transitions are unrepresentable
+  (compile-time enum methods, DB CHECK on state column).
+- `published` is the only state that generates MCP tools and (traffic-first) route proposals
+  → live config. Everything left of `reviewed` is **data, never config** (08a §4.3.1).
+- `served` is asserted by xDS ACK feedback, making "is my API actually live?" a first-class
+  queryable fact end-to-end (CLI: `flowplane api status`).
+
+### 3.3 Domain events and the outbox (fixes 08 §2)
+
+- Every `fp-core` mutation writes its rows **and** its event(s) to an `events` outbox table in
+  the same transaction. Event types (closed enum, versioned payloads): resource CRUD
+  (`ClusterUpserted`, `RouteConfigDeleted`, …), lifecycle (`SpecVersionLearned`,
+  `SpecVersionPublished`, …), learning (`CaptureSessionStarted/Stopped`), AI
+  (`BudgetThresholdCrossed`, `ProviderFailedOver`), security (`CertRevoked`).
+- Delivery: in-process dispatcher consumes the outbox (Postgres `LISTEN/NOTIFY` for wakeup,
+  poll fallback for missed notifications — works on any Postgres, no K8s anything), with
+  at-least-once semantics and idempotent consumers. Consumer cursors are persisted → CP restart
+  resumes cleanly; multi-replica CPs coordinate via `FOR UPDATE SKIP LOCKED` on the cursor.
+- Consumers: xDS snapshot rebuilder (per team, per type), MCP tool generator, learning session
+  manager, audit fan-in, budget evaluator. No subsystem ever polls another's tables.
+
+### 3.4 Consistency rules (no orphans, no stale artifacts)
+
+1. All FKs real, all with explicit ON DELETE (no name-string FKs; kills the v1
+   cluster-name CASCADE surprise — referenced clusters RESTRICT delete with an actionable
+   error listing dependents, `--cascade` opt-in does an ordered, evented teardown).
+2. Deleting an upstream (cluster) or ApiDefinition emits events that retire its tools,
+   unpublish its spec versions, and rebuild xDS — verified by the definition-of-done E2E.
+3. MCP tools carry the `spec_version_id` they were generated from; publishing a newer version
+   regenerates tools (with a diff surfaced for review when breaking) — kills 08 §4.4 staleness.
+4. Optimistic concurrency on **every** mutable resource (`version` column, `If-Match`/CLI
+   `--revision`, 409 with current revision on mismatch).
+5. Retention is a first-class policy: inference intermediates TTL after aggregation; spec
+   versions pruned by count; audit by age (configurable; defaults documented).
+
+## 4. Tenancy architecture (fixes 08a §2)
+
+- `TeamId`/`OrgId` newtypes; `fp-storage` repository methods **require** a `TeamScope`
+  parameter (`Team(TeamId)` or `PlatformAdmin(reason)`) — there is no unscoped query API;
+  the scope lands in the SQL predicate, not the handler (rate-limit pattern universalized).
+- Schema: `team_id` column name everywhere; `(org_id, team_id)` composite FKs validate team∈org
+  by construction wherever both appear; per-team unique indexes `(team_id, name)`.
+- Authorization: v1's `check_resource_access` **semantics** preserved verbatim (decision table
+  in spec/05 §3.1 — including admin:all≠tenant-bypass, 404-hiding, agent partitions),
+  re-housed in `fp-core::authz` as a pure, table-driven, property-tested function; one public
+  allowlist; surfaces declare `(resource, action)` in their route/tool definitions so the
+  OpenAPI doc, MCP registry, and enforcement derive from the same table (kills phantom
+  entries).
+- Per-tenant quotas (resources, sessions, capture volume, schema cardinality, write rate) in
+  `fp-domain`, enforced in `fp-core`, configurable per team by platform admin.
+
+## 5. xDS subsystem (fixes 08 §2, spec/04 §8)
+
+- **Pipeline (adopted from Envoy Gateway, de-K8s'd per D-004):** domain snapshot → typed IR →
+  Envoy protos. The IR seam is where filters, learning capture config, and AI-gateway filter
+  chains inject — deterministically (BTreeMap everywhere; no HashMap iteration in any encoded
+  output).
+- Event-driven rebuilds (outbox consumer) with per-team, per-type-URL versioned snapshots;
+  ordering: make-before-break (CDS/EDS before RDS before LDS; deletes reversed) within a team's
+  push sequence.
+- ACK/NACK: per-type versions; NACK quarantines the offending resource (serve last-ACKed
+  snapshot for that type, flag resource `degraded`, surface in CLI/API/audit) instead of v1's
+  silent wait-for-fix.
+- Real EDS (endpoints from their own table; endpoint churn ≠ cluster rebuild). Delta xDS
+  dropped in v1.0 (SOTW only — honest, vs v1's fake delta); revisit post-1.0.
+- Uniform **fail-closed**: DB error = serve last good snapshot, never config fallback.
+- mTLS identity as v1 (SPIFFE SAN → cert registry row → team) plus: per-message team binding on
+  ALS/ExtProc/diagnostics, revocation enforced on live streams, allowlist-scope via
+  authenticated registry not node metadata.
+- Capture injection scoped to the session's team listeners/routes only, with Envoy-side ALS
+  filters where possible (kills the all-listener blast radius and 08a §4.1).
+
+## 6. Learning subsystem (fixes spec/06 §9–11)
+
+- Both directions on the shared model: **config-first** (session targets an ApiDefinition or
+  route set; capture → inference → aggregation → SpecVersion `learned`) and **traffic-first**
+  (a team-scoped *discovery listener* with explicit operator opt-in captures unmatched traffic;
+  aggregation produces an ApiDefinition with origin `discovered`; `flowplane routes generate
+  --from-spec` materializes a route/cluster **plan** — same planner as OpenAPI import — shown
+  via `--dry-run`, applied only on approval, entering the lifecycle at `reviewed`).
+- Poisoning resistance per 08a §4.3: frequency thresholds, cardinality caps + alerts,
+  provenance per element, quarantine bucket, TTL'd intermediates, redaction by default.
+- Pipeline mechanics keep v1's good bones (worker pool, batched transactional writes,
+  confidence scoring, path templating) with the fixes: per-queue bounds end-to-end, batched
+  sample counting, sharded workers (no single-Mutex pool), ExtProc honoring method filters,
+  template-aware (not byte-exact) route↔spec matching.
+
+## 7. AI gateway (requirements from spec/09; same domain model)
+
+- **`AiProvider`** (team-scoped): provider kind (anthropic | openai | bedrock | self-hosted |
+  openai-compatible(prefix)), endpoints, credential = reference to a `Secret` (never inline),
+  model catalog. Compiled to a flavored Cluster in the IR.
+- **`AiRoute`**: unified inbound API (OpenAI-compatible chat-completions shape for v1.0),
+  model-based routing rules, backend list with `weight` + `priority` + optional
+  `model_override` (failover vocabulary borrowed from AIGW; retries re-translate/re-sign per
+  selected backend).
+- **Translation + metering**: ExtProc service in `fp-xds` hosting `fp-ai` translators
+  (ingress↔provider); token usage parsed from provider `usage` accounting — streaming included
+  by force-injecting `include_usage` — emitted as dynamic metadata costs and ingested as usage
+  events (per team, provider, model, token type).
+- **`AiBudget`**: per-team/per-provider token & request budgets with windows; enforced via
+  rate-limit costs charged post-response (overdraft-on-last-request semantics, documented);
+  `shadow_mode` for meter-without-enforce (fits the dry-run culture); breaches emit events →
+  audit + CLI visibility.
+- Observed AI traffic is still traffic: usage records feed the same stats/insights surface, and
+  AI endpoints are learnable ApiDefinitions like any other.
+
+## 8. Error handling strategy
+
+- One `fp-domain::Error` taxonomy; every API failure renders as
+  `{code, message, hint, request_id, details?}` where `code` is a stable machine string from a
+  published closed set (OpenAPI-documented), `hint` says what to do next, `request_id`
+  correlates to logs/traces. CLI renders the same object as colored text + remediation, exit
+  codes: 0 ok, 1 generic, 2 usage, 3 auth, 4 not-found, 5 conflict/revision, 6 server, 7
+  unavailable.
+- No `unwrap`/`expect` outside tests; panics = bugs; `#![deny(clippy::unwrap_used)]`.
+
+## 9. Contract generation (fixes 08 §2 "detached artifacts")
+
+Route definitions (REST), tool definitions (MCP), and CLI command metadata each carry their
+`(resource, action)`, schemas, and docs **in one declaration site**; OpenAPI doc, MCP
+`tools/list`, the authz table, and reference docs are generated from those declarations at
+build time, with CI parity gates (router↔OpenAPI 100%, registry↔tools 100%, docs↔flags 100%).
+The v1↔v2 OpenAPI diff (required by the plan) runs against `spec/01-api-contract.v1-openapi.json`.
+
+## 10. Operations (D-004; full review in docs/production-readiness.md at hardening)
+
+Single static binary (musl) + OCI image + compose bundle + systemd unit examples; ECS task
+definition and K8s manifests as optional extras (D-004: ECS-class managed container platforms
+are first-class deployment targets — nothing may assume orchestrator-specific discovery,
+sidecar injection, or secret stores; everything works over plain TCP/HTTP + env vars). `/healthz` (liveness) and `/readyz` (DB + outbox lag + xDS serving)
+endpoints; Prometheus metrics + OTel traces; structured JSON logs with request ids; graceful
+shutdown (drain xDS streams, flush outbox consumers, stop workers); migrations forward-only,
+run by `flowplane db migrate` or auto-on-boot (flag); backup = Postgres backup (documented
+restore drill); degradation: DB down → serve last xDS snapshots read-only, REST 503 with hint;
+Envoy down → no impact on CP, dataplane status visible.
+
+## 11. Traceability: 08-critique items → design elements
+
+| 08 item | Fixed by |
+|---|---|
+| §2 DB-polling integration | §3.3 outbox events |
+| §2 name-convention FKs | §3.1 real FKs on shared aggregate |
+| §2 detached generated artifacts | §9 single-declaration generation + CI gates |
+| §3.1 handler tenancy | §4 TeamScope-typed repos |
+| §3.2 triple validation | §2 rules: domain validation only in fp-domain, all surfaces converge via fp-core |
+| §3.3 dual representations | §3.1 normalized single model, generated views |
+| §3.5 concurrency | §3.4.4 universal optimistic locking; DB-allocated ports/uniqueness |
+| §4 loop seams 1–6 | §3.1–3.4, §6 (traffic-first), lifecycle §3.2 |
+| §5 error contract | §8 |
+| §6 CLI | spec/12 |
+| §7 multi-replica/failure semantics | §3.3 persisted cursors, §5 fail-closed, §10 |
+
+Adopted from spec/09: EG IR pipeline (§5), AIGW resource split + failover vocabulary +
+ExtProc metering (§7), metadata-driven rate-limit cost (§7), shadow mode (§7), GenAI OTel
+semconv (§10), 3-condition status model (adapted to lifecycle states §3.2). Rejected (with
+09's reasoning): EnvoyPatchPolicy-style raw overrides, header-based tenancy, secrets inlined
+into filter config, K8s-native anything (D-004).

@@ -42,12 +42,17 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
 ## D-004: Environment-agnostic deployment (founder non-negotiable, 2026-06-12)
 
 - **Context:** Founder directive: control plane and data plane must be deployable in any
-  environment — bare metal, VMs, plain containers, or Kubernetes — never *designed for*
-  Kubernetes.
+  environment — bare metal, VMs, plain containers, managed container platforms (ECS/Fargate,
+  Nomad, Cloud Run and similar), or Kubernetes — never *designed for* Kubernetes or any other
+  specific orchestrator (founder clarification 2026-06-12: ECS-class environments are explicitly
+  in scope).
 - **Decision:** No Kubernetes API dependency anywhere: PostgreSQL (not CRDs) is the source of
   truth; identity via OIDC + mTLS certs (not ServiceAccounts); deployment artifacts are a
-  static binary, an OCI image, a compose bundle, and systemd guidance — K8s manifests may be
-  *offered* as one packaging among equals, never required. Prior-art borrowings (Envoy
+  static binary, an OCI image, a compose bundle, and systemd guidance — plus deployment notes
+  per environment class (ECS task definitions, K8s manifests) offered as packagings among
+  equals, never required. Concretely this forbids: orchestrator-specific service discovery,
+  sidecar injection assumptions, orchestrator secret stores as the only secrets path, and any
+  health/identity mechanism that doesn't work over plain TCP/HTTP. Prior-art borrowings (Envoy
   Gateway's IR pipeline, AI Gateway's metering) are adopted as mechanisms, stripped of their
   CRD/controller substrate (spec/09 rejects already aligned with this).
 - **Why better than v1:** v1 was already environment-agnostic (compose-first); this locks the
