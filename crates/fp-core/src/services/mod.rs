@@ -2,6 +2,7 @@
 //! audit actor extraction, trace-context capture, and quotas.
 
 pub mod clusters;
+pub mod gateway;
 pub mod quota;
 
 use crate::authz::{PrincipalCtx, Reason};

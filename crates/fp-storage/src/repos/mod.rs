@@ -4,4 +4,5 @@
 pub mod audit;
 pub mod bootstrap;
 pub mod clusters;
+pub mod gateway;
 pub mod identity;

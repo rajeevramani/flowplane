@@ -23,6 +23,10 @@ pub async fn check_team_resource_quota(
 ) -> DomainResult<()> {
     let used = match resource {
         Resource::Clusters => fp_storage::repos::clusters::count_for_team(pool, team_id).await?,
+        Resource::RouteConfigs => {
+            fp_storage::repos::gateway::count_route_configs(pool, team_id).await?
+        }
+        Resource::Listeners => fp_storage::repos::gateway::count_listeners(pool, team_id).await?,
         // Other resources adopt this check as their verticals land.
         _ => return Ok(()),
     };

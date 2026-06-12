@@ -2,5 +2,7 @@
 //! follow the same vertical pattern.
 
 pub mod cluster;
+pub mod listener;
+pub mod route_config;
 
 pub use cluster::{Cluster, ClusterSpec, Endpoint, LbPolicy};

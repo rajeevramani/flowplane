@@ -302,3 +302,155 @@ async fn grantless_member_denied_with_actionable_forbidden() {
     assert_eq!(err.code, ErrorCode::Forbidden);
     assert!(err.message.contains("clusters:create"));
 }
+
+mod referential {
+    use super::*;
+    use fp_core::services::gateway as gw;
+    use fp_domain::gateway::listener::ListenerSpec;
+    use fp_domain::gateway::route_config::{
+        PathMatch, RouteAction, RouteConfigSpec, RouteRule, VirtualHost,
+    };
+
+    fn rc_spec(cluster: &str) -> RouteConfigSpec {
+        RouteConfigSpec {
+            virtual_hosts: vec![VirtualHost {
+                name: "default".into(),
+                domains: vec!["*".into()],
+                routes: vec![RouteRule {
+                    name: "all".into(),
+                    matcher: PathMatch::Prefix { prefix: "/".into() },
+                    action: RouteAction {
+                        cluster: cluster.into(),
+                        prefix_rewrite: None,
+                        template_rewrite: None,
+                        timeout_secs: 15,
+                    },
+                }],
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn references_resolve_and_deletion_is_guarded_end_to_end() {
+        let Some(w) = world().await else { return };
+        let rid = RequestId::generate;
+
+        // Route config referencing a missing cluster: validation error naming it.
+        let err = gw::create_route_config(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &unique("rc"),
+            rc_spec("ghost-cluster"),
+            rid(),
+        )
+        .await
+        .expect_err("missing cluster reference");
+        assert_eq!(err.code, ErrorCode::ValidationFailed);
+        assert!(err.message.contains("ghost-cluster"));
+
+        // Create the chain: cluster -> route config -> listener.
+        let cluster_name = unique("upstream");
+        svc::create_cluster(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &cluster_name,
+            spec("10.0.0.9"),
+            rid(),
+        )
+        .await
+        .expect("cluster");
+        let rc_name = unique("routes");
+        gw::create_route_config(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &rc_name,
+            rc_spec(&cluster_name),
+            rid(),
+        )
+        .await
+        .expect("route config");
+        let listener_name = unique("edge");
+        gw::create_listener(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &listener_name,
+            ListenerSpec {
+                address: "0.0.0.0".into(),
+                port: 18443,
+                route_config: Some(rc_name.clone()),
+            },
+            rid(),
+        )
+        .await
+        .expect("listener");
+
+        // Deleting the referenced cluster: conflict naming the dependent route config.
+        let err = svc::delete_cluster(&w.pool, &w.admin, w.team, &cluster_name, 1, rid())
+            .await
+            .expect_err("referenced cluster must not delete");
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert!(
+            err.message.contains(&rc_name),
+            "dependents are named: {}",
+            err.message
+        );
+
+        // Deleting the referenced route config: conflict naming the dependent listener.
+        let err = gw::delete_route_config(&w.pool, &w.admin, w.team, &rc_name, 1, rid())
+            .await
+            .expect_err("referenced route config must not delete");
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert!(err.message.contains(&listener_name));
+
+        // Unwind in dependency order: listener -> route config -> cluster. No orphans.
+        gw::delete_listener(&w.pool, &w.admin, w.team, &listener_name, 1, rid())
+            .await
+            .expect("delete listener");
+        gw::delete_route_config(&w.pool, &w.admin, w.team, &rc_name, 1, rid())
+            .await
+            .expect("delete route config");
+        svc::delete_cluster(&w.pool, &w.admin, w.team, &cluster_name, 1, rid())
+            .await
+            .expect("delete cluster");
+        let (refs,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM route_config_cluster_refs r \
+             JOIN route_configs rc ON rc.id = r.route_config_id WHERE rc.team_id = $1",
+        )
+        .bind(w.team.id.as_uuid())
+        .fetch_one(&w.pool)
+        .await
+        .expect("refs");
+        assert_eq!(refs, 0, "no orphaned reference rows");
+    }
+
+    #[tokio::test]
+    async fn port_collisions_within_a_team_conflict() {
+        let Some(w) = world().await else { return };
+        let rid = RequestId::generate;
+        let make = |name: String, port: u16| {
+            gw::create_listener(
+                &w.pool,
+                &w.admin,
+                w.team,
+                // move name into the future
+                Box::leak(name.into_boxed_str()),
+                ListenerSpec {
+                    address: "0.0.0.0".into(),
+                    port,
+                    route_config: None,
+                },
+                rid(),
+            )
+        };
+        make(unique("l1"), 19001).await.expect("first listener");
+        let err = make(unique("l2"), 19001)
+            .await
+            .expect_err("same port, same team");
+        assert_eq!(err.code, ErrorCode::Conflict);
+        assert!(err.hint.is_some());
+    }
+}

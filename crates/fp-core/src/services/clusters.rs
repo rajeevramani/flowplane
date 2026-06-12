@@ -137,6 +137,18 @@ pub async fn delete_cluster(
         .begin()
         .await
         .map_err(crate::services::db_err("delete cluster: begin"))?;
+    // Referenced clusters cannot be deleted (no silent cascade — spec/10 §3.4.1); the
+    // error lists dependents so the operator knows exactly what to unwind.
+    let dependents =
+        fp_storage::repos::gateway::route_configs_referencing_cluster(&mut tx, team.id, name)
+            .await?;
+    if !dependents.is_empty() {
+        return Err(fp_domain::DomainError::conflict(format!(
+            "cluster \"{name}\" is referenced by route configs: {}",
+            dependents.join(", ")
+        ))
+        .with_hint("update or delete those route configs first"));
+    }
     let cluster_id = clusters::delete(&mut tx, team.id, name, expected_version).await?;
     fp_storage::outbox::append(
         &mut tx,

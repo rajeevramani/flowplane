@@ -52,12 +52,12 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S2.5 auth middleware, whoami, OIDC config, authn-failure audit, one-shot bootstrap flow (live-verified)
   - [x] S2.6 per-tenant write throttle (org-keyed, fail-closed keying, tenant-isolation test)
   - [x] S2 exit: invariant tests green, cross-org denied pre-grant, denial+authn audit rows, real-PG integration, live E2E (whoami + bootstrap)
-- [ ] S3 Gateway domain + storage + outbox events
+- [x] S3 Gateway domain + storage + outbox events
   - [x] S3.1 outbox: events table, transactional append, dispatcher (LISTEN/NOTIFY + poll, SKIP LOCKED cursors, trace ctx), crash-redelivery test
-  - [~] S3.2 gateway domain types: cluster DONE (validated business rules); listener/route-config NEXT
-  - [~] S3.3 clusters: schema 0004, TeamScope repo, optimistic locking, per-team uniqueness DONE; listener/route-config NEXT
+  - [x] S3.2 gateway domain types + validation (cluster, listener, route-config w/ rewrite rules)
+  - [x] S3.3 schemas 0004/0005, repos for all three resources, normalized reference tracking, optimistic locking, per-team uniqueness + port uniqueness
   - [x] S3.4 per-tenant quotas (framework + clusters limit, quota test)
-  - [~] S3 exit tests for clusters vertical GREEN (concurrent 409 + no lost update, event emission, cross-org 404, quota); repeat for listener/route-config
+  - [x] S3 exit: concurrent 409 + no lost update, transactional events, cross-org 404, quota, referential guards (cluster/rc deletion blocked with dependents named), no orphaned refs
 - [ ] S4 REST API core + OpenAPI generation (+ v1 contract diff)
 - [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine
 - [ ] S6 Secrets/SDS, proxy certs, dataplanes
