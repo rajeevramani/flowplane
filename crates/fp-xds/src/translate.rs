@@ -466,11 +466,22 @@ mod type_url_tests {
             }],
         };
         let proto = route_config_to_proto("rc", &spec).expect("translate");
-        let encoded = format!("{proto:?}");
+        let matcher = proto.virtual_hosts[0].routes[0]
+            .r#match
+            .as_ref()
+            .expect("match");
+        let Some(rt::route_match::PathSpecifier::PathMatchPolicy(policy)) = &matcher.path_specifier
+        else {
+            panic!("expected a PathMatchPolicy");
+        };
+        let url = &policy.typed_config.as_ref().expect("typed config").type_url;
         assert!(
-            !encoded.contains("r#"),
-            "raw identifier leaked into a type URL"
+            !url.contains("r#"),
+            "raw identifier leaked into the type URL: {url}"
         );
-        assert!(encoded.contains("envoy.extensions.path.match.uri_template.v3"));
+        assert_eq!(
+            url,
+            "type.googleapis.com/envoy.extensions.path.match.uri_template.v3.UriTemplateMatchConfig"
+        );
     }
 }
