@@ -12,7 +12,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 ## Phase 0 — Behavioral spec extraction (no v2 code)
 
 - [x] Clone v1 read-only, create PROGRESS/DECISIONS/QUESTIONS scaffolding
-- [ ] `spec/00-system-overview.md` — what Flowplane is, subsystems, data flow
+- [x] `spec/00-system-overview.md` — what Flowplane is, subsystems, data flow
 - [ ] `spec/01-api-contract.md` — every REST endpoint from `src/api/`, `src/openapi/`
 - [ ] `spec/02-mcp-tools.md` — all MCP tool modules, schemas, authz, control_plane vs gateway_api
 - [ ] `spec/03-domain-model.md` — entities, invariants, team isolation, DB schema (`migrations/`)
