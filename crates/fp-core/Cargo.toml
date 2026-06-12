@@ -7,9 +7,16 @@ rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
 
+[features]
+# Dev-mode identity (in-process OIDC issuer). Excluded from release artifacts unless
+# explicitly built in; additionally runtime-gated (spec/10 4a).
+dev-oidc = ["dep:rsa"]
+
 [dependencies]
+chrono = { workspace = true }
 fp-domain = { workspace = true }
 jsonwebtoken = { workspace = true }
+rsa = { workspace = true, optional = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

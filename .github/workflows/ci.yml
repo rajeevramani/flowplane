@@ -35,10 +35,12 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (release artifact shape, no dev-oidc)
+        run: cargo clippy -p flowplane --no-default-features --all-targets -- -D warnings
       - name: Tests (unit + integration against real PostgreSQL)
         env:
           FLOWPLANE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowplane_test
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features
       - name: Boot smoke (fresh DB, plaintext opt-in, health + request-id checks)
         env:
           FLOWPLANE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowplane_test

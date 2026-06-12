@@ -3,6 +3,8 @@
 
 pub mod authz;
 pub mod config;
+#[cfg(feature = "dev-oidc")]
+pub mod dev;
 pub mod oidc;
 
 pub use authz::{check_resource_access, Decision, GrantSet, PrincipalCtx, Reason, TeamRef};

@@ -7,6 +7,10 @@ rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
 
+[features]
+default = ["dev-oidc"]
+dev-oidc = ["fp-core/dev-oidc"]
+
 [[bin]]
 name = "flowplane"
 path = "src/main.rs"
@@ -26,6 +30,7 @@ opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 rustls = { workspace = true }
+sqlx = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

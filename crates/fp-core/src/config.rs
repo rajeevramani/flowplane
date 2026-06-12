@@ -32,6 +32,9 @@ pub struct ServerConfig {
     pub log_filter: String,
     /// OTLP endpoint for traces; `None` disables export (spans still recorded locally).
     pub otlp_endpoint: Option<String>,
+    /// Dev mode: in-process OIDC issuer + seeded resources. Requires the `dev-oidc` build
+    /// feature AND, in release builds, an explicit acknowledgment env var (spec/10 §4a).
+    pub dev_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +62,7 @@ struct FileConfig {
     api_tls_cert: Option<String>,
     api_tls_key: Option<String>,
     api_insecure: Option<bool>,
+    dev_mode: Option<bool>,
     log_format: Option<LogFormat>,
     log_filter: Option<String>,
     otlp_endpoint: Option<String>,
@@ -185,6 +189,11 @@ impl ServerConfig {
             .map(str::to_owned)
             .or(file.otlp_endpoint);
 
+        let dev_mode = match get("FLOWPLANE_DEV_MODE") {
+            Some(raw) => parse_bool("FLOWPLANE_DEV_MODE", raw)?,
+            None => file.dev_mode.unwrap_or(false),
+        };
+
         Ok(Self {
             api_addr,
             database_url,
@@ -194,6 +203,7 @@ impl ServerConfig {
             log_format,
             log_filter,
             otlp_endpoint,
+            dev_mode,
         })
     }
 }

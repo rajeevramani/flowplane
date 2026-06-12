@@ -23,6 +23,10 @@ pub async fn run() -> anyhow::Result<()> {
     fp_storage::migrate(&pool).await?;
     tracing::info!("database connected and migrations applied");
 
+    if config.dev_mode {
+        setup_dev_mode(&pool).await?;
+    }
+
     let prometheus = PrometheusBuilder::new()
         .install_recorder()
         .context("failed to install Prometheus metrics recorder")?;
@@ -85,6 +89,37 @@ pub async fn migrate_only() -> anyhow::Result<()> {
     fp_storage::migrate(&pool).await?;
     tracing::info!("migrations applied");
     Ok(())
+}
+
+/// Dev-mode startup: triple-gated (config flag + build feature + release ack), then seeds
+/// dev resources and boots the in-process issuer (spec/10 §4a).
+#[cfg(feature = "dev-oidc")]
+async fn setup_dev_mode(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    if !cfg!(debug_assertions) {
+        let ack = std::env::var("FLOWPLANE_DEV_MODE_ACK").unwrap_or_default();
+        if ack != "yes-this-is-not-production" {
+            return Err(anyhow::anyhow!(
+                "FLOWPLANE_DEV_MODE=true in a release build requires \
+                 FLOWPLANE_DEV_MODE_ACK=yes-this-is-not-production"
+            ));
+        }
+    }
+    tracing::warn!("DEV MODE: in-process identity, seeded resources — never production");
+    fp_storage::seed::seed_dev(pool).await?;
+    let issuer = fp_core::dev::DevIssuer::generate()?;
+    let token = issuer.mint_dev_user()?;
+    // Dev-only by triple gate: the token grants access to the seeded local instance only
+    // and dies with this process (per-boot key).
+    tracing::warn!(dev_token = %token, "dev bearer token (valid 1h, this boot only)");
+    Ok(())
+}
+
+#[cfg(not(feature = "dev-oidc"))]
+async fn setup_dev_mode(_pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    Err(anyhow::anyhow!(
+        "FLOWPLANE_DEV_MODE=true but this binary was built without the dev-oidc feature \
+         (release artifact); use a development build or configure a real OIDC issuer"
+    ))
 }
 
 fn load_config() -> anyhow::Result<ServerConfig> {

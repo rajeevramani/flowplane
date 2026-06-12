@@ -11,6 +11,7 @@ publish.workspace = true
 fp-domain = { workspace = true }
 rustls = { workspace = true }
 sqlx = { workspace = true }
+uuid = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
