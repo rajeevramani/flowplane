@@ -118,74 +118,30 @@ The dev bootstrap command uses this row to generate a stable Envoy `node.id`.
 ./target/debug/flowplane dataplane list
 ```
 
-## 7. Create Gateway Resources
+## 7. Expose the Upstream
 
-The current CLI accepts JSON files for resource create/update. These shapes are the V2 REST shapes.
-
-Create `/tmp/fp-cluster.json`:
-
-```json
-{
-  "name": "local-upstream",
-  "spec": {
-    "endpoints": [
-      {
-        "host": "127.0.0.1",
-        "port": 3001
-      }
-    ]
-  }
-}
-```
-
-Create `/tmp/fp-route.json`:
-
-```json
-{
-  "name": "local-routes",
-  "spec": {
-    "virtual_hosts": [
-      {
-        "name": "default",
-        "domains": ["*"],
-        "routes": [
-          {
-            "name": "all",
-            "match": {
-              "prefix": {
-                "prefix": "/"
-              }
-            },
-            "action": {
-              "cluster": "local-upstream"
-            }
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Create `/tmp/fp-listener.json`:
-
-```json
-{
-  "name": "local-edge",
-  "spec": {
-    "address": "0.0.0.0",
-    "port": 10001,
-    "route_config": "local-routes"
-  }
-}
-```
-
-Apply them:
+This creates a normal cluster, route config, and listener through the V2 services:
 
 ```bash
-./target/debug/flowplane cluster create -f /tmp/fp-cluster.json
-./target/debug/flowplane route create -f /tmp/fp-route.json
-./target/debug/flowplane listener create -f /tmp/fp-listener.json
+./target/debug/flowplane expose http://127.0.0.1:3001 \
+  --name local \
+  --path / \
+  --port 10001
+```
+
+Expected table fields include:
+
+| Field | Value |
+| --- | --- |
+| `curl_url` | `http://127.0.0.1:10001/` |
+| `cluster_name` | `local-upstream` |
+| `route_config_name` | `local-routes` |
+| `listener_name` | `local` |
+
+Cleanup after testing:
+
+```bash
+./target/debug/flowplane unexpose local
 ```
 
 ## 8. Start Envoy
@@ -270,7 +226,7 @@ If traffic does not flow, check in this order:
 
 1. CP logs show Envoy connected to xDS.
 2. `ops xds nacks` is empty.
-3. Envoy admin `config_dump` contains `local-edge`, `local-routes`, and `local-upstream`.
+3. Envoy admin `config_dump` contains `local`, `local-routes`, and `local-upstream`.
 4. The upstream is reachable at `http://127.0.0.1:3001/` from the same host/network namespace as
    Envoy.
 5. Port `10001` is not already occupied.
@@ -280,7 +236,6 @@ If traffic does not flow, check in this order:
 These are known gaps, not operator mistakes:
 
 - There is no V2-native `dataplane up/down/status` command yet.
-- There is no `flowplane expose` shortcut yet; resources must be created manually.
 - This runbook should be pinned by an S7.7e transcript/e2e test.
 
 Relevant tracking:

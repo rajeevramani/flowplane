@@ -252,8 +252,16 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
     - Rationale: it avoids porting V1 compose internals, works on macOS without Docker host
       networking assumptions, and keeps the control plane/dataplane contract centered on xDS plus
       persisted diagnostics.
-  - [ ] S7.7d `expose`/`unexpose` shortcut over existing cluster/route-config/listener services,
+  - [x] S7.7d `expose`/`unexpose` shortcut over existing cluster/route-config/listener services,
         with explicit or allocated listener port and a curlable success message.
+    - Implemented: REST `POST /api/v1/teams/{team}/expose` creates a cluster, route config, and
+      listener through the existing service layer; `DELETE /api/v1/teams/{team}/expose/{name}`
+      removes them in reverse order.
+    - CLI: `flowplane expose <upstream-url> --name <name> [--path /] [--port N]` prints the
+      allocated listener port and curl URL; `flowplane unexpose <name>` cleans up the generated
+      resources.
+    - Tests: OpenAPI/CLI path parity, parser coverage, table rendering, and authenticated HTTP
+      CRUD coverage assert creation, derived specs, and cleanup.
   - [ ] S7.7e Transcript/E2E: CP + dataplane + expose + curl + stats/NACK checks pinned so the
         route-to-traffic loop cannot regress.
 - [ ] S7.8 Core gateway field parity before learning (see

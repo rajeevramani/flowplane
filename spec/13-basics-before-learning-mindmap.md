@@ -24,7 +24,7 @@ implementation.
 | First run | `flowplane init` brings up PG + CP + Envoy + agent | Manual `flowplane serve` works with dev mode | Documented/manual path first; later `stack up` |
 | Dataplane bootstrap | Generated bootstrap wrapped by CLI/scripts | REST `/envoy-config` + CLI call exist | Better CLI naming, `--out`, explicit dev/prod bootstrap modes |
 | Dataplane lifecycle | `dataplane up/down`, bundle `dataplane-up.sh` | E2E script proves Envoy can connect | Decide manual Envoy vs V2-native lifecycle command |
-| Traffic shortcut | `flowplane expose` creates cluster/route/listener | Low-level CRUD exists | Add `expose`/`unexpose` over V2 services |
+| Traffic shortcut | `flowplane expose` creates cluster/route/listener | Implemented over V2 services | Validate in S7.7e live workflow |
 | Docs | README, quickstarts, dataplane runbook | Specs and progress notes | Add operator runbook/README path |
 | Validation | Smoke tests cover the full CLI journey | API/unit/e2e pieces exist | Add transcript/e2e for CP + DP + expose + curl |
 | Packaging | Platform evaluation bundle | No bundle yet | Defer until wrappers sit on a clean CLI contract |
@@ -44,7 +44,7 @@ blockers from field-parity blockers.
 | Dataplane certs | Bundle mints certs and writes files | cert issue/register/revoke API/CLI exists | Document one-time PEM response and local file layout; improve CLI output only if needed | S6.2, S7.7a |
 | Envoy bootstrap | CLI/scripts generate usable bootstrap | API/CLI exists, but naming and dev plaintext UX are rough | **Pre-S8 blocker:** `dataplane bootstrap`, `--out`, explicit dev/prod mode | S7.7b |
 | Dataplane process | `dataplane up/down`, bundle scripts | e2e script only | **Pre-S8 blocker:** choose manual Envoy or V2-native lifecycle command | S7.7c |
-| Route-to-traffic shortcut | `expose` creates cluster/route/listener | Low-level CRUD only | **Pre-S8 blocker:** implement `expose`/`unexpose` on V2 services | S7.7d |
+| Route-to-traffic shortcut | `expose` creates cluster/route/listener | Implemented over existing services | Validate with live CP + Envoy transcript | S7.7d/S7.7e |
 | Gateway CRUD | cluster/listener/route CRUD with broader Envoy field coverage | Implemented with V2 REST/CLI and xDS, but narrower typed specs | **Pre-S8 blocker:** close field parity across API schema, DB round-trip, xDS translation, CLI examples, and Envoy tests | S3, S4, S5, S7, S7.8 |
 | xDS delivery | ADS, ACK/NACK visibility | Implemented with stronger quarantine + persistence plus `ops xds status` / `xds nacks` CLI | Runbook examples still useful; product source of truth is persisted telemetry/NACK state | S5.5, S7.7a/e, S8.2b |
 | SDS/secrets | TLS secrets to Envoy | Implemented, stronger write-only API | Operator workflow docs; not a pre-S8 learning blocker unless used by examples | S6.3, S6.4, S12 |
@@ -75,7 +75,7 @@ exists and what "done" means.
 | S7.7a | Dev runbook | A developer can manually start CP, authenticate CLI, start Envoy, create traffic, and troubleshoot failures | `README.md` plus `docs/dev-dataplane.md` or equivalent | Commands work from a fresh DB without reading source or `scripts/e2e-envoy.sh` |
 | S7.7b | Bootstrap UX | A dataplane bootstrap is generated with one clear command and written to a file | Add `dataplane bootstrap` alias/rename over existing `/envoy-config`; add `--out`; make dev/prod mode explicit | Generated YAML works for dev plaintext and non-dev mTLS; errors explain missing cert/xDS inputs |
 | S7.7c | Dataplane lifecycle | Operator knows the supported way to run Envoy in V2 | Manual local Envoy is the supported pre-S8 lifecycle; defer V2-native `dataplane up/down/status` to packaging/S12 unless smoke tests prove it is needed | Decision recorded; macOS path avoids Docker host-network dependency; Envoy starts from generated bootstrap YAML |
-| S7.7d | Expose shortcut | One command turns an upstream into curlable traffic through Envoy | Implement `expose`/`unexpose` using V2 cluster/route-config/listener services and existing xDS propagation | `flowplane expose <url> --name demo` prints a listener port and curl hint; cleanup works |
+| S7.7d | Expose shortcut | One command turns an upstream into curlable traffic through Envoy | Implemented `expose`/`unexpose` using V2 cluster/route-config/listener services and existing xDS propagation | `flowplane expose <url> --name demo` prints a listener port and curl hint; cleanup works |
 | S7.7e | Workflow validation | The CP + DP + expose loop cannot regress silently | Add transcript/parser test and one live e2e/smoke path around the happy path and key diagnostics | Test proves CP start, DP bootstrap/connect, expose, curl, stats/NACK checks |
 | S7.8 | Field parity | Core gateway resources represent the Envoy surface V1 exposed, without V1's architectural shortcuts | Follow `spec/15-core-gateway-field-parity.md`; add typed domain fields, service validation, storage/API/CLI round trips, xDS translation, and live Envoy checks | V1-equivalent cluster, route, listener, filter, and secret examples are accepted by V2, stored once, emitted to Envoy, and regression-tested |
 
@@ -125,14 +125,14 @@ Flowplane v2 product loop
 │   └── Done when: Envoy connects to xDS and appears in status from generated bootstrap YAML
 │
 ├── 4. Resource-to-traffic happy path
-│   ├── Status: low-level resources exist; shortcut absent
+│   ├── Status: shortcut implemented; live workflow validation remains
 │   ├── Progress anchor: S3, S4, S5, S7; proposed pre-S8 basics checkpoint
 │   ├── Existing: cluster/listener/route-config CRUD
 │   ├── Existing: xDS pushes resources and live Envoy E2E proves traffic
-│   ├── Need: `flowplane expose <url> --name <name>`
-│   ├── Need: port allocation or explicit `--port`
-│   ├── Need: clear output with curl hint
-│   ├── Need: `unexpose` or equivalent cleanup
+│   ├── Existing: `flowplane expose <url> --name <name>`
+│   ├── Existing: port allocation or explicit `--port`
+│   ├── Existing: clear output with curl hint
+│   ├── Existing: `unexpose` cleanup
 │   └── Done when: upstream -> expose -> curl through Envoy works from CLI
 │
 ├── 4a. Core gateway field parity

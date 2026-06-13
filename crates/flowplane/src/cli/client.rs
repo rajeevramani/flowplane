@@ -30,7 +30,17 @@ impl RestClient {
         path: &str,
         body: Option<Value>,
     ) -> Result<Option<Value>> {
-        self.request_inner(method, path, body, self.global.revision, true)
+        self.request_inner(method, path, body, self.global.revision, true, false)
+            .await
+    }
+
+    pub(crate) async fn request_and_render(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Option<Value>> {
+        self.request_inner(method, path, body, self.global.revision, true, true)
             .await
     }
 
@@ -41,7 +51,8 @@ impl RestClient {
         body: Option<Value>,
         revision: Option<i64>,
     ) -> Result<Option<Value>> {
-        self.request_inner(method, path, body, revision, true).await
+        self.request_inner(method, path, body, revision, true, false)
+            .await
     }
 
     pub(crate) async fn get_optional(&self, path: &str) -> Result<Option<Value>> {
@@ -105,6 +116,7 @@ impl RestClient {
         body: Option<Value>,
         revision: Option<i64>,
         render_response: bool,
+        always_render_success: bool,
     ) -> Result<Option<Value>> {
         if self.global.dry_run && method != reqwest::Method::GET {
             let plan = json!({ "method": method.as_str(), "path": path, "body": body });
@@ -138,7 +150,8 @@ impl RestClient {
         }
         let value: Value = serde_json::from_str(&text).context("parse response JSON")?;
         if render_response
-            && (is_get
+            && (always_render_success
+                || is_get
                 || matches!(
                     self.global.format(),
                     OutputFormat::Json | OutputFormat::Yaml

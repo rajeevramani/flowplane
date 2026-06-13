@@ -100,6 +100,10 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         ))
         .routes(routes!(api_lifecycle_api::api_status))
         .routes(routes!(
+            crate::expose_api::expose,
+            crate::expose_api::unexpose
+        ))
+        .routes(routes!(
             dataplanes_api::list_dataplanes,
             dataplanes_api::create_dataplane
         ))

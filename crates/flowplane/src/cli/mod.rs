@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 use client::RestClient;
 pub use commands::{
     ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneBootstrapMode,
-    DataplaneCommand, GrantCommand, OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand,
-    SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, XdsCommand,
+    DataplaneCommand, ExposeCommand, GrantCommand, OpsCommand, OrgCommand, OrgMemberCommand,
+    ResourceCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand,
+    XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{config_path, credentials_path, effective, read_config, write_config, NamedContext};
@@ -868,6 +869,40 @@ pub async fn run_resource(
     Ok(())
 }
 
+pub async fn run_expose(global: GlobalOptions, command: ExposeCommand) -> Result<()> {
+    let client = RestClient::new(global)?;
+    let team = client.team(command.team)?;
+    client
+        .request_and_render(
+            reqwest::Method::POST,
+            &format!("/api/v1/teams/{team}/expose"),
+            Some(json!({
+                "name": command.name,
+                "upstream": command.upstream,
+                "path": command.path,
+                "port": command.port,
+            })),
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn run_unexpose(global: GlobalOptions, command: UnexposeCommand) -> Result<()> {
+    let client = RestClient::new(global)?;
+    let team = client.team(command.team)?;
+    client
+        .request_and_render(
+            reqwest::Method::DELETE,
+            &format!(
+                "/api/v1/teams/{team}/expose/{}",
+                query_component(&command.name)
+            ),
+            None,
+        )
+        .await?;
+    Ok(())
+}
+
 pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
     let client = RestClient::new(global)?;
     match command {
@@ -1567,6 +1602,8 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/listeners/{name}",
         "/api/v1/teams/{team}/route-configs",
         "/api/v1/teams/{team}/route-configs/{name}",
+        "/api/v1/teams/{team}/expose",
+        "/api/v1/teams/{team}/expose/{name}",
         "/api/v1/teams/{team}/api-definitions",
         "/api/v1/teams/{team}/api-definitions/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
@@ -1693,6 +1730,24 @@ mod tests {
         assert!(rendered.contains("audit"));
         assert!(rendered.contains("outbox"));
         assert!(rendered.contains("cluster.changed"));
+        assert!(!rendered.contains("{...}"));
+    }
+
+    #[test]
+    fn table_flattens_expose_response() {
+        let rendered = table(&json!({
+            "name": "demo",
+            "upstream": "http://127.0.0.1:3001",
+            "path": "/",
+            "port": 10001,
+            "curl_url": "http://127.0.0.1:10001/",
+            "cluster": {"name": "demo-upstream", "spec": {}},
+            "route_config": {"name": "demo-routes", "spec": {}},
+            "listener": {"name": "demo", "spec": {}}
+        }));
+        assert!(rendered.contains("CURL URL"));
+        assert!(rendered.contains("http://127.0.0.1:10001/"));
+        assert!(rendered.contains("demo-upstream"));
         assert!(!rendered.contains("{...}"));
     }
 

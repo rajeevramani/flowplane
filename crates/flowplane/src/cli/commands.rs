@@ -318,6 +318,26 @@ impl DataplaneBootstrapMode {
     }
 }
 
+#[derive(Debug, Args)]
+pub struct ExposeCommand {
+    pub upstream: String,
+    #[arg(long)]
+    pub name: String,
+    #[arg(long)]
+    pub team: Option<String>,
+    #[arg(long, default_value = "/")]
+    pub path: String,
+    #[arg(long)]
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, Args)]
+pub struct UnexposeCommand {
+    pub name: String,
+    #[arg(long)]
+    pub team: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum CertCommand {
     List {

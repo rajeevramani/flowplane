@@ -89,6 +89,16 @@ enum Command {
         #[command(subcommand)]
         command: cli::DataplaneCommand,
     },
+    /// Expose an upstream through Envoy with cluster + route + listener resources.
+    Expose {
+        #[command(flatten)]
+        command: cli::ExposeCommand,
+    },
+    /// Remove resources created by `expose`.
+    Unexpose {
+        #[command(flatten)]
+        command: cli::UnexposeCommand,
+    },
     /// Team stats.
     Stats {
         #[command(subcommand)]
@@ -151,6 +161,8 @@ fn main() -> anyhow::Result<()> {
         Command::Api { command } => runtime.block_on(cli::run_api(cli.client, command)),
         Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
         Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),
+        Command::Expose { command } => runtime.block_on(cli::run_expose(cli.client, command)),
+        Command::Unexpose { command } => runtime.block_on(cli::run_unexpose(cli.client, command)),
         Command::Stats { command } => runtime.block_on(cli::run_stats(cli.client, command)),
         Command::Ops { command } => runtime.block_on(cli::run_ops(cli.client, command)),
         Command::Apply { command } => runtime.block_on(cli::run_apply(cli.client, command)),
@@ -240,6 +252,20 @@ mod tests {
             "/certs/ca.crt",
         ])
         .expect("legacy dataplane envoy-config alias should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "expose",
+            "http://127.0.0.1:3001",
+            "--name",
+            "demo",
+            "--path",
+            "/",
+            "--port",
+            "10001",
+        ])
+        .expect("expose shortcut form should parse");
+        Cli::try_parse_from(["flowplane", "unexpose", "demo"])
+            .expect("unexpose shortcut form should parse");
     }
 
     #[test]

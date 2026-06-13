@@ -61,6 +61,9 @@ pub(crate) fn table(value: &Value) -> String {
     if let Some(flattened) = flatten_ops_trace(value) {
         return table(&flattened);
     }
+    if let Some(flattened) = flatten_expose(value) {
+        return table(&flattened);
+    }
     if let Some(flattened) = flatten_status_row(value) {
         return table(&flattened);
     }
@@ -127,6 +130,13 @@ fn ordered_columns(columns: BTreeSet<String>) -> Vec<String> {
         "id",
         "display_name",
         "description",
+        "upstream",
+        "path",
+        "port",
+        "curl_url",
+        "cluster_name",
+        "route_config_name",
+        "listener_name",
         "role",
         "email",
         "resource",
@@ -166,6 +176,45 @@ fn ordered_columns(columns: BTreeSet<String>) -> Vec<String> {
         }
     }
     ordered
+}
+
+fn flatten_expose(value: &Value) -> Option<Value> {
+    let obj = value.as_object()?;
+    if !(obj.contains_key("curl_url")
+        && obj.contains_key("cluster")
+        && obj.contains_key("route_config")
+        && obj.contains_key("listener"))
+    {
+        return None;
+    }
+    let mut row = serde_json::Map::new();
+    for key in ["name", "upstream", "path", "port", "curl_url"] {
+        if let Some(value) = obj.get(key) {
+            row.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(name) = obj
+        .get("cluster")
+        .and_then(|v| v.get("name"))
+        .and_then(Value::as_str)
+    {
+        row.insert("cluster_name".into(), Value::String(name.into()));
+    }
+    if let Some(name) = obj
+        .get("route_config")
+        .and_then(|v| v.get("name"))
+        .and_then(Value::as_str)
+    {
+        row.insert("route_config_name".into(), Value::String(name.into()));
+    }
+    if let Some(name) = obj
+        .get("listener")
+        .and_then(|v| v.get("name"))
+        .and_then(Value::as_str)
+    {
+        row.insert("listener_name".into(), Value::String(name.into()));
+    }
+    Some(Value::Array(vec![Value::Object(row)]))
 }
 
 fn flatten_status_row(value: &Value) -> Option<Value> {

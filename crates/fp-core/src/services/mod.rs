@@ -4,6 +4,7 @@
 pub mod api_lifecycle;
 pub mod clusters;
 pub mod dataplanes;
+pub mod expose;
 pub mod gateway;
 pub mod orgs;
 pub mod quota;

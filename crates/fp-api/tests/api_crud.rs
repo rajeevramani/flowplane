@@ -102,12 +102,12 @@ fn openapi_document_covers_every_registered_operation() {
     // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 4 dataplane
     // + 4 proxy-certificate + 3 ops/xds diagnostics operations.
     // + 4 secrets operations + 2 dataplane/stats telemetry operations.
-    // + 5 API lifecycle operations.
+    // + 5 API lifecycle operations + 2 expose shortcut operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 54,
-        "expected 54 documented operations, got {operations}"
+        operations, 56,
+        "expected 56 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -126,6 +126,8 @@ fn openapi_document_covers_every_registered_operation() {
     for path in [
         "/api/v1/teams/{team}/clusters",
         "/api/v1/teams/{team}/route-configs/{name}",
+        "/api/v1/teams/{team}/expose",
+        "/api/v1/teams/{team}/expose/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
         "/api/v1/teams/{team}/xds/status",
         "/api/v1/teams/{team}/ops/trace",
@@ -401,6 +403,66 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         .expect("get");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(json_of(response).await["code"], "not_found");
+
+    // S7.7d: expose shortcut creates normal gateway resources and unexpose removes them.
+    let expose_name = unique("demo");
+    let expose_base = format!("/api/v1/teams/{}/expose", team.name);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &expose_base,
+            Some(serde_json::json!({
+                "name": expose_name,
+                "upstream": "http://127.0.0.1:3001",
+                "path": "/",
+                "port": 10001
+            })),
+            None,
+        ))
+        .await
+        .expect("expose");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert_eq!(body["port"], 10001);
+    assert_eq!(body["curl_url"], "http://127.0.0.1:10001/");
+    assert_eq!(body["cluster"]["name"], format!("{expose_name}-upstream"));
+    assert_eq!(body["cluster"]["spec"]["endpoints"][0]["host"], "127.0.0.1");
+    assert_eq!(
+        body["route_config"]["name"],
+        format!("{expose_name}-routes")
+    );
+    assert_eq!(body["listener"]["name"], expose_name);
+    assert_eq!(
+        body["listener"]["spec"]["route_config"],
+        format!("{expose_name}-routes")
+    );
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("{expose_base}/{expose_name}"),
+            None,
+            None,
+        ))
+        .await
+        .expect("unexpose");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["cluster_name"], format!("{expose_name}-upstream"));
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/api/v1/teams/{}/listeners/{expose_name}", team.name),
+            None,
+            None,
+        ))
+        .await
+        .expect("get exposed listener");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     // S7.8f: advanced gateway specs round-trip through REST + storage without projection loss.
     let primary = unique("primary");
