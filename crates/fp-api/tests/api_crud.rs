@@ -851,6 +851,7 @@ async fn proxy_certificate_registry_flow_over_http() {
     )
     .expect("utf8");
     serde_yaml::from_str::<serde_yaml::Value>(&body).expect("mTLS bootstrap is valid YAML");
+    assert!(body.contains(&format!("id: \"team={}/dp-", team.id.as_uuid())));
     assert!(body.contains("cluster_name: xds_cluster"));
     assert!(body.contains("filename: \"/certs/client.crt\""));
     assert!(body.contains("filename: \"/certs/client.key\""));

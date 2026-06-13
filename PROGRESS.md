@@ -262,8 +262,13 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
       resources.
     - Tests: OpenAPI/CLI path parity, parser coverage, table rendering, and authenticated HTTP
       CRUD coverage assert creation, derived specs, and cleanup.
-  - [ ] S7.7e Transcript/E2E: CP + dataplane + expose + curl + stats/NACK checks pinned so the
+  - [x] S7.7e Transcript/E2E: CP + dataplane + expose + curl + stats/NACK checks pinned so the
         route-to-traffic loop cannot regress.
+    - Implemented: `scripts/e2e-envoy.sh` phase 1 now uses the product CLI path:
+      `dataplane create`, `expose`, generated dev bootstrap, local Envoy join, curl through
+      Envoy, `stats overview`, `ops xds status`, and `ops xds nacks`.
+    - Verified locally with Envoy 1.36.4: all seven live E2E phases passed, including CP restart
+      convergence, cross-team isolation, HTTP/auth filters, SDS rotation, and advanced parity.
 - [ ] S7.8 Core gateway field parity before learning (see
       `spec/15-core-gateway-field-parity.md`)
   - [x] S7.8a Finalize the field parity matrix against V1 examples and current V2 code:

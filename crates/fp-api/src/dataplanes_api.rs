@@ -10,6 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use fp_core::services::dataplanes as svc;
 use fp_core::PrincipalCtx;
+use fp_domain::authz::TeamRef;
 use fp_domain::dataplane::{Dataplane, ProxyCertificate};
 use fp_domain::{DomainError, RequestId, TeamStatsOverview};
 use serde::{Deserialize, Serialize};
@@ -393,7 +394,7 @@ pub async fn get_envoy_config(
         validate_bootstrap_query(&query)?;
         let team_ref = resolve_team(&state, &ctx, &team).await?;
         let dataplane = svc::get_dataplane(&state.pool, &ctx, team_ref, &name, rid).await?;
-        Ok::<_, fp_domain::DomainError>(render_envoy_bootstrap(&team, &dataplane, &query))
+        Ok::<_, fp_domain::DomainError>(render_envoy_bootstrap(team_ref, &dataplane, &query))
     };
     let body = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(([(header::CONTENT_TYPE, "text/yaml; charset=utf-8")], body).into_response())
@@ -567,9 +568,14 @@ fn validate_bootstrap_query(query: &EnvoyConfigQuery) -> Result<(), DomainError>
     Ok(())
 }
 
-fn render_envoy_bootstrap(team: &str, dataplane: &Dataplane, query: &EnvoyConfigQuery) -> String {
-    let node_id = format!("team={team}/dp-{}", dataplane.id.as_uuid());
-    let cluster = format!("{team}-cluster");
+fn render_envoy_bootstrap(
+    team: TeamRef,
+    dataplane: &Dataplane,
+    query: &EnvoyConfigQuery,
+) -> String {
+    let team_id = team.id.as_uuid().to_string();
+    let node_id = format!("team={team_id}/dp-{}", dataplane.id.as_uuid());
+    let cluster = format!("{team_id}-cluster");
     let dataplane_id = dataplane.id.as_uuid().to_string();
     let transport_socket = match query.mode {
         BootstrapMode::Dev => String::new(),
@@ -648,7 +654,7 @@ static_resources:
 "#,
         node_id = yaml_quote(&node_id),
         cluster = yaml_quote(&cluster),
-        team = yaml_quote(team),
+        team = yaml_quote(&team_id),
         dataplane_id = yaml_quote(&dataplane_id),
         dataplane_name = yaml_quote(&dataplane.name),
         admin_port = query.admin_port,

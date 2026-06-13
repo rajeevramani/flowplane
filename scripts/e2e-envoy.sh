@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Live Envoy E2E (S5.6, dev-mode path): boot CP -> configure cluster/route/listener via the
-# REST API -> a real Envoy joins over ADS -> traffic flows end to end.
+# Live Envoy E2E (S5.6/S7.7e, dev-mode path): boot CP -> configure via the CLI expose shortcut
+# -> generate dataplane bootstrap -> a real Envoy joins over ADS -> traffic flows end to end.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -52,44 +52,28 @@ TOKEN=$(grep -o '"dev_token":"[^"]*"' /tmp/fp-e2e-cp.log | cut -d'"' -f4)
 auth=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
 TEAM_ID=$(curl -fsS "${auth[@]}" http://$API/api/v1/teams | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['id'])")
 echo "team: $TEAM_ID"
+export FLOWPLANE_SERVER="http://$API"
+export FLOWPLANE_TOKEN="$TOKEN"
+export FLOWPLANE_ORG=dev-org
+export FLOWPLANE_TEAM=default
 
-curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/clusters \
-  -d "{\"name\":\"e2e-upstream\",\"spec\":{\"endpoints\":[{\"host\":\"127.0.0.1\",\"port\":$UPSTREAM_PORT}]}}" >/dev/null
-curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/route-configs \
-  -d '{"name":"e2e-routes","spec":{"virtual_hosts":[{"name":"default","domains":["*"],"routes":[{"name":"all","match":{"prefix":{"prefix":"/"}},"action":{"cluster":"e2e-upstream"}}]}]}}' >/dev/null
-curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/listeners \
-  -d "{\"name\":\"e2e-edge\",\"spec\":{\"address\":\"0.0.0.0\",\"port\":$GW_PORT,\"route_config\":\"e2e-routes\"}}" >/dev/null
-echo "resources created via REST"
-
-cat > /tmp/fp-e2e-bootstrap.yaml <<EOF
-node:
-  id: "team=$TEAM_ID/dp-e2e"
-  cluster: e2e
-admin:
-  address: { socket_address: { address: 127.0.0.1, port_value: $ADMIN_PORT } }
-dynamic_resources:
-  ads_config:
-    api_type: GRPC
-    transport_api_version: V3
-    grpc_services: [{ envoy_grpc: { cluster_name: xds_cluster } }]
-  cds_config: { ads: {}, resource_api_version: V3 }
-  lds_config: { ads: {}, resource_api_version: V3 }
-static_resources:
-  clusters:
-    - name: xds_cluster
-      connect_timeout: 1s
-      type: STRICT_DNS
-      typed_extension_protocol_options:
-        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
-          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
-          explicit_http_config: { http2_protocol_options: {} }
-      load_assignment:
-        cluster_name: xds_cluster
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address: { socket_address: { address: 127.0.0.1, port_value: $XDS_PORT } }
-EOF
+./target/debug/flowplane dataplane create dp-e2e --description "e2e local Envoy" >/dev/null
+./target/debug/flowplane expose "http://127.0.0.1:$UPSTREAM_PORT" \
+  --name e2e --path / --port "$GW_PORT" >/tmp/fp-e2e-expose.txt
+grep -q "http://127.0.0.1:$GW_PORT/" /tmp/fp-e2e-expose.txt || {
+  echo "expose output did not include curl URL"
+  cat /tmp/fp-e2e-expose.txt
+  exit 1
+}
+./target/debug/flowplane --out /tmp/fp-e2e-bootstrap.yaml \
+  dataplane bootstrap dp-e2e --mode dev \
+  --xds-host 127.0.0.1 --xds-port "$XDS_PORT" --admin-port "$ADMIN_PORT"
+grep -q "team=$TEAM_ID/dp-" /tmp/fp-e2e-bootstrap.yaml || {
+  echo "bootstrap did not include team UUID in node.id"
+  cat /tmp/fp-e2e-bootstrap.yaml
+  exit 1
+}
+echo "dataplane bootstrap and gateway resources created via CLI"
 
 if docker run -d --name fp-e2e-envoy --network host \
   -v /tmp/fp-e2e-bootstrap.yaml:/etc/envoy/envoy.yaml:ro \
@@ -122,6 +106,12 @@ wait_body() {
 }
 
 wait_body hello-from-upstream- || fail "initial traffic never flowed"
+./target/debug/flowplane stats overview >/tmp/fp-e2e-stats.txt
+grep -q "TOTAL DATAPLANES" /tmp/fp-e2e-stats.txt || fail "stats overview did not render dataplane totals"
+./target/debug/flowplane ops xds status >/tmp/fp-e2e-xds-status.txt
+grep -q "TOTAL DATAPLANES" /tmp/fp-e2e-xds-status.txt || fail "xds status did not render dataplane totals"
+./target/debug/flowplane ops xds nacks >/tmp/fp-e2e-xds-nacks.txt
+grep -q "no rows" /tmp/fp-e2e-xds-nacks.txt || fail "unexpected xDS NACKs after happy-path expose"
 echo "PHASE 1 OK: '$BODY' served through Envoy via ADS-delivered config"
 
 # ---- Phase 2: restart convergence. Kill the CP while Envoy keeps running; the restarted
@@ -144,6 +134,7 @@ CP_PID=$!
 for i in $(seq 1 40); do curl -fsS http://$API/healthz >/dev/null 2>&1 && break; sleep 0.5; done
 TOKEN=$(grep -o '"dev_token":"[^"]*"' "$CP_LOG" | cut -d'"' -f4)
 [ -n "$TOKEN" ] || fail "no dev token after restart"
+export FLOWPLANE_TOKEN="$TOKEN"
 auth=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
 grep -q "snapshot cache primed" "$CP_LOG" || fail "restarted CP did not prime the snapshot cache"
 
