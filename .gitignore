@@ -3,3 +3,6 @@
 .env
 *.pem
 *.key
+
+# ai-dev-framework local config
+.aidf.yml
