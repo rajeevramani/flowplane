@@ -206,9 +206,11 @@ Stats:
 ./target/debug/flowplane stats overview
 ```
 
-In this manual dev path there is no `fp-agent` sidecar yet, so request counters may not increase.
-The command should still return a valid overview. S7.7c/S7.7e cover the agent-backed lifecycle and
-validated stats path.
+xDS delivery status:
+
+```bash
+./target/debug/flowplane ops xds status
+```
 
 Recent xDS NACKs:
 
@@ -216,17 +218,20 @@ Recent xDS NACKs:
 ./target/debug/flowplane ops xds nacks
 ```
 
-Envoy config dump:
+This manual dev path starts Envoy directly, without `fp-agent`. Request counters may not increase
+until the agent-backed diagnostics path is included in a later local lifecycle wrapper. The normal
+operator path is still Flowplane diagnostics (`stats`, `ops xds status`, `ops xds nacks`), not
+direct Envoy admin access.
 
-```bash
-curl -fsS http://127.0.0.1:9901/config_dump
-```
+Envoy admin is loopback-only local debugging. Do not treat `curl :9901/config_dump` as a product or
+operator workflow; in the intended DP unit, `fp-agent` is the only component that scrapes Envoy
+admin and relays curated telemetry to the CP.
 
 If traffic does not flow, check in this order:
 
 1. CP logs show Envoy connected to xDS.
 2. `ops xds nacks` is empty.
-3. Envoy admin `config_dump` contains `local`, `local-routes`, and `local-upstream`.
+3. `ops xds status` shows the expected dataplane and no recent NACKs.
 4. The upstream is reachable at `http://127.0.0.1:3001/` from the same host/network namespace as
    Envoy.
 5. Port `10001` is not already occupied.

@@ -225,12 +225,14 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         prints the authorization URL, listens only on an explicit loopback callback URL, validates
         state, exchanges the code with S256 verifier, and stores `id_token` when present (else
         access token). `--device-code` remains the headless path.
-- [ ] S7.7 Core gateway parity before learning (see `spec/13-basics-before-learning-mindmap.md`)
-  - [ ] S7.7a Dev runbook: manual CP, auth, org/team context, dataplane bootstrap, Envoy start,
+- [x] S7.7 Core gateway parity before learning (see `spec/13-basics-before-learning-mindmap.md`)
+  - [x] S7.7a Dev runbook: manual CP, auth, org/team context, dataplane bootstrap, Envoy start,
         traffic curl, stats/NACK troubleshooting.
     - [x] Drafted `README.md` and `docs/dev-dataplane.md` for the current manual dev path.
-    - [ ] Live-validate the runbook against a fresh `flowplane_dev` database without reading
+    - [x] Live-validate the runbook against a fresh `flowplane_dev` database without reading
           `scripts/e2e-envoy.sh`.
+    - Verified manually by Rajeev after S7.7b-d updates: full `docs/dev-dataplane.md` path works
+      end to end.
   - [x] S7.7b Dataplane bootstrap CLI polish: dev plaintext bootstrap path, `--out` file output,
         and naming alignment (`dataplane bootstrap` with compatibility for current
         `dataplane envoy-config`).

@@ -42,11 +42,17 @@ mutation path before editing code.
    Production xDS is mTLS-or-off; partial TLS config fails boot; dev plaintext is explicit and
    gated; secret values are write-only over HTTP.
 
-9. **Contracts must not drift.**
+9. **Envoy admin is not an operator/product API.**
+   Envoy admin endpoints stay loopback-local to the dataplane unit. Product diagnostics and
+   operator workflows must use CP surfaces backed by persisted diagnostics, audit, outbox, and
+   xDS state. Only `fp-agent` may scrape Envoy admin, and only to relay curated telemetry to the
+   CP over the outbound diagnostics channel.
+
+10. **Contracts must not drift.**
    REST, OpenAPI, CLI, and MCP declarations should come from the same source where possible, with
    parity tests pinning the surface.
 
-10. **The V2 UX must improve V1.**
+11. **The V2 UX must improve V1.**
     V1 defines the user outcome; V2 defines the architecture and experience.
 
 ## 2. Domain Ownership
@@ -145,6 +151,7 @@ The DP unit is Envoy plus `fp-agent`.
 Rules:
 - DP connects outbound to CP over xDS-family gRPC
 - CP never dials Envoy admin ports
+- operator/product workflows must not require direct Envoy admin access
 - agent may scrape Envoy admin on loopback and relay curated telemetry
 - non-dev xDS requires mTLS
 - generated bootstrap carries resolved addresses/ports/cert paths explicitly
@@ -211,6 +218,7 @@ These patterns usually mean the architecture is drifting:
 - a local Docker/Compose assumption becomes the only supported deployment path
 - learning, AI, or MCP tools become live config before review/publish gates
 - diagnostics require CP inbound access to a dataplane
+- operator docs or CLI commands depend on `curl :9901/config_dump` as the normal validation path
 
 ## 6. Current S7.7/S8 Application
 
