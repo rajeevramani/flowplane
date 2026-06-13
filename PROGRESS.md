@@ -287,11 +287,22 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           listener mode, file access logs, and the global RLS HTTP filter against a real Envoy.
         - Verified locally with Envoy 1.36.4: all seven live E2E phases passed.
 - [ ] S8 Learning config-first
-  - [ ] S8.1 API lifecycle foundation (D-017): domain types + migration for
+  - [x] S8.1 API lifecycle foundation (D-017): domain types + migration for
         `api_definitions`, `api_route_bindings`, immutable `spec_versions`, generated
         `api_tools`, and retention policy rows. All records are team-owned, per-team named,
         and linked by typed FKs. Import/learn/publish/tool generation share this spine instead
         of v1's export/import string bridge.
+        - Implemented: `fp-domain::api_lifecycle` IDs/types, migration
+          `0010_api_lifecycle.sql`, and `fp-storage::repos::api_lifecycle` foundation
+          operations for API definitions, route bindings, append-only spec versions,
+          generated tool rows, and retention policies.
+        - Schema guarantees: per-team names, composite same-team FKs to gateway resources and
+          spec/tool parents, immutable `spec_versions` update trigger, deterministic spec hash,
+          and row-locked per-API version allocation for concurrent imports/learned publishes.
+        - Tests: `crates/fp-storage/tests/api_lifecycle.rs` covers per-team naming,
+          cross-team gateway reference rejection, spec immutability, generated tool references,
+          retention policy scoping, and concurrent version allocation without serializing the
+          test suite.
   - [ ] S8.2 API REST/CLI foundation: `api list|get|create|delete|status`; `api create
         --from-openapi` imports a spec into an `ApiDefinition` + imported `SpecVersion` and
         optionally creates/binds gateway resources through the existing cluster/listener/

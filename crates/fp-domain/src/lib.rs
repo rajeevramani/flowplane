@@ -4,6 +4,7 @@
 //! crates — errors, identifiers, lifecycle states, event types — originates here so all
 //! surfaces speak one language.
 
+pub mod api_lifecycle;
 pub mod authz;
 pub mod dataplane;
 pub mod error;
@@ -16,8 +17,9 @@ pub mod secret;
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
 pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
-    AgentId, AuditEntryId, ClusterId, DataplaneId, GrantId, ListenerId, MembershipId, OrgId,
-    ProxyCertificateId, RequestId, RouteConfigId, SecretId, TeamId, UserId,
+    AgentId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId, ClusterId, DataplaneId,
+    GrantId, ListenerId, MembershipId, OrgId, ProxyCertificateId, RequestId, RetentionPolicyId,
+    RouteConfigId, SecretId, SpecVersionId, TeamId, UserId,
 };
 pub use identity::{
     validate_name, Agent, AgentKind, EntityStatus, OrgRole, Organization, Team, User,

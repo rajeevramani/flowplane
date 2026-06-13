@@ -11,6 +11,24 @@ gaps feed spec/08.
 
 ---
 
+## 0.1 V2 config-first spine
+
+S8 starts from durable API lifecycle state before any capture injection or inference:
+
+- `api_definitions` are the team-owned roots for an API surface.
+- `api_route_bindings` attach an API to existing gateway route scope with same-team typed FKs.
+- `spec_versions` hold imported, learned, or manual OpenAPI content as append-only rows with
+  deterministic hashes and per-API version numbers.
+- `api_tools` are generated rows tied to one spec version; they remain data only until S11 MCP
+  serving.
+- retention policy rows define raw observation TTL and max retained spec versions for later ingest
+  and cleanup.
+
+This replaces v1's manual OpenAPI export/import bridge. Import, learn, review/publish, and tool
+generation all converge on the same API definition and spec version tables.
+
+---
+
 ## 1. End-to-end narrative
 
 ```

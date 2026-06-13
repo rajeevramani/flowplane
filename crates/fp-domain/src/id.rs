@@ -110,6 +110,26 @@ domain_id!(
     /// Identifies an SDS secret.
     SecretId
 );
+domain_id!(
+    /// Identifies an API definition, the config-first lifecycle root for learning/tools.
+    ApiDefinitionId
+);
+domain_id!(
+    /// Identifies a binding from an API definition to gateway route scope.
+    ApiRouteBindingId
+);
+domain_id!(
+    /// Identifies one immutable API spec version.
+    SpecVersionId
+);
+domain_id!(
+    /// Identifies one generated API tool row.
+    ApiToolId
+);
+domain_id!(
+    /// Identifies one API observation/spec retention policy.
+    RetentionPolicyId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]

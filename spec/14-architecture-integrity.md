@@ -214,6 +214,20 @@ These patterns usually mean the architecture is drifting:
 
 ## 6. Current S7.7/S8 Application
 
+For S8.1 API lifecycle foundation:
+- `api_definitions` are the config-first roots for imported APIs, learned APIs, generated tools,
+  and later MCP/API tool serving.
+- `api_route_bindings` link APIs to existing gateway route scope by typed same-team FKs; they do
+  not duplicate route config JSON or create a second routing authority.
+- `spec_versions` are append-only content rows. Review/publish state in later S8 slices must point
+  at versions or add explicit lifecycle records; it must not mutate a spec body in place.
+- `api_tools` are generated data rows attached to a concrete spec version. They are not live MCP
+  serving behavior until S11.
+- Retention policy rows are team-owned and may be API-scoped; raw observation retention in S8.5
+  must read from this policy rather than hard-coding learning cleanup.
+- Tests for API lifecycle storage use unique tenant/resource names and row-level locking where
+  concurrency matters, so they can run with the normal parallel suite.
+
 For S7.7 core gateway parity:
 - `expose` is a CLI/API workflow over existing gateway services, not a separate config model.
 - `dataplane bootstrap` wraps the existing bootstrap API and must keep dev/prod security explicit.
