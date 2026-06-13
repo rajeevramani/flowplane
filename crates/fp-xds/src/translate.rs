@@ -1594,4 +1594,24 @@ mod type_url_tests {
             "type.googleapis.com/envoy.extensions.path.match.uri_template.v3.UriTemplateMatchConfig"
         );
     }
+
+    #[test]
+    fn generic_secret_translates_to_envoy_sds_secret() {
+        let secret = secret_to_proto(
+            "api-token",
+            &SecretSpec::GenericSecret {
+                secret: "aGVsbG8=".into(),
+            },
+        )
+        .expect("secret");
+        assert_eq!(secret.name, "api-token");
+        let tls::secret::Type::GenericSecret(generic) = secret.r#type.expect("type") else {
+            panic!("expected generic secret");
+        };
+        let source = generic.secret.expect("source");
+        assert!(matches!(
+            source.specifier,
+            Some(core::data_source::Specifier::InlineBytes(bytes)) if bytes == b"hello"
+        ));
+    }
 }
