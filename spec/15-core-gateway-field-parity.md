@@ -133,14 +133,14 @@ For each field group below, "done" means:
 | --- | --- | --- |
 | Address and port | Present | Keep |
 | HTTP listener with RDS | Present | Keep |
-| Protocol enum: HTTP, HTTP/2, HTTPS, TCP | Partial in S7.8d | HTTP/HTTP2/HTTPS implemented with HCM codec mapping and HTTPS TLS validation. TCP remains a retain/defer decision because it needs a first-class TCP route/action model |
-| HTTPS downstream TLS | Partial | Keep and expand only where Envoy fields are missing |
+| Protocol enum: HTTP, HTTP/2, HTTPS, TCP | HTTP/HTTP2/HTTPS implemented in S7.8d | HTTP/HTTP2/HTTPS now have a typed listener protocol with HCM codec mapping and HTTPS TLS validation. TCP is explicitly deferred until V2 has a first-class TCP route/action model |
+| HTTPS downstream TLS | Implemented for single HTTP filter chain | SDS and file-backed certificate sources remain the supported V2 model |
 | Multiple filter chains | Missing | **Defer pre-S8** unless TLS/SNI routing requires it; V2 should avoid this complexity until needed |
 | Inline route config | Missing | **Reject by default.** Prefer RDS as the V2 architecture; add inline only for a concrete UX need |
-| TCP proxy | Missing | **Must implement** if TCP remains part of the V1 parity definition; otherwise explicitly defer |
+| TCP proxy | Deferred in S7.8d | Do not add TCP listener/proxy until the route/action domain can express TCP without overloading HTTP routes |
 | Access logs | Basic file access logs implemented in S7.8d | Typed listener `access_logs` emit `envoy.access_loggers.file`; learning can later inject capture logs through the same IR |
-| Tracing | Missing | **Must implement basic typed config** for OTel/Zipkin-or-generic decision, or explicitly defer with impact |
-| Request ID behavior | Translator-owned | Verify and document default behavior |
+| Tracing | Deferred in S7.8d | Track under observability/filter parity because provider-specific OTel/Zipkin/generic config needs API and cluster decisions |
+| Request ID behavior | Implemented in S7.8d | Translator always enables HCM request-id generation and response echo for ALS/extproc correlation |
 | HTTP filter chain order | Present for current subset | Keep router auto-append invariant |
 
 ## Filter Parity
