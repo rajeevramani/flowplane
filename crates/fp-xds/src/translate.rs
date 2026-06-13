@@ -490,6 +490,7 @@ pub fn route_config_to_proto(
             name: vhost.name.clone(),
             domains: vhost.domains.clone(),
             routes,
+            rate_limits: rate_limits_to_proto(&vhost.rate_limits),
             typed_per_filter_config: overrides_to_typed_config(&vhost.filter_overrides)?,
             ..Default::default()
         });
@@ -595,8 +596,59 @@ fn route_action_proto(
         path_rewrite_policy,
         timeout: Some(duration(rule.action.timeout_secs)),
         retry_policy: rule.action.retry_policy.as_ref().map(retry_policy_to_proto),
+        rate_limits: rate_limits_to_proto(&rule.action.rate_limits),
         ..Default::default()
     }))
+}
+
+fn rate_limits_to_proto(
+    limits: &[fp_domain::gateway::route_config::RateLimitDefinition],
+) -> Vec<rt::RateLimit> {
+    limits
+        .iter()
+        .map(|limit| rt::RateLimit {
+            stage: limit.stage.map(u32_value),
+            disable_key: limit.disable_key.clone().unwrap_or_default(),
+            actions: limit
+                .actions
+                .iter()
+                .map(rate_limit_action_to_proto)
+                .collect(),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn rate_limit_action_to_proto(
+    action: &fp_domain::gateway::route_config::RateLimitAction,
+) -> rt::rate_limit::Action {
+    use fp_domain::gateway::route_config::RateLimitAction;
+    let action_specifier = match action {
+        RateLimitAction::RequestHeaders {
+            header_name,
+            descriptor_key,
+            skip_if_absent,
+        } => rt::rate_limit::action::ActionSpecifier::RequestHeaders(
+            rt::rate_limit::action::RequestHeaders {
+                header_name: header_name.clone(),
+                descriptor_key: descriptor_key.clone(),
+                skip_if_absent: *skip_if_absent,
+            },
+        ),
+        RateLimitAction::GenericKey {
+            descriptor_value,
+            descriptor_key,
+        } => rt::rate_limit::action::ActionSpecifier::GenericKey(
+            rt::rate_limit::action::GenericKey {
+                descriptor_value: descriptor_value.clone(),
+                descriptor_key: descriptor_key.clone().unwrap_or_default(),
+                default_value: String::new(),
+            },
+        ),
+    };
+    rt::rate_limit::Action {
+        action_specifier: Some(action_specifier),
+    }
 }
 
 fn retry_policy_to_proto(retry: &fp_domain::gateway::route_config::RetryPolicy) -> rt::RetryPolicy {
@@ -1497,9 +1549,9 @@ mod tests {
         HttpHealthCheckMethod, MaglevPolicy, OutlierDetection, UpstreamProtocol, UpstreamTlsConfig,
     };
     use fp_domain::gateway::route_config::{
-        HeaderMatch, HeaderValueMatch, QueryParameterMatch, QueryValueMatch, RedirectAction,
-        RedirectResponseCode, RetryPolicy, RouteAction, RouteRule, VirtualHost,
-        WeightedClusterTarget,
+        HeaderMatch, HeaderValueMatch, QueryParameterMatch, QueryValueMatch, RateLimitAction,
+        RateLimitDefinition, RedirectAction, RedirectResponseCode, RetryPolicy, RouteAction,
+        RouteRule, VirtualHost, WeightedClusterTarget,
     };
 
     fn route_action(cluster: &str) -> RouteAction {
@@ -1511,6 +1563,7 @@ mod tests {
             template_rewrite: None,
             timeout_secs: 15,
             retry_policy: None,
+            rate_limits: Vec::new(),
         }
     }
 
@@ -1709,6 +1762,7 @@ mod tests {
                             template_rewrite: None,
                             timeout_secs: 30,
                             retry_policy: None,
+                            rate_limits: Vec::new(),
                         },
                         filter_overrides: Vec::new(),
                     },
@@ -1727,10 +1781,12 @@ mod tests {
                             template_rewrite: Some("/{id}".into()),
                             timeout_secs: 15,
                             retry_policy: None,
+                            rate_limits: Vec::new(),
                         },
                         filter_overrides: Vec::new(),
                     },
                 ],
+                rate_limits: Vec::new(),
                 filter_overrides: Vec::new(),
             }],
         };
@@ -1801,6 +1857,21 @@ mod tests {
                                 per_try_timeout_secs: Some(3),
                                 retriable_status_codes: vec![502, 503],
                             }),
+                            rate_limits: vec![RateLimitDefinition {
+                                stage: Some(1),
+                                disable_key: Some("rl.disable.preview".into()),
+                                actions: vec![
+                                    RateLimitAction::RequestHeaders {
+                                        header_name: "x-user".into(),
+                                        descriptor_key: "user".into(),
+                                        skip_if_absent: true,
+                                    },
+                                    RateLimitAction::GenericKey {
+                                        descriptor_value: "items".into(),
+                                        descriptor_key: Some("route".into()),
+                                    },
+                                ],
+                            }],
                         },
                         filter_overrides: Vec::new(),
                     },
@@ -1827,14 +1898,24 @@ mod tests {
                             template_rewrite: None,
                             timeout_secs: 15,
                             retry_policy: None,
+                            rate_limits: Vec::new(),
                         },
                         filter_overrides: Vec::new(),
                     },
                 ],
+                rate_limits: vec![RateLimitDefinition {
+                    stage: None,
+                    disable_key: None,
+                    actions: vec![RateLimitAction::GenericKey {
+                        descriptor_value: "default-vhost".into(),
+                        descriptor_key: None,
+                    }],
+                }],
                 filter_overrides: Vec::new(),
             }],
         };
         let proto = route_config_to_proto("advanced", &spec).expect("translate");
+        assert_eq!(proto.virtual_hosts[0].rate_limits.len(), 1);
         let routes = &proto.virtual_hosts[0].routes;
         let split_match = routes[0].r#match.as_ref().expect("split match");
         assert!(matches!(
@@ -1863,6 +1944,16 @@ mod tests {
         assert_eq!(retry.retry_on, "5xx,connect-failure");
         assert_eq!(retry.num_retries.as_ref().expect("retries").value, 2);
         assert_eq!(retry.retriable_status_codes, vec![502, 503]);
+        assert_eq!(split_action.rate_limits.len(), 1);
+        assert_eq!(
+            split_action.rate_limits[0]
+                .stage
+                .as_ref()
+                .expect("stage")
+                .value,
+            1
+        );
+        assert_eq!(split_action.rate_limits[0].actions.len(), 2);
 
         let redirect = match routes[1].action.as_ref().expect("redirect action") {
             rt::route::Action::Redirect(redirect) => redirect,
@@ -2070,6 +2161,7 @@ mod tests {
                         filter_type: "local_rate_limit".into(),
                     }],
                 }],
+                rate_limits: Vec::new(),
                 filter_overrides: vec![FilterOverride::Cors(CorsConfig {
                     allow_origin: vec![OriginMatcher::Suffix {
                         value: ".example".into(),
@@ -2297,6 +2389,7 @@ mod tests {
                         requirement_name: "admins-only".into(),
                     }],
                 }],
+                rate_limits: Vec::new(),
                 filter_overrides: vec![FilterOverride::Disable {
                     filter_type: "rbac".into(),
                 }],
@@ -2341,6 +2434,7 @@ mod type_url_tests {
             template_rewrite: None,
             timeout_secs: 15,
             retry_policy: None,
+            rate_limits: Vec::new(),
         }
     }
 
@@ -2362,6 +2456,7 @@ mod type_url_tests {
                     action: route_action("c"),
                     filter_overrides: Vec::new(),
                 }],
+                rate_limits: Vec::new(),
                 filter_overrides: Vec::new(),
             }],
         };

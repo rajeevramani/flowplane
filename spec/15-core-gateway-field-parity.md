@@ -124,8 +124,8 @@ For each field group below, "done" means:
 | Retry policy | Implemented in S7.8c | Typed retry-on, retry count, per-try timeout seconds, and retriable status codes |
 | Redirect action | Implemented in S7.8c | Typed host/scheme/path/prefix/status/strip-query redirect action |
 | Direct response action | Not currently modeled | **Defer pre-S8** unless required by a core gateway example |
-| Per-route/vhost rate limits | Missing | **Must design before S8; implement minimum route/vhost descriptor hooks if RLS remains in core parity** |
-| Typed per-filter config | Partial through overrides | Existing override path remains; expand as filter catalog and RLS hooks grow |
+| Per-route/vhost rate limits | Implemented in S7.8c | First-class V2 descriptor hooks on VirtualHost and RouteAction, emitting Envoy `RateLimit` with `request_headers` and `generic_key` actions. Global RLS enforcement filter remains a filter-parity item |
+| Typed per-filter config | Partial through overrides | Existing override path remains; expand as filter catalog grows |
 
 ## Listener Parity
 
@@ -155,7 +155,7 @@ For each field group below, "done" means:
 | JWT auth | Present | Keep |
 | Ext authz | Present | Keep |
 | RBAC | Present | Keep |
-| Global rate limit / RLS | Missing | **Must design before S8.** Implement minimum chain/per-route hooks if rate-limit parity is retained as pre-S8 |
+| Global rate limit / RLS | Partial | Route/vhost descriptor hooks exist; **remaining pre-S8 decision:** add the listener-chain `envoy.filters.http.ratelimit` client config and decide how much of V1's RLS domain/policy workflow is required before learning |
 | Rate limit quota | Missing | **Defer pre-S8** unless quota behavior is needed for AI gateway budgeting immediately |
 | ExtProc | Missing | **Must design now, implement learning-required subset in S8.** It must enter through typed IR, not post-hoc injection |
 | OAuth2 | Missing | **Defer pre-S8** to a later auth slice |

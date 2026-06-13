@@ -249,14 +249,14 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S7.8b Cluster parity: typed V2 support for V1-exposed Envoy cluster fields, including
         richer load-balancing options, DNS behavior, upstream TLS/SNI/validation, upstream
         protocol, health checks, circuit breakers, and outlier detection.
-  - [ ] S7.8c Route parity: typed V2 support for header/query/regex matching, weighted clusters,
+  - [x] S7.8c Route parity: typed V2 support for header/query/regex matching, weighted clusters,
         retry policy, redirect/direct-response decisions, route/vhost rate-limit hooks, rewrites,
         and per-filter config.
         - Implemented: regex path matching, header/query matchers, weighted clusters, retry policy,
-          redirect action, and URI-template rewrite translation.
-        - Remaining before close: route/vhost rate-limit descriptor hook decision and any minimum
-          implementation needed for core parity; direct response remains explicitly deferred in
-          `spec/15-core-gateway-field-parity.md`.
+          redirect action, URI-template rewrite translation, and route/vhost RLS descriptor hooks
+          (`request_headers` + `generic_key` actions).
+        - Direct response remains explicitly deferred in `spec/15-core-gateway-field-parity.md`;
+          global RLS enforcement filter remains tracked under filter parity, not route parity.
   - [ ] S7.8d Listener parity: typed V2 support for protocol/listener kind, TCP proxy if retained,
         downstream TLS coverage, access logs, tracing, filter-chain decisions, and request-id
         behavior.

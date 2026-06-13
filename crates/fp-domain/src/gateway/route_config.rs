@@ -38,6 +38,9 @@ pub struct VirtualHost {
     /// Host-header matches: valid hostnames, `*.suffix` wildcards, or literal `*`.
     pub domains: Vec<String>,
     pub routes: Vec<RouteRule>,
+    /// Virtual-host descriptor generators for the global RLS filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rate_limits: Vec<RateLimitDefinition>,
     /// Per-vhost filter behavior (S5.8); a route-level override wins over the vhost's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filter_overrides: Vec<crate::gateway::filters::FilterOverride>,
@@ -100,6 +103,9 @@ pub struct RouteAction {
     pub timeout_secs: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_policy: Option<RetryPolicy>,
+    /// Route descriptor generators for the global RLS filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rate_limits: Vec<RateLimitDefinition>,
 }
 
 fn default_route_timeout() -> u32 {
@@ -124,6 +130,33 @@ pub struct RetryPolicy {
     pub per_try_timeout_secs: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retriable_status_codes: Vec<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitDefinition {
+    /// Envoy RLS stage, 0-10. Omitted means stage 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_key: Option<String>,
+    pub actions: Vec<RateLimitAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RateLimitAction {
+    RequestHeaders {
+        header_name: String,
+        descriptor_key: String,
+        #[serde(default)]
+        skip_if_absent: bool,
+    },
+    GenericKey {
+        descriptor_value: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        descriptor_key: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -300,6 +333,7 @@ impl RouteConfigSpec {
                     )));
                 }
             }
+            validate_rate_limits(&vhost.rate_limits)?;
             crate::gateway::filters::validate_filter_overrides(&vhost.filter_overrides)?;
             if vhost.routes.is_empty() || vhost.routes.len() > MAX_ROUTES_PER_VHOST {
                 return Err(DomainError::validation(format!(
@@ -409,9 +443,10 @@ fn validate_action(
         if action.prefix_rewrite.is_some()
             || action.template_rewrite.is_some()
             || action.retry_policy.is_some()
+            || !action.rate_limits.is_empty()
         {
             return Err(DomainError::validation(format!(
-                "route \"{route_name}\": redirect cannot combine with route rewrites or retry_policy"
+                "route \"{route_name}\": redirect cannot combine with route rewrites, retry_policy, or rate_limits"
             )));
         }
     }
@@ -447,6 +482,59 @@ fn validate_action(
     }
     if let Some(retry) = &action.retry_policy {
         validate_retry_policy(retry, action.timeout_secs)?;
+    }
+    validate_rate_limits(&action.rate_limits)?;
+    Ok(())
+}
+
+fn validate_rate_limits(rate_limits: &[RateLimitDefinition]) -> DomainResult<()> {
+    if rate_limits.len() > 32 {
+        return Err(DomainError::validation(
+            "rate_limits must contain at most 32 definitions",
+        ));
+    }
+    for limit in rate_limits {
+        if let Some(stage) = limit.stage {
+            if stage > 10 {
+                return Err(DomainError::validation(
+                    "rate_limits.stage must be in 0..=10",
+                ));
+            }
+        }
+        if let Some(disable_key) = &limit.disable_key {
+            valid_token("rate_limits.disable_key", disable_key)?;
+        }
+        if limit.actions.is_empty() || limit.actions.len() > 16 {
+            return Err(DomainError::validation(
+                "rate_limits.actions must contain 1-16 actions",
+            ));
+        }
+        for action in &limit.actions {
+            validate_rate_limit_action(action)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_rate_limit_action(action: &RateLimitAction) -> DomainResult<()> {
+    match action {
+        RateLimitAction::RequestHeaders {
+            header_name,
+            descriptor_key,
+            ..
+        } => {
+            valid_token("rate_limits.request_headers.header_name", header_name)?;
+            valid_token("rate_limits.request_headers.descriptor_key", descriptor_key)?;
+        }
+        RateLimitAction::GenericKey {
+            descriptor_value,
+            descriptor_key,
+        } => {
+            valid_match_value("rate_limits.generic_key.descriptor_value", descriptor_value)?;
+            if let Some(descriptor_key) = descriptor_key {
+                valid_token("rate_limits.generic_key.descriptor_key", descriptor_key)?;
+            }
+        }
     }
     Ok(())
 }
@@ -594,9 +682,11 @@ mod tests {
                         template_rewrite: None,
                         timeout_secs: 15,
                         retry_policy: None,
+                        rate_limits: Vec::new(),
                     },
                     filter_overrides: Vec::new(),
                 }],
+                rate_limits: Vec::new(),
                 filter_overrides: Vec::new(),
             }],
         }
@@ -773,6 +863,7 @@ mod tests {
             template_rewrite: None,
             timeout_secs: 15,
             retry_policy: None,
+            rate_limits: Vec::new(),
         };
         assert!(spec.validate().is_err(), "invalid redirect scheme");
 
@@ -793,6 +884,7 @@ mod tests {
             template_rewrite: None,
             timeout_secs: 15,
             retry_policy: None,
+            rate_limits: Vec::new(),
         };
         assert!(spec.validate().is_err(), "no-op redirect");
     }

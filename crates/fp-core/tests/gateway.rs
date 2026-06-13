@@ -338,9 +338,11 @@ mod referential {
                         template_rewrite: None,
                         timeout_secs: 15,
                         retry_policy: None,
+                        rate_limits: Vec::new(),
                     },
                     filter_overrides: Vec::new(),
                 }],
+                rate_limits: Vec::new(),
                 filter_overrides: Vec::new(),
             }],
         }

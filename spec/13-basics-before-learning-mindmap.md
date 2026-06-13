@@ -51,7 +51,7 @@ blockers from field-parity blockers.
 | Agent telemetry/stats | Agent reports warming/status; stats commands | Foundation implemented; CLI has stats overview | Pre-S8: prove happy path or clearly document dev plaintext limitations | S6.5, S7.7e |
 | Ops summary | `xds status`, `ops doctor`-style flow | NACKs/stats exist; no rich doctor | Not required before S8; record as S12 hardening unless needed for tests | S7.7e, S12 |
 | Filters | Broad V1 filter catalog | V2 typed IR subset shipped; several filters missing | Field parity decision required before S8: implement core gateway filters now or explicitly document a signed-off deferral | S5.8, S7.8, S10, S11, S12 |
-| Rate limiting | local/RLS workflows | local_rate_limit filter shipped; RLS/domain/policy deferred | Field parity decision required before S8 because rate-limit config is part of the gateway contract V1 exposed | S5.8, S7.8, S10/S12 |
+| Rate limiting | local/RLS workflows | local_rate_limit filter shipped; route/vhost RLS descriptor hooks implemented; RLS enforcement filter/domain/policy workflow deferred | Before S8, decide whether to add the global RLS listener filter and minimal domain/policy workflow now or explicitly defer to S10/S12 | S5.8, S7.8, S10/S12 |
 | MCP gateway tools | api_* through Envoy | Deferred | Must wait for published specs/tools | S11 |
 | Learning capture | learn from live traffic | Deferred | Must use the S7.7-proven route-to-traffic loop | S8/S9 |
 | Packaging | release installer/platform bundle | None in V2 | Defer until CLI contract is clean; avoid premature V1 script port | S12 |
