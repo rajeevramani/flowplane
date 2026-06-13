@@ -46,10 +46,10 @@ blockers from field-parity blockers.
 | Dataplane process | `dataplane up/down`, bundle scripts | e2e script only | **Pre-S8 blocker:** choose manual Envoy or V2-native lifecycle command | S7.7c |
 | Route-to-traffic shortcut | `expose` creates cluster/route/listener | Low-level CRUD only | **Pre-S8 blocker:** implement `expose`/`unexpose` on V2 services | S7.7d |
 | Gateway CRUD | cluster/listener/route CRUD with broader Envoy field coverage | Implemented with V2 REST/CLI and xDS, but narrower typed specs | **Pre-S8 blocker:** close field parity across API schema, DB round-trip, xDS translation, CLI examples, and Envoy tests | S3, S4, S5, S7, S7.8 |
-| xDS delivery | ADS, ACK/NACK visibility | Implemented with stronger quarantine + persistence | Surface in runbook and diagnostics path | S5.5, S7.7a/e |
+| xDS delivery | ADS, ACK/NACK visibility | Implemented with stronger quarantine + persistence plus `ops xds status` / `xds nacks` CLI | Runbook examples still useful; product source of truth is persisted telemetry/NACK state | S5.5, S7.7a/e, S8.2b |
 | SDS/secrets | TLS secrets to Envoy | Implemented, stronger write-only API | Operator workflow docs; not a pre-S8 learning blocker unless used by examples | S6.3, S6.4, S12 |
 | Agent telemetry/stats | Agent reports warming/status; stats commands | Foundation implemented; CLI has stats overview | Pre-S8: prove happy path or clearly document dev plaintext limitations | S6.5, S7.7e |
-| Ops summary | `xds status`, `ops doctor`-style flow | NACKs/stats exist; no rich doctor | Not required before S8; record as S12 hardening unless needed for tests | S7.7e, S12 |
+| Ops summary | `xds status`, trace/correlation, `ops doctor`-style flow | `ops xds status` and `ops trace` implemented; no rich doctor/topology/validate yet | Doctor/topology/validate remain S12 hardening unless needed for tests | S7.7e, S8.2b, S12 |
 | Filters | Broad V1 filter catalog | V2 typed IR subset shipped; several filters missing | Field parity decision required before S8: implement core gateway filters now or explicitly document a signed-off deferral | S5.8, S7.8, S10, S11, S12 |
 | Rate limiting | local/RLS workflows | local_rate_limit filter shipped; route/vhost RLS descriptor hooks implemented; RLS enforcement filter/domain/policy workflow deferred | Before S8, decide whether to add the global RLS listener filter and minimal domain/policy workflow now or explicitly defer to S10/S12 | S5.8, S7.8, S10/S12 |
 | MCP gateway tools | api_* through Envoy | Deferred | Must wait for published specs/tools | S11 |

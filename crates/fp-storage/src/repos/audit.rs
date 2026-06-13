@@ -5,8 +5,9 @@
 //! depend on the audit insert, but a failed insert is itself loudly logged and counted —
 //! silent audit loss is how incidents become unexplainable.
 
-use fp_domain::{AuditEntryId, OrgId, RequestId, TeamId, UserId};
-use sqlx::{PgPool, Postgres, Transaction};
+use fp_domain::{AuditEntryId, DomainError, DomainResult, OrgId, RequestId, TeamId, UserId};
+use sqlx::types::chrono::{DateTime, Utc};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActorType {
@@ -85,6 +86,19 @@ pub struct AuditEntry {
     pub detail: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuditTraceRow {
+    pub id: uuid::Uuid,
+    pub request_id: Option<RequestId>,
+    pub actor_label: String,
+    pub surface: String,
+    pub action: String,
+    pub resource: String,
+    pub outcome: String,
+    pub detail: serde_json::Value,
+    pub occurred_at: DateTime<Utc>,
+}
+
 impl AuditEntry {
     pub fn denial(
         request_id: RequestId,
@@ -159,6 +173,48 @@ pub async fn record_best_effort(pool: &PgPool, entry: &AuditEntry) {
         metrics::counter!("fp_audit_write_failures_total").increment(1);
         tracing::error!(action = %entry.action, "audit write failed: {e}");
     }
+}
+
+pub async fn trace_rows(
+    pool: &PgPool,
+    team_id: TeamId,
+    request_id: Option<RequestId>,
+    path: Option<&str>,
+    limit: i64,
+) -> DomainResult<Vec<AuditTraceRow>> {
+    let rows = sqlx::query(
+        "SELECT id, request_id, actor_label, surface, action, resource, outcome, detail, occurred_at \
+         FROM audit_log \
+         WHERE team_id = $1 \
+           AND ($2::uuid IS NULL OR request_id = $2) \
+           AND ($3::text IS NULL OR resource ILIKE ('%' || $3 || '%') OR action ILIKE ('%' || $3 || '%')) \
+         ORDER BY occurred_at DESC \
+         LIMIT $4",
+    )
+    .bind(team_id.as_uuid())
+    .bind(request_id.map(|r| r.as_uuid()))
+    .bind(path)
+    .bind(limit.clamp(1, 200))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("query audit trace rows: {e}")))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| AuditTraceRow {
+            id: row.get("id"),
+            request_id: row
+                .get::<Option<uuid::Uuid>, _>("request_id")
+                .map(RequestId::from),
+            actor_label: row.get("actor_label"),
+            surface: row.get("surface"),
+            action: row.get("action"),
+            resource: row.get("resource"),
+            outcome: row.get("outcome"),
+            detail: row.get("detail"),
+            occurred_at: row.get("occurred_at"),
+        })
+        .collect())
 }
 
 #[cfg(test)]

@@ -191,10 +191,10 @@ spec) on create/update, `-o/--output` per conventions above.
 |---|---|---|
 | `status [NAME]` | — | listeners/clusters/filters `?limit=1` + stats overview, or listener lookup. Plain output, no `-o`. |
 | `doctor` | — | Health probes against base URL + team resources. Plain checklist output. |
-| `trace <PATH>` | `--port` | GET `/ops/trace?path=...`. |
+| `trace` | `--request-id`, `--trace-id`, `--path`, `--limit` | GET `/api/v1/teams/{team}/ops/trace?...`; persisted audit/outbox correlation, not a live Envoy admin trace. |
 | `topology` / `validate` | `-o` | `/ops/topology`, `/ops/validate`. |
-| `xds status` | `--dataplane` | `/ops/xds/status`. |
-| `xds nacks` | `--dataplane`, `--type` (CDS/RDS/LDS/EDS), `--since`, `--limit` | `/ops/xds/nacks`. |
+| `xds status` | `--team` | `/api/v1/teams/{team}/xds/status`. |
+| `xds nacks` | `--team` | `/api/v1/teams/{team}/xds/nacks`. |
 | `audit [list]` | `--resource-type`, `--action`, `--since`, `--limit` (20) | `/ops/audit`. Bare `flowplane audit` defaults to `list`. |
 | `stats overview/clusters/cluster <NAME>` | `-o` | `/stats/overview`, `/stats/clusters[/{n}]`. |
 | `route-views list/stats` | `-o` | `/api/v1/route-views[/stats]` (unscoped). |

@@ -7,8 +7,9 @@
 //! replica works, others skip past instead of blocking.
 
 use fp_domain::event::{DomainEvent, EventScope};
-use fp_domain::{DomainError, DomainResult};
+use fp_domain::{DomainError, DomainResult, TeamId};
 use sqlx::postgres::PgListener;
+use sqlx::types::chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::future::Future;
 use std::time::Duration;
@@ -48,6 +49,15 @@ pub struct StoredEvent {
     pub event: DomainEvent,
     pub scope: EventScope,
     pub trace_context: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventTraceRow {
+    pub seq: i64,
+    pub event_type: String,
+    pub payload: serde_json::Value,
+    pub trace_context: serde_json::Value,
+    pub occurred_at: DateTime<Utc>,
 }
 
 /// Register a consumer cursor (idempotent). Call once before `run_consumer`.
@@ -170,6 +180,43 @@ pub async fn consumer_lag(pool: &PgPool, consumer: &str) -> DomainResult<i64> {
     .await
     .map_err(|e| DomainError::internal(format!("outbox: lag: {e}")))?;
     Ok(lag.unwrap_or(0))
+}
+
+pub async fn trace_rows(
+    pool: &PgPool,
+    team_id: TeamId,
+    trace_id: Option<&str>,
+    path: Option<&str>,
+    limit: i64,
+) -> DomainResult<Vec<EventTraceRow>> {
+    let trace_like = trace_id.map(|id| format!("%{id}%"));
+    let rows = sqlx::query(
+        "SELECT seq, event_type, payload, trace_context, occurred_at \
+         FROM events \
+         WHERE team_id = $1 \
+           AND ($2::text IS NULL OR trace_context::text LIKE $2) \
+           AND ($3::text IS NULL OR payload::text ILIKE ('%' || $3 || '%') OR event_type ILIKE ('%' || $3 || '%')) \
+         ORDER BY occurred_at DESC \
+         LIMIT $4",
+    )
+    .bind(team_id.as_uuid())
+    .bind(trace_like.as_deref())
+    .bind(path)
+    .bind(limit.clamp(1, 200))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("query outbox trace rows: {e}")))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| EventTraceRow {
+            seq: row.get("seq"),
+            event_type: row.get("event_type"),
+            payload: row.get("payload"),
+            trace_context: row.get("trace_context"),
+            occurred_at: row.get("occurred_at"),
+        })
+        .collect())
 }
 
 /// Long-running consumer loop: LISTEN for wakeups with a poll fallback, drain batches,

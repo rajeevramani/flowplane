@@ -246,11 +246,11 @@ Exact request/response schemas: see the committed OpenAPI JSON.
 
 | Method | Path | Behavior |
 |---|---|---|
-| GET | `/api/v1/teams/{team}/ops/trace` | request tracing |
+| GET | `/api/v1/teams/{team}/ops/trace` | persisted request/config-change correlation by `request_id`, `trace_id`, or resource/path substring |
 | GET | `/api/v1/teams/{team}/ops/topology` | resource topology |
 | GET | `/api/v1/teams/{team}/ops/validate` | config preflight validation |
-| GET | `/api/v1/teams/{team}/ops/xds/status` | xDS delivery status |
-| GET | `/api/v1/teams/{team}/ops/xds/nacks` | NACK history |
+| GET | `/api/v1/teams/{team}/xds/status` | xDS delivery status from persisted dataplane telemetry and NACK history |
+| GET | `/api/v1/teams/{team}/xds/nacks` | NACK history |
 | GET | `/api/v1/teams/{team}/ops/audit` | team audit query |
 | GET | `/api/v1/teams/{team}/ops/audit/volume` | audit volume |
 | GET | `/api/v1/teams/{team}/ops/learning/{id}/health` | learning-session pipeline health |

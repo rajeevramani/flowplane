@@ -79,3 +79,15 @@ pub async fn list(pool: &PgPool, team_id: TeamId, limit: i64) -> DomainResult<Ve
     .map_err(|e| DomainError::internal(format!("list nacks: {e}")))?;
     Ok(rows.iter().map(from_row).collect())
 }
+
+pub async fn count_recent(pool: &PgPool, team_id: TeamId, minutes: i64) -> DomainResult<i64> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint FROM xds_nack_events \
+         WHERE team_id = $1 AND created_at > now() - ($2::text || ' minutes')::interval",
+    )
+    .bind(team_id.as_uuid())
+    .bind(minutes.clamp(1, 1440))
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count recent nacks: {e}")))
+}

@@ -55,6 +55,12 @@ pub(crate) fn render(global: &GlobalOptions, value: &Value) -> Result<()> {
 }
 
 pub(crate) fn table(value: &Value) -> String {
+    if let Some(flattened) = flatten_xds_status(value) {
+        return table(&flattened);
+    }
+    if let Some(flattened) = flatten_ops_trace(value) {
+        return table(&flattened);
+    }
     if let Some(flattened) = flatten_status_row(value) {
         return table(&flattened);
     }
@@ -116,6 +122,7 @@ pub(crate) fn table(value: &Value) -> String {
 
 fn ordered_columns(columns: BTreeSet<String>) -> Vec<String> {
     let preferred = [
+        "health",
         "name",
         "id",
         "display_name",
@@ -135,7 +142,15 @@ fn ordered_columns(columns: BTreeSet<String>) -> Vec<String> {
         "total_requests",
         "total_errors",
         "warming_failures",
+        "source",
+        "event_type",
+        "outcome",
+        "surface",
+        "request_id",
+        "recent_nack_count",
+        "config_verified_dataplanes",
         "last_heartbeat_at",
+        "occurred_at",
         "created_at",
         "updated_at",
     ];
@@ -197,6 +212,86 @@ fn flatten_status_row(value: &Value) -> Option<Value> {
         row.insert("tool_count".into(), count.clone());
     }
     Some(Value::Object(row))
+}
+
+fn flatten_xds_status(value: &Value) -> Option<Value> {
+    let obj = value.as_object()?;
+    if !(obj.contains_key("health")
+        && obj.contains_key("total_dataplanes")
+        && obj.contains_key("dataplanes"))
+    {
+        return None;
+    }
+    let mut row = serde_json::Map::new();
+    for key in [
+        "health",
+        "total_dataplanes",
+        "live_dataplanes",
+        "stale_dataplanes",
+        "config_verified_dataplanes",
+        "recent_nack_count",
+        "total_requests",
+        "total_errors",
+        "warming_failures",
+    ] {
+        if let Some(value) = obj.get(key) {
+            row.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(latest) = obj.get("latest_nack").and_then(Value::as_object) {
+        if let Some(created_at) = latest.get("created_at") {
+            row.insert("latest_nack_at".into(), created_at.clone());
+        }
+        if let Some(node_id) = latest.get("node_id") {
+            row.insert("latest_nack_node".into(), node_id.clone());
+        }
+        if let Some(type_url) = latest.get("type_url") {
+            row.insert("latest_nack_type".into(), type_url.clone());
+        }
+    }
+    Some(Value::Array(vec![Value::Object(row)]))
+}
+
+fn flatten_ops_trace(value: &Value) -> Option<Value> {
+    let obj = value.as_object()?;
+    let audit = obj.get("audit")?.as_array()?;
+    let events = obj.get("events")?.as_array()?;
+    let mut rows = Vec::with_capacity(audit.len() + events.len());
+    for item in audit {
+        let Some(item) = item.as_object() else {
+            continue;
+        };
+        let mut row = serde_json::Map::new();
+        row.insert("source".into(), Value::String("audit".into()));
+        for key in [
+            "occurred_at",
+            "request_id",
+            "surface",
+            "action",
+            "resource",
+            "outcome",
+            "actor_label",
+        ] {
+            if let Some(value) = item.get(key) {
+                row.insert(key.to_string(), value.clone());
+            }
+        }
+        rows.push(Value::Object(row));
+    }
+    for item in events {
+        let Some(item) = item.as_object() else {
+            continue;
+        };
+        let mut row = serde_json::Map::new();
+        row.insert("source".into(), Value::String("outbox".into()));
+        for key in ["occurred_at", "event_type", "seq"] {
+            if let Some(value) = item.get(key) {
+                row.insert(key.to_string(), value.clone());
+            }
+        }
+        rows.push(Value::Object(row));
+    }
+    Some(Value::Array(rows))
 }
 
 fn short_hash(value: &Value) -> Value {

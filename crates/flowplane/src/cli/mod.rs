@@ -1157,6 +1157,18 @@ pub async fn run_ops(global: GlobalOptions, command: OpsCommand) -> Result<()> {
     let client = RestClient::new(global)?;
     match command {
         OpsCommand::Xds {
+            command: XdsCommand::Status { team },
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/xds/status"),
+                    None,
+                )
+                .await?;
+        }
+        OpsCommand::Xds {
             command: XdsCommand::Nacks { team },
         } => {
             let team = client.team(team)?;
@@ -1168,8 +1180,52 @@ pub async fn run_ops(global: GlobalOptions, command: OpsCommand) -> Result<()> {
                 )
                 .await?;
         }
+        OpsCommand::Trace {
+            team,
+            request_id,
+            trace_id,
+            path,
+            limit,
+        } => {
+            let team = client.team(team)?;
+            let mut query = Vec::new();
+            if let Some(request_id) = request_id {
+                query.push(("request_id", request_id));
+            }
+            if let Some(trace_id) = trace_id {
+                query.push(("trace_id", trace_id));
+            }
+            if let Some(path) = path {
+                query.push(("path", path));
+            }
+            query.push(("limit", limit.to_string()));
+            let query = query
+                .into_iter()
+                .map(|(key, value)| format!("{key}={}", query_component(&value)))
+                .collect::<Vec<_>>()
+                .join("&");
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/ops/trace?{query}"),
+                    None,
+                )
+                .await?;
+        }
     }
     Ok(())
+}
+
+fn query_component(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                vec![byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
 }
 
 pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<()> {
@@ -1499,6 +1555,8 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/secrets/{name}/rotate",
         "/api/v1/teams/{team}/stats/overview",
         "/api/v1/teams/{team}/xds/nacks",
+        "/api/v1/teams/{team}/xds/status",
+        "/api/v1/teams/{team}/ops/trace",
     ]
     .into_iter()
     .collect()
@@ -1559,6 +1617,55 @@ mod tests {
         assert!(rendered.contains("LATEST SPEC VERSION"));
         assert!(rendered.contains("imported"));
         assert!(rendered.contains("1234567890ab"));
+        assert!(!rendered.contains("{...}"));
+    }
+
+    #[test]
+    fn table_flattens_xds_status() {
+        let rendered = table(&json!({
+            "health": "healthy",
+            "total_dataplanes": 1,
+            "live_dataplanes": 1,
+            "stale_dataplanes": 0,
+            "config_verified_dataplanes": 1,
+            "total_requests": 42,
+            "total_errors": 0,
+            "warming_failures": 0,
+            "recent_nack_count": 0,
+            "dataplanes": [{
+                "name": "local",
+                "id": "dp-1",
+                "live": true
+            }]
+        }));
+        assert!(rendered.contains("HEALTH"));
+        assert!(rendered.contains("LIVE DATAPLANES"));
+        assert!(rendered.contains("healthy"));
+        assert!(!rendered.contains("{...}"));
+    }
+
+    #[test]
+    fn table_flattens_ops_trace_rows() {
+        let rendered = table(&json!({
+            "audit": [{
+                "occurred_at": "2026-06-14T00:00:00Z",
+                "request_id": "019f0000-0000-7000-8000-000000000001",
+                "surface": "rest",
+                "action": "cluster.create",
+                "resource": "clusters/api",
+                "outcome": "success",
+                "actor_label": "dev"
+            }],
+            "events": [{
+                "seq": 10,
+                "event_type": "cluster.changed",
+                "occurred_at": "2026-06-14T00:00:01Z"
+            }]
+        }));
+        assert!(rendered.contains("SOURCE"));
+        assert!(rendered.contains("audit"));
+        assert!(rendered.contains("outbox"));
+        assert!(rendered.contains("cluster.changed"));
         assert!(!rendered.contains("{...}"));
     }
 

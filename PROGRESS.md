@@ -327,7 +327,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           stdin (`-`) because parsing is content-based. REST continues receiving normalized JSON.
         - Tests: parser unit tests cover JSON, YAML, and malformed input with combined
           JSON/YAML error context.
-  - [ ] S8.2b Operator diagnostics parity before learning: V1 had `xds status` and `trace`;
+  - [x] S8.2b Operator diagnostics parity before learning: V1 had `xds status` and `trace`;
         V2 already has NACK history, diagnostics gRPC ingest, request IDs, trace IDs, W3C
         `traceparent`, and optional OTLP export, but needs user-facing REST/CLI rollups:
         `flowplane ops xds status` for per-team/dataplane xDS delivery health and
@@ -335,6 +335,15 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         trace id. Keep this read-only and sourced from persisted diagnostics/audit/outbox/NACK
         state; do not make Envoy admin access or in-memory stream state the product source of
         truth.
+        - Implemented: REST `GET /api/v1/teams/{team}/xds/status` summarizes persisted
+          dataplane telemetry plus recent NACKs; REST `GET /api/v1/teams/{team}/ops/trace`
+          correlates persisted audit/outbox rows by request id, trace id, or resource/path
+          substring.
+        - CLI: `flowplane ops xds status`, `flowplane ops xds nacks`, and
+          `flowplane ops trace --request-id/--trace-id/--path` render readable tables by
+          default while JSON/YAML expose the full persisted rows.
+        - Tests: OpenAPI operation-count/path pin, CLI endpoint parity, and table renderer
+          tests cover the new diagnostics surfaces.
   - [ ] S8.3 Capture-session model: `learn start|list|get|stop|cancel` against an
         `ApiDefinition` or explicit bound route scope; session state machine, sample/byte/path
         quotas, health counters, target sample/timeout completion, and transactional events.

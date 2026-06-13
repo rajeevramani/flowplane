@@ -120,6 +120,8 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(secrets_api::get_secret))
         .routes(routes!(secrets_api::rotate_secret))
         .routes(routes!(crate::xds_api::list_nacks))
+        .routes(routes!(crate::xds_api::status))
+        .routes(routes!(crate::xds_api::trace))
         .split_for_parts()
 }
 

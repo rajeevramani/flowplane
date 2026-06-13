@@ -340,10 +340,26 @@ pub enum OpsCommand {
         #[command(subcommand)]
         command: XdsCommand,
     },
+    Trace {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        request_id: Option<String>,
+        #[arg(long)]
+        trace_id: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum XdsCommand {
+    Status {
+        #[arg(long)]
+        team: Option<String>,
+    },
     Nacks {
         #[arg(long)]
         team: Option<String>,
