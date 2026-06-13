@@ -224,6 +224,35 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         state, exchanges the code with S256 verifier, and stores `id_token` when present (else
         access token). `--device-code` remains the headless path.
 - [ ] S8 Learning config-first
+  - [ ] S8.1 API lifecycle foundation (D-017): domain types + migration for
+        `api_definitions`, `api_route_bindings`, immutable `spec_versions`, generated
+        `api_tools`, and retention policy rows. All records are team-owned, per-team named,
+        and linked by typed FKs. Import/learn/publish/tool generation share this spine instead
+        of v1's export/import string bridge.
+  - [ ] S8.2 API REST/CLI foundation: `api list|get|create|delete|status`; `api create
+        --from-openapi` imports a spec into an `ApiDefinition` + imported `SpecVersion` and
+        optionally creates/binds gateway resources through the existing cluster/listener/
+        route-config services; no MCP serving yet, only generated tool rows.
+  - [ ] S8.3 Capture-session model: `learn start|list|get|stop|cancel` against an
+        `ApiDefinition` or explicit bound route scope; session state machine, sample/byte/path
+        quotas, health counters, target sample/timeout completion, and transactional events.
+  - [ ] S8.4 Team-scoped capture injection: xDS adds ALS/ExtProc only for the selected team's
+        listener/route scopes; per-message team/api/session binding is validated before ingest.
+        Cross-team broad-session poaching test must prove A cannot receive B traffic.
+  - [ ] S8.5 Observation ingest pipeline: bounded sharded merge by `(team, session,
+        request_id)`, batched counter updates, body/header redaction, raw observation TTL, and
+        health-visible drop accounting so sample counters cannot lie.
+  - [ ] S8.6 Inference and aggregation v2: v1-inspired JSON schema/path heuristics, but with
+        host-aware endpoint keys, frequency/min-sample required thresholds, header
+        allowlist/frequency rules, path-cardinality caps with outlier bucket, confidence that
+        does not penalize legitimate optional fields, and deterministic SpecVersion diffs.
+  - [ ] S8.7 Review/publish loop: learned SpecVersions can be reviewed/rejected/published;
+        publish regenerates `api_tools` rows from the published spec version and marks
+        freshness. Tools remain data only until S11 serving.
+  - [ ] S8 exit: config-first E2E from CLI (create/import API → bind route → start learn →
+        traffic → learned spec → review/publish → generated tool rows → delete upstream →
+        zero orphans); poisoning tests for header flood and path explosion; retention test for
+        raw observations.
 - [ ] S9 Learning traffic-first
 - [ ] S10 AI gateway
 - [ ] S11 MCP server + tools

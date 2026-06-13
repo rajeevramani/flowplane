@@ -300,3 +300,41 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   admin jobs) that wants direct storage access, either route it through `fp-core::services` or
   update this decision with a named read-side exception before implementation.
 - **Status:** decided (post-S7 crate-boundary review).
+
+## D-017: Learning is an API lifecycle aggregate, not a sidecar schema pipeline
+
+- **Context:** v1's learning loop works, but it is stitched together by string conventions:
+  learning sessions, inferred rows, aggregated schemas, route metadata, OpenAPI imports, and
+  MCP tools all live as separate records with manual export/import/enable hops between them.
+  That creates drift: exports are not re-importable without editing, tools go stale, matching
+  depends on exact path strings, and capture is listener-wide with CP-side filtering.
+- **Decision:** S8 introduces a typed, team-owned `ApiDefinition` aggregate as the spine for
+  the loop: route bindings, capture sessions, observations, immutable `SpecVersion`s, publish
+  state, and generated tool rows all reference the same API identity. Learning remains data
+  until an operator reviews/publishes a spec version. Publishing is the integration point:
+  it regenerates the API's tool projection and, in later traffic-first work, produces route
+  materialization plans. The v1 algorithms are reference material only; the v2 shape is
+  stricter and more integrated.
+- **Accuracy improvements over v1:**
+  - Observations are keyed by `(team, api_definition, capture_scope, host, method, normalized_path)`
+    so two hosts or route bindings with the same path cannot collapse into one schema.
+  - Capture is scoped to team-owned listeners/routes at injection time, not all listeners with
+    CP-side path regex filtering. Per-message team/API/session ids are validated before ingest.
+  - Required fields use frequency thresholds with minimum sample counts rather than v1's brittle
+    100% rule; optional-rich APIs should still earn high confidence.
+  - Header export uses allowlist/frequency thresholds and length caps. One hostile request must
+    not become an OpenAPI parameter.
+  - Path templating keeps v1's useful heuristics, but adds cardinality caps and an outlier bucket
+    so random-word path floods do not create unbounded endpoints.
+- **Efficiency improvements over v1:**
+  - ALS sample counts are batched; hot-path capture does not update one DB row per request.
+  - The worker pipeline is sharded by `(team, session, request_id)` and bounded at every queue;
+    drops are accounted against session health instead of silently disagreeing with counters.
+  - Raw inference intermediates have TTL/retention after aggregation, so transient enum
+    candidates and header examples do not persist forever.
+  - Aggregation is incremental per API endpoint and spec version, not a full ad hoc export/import
+    round trip.
+- **Integration rule:** OpenAPI import, config-first learning, traffic-first discovery, and AI
+  gateway APIs all produce or update `ApiDefinition`/`SpecVersion` records. MCP tools are a
+  generated projection of the published spec version, not manually managed schema copies.
+- **Status:** decided for S8 (founder direction, 2026-06-13).
