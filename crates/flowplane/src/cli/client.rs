@@ -3,6 +3,7 @@ use crate::cli::output::{print_mutation_summary, render, render_error};
 use anyhow::{Context, Result};
 use serde_json::json;
 use serde_json::Value;
+use std::fs;
 
 pub(crate) struct RestClient {
     http: reqwest::Client,
@@ -67,6 +68,34 @@ impl RestClient {
         serde_json::from_str(&text)
             .context("parse response JSON")
             .map(Some)
+    }
+
+    pub(crate) async fn request_text(&self, method: reqwest::Method, path: &str) -> Result<String> {
+        if self.global.dry_run && method != reqwest::Method::GET {
+            let plan = json!({ "method": method.as_str(), "path": path });
+            render(&self.global, &plan)?;
+            return Ok(String::new());
+        }
+        let url = self.url(path);
+        let mut req = self.http.request(method, url);
+        req = self.add_auth_headers(req, self.global.revision);
+        let response = req.send().await.context("send request")?;
+        let status = response.status();
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let text = response.text().await.context("read response body")?;
+        if !status.is_success() {
+            return Err(render_error(status, request_id, &text));
+        }
+        if let Some(out) = &self.global.out {
+            fs::write(out, &text).with_context(|| format!("write {}", out.display()))?;
+        } else {
+            print!("{text}");
+        }
+        Ok(text)
     }
 
     async fn request_inner(

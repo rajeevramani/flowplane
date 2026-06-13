@@ -1,4 +1,4 @@
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
@@ -275,10 +275,13 @@ pub enum DataplaneCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    #[command(alias = "envoy-config")]
     Bootstrap {
         #[arg(long)]
         team: Option<String>,
         name: String,
+        #[arg(long, value_enum, default_value_t = DataplaneBootstrapMode::Dev)]
+        mode: DataplaneBootstrapMode,
         #[arg(long, default_value = "127.0.0.1")]
         xds_host: String,
         #[arg(long, default_value_t = 18000)]
@@ -286,16 +289,33 @@ pub enum DataplaneCommand {
         #[arg(long, default_value_t = 9901)]
         admin_port: u16,
         #[arg(long)]
-        cert_path: String,
+        cert_path: Option<String>,
         #[arg(long)]
-        key_path: String,
+        key_path: Option<String>,
         #[arg(long)]
-        ca_path: String,
+        ca_path: Option<String>,
     },
     Cert {
         #[command(subcommand)]
         command: CertCommand,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum DataplaneBootstrapMode {
+    /// Plaintext xDS for local FLOWPLANE_DEV_MODE runs.
+    Dev,
+    /// mTLS xDS for non-dev dataplanes.
+    Mtls,
+}
+
+impl DataplaneBootstrapMode {
+    pub(crate) fn as_query_value(self) -> &'static str {
+        match self {
+            Self::Dev => "dev",
+            Self::Mtls => "mtls",
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

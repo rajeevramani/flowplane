@@ -212,6 +212,34 @@ mod tests {
             "payments",
         ])
         .expect("api import form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "--out",
+            "/tmp/flowplane-envoy.yaml",
+            "dataplane",
+            "bootstrap",
+            "dp-local",
+            "--mode",
+            "dev",
+            "--xds-host",
+            "127.0.0.1",
+        ])
+        .expect("dev dataplane bootstrap form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "dataplane",
+            "envoy-config",
+            "dp-local",
+            "--mode",
+            "mtls",
+            "--cert-path",
+            "/certs/client.crt",
+            "--key-path",
+            "/certs/client.key",
+            "--ca-path",
+            "/certs/ca.crt",
+        ])
+        .expect("legacy dataplane envoy-config alias should parse");
     }
 
     #[test]

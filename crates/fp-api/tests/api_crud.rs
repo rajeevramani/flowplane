@@ -788,10 +788,34 @@ async fn proxy_certificate_registry_flow_over_http() {
             .to_vec(),
     )
     .expect("utf8");
+    serde_yaml::from_str::<serde_yaml::Value>(&body).expect("mTLS bootstrap is valid YAML");
     assert!(body.contains("cluster_name: xds_cluster"));
     assert!(body.contains("filename: \"/certs/client.crt\""));
     assert!(body.contains("filename: \"/certs/client.key\""));
     assert!(body.contains("filename: \"/certs/ca.crt\""));
+
+    let dev_config_path =
+        format!("{dataplanes}/{dataplane}/envoy-config?mode=dev&xds_host=127.0.0.1");
+    let response = app
+        .clone()
+        .oneshot(request("GET", &dev_config_path, None))
+        .await
+        .expect("dev envoy config");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes()
+            .to_vec(),
+    )
+    .expect("utf8");
+    serde_yaml::from_str::<serde_yaml::Value>(&body).expect("dev bootstrap is valid YAML");
+    assert!(body.contains("cluster_name: xds_cluster"));
+    assert!(!body.contains("transport_socket:"));
+    assert!(!body.contains("filename:"));
 
     let certs = format!("/api/v1/teams/{}/proxy-certificates", team.name);
     let (ca_cert_path, ca_key_path) = write_test_ca("issue");

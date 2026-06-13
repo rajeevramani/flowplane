@@ -171,8 +171,22 @@ impl From<TeamStatsOverview> for TeamStatsOverviewView {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BootstrapMode {
+    Dev,
+    Mtls,
+}
+
+fn default_bootstrap_mode() -> BootstrapMode {
+    BootstrapMode::Mtls
+}
+
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct EnvoyConfigQuery {
+    /// Bootstrap transport mode. Use `dev` only with FLOWPLANE_DEV_MODE plaintext xDS.
+    #[serde(default = "default_bootstrap_mode")]
+    pub mode: BootstrapMode,
     /// Host or DNS name Envoy uses to reach the control plane xDS listener.
     #[serde(default = "default_xds_host")]
     pub xds_host: String,
@@ -183,11 +197,14 @@ pub struct EnvoyConfigQuery {
     #[serde(default = "default_admin_port")]
     pub admin_port: u16,
     /// Dataplane client certificate path as seen by Envoy.
-    pub cert_path: String,
+    #[serde(default)]
+    pub cert_path: Option<String>,
     /// Dataplane private key path as seen by Envoy.
-    pub key_path: String,
+    #[serde(default)]
+    pub key_path: Option<String>,
     /// Control-plane/client-CA bundle path as seen by Envoy.
-    pub ca_path: String,
+    #[serde(default)]
+    pub ca_path: Option<String>,
 }
 
 fn default_xds_host() -> String {
@@ -515,12 +532,7 @@ pub async fn revoke_proxy_certificate(
 }
 
 fn validate_bootstrap_query(query: &EnvoyConfigQuery) -> Result<(), DomainError> {
-    for (name, value) in [
-        ("xds_host", query.xds_host.as_str()),
-        ("cert_path", query.cert_path.as_str()),
-        ("key_path", query.key_path.as_str()),
-        ("ca_path", query.ca_path.as_str()),
-    ] {
+    for (name, value) in [("xds_host", query.xds_host.as_str())] {
         if value.trim().is_empty() {
             return Err(DomainError::validation(format!("{name} must not be empty")));
         }
@@ -530,6 +542,28 @@ fn validate_bootstrap_query(query: &EnvoyConfigQuery) -> Result<(), DomainError>
             )));
         }
     }
+    if matches!(query.mode, BootstrapMode::Mtls) {
+        for (name, value) in [
+            ("cert_path", query.cert_path.as_deref()),
+            ("key_path", query.key_path.as_deref()),
+            ("ca_path", query.ca_path.as_deref()),
+        ] {
+            let Some(value) = value else {
+                return Err(
+                    DomainError::validation(format!("{name} is required when mode=mtls"))
+                        .with_hint("use mode=dev only for local FLOWPLANE_DEV_MODE plaintext xDS"),
+                );
+            };
+            if value.trim().is_empty() {
+                return Err(DomainError::validation(format!("{name} must not be empty")));
+            }
+            if value.chars().any(|c| c.is_control()) {
+                return Err(DomainError::validation(format!(
+                    "{name} must not contain control characters"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -537,6 +571,33 @@ fn render_envoy_bootstrap(team: &str, dataplane: &Dataplane, query: &EnvoyConfig
     let node_id = format!("team={team}/dp-{}", dataplane.id.as_uuid());
     let cluster = format!("{team}-cluster");
     let dataplane_id = dataplane.id.as_uuid().to_string();
+    let transport_socket = match query.mode {
+        BootstrapMode::Dev => String::new(),
+        BootstrapMode::Mtls => format!(
+            r#"      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain:
+                  filename: {cert_path}
+                private_key:
+                  filename: {key_path}
+            validation_context:
+              trusted_ca:
+                filename: {ca_path}
+"#,
+            cert_path = yaml_quote(
+                query
+                    .cert_path
+                    .as_deref()
+                    .expect("validated mTLS cert_path")
+            ),
+            key_path = yaml_quote(query.key_path.as_deref().expect("validated mTLS key_path")),
+            ca_path = yaml_quote(query.ca_path.as_deref().expect("validated mTLS ca_path")),
+        ),
+    };
     format!(
         r#"node:
   id: {node_id}
@@ -583,19 +644,7 @@ static_resources:
                     socket_address:
                       address: {xds_host}
                       port_value: {xds_port}
-      transport_socket:
-        name: envoy.transport_sockets.tls
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-          common_tls_context:
-            tls_certificates:
-              - certificate_chain:
-                  filename: {cert_path}
-                private_key:
-                  filename: {key_path}
-            validation_context:
-              trusted_ca:
-                filename: {ca_path}
+{transport_socket}
 "#,
         node_id = yaml_quote(&node_id),
         cluster = yaml_quote(&cluster),
@@ -605,9 +654,7 @@ static_resources:
         admin_port = query.admin_port,
         xds_host = yaml_quote(&query.xds_host),
         xds_port = query.xds_port,
-        cert_path = yaml_quote(&query.cert_path),
-        key_path = yaml_quote(&query.key_path),
-        ca_path = yaml_quote(&query.ca_path),
+        transport_socket = transport_socket.trim_end(),
     )
 }
 

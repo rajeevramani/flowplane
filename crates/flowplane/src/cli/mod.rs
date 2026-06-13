@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 
 use client::RestClient;
 pub use commands::{
-    ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneCommand,
-    GrantCommand, OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand, SecretCommand,
-    StatsCommand, TeamCommand, TeamMemberCommand, XdsCommand,
+    ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneBootstrapMode,
+    DataplaneCommand, GrantCommand, OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand,
+    SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{config_path, credentials_path, effective, read_config, write_config, NamedContext};
@@ -1060,6 +1060,7 @@ pub async fn run_dataplane(global: GlobalOptions, command: DataplaneCommand) -> 
         DataplaneCommand::Bootstrap {
             team,
             name,
+            mode,
             xds_host,
             xds_port,
             admin_port,
@@ -1068,14 +1069,40 @@ pub async fn run_dataplane(global: GlobalOptions, command: DataplaneCommand) -> 
             ca_path,
         } => {
             let team = client.team(team)?;
-            let query = format!("xds_host={xds_host}&xds_port={xds_port}&admin_port={admin_port}&cert_path={cert_path}&key_path={key_path}&ca_path={ca_path}");
+            if mode == DataplaneBootstrapMode::Mtls
+                && (cert_path.is_none() || key_path.is_none() || ca_path.is_none())
+            {
+                anyhow::bail!(
+                    "--cert-path, --key-path, and --ca-path are required with --mode mtls"
+                );
+            }
+            let mut query = vec![
+                ("mode", mode.as_query_value().to_string()),
+                ("xds_host", xds_host),
+                ("xds_port", xds_port.to_string()),
+                ("admin_port", admin_port.to_string()),
+            ];
+            if let Some(cert_path) = cert_path {
+                query.push(("cert_path", cert_path));
+            }
+            if let Some(key_path) = key_path {
+                query.push(("key_path", key_path));
+            }
+            if let Some(ca_path) = ca_path {
+                query.push(("ca_path", ca_path));
+            }
+            let query = query
+                .into_iter()
+                .map(|(key, value)| format!("{key}={}", query_component(&value)))
+                .collect::<Vec<_>>()
+                .join("&");
             client
-                .request(
+                .request_text(
                     reqwest::Method::GET,
                     &format!("/api/v1/teams/{team}/dataplanes/{name}/envoy-config?{query}"),
-                    None,
                 )
-                .await?
+                .await?;
+            None
         }
         DataplaneCommand::Cert { command } => return run_cert(client, command).await,
     };

@@ -883,6 +883,7 @@ dependencies = [
  "opentelemetry",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sqlx",
  "tokio",
  "tower",

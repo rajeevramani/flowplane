@@ -231,9 +231,18 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
     - [x] Drafted `README.md` and `docs/dev-dataplane.md` for the current manual dev path.
     - [ ] Live-validate the runbook against a fresh `flowplane_dev` database without reading
           `scripts/e2e-envoy.sh`.
-  - [ ] S7.7b Dataplane bootstrap CLI polish: dev plaintext bootstrap path, `--out` file output,
+  - [x] S7.7b Dataplane bootstrap CLI polish: dev plaintext bootstrap path, `--out` file output,
         and naming alignment (`dataplane bootstrap` with compatibility for current
         `dataplane envoy-config`).
+    - Implemented: `flowplane dataplane bootstrap <name> --mode dev` emits plaintext xDS
+      bootstrap YAML for local dev mode, while `--mode mtls` keeps the production cert/key/CA
+      requirements. The CLI now handles `text/yaml` responses directly and writes bootstrap files
+      via the existing global `--out` flag.
+    - Compatibility: the REST endpoint remains `/dataplanes/{name}/envoy-config`; existing mTLS
+      callers without an explicit mode continue to work.
+    - Tests: parser coverage pins the `dataplane bootstrap --mode dev --out` form; REST coverage
+      asserts dev bootstrap omits TLS transport sockets and mTLS bootstrap includes certificate
+      paths.
   - [ ] S7.7c Dataplane lifecycle decision: either document manual local Envoy as the supported
         pre-S8 path or implement V2-native `dataplane up/down/status` without porting v1 compose
         internals.

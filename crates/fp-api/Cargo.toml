@@ -30,6 +30,7 @@ uuid = { workspace = true }
 fp-core = { workspace = true, features = ["dev-oidc"] }
 http-body-util = { workspace = true }
 openssl = { workspace = true }
+serde_yaml = { workspace = true }
 uuid = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 

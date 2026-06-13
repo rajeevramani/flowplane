@@ -100,15 +100,9 @@ cd /tmp/fp-upstream
 python3 -m http.server 3001
 ```
 
-## 6. Dataplane Record Note
+## 6. Create a Dataplane Record
 
-The manual dev bootstrap below uses the plaintext dev xDS resolver and identifies the dataplane by
-`node.id` shape: `team=<team-id>/dp-local`. That path does not require a dataplane database row.
-
-Non-dev mTLS does require a registered dataplane and active proxy certificate. The product bootstrap
-flow for that path is tracked in S7.7b.
-
-You can still exercise the dataplane REST/CLI surface:
+The dev bootstrap command uses this row to generate a stable Envoy `node.id`.
 
 ```bash
 ./target/debug/flowplane dataplane create dp-local --description "manual local Envoy"
@@ -187,67 +181,27 @@ Apply them:
 
 ## 8. Start Envoy
 
-The current bootstrap API emits a production-style mTLS bootstrap. Dev mode xDS is plaintext, so
-for the manual dev loop use this plaintext bootstrap until S7.7b adds first-class dev bootstrap UX.
-
-First get the dev team ID:
+Generate the dev plaintext bootstrap:
 
 ```bash
-TEAM_ID="$(
-  curl -fsS \
-    -H "Authorization: Bearer ${FLOWPLANE_TOKEN}" \
-    -H "X-Flowplane-Org: ${FLOWPLANE_ORG}" \
-    "${FLOWPLANE_SERVER}/api/v1/teams" \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)[0]["id"])'
-)"
-printf '%s\n' "$TEAM_ID"
+./target/debug/flowplane --out /tmp/flowplane-envoy.yaml \
+  dataplane bootstrap dp-local \
+  --mode dev \
+  --xds-host 127.0.0.1 \
+  --xds-port 18000 \
+  --admin-port 9901
 ```
 
-Create `/tmp/flowplane-envoy.yaml`:
+For non-dev dataplanes, use mTLS mode with paths as Envoy sees them:
 
 ```bash
-cat > /tmp/flowplane-envoy.yaml <<EOF
-node:
-  id: "team=${TEAM_ID}/dp-local"
-  cluster: flowplane-local
-admin:
-  address:
-    socket_address:
-      address: 127.0.0.1
-      port_value: 9901
-dynamic_resources:
-  ads_config:
-    api_type: GRPC
-    transport_api_version: V3
-    grpc_services:
-      - envoy_grpc:
-          cluster_name: xds_cluster
-  cds_config:
-    ads: {}
-    resource_api_version: V3
-  lds_config:
-    ads: {}
-    resource_api_version: V3
-static_resources:
-  clusters:
-    - name: xds_cluster
-      connect_timeout: 1s
-      type: STRICT_DNS
-      typed_extension_protocol_options:
-        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
-          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
-          explicit_http_config:
-            http2_protocol_options: {}
-      load_assignment:
-        cluster_name: xds_cluster
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address:
-                    socket_address:
-                      address: 127.0.0.1
-                      port_value: 18000
-EOF
+./target/debug/flowplane --out /tmp/flowplane-envoy.yaml \
+  dataplane bootstrap dp-local \
+  --mode mtls \
+  --xds-host cp.example.internal \
+  --cert-path /etc/flowplane/tls/client.crt \
+  --key-path /etc/flowplane/tls/client.key \
+  --ca-path /etc/flowplane/tls/ca.crt
 ```
 
 Start local Envoy:
@@ -316,11 +270,6 @@ If traffic does not flow, check in this order:
 
 These are known gaps, not operator mistakes:
 
-- `dataplane bootstrap` exists in the CLI command tree, but the generic CLI response renderer
-  expects JSON while the API returns `text/yaml`.
-- The bootstrap endpoint currently emits an mTLS bootstrap; dev plaintext xDS needs first-class
-  explicit support.
-- There is no `--out` convenience specifically for bootstrap YAML yet.
 - There is no V2-native `dataplane up/down/status` command yet.
 - There is no `flowplane expose` shortcut yet; resources must be created manually.
 - This runbook should be pinned by an S7.7e transcript/e2e test.
