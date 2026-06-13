@@ -494,11 +494,16 @@ async fn subscription_change_echoing_last_nonce_is_answered() {
                     matcher: fp_domain::gateway::route_config::PathMatch::Prefix {
                         prefix: "/".into(),
                     },
+                    headers: Vec::new(),
+                    query_parameters: Vec::new(),
                     action: fp_domain::gateway::route_config::RouteAction {
-                        cluster: upstream.clone(),
+                        cluster: Some(upstream.clone()),
+                        weighted_clusters: None,
+                        redirect: None,
                         prefix_rewrite: None,
                         template_rewrite: None,
                         timeout_secs: 15,
+                        retry_policy: None,
                     },
                     filter_overrides: Vec::new(),
                 }],

@@ -112,20 +112,20 @@ For each field group below, "done" means:
 | --- | --- | --- |
 | Virtual host names and domains | Present | Keep |
 | Prefix and exact path match | Present | Keep |
-| URI template match | Present | **Must verify.** Domain has it; translator/test coverage must prove Envoy receives it |
-| Regex path match | Missing | **Must implement** typed regex matcher with validation |
-| Header matchers | Missing | **Must implement** at least exact/regex/present; range can defer unless needed |
-| Query parameter matchers | Missing | **Must implement and emit.** This explicitly fixes V1's parsed-but-not-emitted gap |
+| URI template match | Verified in S7.8c | Domain and xDS translator tests prove Envoy receives URI-template match policy |
+| Regex path match | Implemented in S7.8c | Typed regex path matcher with bounded validation and Envoy safe-regex emission |
+| Header matchers | Implemented in S7.8c | Exact/prefix/suffix/contains/regex/present supported; range deferred unless needed |
+| Query parameter matchers | Implemented in S7.8c | Exact/prefix/suffix/contains/regex/present supported and emitted |
 | Single-cluster action | Present | Keep |
-| Weighted clusters | Missing | **Must implement** weighted cluster action; per-weight filter config can follow only if needed |
+| Weighted clusters | Implemented in S7.8c | Typed weighted cluster action with dependency tracking across all target clusters |
 | Prefix rewrite | Present | Keep |
-| Template rewrite | Domain present; translation missing/unclear | **Must implement or prove translation** before marking done |
+| Template rewrite | Implemented in S7.8c | Emits Envoy URI-template rewrite policy for template routes |
 | Timeout | Present | Keep |
-| Retry policy | Missing | **Must implement** typed retry policy with duration units fixed |
-| Redirect action | Missing | **Must implement** because V1 exposed it as a route action |
+| Retry policy | Implemented in S7.8c | Typed retry-on, retry count, per-try timeout seconds, and retriable status codes |
+| Redirect action | Implemented in S7.8c | Typed host/scheme/path/prefix/status/strip-query redirect action |
 | Direct response action | Not currently modeled | **Defer pre-S8** unless required by a core gateway example |
 | Per-route/vhost rate limits | Missing | **Must design before S8; implement minimum route/vhost descriptor hooks if RLS remains in core parity** |
-| Typed per-filter config | Partial through overrides | Expand as filter catalog grows |
+| Typed per-filter config | Partial through overrides | Existing override path remains; expand as filter catalog and RLS hooks grow |
 
 ## Listener Parity
 

@@ -252,6 +252,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [ ] S7.8c Route parity: typed V2 support for header/query/regex matching, weighted clusters,
         retry policy, redirect/direct-response decisions, route/vhost rate-limit hooks, rewrites,
         and per-filter config.
+        - Implemented: regex path matching, header/query matchers, weighted clusters, retry policy,
+          redirect action, and URI-template rewrite translation.
+        - Remaining before close: route/vhost rate-limit descriptor hook decision and any minimum
+          implementation needed for core parity; direct response remains explicitly deferred in
+          `spec/15-core-gateway-field-parity.md`.
   - [ ] S7.8d Listener parity: typed V2 support for protocol/listener kind, TCP proxy if retained,
         downstream TLS coverage, access logs, tracing, filter-chain decisions, and request-id
         behavior.

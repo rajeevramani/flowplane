@@ -8,8 +8,10 @@ use envoy_types::pb::envoy::config::listener::v3 as lst;
 use envoy_types::pb::envoy::config::route::v3 as rt;
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
+use envoy_types::pb::envoy::extensions::path::rewrite::uri_template::v3 as uri_template_rewrite;
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3 as tls;
 use envoy_types::pb::envoy::extensions::upstreams::http::v3 as upstream_http;
+use envoy_types::pb::envoy::r#type::matcher::v3 as matcher_type;
 use envoy_types::pb::envoy::r#type::v3 as envoy_type;
 use envoy_types::pb::google::protobuf as wkt;
 use fp_domain::gateway::cluster::{
@@ -478,15 +480,8 @@ pub fn route_config_to_proto(
         for rule in &vhost.routes {
             routes.push(rt::Route {
                 name: rule.name.clone(),
-                r#match: Some(route_match_proto(&rule.matcher)),
-                action: Some(rt::route::Action::Route(rt::RouteAction {
-                    cluster_specifier: Some(rt::route_action::ClusterSpecifier::Cluster(
-                        rule.action.cluster.clone(),
-                    )),
-                    prefix_rewrite: rule.action.prefix_rewrite.clone().unwrap_or_default(),
-                    timeout: Some(duration(rule.action.timeout_secs)),
-                    ..Default::default()
-                })),
+                r#match: Some(route_match_proto(rule)),
+                action: Some(route_action_proto(rule)?),
                 typed_per_filter_config: overrides_to_typed_config(&rule.filter_overrides)?,
                 ..Default::default()
             });
@@ -505,6 +500,117 @@ pub fn route_config_to_proto(
         virtual_hosts,
         ..Default::default()
     })
+}
+
+fn route_action_proto(
+    rule: &fp_domain::gateway::route_config::RouteRule,
+) -> DomainResult<rt::route::Action> {
+    use fp_domain::gateway::route_config::RedirectResponseCode;
+    if let Some(redirect) = &rule.action.redirect {
+        let response_code = redirect
+            .response_code
+            .map(|code| match code {
+                RedirectResponseCode::MovedPermanently => {
+                    rt::redirect_action::RedirectResponseCode::MovedPermanently
+                }
+                RedirectResponseCode::Found => rt::redirect_action::RedirectResponseCode::Found,
+                RedirectResponseCode::SeeOther => {
+                    rt::redirect_action::RedirectResponseCode::SeeOther
+                }
+                RedirectResponseCode::TemporaryRedirect => {
+                    rt::redirect_action::RedirectResponseCode::TemporaryRedirect
+                }
+                RedirectResponseCode::PermanentRedirect => {
+                    rt::redirect_action::RedirectResponseCode::PermanentRedirect
+                }
+            })
+            .unwrap_or(rt::redirect_action::RedirectResponseCode::MovedPermanently);
+        let scheme_rewrite_specifier =
+            match (redirect.https_redirect, redirect.scheme_redirect.as_ref()) {
+                (Some(value), None) => Some(
+                    rt::redirect_action::SchemeRewriteSpecifier::HttpsRedirect(value),
+                ),
+                (None, Some(value)) => Some(
+                    rt::redirect_action::SchemeRewriteSpecifier::SchemeRedirect(value.clone()),
+                ),
+                _ => None,
+            };
+        let path_rewrite_specifier = match (
+            redirect.path_redirect.as_ref(),
+            redirect.prefix_rewrite.as_ref(),
+        ) {
+            (Some(path), None) => Some(rt::redirect_action::PathRewriteSpecifier::PathRedirect(
+                path.clone(),
+            )),
+            (None, Some(prefix)) => Some(rt::redirect_action::PathRewriteSpecifier::PrefixRewrite(
+                prefix.clone(),
+            )),
+            _ => None,
+        };
+        return Ok(rt::route::Action::Redirect(rt::RedirectAction {
+            host_redirect: redirect.host_redirect.clone().unwrap_or_default(),
+            response_code: response_code as i32,
+            strip_query: redirect.strip_query,
+            scheme_rewrite_specifier,
+            path_rewrite_specifier,
+            ..Default::default()
+        }));
+    }
+
+    let cluster_specifier = if let Some(cluster) = &rule.action.cluster {
+        rt::route_action::ClusterSpecifier::Cluster(cluster.clone())
+    } else {
+        rt::route_action::ClusterSpecifier::WeightedClusters(rt::WeightedCluster {
+            clusters: rule
+                .action
+                .weighted_clusters
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|target| rt::weighted_cluster::ClusterWeight {
+                    name: target.cluster.clone(),
+                    weight: Some(u32_value(target.weight)),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })
+    };
+
+    let path_rewrite_policy = rule.action.template_rewrite.as_ref().map(|rewrite| {
+        core::TypedExtensionConfig {
+            name: "envoy.path.rewrite.uri_template.uri_template_rewriter".to_string(),
+            typed_config: Some(any(
+                "type.googleapis.com/envoy.extensions.path.rewrite.uri_template.v3.UriTemplateRewriteConfig",
+                &uri_template_rewrite::UriTemplateRewriteConfig {
+                    path_template_rewrite: rewrite.clone(),
+                },
+            )),
+        }
+    });
+
+    Ok(rt::route::Action::Route(rt::RouteAction {
+        cluster_specifier: Some(cluster_specifier),
+        prefix_rewrite: rule.action.prefix_rewrite.clone().unwrap_or_default(),
+        path_rewrite_policy,
+        timeout: Some(duration(rule.action.timeout_secs)),
+        retry_policy: rule.action.retry_policy.as_ref().map(retry_policy_to_proto),
+        ..Default::default()
+    }))
+}
+
+fn retry_policy_to_proto(retry: &fp_domain::gateway::route_config::RetryPolicy) -> rt::RetryPolicy {
+    rt::RetryPolicy {
+        retry_on: retry.retry_on.clone(),
+        num_retries: retry.num_retries.map(u32_value),
+        per_try_timeout: retry.per_try_timeout_secs.map(duration),
+        retriable_status_codes: retry
+            .retriable_status_codes
+            .iter()
+            .map(|status| u32::from(*status))
+            .collect(),
+        ..Default::default()
+    }
 }
 
 /// Per-scope `typed_per_filter_config` map from filter overrides (spec/04 §4.3). Keys are
@@ -923,7 +1029,10 @@ fn jwt_auth_to_proto(
         .rules
         .iter()
         .map(|rule| jwt::RequirementRule {
-            r#match: Some(route_match_proto(&rule.matcher)),
+            r#match: Some(rt::RouteMatch {
+                path_specifier: Some(route_path_specifier(&rule.matcher)),
+                ..Default::default()
+            }),
             requirement_type: Some(jwt::requirement_rule::RequirementType::RequirementName(
                 rule.requirement_name.clone(),
             )),
@@ -1083,9 +1192,23 @@ fn cidr_range(cidr: &str) -> core::CidrRange {
     }
 }
 
-/// RouteMatch from a domain PathMatch — shared by jwt rules and route translation.
-fn route_match_proto(matcher: &PathMatch) -> rt::RouteMatch {
-    let path_specifier = match matcher {
+/// RouteMatch from a domain route rule.
+fn route_match_proto(rule: &fp_domain::gateway::route_config::RouteRule) -> rt::RouteMatch {
+    let path_specifier = route_path_specifier(&rule.matcher);
+    rt::RouteMatch {
+        path_specifier: Some(path_specifier),
+        headers: rule.headers.iter().map(header_match_to_proto).collect(),
+        query_parameters: rule
+            .query_parameters
+            .iter()
+            .map(query_match_to_proto)
+            .collect(),
+        ..Default::default()
+    }
+}
+
+fn route_path_specifier(matcher: &PathMatch) -> rt::route_match::PathSpecifier {
+    match matcher {
         PathMatch::Prefix { prefix } => rt::route_match::PathSpecifier::Prefix(prefix.clone()),
         PathMatch::Exact { path } => rt::route_match::PathSpecifier::Path(path.clone()),
         PathMatch::Template { template } => {
@@ -1099,10 +1222,120 @@ fn route_match_proto(matcher: &PathMatch) -> rt::RouteMatch {
                 )),
             })
         }
+        PathMatch::Regex { pattern } => {
+            rt::route_match::PathSpecifier::SafeRegex(safe_regex(pattern))
+        }
+    }
+}
+
+#[allow(deprecated)]
+fn safe_regex(pattern: &str) -> matcher_type::RegexMatcher {
+    matcher_type::RegexMatcher {
+        regex: pattern.to_string(),
+        engine_type: Some(matcher_type::regex_matcher::EngineType::GoogleRe2(
+            matcher_type::regex_matcher::GoogleRe2::default(),
+        )),
+    }
+}
+
+fn string_match_to_proto(
+    matcher: &fp_domain::gateway::route_config::QueryValueMatch,
+) -> matcher_type::StringMatcher {
+    use fp_domain::gateway::route_config::QueryValueMatch;
+    let match_pattern = match matcher {
+        QueryValueMatch::Exact { value } => {
+            matcher_type::string_matcher::MatchPattern::Exact(value.clone())
+        }
+        QueryValueMatch::Prefix { value } => {
+            matcher_type::string_matcher::MatchPattern::Prefix(value.clone())
+        }
+        QueryValueMatch::Suffix { value } => {
+            matcher_type::string_matcher::MatchPattern::Suffix(value.clone())
+        }
+        QueryValueMatch::Contains { value } => {
+            matcher_type::string_matcher::MatchPattern::Contains(value.clone())
+        }
+        QueryValueMatch::Regex { pattern } => {
+            matcher_type::string_matcher::MatchPattern::SafeRegex(safe_regex(pattern))
+        }
+        QueryValueMatch::Present { .. } => unreachable!("present is not a string matcher"),
     };
-    rt::RouteMatch {
-        path_specifier: Some(path_specifier),
+    matcher_type::StringMatcher {
+        match_pattern: Some(match_pattern),
         ..Default::default()
+    }
+}
+
+fn header_string_match_to_proto(
+    matcher: &fp_domain::gateway::route_config::HeaderValueMatch,
+) -> matcher_type::StringMatcher {
+    use fp_domain::gateway::route_config::HeaderValueMatch;
+    let query_equivalent = match matcher {
+        HeaderValueMatch::Exact { value } => {
+            fp_domain::gateway::route_config::QueryValueMatch::Exact {
+                value: value.clone(),
+            }
+        }
+        HeaderValueMatch::Prefix { value } => {
+            fp_domain::gateway::route_config::QueryValueMatch::Prefix {
+                value: value.clone(),
+            }
+        }
+        HeaderValueMatch::Suffix { value } => {
+            fp_domain::gateway::route_config::QueryValueMatch::Suffix {
+                value: value.clone(),
+            }
+        }
+        HeaderValueMatch::Contains { value } => {
+            fp_domain::gateway::route_config::QueryValueMatch::Contains {
+                value: value.clone(),
+            }
+        }
+        HeaderValueMatch::Regex { pattern } => {
+            fp_domain::gateway::route_config::QueryValueMatch::Regex {
+                pattern: pattern.clone(),
+            }
+        }
+        HeaderValueMatch::Present { .. } => unreachable!("present is not a string matcher"),
+    };
+    string_match_to_proto(&query_equivalent)
+}
+
+fn header_match_to_proto(
+    header: &fp_domain::gateway::route_config::HeaderMatch,
+) -> rt::HeaderMatcher {
+    use fp_domain::gateway::route_config::HeaderValueMatch;
+    let header_match_specifier = match &header.matcher {
+        HeaderValueMatch::Present { value } => {
+            rt::header_matcher::HeaderMatchSpecifier::PresentMatch(*value)
+        }
+        other => rt::header_matcher::HeaderMatchSpecifier::StringMatch(
+            header_string_match_to_proto(other),
+        ),
+    };
+    rt::HeaderMatcher {
+        name: header.name.clone(),
+        invert_match: header.invert_match,
+        header_match_specifier: Some(header_match_specifier),
+        ..Default::default()
+    }
+}
+
+fn query_match_to_proto(
+    query: &fp_domain::gateway::route_config::QueryParameterMatch,
+) -> rt::QueryParameterMatcher {
+    use fp_domain::gateway::route_config::QueryValueMatch;
+    let query_parameter_match_specifier = match &query.matcher {
+        QueryValueMatch::Present { value } => {
+            rt::query_parameter_matcher::QueryParameterMatchSpecifier::PresentMatch(*value)
+        }
+        other => rt::query_parameter_matcher::QueryParameterMatchSpecifier::StringMatch(
+            string_match_to_proto(other),
+        ),
+    };
+    rt::QueryParameterMatcher {
+        name: query.name.clone(),
+        query_parameter_match_specifier: Some(query_parameter_match_specifier),
     }
 }
 
@@ -1263,7 +1496,23 @@ mod tests {
         CircuitBreakerThresholds, CircuitBreakers, Endpoint, HealthCheck, HttpHealthCheck,
         HttpHealthCheckMethod, MaglevPolicy, OutlierDetection, UpstreamProtocol, UpstreamTlsConfig,
     };
-    use fp_domain::gateway::route_config::{RouteAction, RouteRule, VirtualHost};
+    use fp_domain::gateway::route_config::{
+        HeaderMatch, HeaderValueMatch, QueryParameterMatch, QueryValueMatch, RedirectAction,
+        RedirectResponseCode, RetryPolicy, RouteAction, RouteRule, VirtualHost,
+        WeightedClusterTarget,
+    };
+
+    fn route_action(cluster: &str) -> RouteAction {
+        RouteAction {
+            cluster: Some(cluster.into()),
+            weighted_clusters: None,
+            redirect: None,
+            prefix_rewrite: None,
+            template_rewrite: None,
+            timeout_secs: 15,
+            retry_policy: None,
+        }
+    }
 
     fn cluster_spec() -> ClusterSpec {
         ClusterSpec {
@@ -1440,12 +1689,9 @@ mod tests {
                         matcher: PathMatch::Exact {
                             path: "/health".into(),
                         },
-                        action: RouteAction {
-                            cluster: "c1".into(),
-                            prefix_rewrite: None,
-                            template_rewrite: None,
-                            timeout_secs: 15,
-                        },
+                        headers: Vec::new(),
+                        query_parameters: Vec::new(),
+                        action: route_action("c1"),
                         filter_overrides: Vec::new(),
                     },
                     RouteRule {
@@ -1453,11 +1699,16 @@ mod tests {
                         matcher: PathMatch::Prefix {
                             prefix: "/api".into(),
                         },
+                        headers: Vec::new(),
+                        query_parameters: Vec::new(),
                         action: RouteAction {
-                            cluster: "c2".into(),
+                            cluster: Some("c2".into()),
+                            weighted_clusters: None,
+                            redirect: None,
                             prefix_rewrite: Some("/v2".into()),
                             template_rewrite: None,
                             timeout_secs: 30,
+                            retry_policy: None,
                         },
                         filter_overrides: Vec::new(),
                     },
@@ -1466,11 +1717,16 @@ mod tests {
                         matcher: PathMatch::Template {
                             template: "/users/{id}".into(),
                         },
+                        headers: Vec::new(),
+                        query_parameters: Vec::new(),
                         action: RouteAction {
-                            cluster: "c3".into(),
+                            cluster: Some("c3".into()),
+                            weighted_clusters: None,
+                            redirect: None,
                             prefix_rewrite: None,
-                            template_rewrite: None,
+                            template_rewrite: Some("/{id}".into()),
                             timeout_secs: 15,
+                            retry_policy: None,
                         },
                         filter_overrides: Vec::new(),
                     },
@@ -1492,6 +1748,132 @@ mod tests {
         // Route ORDER is preserved exactly (first-match-wins semantics).
         let names: Vec<&str> = routes.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["exact", "prefixed", "templated"]);
+        let action = match routes[2].action.as_ref().expect("action") {
+            rt::route::Action::Route(action) => action,
+            _ => panic!("expected route action"),
+        };
+        assert!(
+            action.path_rewrite_policy.is_some(),
+            "template_rewrite emits URI template rewrite policy"
+        );
+    }
+
+    #[test]
+    fn route_config_translates_advanced_route_fields() {
+        let spec = RouteConfigSpec {
+            virtual_hosts: vec![VirtualHost {
+                name: "default".into(),
+                domains: vec!["*".into()],
+                routes: vec![
+                    RouteRule {
+                        name: "split".into(),
+                        matcher: PathMatch::Regex {
+                            pattern: "^/v[0-9]+/items$".into(),
+                        },
+                        headers: vec![HeaderMatch {
+                            name: "x-api-version".into(),
+                            invert_match: false,
+                            matcher: HeaderValueMatch::Exact { value: "2".into() },
+                        }],
+                        query_parameters: vec![QueryParameterMatch {
+                            name: "preview".into(),
+                            matcher: QueryValueMatch::Present { value: true },
+                        }],
+                        action: RouteAction {
+                            cluster: None,
+                            weighted_clusters: Some(vec![
+                                WeightedClusterTarget {
+                                    cluster: "primary".into(),
+                                    weight: 80,
+                                },
+                                WeightedClusterTarget {
+                                    cluster: "canary".into(),
+                                    weight: 20,
+                                },
+                            ]),
+                            redirect: None,
+                            prefix_rewrite: None,
+                            template_rewrite: None,
+                            timeout_secs: 10,
+                            retry_policy: Some(RetryPolicy {
+                                retry_on: "5xx,connect-failure".into(),
+                                num_retries: Some(2),
+                                per_try_timeout_secs: Some(3),
+                                retriable_status_codes: vec![502, 503],
+                            }),
+                        },
+                        filter_overrides: Vec::new(),
+                    },
+                    RouteRule {
+                        name: "redirect".into(),
+                        matcher: PathMatch::Prefix {
+                            prefix: "/old".into(),
+                        },
+                        headers: Vec::new(),
+                        query_parameters: Vec::new(),
+                        action: RouteAction {
+                            cluster: None,
+                            weighted_clusters: None,
+                            redirect: Some(RedirectAction {
+                                host_redirect: Some("new.example.com".into()),
+                                scheme_redirect: None,
+                                https_redirect: Some(true),
+                                path_redirect: None,
+                                prefix_rewrite: Some("/new".into()),
+                                response_code: Some(RedirectResponseCode::PermanentRedirect),
+                                strip_query: true,
+                            }),
+                            prefix_rewrite: None,
+                            template_rewrite: None,
+                            timeout_secs: 15,
+                            retry_policy: None,
+                        },
+                        filter_overrides: Vec::new(),
+                    },
+                ],
+                filter_overrides: Vec::new(),
+            }],
+        };
+        let proto = route_config_to_proto("advanced", &spec).expect("translate");
+        let routes = &proto.virtual_hosts[0].routes;
+        let split_match = routes[0].r#match.as_ref().expect("split match");
+        assert!(matches!(
+            split_match.path_specifier,
+            Some(rt::route_match::PathSpecifier::SafeRegex(_))
+        ));
+        assert_eq!(split_match.headers.len(), 1);
+        assert_eq!(split_match.query_parameters.len(), 1);
+
+        let split_action = match routes[0].action.as_ref().expect("split action") {
+            rt::route::Action::Route(action) => action,
+            _ => panic!("expected route action"),
+        };
+        match split_action
+            .cluster_specifier
+            .as_ref()
+            .expect("cluster specifier")
+        {
+            rt::route_action::ClusterSpecifier::WeightedClusters(weighted) => {
+                assert_eq!(weighted.clusters.len(), 2);
+                assert_eq!(weighted.clusters[0].name, "primary");
+            }
+            other => panic!("unexpected cluster specifier: {other:?}"),
+        }
+        let retry = split_action.retry_policy.as_ref().expect("retry");
+        assert_eq!(retry.retry_on, "5xx,connect-failure");
+        assert_eq!(retry.num_retries.as_ref().expect("retries").value, 2);
+        assert_eq!(retry.retriable_status_codes, vec![502, 503]);
+
+        let redirect = match routes[1].action.as_ref().expect("redirect action") {
+            rt::route::Action::Redirect(redirect) => redirect,
+            _ => panic!("expected redirect action"),
+        };
+        assert_eq!(redirect.host_redirect, "new.example.com");
+        assert_eq!(
+            redirect.response_code,
+            rt::redirect_action::RedirectResponseCode::PermanentRedirect as i32
+        );
+        assert!(redirect.strip_query);
     }
 
     #[test]
@@ -1671,7 +2053,7 @@ mod tests {
     #[test]
     fn filter_overrides_become_typed_per_filter_config() {
         use fp_domain::gateway::filters::*;
-        use fp_domain::gateway::route_config::{RouteAction, RouteRule, VirtualHost};
+        use fp_domain::gateway::route_config::{RouteRule, VirtualHost};
         let spec = RouteConfigSpec {
             virtual_hosts: vec![VirtualHost {
                 name: "default".into(),
@@ -1681,12 +2063,9 @@ mod tests {
                     matcher: PathMatch::Prefix {
                         prefix: "/quiet".into(),
                     },
-                    action: RouteAction {
-                        cluster: "c".into(),
-                        prefix_rewrite: None,
-                        template_rewrite: None,
-                        timeout_secs: 15,
-                    },
+                    headers: Vec::new(),
+                    query_parameters: Vec::new(),
+                    action: route_action("c"),
                     filter_overrides: vec![FilterOverride::Disable {
                         filter_type: "local_rate_limit".into(),
                     }],
@@ -1901,7 +2280,7 @@ mod tests {
     #[test]
     fn jwt_per_route_override_emits_reference_only_config() {
         use fp_domain::gateway::filters::*;
-        use fp_domain::gateway::route_config::{RouteAction, RouteRule, VirtualHost};
+        use fp_domain::gateway::route_config::{RouteRule, VirtualHost};
         let spec = RouteConfigSpec {
             virtual_hosts: vec![VirtualHost {
                 name: "default".into(),
@@ -1911,12 +2290,9 @@ mod tests {
                     matcher: PathMatch::Prefix {
                         prefix: "/admin".into(),
                     },
-                    action: RouteAction {
-                        cluster: "c".into(),
-                        prefix_rewrite: None,
-                        template_rewrite: None,
-                        timeout_secs: 15,
-                    },
+                    headers: Vec::new(),
+                    query_parameters: Vec::new(),
+                    action: route_action("c"),
                     filter_overrides: vec![FilterOverride::JwtAuth {
                         requirement_name: "admins-only".into(),
                     }],
@@ -1956,6 +2332,18 @@ mod type_url_tests {
     use super::*;
     use fp_domain::gateway::route_config::{RouteAction, RouteRule, VirtualHost};
 
+    fn route_action(cluster: &str) -> RouteAction {
+        RouteAction {
+            cluster: Some(cluster.into()),
+            weighted_clusters: None,
+            redirect: None,
+            prefix_rewrite: None,
+            template_rewrite: None,
+            timeout_secs: 15,
+            retry_policy: None,
+        }
+    }
+
     /// Rust raw-identifier syntax (`r#match`) must never leak into protobuf type URLs —
     /// Envoy would NACK the resource (caught during S5.1 review).
     #[test]
@@ -1969,12 +2357,9 @@ mod type_url_tests {
                     matcher: PathMatch::Template {
                         template: "/users/{id}".into(),
                     },
-                    action: RouteAction {
-                        cluster: "c".into(),
-                        prefix_rewrite: None,
-                        template_rewrite: None,
-                        timeout_secs: 15,
-                    },
+                    headers: Vec::new(),
+                    query_parameters: Vec::new(),
+                    action: route_action("c"),
                     filter_overrides: Vec::new(),
                 }],
                 filter_overrides: Vec::new(),

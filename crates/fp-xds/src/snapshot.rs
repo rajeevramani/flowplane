@@ -533,11 +533,16 @@ mod tests {
                 routes: vec![RouteRule {
                     name: "all".into(),
                     matcher: PathMatch::Prefix { prefix: "/".into() },
+                    headers: Vec::new(),
+                    query_parameters: Vec::new(),
                     action: RouteAction {
-                        cluster: cluster.into(),
+                        cluster: Some(cluster.into()),
+                        weighted_clusters: None,
+                        redirect: None,
                         prefix_rewrite: None,
                         template_rewrite: None,
                         timeout_secs: 15,
+                        retry_policy: None,
                     },
                     filter_overrides: Vec::new(),
                 }],
