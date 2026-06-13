@@ -29,28 +29,64 @@ impl RestClient {
         path: &str,
         body: Option<Value>,
     ) -> Result<Option<Value>> {
+        self.request_inner(method, path, body, self.global.revision, true)
+            .await
+    }
+
+    pub(crate) async fn request_with_revision(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        revision: Option<i64>,
+    ) -> Result<Option<Value>> {
+        self.request_inner(method, path, body, revision, true).await
+    }
+
+    pub(crate) async fn get_optional(&self, path: &str) -> Result<Option<Value>> {
+        let url = self.url(path);
+        let mut req = self.http.request(reqwest::Method::GET, url);
+        req = self.add_auth_headers(req, None);
+        let response = req.send().await.context("send request")?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let text = response.text().await.context("read response body")?;
+        if !status.is_success() {
+            return Err(render_error(status, request_id, &text));
+        }
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_str(&text)
+            .context("parse response JSON")
+            .map(Some)
+    }
+
+    async fn request_inner(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        revision: Option<i64>,
+        render_response: bool,
+    ) -> Result<Option<Value>> {
         if self.global.dry_run && method != reqwest::Method::GET {
             let plan = json!({ "method": method.as_str(), "path": path, "body": body });
             render(&self.global, &plan)?;
             return Ok(Some(plan));
         }
-        let url = format!(
-            "{}/{}",
-            self.config.server.trim_end_matches('/'),
-            path.trim_start_matches('/')
-        );
+        let url = self.url(path);
         let method_label = method.as_str().to_string();
         let is_get = method == reqwest::Method::GET;
         let mut req = self.http.request(method, url);
-        if let Some(token) = &self.config.token {
-            req = req.bearer_auth(token);
-        }
-        if let Some(org) = &self.config.org {
-            req = req.header("X-Flowplane-Org", org);
-        }
-        if let Some(revision) = self.global.revision {
-            req = req.header(reqwest::header::IF_MATCH, revision.to_string());
-        }
+        req = self.add_auth_headers(req, revision);
         if let Some(body) = body {
             req = req.json(&body);
         }
@@ -72,14 +108,15 @@ impl RestClient {
             return Ok(None);
         }
         let value: Value = serde_json::from_str(&text).context("parse response JSON")?;
-        if is_get
-            || matches!(
-                self.global.format(),
-                OutputFormat::Json | OutputFormat::Yaml
-            )
+        if render_response
+            && (is_get
+                || matches!(
+                    self.global.format(),
+                    OutputFormat::Json | OutputFormat::Yaml
+                ))
         {
             render(&self.global, &value)?;
-        } else {
+        } else if render_response {
             print_mutation_summary(&self.global, &method_label, path, Some(&value))?;
         }
         Ok(Some(value))
@@ -89,5 +126,30 @@ impl RestClient {
         explicit
             .or_else(|| self.config.team.clone())
             .ok_or_else(|| anyhow::anyhow!("team is required; pass --team or configure a context"))
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!(
+            "{}/{}",
+            self.config.server.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
+    }
+
+    fn add_auth_headers(
+        &self,
+        mut req: reqwest::RequestBuilder,
+        revision: Option<i64>,
+    ) -> reqwest::RequestBuilder {
+        if let Some(token) = &self.config.token {
+            req = req.bearer_auth(token);
+        }
+        if let Some(org) = &self.config.org {
+            req = req.header("X-Flowplane-Org", org);
+        }
+        if let Some(revision) = revision {
+            req = req.header(reqwest::header::IF_MATCH, revision.to_string());
+        }
+        req
     }
 }

@@ -83,6 +83,11 @@ enum Command {
         #[command(subcommand)]
         command: cli::OpsCommand,
     },
+    /// Apply a declarative JSON resource manifest.
+    Apply {
+        #[command(flatten)]
+        command: cli::ApplyCommand,
+    },
     /// Shell completion script.
     Completion { shell: Shell },
     /// Print version.
@@ -131,6 +136,7 @@ fn main() -> anyhow::Result<()> {
         Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),
         Command::Stats { command } => runtime.block_on(cli::run_stats(cli.client, command)),
         Command::Ops { command } => runtime.block_on(cli::run_ops(cli.client, command)),
+        Command::Apply { command } => runtime.block_on(cli::run_apply(cli.client, command)),
         Command::Completion { shell } => {
             let mut command = Cli::command();
             clap_complete::generate(shell, &mut command, "flowplane", &mut std::io::stdout());

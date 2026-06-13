@@ -11,9 +11,9 @@ use std::path::PathBuf;
 
 use client::RestClient;
 pub use commands::{
-    AuthCommand, CertCommand, ConfigCommand, DataplaneCommand, GrantCommand, OpsCommand,
-    OrgCommand, OrgMemberCommand, ResourceCommand, SecretCommand, StatsCommand, TeamCommand,
-    TeamMemberCommand, XdsCommand,
+    ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneCommand, GrantCommand,
+    OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand, SecretCommand, StatsCommand,
+    TeamCommand, TeamMemberCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{config_path, credentials_path, effective, read_config, write_config, NamedContext};
@@ -632,6 +632,298 @@ pub async fn run_ops(global: GlobalOptions, command: OpsCommand) -> Result<()> {
     Ok(())
 }
 
+pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<()> {
+    let manifests = read_apply_manifests(&command.file)?;
+    let client = RestClient::new(global.clone())?;
+    let mut diff_lines = Vec::new();
+    for manifest in manifests {
+        let target = apply_target(manifest)?;
+        let team = client.team(target.team.clone())?;
+        let path = format!(
+            "/api/v1/teams/{team}/{}/{}",
+            target.kind.segment(),
+            target.name
+        );
+        let existing = client.get_optional(&path).await?;
+        if command.diff || global.dry_run {
+            diff_lines.push(diff_line(&target, existing.as_ref()));
+            continue;
+        }
+        match existing {
+            None => {
+                client
+                    .request(
+                        reqwest::Method::POST,
+                        &format!("/api/v1/teams/{team}/{}", target.kind.segment()),
+                        Some(target.create_body),
+                    )
+                    .await?;
+            }
+            Some(existing) => apply_existing(&client, &path, target, existing).await?,
+        }
+    }
+    if command.diff || global.dry_run {
+        let text = diff_lines.join("\n");
+        if let Some(out) = &global.out {
+            fs::write(out, text).with_context(|| format!("write {}", out.display()))?;
+        } else if !global.quiet {
+            println!("{text}");
+        }
+    }
+    Ok(())
+}
+
+async fn apply_existing(
+    client: &RestClient,
+    path: &str,
+    target: ApplyTarget,
+    existing: Value,
+) -> Result<()> {
+    match target.kind {
+        ApplyKind::Cluster | ApplyKind::Listener | ApplyKind::RouteConfig => {
+            if unchanged(&target, &existing) {
+                println!("unchanged {} \"{}\"", target.kind.label(), target.name);
+                return Ok(());
+            }
+            let revision = existing.get("revision").and_then(Value::as_i64);
+            client
+                .request_with_revision(
+                    reqwest::Method::PATCH,
+                    path,
+                    Some(target.update_body()?),
+                    revision,
+                )
+                .await?;
+        }
+        ApplyKind::Secret => {
+            client
+                .request(
+                    reqwest::Method::POST,
+                    &format!("{path}/rotate"),
+                    Some(target.update_body()?),
+                )
+                .await?;
+        }
+        ApplyKind::Dataplane => {
+            if unchanged(&target, &existing) {
+                println!("unchanged {} \"{}\"", target.kind.label(), target.name);
+                return Ok(());
+            }
+            anyhow::bail!(
+                "dataplane \"{}\" exists and cannot be updated by the current API",
+                target.name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_apply_manifests(path: &PathBuf) -> Result<Vec<Value>> {
+    let value = body_from_file(path)?;
+    if let Some(items) = value.as_array() {
+        return Ok(items.clone());
+    }
+    if let Some(items) = value.get("items").and_then(Value::as_array) {
+        return Ok(items.clone());
+    }
+    Ok(vec![value])
+}
+
+#[derive(Debug, Clone)]
+struct ApplyTarget {
+    kind: ApplyKind,
+    name: String,
+    team: Option<String>,
+    create_body: Value,
+}
+
+impl ApplyTarget {
+    fn update_body(&self) -> Result<Value> {
+        match self.kind {
+            ApplyKind::Cluster | ApplyKind::Listener | ApplyKind::RouteConfig => {
+                let spec = self
+                    .create_body
+                    .get("spec")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("{} requires spec", self.kind.label()))?;
+                Ok(json!({ "spec": spec }))
+            }
+            ApplyKind::Secret => {
+                let spec = self
+                    .create_body
+                    .get("spec")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("secret requires spec"))?;
+                let mut body = Map::new();
+                body.insert("spec".into(), spec);
+                if let Some(expires_at) = self.create_body.get("expires_at") {
+                    body.insert("expires_at".into(), expires_at.clone());
+                }
+                Ok(Value::Object(body))
+            }
+            ApplyKind::Dataplane => Ok(json!({
+                "name": self.name,
+                "description": self.create_body.get("description").cloned().unwrap_or(Value::String(String::new())),
+            })),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplyKind {
+    Cluster,
+    Listener,
+    RouteConfig,
+    Secret,
+    Dataplane,
+}
+
+impl ApplyKind {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.to_ascii_lowercase().replace('_', "-").as_str() {
+            "cluster" | "clusters" => Ok(Self::Cluster),
+            "listener" | "listeners" => Ok(Self::Listener),
+            "route" | "route-config" | "route-configs" | "routeconfig" | "routeconfigs" => {
+                Ok(Self::RouteConfig)
+            }
+            "secret" | "secrets" => Ok(Self::Secret),
+            "dataplane" | "dataplanes" => Ok(Self::Dataplane),
+            other => anyhow::bail!("unsupported apply kind \"{other}\""),
+        }
+    }
+
+    fn segment(self) -> &'static str {
+        match self {
+            Self::Cluster => "clusters",
+            Self::Listener => "listeners",
+            Self::RouteConfig => "route-configs",
+            Self::Secret => "secrets",
+            Self::Dataplane => "dataplanes",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cluster => "cluster",
+            Self::Listener => "listener",
+            Self::RouteConfig => "route-config",
+            Self::Secret => "secret",
+            Self::Dataplane => "dataplane",
+        }
+    }
+}
+
+fn apply_target(value: Value) -> Result<ApplyTarget> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("apply manifest must be a JSON object"))?;
+    let kind = obj
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("apply manifest requires string field kind"))
+        .and_then(ApplyKind::parse)?;
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| obj.get("body")?.get("name")?.as_str())
+        .ok_or_else(|| anyhow::anyhow!("apply manifest requires string field name"))?
+        .to_string();
+    let team = obj.get("team").and_then(Value::as_str).map(str::to_string);
+    let create_body = if let Some(body) = obj.get("body") {
+        with_name(body.clone(), &name)?
+    } else {
+        build_apply_body(kind, &name, obj)?
+    };
+    Ok(ApplyTarget {
+        kind,
+        name,
+        team,
+        create_body,
+    })
+}
+
+fn with_name(mut body: Value, name: &str) -> Result<Value> {
+    let obj = body
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("body must be a JSON object"))?;
+    if let Some(body_name) = obj.get("name").and_then(Value::as_str) {
+        if body_name != name {
+            anyhow::bail!("manifest name and body.name differ");
+        }
+    } else {
+        obj.insert("name".into(), Value::String(name.to_string()));
+    }
+    Ok(body)
+}
+
+fn build_apply_body(kind: ApplyKind, name: &str, obj: &Map<String, Value>) -> Result<Value> {
+    match kind {
+        ApplyKind::Cluster | ApplyKind::Listener | ApplyKind::RouteConfig => {
+            let spec = obj
+                .get("spec")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{} requires spec", kind.label()))?;
+            Ok(json!({ "name": name, "spec": spec }))
+        }
+        ApplyKind::Secret => {
+            let spec = obj
+                .get("spec")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("secret requires spec"))?;
+            let mut body = Map::new();
+            body.insert("name".into(), Value::String(name.to_string()));
+            body.insert("spec".into(), spec);
+            if let Some(description) = obj.get("description") {
+                body.insert("description".into(), description.clone());
+            }
+            if let Some(expires_at) = obj.get("expires_at") {
+                body.insert("expires_at".into(), expires_at.clone());
+            }
+            Ok(Value::Object(body))
+        }
+        ApplyKind::Dataplane => Ok(json!({
+            "name": name,
+            "description": obj.get("description").cloned().unwrap_or(Value::String(String::new())),
+        })),
+    }
+}
+
+fn diff_line(target: &ApplyTarget, existing: Option<&Value>) -> String {
+    match existing {
+        None => format!("+ {} \"{}\" create", target.kind.label(), target.name),
+        Some(existing) if unchanged(target, existing) => {
+            format!("= {} \"{}\" unchanged", target.kind.label(), target.name)
+        }
+        Some(_) if target.kind == ApplyKind::Secret => {
+            format!(
+                "~ {} \"{}\" rotate (value write-only)",
+                target.kind.label(),
+                target.name
+            )
+        }
+        Some(_) if target.kind == ApplyKind::Dataplane => {
+            format!(
+                "! {} \"{}\" update unsupported",
+                target.kind.label(),
+                target.name
+            )
+        }
+        Some(_) => format!("~ {} \"{}\" update spec", target.kind.label(), target.name),
+    }
+}
+
+fn unchanged(target: &ApplyTarget, existing: &Value) -> bool {
+    match target.kind {
+        ApplyKind::Cluster | ApplyKind::Listener | ApplyKind::RouteConfig => {
+            existing.get("spec") == target.create_body.get("spec")
+        }
+        ApplyKind::Secret => false,
+        ApplyKind::Dataplane => {
+            existing.get("description") == target.create_body.get("description")
+        }
+    }
+}
+
 #[cfg(test)]
 fn cli_endpoint_templates() -> BTreeSet<&'static str> {
     [
@@ -713,6 +1005,71 @@ oidc_client_id = "376872439851843590"
         assert_eq!(parsed.org.as_deref(), Some("dev-org"));
         assert_eq!(parsed.team.as_deref(), Some("default"));
         assert!(parsed.contexts.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn apply_manifest_builds_gateway_bodies() -> Result<()> {
+        let target = apply_target(json!({
+            "kind": "route-config",
+            "team": "platform",
+            "name": "edge",
+            "spec": {"virtual_hosts": []}
+        }))?;
+        assert_eq!(target.kind, ApplyKind::RouteConfig);
+        assert_eq!(target.team.as_deref(), Some("platform"));
+        assert_eq!(target.create_body["name"], "edge");
+        assert_eq!(
+            target.update_body()?,
+            json!({"spec": {"virtual_hosts": []}})
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_diff_reports_update_or_noop() -> Result<()> {
+        let target = apply_target(json!({
+            "kind": "cluster",
+            "name": "api",
+            "spec": {"type": "strict_dns", "connect_timeout_ms": 250}
+        }))?;
+        let current = json!({
+            "name": "api",
+            "spec": {"type": "strict_dns", "connect_timeout_ms": 500},
+            "revision": 7
+        });
+        assert_eq!(
+            diff_line(&target, Some(&current)),
+            "~ cluster \"api\" update spec"
+        );
+        let current = json!({
+            "name": "api",
+            "spec": {"type": "strict_dns", "connect_timeout_ms": 250},
+            "revision": 7
+        });
+        assert_eq!(
+            diff_line(&target, Some(&current)),
+            "= cluster \"api\" unchanged"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_secret_existing_is_write_only_rotate() -> Result<()> {
+        let target = apply_target(json!({
+            "kind": "secret",
+            "name": "api-key",
+            "spec": {"type": "generic_secret", "secret": "new-value"}
+        }))?;
+        let current = json!({"name": "api-key", "value_redacted": true, "revision": 1});
+        assert_eq!(
+            diff_line(&target, Some(&current)),
+            "~ secret \"api-key\" rotate (value write-only)"
+        );
+        assert_eq!(
+            target.update_body()?,
+            json!({"spec": {"type": "generic_secret", "secret": "new-value"}})
+        );
         Ok(())
     }
 }

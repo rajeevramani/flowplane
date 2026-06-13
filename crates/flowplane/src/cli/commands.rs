@@ -1,4 +1,4 @@
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
@@ -294,4 +294,12 @@ pub enum XdsCommand {
         #[arg(long)]
         team: Option<String>,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct ApplyCommand {
+    #[arg(short, long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub diff: bool,
 }

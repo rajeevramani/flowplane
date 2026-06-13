@@ -188,8 +188,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         mutation commands print concise created/updated/deleted summaries unless JSON/YAML is
         requested; `config get-contexts` renders aligned context rows and remains compatible with
         v1-era scalar config fields (`base_url`, `org`, `team`, `token`) so existing local
-        installs do not fail on first run. Remaining S7 scope: PKCE/device-code auth,
-        declarative `apply --diff`, transcript E2E polish.
+        installs do not fail on first run.
+  - [x] S7.3 Declarative apply/diff: `flowplane apply -f manifest.json --diff` plans JSON
+        manifests for clusters/listeners/route-configs, write-only secrets, and dataplanes;
+        non-diff apply creates missing resources and uses live revisions for gateway PATCH.
+        Remaining S7 scope: PKCE/device-code auth and transcript E2E polish.
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
 - [ ] S10 AI gateway
