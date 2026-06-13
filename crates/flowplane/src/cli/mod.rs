@@ -1522,6 +1522,35 @@ mod tests {
     }
 
     #[test]
+    fn table_flattens_api_status() {
+        let rendered = table(&json!({
+            "api": {
+                "id": "8f000000-0000-7000-8000-000000000001",
+                "name": "catalog",
+                "display_name": "Catalog",
+                "description": "",
+                "revision": 1,
+                "created_at": "2026-06-14T00:00:00Z",
+                "updated_at": "2026-06-14T00:00:00Z"
+            },
+            "latest_spec": {
+                "version": 1,
+                "source_kind": "imported",
+                "format": "openapi3",
+                "spec_hash": "1234567890abcdef"
+            },
+            "route_binding_count": 0,
+            "tool_count": 2
+        }));
+        assert!(rendered.contains("NAME"));
+        assert!(rendered.contains("Catalog"));
+        assert!(rendered.contains("LATEST SPEC VERSION"));
+        assert!(rendered.contains("imported"));
+        assert!(rendered.contains("1234567890ab"));
+        assert!(!rendered.contains("{...}"));
+    }
+
+    #[test]
     fn legacy_scalar_config_parses_with_defaults() -> Result<()> {
         let parsed: CliConfig = toml::from_str(
             r#"

@@ -55,6 +55,9 @@ pub(crate) fn render(global: &GlobalOptions, value: &Value) -> Result<()> {
 }
 
 pub(crate) fn table(value: &Value) -> String {
+    if let Some(flattened) = flatten_status_row(value) {
+        return table(&flattened);
+    }
     let rows = if let Some(items) = value.get("items").and_then(Value::as_array) {
         items.clone()
     } else if let Some(items) = value.as_array() {
@@ -122,6 +125,11 @@ fn ordered_columns(columns: BTreeSet<String>) -> Vec<String> {
         "resource",
         "action",
         "revision",
+        "latest_spec_version",
+        "latest_spec_source",
+        "latest_spec_hash",
+        "route_binding_count",
+        "tool_count",
         "live_dataplanes",
         "stale_dataplanes",
         "total_requests",
@@ -143,6 +151,60 @@ fn ordered_columns(columns: BTreeSet<String>) -> Vec<String> {
         }
     }
     ordered
+}
+
+fn flatten_status_row(value: &Value) -> Option<Value> {
+    let obj = value.as_object()?;
+    let api = obj.get("api")?.as_object()?;
+    if !(obj.contains_key("latest_spec")
+        && obj.contains_key("route_binding_count")
+        && obj.contains_key("tool_count"))
+    {
+        return None;
+    }
+
+    let mut row = serde_json::Map::new();
+    for key in [
+        "name",
+        "id",
+        "display_name",
+        "description",
+        "revision",
+        "created_at",
+        "updated_at",
+    ] {
+        if let Some(value) = api.get(key) {
+            row.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(spec) = obj.get("latest_spec").and_then(Value::as_object) {
+        if let Some(version) = spec.get("version") {
+            row.insert("latest_spec_version".into(), version.clone());
+        }
+        if let Some(source) = spec.get("source_kind") {
+            row.insert("latest_spec_source".into(), source.clone());
+        }
+        if let Some(hash) = spec.get("spec_hash") {
+            row.insert("latest_spec_hash".into(), short_hash(hash));
+        }
+    } else {
+        row.insert("latest_spec_version".into(), Value::Null);
+    }
+    if let Some(count) = obj.get("route_binding_count") {
+        row.insert("route_binding_count".into(), count.clone());
+    }
+    if let Some(count) = obj.get("tool_count") {
+        row.insert("tool_count".into(), count.clone());
+    }
+    Some(Value::Object(row))
+}
+
+fn short_hash(value: &Value) -> Value {
+    value
+        .as_str()
+        .map(|s| s.chars().take(12).collect::<String>())
+        .map(Value::String)
+        .unwrap_or_else(|| value.clone())
 }
 
 pub(crate) fn format_row(cells: &[String], widths: &[usize]) -> String {
