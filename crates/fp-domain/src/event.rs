@@ -62,6 +62,25 @@ pub enum DomainEvent {
         secret_id: Uuid,
         name: String,
     },
+    // API lifecycle / learning config-first spine (S8)
+    ApiDefinitionCreated {
+        api_definition_id: Uuid,
+        name: String,
+    },
+    ApiDefinitionDeleted {
+        api_definition_id: Uuid,
+        name: String,
+    },
+    SpecVersionCreated {
+        spec_version_id: Uuid,
+        api_definition_id: Uuid,
+        version: i64,
+    },
+    ApiToolsGenerated {
+        api_definition_id: Uuid,
+        spec_version_id: Uuid,
+        count: usize,
+    },
 }
 
 impl DomainEvent {
@@ -80,6 +99,10 @@ impl DomainEvent {
             Self::ProxyCertificateRegistered { .. } => "proxy_certificate.registered",
             Self::ProxyCertificateRevoked { .. } => "proxy_certificate.revoked",
             Self::SecretUpserted { .. } => "secret.upserted",
+            Self::ApiDefinitionCreated { .. } => "api_definition.created",
+            Self::ApiDefinitionDeleted { .. } => "api_definition.deleted",
+            Self::SpecVersionCreated { .. } => "spec_version.created",
+            Self::ApiToolsGenerated { .. } => "api_tools.generated",
         }
     }
 }

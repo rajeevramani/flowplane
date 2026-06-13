@@ -27,6 +27,12 @@ S8 starts from durable API lifecycle state before any capture injection or infer
 This replaces v1's manual OpenAPI export/import bridge. Import, learn, review/publish, and tool
 generation all converge on the same API definition and spec version tables.
 
+S8.2 exposes this spine through REST and CLI. `flowplane api create NAME --from-openapi
+openapi.json` creates an API definition, appends an imported spec version, and generates `api_tools`
+rows from OpenAPI HTTP operations. Route binding is supported only to existing gateway route scope
+by typed IDs; automatic gateway topology creation from OpenAPI is deferred until the
+OpenAPI-to-cluster/listener/route mapping is explicit.
+
 ---
 
 ## 1. End-to-end narrative

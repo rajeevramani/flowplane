@@ -17,6 +17,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
   flowplane auth login --device-code --issuer https://issuer.example --client-id flowplane-cli
   flowplane auth login --pkce --callback-url http://127.0.0.1:8976/callback
   flowplane config set-context prod --server https://fp.example --org acme --team payments
+  flowplane api create catalog --from-openapi openapi.json --team payments
   flowplane apply -f gateway.json --diff
   flowplane cluster list --team payments"
 )]
@@ -72,6 +73,11 @@ enum Command {
     Route {
         #[command(subcommand)]
         command: cli::ResourceCommand,
+    },
+    /// API definitions, imported specs, and generated API tool rows.
+    Api {
+        #[command(subcommand)]
+        command: cli::ApiCommand,
     },
     /// Write-only secrets.
     Secret {
@@ -142,6 +148,7 @@ fn main() -> anyhow::Result<()> {
         Command::Route { command } => {
             runtime.block_on(cli::run_resource(cli.client, "route-configs", command))
         }
+        Command::Api { command } => runtime.block_on(cli::run_api(cli.client, command)),
         Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
         Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),
         Command::Stats { command } => runtime.block_on(cli::run_stats(cli.client, command)),
@@ -194,6 +201,17 @@ mod tests {
             .expect("apply diff form should parse");
         Cli::try_parse_from(["flowplane", "cluster", "list", "--team", "payments"])
             .expect("resource list form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "api",
+            "create",
+            "catalog",
+            "--from-openapi",
+            "openapi.json",
+            "--team",
+            "payments",
+        ])
+        .expect("api import form should parse");
     }
 
     #[test]
@@ -202,6 +220,7 @@ mod tests {
         assert!(help.contains("flowplane auth login --device-code"));
         assert!(help.contains("flowplane auth login --pkce"));
         assert!(help.contains("flowplane config set-context prod"));
+        assert!(help.contains("flowplane api create catalog"));
         assert!(help.contains("flowplane apply -f gateway.json --diff"));
     }
 }

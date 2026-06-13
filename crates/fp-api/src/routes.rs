@@ -44,6 +44,7 @@ impl utoipa::Modify for SecurityAddon {
 
 /// Build the OpenAPI router + document for the secured /api/v1 surface.
 fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
+    use crate::api_lifecycle_api;
     use crate::dataplanes_api;
     use crate::identity_api;
     use crate::resources::{clusters, listeners, route_configs};
@@ -89,6 +90,15 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             route_configs::update,
             route_configs::delete
         ))
+        .routes(routes!(
+            api_lifecycle_api::list_apis,
+            api_lifecycle_api::create_api
+        ))
+        .routes(routes!(
+            api_lifecycle_api::get_api,
+            api_lifecycle_api::delete_api
+        ))
+        .routes(routes!(api_lifecycle_api::api_status))
         .routes(routes!(
             dataplanes_api::list_dataplanes,
             dataplanes_api::create_dataplane

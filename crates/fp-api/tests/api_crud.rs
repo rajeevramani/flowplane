@@ -102,11 +102,12 @@ fn openapi_document_covers_every_registered_operation() {
     // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 4 dataplane
     // + 4 proxy-certificate + 1 xds-nacks operations.
     // + 4 secrets operations + 2 dataplane/stats telemetry operations.
+    // + 5 API lifecycle operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 47,
-        "expected 47 documented operations, got {operations}"
+        operations, 52,
+        "expected 52 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -125,9 +126,130 @@ fn openapi_document_covers_every_registered_operation() {
     for path in [
         "/api/v1/teams/{team}/clusters",
         "/api/v1/teams/{team}/route-configs/{name}",
+        "/api/v1/teams/{team}/api-definitions/{name}/status",
     ] {
         assert!(paths.contains_key(path), "missing {path}");
     }
+}
+
+#[tokio::test]
+async fn api_definition_import_status_and_delete_over_http() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+    let subject = unique("sub");
+    let token = issuer.mint(&subject, "api@test", "Api", 600).expect("mint");
+
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let user = identity::upsert_user_by_subject(&pool, &subject, "api@test", "Api")
+        .await
+        .expect("user");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Admin)
+        .await
+        .expect("member");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+    });
+
+    let request =
+        |method: &str, path: &str, body: Option<serde_json::Value>, revision: Option<i64>| {
+            let mut builder = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if let Some(revision) = revision {
+                builder = builder.header("if-match", revision.to_string());
+            }
+            match body {
+                Some(json) => builder
+                    .header("content-type", "application/json")
+                    .body(Body::from(json.to_string())),
+                None => builder.body(Body::empty()),
+            }
+            .expect("request")
+        };
+
+    let api_name = unique("catalog");
+    let base = format!("/api/v1/teams/{}/api-definitions", team.name);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &base,
+            Some(serde_json::json!({
+                "name": api_name,
+                "display_name": "Catalog",
+                "openapi": {
+                    "openapi": "3.0.3",
+                    "info": {"title": "Catalog", "version": "1.0.0"},
+                    "paths": {
+                        "/items": {"get": {"operationId": "listItems"}},
+                        "/items/{id}": {"post": {}}
+                    }
+                }
+            })),
+            None,
+        ))
+        .await
+        .expect("create api");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert_eq!(body["api"]["name"], api_name);
+    assert_eq!(body["latest_spec"]["version"], 1);
+    assert_eq!(body["tool_count"], 2);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{base}/{api_name}/status"),
+            None,
+            None,
+        ))
+        .await
+        .expect("status");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["tool_count"], 2);
+    assert_eq!(body["route_binding_count"], 0);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("{base}/{api_name}"),
+            None,
+            Some(1),
+        ))
+        .await
+        .expect("delete api");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = app
+        .clone()
+        .oneshot(request("GET", &format!("{base}/{api_name}"), None, None))
+        .await
+        .expect("get deleted api");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

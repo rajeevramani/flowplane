@@ -53,7 +53,7 @@ pub async fn resolve_team(
 }
 
 /// Revision from `If-Match` (plain integer). Required on update/delete.
-fn revision_from(headers: &HeaderMap) -> DomainResult<i64> {
+pub fn revision_from(headers: &HeaderMap) -> DomainResult<i64> {
     headers
         .get(axum::http::header::IF_MATCH)
         .and_then(|v| v.to_str().ok())

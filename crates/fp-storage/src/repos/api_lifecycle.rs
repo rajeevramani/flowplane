@@ -10,8 +10,8 @@ use fp_domain::api_lifecycle::{
 };
 use fp_domain::authz::TeamRef;
 use fp_domain::{
-    ApiDefinitionId, ApiRouteBindingId, ApiToolId, DomainError, DomainResult, ListenerId,
-    RetentionPolicyId, RouteConfigId, SpecVersionId, TeamId,
+    ApiDefinitionId, ApiRouteBindingId, ApiToolId, DomainError, DomainResult, ErrorCode,
+    ListenerId, RetentionPolicyId, RouteConfigId, SpecVersionId, TeamId,
 };
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgRow;
@@ -241,6 +241,22 @@ pub async fn get_api_definition(
     Ok(row.as_ref().map(api_from_row))
 }
 
+pub async fn get_api_definition_by_id(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+) -> DomainResult<Option<ApiDefinition>> {
+    let row = sqlx::query(&format!(
+        "SELECT {API_COLUMNS} FROM api_definitions WHERE team_id = $1 AND id = $2"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get api by id: {e}")))?;
+    Ok(row.as_ref().map(api_from_row))
+}
+
 pub async fn list_api_definitions(
     pool: &PgPool,
     team_id: TeamId,
@@ -262,6 +278,46 @@ pub async fn list_api_definitions(
         .await
         .map_err(|e| DomainError::internal(format!("count apis: {e}")))?;
     Ok((rows.iter().map(api_from_row).collect(), total))
+}
+
+pub async fn delete_api_definition(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+    expected_version: i64,
+) -> DomainResult<ApiDefinitionId> {
+    let row = sqlx::query(
+        "DELETE FROM api_definitions WHERE team_id = $1 AND name = $2 AND version = $3 RETURNING id",
+    )
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .bind(expected_version)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete api: {e}")))?;
+    match row {
+        Some(row) => Ok(ApiDefinitionId::from(row.get::<Uuid, _>("id"))),
+        None => {
+            let current: Option<i64> = sqlx::query_scalar(
+                "SELECT version FROM api_definitions WHERE team_id = $1 AND name = $2",
+            )
+            .bind(team_id.as_uuid())
+            .bind(name)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("delete api: recheck: {e}")))?;
+            Err(match current {
+                Some(version) => DomainError::new(
+                    ErrorCode::RevisionMismatch,
+                    format!(
+                        "api \"{name}\" is at revision {version}, you supplied {expected_version}"
+                    ),
+                )
+                .with_hint("re-read the API and retry with the current revision"),
+                None => DomainError::not_found("api", name),
+            })
+        }
+    }
 }
 
 pub async fn create_route_binding(
@@ -380,6 +436,53 @@ pub async fn create_api_tool(
     .await
     .map_err(|e| map_unique(e, "api tool", name))?;
     tool_from_row(&row)
+}
+
+pub async fn latest_spec_version(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+) -> DomainResult<Option<SpecVersion>> {
+    let row = sqlx::query(&format!(
+        "SELECT {SPEC_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 ORDER BY version DESC LIMIT 1"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("latest spec version: {e}")))?;
+    row.as_ref().map(spec_from_row).transpose()
+}
+
+pub async fn count_api_tools(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+) -> DomainResult<i64> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM api_tools WHERE team_id = $1 AND api_definition_id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count api tools: {e}")))
+}
+
+pub async fn count_route_bindings(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+) -> DomainResult<i64> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM api_route_bindings WHERE team_id = $1 AND api_definition_id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count api route bindings: {e}")))
 }
 
 pub async fn list_api_tools(

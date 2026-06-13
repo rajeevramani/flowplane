@@ -303,10 +303,21 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           cross-team gateway reference rejection, spec immutability, generated tool references,
           retention policy scoping, and concurrent version allocation without serializing the
           test suite.
-  - [ ] S8.2 API REST/CLI foundation: `api list|get|create|delete|status`; `api create
+  - [x] S8.2 API REST/CLI foundation: `api list|get|create|delete|status`; `api create
         --from-openapi` imports a spec into an `ApiDefinition` + imported `SpecVersion` and
         optionally creates/binds gateway resources through the existing cluster/listener/
         route-config services; no MCP serving yet, only generated tool rows.
+        - Implemented: REST `/api/v1/teams/{team}/api-definitions` list/create/get/delete and
+          `/status`, plus CLI `flowplane api list|get|create|delete|status`.
+        - `flowplane api create NAME --from-openapi openapi.json` persists an imported
+          `SpecVersion` and generates `api_tools` rows from OpenAPI HTTP operations; tools
+          are data only and are not served over MCP yet.
+        - Binding support is intentionally to existing route scope by typed IDs
+          (`--route-config-id`, optional `--listener-id`, `--virtual-host`, `--route`).
+          Automatic OpenAPI-to-cluster/listener/route creation is deferred until the gateway
+          topology mapping is designed instead of inferred from incomplete spec data.
+        - Tests: API contract pin updated to 52 operations, REST import/status/delete test
+          added, CLI path coverage includes the new API lifecycle paths.
   - [ ] S8.3 Capture-session model: `learn start|list|get|stop|cancel` against an
         `ApiDefinition` or explicit bound route scope; session state machine, sample/byte/path
         quotas, health counters, target sample/timeout completion, and transactional events.

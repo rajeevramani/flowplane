@@ -183,6 +183,48 @@ pub enum ResourceCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum ApiCommand {
+    List {
+        #[arg(long)]
+        team: Option<String>,
+    },
+    Get {
+        #[arg(long)]
+        team: Option<String>,
+        name: String,
+    },
+    Status {
+        #[arg(long)]
+        team: Option<String>,
+        name: String,
+    },
+    Create {
+        #[arg(long)]
+        team: Option<String>,
+        name: String,
+        #[arg(long)]
+        display_name: Option<String>,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        from_openapi: Option<PathBuf>,
+        #[arg(long)]
+        route_config_id: Option<String>,
+        #[arg(long)]
+        listener_id: Option<String>,
+        #[arg(long)]
+        virtual_host: Option<String>,
+        #[arg(long)]
+        route: Option<String>,
+    },
+    Delete {
+        #[arg(long)]
+        team: Option<String>,
+        name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum SecretCommand {
     List {
         #[arg(long)]

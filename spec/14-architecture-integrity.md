@@ -228,6 +228,16 @@ For S8.1 API lifecycle foundation:
 - Tests for API lifecycle storage use unique tenant/resource names and row-level locking where
   concurrency matters, so they can run with the normal parallel suite.
 
+For S8.2 API REST/CLI foundation:
+- REST and CLI expose API lifecycle through the same service mutation path; CLI never writes API
+  rows directly.
+- OpenAPI import creates an append-only `SpecVersion` and generated `api_tools` rows in the same
+  transaction as the API create.
+- Generated tools remain inert product data until S11 MCP serving; no API tool can become live
+  config without the later review/publish/serving gates.
+- Route binding names existing gateway resources by typed IDs. V2 does not infer clusters,
+  listeners, upstreams, or route topology from partial OpenAPI data.
+
 For S7.7 core gateway parity:
 - `expose` is a CLI/API workflow over existing gateway services, not a separate config model.
 - `dataplane bootstrap` wraps the existing bootstrap API and must keep dev/prod security explicit.

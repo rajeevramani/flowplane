@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 
 use client::RestClient;
 pub use commands::{
-    ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneCommand, GrantCommand,
-    OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand, SecretCommand, StatsCommand,
-    TeamCommand, TeamMemberCommand, XdsCommand,
+    ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneCommand,
+    GrantCommand, OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand, SecretCommand,
+    StatsCommand, TeamCommand, TeamMemberCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{config_path, credentials_path, effective, read_config, write_config, NamedContext};
@@ -856,6 +856,101 @@ pub async fn run_resource(
     Ok(())
 }
 
+pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
+    let client = RestClient::new(global)?;
+    match command {
+        ApiCommand::List { team } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/api-definitions"),
+                    None,
+                )
+                .await?
+        }
+        ApiCommand::Get { team, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/api-definitions/{name}"),
+                    None,
+                )
+                .await?
+        }
+        ApiCommand::Status { team, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/api-definitions/{name}/status"),
+                    None,
+                )
+                .await?
+        }
+        ApiCommand::Create {
+            team,
+            name,
+            display_name,
+            description,
+            from_openapi,
+            route_config_id,
+            listener_id,
+            virtual_host,
+            route,
+        } => {
+            let team = client.team(team)?;
+            let mut body = Map::new();
+            body.insert("name".into(), Value::String(name));
+            body.insert(
+                "display_name".into(),
+                Value::String(display_name.unwrap_or_default()),
+            );
+            body.insert("description".into(), Value::String(description));
+            if let Some(path) = from_openapi {
+                body.insert("openapi".into(), body_from_file(&path)?);
+            }
+            if let Some(route_config_id) = route_config_id {
+                let mut binding = Map::new();
+                binding.insert("route_config_id".into(), Value::String(route_config_id));
+                if let Some(listener_id) = listener_id {
+                    binding.insert("listener_id".into(), Value::String(listener_id));
+                }
+                if let Some(virtual_host) = virtual_host {
+                    binding.insert("virtual_host".into(), Value::String(virtual_host));
+                }
+                if let Some(route) = route {
+                    binding.insert("route".into(), Value::String(route));
+                }
+                body.insert("route_binding".into(), Value::Object(binding));
+            } else if listener_id.is_some() || virtual_host.is_some() || route.is_some() {
+                anyhow::bail!(
+                    "--route-config-id is required when passing --listener-id, --virtual-host, or --route"
+                );
+            }
+            client
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/api/v1/teams/{team}/api-definitions"),
+                    Some(Value::Object(body)),
+                )
+                .await?
+        }
+        ApiCommand::Delete { team, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::DELETE,
+                    &format!("/api/v1/teams/{team}/api-definitions/{name}"),
+                    None,
+                )
+                .await?
+        }
+    };
+    Ok(())
+}
+
 pub async fn run_secret(global: GlobalOptions, command: SecretCommand) -> Result<()> {
     let client = RestClient::new(global)?;
     match command {
@@ -1377,6 +1472,9 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/listeners/{name}",
         "/api/v1/teams/{team}/route-configs",
         "/api/v1/teams/{team}/route-configs/{name}",
+        "/api/v1/teams/{team}/api-definitions",
+        "/api/v1/teams/{team}/api-definitions/{name}",
+        "/api/v1/teams/{team}/api-definitions/{name}/status",
         "/api/v1/teams/{team}/dataplanes",
         "/api/v1/teams/{team}/dataplanes/{name}",
         "/api/v1/teams/{team}/dataplanes/{name}/telemetry",
