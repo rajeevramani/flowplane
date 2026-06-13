@@ -178,8 +178,11 @@ pub async fn create_org(
     org_from_row(&row)
 }
 
-pub async fn create_team(
-    pool: &PgPool,
+/// Insert a team inside a caller-owned transaction. The service layer uses this so the
+/// row, its `TeamCreated` outbox event, and its audit entry commit atomically (the
+/// transactional-outbox invariant — a team must never exist without its event/audit).
+pub async fn create_team_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     org_id: OrgId,
     name: &str,
     display_name: &str,
@@ -193,10 +196,29 @@ pub async fn create_team(
     .bind(org_id.as_uuid())
     .bind(name)
     .bind(display_name)
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await
     .map_err(|e| map_unique_violation(e, "team", name))?;
     team_from_row(&row)
+}
+
+/// Standalone create (own transaction). Kept for tests/fixtures; production goes through
+/// [`create_team_tx`] so the event + audit share the transaction.
+pub async fn create_team(
+    pool: &PgPool,
+    org_id: OrgId,
+    name: &str,
+    display_name: &str,
+) -> DomainResult<Team> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("create team: begin: {e}")))?;
+    let team = create_team_tx(&mut tx, org_id, name, display_name).await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("create team: commit: {e}")))?;
+    Ok(team)
 }
 
 /// Resolve a team id to its org-carrying reference for the authorization engine.
@@ -327,15 +349,20 @@ pub async fn list_teams_for_org(pool: &PgPool, org_id: OrgId) -> DomainResult<Ve
     rows.iter().map(team_from_row).collect()
 }
 
-/// Delete a team. Refuses while the team owns resources (counts reported in the error).
-pub async fn delete_team(pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
+/// Delete a team inside a caller-owned transaction (resource-count guard, the DELETE, and
+/// the caller's event + audit all commit atomically). The count check and DELETE run in the
+/// same transaction so a concurrently-created resource cannot slip in between.
+pub async fn delete_team_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team_id: TeamId,
+) -> DomainResult<()> {
     let (clusters, listeners, rcs): (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM clusters WHERE team_id = $1), \
                 (SELECT count(*) FROM listeners WHERE team_id = $1), \
                 (SELECT count(*) FROM route_configs WHERE team_id = $1)",
     )
     .bind(team_id.as_uuid())
-    .fetch_one(pool)
+    .fetch_one(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("delete team: counts: {e}")))?;
     if clusters + listeners + rcs > 0 {
@@ -346,7 +373,7 @@ pub async fn delete_team(pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
     }
     let deleted = sqlx::query("DELETE FROM teams WHERE id = $1")
         .bind(team_id.as_uuid())
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| DomainError::internal(format!("delete team: {e}")))?;
     if deleted.rows_affected() == 0 {
@@ -355,6 +382,20 @@ pub async fn delete_team(pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
             "team not found",
         ));
     }
+    Ok(())
+}
+
+/// Standalone delete (own transaction). Kept for tests/fixtures; production goes through
+/// [`delete_team_tx`] so the event + audit share the transaction.
+pub async fn delete_team(pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("delete team: begin: {e}")))?;
+    delete_team_tx(&mut tx, team_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("delete team: commit: {e}")))?;
     Ok(())
 }
 

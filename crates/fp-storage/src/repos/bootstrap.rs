@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+/// Fixed advisory-lock key serializing concurrent `initialize` calls (see below).
+const BOOTSTRAP_LOCK_KEY: i64 = 0x666c_6f77_626f_6f74; // "flowboot"
+
 fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
@@ -77,13 +80,24 @@ pub async fn initialize(
         .await
         .map_err(|e| DomainError::internal(format!("bootstrap: begin: {e}")))?;
 
-    // Idempotency guard inside the transaction: only one initialize can ever win.
-    let already: Option<String> = sqlx::query_scalar(
-        "SELECT value FROM instance_meta WHERE key = 'platform_org_id' FOR UPDATE",
-    )
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| DomainError::internal(format!("bootstrap: check: {e}")))?;
+    // Serialize the whole critical section: a transaction-scoped advisory lock means only
+    // one initialize runs at a time across all connections. Without it, two concurrent
+    // callers with two different valid tokens both pass the "already initialized?" check
+    // (the FOR UPDATE below locks nothing when the marker row does not yet exist) and both
+    // commit — producing two orgs and a silently-lost platform marker. The lock is released
+    // automatically on commit/rollback. Key is an arbitrary fixed constant for this purpose.
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(BOOTSTRAP_LOCK_KEY)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("bootstrap: lock: {e}")))?;
+
+    // Idempotency guard inside the (now serialized) transaction: only one initialize wins.
+    let already: Option<String> =
+        sqlx::query_scalar("SELECT value FROM instance_meta WHERE key = 'platform_org_id'")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("bootstrap: check: {e}")))?;
     if already.is_some() {
         return Err(DomainError::conflict(
             "this instance is already initialized",
@@ -273,6 +287,80 @@ mod tests {
         assert_eq!(loaded.org.map(|(id, _)| id), Some(org_id));
 
         // Cleanup so other instance-level tests (and dev seeding) see a clean slate.
+        sqlx::query("DELETE FROM instance_meta WHERE key = 'platform_org_id'")
+            .execute(&pool)
+            .await
+            .expect("clean");
+        sqlx::query("SELECT pg_advisory_unlock(420001)")
+            .execute(&pool)
+            .await
+            .expect("unlock");
+    }
+
+    #[tokio::test]
+    async fn concurrent_initialize_with_two_valid_tokens_yields_exactly_one_platform_org() {
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = crate::connect(&url, 8).await.expect("connect");
+        crate::migrate(&pool).await.expect("migrate");
+
+        // Serialize against the other instance-level test (shared instance_meta state).
+        sqlx::query("SELECT pg_advisory_lock(420001)")
+            .execute(&pool)
+            .await
+            .expect("lock");
+        sqlx::query("DELETE FROM instance_meta WHERE key = 'platform_org_id'")
+            .execute(&pool)
+            .await
+            .expect("clean");
+
+        // Two distinct, valid tokens (issued before initialization).
+        let t1 = issue_token_if_uninitialized(&pool)
+            .await
+            .expect("issue1")
+            .expect("uninit");
+        let t2 = issue_token_if_uninitialized(&pool)
+            .await
+            .expect("issue2")
+            .expect("uninit");
+
+        // Race two initialize calls. Exactly one must win; the other must be rejected — never
+        // two platform orgs (the bug the advisory lock closes).
+        let (org_a, sub_a) = (unique("plat-a"), unique("sub-a"));
+        let (org_b, sub_b) = (unique("plat-b"), unique("sub-b"));
+        let (a, b) = tokio::join!(
+            initialize(
+                &pool,
+                &t1,
+                &org_a,
+                "A",
+                &sub_a,
+                "a@p.test",
+                RequestId::generate(),
+            ),
+            initialize(
+                &pool,
+                &t2,
+                &org_b,
+                "B",
+                &sub_b,
+                "b@p.test",
+                RequestId::generate(),
+            ),
+        );
+        let wins = [a.is_ok(), b.is_ok()].iter().filter(|x| **x).count();
+        assert_eq!(wins, 1, "exactly one initialize may win the race");
+
+        // And the database agrees: a single platform_org_id marker exists.
+        let markers: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM instance_meta WHERE key = 'platform_org_id'")
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+        assert_eq!(markers, 1, "exactly one platform org marker");
+
         sqlx::query("DELETE FROM instance_meta WHERE key = 'platform_org_id'")
             .execute(&pool)
             .await

@@ -81,11 +81,13 @@ pub async fn create_team(
     request_id: RequestId,
 ) -> DomainResult<Team> {
     let org_id = require_org_admin(ctx)?;
-    let team = identity::create_team(pool, org_id, name, display_name).await?;
+    // Row + event + audit in ONE transaction (transactional-outbox invariant): a team must
+    // never exist without its TeamCreated event and audit row, even on a mid-call crash.
     let mut tx = pool
         .begin()
         .await
-        .map_err(crate::services::db_err("create team: events"))?;
+        .map_err(crate::services::db_err("create team: begin"))?;
+    let team = identity::create_team_tx(&mut tx, org_id, name, display_name).await?;
     fp_storage::outbox::append(
         &mut tx,
         &DomainEvent::TeamCreated {
@@ -130,11 +132,12 @@ pub async fn delete_team(
 ) -> DomainResult<()> {
     let org_id = require_org_admin(ctx)?;
     require_same_org(team, org_id)?;
-    identity::delete_team(pool, team.id).await?;
+    // Guard + DELETE + event + audit in ONE transaction (see create_team).
     let mut tx = pool
         .begin()
         .await
-        .map_err(crate::services::db_err("delete team: events"))?;
+        .map_err(crate::services::db_err("delete team: begin"))?;
+    identity::delete_team_tx(&mut tx, team.id).await?;
     fp_storage::outbox::append(
         &mut tx,
         &DomainEvent::TeamDeleted {

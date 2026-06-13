@@ -67,11 +67,14 @@ pub async fn run() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to prime xDS snapshot cache: {e}"))?;
     tracing::info!(teams = primed, "xDS snapshot cache primed from database");
     let (revocation_tx, _) = tokio::sync::broadcast::channel::<uuid::Uuid>(64);
+    // Handles for every spawned xDS task; awaited (bounded) on shutdown so streams and the
+    // outbox consumer drain rather than being abandoned mid-flight.
+    let mut xds_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     {
         let cache = snapshot_cache.clone();
         let consumer_pool = pool.clone();
         let revocations = revocation_tx.clone();
-        tokio::spawn(async move {
+        xds_tasks.push(tokio::spawn(async move {
             let handler_pool = consumer_pool.clone();
             let result = fp_storage::outbox::run_consumer(
                 consumer_pool,
@@ -91,7 +94,7 @@ pub async fn run() -> anyhow::Result<()> {
             if let Err(e) = result {
                 tracing::error!("xds outbox consumer exited with error: {e}");
             }
-        });
+        }));
     }
     if let Some(xds_tls) = &config.xds_tls {
         // Production path: mandatory mTLS, team identity from the certificate registry.
@@ -105,7 +108,8 @@ pub async fn run() -> anyhow::Result<()> {
         let resolver = std::sync::Arc::new(fp_xds::ads::CertRegistryResolver::new(pool.clone()));
         let revocations = revocation_tx.clone();
         let nack_pool = pool.clone();
-        tokio::spawn(async move {
+        let shutdown = xds_shutdown_signal(&xds_shutdown_tx);
+        xds_tasks.push(tokio::spawn(async move {
             if let Err(e) = fp_xds::server::serve_mtls(
                 xds_addr,
                 cache,
@@ -113,30 +117,31 @@ pub async fn run() -> anyhow::Result<()> {
                 revocations,
                 nack_pool,
                 &tls,
-                std::future::pending(),
+                shutdown,
             )
             .await
             {
                 tracing::error!("xds server exited: {e}");
             }
-        });
+        }));
     } else if config.dev_mode {
         let cache = snapshot_cache.clone();
         let xds_addr = config.xds_addr;
         let nack_pool = pool.clone();
-        tokio::spawn(async move {
+        let shutdown = xds_shutdown_signal(&xds_shutdown_tx);
+        xds_tasks.push(tokio::spawn(async move {
             if let Err(e) = fp_xds::server::serve_plaintext(
                 xds_addr,
                 cache,
                 std::sync::Arc::new(fp_xds::ads::NodeIdTeamResolver),
                 Some(nack_pool),
-                std::future::pending(),
+                shutdown,
             )
             .await
             {
                 tracing::error!("xds server exited: {e}");
             }
-        });
+        }));
     } else {
         tracing::warn!(
             "xDS listener disabled: mTLS is mandatory for xDS — set FLOWPLANE_XDS_TLS_CERT, \
@@ -190,7 +195,17 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
 
+    // Signal the xDS tasks and let them drain (bounded). serve_with_shutdown finishes the
+    // in-flight gRPC streams; the outbox consumer exits its loop on the watch flag.
     let _ = xds_shutdown_tx.send(true);
+    for task in xds_tasks {
+        if tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .is_err()
+        {
+            tracing::warn!("an xDS task did not drain within 10s; abandoning it");
+        }
+    }
     if let Some(provider) = otel_provider {
         if let Err(e) = provider.shutdown() {
             tracing::warn!("OTel provider shutdown reported an error: {e}");
@@ -198,6 +213,18 @@ pub async fn run() -> anyhow::Result<()> {
     }
     tracing::info!("server stopped cleanly");
     Ok(())
+}
+
+/// A future that resolves when the xDS shutdown flag flips to `true`. Each xDS server task
+/// gets its own receiver so `serve_with_shutdown` can drain its streams on shutdown.
+fn xds_shutdown_signal(
+    tx: &tokio::sync::watch::Sender<bool>,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    let mut rx = tx.subscribe();
+    async move {
+        // Wakes on the first `true`; treats a dropped sender as shutdown too.
+        let _ = rx.wait_for(|flag| *flag).await;
+    }
 }
 
 pub async fn migrate_only() -> anyhow::Result<()> {

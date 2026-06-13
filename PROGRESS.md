@@ -41,17 +41,17 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S1.4 fp-api: healthz/readyz, request-id middleware, error envelope, /metrics
   - [x] S1.5 observability: JSON logs w/ request_id + trace_id; OTel layer always on; OTLP export when configured; W3C traceparent honored
   - [x] S1.6 native-TLS API listener + insecure opt-in warning; TLS smoke in CI
-  - [x] S1.7 flowplane bin: serve + db migrate; graceful shutdown
-  - [x] S1.8 CI: fmt, clippy -D warnings, tests w/ Postgres, cargo audit/deny
+  - [x] S1.7 flowplane bin: serve + db migrate; API graceful shutdown (xDS task drain wired in S5.6/S5.4 — see serve.rs `xds_shutdown_signal` + bounded drain)
+  - [x] S1.8 CI: fmt, clippy -D warnings, tests w/ Postgres, cargo-deny (advisories + licenses + bans; no separate `cargo audit` step)
   - [x] S1 exit: request_id in error body + log + trace; traceparent inherited; boots on fresh PG; TLS verified
 - [x] S2 Identity, teams, authz backbone
   - [x] S2.1 schema 0002 (orgs/teams/users/agents/memberships/grants/audit/bootstrap) + domain types
   - [x] S2.2 authz decision engine (pure, table-driven, exhaustive invariant tests vs spec/05 §3.1)
   - [x] S2.3 OIDC JWT validation (provider-agnostic, JWKS cache) + dev issuer (same validation path) + triple gating + seeding
-  - [x] S2.4 TeamScope pattern, identity repos + principal loader, audit writer (incl. denials), keystone tenancy integration tests
-  - [x] S2.5 auth middleware, whoami, OIDC config, authn-failure audit, one-shot bootstrap flow (live-verified)
+  - [x] S2.4 TeamScope pattern, identity repos + principal loader, audit writer (success + authn-failure paths; `AuditEntry::denial` row primitive present + storage-tested, but NOT yet wired into service-layer authz denials — see Open Risk R2), keystone tenancy integration tests
+  - [x] S2.5 auth middleware, whoami, OIDC config, authn-failure audit, one-shot bootstrap flow (single-use + concurrency-safe via transaction advisory lock, live-verified)
   - [x] S2.6 per-tenant write throttle (org-keyed, fail-closed keying, tenant-isolation test)
-  - [x] S2 exit: invariant tests green, cross-org denied pre-grant, denial+authn audit rows, real-PG integration, live E2E (whoami + bootstrap)
+  - [x] S2 exit: invariant tests green, cross-org denied pre-grant, authn-failure audit rows (service-authz denial auditing tracked as Open Risk R2), real-PG integration, live E2E (whoami + bootstrap)
 - [x] S3 Gateway domain + storage + outbox events
   - [x] S3.1 outbox: events table, transactional append, dispatcher (LISTEN/NOTIFY + poll, SKIP LOCKED cursors, trace ctx), crash-redelivery test
   - [x] S3.2 gateway domain types + validation (cluster, listener, route-config w/ rewrite rules)
@@ -135,13 +135,64 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           clean + foreign listener port closed)
     - [x] `SnapshotCache::prime_all` + regression test (fresh cache primed from DB byte-identical
           to the event-driven one)
-- [ ] S6 Secrets/SDS, proxy certs, dataplanes
+- [ ] S6 Secrets/SDS + dataplane & proxy-cert management surface (REST/CLI) + fp-agent telemetry
+  - NOTE: the dataplane + proxy_certificate **internals** (migration 0006, repos, services,
+    mTLS cert-registry binding, revocation) already shipped in S5.4 — do NOT rebuild them.
+    S6's remaining scope: encrypted-at-rest secrets + SDS delivery; the REST/CLI surface for
+    dataplane registration + bootstrap generation + cert issue/revoke; fp-agent telemetry
+    relay + heartbeats (D-007); per-team stats aggregation.
 - [ ] S7 CLI core (+ commands for S2–S6)
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
 - [ ] S10 AI gateway
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
+
+## Known Corrections / Open Risks
+
+Cold-start handoff safety: items surfaced by review that the checklist above must not paper
+over. "RESOLVED" items were fixed in the same review pass (with tests); "OPEN" items are real
+and scheduled — read these before trusting a green checkbox.
+
+- **R1 — Bootstrap concurrent-init race — RESOLVED.** `initialize` used `FOR UPDATE` on a
+  not-yet-existing `instance_meta` row (locks nothing) + `ON CONFLICT DO NOTHING` on the
+  marker, so two concurrent calls with two different valid tokens could both commit (two
+  orgs, lost marker). Fixed with a transaction-scoped advisory lock serializing the critical
+  section; regression test `concurrent_initialize_*` asserts exactly one winner.
+- **R3 — Team create/delete transaction boundary — RESOLVED.** `create_team`/`delete_team`
+  inserted/deleted the row in a separate transaction *before* the event+audit tx, so a
+  mid-call crash could leave a team with no `TeamCreated`/`TeamDeleted` event or audit row
+  (transactional-outbox invariant violated). Fixed with `identity::create_team_tx` /
+  `delete_team_tx`; the service now does row+event+audit in one transaction (pool-based
+  wrappers retained for test fixtures).
+- **R4 — xDS task graceful shutdown — RESOLVED.** xDS server tasks were spawned with
+  `std::future::pending()` shutdown futures (never drained); only the API drained. Fixed:
+  `serve.rs::xds_shutdown_signal` feeds each task a real shutdown future off the watch
+  channel, and shutdown now awaits all xDS task handles with a 10s bound.
+- **R2 — Service-layer authz denials are NOT audited — OPEN.** Authn *failures* are audited
+  (auth middleware) and the `AuditEntry::denial` row primitive exists + is storage-tested,
+  but no service/middleware path writes a denial row when `check_resource_access` denies.
+  Spec/05 + 08a §6 want denials audited. Recommendation: in the service `authorize()` helpers
+  (they already hold ctx/resource/action/team) write a best-effort denial row before
+  returning the error — thread `pool`+`request_id` in. Target: S12 hardening or a focused
+  commit before the design-partner cut.
+- **R5 — one-org-per-user is assumed but not enforced — OPEN.** `org_memberships` has
+  `UNIQUE (user_id, org_id)` (no duplicate membership in the *same* org) but nothing stops a
+  user from holding memberships in two orgs, while the principal loader and D-010 assume
+  exactly one. Recommendation: add a `UNIQUE` index on `org_memberships(user_id)` (at most one
+  org per user) or reject the second membership at add-time; decide before multi-tenant
+  onboarding.
+- **R6 — Email resolution is global and non-unique — OPEN.** `identity::find_user_by_email`
+  selects across ALL orgs with `LIMIT 1`, and `users.email` has no `UNIQUE` constraint — so
+  add-member / add-grant by email can resolve a user in another org or silently pick one of
+  several duplicates. Recommendation: scope email resolution to the caller's org and/or add a
+  uniqueness constraint; prefer subject-based resolution where possible.
+- **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — OPEN.**
+  `refresh_keys` takes `cache.write()` *then* does the JWKS HTTP fetch while holding it, and
+  `reqwest::Client::new()` sets no timeout — so a slow/hung IdP stalls every token validation
+  (head-of-line blocking) indefinitely. Recommendation: set a reqwest timeout (~5s) and fetch
+  outside the write lock (swap keys under a brief lock), keeping single-flight via a dedicated
+  refresh mutex. Target: before any non-dev OIDC deployment.
 
 ## Notes
 
