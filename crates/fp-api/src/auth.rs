@@ -8,8 +8,11 @@ use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use fp_core::{GrantSet, PrincipalCtx};
-use fp_domain::{DomainError, ErrorCode, RequestId};
+use fp_domain::{DomainError, ErrorCode, OrgId, RequestId};
 use fp_storage::repos::{audit, identity};
+use std::str::FromStr;
+
+const ACTIVE_ORG_HEADER: &str = "x-flowplane-org";
 
 fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
@@ -17,6 +20,30 @@ fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+}
+
+async fn requested_org(
+    pool: &sqlx::PgPool,
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<OrgId>, DomainError> {
+    let Some(raw) = headers.get(ACTIVE_ORG_HEADER) else {
+        return Ok(None);
+    };
+    let raw = raw.to_str().map_err(|_| {
+        DomainError::validation("invalid organization selector")
+            .with_hint("send X-Flowplane-Org as an organization name or UUID")
+    })?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    if let Ok(id) = OrgId::from_str(raw) {
+        return Ok(Some(id));
+    }
+    identity::resolve_org_by_name(pool, raw)
+        .await?
+        .ok_or_else(|| DomainError::not_found("organization", raw))
+        .map(Some)
 }
 
 pub async fn authenticate(
@@ -73,6 +100,11 @@ pub async fn authenticate(
         }
     };
 
+    let requested_org = match requested_org(&state.pool, request.headers()).await {
+        Ok(requested_org) => requested_org,
+        Err(e) => return ApiError::new(e, rid).into_response(),
+    };
+
     // JIT provisioning + principal load (spec/05 §1).
     let principal = async {
         identity::upsert_user_by_subject(
@@ -82,7 +114,7 @@ pub async fn authenticate(
             claims.name.as_deref().unwrap_or(""),
         )
         .await?;
-        identity::load_principal(&state.pool, &claims.subject).await
+        identity::load_principal_for_org(&state.pool, &claims.subject, requested_org).await
     }
     .await;
 

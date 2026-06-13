@@ -176,20 +176,19 @@ and scheduled — read these before trusting a green checkbox.
   (they already hold ctx/resource/action/team) write a best-effort denial row before
   returning the error — thread `pool`+`request_id` in. Target: S12 hardening or a focused
   commit before the design-partner cut.
-- **R5 — multi-org users require explicit request org context — OPEN.** Founder direction is
+- **R5 — multi-org users require explicit request org context — IN PROGRESS.** Founder direction is
   to allow a human user to belong to multiple orgs, so `org_memberships` must keep only
-  `UNIQUE (user_id, org_id)` and must **not** gain a `UNIQUE (user_id)` constraint. The risk is
-  now the inverse: the principal loader and D-010 still assume one org and choose one
-  membership with `ORDER BY created_at LIMIT 1`. Recommendation: replace implicit selection
-  with an explicit request org context (route org or validated active-org selector), make
-  ambiguous tenant-scoped requests fail closed, and update authz checks to test membership in
-  the requested org.
-- **R6 — Email resolution is global and non-unique — OPEN.** `identity::find_user_by_email`
+  `UNIQUE (user_id, org_id)` and must **not** gain a `UNIQUE (user_id)` constraint. The v2
+  selector contract is `X-Flowplane-Org` for REST/MCP and `--org` / active config context for
+  CLI. Implemented so far: principal loading validates a selected org, infers only exactly one
+  active non-platform org, and otherwise leaves no active org for tenant-scoped APIs to fail
+  closed; path-scoped org member APIs validate membership against the path org directly.
+- **R6 — Email resolution is global and non-unique — IN PROGRESS.** `identity::find_user_by_email`
   selects across ALL orgs with `LIMIT 1`, and `users.email` has no `UNIQUE` constraint — so
   add-member / add-grant by email can resolve a user in another org or silently pick one of
-  several duplicates. Recommendation: prefer subject/user-id based selection; where email is a
-  UX affordance, scope resolution to the target org or reject ambiguous matches. Do not rely on
-  global email uniqueness as the isolation boundary.
+  several duplicates. Implemented so far: org member add rejects duplicate active global emails
+  instead of picking one; team member/grant add resolve email inside the selected org. Remaining:
+  add subject/user-id UX for ambiguous org-member add.
 - **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — OPEN.**
   `refresh_keys` takes `cache.write()` *then* does the JWKS HTTP fetch while holding it, and
   `reqwest::Client::new()` sets no timeout — so a slow/hung IdP stalls every token validation

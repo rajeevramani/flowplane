@@ -18,6 +18,12 @@ pub struct LoadedPrincipal {
     pub grants: Vec<(Resource, Action, TeamId)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Membership {
+    org_id: OrgId,
+    role: OrgRole,
+}
+
 /// JIT user provisioning (Q-004): first authenticated request creates the user row;
 /// later requests refresh email/name drift from the IdP.
 pub async fn upsert_user_by_subject(
@@ -45,6 +51,16 @@ pub async fn upsert_user_by_subject(
 /// Load the full principal context for a validated subject. Returns `None` for unknown or
 /// suspended users (callers render 401 — a suspended user is indistinguishable from absent).
 pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option<LoadedPrincipal>> {
+    load_principal_for_org(pool, subject, None).await
+}
+
+/// Load the full principal context for a validated subject and optional request org. If no
+/// request org is supplied, infer only when the user has exactly one active non-platform org.
+pub async fn load_principal_for_org(
+    pool: &PgPool,
+    subject: &str,
+    requested_org: Option<OrgId>,
+) -> DomainResult<Option<LoadedPrincipal>> {
     let Some(user_row) = sqlx::query("SELECT id, status FROM users WHERE subject = $1")
         .bind(subject)
         .fetch_optional(pool)
@@ -58,44 +74,35 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
     }
     let user_id = UserId::from(user_row.get::<Uuid, _>("id"));
 
-    // Compatibility path from the original one-org model. D-014 makes this a hardening target:
-    // tenant-scoped requests must pass an explicit org context instead of taking the first
-    // membership.
-    let membership = sqlx::query(
+    let platform_org_id = load_platform_org_id(pool).await?;
+
+    let membership_rows = sqlx::query(
         "SELECT m.org_id, m.role FROM org_memberships m \
          JOIN organizations o ON o.id = m.org_id AND o.status = 'active' \
-         WHERE m.user_id = $1 ORDER BY m.created_at LIMIT 1",
+         WHERE m.user_id = $1 ORDER BY m.created_at",
     )
     .bind(user_id.as_uuid())
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| DomainError::internal(format!("load principal: membership: {e}")))?;
 
-    let org = match membership {
-        Some(row) => Some((
-            OrgId::from(row.get::<Uuid, _>("org_id")),
-            OrgRole::parse(&row.get::<String, _>("role"))?,
-        )),
-        None => None,
-    };
+    let memberships = membership_rows
+        .iter()
+        .map(|row| {
+            Ok(Membership {
+                org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+                role: OrgRole::parse(&row.get::<String, _>("role"))?,
+            })
+        })
+        .collect::<DomainResult<Vec<_>>>()?;
 
-    // Platform admin = owner of the org named by instance_meta 'platform_org_id'.
-    let platform_admin = match org {
-        Some((org_id, OrgRole::Owner)) => {
-            let marker: Option<String> =
-                sqlx::query_scalar("SELECT value FROM instance_meta WHERE key = 'platform_org_id'")
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(|e| {
-                        DomainError::internal(format!("load principal: platform org: {e}"))
-                    })?;
-            marker
-                .and_then(|v| Uuid::parse_str(&v).ok())
-                .map(OrgId::from)
-                == Some(org_id)
-        }
-        _ => false,
-    };
+    let platform_admin = platform_org_id.is_some_and(|platform_org_id| {
+        memberships
+            .iter()
+            .any(|m| m.org_id == platform_org_id && m.role == OrgRole::Owner)
+    });
+
+    let org = select_request_org(&memberships, requested_org, platform_org_id)?;
 
     let grant_rows = sqlx::query(
         "SELECT resource, action, team_id FROM grants \
@@ -124,6 +131,53 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
         org,
         grants,
     }))
+}
+
+fn select_request_org(
+    memberships: &[Membership],
+    requested_org: Option<OrgId>,
+    platform_org_id: Option<OrgId>,
+) -> DomainResult<Option<(OrgId, OrgRole)>> {
+    if let Some(requested_org) = requested_org {
+        if Some(requested_org) == platform_org_id {
+            return Err(DomainError::new(
+                fp_domain::ErrorCode::Forbidden,
+                "platform organization cannot be selected as tenant context",
+            ));
+        }
+        return memberships
+            .iter()
+            .find(|m| m.org_id == requested_org)
+            .map(|m| Some((m.org_id, m.role)))
+            .ok_or_else(|| {
+                DomainError::new(
+                    fp_domain::ErrorCode::Forbidden,
+                    "selected organization is not available to this user",
+                )
+            });
+    }
+
+    let mut tenant_memberships = memberships
+        .iter()
+        .filter(|m| Some(m.org_id) != platform_org_id);
+    let Some(first) = tenant_memberships.next() else {
+        return Ok(None);
+    };
+    if tenant_memberships.next().is_some() {
+        return Ok(None);
+    }
+    Ok(Some((first.org_id, first.role)))
+}
+
+async fn load_platform_org_id(pool: &PgPool) -> DomainResult<Option<OrgId>> {
+    let marker: Option<String> =
+        sqlx::query_scalar("SELECT value FROM instance_meta WHERE key = 'platform_org_id'")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("load principal: platform org: {e}")))?;
+    Ok(marker
+        .and_then(|v| Uuid::parse_str(&v).ok())
+        .map(OrgId::from))
 }
 
 fn org_from_row(row: &PgRow) -> DomainResult<Organization> {
@@ -496,15 +550,67 @@ pub async fn delete_grant(pool: &PgPool, team_id: TeamId, grant_id: Uuid) -> Dom
     Ok(deleted.rows_affected() > 0)
 }
 
-/// Find an active user by email within callers' provisioned set (membership flows).
+/// Find one active user by email. This is only valid for flows that can legitimately attach an
+/// existing account to a new org; duplicate active emails are rejected rather than picked.
 pub async fn find_user_by_email(pool: &PgPool, email: &str) -> DomainResult<Option<UserId>> {
-    let id: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND status = 'active' LIMIT 1")
+    let ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND status = 'active' LIMIT 2")
             .bind(email)
-            .fetch_optional(pool)
+            .fetch_all(pool)
             .await
             .map_err(|e| DomainError::internal(format!("find user: {e}")))?;
-    Ok(id.map(UserId::from))
+    match ids.as_slice() {
+        [] => Ok(None),
+        [id] => Ok(Some(UserId::from(*id))),
+        _ => Err(
+            DomainError::conflict("multiple active users have this email")
+                .with_hint("select the user by immutable subject or user id"),
+        ),
+    }
+}
+
+/// Find an active user by email only if they already belong to the target org.
+pub async fn find_org_user_by_email(
+    pool: &PgPool,
+    org_id: OrgId,
+    email: &str,
+) -> DomainResult<Option<UserId>> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT u.id FROM users u \
+         JOIN org_memberships m ON m.user_id = u.id \
+         WHERE m.org_id = $1 AND u.email = $2 AND u.status = 'active' LIMIT 2",
+    )
+    .bind(org_id.as_uuid())
+    .bind(email)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("find org user: {e}")))?;
+    match ids.as_slice() {
+        [] => Ok(None),
+        [id] => Ok(Some(UserId::from(*id))),
+        _ => Err(
+            DomainError::conflict("multiple active org users have this email")
+                .with_hint("select the user by immutable subject or user id"),
+        ),
+    }
+}
+
+pub async fn get_org_membership_role(
+    pool: &PgPool,
+    user_id: UserId,
+    org_id: OrgId,
+) -> DomainResult<Option<OrgRole>> {
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT m.role FROM org_memberships m \
+         JOIN organizations o ON o.id = m.org_id AND o.status = 'active' \
+         WHERE m.user_id = $1 AND m.org_id = $2",
+    )
+    .bind(user_id.as_uuid())
+    .bind(org_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get org membership: {e}")))?;
+    role.map(|role| OrgRole::parse(&role)).transpose()
 }
 
 pub async fn list_orgs(pool: &PgPool) -> DomainResult<Vec<Organization>> {

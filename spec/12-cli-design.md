@@ -26,7 +26,8 @@ the same binary that runs the server).
    `error (CODE): message` + `→ hint` + `request id`; exit codes 0/1/2/3/4/5/6/7 per spec/10 §8.
 7. **Config precedence (D-005)**: flag > env (`FLOWPLANE_*`) > `~/.flowplane/config.toml` >
    default — uniformly for every value. `flowplane config` manages the file; contexts
-   (`--context`, named server+team pairs) like kubeconfig.
+   (`--context`, named server+org+team tuples) like kubeconfig. `--org` is the human-facing
+   active-org selector; the CLI sends it to REST/MCP as `X-Flowplane-Org`.
 8. **Completions**: `flowplane completion bash|zsh|fish` (clap_complete), including dynamic
    resource-name completion via the API when authenticated.
 9. **Help**: every command has `--help` with one-line summary, examples, and related commands;

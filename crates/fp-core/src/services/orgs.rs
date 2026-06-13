@@ -110,12 +110,11 @@ async fn authorize_member_admin(
     ctx: &PrincipalCtx,
     org_id: OrgId,
 ) -> DomainResult<()> {
-    if let PrincipalCtx::User {
-        org: Some((own, role)),
-        ..
-    } = ctx
-    {
-        if *own == org_id && role.is_org_admin() {
+    if let PrincipalCtx::User { user_id, .. } = ctx {
+        if identity::get_org_membership_role(pool, *user_id, org_id)
+            .await?
+            .is_some_and(|role| role.is_org_admin())
+        {
             return Ok(());
         }
     }
@@ -173,13 +172,14 @@ pub async fn list_org_members(
     // Own-org members may read the roster; platform admin may read any (governance read).
     let allowed = match ctx {
         PrincipalCtx::User {
-            org: Some((own, _)),
-            ..
-        } if *own == org_id => true,
-        PrincipalCtx::User {
             platform_admin: true,
             ..
         } => true,
+        PrincipalCtx::User { user_id, .. } => {
+            identity::get_org_membership_role(pool, *user_id, org_id)
+                .await?
+                .is_some()
+        }
         _ => false,
     };
     if !allowed {

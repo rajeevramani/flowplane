@@ -36,8 +36,9 @@ fn member_org(ctx: &PrincipalCtx) -> DomainResult<OrgId> {
         PrincipalCtx::Agent { org_id, .. } => Ok(*org_id),
         PrincipalCtx::User { org: None, .. } => Err(DomainError::new(
             ErrorCode::Forbidden,
-            "no organization membership",
-        )),
+            "no active organization selected",
+        )
+        .with_hint("select an organization with `flowplane --org <org> ...`")),
     }
 }
 
@@ -178,11 +179,11 @@ pub async fn add_member(
 ) -> DomainResult<()> {
     let org_id = require_org_admin(ctx)?;
     require_same_org(team, org_id)?;
-    let user = identity::find_user_by_email(pool, email)
+    let user = identity::find_org_user_by_email(pool, org_id, email)
         .await?
         .ok_or_else(|| {
             DomainError::not_found("user", email)
-                .with_hint("the user must sign in once before being added to a team")
+                .with_hint("add the user to this organization before adding them to a team")
         })?;
     identity::add_team_membership(pool, user, team.id).await?;
     audit::record_best_effort(
@@ -256,11 +257,11 @@ pub async fn add_grant(
             "governance resources cannot be granted at team scope",
         ));
     }
-    let user = identity::find_user_by_email(pool, email)
+    let user = identity::find_org_user_by_email(pool, org_id, email)
         .await?
         .ok_or_else(|| {
             DomainError::not_found("user", email)
-                .with_hint("the user must sign in once before receiving grants")
+                .with_hint("add the user to this organization before granting team access")
         })?;
     let granter = match ctx {
         PrincipalCtx::User { user_id, .. } => Some(*user_id),

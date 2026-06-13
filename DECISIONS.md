@@ -214,15 +214,17 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   admins. That makes implicit membership selection a tenant-isolation risk.
 - **Decision:** v2 supports multiple org memberships per human user. Do **not** add a
   uniqueness constraint on `org_memberships(user_id)`. Instead, every tenant-scoped operation
-  must be authorized against an explicit request org context from the route or a dedicated
-  request selector. If a user has access to multiple orgs and a tenant-scoped API lacks an org
-  context, the request must fail closed rather than defaulting to the oldest or first
-  membership.
+  must be authorized against a validated request org context. The v2 selector contract is
+  `X-Flowplane-Org` for REST/MCP and `--org` / active config context for the CLI. When no
+  selector is supplied, the server may infer the org only if the user has exactly one active
+  non-platform org membership; zero or multiple tenant memberships produce no active org and
+  tenant-scoped operations fail closed.
 - **Identity resolution:** user lookup by email must not search globally and attach whichever
   row appears first. Prefer immutable subject/user-id based selection. Where email remains a
   UX affordance, resolve it inside the target org or reject ambiguous matches.
-- **API implication:** existing caller-org-implied routes such as `/api/v1/teams...` need an
-  org selector contract before they become the long-term tenant admin surface. Route-scoped org
-  identity (`/orgs/{org}/...`) is valid; a header/CLI-selected active org is also valid if the
-  server validates membership before constructing the request principal.
+- **API implication:** existing caller-org-implied routes such as `/api/v1/teams...` remain
+  viable because the server constructs a validated active org from the selector before
+  authorization. Path-scoped org endpoints such as `/api/v1/orgs/{org}/members...` validate
+  membership against the path org directly. This is v2-native; v1 routes are input for desired
+  functionality, not a surface to port wholesale.
 - **Status:** decided (post-S5.8, founder directive).

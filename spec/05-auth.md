@@ -200,16 +200,17 @@ operations:
    - `grants` from the `grants` table joined to team names, **filtered by
      `expires_at IS NULL OR expires_at > NOW()`**;
    - org memberships from `organization_memberships` are retained as a set. For tenant-scoped
-     operations, `org_id`/`org_name`/`org_role` are derived only from the explicit request org
-     context after validating membership; the platform org never becomes the request org
-     context.
+     operations, `org_id`/`org_name`/`org_role` are derived from the validated request org
+     context (`X-Flowplane-Org`, CLI `--org`, or active CLI config). With no selector, the
+     server may infer an org only when the user has exactly one active non-platform org
+     membership; the platform org never becomes the request org context.
    For machine users, `agent_context` is parsed from the user row.
 8. **Build `AuthContext`** and insert into request extensions:
    `token_id = "zitadel:{sub}"`, `token_name = "zitadel/{sub}"`, `user_id`, `user_email`,
    `user_name?`, `org_scopes` (private set, queried via `has_scope`), `grants`,
    `agent_context?`, validated request `org_id?`/`org_name?`, plus `client_ip`/`user_agent`
-   for audit. A user with multiple memberships must never receive an implicit default org for
-   tenant-scoped authorization.
+   for audit. A user with multiple tenant memberships and no selector must never receive an
+   implicit default org for tenant-scoped authorization.
 
 ### 2.4 Dev mode: embedded mock OIDC (`src/dev/oidc_server.rs`, feature `dev-oidc`)
 

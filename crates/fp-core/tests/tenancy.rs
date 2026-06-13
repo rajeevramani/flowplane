@@ -6,7 +6,7 @@
 
 use fp_core::{check_resource_access, Decision, GrantSet, PrincipalCtx, Reason};
 use fp_domain::authz::{Action, Resource};
-use fp_domain::{OrgRole, RequestId};
+use fp_domain::{ErrorCode, OrgRole, RequestId};
 use fp_storage::repos::{audit, identity};
 use sqlx::PgPool;
 
@@ -201,6 +201,113 @@ async fn suspended_user_loads_as_absent() {
         loaded.is_none(),
         "suspended user must be indistinguishable from absent"
     );
+}
+
+#[tokio::test]
+async fn multi_org_principal_requires_explicit_or_unambiguous_org_context() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let org_a = identity::create_org(&pool, &unique("org-a"), "")
+        .await
+        .expect("a");
+    let org_b = identity::create_org(&pool, &unique("org-b"), "")
+        .await
+        .expect("b");
+    let sub = unique("sub-multi");
+    let user = identity::upsert_user_by_subject(&pool, &sub, "multi@test", "Multi")
+        .await
+        .expect("user");
+    identity::add_org_membership(&pool, user, org_a.id, OrgRole::Admin)
+        .await
+        .expect("member a");
+    identity::add_org_membership(&pool, user, org_b.id, OrgRole::Viewer)
+        .await
+        .expect("member b");
+
+    let ambiguous = identity::load_principal(&pool, &sub)
+        .await
+        .expect("load")
+        .expect("principal");
+    assert_eq!(ambiguous.org, None, "multi-org users get no implicit org");
+
+    let selected = identity::load_principal_for_org(&pool, &sub, Some(org_b.id))
+        .await
+        .expect("load selected")
+        .expect("principal");
+    assert_eq!(selected.org, Some((org_b.id, OrgRole::Viewer)));
+
+    let outsider_org = identity::create_org(&pool, &unique("org-c"), "")
+        .await
+        .expect("c");
+    let err = identity::load_principal_for_org(&pool, &sub, Some(outsider_org.id))
+        .await
+        .expect_err("foreign selected org must fail");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+}
+
+#[tokio::test]
+async fn team_member_email_resolution_is_scoped_to_selected_org() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let org_a = identity::create_org(&pool, &unique("org-a"), "")
+        .await
+        .expect("a");
+    let org_b = identity::create_org(&pool, &unique("org-b"), "")
+        .await
+        .expect("b");
+    let team_a = identity::create_team(&pool, org_a.id, &unique("team-a"), "")
+        .await
+        .expect("team");
+
+    let admin_sub = unique("sub-admin");
+    let admin = identity::upsert_user_by_subject(&pool, &admin_sub, "admin@test", "Admin")
+        .await
+        .expect("admin");
+    identity::add_org_membership(&pool, admin, org_a.id, OrgRole::Admin)
+        .await
+        .expect("admin member");
+    let admin_ctx = PrincipalCtx::User {
+        user_id: admin,
+        platform_admin: false,
+        org: Some((org_a.id, OrgRole::Admin)),
+        grants: GrantSet::default(),
+    };
+
+    let same_email = format!("dup-{}@test", unique("email"));
+    let user_a = identity::upsert_user_by_subject(&pool, &unique("sub-a"), &same_email, "A")
+        .await
+        .expect("user a");
+    identity::add_org_membership(&pool, user_a, org_a.id, OrgRole::Member)
+        .await
+        .expect("member a");
+    let user_b = identity::upsert_user_by_subject(&pool, &unique("sub-b"), &same_email, "B")
+        .await
+        .expect("user b");
+    identity::add_org_membership(&pool, user_b, org_b.id, OrgRole::Member)
+        .await
+        .expect("member b");
+
+    let team_ref = identity::resolve_team_ref(&pool, team_a.id)
+        .await
+        .expect("resolve")
+        .expect("team");
+    fp_core::services::teams::add_member(
+        &pool,
+        &admin_ctx,
+        team_ref,
+        &same_email,
+        RequestId::generate(),
+    )
+    .await
+    .expect("add member");
+
+    let members = identity::list_team_members(&pool, team_a.id)
+        .await
+        .expect("members");
+    assert!(members.iter().any(|(id, _, _)| *id == user_a));
+    assert!(!members.iter().any(|(id, _, _)| *id == user_b));
 }
 
 #[tokio::test]
