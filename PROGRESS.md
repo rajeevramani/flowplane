@@ -145,6 +145,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         `/api/v1/teams/{team}/dataplanes[/{name}]` over the existing S5.4 service internals;
         OpenAPI operation pin updated to 36.
   - [ ] S6.2 dataplane bootstrap generation + proxy-cert issue/revoke REST surface
+    - [x] S6.2a proxy-certificate REST registry surface: list/register/revoke at
+          `/api/v1/teams/{team}/proxy-certificates[/{serial}/revoke]`, backed by the S5.4
+          registry/revocation services; OpenAPI operation pin updated to 39.
+    - [ ] S6.2b actual certificate/key issuance + dataplane bootstrap generation
   - [ ] S6.3 encrypted-at-rest secrets + write-only API + rotation
   - [ ] S6.4 SDS delivery over ADS + live rotation E2E
   - [ ] S6.5 fp-agent telemetry relay, heartbeats, liveness, per-team stats aggregation

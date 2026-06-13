@@ -38,12 +38,13 @@ fn openapi_document_covers_every_registered_operation() {
     for item in paths.values() {
         operations += item.as_object().map(|o| o.len()).unwrap_or(0);
     }
-    // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 3 dataplane + 1 xds-nacks operations.
+    // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 3 dataplane
+    // + 3 proxy-certificate + 1 xds-nacks operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 36,
-        "expected 36 documented operations, got {operations}"
+        operations, 39,
+        "expected 39 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     for path in [
@@ -301,4 +302,139 @@ async fn multi_org_user_selects_active_org_with_header() {
     let body = json_of(response).await;
     assert_eq!(body["total"], 0);
     assert!(body["items"].is_array());
+}
+
+#[tokio::test]
+async fn proxy_certificate_registry_flow_over_http() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+    let subject = unique("sub");
+    let token = issuer
+        .mint(&subject, "cert-http@test", "Cert HTTP", 600)
+        .expect("mint");
+
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let user = identity::upsert_user_by_subject(&pool, &subject, "cert-http@test", "Cert HTTP")
+        .await
+        .expect("user");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Admin)
+        .await
+        .expect("member");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+    });
+
+    let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"));
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        builder
+            .body(match body {
+                Some(json) => Body::from(json.to_string()),
+                None => Body::empty(),
+            })
+            .expect("request")
+    };
+
+    let dataplanes = format!("/api/v1/teams/{}/dataplanes", team.name);
+    let dataplane = unique("dp");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &dataplanes,
+            Some(serde_json::json!({"name": dataplane, "description": "edge"})),
+        ))
+        .await
+        .expect("create dataplane");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let certs = format!("/api/v1/teams/{}/proxy-certificates", team.name);
+    let serial = unique("serial");
+    let spiffe = format!(
+        "spiffe://flowplane.test/org/{}/team/{}/proxy/{}",
+        org.name, team.name, dataplane
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &certs,
+            Some(serde_json::json!({
+                "dataplane": dataplane,
+                "spiffe_uri": spiffe,
+                "serial_number": serial,
+                "expires_at": "2099-01-01T00:00:00Z"
+            })),
+        ))
+        .await
+        .expect("register cert");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert_eq!(body["serial_number"], serial);
+    assert!(body["revoked_at"].is_null());
+
+    let response = app
+        .clone()
+        .oneshot(request("GET", &certs, None))
+        .await
+        .expect("list certs");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert!(body
+        .as_array()
+        .expect("cert list")
+        .iter()
+        .any(|cert| cert["serial_number"] == serial));
+
+    let revoke = format!("{certs}/{serial}/revoke");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &revoke,
+            Some(serde_json::json!({"reason": "rotation"})),
+        ))
+        .await
+        .expect("revoke cert");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["revoked_reason"], "rotation");
+    assert!(body["revoked_at"].is_string());
+
+    let response = app
+        .oneshot(request(
+            "POST",
+            &revoke,
+            Some(serde_json::json!({"reason": "again"})),
+        ))
+        .await
+        .expect("double revoke");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(json_of(response).await["code"], "conflict");
 }

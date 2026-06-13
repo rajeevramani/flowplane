@@ -122,6 +122,24 @@ pub async fn list_dataplanes(
     dataplanes::list_dataplanes(pool, team.id, limit, offset).await
 }
 
+pub async fn list_certificates(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<Vec<ProxyCertificate>> {
+    authorize(
+        pool,
+        ctx,
+        Resource::ProxyCertificates,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
+    dataplanes::list_certificates(pool, team.id).await
+}
+
 /// What gets registered for a dataplane's certificate (the issued material's metadata;
 /// private keys never reach the control plane).
 #[derive(Debug, Clone)]
