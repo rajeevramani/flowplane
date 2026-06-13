@@ -32,10 +32,24 @@ async fn principal_ctx(pool: &PgPool, subject: &str) -> PrincipalCtx {
         .await
         .expect("load principal")
         .expect("principal exists");
+    // Mirror the auth middleware's D-014 resolution: infer the active org from the sole
+    // non-platform membership (these test users are single-org).
+    let candidates: Vec<_> = loaded
+        .memberships
+        .iter()
+        .copied()
+        .filter(|(org_id, _)| Some(*org_id) != loaded.platform_org_id)
+        .collect();
+    let (org, org_selector_required) = match candidates.as_slice() {
+        [one] => (Some(*one), false),
+        [] => (None, false),
+        _ => (None, true),
+    };
     PrincipalCtx::User {
         user_id: loaded.user_id,
         platform_admin: loaded.platform_admin,
-        org: loaded.org,
+        org_selector_required,
+        org,
         grants: GrantSet::new(loaded.grants),
     }
 }

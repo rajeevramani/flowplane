@@ -10,11 +10,19 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 /// Everything the authorization engine needs about a user principal, loaded in one pass.
+/// D-014: a human user may belong to multiple orgs, so we return the full membership SET —
+/// the auth middleware resolves the single *active* request org from it. No implicit
+/// "first membership wins".
 #[derive(Debug, Clone)]
 pub struct LoadedPrincipal {
     pub user_id: UserId,
     pub platform_admin: bool,
-    pub org: Option<(OrgId, OrgRole)>,
+    /// All active org memberships (org + role), unordered. Includes the platform org if the
+    /// user is a member of it.
+    pub memberships: Vec<(OrgId, OrgRole)>,
+    /// The platform org id (from `instance_meta`), so callers can exclude it from tenant
+    /// context resolution. `None` on an uninitialized instance.
+    pub platform_org_id: Option<OrgId>,
     pub grants: Vec<(Resource, Action, TeamId)>,
 }
 
@@ -58,43 +66,41 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
     }
     let user_id = UserId::from(user_row.get::<Uuid, _>("id"));
 
-    // Compatibility path from the original one-org model. D-014 makes this a hardening target:
-    // tenant-scoped requests must pass an explicit org context instead of taking the first
-    // membership.
-    let membership = sqlx::query(
+    // D-014: load the FULL active-membership set (no ORDER BY / LIMIT). The middleware
+    // resolves the active request org from this set + the request's org selector.
+    let membership_rows = sqlx::query(
         "SELECT m.org_id, m.role FROM org_memberships m \
          JOIN organizations o ON o.id = m.org_id AND o.status = 'active' \
-         WHERE m.user_id = $1 ORDER BY m.created_at LIMIT 1",
+         WHERE m.user_id = $1",
     )
     .bind(user_id.as_uuid())
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
-    .map_err(|e| DomainError::internal(format!("load principal: membership: {e}")))?;
+    .map_err(|e| DomainError::internal(format!("load principal: memberships: {e}")))?;
 
-    let org = match membership {
-        Some(row) => Some((
+    let mut memberships = Vec::with_capacity(membership_rows.len());
+    for row in &membership_rows {
+        memberships.push((
             OrgId::from(row.get::<Uuid, _>("org_id")),
             OrgRole::parse(&row.get::<String, _>("role"))?,
-        )),
-        None => None,
-    };
+        ));
+    }
 
-    // Platform admin = owner of the org named by instance_meta 'platform_org_id'.
-    let platform_admin = match org {
-        Some((org_id, OrgRole::Owner)) => {
-            let marker: Option<String> =
-                sqlx::query_scalar("SELECT value FROM instance_meta WHERE key = 'platform_org_id'")
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(|e| {
-                        DomainError::internal(format!("load principal: platform org: {e}"))
-                    })?;
-            marker
-                .and_then(|v| Uuid::parse_str(&v).ok())
-                .map(OrgId::from)
-                == Some(org_id)
-        }
-        _ => false,
+    let platform_org_id: Option<OrgId> = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM instance_meta WHERE key = 'platform_org_id'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("load principal: platform org: {e}")))?
+    .and_then(|v| Uuid::parse_str(&v).ok())
+    .map(OrgId::from);
+
+    // Platform admin = owner of the platform org (membership in the set with role Owner).
+    let platform_admin = match platform_org_id {
+        Some(platform) => memberships
+            .iter()
+            .any(|(org_id, role)| *org_id == platform && *role == OrgRole::Owner),
+        None => false,
     };
 
     let grant_rows = sqlx::query(
@@ -121,7 +127,8 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
     Ok(Some(LoadedPrincipal {
         user_id,
         platform_admin,
-        org,
+        memberships,
+        platform_org_id,
         grants,
     }))
 }
@@ -496,15 +503,50 @@ pub async fn delete_grant(pool: &PgPool, team_id: TeamId, grant_id: Uuid) -> Dom
     Ok(deleted.rows_affected() > 0)
 }
 
-/// Find an active user by email within callers' provisioned set (membership flows).
-pub async fn find_user_by_email(pool: &PgPool, email: &str) -> DomainResult<Option<UserId>> {
+/// Resolve an active user by **immutable subject** (the preferred, unambiguous path — a
+/// subject is globally unique by IdP construction).
+pub async fn find_user_by_subject(pool: &PgPool, subject: &str) -> DomainResult<Option<UserId>> {
     let id: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND status = 'active' LIMIT 1")
-            .bind(email)
+        sqlx::query_scalar("SELECT id FROM users WHERE subject = $1 AND status = 'active'")
+            .bind(subject)
             .fetch_optional(pool)
             .await
-            .map_err(|e| DomainError::internal(format!("find user: {e}")))?;
+            .map_err(|e| DomainError::internal(format!("find user by subject: {e}")))?;
     Ok(id.map(UserId::from))
+}
+
+/// Resolve an active user by email (a UX affordance only — D-014/R6). Email is NOT a unique
+/// or tenant-isolating key, so an ambiguous match (more than one active user) is REJECTED
+/// rather than silently picking one with `LIMIT 1`. Callers should prefer
+/// [`find_user_by_subject`].
+pub async fn find_user_by_email(pool: &PgPool, email: &str) -> DomainResult<Option<UserId>> {
+    let ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND status = 'active'")
+            .bind(email)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("find user: {e}")))?;
+    match ids.len() {
+        0 => Ok(None),
+        1 => Ok(Some(UserId::from(ids[0]))),
+        _ => Err(DomainError::conflict(format!(
+            "email \"{email}\" matches multiple users; identify the user by subject or id instead"
+        ))
+        .with_hint("email is not a unique identifier; use the immutable subject/user-id")),
+    }
+}
+
+/// Resolve an active org id by name (for the `X-Flowplane-Org` selector when it is a name
+/// rather than a UUID). Returns `None` for unknown/suspended orgs — the caller then fails
+/// closed without disclosing existence.
+pub async fn find_active_org_id_by_name(pool: &PgPool, name: &str) -> DomainResult<Option<OrgId>> {
+    let id: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM organizations WHERE name = $1 AND status = 'active'")
+            .bind(name)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("resolve org by name: {e}")))?;
+    Ok(id.map(OrgId::from))
 }
 
 pub async fn list_orgs(pool: &PgPool) -> DomainResult<Vec<Organization>> {
@@ -613,4 +655,86 @@ pub async fn count_org_owners(pool: &PgPool, org_id: OrgId) -> DomainResult<i64>
         .fetch_one(pool)
         .await
         .map_err(|e| DomainError::internal(format!("count owners: {e}")))
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn unique(prefix: &str) -> String {
+        format!("{prefix}-{}", &Uuid::now_v7().simple().to_string()[20..])
+    }
+
+    async fn pool() -> Option<PgPool> {
+        let url = std::env::var("FLOWPLANE_TEST_DATABASE_URL").ok()?;
+        let pool = crate::connect(&url, 4).await.expect("connect");
+        crate::migrate(&pool).await.expect("migrate");
+        Some(pool)
+    }
+
+    #[tokio::test]
+    async fn loader_returns_full_membership_set_no_implicit_pick() {
+        let Some(pool) = pool().await else { return };
+        // A user in TWO orgs: the loader must return both, in no implied order, and must
+        // NOT collapse to one (D-014 — no "first membership wins").
+        let org_a = create_org(&pool, &unique("orga"), "").await.expect("a");
+        let org_b = create_org(&pool, &unique("orgb"), "").await.expect("b");
+        let subject = unique("sub");
+        let user = upsert_user_by_subject(&pool, &subject, "m@x.test", "M")
+            .await
+            .expect("u");
+        add_org_membership(&pool, user, org_a.id, OrgRole::Admin)
+            .await
+            .expect("ma");
+        add_org_membership(&pool, user, org_b.id, OrgRole::Member)
+            .await
+            .expect("mb");
+
+        let loaded = load_principal(&pool, &subject)
+            .await
+            .expect("load")
+            .expect("exists");
+        assert_eq!(loaded.memberships.len(), 2, "both memberships returned");
+        let ids: std::collections::HashSet<_> =
+            loaded.memberships.iter().map(|(o, _)| *o).collect();
+        assert!(ids.contains(&org_a.id) && ids.contains(&org_b.id));
+        // Not a platform admin (neither org is the platform org here).
+        assert!(!loaded.platform_admin);
+    }
+
+    #[tokio::test]
+    async fn find_user_by_email_rejects_ambiguous_matches() {
+        let Some(pool) = pool().await else { return };
+        // Two distinct users sharing one email (email is not unique — R6).
+        let email = format!("{}@dup.test", unique("e"));
+        let u1 = upsert_user_by_subject(&pool, &unique("s1"), &email, "One")
+            .await
+            .expect("u1");
+        let _u2 = upsert_user_by_subject(&pool, &unique("s2"), &email, "Two")
+            .await
+            .expect("u2");
+
+        let err = find_user_by_email(&pool, &email)
+            .await
+            .expect_err("ambiguous email must be rejected, not silently picked");
+        assert_eq!(err.code, fp_domain::ErrorCode::Conflict);
+
+        // A unique email still resolves; subject is always unambiguous.
+        let unique_email = format!("{}@one.test", unique("e"));
+        let u3 = upsert_user_by_subject(&pool, &unique("s3"), &unique_email, "Three")
+            .await
+            .expect("u3");
+        assert_eq!(
+            find_user_by_email(&pool, &unique_email).await.expect("ok"),
+            Some(u3)
+        );
+        assert_eq!(
+            find_user_by_subject(&pool, &format!("ghost-{}", unique("g")))
+                .await
+                .expect("ok"),
+            None
+        );
+        let _ = u1;
+    }
 }

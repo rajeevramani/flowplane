@@ -136,10 +136,14 @@ pub fn build_router(state: AppState) -> Router {
 struct WhoAmI {
     user_id: String,
     platform_admin: bool,
+    /// The validated ACTIVE org for this request (from the `X-Flowplane-Org` selector or the
+    /// caller's sole non-platform membership), if resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     org_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     org_role: Option<&'static str>,
+    /// True when the caller must name an org (multi-org, no selector) for tenant-scoped ops.
+    org_selector_required: bool,
     grant_count: usize,
 }
 
@@ -155,12 +159,14 @@ async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI
             user_id,
             platform_admin,
             org,
+            org_selector_required,
             grants,
         } => Json(WhoAmI {
             user_id: user_id.to_string(),
             platform_admin,
             org_id: org.map(|(id, _)| id.to_string()),
             org_role: org.map(|(_, role)| role.as_str()),
+            org_selector_required,
             grant_count: grants.len(),
         }),
         fp_core::PrincipalCtx::Agent {
@@ -173,6 +179,7 @@ async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI
             platform_admin: false,
             org_id: Some(org_id.to_string()),
             org_role: None,
+            org_selector_required: false,
             grant_count: grants.len(),
         }),
     }

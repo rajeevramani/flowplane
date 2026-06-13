@@ -284,7 +284,11 @@ mod tests {
             "bootstrap admin must be platform admin"
         );
         assert_eq!(loaded.user_id, admin);
-        assert_eq!(loaded.org.map(|(id, _)| id), Some(org_id));
+        assert!(
+            loaded.memberships.iter().any(|(id, _)| *id == org_id),
+            "bootstrap admin is a member of the platform org"
+        );
+        assert_eq!(loaded.platform_org_id, Some(org_id));
 
         // Cleanup so other instance-level tests (and dev seeding) see a clean slate.
         sqlx::query("DELETE FROM instance_meta WHERE key = 'platform_org_id'")

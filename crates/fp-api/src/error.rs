@@ -33,7 +33,7 @@ impl ApiError {
 
     fn status(&self) -> StatusCode {
         match self.error.code {
-            ErrorCode::ValidationFailed => StatusCode::BAD_REQUEST,
+            ErrorCode::ValidationFailed | ErrorCode::OrgSelectorRequired => StatusCode::BAD_REQUEST,
             ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
             ErrorCode::Forbidden => StatusCode::FORBIDDEN,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,

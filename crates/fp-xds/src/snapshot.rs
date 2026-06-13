@@ -509,6 +509,7 @@ mod tests {
                 PrincipalCtx::User {
                     user_id: user,
                     platform_admin: false,
+                    org_selector_required: false,
                     org: Some((org.id, OrgRole::Admin)),
                     grants: GrantSet::default(),
                 },
