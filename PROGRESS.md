@@ -318,6 +318,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           topology mapping is designed instead of inferred from incomplete spec data.
         - Tests: API contract pin updated to 52 operations, REST import/status/delete test
           added, CLI path coverage includes the new API lifecycle paths.
+  - [ ] S8.2a OpenAPI import polish: CLI `--from-openapi` accepts JSON and YAML
+        (`.json`, `.yaml`, `.yml`, and stdin where practical), normalizes to JSON before REST
+        submission, and returns graceful validation errors for malformed documents. Add
+        lightweight OpenAPI semantic validation beyond the current object/paths/operation checks
+        before imported specs feed publish/tool quality.
   - [ ] S8.3 Capture-session model: `learn start|list|get|stop|cancel` against an
         `ApiDefinition` or explicit bound route scope; session state machine, sample/byte/path
         quotas, health counters, target sample/timeout completion, and transactional events.
