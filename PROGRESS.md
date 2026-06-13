@@ -246,7 +246,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S7.8a Finalize the field parity matrix against V1 examples and current V2 code:
         clusters, routes, listeners, filters, secrets, API schema, DB round-trip, CLI examples,
         and xDS translation.
-  - [ ] S7.8b Cluster parity: typed V2 support for V1-exposed Envoy cluster fields, including
+  - [x] S7.8b Cluster parity: typed V2 support for V1-exposed Envoy cluster fields, including
         richer load-balancing options, DNS behavior, upstream TLS/SNI/validation, upstream
         protocol, health checks, circuit breakers, and outlier detection.
   - [ ] S7.8c Route parity: typed V2 support for header/query/regex matching, weighted clusters,

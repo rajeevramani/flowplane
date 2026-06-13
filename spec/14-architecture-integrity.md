@@ -161,6 +161,24 @@ Every new externally visible capability needs:
 - MCP coverage only in S11 or later
 - tests that prevent route/document/CLI drift
 
+### 3.8 Test Execution Seam
+
+Tests should be parallel-safe by default. As the gateway, learning loop, and live Envoy coverage
+grow, serializing broad suites will become a real development tax.
+
+Rules:
+- prefer pure unit tests and table-driven translator/domain tests for most behavior
+- integration tests sharing PostgreSQL must generate unique org/team/resource names and avoid
+  assumptions about global row counts
+- tests needing a TCP port must bind port `0` or allocate a per-test unique port; fixed ports are
+  only for documented manual runbooks
+- tests needing singleton product state must serialize only the critical section, preferably via a
+  named advisory lock or local mutex with a comment explaining the shared resource
+- live Envoy/CP tests should be smoke-sized and feature-focused; one test should not become a
+  full release rehearsal unless it is explicitly an E2E gate
+- do not pass `--test-threads=1` for a suite unless the suite owns unavoidable global external
+  state and the reason is documented
+
 ## 4. Feature Placement Checklist
 
 Before implementing a new capability, answer these in the change description or design note:
@@ -175,6 +193,7 @@ Before implementing a new capability, answer these in the change description or 
 8. What tenant scope is required, and where is it enforced?
 9. What happens on DB error, authz denial, partial TLS/cert config, or cross-tenant input?
 10. What test proves the seam does not drift?
+11. Is the test parallel-safe? If not, what exact shared resource forces serialization?
 
 If the answers are unclear, stop and update the spec or decision log first.
 

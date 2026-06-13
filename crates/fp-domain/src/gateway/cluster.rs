@@ -32,16 +32,31 @@ pub struct ClusterSpec {
     pub endpoints: Vec<Endpoint>,
     #[serde(default)]
     pub lb_policy: LbPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub least_request: Option<LeastRequestPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ring_hash: Option<RingHashPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maglev: Option<MaglevPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_lookup_family: Option<DnsLookupFamily>,
     /// Connection timeout to the upstream, seconds (1–300).
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_secs: u32,
     /// TLS to the upstream — always explicit (no port-443 inference).
     #[serde(default)]
     pub use_tls: bool,
+    /// Optional upstream TLS details. Setting this also enables upstream TLS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub health_check: Option<HealthCheck>,
+    pub upstream_tls: Option<UpstreamTlsConfig>,
+    /// Optional upstream protocol selection. `Http2`/`Grpc` force Envoy's HTTP/2
+    /// upstream protocol options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub circuit_breaker: Option<CircuitBreaker>,
+    pub protocol: Option<UpstreamProtocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_checks: Option<Vec<HealthCheck>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit_breakers: Option<CircuitBreakers>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outlier_detection: Option<OutlierDetection>,
 }
@@ -68,13 +83,88 @@ pub enum LbPolicy {
     LeastRequest,
     Random,
     RingHash,
+    Maglev,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct HealthCheck {
+pub struct LeastRequestPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_count: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RingHashPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_ring_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_ring_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_function: Option<RingHashFunction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RingHashFunction {
+    XxHash,
+    MurmurHash2,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MaglevPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DnsLookupFamily {
+    Auto,
+    V4Only,
+    V6Only,
+    V4Preferred,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamTlsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sni: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_context_sds_secret_name: Option<String>,
+    #[serde(default)]
+    pub auto_sni_san_validation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamProtocol {
+    Http1,
+    Http2,
+    Grpc,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HealthCheck {
+    Http(HttpHealthCheck),
+    Tcp(TcpHealthCheck),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HttpHealthCheck {
     /// HTTP path probed; must start with `/`, no `..`, ≤200 chars.
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<HttpHealthCheckMethod>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_statuses: Vec<u16>,
     /// 1–60 and strictly less than `interval_seconds`.
     pub timeout_seconds: u32,
     /// 1–300.
@@ -87,13 +177,50 @@ pub struct HealthCheck {
     pub unhealthy_threshold: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TcpHealthCheck {
+    /// 1–60 and strictly less than `interval_seconds`.
+    pub timeout_seconds: u32,
+    /// 1–300.
+    pub interval_seconds: u32,
+    /// 1–10.
+    #[serde(default = "default_threshold")]
+    pub healthy_threshold: u32,
+    /// 1–10.
+    #[serde(default = "default_threshold")]
+    pub unhealthy_threshold: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum HttpHealthCheckMethod {
+    Get,
+    Head,
+    Post,
+    Put,
+    Delete,
+    Options,
+    Trace,
+    Patch,
+}
+
 fn default_threshold() -> u32 {
     3
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct CircuitBreaker {
+pub struct CircuitBreakers {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<CircuitBreakerThresholds>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high: Option<CircuitBreakerThresholds>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CircuitBreakerThresholds {
     /// Each 1–10000.
     pub max_connections: u32,
     pub max_pending_requests: u32,
@@ -114,6 +241,9 @@ pub struct OutlierDetection {
     pub base_ejection_seconds: u32,
     /// 1–100.
     pub max_ejection_percent: u32,
+    /// 1–100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_hosts: Option<u32>,
 }
 
 fn range(label: &str, value: u32, min: u32, max: u32) -> DomainResult<()> {
@@ -194,36 +324,155 @@ impl ClusterSpec {
         }
         range("connect_timeout_secs", self.connect_timeout_secs, 1, 300)?;
 
-        if let Some(hc) = &self.health_check {
-            if !hc.path.starts_with('/') || hc.path.contains("..") || hc.path.len() > 200 {
-                return Err(DomainError::validation(
-                    "health-check path must start with '/', contain no '..', and be <= 200 chars",
-                ));
-            }
-            range("health-check timeout_seconds", hc.timeout_seconds, 1, 60)?;
-            range("health-check interval_seconds", hc.interval_seconds, 1, 300)?;
-            if hc.timeout_seconds >= hc.interval_seconds {
-                return Err(DomainError::validation(
-                    "health-check timeout must be strictly less than its interval",
-                ));
-            }
-            range("healthy_threshold", hc.healthy_threshold, 1, 10)?;
-            range("unhealthy_threshold", hc.unhealthy_threshold, 1, 10)?;
+        if self.lb_policy != LbPolicy::LeastRequest && self.least_request.is_some() {
+            return Err(DomainError::validation(
+                "least_request options require lb_policy = least-request",
+            ));
         }
-        if let Some(cb) = &self.circuit_breaker {
-            range("max_connections", cb.max_connections, 1, 10_000)?;
-            range("max_pending_requests", cb.max_pending_requests, 1, 10_000)?;
-            range("max_requests", cb.max_requests, 1, 10_000)?;
-            range("max_retries", cb.max_retries, 0, 10)?;
+        if self.lb_policy != LbPolicy::RingHash && self.ring_hash.is_some() {
+            return Err(DomainError::validation(
+                "ring_hash options require lb_policy = ring-hash",
+            ));
+        }
+        if self.lb_policy != LbPolicy::Maglev && self.maglev.is_some() {
+            return Err(DomainError::validation(
+                "maglev options require lb_policy = maglev",
+            ));
+        }
+
+        if let Some(policy) = &self.least_request {
+            if let Some(choice_count) = policy.choice_count {
+                range("least_request.choice_count", choice_count, 2, 100)?;
+            }
+        }
+        if let Some(policy) = &self.ring_hash {
+            if let Some(min) = policy.minimum_ring_size {
+                range_u64("ring_hash.minimum_ring_size", min, 1, 8_388_608)?;
+            }
+            if let Some(max) = policy.maximum_ring_size {
+                range_u64("ring_hash.maximum_ring_size", max, 1, 8_388_608)?;
+            }
+            if let (Some(min), Some(max)) = (policy.minimum_ring_size, policy.maximum_ring_size) {
+                if min > max {
+                    return Err(DomainError::validation(
+                        "ring_hash.minimum_ring_size must be <= maximum_ring_size",
+                    ));
+                }
+            }
+        }
+        if let Some(policy) = &self.maglev {
+            if let Some(table_size) = policy.table_size {
+                range_u64("maglev.table_size", table_size, 1, 5_000_011)?;
+            }
+        }
+        if let Some(tls) = &self.upstream_tls {
+            if let Some(sni) = &tls.sni {
+                validate_host(sni)?;
+            }
+            if let Some(secret) = &tls.validation_context_sds_secret_name {
+                crate::identity::validate_name(secret)?;
+            }
+        }
+        for hc in self.health_checks.iter().flatten() {
+            validate_health_check(hc)?;
+        }
+        if let Some(cb) = &self.circuit_breakers {
+            if cb.default.is_none() && cb.high.is_none() {
+                return Err(DomainError::validation(
+                    "circuit_breakers must set default or high thresholds",
+                ));
+            }
+            if let Some(default) = &cb.default {
+                validate_circuit_breaker("circuit_breakers.default", default)?;
+            }
+            if let Some(high) = &cb.high {
+                validate_circuit_breaker("circuit_breakers.high", high)?;
+            }
         }
         if let Some(od) = &self.outlier_detection {
             range("consecutive_5xx", od.consecutive_5xx, 1, 1000)?;
             range("outlier interval_seconds", od.interval_seconds, 1, 300)?;
             range("base_ejection_seconds", od.base_ejection_seconds, 1, 3600)?;
             range("max_ejection_percent", od.max_ejection_percent, 1, 100)?;
+            if let Some(min_hosts) = od.min_hosts {
+                range("min_hosts", min_hosts, 1, 100)?;
+            }
         }
         Ok(())
     }
+}
+
+fn range_u64(label: &str, value: u64, min: u64, max: u64) -> DomainResult<()> {
+    if value < min || value > max {
+        return Err(DomainError::validation(format!(
+            "{label} must be between {min} and {max}, got {value}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_health_check(hc: &HealthCheck) -> DomainResult<()> {
+    let (label, timeout, interval, healthy, unhealthy) = match hc {
+        HealthCheck::Http(hc) => {
+            if !hc.path.starts_with('/') || hc.path.contains("..") || hc.path.len() > 200 {
+                return Err(DomainError::validation(
+                    "health-check path must start with '/', contain no '..', and be <= 200 chars",
+                ));
+            }
+            if let Some(host) = &hc.host {
+                validate_host(host)?;
+            }
+            for status in &hc.expected_statuses {
+                if !(100..600).contains(status) {
+                    return Err(DomainError::validation(
+                        "health-check expected_statuses must be HTTP status codes 100-599",
+                    ));
+                }
+            }
+            (
+                "http health-check",
+                hc.timeout_seconds,
+                hc.interval_seconds,
+                hc.healthy_threshold,
+                hc.unhealthy_threshold,
+            )
+        }
+        HealthCheck::Tcp(hc) => (
+            "tcp health-check",
+            hc.timeout_seconds,
+            hc.interval_seconds,
+            hc.healthy_threshold,
+            hc.unhealthy_threshold,
+        ),
+    };
+    range(&format!("{label} timeout_seconds"), timeout, 1, 60)?;
+    range(&format!("{label} interval_seconds"), interval, 1, 300)?;
+    if timeout >= interval {
+        return Err(DomainError::validation(format!(
+            "{label} timeout must be strictly less than its interval"
+        )));
+    }
+    range(&format!("{label} healthy_threshold"), healthy, 1, 10)?;
+    range(&format!("{label} unhealthy_threshold"), unhealthy, 1, 10)?;
+    Ok(())
+}
+
+fn validate_circuit_breaker(label: &str, cb: &CircuitBreakerThresholds) -> DomainResult<()> {
+    range(
+        &format!("{label}.max_connections"),
+        cb.max_connections,
+        1,
+        10_000,
+    )?;
+    range(
+        &format!("{label}.max_pending_requests"),
+        cb.max_pending_requests,
+        1,
+        10_000,
+    )?;
+    range(&format!("{label}.max_requests"), cb.max_requests, 1, 10_000)?;
+    range(&format!("{label}.max_retries"), cb.max_retries, 0, 10)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -239,10 +488,16 @@ mod tests {
                 weight: None,
             }],
             lb_policy: LbPolicy::RoundRobin,
+            least_request: None,
+            ring_hash: None,
+            maglev: None,
+            dns_lookup_family: None,
             connect_timeout_secs: 5,
             use_tls: false,
-            health_check: None,
-            circuit_breaker: None,
+            upstream_tls: None,
+            protocol: None,
+            health_checks: None,
+            circuit_breakers: None,
             outlier_detection: None,
         }
     }
@@ -340,37 +595,94 @@ mod tests {
             (
                 "hc timeout >= interval",
                 ClusterSpec {
-                    health_check: Some(HealthCheck {
+                    health_checks: Some(vec![HealthCheck::Http(HttpHealthCheck {
                         path: "/healthz".into(),
+                        host: None,
+                        method: None,
+                        expected_statuses: Vec::new(),
                         timeout_seconds: 10,
                         interval_seconds: 10,
                         healthy_threshold: 3,
                         unhealthy_threshold: 3,
-                    }),
+                    })]),
                     ..minimal()
                 },
             ),
             (
                 "hc path traversal",
                 ClusterSpec {
-                    health_check: Some(HealthCheck {
+                    health_checks: Some(vec![HealthCheck::Http(HttpHealthCheck {
                         path: "/../admin".into(),
+                        host: None,
+                        method: None,
+                        expected_statuses: Vec::new(),
                         timeout_seconds: 1,
                         interval_seconds: 10,
                         healthy_threshold: 3,
                         unhealthy_threshold: 3,
-                    }),
+                    })]),
+                    ..minimal()
+                },
+            ),
+            (
+                "invalid expected status",
+                ClusterSpec {
+                    health_checks: Some(vec![HealthCheck::Http(HttpHealthCheck {
+                        path: "/healthz".into(),
+                        host: None,
+                        method: Some(HttpHealthCheckMethod::Get),
+                        expected_statuses: vec![99],
+                        timeout_seconds: 1,
+                        interval_seconds: 10,
+                        healthy_threshold: 3,
+                        unhealthy_threshold: 3,
+                    })]),
                     ..minimal()
                 },
             ),
             (
                 "retries over cap",
                 ClusterSpec {
-                    circuit_breaker: Some(CircuitBreaker {
-                        max_connections: 10,
-                        max_pending_requests: 10,
-                        max_requests: 10,
-                        max_retries: 11,
+                    circuit_breakers: Some(CircuitBreakers {
+                        default: Some(CircuitBreakerThresholds {
+                            max_connections: 10,
+                            max_pending_requests: 10,
+                            max_requests: 10,
+                            max_retries: 11,
+                        }),
+                        high: None,
+                    }),
+                    ..minimal()
+                },
+            ),
+            (
+                "empty circuit breaker config",
+                ClusterSpec {
+                    circuit_breakers: Some(CircuitBreakers {
+                        default: None,
+                        high: None,
+                    }),
+                    ..minimal()
+                },
+            ),
+            (
+                "ring hash min over max",
+                ClusterSpec {
+                    lb_policy: LbPolicy::RingHash,
+                    ring_hash: Some(RingHashPolicy {
+                        minimum_ring_size: Some(1024),
+                        maximum_ring_size: Some(128),
+                        hash_function: None,
+                    }),
+                    ..minimal()
+                },
+            ),
+            (
+                "lb option for wrong policy",
+                ClusterSpec {
+                    lb_policy: LbPolicy::RoundRobin,
+                    maglev: Some(MaglevPolicy {
+                        table_size: Some(65_537),
                     }),
                     ..minimal()
                 },
@@ -379,6 +691,64 @@ mod tests {
         for (label, spec) in cases {
             assert!(spec.validate().is_err(), "{label} must be rejected");
         }
+    }
+
+    #[test]
+    fn expanded_cluster_options_validate() {
+        let spec = ClusterSpec {
+            lb_policy: LbPolicy::Maglev,
+            maglev: Some(MaglevPolicy {
+                table_size: Some(65_537),
+            }),
+            dns_lookup_family: Some(DnsLookupFamily::V4Only),
+            upstream_tls: Some(UpstreamTlsConfig {
+                sni: Some("api.example.com".into()),
+                validation_context_sds_secret_name: Some("upstream-ca".into()),
+                auto_sni_san_validation: true,
+            }),
+            protocol: Some(UpstreamProtocol::Grpc),
+            health_checks: Some(vec![
+                HealthCheck::Http(HttpHealthCheck {
+                    path: "/healthz".into(),
+                    host: Some("api.example.com".into()),
+                    method: Some(HttpHealthCheckMethod::Get),
+                    expected_statuses: vec![200, 204],
+                    timeout_seconds: 1,
+                    interval_seconds: 10,
+                    healthy_threshold: 2,
+                    unhealthy_threshold: 3,
+                }),
+                HealthCheck::Tcp(TcpHealthCheck {
+                    timeout_seconds: 1,
+                    interval_seconds: 10,
+                    healthy_threshold: 2,
+                    unhealthy_threshold: 3,
+                }),
+            ]),
+            circuit_breakers: Some(CircuitBreakers {
+                default: Some(CircuitBreakerThresholds {
+                    max_connections: 100,
+                    max_pending_requests: 200,
+                    max_requests: 300,
+                    max_retries: 3,
+                }),
+                high: Some(CircuitBreakerThresholds {
+                    max_connections: 1000,
+                    max_pending_requests: 2000,
+                    max_requests: 3000,
+                    max_retries: 5,
+                }),
+            }),
+            outlier_detection: Some(OutlierDetection {
+                consecutive_5xx: 5,
+                interval_seconds: 10,
+                base_ejection_seconds: 30,
+                max_ejection_percent: 50,
+                min_hosts: Some(3),
+            }),
+            ..minimal()
+        };
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

@@ -27,10 +27,16 @@ fn spec(host: &str) -> ClusterSpec {
             weight: None,
         }],
         lb_policy: LbPolicy::RoundRobin,
+        least_request: None,
+        ring_hash: None,
+        maglev: None,
+        dns_lookup_family: None,
         connect_timeout_secs: 5,
         use_tls: false,
-        health_check: None,
-        circuit_breaker: None,
+        upstream_tls: None,
+        protocol: None,
+        health_checks: None,
+        circuit_breakers: None,
         outlier_detection: None,
     }
 }
@@ -132,7 +138,7 @@ async fn create_emits_event_and_cross_org_caller_sees_not_found() {
     assert_eq!(audit_count, 1);
 
     // Cross-org caller: not_found, never forbidden (anti-enumeration).
-    let err = svc::get_cluster(&w.pool, &w.outsider, w.team, &name)
+    let err = svc::get_cluster(&w.pool, &w.outsider, w.team, &name, RequestId::generate())
         .await
         .expect_err("outsider must not see it");
     assert_eq!(err.code, ErrorCode::NotFound);
@@ -200,7 +206,7 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
     );
 
     // No lost update: the survivor's spec is what's stored, at revision 2.
-    let stored = svc::get_cluster(&w.pool, &w.admin, w.team, &name)
+    let stored = svc::get_cluster(&w.pool, &w.admin, w.team, &name, RequestId::generate())
         .await
         .expect("get");
     assert_eq!(stored.version, 2);
@@ -388,6 +394,7 @@ mod referential {
                 port: 18443,
                 route_config: Some(rc_name.clone()),
                 http_filters: Vec::new(),
+                tls_context: None,
             },
             rid(),
         )
@@ -449,6 +456,7 @@ mod referential {
                     port,
                     route_config: None,
                     http_filters: Vec::new(),
+                    tls_context: None,
                 },
                 rid(),
             )

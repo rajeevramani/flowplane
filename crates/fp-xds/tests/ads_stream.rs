@@ -31,10 +31,16 @@ fn cluster_spec(host: &str) -> ClusterSpec {
             weight: None,
         }],
         lb_policy: LbPolicy::RoundRobin,
+        least_request: None,
+        ring_hash: None,
+        maglev: None,
+        dns_lookup_family: None,
         connect_timeout_secs: 5,
         use_tls: false,
-        health_check: None,
-        circuit_breaker: None,
+        upstream_tls: None,
+        protocol: None,
+        health_checks: None,
+        circuit_breakers: None,
         outlier_detection: None,
     }
 }

@@ -9,8 +9,13 @@ use envoy_types::pb::envoy::config::route::v3 as rt;
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3 as tls;
+use envoy_types::pb::envoy::extensions::upstreams::http::v3 as upstream_http;
+use envoy_types::pb::envoy::r#type::v3 as envoy_type;
 use envoy_types::pb::google::protobuf as wkt;
-use fp_domain::gateway::cluster::{ClusterSpec, LbPolicy};
+use fp_domain::gateway::cluster::{
+    CircuitBreakerThresholds, ClusterSpec, DnsLookupFamily, HealthCheck, HttpHealthCheckMethod,
+    LbPolicy, RingHashFunction, UpstreamProtocol,
+};
 use fp_domain::gateway::listener::{ListenerSpec, ListenerTlsConfig};
 use fp_domain::gateway::route_config::{PathMatch, RouteConfigSpec};
 use fp_domain::{DomainError, DomainResult, SecretSpec};
@@ -32,6 +37,10 @@ fn duration(secs: u32) -> wkt::Duration {
 
 fn u32_value(value: u32) -> wkt::UInt32Value {
     wkt::UInt32Value { value }
+}
+
+fn u64_value(value: u64) -> wkt::UInt64Value {
+    wkt::UInt64Value { value }
 }
 
 fn bool_value(value: bool) -> wkt::BoolValue {
@@ -202,14 +211,43 @@ pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Clu
         LbPolicy::LeastRequest => exc::cluster::LbPolicy::LeastRequest,
         LbPolicy::Random => exc::cluster::LbPolicy::Random,
         LbPolicy::RingHash => exc::cluster::LbPolicy::RingHash,
+        LbPolicy::Maglev => exc::cluster::LbPolicy::Maglev,
     };
 
-    let transport_socket = if spec.use_tls {
+    let lb_config = match spec.lb_policy {
+        LbPolicy::LeastRequest => spec.least_request.as_ref().map(|policy| {
+            exc::cluster::LbConfig::LeastRequestLbConfig(exc::cluster::LeastRequestLbConfig {
+                choice_count: policy.choice_count.map(u32_value),
+                ..Default::default()
+            })
+        }),
+        LbPolicy::RingHash => spec.ring_hash.as_ref().map(|policy| {
+            let hash_function = match policy.hash_function.unwrap_or(RingHashFunction::XxHash) {
+                RingHashFunction::XxHash => exc::cluster::ring_hash_lb_config::HashFunction::XxHash,
+                RingHashFunction::MurmurHash2 => {
+                    exc::cluster::ring_hash_lb_config::HashFunction::MurmurHash2
+                }
+            };
+            exc::cluster::LbConfig::RingHashLbConfig(exc::cluster::RingHashLbConfig {
+                minimum_ring_size: policy.minimum_ring_size.map(u64_value),
+                maximum_ring_size: policy.maximum_ring_size.map(u64_value),
+                hash_function: hash_function as i32,
+            })
+        }),
+        LbPolicy::Maglev => spec.maglev.as_ref().map(|policy| {
+            exc::cluster::LbConfig::MaglevLbConfig(exc::cluster::MaglevLbConfig {
+                table_size: policy.table_size.map(u64_value),
+            })
+        }),
+        LbPolicy::RoundRobin | LbPolicy::Random => None,
+    };
+
+    let transport_socket = if spec.use_tls || spec.upstream_tls.is_some() {
         Some(core::TransportSocket {
             name: "envoy.transport_sockets.tls".to_string(),
             config_type: Some(core::transport_socket::ConfigType::TypedConfig(any(
                 "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
-                &tls::UpstreamTlsContext::default(),
+                &upstream_tls_context(spec),
             ))),
         })
     } else {
@@ -217,36 +255,27 @@ pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Clu
     };
 
     let health_checks = spec
-        .health_check
-        .as_ref()
-        .map(|hc| {
-            vec![core::HealthCheck {
-                timeout: Some(duration(hc.timeout_seconds)),
-                interval: Some(duration(hc.interval_seconds)),
-                healthy_threshold: Some(u32_value(hc.healthy_threshold)),
-                unhealthy_threshold: Some(u32_value(hc.unhealthy_threshold)),
-                health_checker: Some(core::health_check::HealthChecker::HttpHealthCheck(
-                    core::health_check::HttpHealthCheck {
-                        path: hc.path.clone(),
-                        ..Default::default()
-                    },
-                )),
-                ..Default::default()
-            }]
-        })
-        .unwrap_or_default();
+        .health_checks
+        .iter()
+        .flatten()
+        .map(health_check_to_proto)
+        .collect();
 
     let circuit_breakers = spec
-        .circuit_breaker
+        .circuit_breakers
         .as_ref()
         .map(|cb| exc::CircuitBreakers {
-            thresholds: vec![exc::circuit_breakers::Thresholds {
-                max_connections: Some(u32_value(cb.max_connections)),
-                max_pending_requests: Some(u32_value(cb.max_pending_requests)),
-                max_requests: Some(u32_value(cb.max_requests)),
-                max_retries: Some(u32_value(cb.max_retries)),
-                ..Default::default()
-            }],
+            thresholds: [
+                cb.default.as_ref().map(|thresholds| {
+                    circuit_breaker_to_proto(core::RoutingPriority::Default, thresholds)
+                }),
+                cb.high.as_ref().map(|thresholds| {
+                    circuit_breaker_to_proto(core::RoutingPriority::High, thresholds)
+                }),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             ..Default::default()
         });
 
@@ -258,6 +287,7 @@ pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Clu
             interval: Some(duration(od.interval_seconds)),
             base_ejection_time: Some(duration(od.base_ejection_seconds)),
             max_ejection_percent: Some(u32_value(od.max_ejection_percent)),
+            success_rate_minimum_hosts: od.min_hosts.map(u32_value),
             ..Default::default()
         });
 
@@ -297,8 +327,143 @@ pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Clu
         health_checks,
         circuit_breakers,
         outlier_detection,
+        lb_config,
+        dns_lookup_family: dns_lookup_family(spec, cluster_uses_eds(spec)),
+        typed_extension_protocol_options: upstream_protocol_options(spec),
         ..Default::default()
     })
+}
+
+fn upstream_tls_context(spec: &ClusterSpec) -> tls::UpstreamTlsContext {
+    let tls_spec = spec.upstream_tls.as_ref();
+    tls::UpstreamTlsContext {
+        common_tls_context: Some(tls::CommonTlsContext {
+            validation_context_type: tls_spec
+                .and_then(|tls| tls.validation_context_sds_secret_name.as_deref())
+                .map(|secret| {
+                    tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
+                        sds_secret_config(secret),
+                    )
+                }),
+            ..Default::default()
+        }),
+        sni: tls_spec.and_then(|tls| tls.sni.clone()).unwrap_or_default(),
+        auto_sni_san_validation: tls_spec
+            .map(|tls| tls.auto_sni_san_validation)
+            .unwrap_or(false),
+        ..Default::default()
+    }
+}
+
+fn health_check_to_proto(hc: &HealthCheck) -> core::HealthCheck {
+    match hc {
+        HealthCheck::Http(hc) => core::HealthCheck {
+            timeout: Some(duration(hc.timeout_seconds)),
+            interval: Some(duration(hc.interval_seconds)),
+            healthy_threshold: Some(u32_value(hc.healthy_threshold)),
+            unhealthy_threshold: Some(u32_value(hc.unhealthy_threshold)),
+            health_checker: Some(core::health_check::HealthChecker::HttpHealthCheck(
+                core::health_check::HttpHealthCheck {
+                    host: hc.host.clone().unwrap_or_default(),
+                    path: hc.path.clone(),
+                    expected_statuses: hc
+                        .expected_statuses
+                        .iter()
+                        .map(|status| envoy_type::Int64Range {
+                            start: i64::from(*status),
+                            end: i64::from(*status) + 1,
+                        })
+                        .collect(),
+                    method: hc.method.map(http_method).unwrap_or_default(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        },
+        HealthCheck::Tcp(hc) => core::HealthCheck {
+            timeout: Some(duration(hc.timeout_seconds)),
+            interval: Some(duration(hc.interval_seconds)),
+            healthy_threshold: Some(u32_value(hc.healthy_threshold)),
+            unhealthy_threshold: Some(u32_value(hc.unhealthy_threshold)),
+            health_checker: Some(core::health_check::HealthChecker::TcpHealthCheck(
+                core::health_check::TcpHealthCheck::default(),
+            )),
+            ..Default::default()
+        },
+    }
+}
+
+fn http_method(method: HttpHealthCheckMethod) -> i32 {
+    (match method {
+        HttpHealthCheckMethod::Get => core::RequestMethod::Get,
+        HttpHealthCheckMethod::Head => core::RequestMethod::Head,
+        HttpHealthCheckMethod::Post => core::RequestMethod::Post,
+        HttpHealthCheckMethod::Put => core::RequestMethod::Put,
+        HttpHealthCheckMethod::Delete => core::RequestMethod::Delete,
+        HttpHealthCheckMethod::Options => core::RequestMethod::Options,
+        HttpHealthCheckMethod::Trace => core::RequestMethod::Trace,
+        HttpHealthCheckMethod::Patch => core::RequestMethod::Patch,
+    }) as i32
+}
+
+fn circuit_breaker_to_proto(
+    priority: core::RoutingPriority,
+    cb: &CircuitBreakerThresholds,
+) -> exc::circuit_breakers::Thresholds {
+    exc::circuit_breakers::Thresholds {
+        priority: priority as i32,
+        max_connections: Some(u32_value(cb.max_connections)),
+        max_pending_requests: Some(u32_value(cb.max_pending_requests)),
+        max_requests: Some(u32_value(cb.max_requests)),
+        max_retries: Some(u32_value(cb.max_retries)),
+        ..Default::default()
+    }
+}
+
+fn dns_lookup_family(spec: &ClusterSpec, uses_eds: bool) -> i32 {
+    if uses_eds {
+        return exc::cluster::DnsLookupFamily::Auto as i32;
+    }
+    (match spec.dns_lookup_family.unwrap_or(DnsLookupFamily::Auto) {
+        DnsLookupFamily::Auto => exc::cluster::DnsLookupFamily::Auto,
+        DnsLookupFamily::V4Only => exc::cluster::DnsLookupFamily::V4Only,
+        DnsLookupFamily::V6Only => exc::cluster::DnsLookupFamily::V6Only,
+        DnsLookupFamily::V4Preferred => exc::cluster::DnsLookupFamily::V4Preferred,
+        DnsLookupFamily::All => exc::cluster::DnsLookupFamily::All,
+    }) as i32
+}
+
+fn upstream_protocol_options(spec: &ClusterSpec) -> std::collections::HashMap<String, wkt::Any> {
+    let Some(protocol) = spec.protocol else {
+        return std::collections::HashMap::new();
+    };
+    match protocol {
+        UpstreamProtocol::Http1 => std::collections::HashMap::new(),
+        UpstreamProtocol::Http2 | UpstreamProtocol::Grpc => {
+            let options = upstream_http::HttpProtocolOptions {
+                upstream_protocol_options: Some(
+                    upstream_http::http_protocol_options::UpstreamProtocolOptions::ExplicitHttpConfig(
+                        upstream_http::http_protocol_options::ExplicitHttpConfig {
+                            protocol_config: Some(
+                                upstream_http::http_protocol_options::explicit_http_config::ProtocolConfig::Http2ProtocolOptions(
+                                    core::Http2ProtocolOptions::default(),
+                                ),
+                            ),
+                        },
+                    ),
+                ),
+                ..Default::default()
+            };
+            std::iter::once((
+                "envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(),
+                any(
+                    "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+                    &options,
+                ),
+            ))
+            .collect()
+        }
+    }
 }
 
 /// Translate a validated RouteConfigSpec. Vhosts and routes keep their declared order
@@ -1094,7 +1259,10 @@ fn sds_secret_config(name: &str) -> tls::SdsSecretConfig {
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use fp_domain::gateway::cluster::Endpoint;
+    use fp_domain::gateway::cluster::{
+        CircuitBreakerThresholds, CircuitBreakers, Endpoint, HealthCheck, HttpHealthCheck,
+        HttpHealthCheckMethod, MaglevPolicy, OutlierDetection, UpstreamProtocol, UpstreamTlsConfig,
+    };
     use fp_domain::gateway::route_config::{RouteAction, RouteRule, VirtualHost};
 
     fn cluster_spec() -> ClusterSpec {
@@ -1112,10 +1280,16 @@ mod tests {
                 },
             ],
             lb_policy: LbPolicy::LeastRequest,
+            least_request: None,
+            ring_hash: None,
+            maglev: None,
+            dns_lookup_family: None,
             connect_timeout_secs: 7,
             use_tls: true,
-            health_check: None,
-            circuit_breaker: None,
+            upstream_tls: None,
+            protocol: None,
+            health_checks: None,
+            circuit_breakers: None,
             outlier_detection: None,
         }
     }
@@ -1157,6 +1331,101 @@ mod tests {
             "explicit TLS produced a transport socket"
         );
         assert_eq!(a.connect_timeout.expect("timeout").seconds, 7);
+    }
+
+    #[test]
+    fn cluster_translation_carries_expanded_cluster_fields() {
+        let spec = ClusterSpec {
+            endpoints: vec![Endpoint {
+                host: "api.example.com".into(),
+                port: 443,
+                weight: None,
+            }],
+            lb_policy: LbPolicy::Maglev,
+            least_request: None,
+            ring_hash: None,
+            maglev: Some(MaglevPolicy {
+                table_size: Some(65_537),
+            }),
+            dns_lookup_family: Some(DnsLookupFamily::V4Only),
+            connect_timeout_secs: 5,
+            use_tls: false,
+            upstream_tls: Some(UpstreamTlsConfig {
+                sni: Some("api.example.com".into()),
+                validation_context_sds_secret_name: Some("upstream-ca".into()),
+                auto_sni_san_validation: true,
+            }),
+            protocol: Some(UpstreamProtocol::Grpc),
+            health_checks: Some(vec![HealthCheck::Http(HttpHealthCheck {
+                path: "/healthz".into(),
+                host: Some("api.example.com".into()),
+                method: Some(HttpHealthCheckMethod::Head),
+                expected_statuses: vec![200, 204],
+                timeout_seconds: 1,
+                interval_seconds: 10,
+                healthy_threshold: 2,
+                unhealthy_threshold: 3,
+            })]),
+            circuit_breakers: Some(CircuitBreakers {
+                default: Some(CircuitBreakerThresholds {
+                    max_connections: 100,
+                    max_pending_requests: 200,
+                    max_requests: 300,
+                    max_retries: 3,
+                }),
+                high: None,
+            }),
+            outlier_detection: Some(OutlierDetection {
+                consecutive_5xx: 5,
+                interval_seconds: 10,
+                base_ejection_seconds: 30,
+                max_ejection_percent: 50,
+                min_hosts: Some(3),
+            }),
+        };
+        let proto = cluster_to_proto("api", &spec).expect("translate");
+        assert_eq!(proto.lb_policy, exc::cluster::LbPolicy::Maglev as i32);
+        assert!(matches!(
+            proto.lb_config,
+            Some(exc::cluster::LbConfig::MaglevLbConfig(_))
+        ));
+        assert_eq!(
+            proto.dns_lookup_family,
+            exc::cluster::DnsLookupFamily::V4Only as i32
+        );
+        assert!(proto.transport_socket.is_some(), "upstream_tls enables TLS");
+        assert!(proto
+            .typed_extension_protocol_options
+            .contains_key("envoy.extensions.upstreams.http.v3.HttpProtocolOptions"));
+        assert_eq!(proto.health_checks.len(), 1);
+        assert_eq!(
+            proto.health_checks[0]
+                .healthy_threshold
+                .as_ref()
+                .expect("healthy threshold")
+                .value,
+            2
+        );
+        assert_eq!(
+            proto
+                .circuit_breakers
+                .as_ref()
+                .expect("circuit breakers")
+                .thresholds
+                .len(),
+            1
+        );
+        assert_eq!(
+            proto
+                .outlier_detection
+                .as_ref()
+                .expect("outlier")
+                .success_rate_minimum_hosts
+                .as_ref()
+                .expect("min hosts")
+                .value,
+            3
+        );
     }
 
     #[test]

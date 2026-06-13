@@ -92,19 +92,19 @@ For each field group below, "done" means:
 | Endpoint priority | Missing | **Defer pre-S8.** V1 synced priority from raw Envoy-shaped projections; V2 should add this later only with a first-class priority/locality model |
 | Endpoint health status | Missing as user input | **Defer as authored config.** Health should be observed/reported, not operator-authored, unless a later EDS locality model needs it |
 | Connect timeout | Present | Keep |
-| LB: round robin, least request, random, ring hash | Partial | **Must implement.** Replace bare enum with typed policy variants/options where Envoy supports knobs |
-| LB: Maglev | Missing | **Must implement.** V1 exposed it and it is a normal Envoy LB policy |
+| LB: round robin, least request, random, ring hash | Implemented in S7.8b | V2 now stores typed least-request/ring-hash options and emits Envoy LB config |
+| LB: Maglev | Implemented in S7.8b | V2 now stores Maglev table size and emits Envoy Maglev LB config |
 | LB: cluster provided | Missing | **Reject for pre-S8.** Only add with a concrete extension/custom LB use case |
-| DNS lookup family | Missing | **Must implement** for DNS clusters |
+| DNS lookup family | Implemented in S7.8b | Stored on `ClusterSpec` and emitted for DNS clusters; ignored for EDS/IP clusters |
 | Upstream TLS enablement | Present as `use_tls` | Keep explicit; do not reintroduce port-based inference |
-| Upstream SNI / server name | Missing | **Must implement** inside typed upstream TLS config |
-| Upstream CA/SAN validation | Missing | **Must implement** through SDS/reference-based validation context, not inline secret material |
+| Upstream SNI / server name | Implemented in S7.8b | Stored in typed upstream TLS config and emitted in `UpstreamTlsContext` |
+| Upstream CA/SAN validation | Implemented in S7.8b | Reference-based SDS validation context only; no inline secret material |
 | Upstream client certificate | Missing | **Defer pre-S8** unless a concrete upstream mTLS example becomes required |
-| Upstream HTTP/2 or gRPC protocol | Missing | **Must implement** as explicit protocol options |
-| HTTP health checks | Partial | **Must implement** host/method/expected status support |
-| TCP health checks | Missing | **Must implement** as a typed health-check variant |
-| Circuit breakers | Partial | **Must implement** Envoy default/high threshold structure |
-| Outlier detection | Partial | **Must implement** missing V1 fields such as minimum host behavior |
+| Upstream HTTP/2 or gRPC protocol | Implemented in S7.8b | Emits modern typed upstream HTTP protocol options with explicit HTTP/2 config |
+| HTTP health checks | Implemented in S7.8b | Supports host, method, expected status ranges, thresholds, timeout, and interval |
+| TCP health checks | Implemented in S7.8b | Stored and emitted as a typed TCP health check variant |
+| Circuit breakers | Implemented in S7.8b | Supports Envoy default/high threshold structure |
+| Outlier detection | Implemented in S7.8b | Adds minimum host behavior alongside existing outlier fields |
 
 ## Route Parity
 
