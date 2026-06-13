@@ -38,6 +38,40 @@ That is enough for the S7 simple route-to-traffic path, but not enough as the fo
 and AI gateway work. S8 should not infer, learn, or publish against a gateway model that cannot yet
 represent the core fields operators can reasonably expect from V1.
 
+## S7.8a Audit Baseline
+
+Audit inputs:
+
+- V1 domain/xDS surface: `src/xds/{cluster_spec,route,listener,secret}.rs`,
+  `src/xds/filters/http/**`, `filter-schemas/built-in/*.yaml`, and V1 docs/reference material.
+- V2 domain/xDS surface: `crates/fp-domain/src/gateway/**`,
+  `crates/fp-xds/src/translate.rs`, `crates/fp-storage/src/repos/**`, and API/CLI resource paths.
+- Existing V2 specs: `spec/03-domain-model.md`, `spec/04-xds.md`, and
+  `spec/14-architecture-integrity.md`.
+
+Verdict:
+
+- **Must implement before S8:** fields needed for the core HTTP gateway model that V1 exposed and
+  that learning/API binding will rely on: richer cluster policy/TLS/protocol/health fields, route
+  match/action parity, listener kind/logging/tracing basics, and the filter hooks required by
+  learning/rate limiting.
+- **Can defer with explicit owner:** fields that are valid gateway features but not required for the
+  S8 learning foundation: OAuth2, credential injection, custom response, WASM, MCP enforcement, and
+  some advanced rate-limit quota behavior.
+- **Reject or keep out of V2:** V1 implementation shortcuts: implicit upstream TLS on port 443,
+  parsed-but-unemitted query matchers, retry duration unit bugs, dynamic Struct fallback for
+  unknown filters, JSON/projection dual authority, and post-hoc listener/route protobuf surgery.
+
+Implementation order:
+
+1. Cluster parity, because routes and `expose` depend on a correct upstream model.
+2. Route parity, because learning binds to route scopes and must observe the same path/header/query
+   semantics that Envoy enforces.
+3. Listener parity, because capture/logging/tracing and TCP/HTTPS decisions live at the HCM/listener
+   boundary.
+4. Filter parity decisions and the minimum implementation needed for learning/rate limiting.
+5. API/CLI/OpenAPI examples plus live Envoy ACK/smoke coverage.
+
 ## Acceptance Shape
 
 For each field group below, "done" means:
@@ -55,22 +89,22 @@ For each field group below, "done" means:
 | --- | --- | --- |
 | Endpoint host and port | Present | Keep; add examples that cover IP and DNS endpoints |
 | Endpoint weight | Present | Keep; assert weighted endpoint translation |
-| Endpoint priority | Missing | Add if needed for Envoy priority locality behavior; otherwise explicit deferral |
-| Endpoint health status | Missing as user input | Decide whether operator-supplied health is valid or should remain Envoy-observed only |
+| Endpoint priority | Missing | **Defer pre-S8.** V1 synced priority from raw Envoy-shaped projections; V2 should add this later only with a first-class priority/locality model |
+| Endpoint health status | Missing as user input | **Defer as authored config.** Health should be observed/reported, not operator-authored, unless a later EDS locality model needs it |
 | Connect timeout | Present | Keep |
-| LB: round robin, least request, random, ring hash | Partial | Add per-policy option structs where Envoy supports knobs |
-| LB: Maglev | Missing | Add typed Maglev config or explicitly defer with reason |
-| LB: cluster provided | Missing | Likely defer unless a concrete extension needs it |
-| DNS lookup family | Missing | Add explicit DNS family field for DNS clusters |
+| LB: round robin, least request, random, ring hash | Partial | **Must implement.** Replace bare enum with typed policy variants/options where Envoy supports knobs |
+| LB: Maglev | Missing | **Must implement.** V1 exposed it and it is a normal Envoy LB policy |
+| LB: cluster provided | Missing | **Reject for pre-S8.** Only add with a concrete extension/custom LB use case |
+| DNS lookup family | Missing | **Must implement** for DNS clusters |
 | Upstream TLS enablement | Present as `use_tls` | Keep explicit; do not reintroduce port-based inference |
-| Upstream SNI / server name | Missing | Add typed upstream TLS config |
-| Upstream CA/SAN validation | Missing | Add typed validation context or SDS reference |
-| Upstream client certificate | Missing | Add only if required by gateway mTLS upstream use cases |
-| Upstream HTTP/2 or gRPC protocol | Missing | Add explicit protocol options |
-| HTTP health checks | Partial | Add host/method/expected status support where needed |
-| TCP health checks | Missing | Add typed TCP health check variant or explicit deferral |
-| Circuit breakers | Partial | Add Envoy threshold structure if V1 examples require priorities |
-| Outlier detection | Partial | Add missing fields such as minimum host behavior where required |
+| Upstream SNI / server name | Missing | **Must implement** inside typed upstream TLS config |
+| Upstream CA/SAN validation | Missing | **Must implement** through SDS/reference-based validation context, not inline secret material |
+| Upstream client certificate | Missing | **Defer pre-S8** unless a concrete upstream mTLS example becomes required |
+| Upstream HTTP/2 or gRPC protocol | Missing | **Must implement** as explicit protocol options |
+| HTTP health checks | Partial | **Must implement** host/method/expected status support |
+| TCP health checks | Missing | **Must implement** as a typed health-check variant |
+| Circuit breakers | Partial | **Must implement** Envoy default/high threshold structure |
+| Outlier detection | Partial | **Must implement** missing V1 fields such as minimum host behavior |
 
 ## Route Parity
 
@@ -78,19 +112,19 @@ For each field group below, "done" means:
 | --- | --- | --- |
 | Virtual host names and domains | Present | Keep |
 | Prefix and exact path match | Present | Keep |
-| URI template match | Present | Verify translator behavior and add live test |
-| Regex path match | Missing | Add typed regex matcher with validation |
-| Header matchers | Missing | Add exact/regex/present/range or a deliberate supported subset |
-| Query parameter matchers | Missing | Add and emit to Envoy; fix V1's parsed-but-not-emitted gap |
+| URI template match | Present | **Must verify.** Domain has it; translator/test coverage must prove Envoy receives it |
+| Regex path match | Missing | **Must implement** typed regex matcher with validation |
+| Header matchers | Missing | **Must implement** at least exact/regex/present; range can defer unless needed |
+| Query parameter matchers | Missing | **Must implement and emit.** This explicitly fixes V1's parsed-but-not-emitted gap |
 | Single-cluster action | Present | Keep |
-| Weighted clusters | Missing | Add typed weighted cluster action with per-weight filter config support if needed |
+| Weighted clusters | Missing | **Must implement** weighted cluster action; per-weight filter config can follow only if needed |
 | Prefix rewrite | Present | Keep |
-| Template rewrite | Domain present; translation must be verified | Wire or test xDS translation before marking done |
+| Template rewrite | Domain present; translation missing/unclear | **Must implement or prove translation** before marking done |
 | Timeout | Present | Keep |
-| Retry policy | Missing | Add typed retry policy with duration units fixed |
-| Redirect action | Missing | Add if V1 outcome is considered core |
-| Direct response action | Not currently modeled | Decide whether this is core gateway parity or an S12 hardening feature |
-| Per-route/vhost rate limits | Missing | Add route/vhost rate-limit actions once RLS/domain model is chosen |
+| Retry policy | Missing | **Must implement** typed retry policy with duration units fixed |
+| Redirect action | Missing | **Must implement** because V1 exposed it as a route action |
+| Direct response action | Not currently modeled | **Defer pre-S8** unless required by a core gateway example |
+| Per-route/vhost rate limits | Missing | **Must design before S8; implement minimum route/vhost descriptor hooks if RLS remains in core parity** |
 | Typed per-filter config | Partial through overrides | Expand as filter catalog grows |
 
 ## Listener Parity
@@ -99,13 +133,13 @@ For each field group below, "done" means:
 | --- | --- | --- |
 | Address and port | Present | Keep |
 | HTTP listener with RDS | Present | Keep |
-| Protocol enum: HTTP, HTTP/2, HTTPS, TCP | Missing | Add explicit protocol/listener kind so TCP is first-class |
+| Protocol enum: HTTP, HTTP/2, HTTPS, TCP | Missing | **Must implement listener kind/protocol.** TCP can be first-class even if `expose` starts HTTP-only |
 | HTTPS downstream TLS | Partial | Keep and expand only where Envoy fields are missing |
-| Multiple filter chains | Missing | Add only if required by TLS/SNI or TCP parity; otherwise explicit deferral |
-| Inline route config | Missing | Prefer RDS unless there is a concrete V2 UX need |
-| TCP proxy | Missing | Add typed TCP listener action if V1 TCP gateway capability is core |
-| Access logs | Missing as user config | Add typed access-log config; learning can later inject capture-specific logs through the same IR |
-| Tracing | Missing | Add typed tracing config if V1 examples require it before S8 |
+| Multiple filter chains | Missing | **Defer pre-S8** unless TLS/SNI routing requires it; V2 should avoid this complexity until needed |
+| Inline route config | Missing | **Reject by default.** Prefer RDS as the V2 architecture; add inline only for a concrete UX need |
+| TCP proxy | Missing | **Must implement** if TCP remains part of the V1 parity definition; otherwise explicitly defer |
+| Access logs | Missing as user config | **Must implement basic typed config.** Learning can later inject capture logs through the same IR |
+| Tracing | Missing | **Must implement basic typed config** for OTel/Zipkin-or-generic decision, or explicitly defer with impact |
 | Request ID behavior | Translator-owned | Verify and document default behavior |
 | HTTP filter chain order | Present for current subset | Keep router auto-append invariant |
 
@@ -121,14 +155,14 @@ For each field group below, "done" means:
 | JWT auth | Present | Keep |
 | Ext authz | Present | Keep |
 | RBAC | Present | Keep |
-| Global rate limit / RLS | Missing | Add or explicitly anchor to the rate-limit/AI-budget slice before S8 resumes |
-| Rate limit quota | Missing | Decide if core or defer with explicit reason |
-| ExtProc | Missing | Important for learning/AI gateway capture paths; design through typed IR, not post-hoc injection |
-| OAuth2 | Missing | Decide if core gateway parity or later auth slice |
-| Credential injector | Missing | Likely AI gateway/security slice, but document the deferral |
-| Custom response | Missing | Decide if core operator parity |
-| MCP filter/tool routing | Missing | S11, but any Envoy-facing filter shape should be reserved now |
-| WASM | Missing | Likely defer unless there is a current extension use case |
+| Global rate limit / RLS | Missing | **Must design before S8.** Implement minimum chain/per-route hooks if rate-limit parity is retained as pre-S8 |
+| Rate limit quota | Missing | **Defer pre-S8** unless quota behavior is needed for AI gateway budgeting immediately |
+| ExtProc | Missing | **Must design now, implement learning-required subset in S8.** It must enter through typed IR, not post-hoc injection |
+| OAuth2 | Missing | **Defer pre-S8** to a later auth slice |
+| Credential injector | Missing | **Defer pre-S8** to AI gateway/security slice |
+| Custom response | Missing | **Defer pre-S8** unless core operator examples need it |
+| MCP filter/tool routing | Missing | **Defer to S11**, but reserve a typed filter shape so S11 does not need raw patches |
+| WASM | Missing | **Defer pre-S8** unless there is a current extension use case |
 
 ## Secrets And SDS
 
@@ -158,7 +192,8 @@ Field parity should improve the V2 UX, not expose raw Envoy complexity everywher
 
 S7.8 should be tracked as a pre-S8 workstream:
 
-- S7.8a: finalize this parity matrix against V1 examples and current V2 code.
+- S7.8a: finalize this parity matrix against V1 examples and current V2 code. **Done in this
+  audit baseline; keep updating only when a field decision changes.**
 - S7.8b: cluster field parity.
 - S7.8c: route field parity.
 - S7.8d: listener field parity.

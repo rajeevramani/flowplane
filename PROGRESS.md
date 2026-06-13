@@ -243,7 +243,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         route-to-traffic loop cannot regress.
 - [ ] S7.8 Core gateway field parity before learning (see
       `spec/15-core-gateway-field-parity.md`)
-  - [ ] S7.8a Finalize the field parity matrix against V1 examples and current V2 code:
+  - [x] S7.8a Finalize the field parity matrix against V1 examples and current V2 code:
         clusters, routes, listeners, filters, secrets, API schema, DB round-trip, CLI examples,
         and xDS translation.
   - [ ] S7.8b Cluster parity: typed V2 support for V1-exposed Envoy cluster fields, including
