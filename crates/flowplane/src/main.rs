@@ -9,7 +9,16 @@ use clap_complete::Shell;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
-#[command(name = "flowplane", version, about = "Flowplane control plane")]
+#[command(
+    name = "flowplane",
+    version,
+    about = "Flowplane control plane",
+    after_help = "Examples:
+  flowplane auth login --device-code --issuer https://issuer.example --client-id flowplane-cli
+  flowplane config set-context prod --server https://fp.example --org acme --team payments
+  flowplane apply -f gateway.json --diff
+  flowplane cluster list --team payments"
+)]
 struct Cli {
     #[command(flatten)]
     client: cli::GlobalOptions,
@@ -156,5 +165,32 @@ mod tests {
     #[test]
     fn command_tree_builds() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn cli_transcript_command_forms_parse() {
+        Cli::try_parse_from([
+            "flowplane",
+            "auth",
+            "login",
+            "--device-code",
+            "--issuer",
+            "https://issuer.example",
+            "--client-id",
+            "flowplane-cli",
+        ])
+        .expect("device-code login form should parse");
+        Cli::try_parse_from(["flowplane", "apply", "-f", "gateway.json", "--diff"])
+            .expect("apply diff form should parse");
+        Cli::try_parse_from(["flowplane", "cluster", "list", "--team", "payments"])
+            .expect("resource list form should parse");
+    }
+
+    #[test]
+    fn cli_help_contains_workflow_examples() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("flowplane auth login --device-code"));
+        assert!(help.contains("flowplane config set-context prod"));
+        assert!(help.contains("flowplane apply -f gateway.json --diff"));
     }
 }

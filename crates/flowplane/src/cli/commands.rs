@@ -10,7 +10,7 @@ pub enum AuthCommand {
         token: Option<String>,
         #[arg(long)]
         token_stdin: bool,
-        #[arg(long)]
+        #[arg(long, alias = "device-code")]
         device: bool,
         #[arg(long)]
         issuer: Option<String>,

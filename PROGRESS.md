@@ -195,8 +195,12 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S7.4 Device-code auth: `auth login --device` discovers OIDC provider metadata,
         starts the OAuth device-code flow, polls token exchange with pending/slow_down handling,
         stores `id_token` when present (else access token), and promotes `oidc_issuer`,
-        `oidc_client_id`, and `oidc_scope` to first-class CLI config/env inputs. Remaining S7
-        scope: browser PKCE and transcript E2E polish.
+        `oidc_client_id`, and `oidc_scope` to first-class CLI config/env inputs. `--device-code`
+        is accepted as the spec/v1-compatible alias.
+  - [x] S7.5 Transcript polish: top-level help now carries the S7 happy-path examples (device-code
+        login, context setup, `apply --diff`, resource list), and parser tests pin those command
+        forms so future CLI refactors cannot silently break the documented workflows. Remaining S7
+        scope: browser PKCE loopback.
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
 - [ ] S10 AI gateway
