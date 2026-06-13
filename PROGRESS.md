@@ -189,12 +189,12 @@ and scheduled — read these before trusting a green checkbox.
   several duplicates. Fixed: org member add rejects duplicate active global emails instead of
   picking one and also accepts immutable `subject`/`user_id` selectors; team member/grant add
   resolve email inside the selected org.
-- **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — OPEN.**
+- **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — RESOLVED.**
   `refresh_keys` takes `cache.write()` *then* does the JWKS HTTP fetch while holding it, and
   `reqwest::Client::new()` sets no timeout — so a slow/hung IdP stalls every token validation
-  (head-of-line blocking) indefinitely. Recommendation: set a reqwest timeout (~5s) and fetch
-  outside the write lock (swap keys under a brief lock), keeping single-flight via a dedicated
-  refresh mutex. Target: before any non-dev OIDC deployment.
+  (head-of-line blocking) indefinitely. Fixed: the OIDC client has a 5s request timeout,
+  refreshes are single-flighted by a dedicated mutex, and the cache write lock is held only
+  while swapping parsed keys.
 
 ## Notes
 

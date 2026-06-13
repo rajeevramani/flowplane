@@ -15,7 +15,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 /// Issuer configuration. Provider-agnostic: Zitadel, Keycloak, Okta, Entra, or the dev mock.
 #[derive(Debug, Clone)]
@@ -65,6 +65,7 @@ pub struct OidcValidator {
     config: OidcConfig,
     http: reqwest::Client,
     cache: Arc<RwLock<KeyCache>>,
+    refresh: Arc<Mutex<()>>,
     refresh_cooldown: Duration,
 }
 
@@ -72,11 +73,15 @@ impl OidcValidator {
     pub fn new(config: OidcConfig) -> Self {
         Self {
             config,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("valid reqwest client config"),
             cache: Arc::new(RwLock::new(KeyCache {
                 keys: HashMap::new(),
                 last_refresh: None,
             })),
+            refresh: Arc::new(Mutex::new(())),
             refresh_cooldown: Duration::from_secs(30),
         }
     }
@@ -85,42 +90,22 @@ impl OidcValidator {
     pub async fn load_jwks_json(&self, jwks: &str) -> DomainResult<usize> {
         let set: JwkSet = serde_json::from_str(jwks)
             .map_err(|e| DomainError::internal(format!("invalid JWKS document: {e}")))?;
+        let keys = keys_from_set(&set);
         let mut cache = self.cache.write().await;
-        cache.keys.clear();
-        for key in &set.keys {
-            let kid = key
-                .get("kid")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if kid.is_empty() {
-                continue;
-            }
-            let jwk: jsonwebtoken::jwk::Jwk = match serde_json::from_value(key.clone()) {
-                Ok(jwk) => jwk,
-                Err(e) => {
-                    tracing::warn!(kid, "skipping unparseable JWK: {e}");
-                    continue;
-                }
-            };
-            match DecodingKey::from_jwk(&jwk) {
-                Ok(decoding) => {
-                    cache.keys.insert(kid, decoding);
-                }
-                Err(e) => tracing::warn!(kid, "skipping unusable JWK: {e}"),
-            }
-        }
+        cache.keys = keys;
         cache.last_refresh = Some(Instant::now());
         Ok(cache.keys.len())
     }
 
     async fn refresh_keys(&self) -> DomainResult<()> {
-        // Single-flight with cooldown: take the write lock first so concurrent unknown-kid
-        // requests don't stampede the IdP.
-        let mut cache = self.cache.write().await;
-        if let Some(last) = cache.last_refresh {
-            if last.elapsed() < self.refresh_cooldown {
-                return Ok(()); // someone else refreshed recently; keys are as fresh as allowed
+        // Single-flight without holding the cache write lock during network I/O.
+        let _refresh = self.refresh.lock().await;
+        {
+            let cache = self.cache.read().await;
+            if let Some(last) = cache.last_refresh {
+                if last.elapsed() < self.refresh_cooldown {
+                    return Ok(()); // someone else refreshed recently; keys are as fresh as allowed
+                }
             }
         }
 
@@ -158,22 +143,9 @@ impl OidcValidator {
             .await
             .map_err(|e| unavailable_idp(&jwks_uri, e))?;
 
-        cache.keys.clear();
-        for key in &set.keys {
-            let kid = key
-                .get("kid")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if kid.is_empty() {
-                continue;
-            }
-            if let Ok(jwk) = serde_json::from_value::<jsonwebtoken::jwk::Jwk>(key.clone()) {
-                if let Ok(decoding) = DecodingKey::from_jwk(&jwk) {
-                    cache.keys.insert(kid, decoding);
-                }
-            }
-        }
+        let keys = keys_from_set(&set);
+        let mut cache = self.cache.write().await;
+        cache.keys = keys;
         cache.last_refresh = Some(Instant::now());
         tracing::info!(key_count = cache.keys.len(), "JWKS refreshed");
         Ok(())
@@ -228,6 +200,34 @@ impl OidcValidator {
             name: data.claims.name,
         })
     }
+}
+
+fn keys_from_set(set: &JwkSet) -> HashMap<String, DecodingKey> {
+    let mut keys = HashMap::new();
+    for key in &set.keys {
+        let kid = key
+            .get("kid")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if kid.is_empty() {
+            continue;
+        }
+        let jwk: jsonwebtoken::jwk::Jwk = match serde_json::from_value(key.clone()) {
+            Ok(jwk) => jwk,
+            Err(e) => {
+                tracing::warn!(kid, "skipping unparseable JWK: {e}");
+                continue;
+            }
+        };
+        match DecodingKey::from_jwk(&jwk) {
+            Ok(decoding) => {
+                keys.insert(kid, decoding);
+            }
+            Err(e) => tracing::warn!(kid, "skipping unusable JWK: {e}"),
+        }
+    }
+    keys
 }
 
 fn unauthorized(message: &str) -> DomainError {
