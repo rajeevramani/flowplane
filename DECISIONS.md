@@ -136,9 +136,11 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   3. PATCH uniformly for updates (v1 mixed PUT/PATCH; its doc claimed PUT for 4 PATCH routes).
   4. Per-team resource names (v1: global uniqueness — cross-tenant name oracle, 08a §2.2.2).
   5. Uniform `{items,total,limit,offset}` list envelope (v1: partial adoption).
-  6. Team/member/grant management moved from `/orgs/{org_name}/…` to caller-org-implied
-     `/api/v1/teams…` (one-org-per-user model makes the org segment redundant); platform
-     admins are NOT admitted to tenant administration on these paths (invariant 1).
+  6. Team/member/grant management initially moved from `/orgs/{org_name}/…` to
+     caller-org-implied `/api/v1/teams…` under the one-org-per-user assumption. D-014
+     supersedes that assumption: tenant-scoped operations must now carry an explicit org
+     context, while platform admins are still NOT admitted to tenant administration merely by
+     platform role (invariant 1).
   7. `/api/v1/auth/whoami` replaces v1's UI-session-oriented `/api/v1/auth/session`; the
      BFF/cookie endpoints are deleted, not ported (D-008).
 - **Not-yet-mapped v1 surface:** secrets/dataplanes/certs (S6), learning/schemas (S8-S9),
@@ -202,4 +204,25 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   risk breakage).
 - **Revisit:** bump the pin one line behind whenever Envoy cuts a new stable (so we'd move to
   1.38.x once 1.39.x ships), and re-bump `envoy-types` only if a NACK ever shows an API gap.
+- **Status:** decided (post-S5.8, founder directive).
+
+## D-014: human users may belong to multiple orgs; request org context is explicit
+
+- **Context:** Earlier v2 authz kept v1's one-org-per-user simplification and the loader chose
+  one membership with `ORDER BY created_at LIMIT 1`. Founder direction is to support users that
+  can work across multiple customer orgs, e.g. consultants, operators, and design-partner
+  admins. That makes implicit membership selection a tenant-isolation risk.
+- **Decision:** v2 supports multiple org memberships per human user. Do **not** add a
+  uniqueness constraint on `org_memberships(user_id)`. Instead, every tenant-scoped operation
+  must be authorized against an explicit request org context from the route or a dedicated
+  request selector. If a user has access to multiple orgs and a tenant-scoped API lacks an org
+  context, the request must fail closed rather than defaulting to the oldest or first
+  membership.
+- **Identity resolution:** user lookup by email must not search globally and attach whichever
+  row appears first. Prefer immutable subject/user-id based selection. Where email remains a
+  UX affordance, resolve it inside the target org or reject ambiguous matches.
+- **API implication:** existing caller-org-implied routes such as `/api/v1/teams...` need an
+  org selector contract before they become the long-term tenant admin surface. Route-scoped org
+  identity (`/orgs/{org}/...`) is valid; a header/CLI-selected active org is also valid if the
+  server validates membership before constructing the request principal.
 - **Status:** decided (post-S5.8, founder directive).

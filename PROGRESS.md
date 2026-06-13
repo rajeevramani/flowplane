@@ -176,17 +176,20 @@ and scheduled — read these before trusting a green checkbox.
   (they already hold ctx/resource/action/team) write a best-effort denial row before
   returning the error — thread `pool`+`request_id` in. Target: S12 hardening or a focused
   commit before the design-partner cut.
-- **R5 — one-org-per-user is assumed but not enforced — OPEN.** `org_memberships` has
-  `UNIQUE (user_id, org_id)` (no duplicate membership in the *same* org) but nothing stops a
-  user from holding memberships in two orgs, while the principal loader and D-010 assume
-  exactly one. Recommendation: add a `UNIQUE` index on `org_memberships(user_id)` (at most one
-  org per user) or reject the second membership at add-time; decide before multi-tenant
-  onboarding.
+- **R5 — multi-org users require explicit request org context — OPEN.** Founder direction is
+  to allow a human user to belong to multiple orgs, so `org_memberships` must keep only
+  `UNIQUE (user_id, org_id)` and must **not** gain a `UNIQUE (user_id)` constraint. The risk is
+  now the inverse: the principal loader and D-010 still assume one org and choose one
+  membership with `ORDER BY created_at LIMIT 1`. Recommendation: replace implicit selection
+  with an explicit request org context (route org or validated active-org selector), make
+  ambiguous tenant-scoped requests fail closed, and update authz checks to test membership in
+  the requested org.
 - **R6 — Email resolution is global and non-unique — OPEN.** `identity::find_user_by_email`
   selects across ALL orgs with `LIMIT 1`, and `users.email` has no `UNIQUE` constraint — so
   add-member / add-grant by email can resolve a user in another org or silently pick one of
-  several duplicates. Recommendation: scope email resolution to the caller's org and/or add a
-  uniqueness constraint; prefer subject-based resolution where possible.
+  several duplicates. Recommendation: prefer subject/user-id based selection; where email is a
+  UX affordance, scope resolution to the target org or reject ambiguous matches. Do not rely on
+  global email uniqueness as the isolation boundary.
 - **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — OPEN.**
   `refresh_keys` takes `cache.write()` *then* does the JWKS HTTP fetch while holding it, and
   `reqwest::Client::new()` sets no timeout — so a slow/hung IdP stalls every token validation

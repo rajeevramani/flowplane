@@ -57,7 +57,8 @@ pub enum PrincipalCtx {
         user_id: UserId,
         /// True only for owners of the platform organization (v1's `admin:all`).
         platform_admin: bool,
-        /// The user's org membership; v2 keeps v1's one-org-per-user model.
+        /// The validated request org context. D-014 allows multi-org users, so this must not
+        /// be populated by implicitly choosing one membership.
         org: Option<(OrgId, OrgRole)>,
         grants: GrantSet,
     },

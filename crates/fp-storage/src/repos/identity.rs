@@ -58,9 +58,9 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
     }
     let user_id = UserId::from(user_row.get::<Uuid, _>("id"));
 
-    // Org membership (v2 keeps v1's one-org-per-user model; the UNIQUE constraint allows
-    // multiple rows across orgs in the schema for future multi-org, but the loader takes
-    // the first deterministic one and the API enforces single membership at write time).
+    // Compatibility path from the original one-org model. D-014 makes this a hardening target:
+    // tenant-scoped requests must pass an explicit org context instead of taking the first
+    // membership.
     let membership = sqlx::query(
         "SELECT m.org_id, m.role FROM org_memberships m \
          JOIN organizations o ON o.id = m.org_id AND o.status = 'active' \
