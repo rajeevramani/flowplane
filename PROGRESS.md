@@ -323,6 +323,14 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         submission, and returns graceful validation errors for malformed documents. Add
         lightweight OpenAPI semantic validation beyond the current object/paths/operation checks
         before imported specs feed publish/tool quality.
+  - [ ] S8.2b Operator diagnostics parity before learning: V1 had `xds status` and `trace`;
+        V2 already has NACK history, diagnostics gRPC ingest, request IDs, trace IDs, W3C
+        `traceparent`, and optional OTLP export, but needs user-facing REST/CLI rollups:
+        `flowplane ops xds status` for per-team/dataplane xDS delivery health and
+        `flowplane ops trace` for request/config-change correlation by request id, path, or
+        trace id. Keep this read-only and sourced from persisted diagnostics/audit/outbox/NACK
+        state; do not make Envoy admin access or in-memory stream state the product source of
+        truth.
   - [ ] S8.3 Capture-session model: `learn start|list|get|stop|cancel` against an
         `ApiDefinition` or explicit bound route scope; session state machine, sample/byte/path
         quotas, health counters, target sample/timeout completion, and transactional events.
