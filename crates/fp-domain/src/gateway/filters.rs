@@ -32,6 +32,9 @@ pub enum HttpFilterSpec {
     HeaderMutation(HeaderMutationConfig),
     HealthCheck(HealthCheckConfig),
     Compressor(CompressorConfig),
+    JwtAuth(JwtAuthConfig),
+    ExtAuthz(ExtAuthzConfig),
+    Rbac(RbacConfig),
 }
 
 impl HttpFilterSpec {
@@ -42,6 +45,9 @@ impl HttpFilterSpec {
             Self::HeaderMutation(_) => "header_mutation",
             Self::HealthCheck(_) => "health_check",
             Self::Compressor(_) => "compressor",
+            Self::JwtAuth(_) => "jwt_auth",
+            Self::ExtAuthz(_) => "ext_authz",
+            Self::Rbac(_) => "rbac",
         }
     }
 
@@ -52,6 +58,9 @@ impl HttpFilterSpec {
             Self::HeaderMutation(c) => c.validate(),
             Self::HealthCheck(c) => c.validate(),
             Self::Compressor(c) => c.validate(),
+            Self::JwtAuth(c) => c.validate(),
+            Self::ExtAuthz(c) => c.validate(),
+            Self::Rbac(c) => c.validate(),
         }
     }
 }
@@ -68,6 +77,9 @@ pub enum FilterOverride {
     Cors(CorsConfig),
     /// Replace the local rate limit on this scope.
     LocalRateLimit(LocalRateLimitConfig),
+    /// JWT requirement for this scope, by name from the chain config's `requirement_map`
+    /// (reference-only per spec/04 §4.1; disabling goes through `Disable`).
+    JwtAuth { requirement_name: String },
 }
 
 impl FilterOverride {
@@ -76,8 +88,15 @@ impl FilterOverride {
         match self {
             Self::Disable { filter_type } => {
                 // health_check is listener-only (spec/04 §4.1): no per-route control at all.
-                const DISABLABLE: &[&str] =
-                    &["cors", "local_rate_limit", "header_mutation", "compressor"];
+                const DISABLABLE: &[&str] = &[
+                    "cors",
+                    "local_rate_limit",
+                    "header_mutation",
+                    "compressor",
+                    "jwt_auth",
+                    "ext_authz",
+                    "rbac",
+                ];
                 if !DISABLABLE.contains(&filter_type.as_str()) {
                     return Err(DomainError::validation(format!(
                         "filter type \"{filter_type}\" cannot be disabled per-route",
@@ -88,6 +107,7 @@ impl FilterOverride {
             }
             Self::Cors(_) => Ok("cors"),
             Self::LocalRateLimit(_) => Ok("local_rate_limit"),
+            Self::JwtAuth { .. } => Ok("jwt_auth"),
         }
     }
 
@@ -96,6 +116,14 @@ impl FilterOverride {
             Self::Disable { .. } => self.target_kind().map(|_| ()),
             Self::Cors(c) => c.validate(),
             Self::LocalRateLimit(c) => c.validate(),
+            Self::JwtAuth { requirement_name } => {
+                if requirement_name.is_empty() || requirement_name.len() > 128 {
+                    return Err(DomainError::validation(
+                        "jwt_auth override: requirement_name must be 1..=128 characters",
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -327,6 +355,336 @@ impl CompressorConfig {
     }
 }
 
+// ---------------- jwt_auth ----------------
+
+/// Where a provider's JWKS comes from. Remote sources name a same-team cluster the proxy
+/// fetches through (no implicit cluster synthesis — explicit beats magic; the cluster is
+/// validated like any other reference and Envoy NACKs honestly if it is missing).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum JwksSource {
+    Remote {
+        /// Full JWKS URI, e.g. `https://issuer.example/.well-known/jwks.json`.
+        uri: String,
+        /// Cluster (same team) used to reach the JWKS host.
+        cluster: String,
+        #[serde(default = "default_jwks_timeout_ms")]
+        timeout_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_duration_secs: Option<u64>,
+    },
+    Inline {
+        /// JWKS JSON, inline (for static keys / tests).
+        jwks: String,
+    },
+}
+
+fn default_jwks_timeout_ms() -> u64 {
+    5000
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JwtProvider {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audiences: Vec<String>,
+    pub jwks: JwksSource,
+    /// Seconds of clock skew tolerated when validating exp/nbf (default 60, as v1).
+    #[serde(default = "default_clock_skew")]
+    pub clock_skew_seconds: u32,
+    /// Keep the token on the forwarded request (default: stripped).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forward: bool,
+}
+
+fn default_clock_skew() -> u32 {
+    60
+}
+
+/// What a rule (or a per-route override, by name) demands.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum JwtRequirement {
+    /// A specific provider must validate.
+    Provider { provider_name: String },
+    /// Any of the named providers validates.
+    AnyOf { provider_names: Vec<String> },
+    /// Token optional; if present it must validate.
+    AllowMissing,
+    /// Token optional and failures tolerated (audit-only mode).
+    AllowMissingOrFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JwtRule {
+    #[serde(rename = "match")]
+    pub matcher: crate::gateway::route_config::PathMatch,
+    /// Name into `requirement_map`.
+    pub requirement_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JwtAuthConfig {
+    /// Provider name → provider. BTreeMap: deterministic encoding (spec/10 §5).
+    pub providers: std::collections::BTreeMap<String, JwtProvider>,
+    /// Named requirements, referenced by rules and per-route overrides.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub requirement_map: std::collections::BTreeMap<String, JwtRequirement>,
+    /// Path rules, first match wins. Empty → every path requires any provider (v1 rule).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<JwtRule>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bypass_cors_preflight: bool,
+}
+
+impl JwtAuthConfig {
+    fn requirement_providers_exist(&self, req: &JwtRequirement) -> DomainResult<()> {
+        let missing: Vec<&str> = match req {
+            JwtRequirement::Provider { provider_name } => {
+                if self.providers.contains_key(provider_name) {
+                    vec![]
+                } else {
+                    vec![provider_name.as_str()]
+                }
+            }
+            JwtRequirement::AnyOf { provider_names } => provider_names
+                .iter()
+                .filter(|n| !self.providers.contains_key(*n))
+                .map(String::as_str)
+                .collect(),
+            _ => vec![],
+        };
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(DomainError::validation(format!(
+                "jwt_auth: requirement references unknown providers: {}",
+                missing.join(", ")
+            )))
+        }
+    }
+
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.providers.is_empty() {
+            return Err(DomainError::validation(
+                "jwt_auth: at least one provider is required",
+            ));
+        }
+        for (name, provider) in &self.providers {
+            crate::identity::validate_name(name)?;
+            match &provider.jwks {
+                JwksSource::Remote {
+                    uri,
+                    cluster,
+                    timeout_ms,
+                    ..
+                } => {
+                    if !uri.starts_with("https://") && !uri.starts_with("http://") {
+                        return Err(DomainError::validation(format!(
+                            "jwt_auth provider \"{name}\": jwks uri must be http(s)"
+                        )));
+                    }
+                    crate::identity::validate_name(cluster)?;
+                    if *timeout_ms == 0 || *timeout_ms > 60_000 {
+                        return Err(DomainError::validation(format!(
+                            "jwt_auth provider \"{name}\": timeout_ms must be 1..=60000"
+                        )));
+                    }
+                }
+                JwksSource::Inline { jwks } => {
+                    if jwks.is_empty() || jwks.len() > 65_536 {
+                        return Err(DomainError::validation(format!(
+                            "jwt_auth provider \"{name}\": inline jwks must be 1..=65536 bytes"
+                        )));
+                    }
+                }
+            }
+        }
+        for (name, req) in &self.requirement_map {
+            crate::identity::validate_name(name)?;
+            if let JwtRequirement::AnyOf { provider_names } = req {
+                if provider_names.is_empty() {
+                    return Err(DomainError::validation(format!(
+                        "jwt_auth requirement \"{name}\": any_of needs at least one provider"
+                    )));
+                }
+            }
+            self.requirement_providers_exist(req)?;
+        }
+        for rule in &self.rules {
+            if !self.requirement_map.contains_key(&rule.requirement_name) {
+                return Err(DomainError::validation(format!(
+                    "jwt_auth rule references unknown requirement \"{}\"",
+                    rule.requirement_name
+                ))
+                .with_hint("declare it in requirement_map"));
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------- ext_authz ----------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExtAuthzConfig {
+    /// gRPC authorization service, by same-team cluster name.
+    pub cluster: String,
+    #[serde(default = "default_ext_authz_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Allow traffic when the authz service is unreachable (default false: fail closed).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failure_mode_allow: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_peer_certificate: bool,
+}
+
+fn default_ext_authz_timeout_ms() -> u64 {
+    200
+}
+
+impl ExtAuthzConfig {
+    pub fn validate(&self) -> DomainResult<()> {
+        crate::identity::validate_name(&self.cluster)?;
+        if self.timeout_ms == 0 || self.timeout_ms > 60_000 {
+            return Err(DomainError::validation(
+                "ext_authz: timeout_ms must be 1..=60000",
+            ));
+        }
+        Ok(())
+    }
+}
+
+// ---------------- rbac ----------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RbacAction {
+    /// Matching requests are allowed; everything else denied.
+    Allow,
+    /// Matching requests are denied; everything else allowed.
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RbacPermission {
+    Any,
+    Header {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exact: Option<String>,
+    },
+    UrlPath {
+        prefix: String,
+    },
+    DestinationPort {
+        port: u16,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RbacPrincipal {
+    Any,
+    /// Direct peer address in CIDR form, e.g. `10.0.0.0/8`.
+    SourceCidr {
+        cidr: String,
+    },
+    Header {
+        name: String,
+        exact: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RbacPolicy {
+    pub permissions: Vec<RbacPermission>,
+    pub principals: Vec<RbacPrincipal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RbacConfig {
+    pub action: RbacAction,
+    /// Policy name → policy. BTreeMap: deterministic encoding.
+    pub policies: std::collections::BTreeMap<String, RbacPolicy>,
+}
+
+impl RbacConfig {
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.policies.is_empty() {
+            return Err(DomainError::validation(
+                "rbac: at least one policy is required",
+            ));
+        }
+        for (name, policy) in &self.policies {
+            crate::identity::validate_name(name)?;
+            if policy.permissions.is_empty() || policy.principals.is_empty() {
+                return Err(DomainError::validation(format!(
+                    "rbac policy \"{name}\": permissions and principals must be non-empty"
+                )));
+            }
+            for permission in &policy.permissions {
+                match permission {
+                    RbacPermission::Header { name: header, .. } => {
+                        if header.is_empty() {
+                            return Err(DomainError::validation(
+                                "rbac: header permission needs a header name",
+                            ));
+                        }
+                    }
+                    RbacPermission::UrlPath { prefix } => {
+                        if !prefix.starts_with('/') {
+                            return Err(DomainError::validation(
+                                "rbac: url_path prefix must start with '/'",
+                            ));
+                        }
+                    }
+                    RbacPermission::DestinationPort { port } => {
+                        if *port == 0 {
+                            return Err(DomainError::validation(
+                                "rbac: destination_port must be >= 1",
+                            ));
+                        }
+                    }
+                    RbacPermission::Any => {}
+                }
+            }
+            for principal in &policy.principals {
+                match principal {
+                    RbacPrincipal::SourceCidr { cidr } => {
+                        let valid = cidr.split_once('/').is_some_and(|(ip, len)| {
+                            ip.parse::<std::net::IpAddr>().is_ok()
+                                && len.parse::<u8>().is_ok_and(|l| l <= 128)
+                        });
+                        if !valid {
+                            return Err(DomainError::validation(format!(
+                                "rbac: \"{cidr}\" is not a valid CIDR"
+                            )));
+                        }
+                    }
+                    RbacPrincipal::Header { name: header, .. } => {
+                        if header.is_empty() {
+                            return Err(DomainError::validation(
+                                "rbac: header principal needs a header name",
+                            ));
+                        }
+                    }
+                    RbacPrincipal::Any => {}
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Validate a whole chain: per-filter rules plus chain-level invariants (one filter of
 /// each type — duplicates make per-scope overrides ambiguous).
 pub fn validate_filter_chain(entries: &[HttpFilterEntry]) -> DomainResult<()> {
@@ -429,5 +787,167 @@ mod tests {
             },
         ];
         assert!(validate_filter_chain(&chain).is_err());
+    }
+
+    #[test]
+    fn jwt_auth_validates_providers_requirements_and_rules() {
+        use std::collections::BTreeMap;
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "auth0".to_string(),
+            JwtProvider {
+                issuer: Some("https://issuer.example".into()),
+                audiences: vec!["api".into()],
+                jwks: JwksSource::Remote {
+                    uri: "https://issuer.example/jwks".into(),
+                    cluster: "jwks-cluster".into(),
+                    timeout_ms: 5000,
+                    cache_duration_secs: None,
+                },
+                clock_skew_seconds: 60,
+                forward: false,
+            },
+        );
+        let mut requirement_map = BTreeMap::new();
+        requirement_map.insert(
+            "default".to_string(),
+            JwtRequirement::Provider {
+                provider_name: "auth0".into(),
+            },
+        );
+        let good = JwtAuthConfig {
+            providers: providers.clone(),
+            requirement_map: requirement_map.clone(),
+            rules: vec![JwtRule {
+                matcher: crate::gateway::route_config::PathMatch::Prefix { prefix: "/".into() },
+                requirement_name: "default".into(),
+            }],
+            bypass_cors_preflight: true,
+        };
+        assert!(good.validate().is_ok());
+
+        // Requirement naming an unknown provider is rejected.
+        let mut bad_reqs = BTreeMap::new();
+        bad_reqs.insert(
+            "default".to_string(),
+            JwtRequirement::Provider {
+                provider_name: "ghost".into(),
+            },
+        );
+        let bad = JwtAuthConfig {
+            providers: providers.clone(),
+            requirement_map: bad_reqs,
+            rules: vec![],
+            bypass_cors_preflight: false,
+        };
+        assert!(bad.validate().is_err(), "unknown provider in requirement");
+
+        // Rule referencing an undeclared requirement is rejected.
+        let bad = JwtAuthConfig {
+            providers,
+            requirement_map,
+            rules: vec![JwtRule {
+                matcher: crate::gateway::route_config::PathMatch::Prefix { prefix: "/".into() },
+                requirement_name: "nope".into(),
+            }],
+            bypass_cors_preflight: false,
+        };
+        assert!(bad.validate().is_err(), "rule names unknown requirement");
+
+        // No providers at all is rejected.
+        assert!(JwtAuthConfig {
+            providers: BTreeMap::new(),
+            requirement_map: BTreeMap::new(),
+            rules: vec![],
+            bypass_cors_preflight: false,
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn ext_authz_and_rbac_validation() {
+        assert!(ExtAuthzConfig {
+            cluster: "authz".into(),
+            timeout_ms: 200,
+            failure_mode_allow: false,
+            include_peer_certificate: true,
+        }
+        .validate()
+        .is_ok());
+        assert!(ExtAuthzConfig {
+            cluster: "authz".into(),
+            timeout_ms: 0,
+            failure_mode_allow: false,
+            include_peer_certificate: false,
+        }
+        .validate()
+        .is_err());
+
+        let mut policies = std::collections::BTreeMap::new();
+        policies.insert(
+            "admins".to_string(),
+            RbacPolicy {
+                permissions: vec![RbacPermission::UrlPath {
+                    prefix: "/admin".into(),
+                }],
+                principals: vec![RbacPrincipal::SourceCidr {
+                    cidr: "10.0.0.0/8".into(),
+                }],
+            },
+        );
+        assert!(RbacConfig {
+            action: RbacAction::Allow,
+            policies: policies.clone(),
+        }
+        .validate()
+        .is_ok());
+
+        // Bad CIDR rejected.
+        let mut bad_policies = std::collections::BTreeMap::new();
+        bad_policies.insert(
+            "x".to_string(),
+            RbacPolicy {
+                permissions: vec![RbacPermission::Any],
+                principals: vec![RbacPrincipal::SourceCidr {
+                    cidr: "not-a-cidr".into(),
+                }],
+            },
+        );
+        assert!(RbacConfig {
+            action: RbacAction::Deny,
+            policies: bad_policies,
+        }
+        .validate()
+        .is_err());
+
+        // Empty policies rejected.
+        assert!(RbacConfig {
+            action: RbacAction::Allow,
+            policies: std::collections::BTreeMap::new(),
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn jwt_per_route_override_target_and_disable_set() {
+        // jwt_auth disable is now allowed per-route.
+        assert!(FilterOverride::Disable {
+            filter_type: "jwt_auth".into(),
+        }
+        .validate()
+        .is_ok());
+        // reference-only jwt override targets jwt_auth.
+        let ov = FilterOverride::JwtAuth {
+            requirement_name: "admin".into(),
+        };
+        assert_eq!(ov.target_kind().ok(), Some("jwt_auth"));
+        assert!(ov.validate().is_ok());
+        assert!(FilterOverride::JwtAuth {
+            requirement_name: String::new(),
+        }
+        .validate()
+        .is_err());
     }
 }

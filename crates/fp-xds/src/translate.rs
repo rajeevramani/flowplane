@@ -205,32 +205,9 @@ pub fn route_config_to_proto(
     for vhost in &spec.virtual_hosts {
         let mut routes = Vec::with_capacity(vhost.routes.len());
         for rule in &vhost.routes {
-            let path_specifier = match &rule.matcher {
-                PathMatch::Prefix { prefix } => {
-                    rt::route_match::PathSpecifier::Prefix(prefix.clone())
-                }
-                PathMatch::Exact { path } => rt::route_match::PathSpecifier::Path(path.clone()),
-                PathMatch::Template { template } => {
-                    rt::route_match::PathSpecifier::PathMatchPolicy(
-                        core::TypedExtensionConfig {
-                            name: "envoy.path.match.uri_template.uri_template_matcher"
-                                .to_string(),
-                            typed_config: Some(any(
-                                "type.googleapis.com/envoy.extensions.path.match.uri_template.v3.UriTemplateMatchConfig",
-                                &envoy_types::pb::envoy::extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig {
-                                    path_template: template.clone(),
-                                },
-                            )),
-                        },
-                    )
-                }
-            };
             routes.push(rt::Route {
                 name: rule.name.clone(),
-                r#match: Some(rt::RouteMatch {
-                    path_specifier: Some(path_specifier),
-                    ..Default::default()
-                }),
+                r#match: Some(route_match_proto(&rule.matcher)),
                 action: Some(rt::route::Action::Route(rt::RouteAction {
                     cluster_specifier: Some(rt::route_action::ClusterSpecifier::Cluster(
                         rule.action.cluster.clone(),
@@ -296,6 +273,24 @@ fn overrides_to_typed_config(
                     local_rate_limit_to_any(c),
                 );
             }
+            FilterOverride::JwtAuth { requirement_name } => {
+                // Reference-only per-route config (spec/04 §4.1): name a requirement from
+                // the chain filter's requirement_map.
+                use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3 as jwt;
+                map.insert(
+                    "envoy.filters.http.jwt_authn".to_string(),
+                    any(
+                        "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.PerRouteConfig",
+                        &jwt::PerRouteConfig {
+                            requirement_specifier: Some(
+                                jwt::per_route_config::RequirementSpecifier::RequirementName(
+                                    requirement_name.clone(),
+                                ),
+                            ),
+                        },
+                    ),
+                );
+            }
         }
     }
     Ok(map)
@@ -308,6 +303,9 @@ fn envoy_filter_name(kind: &str) -> DomainResult<&'static str> {
         "header_mutation" => Ok("envoy.filters.http.header_mutation"),
         "compressor" => Ok("envoy.filters.http.compressor"),
         "health_check" => Ok("envoy.filters.http.health_check"),
+        "jwt_auth" => Ok("envoy.filters.http.jwt_authn"),
+        "ext_authz" => Ok("envoy.filters.http.ext_authz"),
+        "rbac" => Ok("envoy.filters.http.rbac"),
         other => Err(DomainError::validation(format!(
             "unknown filter type \"{other}\""
         ))),
@@ -533,6 +531,30 @@ fn http_filter_to_proto(
                 ),
             )
         }
+        HttpFilterSpec::JwtAuth(c) => (
+            "envoy.filters.http.jwt_authn",
+            any(
+                "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication",
+                &jwt_auth_to_proto(c),
+            ),
+        ),
+        HttpFilterSpec::ExtAuthz(c) => (
+            "envoy.filters.http.ext_authz",
+            any(
+                "type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz",
+                &ext_authz_to_proto(c),
+            ),
+        ),
+        HttpFilterSpec::Rbac(c) => (
+            "envoy.filters.http.rbac",
+            // The proto message is `RBAC` (all-caps); prost names the Rust type `Rbac` but
+            // the wire type URL must match the proto name or Envoy NACKs (caught by the
+            // live E2E against a real proxy).
+            any(
+                "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
+                &rbac_to_proto(c),
+            ),
+        ),
     };
     Ok(hcm::HttpFilter {
         name: name.to_string(),
@@ -540,6 +562,277 @@ fn http_filter_to_proto(
         disabled: entry.disabled,
         ..Default::default()
     })
+}
+
+/// JwtAuthentication proto (spec/04 §4.1). One filter per chain (v2 invariant), so v1's
+/// provider-merge machinery is unnecessary. With no rules, every path requires any
+/// provider (v1 default rule).
+fn jwt_auth_to_proto(
+    c: &fp_domain::gateway::filters::JwtAuthConfig,
+) -> envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication {
+    use envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3 as jwt;
+    use fp_domain::gateway::filters::{JwksSource, JwtRequirement};
+
+    let providers = c
+        .providers
+        .iter()
+        .map(|(name, p)| {
+            let jwks = match &p.jwks {
+                JwksSource::Remote {
+                    uri,
+                    cluster,
+                    timeout_ms,
+                    cache_duration_secs,
+                } => jwt::jwt_provider::JwksSourceSpecifier::RemoteJwks(jwt::RemoteJwks {
+                    http_uri: Some(core::HttpUri {
+                        uri: uri.clone(),
+                        timeout: Some(millis_duration(*timeout_ms)),
+                        http_upstream_type: Some(core::http_uri::HttpUpstreamType::Cluster(
+                            cluster.clone(),
+                        )),
+                    }),
+                    cache_duration: cache_duration_secs.map(|s| duration(s as u32)),
+                    ..Default::default()
+                }),
+                JwksSource::Inline { jwks } => {
+                    jwt::jwt_provider::JwksSourceSpecifier::LocalJwks(core::DataSource {
+                        specifier: Some(core::data_source::Specifier::InlineString(jwks.clone())),
+                        ..Default::default()
+                    })
+                }
+            };
+            let provider = jwt::JwtProvider {
+                issuer: p.issuer.clone().unwrap_or_default(),
+                audiences: p.audiences.clone(),
+                forward: p.forward,
+                clock_skew_seconds: p.clock_skew_seconds,
+                jwks_source_specifier: Some(jwks),
+                ..Default::default()
+            };
+            (name.clone(), provider)
+        })
+        .collect();
+
+    let requirement = |req: &JwtRequirement| -> jwt::JwtRequirement {
+        let kind = match req {
+            JwtRequirement::Provider { provider_name } => {
+                jwt::jwt_requirement::RequiresType::ProviderName(provider_name.clone())
+            }
+            JwtRequirement::AnyOf { provider_names } => {
+                jwt::jwt_requirement::RequiresType::RequiresAny(jwt::JwtRequirementOrList {
+                    requirements: provider_names
+                        .iter()
+                        .map(|n| jwt::JwtRequirement {
+                            requires_type: Some(jwt::jwt_requirement::RequiresType::ProviderName(
+                                n.clone(),
+                            )),
+                        })
+                        .collect(),
+                })
+            }
+            JwtRequirement::AllowMissing => {
+                jwt::jwt_requirement::RequiresType::AllowMissing(wkt::Empty {})
+            }
+            JwtRequirement::AllowMissingOrFailed => {
+                jwt::jwt_requirement::RequiresType::AllowMissingOrFailed(wkt::Empty {})
+            }
+        };
+        jwt::JwtRequirement {
+            requires_type: Some(kind),
+        }
+    };
+
+    let requirement_map = c
+        .requirement_map
+        .iter()
+        .map(|(name, req)| (name.clone(), requirement(req)))
+        .collect();
+
+    let rules: Vec<jwt::RequirementRule> = c
+        .rules
+        .iter()
+        .map(|rule| jwt::RequirementRule {
+            r#match: Some(route_match_proto(&rule.matcher)),
+            requirement_type: Some(jwt::requirement_rule::RequirementType::RequirementName(
+                rule.requirement_name.clone(),
+            )),
+        })
+        .collect();
+
+    jwt::JwtAuthentication {
+        providers,
+        requirement_map,
+        rules,
+        bypass_cors_preflight: c.bypass_cors_preflight,
+        ..Default::default()
+    }
+}
+
+fn ext_authz_to_proto(
+    c: &fp_domain::gateway::filters::ExtAuthzConfig,
+) -> envoy_types::pb::envoy::extensions::filters::http::ext_authz::v3::ExtAuthz {
+    use envoy_types::pb::envoy::extensions::filters::http::ext_authz::v3 as ea;
+    ea::ExtAuthz {
+        services: Some(ea::ext_authz::Services::GrpcService(core::GrpcService {
+            target_specifier: Some(core::grpc_service::TargetSpecifier::EnvoyGrpc(
+                core::grpc_service::EnvoyGrpc {
+                    cluster_name: c.cluster.clone(),
+                    ..Default::default()
+                },
+            )),
+            timeout: Some(millis_duration(c.timeout_ms)),
+            ..Default::default()
+        })),
+        failure_mode_allow: c.failure_mode_allow,
+        include_peer_certificate: c.include_peer_certificate,
+        ..Default::default()
+    }
+}
+
+fn rbac_to_proto(
+    c: &fp_domain::gateway::filters::RbacConfig,
+) -> envoy_types::pb::envoy::extensions::filters::http::rbac::v3::Rbac {
+    use envoy_types::pb::envoy::config::rbac::v3 as rbacpb;
+    use envoy_types::pb::envoy::extensions::filters::http::rbac::v3 as httprbac;
+    use fp_domain::gateway::filters::{RbacAction, RbacPermission, RbacPrincipal};
+
+    let action = match c.action {
+        RbacAction::Allow => rbacpb::rbac::Action::Allow,
+        RbacAction::Deny => rbacpb::rbac::Action::Deny,
+    } as i32;
+
+    let policies = c
+        .policies
+        .iter()
+        .map(|(name, p)| {
+            let permissions = p
+                .permissions
+                .iter()
+                .map(|perm| match perm {
+                    RbacPermission::Any => rbacpb::Permission {
+                        rule: Some(rbacpb::permission::Rule::Any(true)),
+                    },
+                    RbacPermission::Header { name, exact } => rbacpb::Permission {
+                        rule: Some(rbacpb::permission::Rule::Header(rt::HeaderMatcher {
+                            name: name.clone(),
+                            header_match_specifier: exact.as_ref().map(|v| {
+                                rt::header_matcher::HeaderMatchSpecifier::StringMatch(
+                                    string_exact(v),
+                                )
+                            }),
+                            ..Default::default()
+                        })),
+                    },
+                    RbacPermission::UrlPath { prefix } => rbacpb::Permission {
+                        rule: Some(rbacpb::permission::Rule::UrlPath(
+                            envoy_types::pb::envoy::r#type::matcher::v3::PathMatcher {
+                                rule: Some(
+                                    envoy_types::pb::envoy::r#type::matcher::v3::path_matcher::Rule::Path(
+                                        string_prefix(prefix),
+                                    ),
+                                ),
+                            },
+                        )),
+                    },
+                    RbacPermission::DestinationPort { port } => rbacpb::Permission {
+                        rule: Some(rbacpb::permission::Rule::DestinationPort(u32::from(*port))),
+                    },
+                })
+                .collect();
+            let principals = p
+                .principals
+                .iter()
+                .map(|pr| match pr {
+                    RbacPrincipal::Any => rbacpb::Principal {
+                        identifier: Some(rbacpb::principal::Identifier::Any(true)),
+                    },
+                    RbacPrincipal::SourceCidr { cidr } => rbacpb::Principal {
+                        identifier: Some(rbacpb::principal::Identifier::DirectRemoteIp(
+                            cidr_range(cidr),
+                        )),
+                    },
+                    RbacPrincipal::Header { name, exact } => rbacpb::Principal {
+                        identifier: Some(rbacpb::principal::Identifier::Header(
+                            rt::HeaderMatcher {
+                                name: name.clone(),
+                                header_match_specifier: Some(
+                                    rt::header_matcher::HeaderMatchSpecifier::StringMatch(
+                                        string_exact(exact),
+                                    ),
+                                ),
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                })
+                .collect();
+            (
+                name.clone(),
+                rbacpb::Policy {
+                    permissions,
+                    principals,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+
+    httprbac::Rbac {
+        rules: Some(rbacpb::Rbac {
+            action,
+            policies,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn string_exact(value: &str) -> envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+    use envoy_types::pb::envoy::r#type::matcher::v3 as sm;
+    sm::StringMatcher {
+        match_pattern: Some(sm::string_matcher::MatchPattern::Exact(value.to_string())),
+        ..Default::default()
+    }
+}
+
+fn string_prefix(value: &str) -> envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+    use envoy_types::pb::envoy::r#type::matcher::v3 as sm;
+    sm::StringMatcher {
+        match_pattern: Some(sm::string_matcher::MatchPattern::Prefix(value.to_string())),
+        ..Default::default()
+    }
+}
+
+/// Parse `ip/len` (validated in the domain layer) into an Envoy CidrRange.
+fn cidr_range(cidr: &str) -> core::CidrRange {
+    let (addr, len) = cidr.split_once('/').unwrap_or((cidr, "32"));
+    core::CidrRange {
+        address_prefix: addr.to_string(),
+        prefix_len: Some(u32_value(len.parse::<u32>().unwrap_or(32))),
+    }
+}
+
+/// RouteMatch from a domain PathMatch — shared by jwt rules and route translation.
+fn route_match_proto(matcher: &PathMatch) -> rt::RouteMatch {
+    let path_specifier = match matcher {
+        PathMatch::Prefix { prefix } => rt::route_match::PathSpecifier::Prefix(prefix.clone()),
+        PathMatch::Exact { path } => rt::route_match::PathSpecifier::Path(path.clone()),
+        PathMatch::Template { template } => {
+            rt::route_match::PathSpecifier::PathMatchPolicy(core::TypedExtensionConfig {
+                name: "envoy.path.match.uri_template.uri_template_matcher".to_string(),
+                typed_config: Some(any(
+                    "type.googleapis.com/envoy.extensions.path.match.uri_template.v3.UriTemplateMatchConfig",
+                    &envoy_types::pb::envoy::extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig {
+                        path_template: template.clone(),
+                    },
+                )),
+            })
+        }
+    };
+    rt::RouteMatch {
+        path_specifier: Some(path_specifier),
+        ..Default::default()
+    }
 }
 
 fn header_mutation_entry(
@@ -944,6 +1237,189 @@ mod tests {
         assert!(disable.type_url.ends_with("route.v3.FilterConfig"));
         let cfg = rt::FilterConfig::decode(disable.value.as_slice()).expect("decode");
         assert!(cfg.disabled);
+    }
+
+    fn hcm_of(spec: &ListenerSpec) -> hcm::HttpConnectionManager {
+        let proto = listener_to_proto("edge", spec).expect("translate");
+        match &proto.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(a)) => {
+                hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        }
+    }
+
+    #[test]
+    fn auth_filters_translate_into_the_chain() {
+        use fp_domain::gateway::filters::*;
+        use std::collections::BTreeMap;
+
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "auth0".to_string(),
+            JwtProvider {
+                issuer: Some("https://issuer.example".into()),
+                audiences: vec!["api".into()],
+                jwks: JwksSource::Remote {
+                    uri: "https://issuer.example/jwks".into(),
+                    cluster: "jwks-cluster".into(),
+                    timeout_ms: 5000,
+                    cache_duration_secs: Some(600),
+                },
+                clock_skew_seconds: 30,
+                forward: true,
+            },
+        );
+        let mut requirement_map = BTreeMap::new();
+        requirement_map.insert(
+            "default".to_string(),
+            JwtRequirement::Provider {
+                provider_name: "auth0".into(),
+            },
+        );
+        let mut policies = BTreeMap::new();
+        policies.insert(
+            "internal".to_string(),
+            RbacPolicy {
+                permissions: vec![RbacPermission::UrlPath {
+                    prefix: "/admin".into(),
+                }],
+                principals: vec![RbacPrincipal::SourceCidr {
+                    cidr: "10.0.0.0/8".into(),
+                }],
+            },
+        );
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10001,
+            route_config: Some("orders".into()),
+            http_filters: vec![
+                HttpFilterEntry {
+                    filter: HttpFilterSpec::JwtAuth(JwtAuthConfig {
+                        providers,
+                        requirement_map,
+                        rules: vec![JwtRule {
+                            matcher: PathMatch::Prefix { prefix: "/".into() },
+                            requirement_name: "default".into(),
+                        }],
+                        bypass_cors_preflight: true,
+                    }),
+                    disabled: false,
+                },
+                HttpFilterEntry {
+                    filter: HttpFilterSpec::ExtAuthz(ExtAuthzConfig {
+                        cluster: "authz".into(),
+                        timeout_ms: 200,
+                        failure_mode_allow: false,
+                        include_peer_certificate: true,
+                    }),
+                    disabled: false,
+                },
+                HttpFilterEntry {
+                    filter: HttpFilterSpec::Rbac(RbacConfig {
+                        action: RbacAction::Allow,
+                        policies,
+                    }),
+                    disabled: false,
+                },
+            ],
+        };
+        let manager = hcm_of(&spec);
+        let names: Vec<_> = manager
+            .http_filters
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "envoy.filters.http.jwt_authn",
+                "envoy.filters.http.ext_authz",
+                "envoy.filters.http.rbac",
+                "envoy.filters.http.router",
+            ],
+            "auth filters in declared order, router last"
+        );
+
+        // The RBAC proto message is `RBAC` (all-caps); a `Rbac` type URL makes Envoy NACK.
+        let rbac_any = match &manager.http_filters[2].config_type {
+            Some(hcm::http_filter::ConfigType::TypedConfig(a)) => a,
+            _ => panic!("typed rbac config"),
+        };
+        assert!(
+            rbac_any.type_url.ends_with(".rbac.v3.RBAC"),
+            "rbac type URL must be all-caps RBAC, got {}",
+            rbac_any.type_url
+        );
+
+        // The jwt filter decodes back with its remote provider intact.
+        let jwt_any = match &manager.http_filters[0].config_type {
+            Some(hcm::http_filter::ConfigType::TypedConfig(a)) => a,
+            _ => panic!("typed jwt config"),
+        };
+        let jwt = envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication::decode(
+            jwt_any.value.as_slice(),
+        )
+        .expect("decode jwt");
+        assert!(jwt.providers.contains_key("auth0"));
+        assert_eq!(jwt.rules.len(), 1);
+
+        // Determinism: identical input → identical bytes (BTreeMap ordering).
+        assert_eq!(
+            listener_to_proto("edge", &spec).expect("a").encode_to_vec(),
+            listener_to_proto("edge", &spec).expect("b").encode_to_vec(),
+        );
+    }
+
+    #[test]
+    fn jwt_per_route_override_emits_reference_only_config() {
+        use fp_domain::gateway::filters::*;
+        use fp_domain::gateway::route_config::{RouteAction, RouteRule, VirtualHost};
+        let spec = RouteConfigSpec {
+            virtual_hosts: vec![VirtualHost {
+                name: "default".into(),
+                domains: vec!["*".into()],
+                routes: vec![RouteRule {
+                    name: "admin".into(),
+                    matcher: PathMatch::Prefix {
+                        prefix: "/admin".into(),
+                    },
+                    action: RouteAction {
+                        cluster: "c".into(),
+                        prefix_rewrite: None,
+                        template_rewrite: None,
+                        timeout_secs: 15,
+                    },
+                    filter_overrides: vec![FilterOverride::JwtAuth {
+                        requirement_name: "admins-only".into(),
+                    }],
+                }],
+                filter_overrides: vec![FilterOverride::Disable {
+                    filter_type: "rbac".into(),
+                }],
+            }],
+        };
+        let proto = route_config_to_proto("orders", &spec).expect("translate");
+        let vhost = &proto.virtual_hosts[0];
+        // vhost disables rbac.
+        assert!(vhost
+            .typed_per_filter_config
+            .contains_key("envoy.filters.http.rbac"));
+        // route references a jwt requirement by name.
+        let jwt = vhost.routes[0]
+            .typed_per_filter_config
+            .get("envoy.filters.http.jwt_authn")
+            .expect("jwt per-route");
+        assert!(jwt.type_url.ends_with("jwt_authn.v3.PerRouteConfig"));
+        let cfg =
+            envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::PerRouteConfig::decode(
+                jwt.value.as_slice(),
+            )
+            .expect("decode");
+        assert!(matches!(
+            cfg.requirement_specifier,
+            Some(envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::per_route_config::RequirementSpecifier::RequirementName(n)) if n == "admins-only"
+        ));
     }
 }
 

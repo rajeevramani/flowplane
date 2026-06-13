@@ -111,13 +111,20 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           live E2E: a request echoing the last nonce with CHANGED resource_names is a
           subscription update and is now answered (was swallowed as ACK → warming listener
           stalled on RDS; regression test over real gRPC)
-    - [ ] S5.8c remaining catalog {jwt_auth (+ provider merge + remote-JWKS clusters into
-          CDS), ext_authz, rbac, rate_limit, rate_limit_quota, ext_proc, oauth2,
-          credential_injector, custom_response, mcp, wasm} — wasm needs custom_wasm storage
-          (defer binary upload to S6 secrets-adjacent work if needed; record decision)
-    - [x] S5.8d live Envoy E2E phase 4: listener with local_rate_limit + header_mutation
-          serves traffic; 429 enforced; /quiet route exempt via per-route Disable; mutated
-          response header observed
+    - [x] S5.8c auth-grade filters DONE: jwt_auth (providers w/ remote-JWKS-via-named-cluster
+          OR inline JWKS, requirement_map + rules, allow_missing/any_of; ONE filter per chain
+          so v1's provider-merge is unnecessary — D-012), ext_authz (gRPC, fail-closed default),
+          rbac (Allow/Deny, header/url_path/port permissions, source-CIDR/header principals).
+          Per-route: jwt is reference-only (PerRouteConfig.requirement_name); all three
+          disablable per-scope. Domain + translation + live-Envoy ACK/enforce tests.
+          REMAINING {rate_limit (RLS), rate_limit_quota, ext_proc, oauth2, credential_injector,
+          custom_response, mcp, wasm} — the SDS/secrets-coupled and external-service ones;
+          deferred into S6/S10/S11 where their dependencies land (record per slice).
+    - [x] S5.8d live Envoy E2E phase 4 + 5: phase 4 local_rate_limit + header_mutation (429
+          enforced, /quiet exempt via per-route Disable, header applied); phase 5 jwt_auth
+          (allow_missing flows) + rbac (DENY enforced on /blocked) — real Envoy ACKs both.
+          Found+fixed: rbac type URL must be all-caps `.v3.RBAC` (prost type is `Rbac`), now
+          unit-pinned.
   - [x] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
     - [x] xDS pipeline wired into `flowplane serve` (outbox consumer + dev-mode plaintext ADS listener)
     - [x] `scripts/e2e-envoy.sh` (real Envoy via docker, or Tetrate static binary fallback) — three

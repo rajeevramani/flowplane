@@ -160,3 +160,29 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   control plane stays operable for bring-up. Partial TLS config (1 or 2 of the 3 paths) is
   an invalid_config boot error, so a typo cannot silently disable xDS.
 - **Status:** decided (S5.4), founder can revisit at the S7 CLI review.
+
+## D-012: HTTP filters are typed IR on the spec, translated at build time (no v1-style injection)
+
+- **Context:** v1 assembled filters by post-hoc protobuf surgery — decoding built listeners,
+  walking HCM filter chains, and mutating them (spec/04 §4.4), plus a JWT "merger" because
+  filters could be attached from many places and had to be coalesced into one
+  `JwtAuthentication`. That pipeline was a recurring source of warm-and-skip failures and
+  silent no-ops.
+- **Decision (v2):** filters are a closed, validated IR. `ListenerSpec.http_filters` is the
+  ordered chain; `VirtualHost`/`RouteRule.filter_overrides` carry per-scope behavior. The xDS
+  translator emits the HCM chain (router auto-appended last) and `typed_per_filter_config`
+  directly — no decode/mutate. **At most one filter of each type per chain**, which removes
+  the need for v1's JWT provider-merge entirely (a JWT config simply declares all its
+  providers/requirements in one place).
+- **Per-route capability matches Envoy's** (spec/04 §4.1 column): `Disable` is universal
+  (except health_check, which is listener-only); cors and local_rate_limit take full
+  per-scope config; jwt is reference-only (`PerRouteConfig.requirement_name`); oauth2 has no
+  per-route form and is therefore not expressible as an override.
+- **Type-URL fidelity:** wire type URLs must match the proto message name, not the prost Rust
+  type — e.g. RBAC's message is `RBAC` (all-caps) though the Rust type is `Rbac`. A real-Envoy
+  E2E phase (jwt_auth + rbac) plus a unit assertion guard this class of NACK.
+- **Catalog status:** shipped {cors, local_rate_limit, header_mutation, health_check,
+  compressor, jwt_auth, ext_authz, rbac}. Deferred to their dependency slices:
+  rate_limit/rate_limit_quota (RLS), ext_proc, oauth2/credential_injector (SDS secrets, S6),
+  custom_response, mcp (S11), wasm (custom-binary storage).
+- **Status:** decided (S5.8), founder can revisit at the S7 CLI review.
