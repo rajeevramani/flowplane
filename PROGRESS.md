@@ -228,6 +228,9 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 - [ ] S7.7 Core gateway parity before learning (see `spec/13-basics-before-learning-mindmap.md`)
   - [ ] S7.7a Dev runbook: manual CP, auth, org/team context, dataplane bootstrap, Envoy start,
         traffic curl, stats/NACK troubleshooting.
+    - [x] Drafted `README.md` and `docs/dev-dataplane.md` for the current manual dev path.
+    - [ ] Live-validate the runbook against a fresh `flowplane_dev` database without reading
+          `scripts/e2e-envoy.sh`.
   - [ ] S7.7b Dataplane bootstrap CLI polish: dev plaintext bootstrap path, `--out` file output,
         and naming alignment (`dataplane bootstrap` with compatibility for current
         `dataplane envoy-config`).
