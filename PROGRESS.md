@@ -4,7 +4,8 @@ Resumable state for the rewrite. On session start: read this file, continue the 
 Rules recap: v1 at `/tmp/flowplane-v1` (cloud) is read-only reference (clone from
 `https://github.com/rajeevramani/flowplane.git` if missing). Never port code verbatim. Every
 architectural decision goes in `DECISIONS.md`; founder questions in `QUESTIONS.md` (always with a
-recommendation). Commit+push at every green checkpoint.
+recommendation). Architecture integrity rules live in `spec/14-architecture-integrity.md`.
+Commit+push at every green checkpoint.
 
 **Checkpoint gates:** stop and notify the founder at end of Phase 0 (review of 08, 08a, 09) and end
 of Phase 1 (architecture + slice plan). Between gates, do not wait.
@@ -30,6 +31,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 - [x] `spec/10-v2-architecture.md` — workspace layering, ApiDefinition aggregate, lifecycle, outbox events
 - [x] `spec/12-cli-design.md` — command tree, output/error contracts, transcripts (both loop directions)
 - [x] `spec/11-slice-plan.md` — 12 slices with exit criteria + 100% coverage check
+- [x] `spec/14-architecture-integrity.md` — domain ownership, seams, mutation/event/contract rules
 - [x] Phase 1 exit → **STOPPED at founder gate (10, 11, 12 review)**
 
 ## Phase 2..N — Implementation (after founder gate; details in spec/11)
@@ -223,6 +225,19 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         prints the authorization URL, listens only on an explicit loopback callback URL, validates
         state, exchanges the code with S256 verifier, and stores `id_token` when present (else
         access token). `--device-code` remains the headless path.
+- [ ] S7.7 Core gateway parity before learning (see `spec/13-basics-before-learning-mindmap.md`)
+  - [ ] S7.7a Dev runbook: manual CP, auth, org/team context, dataplane bootstrap, Envoy start,
+        traffic curl, stats/NACK troubleshooting.
+  - [ ] S7.7b Dataplane bootstrap CLI polish: dev plaintext bootstrap path, `--out` file output,
+        and naming alignment (`dataplane bootstrap` with compatibility for current
+        `dataplane envoy-config`).
+  - [ ] S7.7c Dataplane lifecycle decision: either document manual local Envoy as the supported
+        pre-S8 path or implement V2-native `dataplane up/down/status` without porting v1 compose
+        internals.
+  - [ ] S7.7d `expose`/`unexpose` shortcut over existing cluster/route-config/listener services,
+        with explicit or allocated listener port and a curlable success message.
+  - [ ] S7.7e Transcript/E2E: CP + dataplane + expose + curl + stats/NACK checks pinned so the
+        route-to-traffic loop cannot regress.
 - [ ] S8 Learning config-first
   - [ ] S8.1 API lifecycle foundation (D-017): domain types + migration for
         `api_definitions`, `api_route_bindings`, immutable `spec_versions`, generated
