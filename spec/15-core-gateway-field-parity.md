@@ -204,5 +204,11 @@ S7.8 should be tracked as a pre-S8 workstream:
 - S7.8f: DB/API/CLI/OpenAPI parity examples and tests.
 - S7.8g: live Envoy parity E2E, including ACK/NACK diagnostics.
 
+S7.8g is pinned in `scripts/e2e-envoy.sh`: the live Envoy run covers baseline traffic, restart
+convergence, cross-team isolation, HTTP filter behavior, auth filters, SDS rotation, and an advanced
+parity phase that ACKs/serves route/listener/filter config using regex/header/query matchers,
+weighted clusters, retry policy, route RLS descriptors, HTTP/2 listener mode, file access logs, and
+the global RLS HTTP filter.
+
 S8 learning may resume only after S7.7 and S7.8 have enough coverage that learning can rely on the
 gateway model instead of compensating for it.

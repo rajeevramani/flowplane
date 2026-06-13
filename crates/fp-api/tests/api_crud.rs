@@ -311,7 +311,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
             }],
             "routes": [{
                 "name": "items",
-                "matcher": {"regex": {"pattern": "^/v[0-9]+/items$"}},
+                "match": {"regex": {"pattern": "^/v[0-9]+/items$"}},
                 "headers": [{"name": "x-api-version", "type": "exact", "value": "2"}],
                 "query_parameters": [{"name": "preview", "type": "present", "value": true}],
                 "action": {
@@ -358,7 +358,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_of(response).await;
     let route = &body["spec"]["virtual_hosts"][0]["routes"][0];
-    assert_eq!(route["matcher"]["regex"]["pattern"], "^/v[0-9]+/items$");
+    assert_eq!(route["match"]["regex"]["pattern"], "^/v[0-9]+/items$");
     assert_eq!(route["headers"][0]["type"], "exact");
     assert_eq!(route["query_parameters"][0]["type"], "present");
     assert_eq!(route["action"]["weighted_clusters"][1]["cluster"], canary);

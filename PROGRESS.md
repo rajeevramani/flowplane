@@ -280,8 +280,12 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           descriptors, file access logs, and global RLS listener filter.
         - Implemented: OpenAPI component pins for gateway spec schemas and CLI `apply` preservation
           of advanced listener/filter spec JSON.
-  - [ ] S7.8g Live Envoy parity E2E: advanced cluster/route/listener/filter examples ACK in Envoy,
+  - [x] S7.8g Live Envoy parity E2E: advanced cluster/route/listener/filter examples ACK in Envoy,
         exercise at least one behavior per feature class, and expose useful NACK diagnostics.
+        - Implemented: `scripts/e2e-envoy.sh` now includes an advanced parity phase covering regex,
+          header, and query matchers, weighted clusters, retry policy, route RLS descriptors, HTTP/2
+          listener mode, file access logs, and the global RLS HTTP filter against a real Envoy.
+        - Verified locally with Envoy 1.36.4: all seven live E2E phases passed.
 - [ ] S8 Learning config-first
   - [ ] S8.1 API lifecycle foundation (D-017): domain types + migration for
         `api_definitions`, `api_route_bindings`, immutable `spec_versions`, generated

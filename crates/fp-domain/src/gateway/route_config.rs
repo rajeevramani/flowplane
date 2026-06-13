@@ -189,7 +189,6 @@ pub enum RedirectResponseCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct HeaderMatch {
     pub name: String,
     #[serde(default)]
@@ -210,7 +209,6 @@ pub enum HeaderValueMatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct QueryParameterMatch {
     pub name: String,
     #[serde(flatten)]
@@ -819,6 +817,34 @@ mod tests {
         let refs = spec.referenced_clusters();
         assert!(refs.contains("primary"));
         assert!(refs.contains("canary"));
+    }
+
+    #[test]
+    fn flattened_header_and_query_matchers_deserialize_from_api_json() {
+        let spec: RouteConfigSpec = serde_json::from_value(serde_json::json!({
+            "virtual_hosts": [{
+                "name": "default",
+                "domains": ["*"],
+                "routes": [{
+                    "name": "items",
+                    "match": {"regex": {"pattern": "^/v[0-9]+/items$"}},
+                    "headers": [{"name": "x-api-version", "type": "exact", "value": "2"}],
+                    "query_parameters": [{"name": "preview", "type": "present", "value": true}],
+                    "action": {"cluster": "primary"}
+                }]
+            }]
+        }))
+        .expect("deserialize api route config");
+        spec.validate().expect("validate api route config");
+        let route = &spec.virtual_hosts[0].routes[0];
+        assert!(matches!(
+            route.headers[0].matcher,
+            HeaderValueMatch::Exact { ref value } if value == "2"
+        ));
+        assert!(matches!(
+            route.query_parameters[0].matcher,
+            QueryValueMatch::Present { value: true }
+        ));
     }
 
     #[test]
