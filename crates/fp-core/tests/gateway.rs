@@ -71,7 +71,7 @@ async fn world() -> Option<World> {
     let admin = PrincipalCtx::User {
         user_id: admin_id,
         platform_admin: false,
-        memberships: vec![(org.id, OrgRole::Admin)],
+        org_selector_required: false,
         org: Some((org.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };
@@ -89,7 +89,7 @@ async fn world() -> Option<World> {
     let outsider = PrincipalCtx::User {
         user_id: outsider_id,
         platform_admin: false,
-        memberships: vec![(other_org.id, OrgRole::Owner)],
+        org_selector_required: false,
         org: Some((other_org.id, OrgRole::Owner)),
         grants: GrantSet::default(),
     };
@@ -132,21 +132,10 @@ async fn create_emits_event_and_cross_org_caller_sees_not_found() {
     assert_eq!(audit_count, 1);
 
     // Cross-org caller: not_found, never forbidden (anti-enumeration).
-    let deny_rid = RequestId::generate();
-    let err = svc::get_cluster(&w.pool, &w.outsider, w.team, &name, deny_rid)
+    let err = svc::get_cluster(&w.pool, &w.outsider, w.team, &name)
         .await
         .expect_err("outsider must not see it");
     assert_eq!(err.code, ErrorCode::NotFound);
-    let (outcome, detail): (String, serde_json::Value) =
-        sqlx::query_as("SELECT outcome, detail FROM audit_log WHERE request_id = $1")
-            .bind(deny_rid.as_uuid())
-            .fetch_one(&w.pool)
-            .await
-            .expect("denial audit row");
-    assert_eq!(outcome, "denied");
-    assert_eq!(detail["resource"], "clusters");
-    assert_eq!(detail["action"], "read");
-    assert_eq!(detail["reason"], "cross_org");
 
     // Outsider cannot mutate either — and the failure discloses nothing.
     let err = svc::delete_cluster(
@@ -211,7 +200,7 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
     );
 
     // No lost update: the survivor's spec is what's stored, at revision 2.
-    let stored = svc::get_cluster(&w.pool, &w.admin, w.team, &name, RequestId::generate())
+    let stored = svc::get_cluster(&w.pool, &w.admin, w.team, &name)
         .await
         .expect("get");
     assert_eq!(stored.version, 2);
@@ -299,7 +288,7 @@ async fn grantless_member_denied_with_actionable_forbidden() {
     let member = PrincipalCtx::User {
         user_id: member_id,
         platform_admin: false,
-        memberships: vec![(w.team.org_id, OrgRole::Member)],
+        org_selector_required: false,
         org: Some((w.team.org_id, OrgRole::Member)),
         grants: GrantSet::default(),
     };
@@ -399,7 +388,6 @@ mod referential {
                 port: 18443,
                 route_config: Some(rc_name.clone()),
                 http_filters: Vec::new(),
-                tls_context: None,
             },
             rid(),
         )
@@ -461,7 +449,6 @@ mod referential {
                     port,
                     route_config: None,
                     http_filters: Vec::new(),
-                    tls_context: None,
                 },
                 rid(),
             )

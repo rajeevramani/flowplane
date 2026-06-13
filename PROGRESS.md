@@ -135,6 +135,25 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           clean + foreign listener port closed)
     - [x] `SnapshotCache::prime_all` + regression test (fresh cache primed from DB byte-identical
           to the event-driven one)
+- [x] S2.7 Multi-org request context (D-014; absorbs R5+R6) — BEFORE S6
+  - [x] loader returns the full active-membership SET + platform_org_id (no `ORDER BY/LIMIT 1`);
+        platform_admin derived from the set
+  - [x] auth middleware resolves the active org from `X-Flowplane-Org` (name|uuid) or the sole
+        non-platform membership, validates membership, sets `PrincipalCtx::User.org` =
+        validated active org; `org_selector_required` flag for the fail-closed ambiguous case;
+        pure `pick_active_org` policy core (IO split out)
+  - [x] `ErrorCode::OrgSelectorRequired` (HTTP 400); `resolve_team` + team-admin service helpers
+        emit it when ambiguous, else 404 (anti-enumeration); platform org never inferred. Engine
+        unchanged — authorizes against the single validated active org (cross-org/org-admin hold)
+  - [x] R6: `find_user_by_email` rejects ambiguous (>1) matches instead of `LIMIT 1`;
+        `find_user_by_subject` added (preferred). NOTE: member/grant request bodies still take
+        email (now ambiguity-safe); accepting subject in the body is a small follow-up (API
+        schema + OpenAPI), not required for the isolation fix
+  - [x] whoami reports active org + `org_selector_required`
+  - [x] tests: loader multi-org (full set, no implicit pick); `selection_policy_matrix` (pure
+        policy: infer-one / zero / ambiguous / selector-member / selector-nonmember / selector-
+        unresolvable); R6 ambiguity rejection + subject lookup; engine invariant tests unchanged;
+        live E2E green (dev single-org infer path end-to-end)
 - [x] S6 Secrets/SDS + dataplane & proxy-cert management surface (REST/CLI) + fp-agent telemetry
   - NOTE: the dataplane + proxy_certificate **internals** (migration 0006, repos, services,
     mTLS cert-registry binding, revocation) already shipped in S5.4 — do NOT rebuild them.
@@ -237,21 +256,15 @@ and scheduled — read these before trusting a green checkbox.
   Fixed: every service `authorize()` helper that wraps `check_resource_access` now writes a
   best-effort `authz.denied` audit row with request id, actor, resource, action, org/team, and
   reason before returning the existing 403/404 error.
-- **R5 — multi-org users require explicit request org context — RESOLVED.** Founder direction is
-  to allow a human user to belong to multiple orgs, so `org_memberships` must keep only
-  `UNIQUE (user_id, org_id)` and must **not** gain a `UNIQUE (user_id)` constraint. The v2
-  selector contract is `X-Flowplane-Org` for REST/MCP and `--org` / active config context for
-  CLI. Fixed: principal loading validates a selected org, infers only exactly one active
-  non-platform org, and otherwise leaves no active org for tenant-scoped APIs to fail closed;
-  path-scoped org member APIs validate membership against the path org directly; `/auth/whoami`
-  returns all active memberships so the CLI can build/select contexts without platform-admin
-  org listing.
-- **R6 — Email resolution is global and non-unique — RESOLVED.** `identity::find_user_by_email`
-  selects across ALL orgs with `LIMIT 1`, and `users.email` has no `UNIQUE` constraint — so
-  add-member / add-grant by email can resolve a user in another org or silently pick one of
-  several duplicates. Fixed: org member add rejects duplicate active global emails instead of
-  picking one and also accepts immutable `subject`/`user_id` selectors; team member/grant add
-  resolve email inside the selected org.
+- **R5 — multi-org users require explicit request org context — RESOLVED (S2.7, D-014).** The
+  loader no longer picks an org by `ORDER BY/LIMIT 1`; it returns the full membership set and
+  the auth middleware resolves a single validated active org from `X-Flowplane-Org` (or the
+  sole non-platform membership), failing closed (`org_selector_required`) when ambiguous. The
+  platform org is never inferred. `org_memberships` keeps only `UNIQUE (user_id, org_id)`.
+- **R6 — Email resolution is global and non-unique — RESOLVED (S2.7).** `find_user_by_email`
+  now rejects ambiguous (>1) matches instead of `LIMIT 1`; `find_user_by_subject` added as the
+  preferred immutable path. Email is no longer treated as an isolation boundary. (Follow-up,
+  not a risk: let member/grant request bodies accept a subject directly — API-schema sugar.)
 - **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — RESOLVED.**
   `refresh_keys` takes `cache.write()` *then* does the JWKS HTTP fetch while holding it, and
   `reqwest::Client::new()` sets no timeout — so a slow/hung IdP stalls every token validation

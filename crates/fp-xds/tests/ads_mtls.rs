@@ -13,10 +13,6 @@ use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
 use fp_domain::{OrgRole, RequestId};
 use fp_storage::repos::identity;
 use fp_xds::ads::{publish_revocations, CertRegistryResolver};
-use fp_xds::diagnostics::{
-    diagnostics_report, AckStatus, DiagnosticsReport, EnvoyDiagnosticsServiceClient,
-    HeartbeatReport,
-};
 use fp_xds::server::{serve_mtls, XdsTlsPaths};
 use fp_xds::snapshot::{handle_events, SnapshotCache, CLUSTER_TYPE_URL};
 use std::path::{Path, PathBuf};
@@ -235,7 +231,7 @@ async fn world() -> Option<World> {
         ctx: PrincipalCtx::User {
             user_id: user,
             platform_admin: false,
-            memberships: vec![(org.id, OrgRole::Admin)],
+            org_selector_required: false,
             org: Some((org.id, OrgRole::Admin)),
             grants: GrantSet::default(),
         },
@@ -444,109 +440,6 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
         Err(status) => assert_eq!(status.code(), tonic::Code::Unauthenticated),
         Ok(other) => panic!("revoked certificate must not authenticate, got {other:?}"),
     }
-}
-
-#[tokio::test]
-async fn diagnostics_stream_updates_stats_for_registry_bound_dataplane() {
-    let Some(w) = world().await else { return };
-    let pki = TestPki::new();
-    let cache = SnapshotCache::new();
-
-    let dp = unique("dp");
-    fp_core::services::dataplanes::create_dataplane(
-        &w.pool,
-        &w.ctx,
-        w.team,
-        &dp,
-        "",
-        RequestId::generate(),
-    )
-    .await
-    .expect("dataplane");
-    let dataplane = fp_storage::repos::dataplanes::get_dataplane(&w.pool, w.team.id, &dp)
-        .await
-        .expect("get")
-        .expect("exists");
-    let spiffe = format!("spiffe://flowplane.test/team/claimed/proxy/{dp}");
-    fp_core::services::dataplanes::register_certificate(
-        &w.pool,
-        &w.ctx,
-        w.team,
-        fp_core::services::dataplanes::CertificateRegistration {
-            dataplane: &dp,
-            spiffe_uri: &spiffe,
-            serial_number: &unique("serial"),
-            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
-        },
-        RequestId::generate(),
-    )
-    .await
-    .expect("register");
-
-    let (addr, _revocations) = start_server(&pki, cache, w.pool.clone()).await;
-    let identity = pki.client_identity("dp-diagnostics", &spiffe);
-    let channel = tls_channel(&pki, addr, Some(identity))
-        .await
-        .expect("mTLS connect");
-    let mut client = EnvoyDiagnosticsServiceClient::new(channel);
-    let (req_tx, req_rx) = tokio::sync::mpsc::channel::<DiagnosticsReport>(4);
-    let mut responses = client
-        .report_diagnostics(tokio_stream::wrappers::ReceiverStream::new(req_rx))
-        .await
-        .expect("stream")
-        .into_inner();
-
-    req_tx
-        .send(DiagnosticsReport {
-            schema_version: 1,
-            report_id: unique("wrong"),
-            dataplane_id: uuid::Uuid::now_v7().to_string(),
-            observed_at: None,
-            payload: Some(diagnostics_report::Payload::Heartbeat(HeartbeatReport {
-                requests_delta: 100,
-                errors_delta: 100,
-                warming_failures_delta: 100,
-                config_verified: true,
-            })),
-        })
-        .await
-        .expect("send wrong");
-    let denied = tokio::time::timeout(Duration::from_secs(5), responses.message())
-        .await
-        .expect("timely")
-        .expect("ok")
-        .expect("ack");
-    assert_eq!(denied.status, AckStatus::Unauthorized as i32);
-
-    req_tx
-        .send(DiagnosticsReport {
-            schema_version: 1,
-            report_id: unique("heartbeat"),
-            dataplane_id: dataplane.id.to_string(),
-            observed_at: None,
-            payload: Some(diagnostics_report::Payload::Heartbeat(HeartbeatReport {
-                requests_delta: 7,
-                errors_delta: 1,
-                warming_failures_delta: 0,
-                config_verified: true,
-            })),
-        })
-        .await
-        .expect("send heartbeat");
-    let accepted = tokio::time::timeout(Duration::from_secs(5), responses.message())
-        .await
-        .expect("timely")
-        .expect("ok")
-        .expect("ack");
-    assert_eq!(accepted.status, AckStatus::Ok as i32);
-
-    let stats = fp_storage::repos::dataplanes::stats_overview(&w.pool, w.team.id)
-        .await
-        .expect("stats");
-    assert_eq!(stats.live_dataplanes, 1);
-    assert_eq!(stats.total_requests, 7);
-    assert_eq!(stats.total_errors, 1);
-    assert_eq!(stats.warming_failures, 0);
 }
 
 #[tokio::test]

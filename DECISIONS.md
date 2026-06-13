@@ -229,6 +229,31 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   functionality, not a surface to port wholesale.
 - **Status:** decided (post-S5.8, founder directive).
 
+### D-014 addendum: resolved org-context contract (founder-confirmed)
+
+The mechanism left open in D-014 is now decided (founder, 2026-06-13):
+
+- **Transport:** active-org *selector*, not route nesting. REST/MCP carry `X-Flowplane-Org`
+  (org name or UUID); the CLI uses `--org` / config. URLs stay `/api/v1/teams/...` — no
+  `/orgs/{org}/...` nesting, no route duplication. The server resolves and validates the
+  active org BEFORE authorization runs.
+- **Resolution policy (exact):**
+  1. Selector present → resolve to an org the user is an active member of, then authorize in
+     that org. Unknown org or non-member → fail closed (`org_selector_required`, no existence
+     disclosure).
+  2. Selector absent + exactly one active **non-platform** membership → use it.
+  3. Selector absent + zero or ≥2 candidate orgs → fail closed (`org_selector_required`).
+  4. The platform org is NEVER an inferred or selectable tenant context.
+  5. Never choose by `created_at` / `LIMIT 1` / any arbitrary ordering.
+- **Carrier:** `PrincipalCtx::User.org` becomes "the validated active request org" (set by the
+  auth middleware, never by the loader). A new `org_selector_required` flag distinguishes
+  "no active org because the selector is needed" (→ 400 `org_selector_required`) from "genuinely
+  no access" (→ 404). The pure authz engine is unchanged — it still authorizes against the
+  single active org, so cross-org/org-admin semantics and invariant tests hold.
+- **Identity resolution (R6):** prefer immutable subject/user-id; email is a UX affordance only
+  and must reject ambiguous (>1) matches rather than `LIMIT 1`. Global email uniqueness is not
+  an isolation boundary.
+
 ## D-015: local/dev ports are defaults with explicit overrides, never fixed assumptions
 
 - **Context:** Flowplane local workflows bind several ports at once: API, xDS, Envoy admin,

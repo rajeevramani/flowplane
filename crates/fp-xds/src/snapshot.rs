@@ -6,8 +6,8 @@
 //! database per request (kills v1's reconnect-storm fan-out, spec/04 §8.7).
 
 use crate::translate;
-use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use base64::Engine as _;
 use envoy_types::pb::google::protobuf::Any;
 use fp_domain::{DomainError, DomainResult, SecretSpec, TeamId};
@@ -39,8 +39,8 @@ pub struct TeamSnapshot {
     pub clusters: ResourceSet,
     pub endpoints: ResourceSet,
     pub routes: ResourceSet,
-    pub listeners: ResourceSet,
     pub secrets: ResourceSet,
+    pub listeners: ResourceSet,
 }
 
 impl TeamSnapshot {
@@ -49,8 +49,8 @@ impl TeamSnapshot {
             CLUSTER_TYPE_URL => Some(&self.clusters),
             ENDPOINT_TYPE_URL => Some(&self.endpoints),
             ROUTE_TYPE_URL => Some(&self.routes),
-            LISTENER_TYPE_URL => Some(&self.listeners),
             SECRET_TYPE_URL => Some(&self.secrets),
+            LISTENER_TYPE_URL => Some(&self.listeners),
             _ => None,
         }
     }
@@ -177,8 +177,8 @@ struct TeamInternal {
     clusters: TypeInternal,
     endpoints: TypeInternal,
     routes: TypeInternal,
-    listeners: TypeInternal,
     secrets: TypeInternal,
+    listeners: TypeInternal,
 }
 
 impl TeamInternal {
@@ -187,8 +187,8 @@ impl TeamInternal {
             CLUSTER_TYPE_URL => Some(&mut self.clusters),
             ENDPOINT_TYPE_URL => Some(&mut self.endpoints),
             ROUTE_TYPE_URL => Some(&mut self.routes),
-            LISTENER_TYPE_URL => Some(&mut self.listeners),
             SECRET_TYPE_URL => Some(&mut self.secrets),
+            LISTENER_TYPE_URL => Some(&mut self.listeners),
             _ => None,
         }
     }
@@ -235,8 +235,8 @@ impl SnapshotCache {
                 clusters: internal.clusters.to_set(),
                 endpoints: internal.endpoints.to_set(),
                 routes: internal.routes.to_set(),
-                listeners: internal.listeners.to_set(),
                 secrets: internal.secrets.to_set(),
+                listeners: internal.listeners.to_set(),
             })
             .unwrap_or_default()
     }
@@ -252,8 +252,8 @@ impl SnapshotCache {
             (CLUSTER_TYPE_URL, &internal.clusters),
             (ENDPOINT_TYPE_URL, &internal.endpoints),
             (ROUTE_TYPE_URL, &internal.routes),
-            (LISTENER_TYPE_URL, &internal.listeners),
             (SECRET_TYPE_URL, &internal.secrets),
+            (LISTENER_TYPE_URL, &internal.listeners),
         ] {
             for (name, q) in &state.quarantine {
                 out.push(DegradedResource {
@@ -334,12 +334,7 @@ impl SnapshotCache {
             fp_storage::repos::gateway::list_route_configs(pool, team_id, 500, 0).await?;
         let (listeners, _) =
             fp_storage::repos::gateway::list_listeners(pool, team_id, 500, 0).await?;
-        let encrypted_secrets = fp_storage::repos::secrets::list_encrypted_secrets(pool, team_id)
-            .await
-            .map_err(|e| {
-                tracing::warn!(team = %team_id, "secrets unavailable for SDS snapshot: {e}");
-                e
-            })?;
+        let secrets = fp_storage::repos::secrets::list_encrypted_secrets(pool, team_id).await?;
 
         let mut cluster_named = Vec::with_capacity(clusters.len());
         let mut endpoint_named = Vec::new();
@@ -376,6 +371,18 @@ impl SnapshotCache {
                 },
             });
         }
+        let mut secret_named = Vec::with_capacity(secrets.len());
+        for secret in &secrets {
+            let spec = decrypt_secret_spec(&secret.ciphertext, &secret.nonce)?;
+            let proto = translate::secret_to_proto(&secret.metadata.name, &spec)?;
+            secret_named.push(NamedResource {
+                name: secret.metadata.name.clone(),
+                any: Any {
+                    type_url: SECRET_TYPE_URL.to_string(),
+                    value: proto.encode_to_vec(),
+                },
+            });
+        }
         let mut listener_named = Vec::with_capacity(listeners.len());
         for listener in &listeners {
             // Listeners without a bound route config cannot serve; they stay out of the
@@ -390,32 +397,6 @@ impl SnapshotCache {
                 name: listener.name.clone(),
                 any: Any {
                     type_url: LISTENER_TYPE_URL.to_string(),
-                    value: proto.encode_to_vec(),
-                },
-            });
-        }
-        let mut secret_named = Vec::with_capacity(encrypted_secrets.len());
-        for secret in encrypted_secrets {
-            let spec = match decrypt_secret_spec(&secret.ciphertext, &secret.nonce) {
-                Ok(spec) => spec,
-                Err(e) => {
-                    tracing::warn!(team = %team_id, secret = %secret.metadata.name,
-                        "skipping secret in SDS snapshot: {e}");
-                    continue;
-                }
-            };
-            let proto = match translate::secret_to_proto(&secret.metadata.name, &spec) {
-                Ok(proto) => proto,
-                Err(e) => {
-                    tracing::warn!(team = %team_id, secret = %secret.metadata.name,
-                        "skipping invalid secret in SDS snapshot: {e}");
-                    continue;
-                }
-            };
-            secret_named.push(NamedResource {
-                name: secret.metadata.name,
-                any: Any {
-                    type_url: SECRET_TYPE_URL.to_string(),
                     value: proto.encode_to_vec(),
                 },
             });
@@ -451,21 +432,21 @@ impl SnapshotCache {
 
 fn decrypt_secret_spec(ciphertext: &[u8], nonce: &[u8]) -> DomainResult<SecretSpec> {
     let key = secret_key()?;
-    let nonce = <&[u8; 12]>::try_from(nonce)
-        .map_err(|_| DomainError::internal("secret nonce is not 12 bytes"))?;
+    let nonce = <[u8; 12]>::try_from(nonce)
+        .map_err(|_| DomainError::internal("secret nonce must be 12 bytes"))?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|_| DomainError::invalid_config("FLOWPLANE_SECRET_ENCRYPTION_KEY is invalid"))?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(Nonce::from_slice(&nonce), ciphertext)
         .map_err(|_| DomainError::internal("decrypt secret spec"))?;
     serde_json::from_slice(&plaintext)
-        .map_err(|e| DomainError::internal(format!("deserialize secret spec: {e}")))
+        .map_err(|e| DomainError::internal(format!("parse decrypted secret spec: {e}")))
 }
 
 fn secret_key() -> DomainResult<[u8; 32]> {
     let raw = std::env::var("FLOWPLANE_SECRET_ENCRYPTION_KEY").map_err(|_| {
         DomainError::unavailable("secret encryption key is not configured")
-            .with_hint("set FLOWPLANE_SECRET_ENCRYPTION_KEY to enable SDS delivery")
+            .with_hint("set FLOWPLANE_SECRET_ENCRYPTION_KEY to a 32-byte or base64-encoded key")
     })?;
     if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&raw) {
         if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
@@ -588,7 +569,7 @@ mod tests {
                 PrincipalCtx::User {
                     user_id: user,
                     platform_admin: false,
-                    memberships: vec![(org.id, OrgRole::Admin)],
+                    org_selector_required: false,
                     org: Some((org.id, OrgRole::Admin)),
                     grants: GrantSet::default(),
                 },
@@ -645,8 +626,8 @@ mod tests {
                 address: "0.0.0.0".into(),
                 port: 19200,
                 route_config: Some(rc.clone()),
-                http_filters: Vec::new(),
                 tls_context: None,
+                http_filters: Vec::new(),
             },
             RequestId::generate(),
         )

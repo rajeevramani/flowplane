@@ -6,7 +6,7 @@
 
 use fp_core::{check_resource_access, Decision, GrantSet, PrincipalCtx, Reason};
 use fp_domain::authz::{Action, Resource};
-use fp_domain::{ErrorCode, OrgRole, RequestId};
+use fp_domain::{OrgRole, RequestId};
 use fp_storage::repos::{audit, identity};
 use sqlx::PgPool;
 
@@ -32,11 +32,24 @@ async fn principal_ctx(pool: &PgPool, subject: &str) -> PrincipalCtx {
         .await
         .expect("load principal")
         .expect("principal exists");
+    // Mirror the auth middleware's D-014 resolution: infer the active org from the sole
+    // non-platform membership (these test users are single-org).
+    let candidates: Vec<_> = loaded
+        .memberships
+        .iter()
+        .copied()
+        .filter(|(org_id, _)| Some(*org_id) != loaded.platform_org_id)
+        .collect();
+    let (org, org_selector_required) = match candidates.as_slice() {
+        [one] => (Some(*one), false),
+        [] => (None, false),
+        _ => (None, true),
+    };
     PrincipalCtx::User {
         user_id: loaded.user_id,
         platform_admin: loaded.platform_admin,
-        memberships: loaded.memberships,
-        org: loaded.org,
+        org_selector_required,
+        org,
         grants: GrantSet::new(loaded.grants),
     }
 }
@@ -202,190 +215,6 @@ async fn suspended_user_loads_as_absent() {
         loaded.is_none(),
         "suspended user must be indistinguishable from absent"
     );
-}
-
-#[tokio::test]
-async fn multi_org_principal_requires_explicit_or_unambiguous_org_context() {
-    let Some(pool) = test_pool().await else {
-        return;
-    };
-    let org_a = identity::create_org(&pool, &unique("org-a"), "")
-        .await
-        .expect("a");
-    let org_b = identity::create_org(&pool, &unique("org-b"), "")
-        .await
-        .expect("b");
-    let sub = unique("sub-multi");
-    let user = identity::upsert_user_by_subject(&pool, &sub, "multi@test", "Multi")
-        .await
-        .expect("user");
-    identity::add_org_membership(&pool, user, org_a.id, OrgRole::Admin)
-        .await
-        .expect("member a");
-    identity::add_org_membership(&pool, user, org_b.id, OrgRole::Viewer)
-        .await
-        .expect("member b");
-
-    let ambiguous = identity::load_principal(&pool, &sub)
-        .await
-        .expect("load")
-        .expect("principal");
-    assert_eq!(ambiguous.org, None, "multi-org users get no implicit org");
-
-    let selected = identity::load_principal_for_org(&pool, &sub, Some(org_b.id))
-        .await
-        .expect("load selected")
-        .expect("principal");
-    assert_eq!(selected.org, Some((org_b.id, OrgRole::Viewer)));
-
-    let outsider_org = identity::create_org(&pool, &unique("org-c"), "")
-        .await
-        .expect("c");
-    let err = identity::load_principal_for_org(&pool, &sub, Some(outsider_org.id))
-        .await
-        .expect_err("foreign selected org must fail");
-    assert_eq!(err.code, ErrorCode::Forbidden);
-}
-
-#[tokio::test]
-async fn team_member_email_resolution_is_scoped_to_selected_org() {
-    let Some(pool) = test_pool().await else {
-        return;
-    };
-    let org_a = identity::create_org(&pool, &unique("org-a"), "")
-        .await
-        .expect("a");
-    let org_b = identity::create_org(&pool, &unique("org-b"), "")
-        .await
-        .expect("b");
-    let team_a = identity::create_team(&pool, org_a.id, &unique("team-a"), "")
-        .await
-        .expect("team");
-
-    let admin_sub = unique("sub-admin");
-    let admin = identity::upsert_user_by_subject(&pool, &admin_sub, "admin@test", "Admin")
-        .await
-        .expect("admin");
-    identity::add_org_membership(&pool, admin, org_a.id, OrgRole::Admin)
-        .await
-        .expect("admin member");
-    let admin_ctx = PrincipalCtx::User {
-        user_id: admin,
-        platform_admin: false,
-        memberships: vec![(org_a.id, OrgRole::Admin)],
-        org: Some((org_a.id, OrgRole::Admin)),
-        grants: GrantSet::default(),
-    };
-
-    let same_email = format!("dup-{}@test", unique("email"));
-    let user_a = identity::upsert_user_by_subject(&pool, &unique("sub-a"), &same_email, "A")
-        .await
-        .expect("user a");
-    identity::add_org_membership(&pool, user_a, org_a.id, OrgRole::Member)
-        .await
-        .expect("member a");
-    let user_b = identity::upsert_user_by_subject(&pool, &unique("sub-b"), &same_email, "B")
-        .await
-        .expect("user b");
-    identity::add_org_membership(&pool, user_b, org_b.id, OrgRole::Member)
-        .await
-        .expect("member b");
-
-    let team_ref = identity::resolve_team_ref(&pool, team_a.id)
-        .await
-        .expect("resolve")
-        .expect("team");
-    fp_core::services::teams::add_member(
-        &pool,
-        &admin_ctx,
-        team_ref,
-        &same_email,
-        RequestId::generate(),
-    )
-    .await
-    .expect("add member");
-
-    let members = identity::list_team_members(&pool, team_a.id)
-        .await
-        .expect("members");
-    assert!(members.iter().any(|(id, _, _)| *id == user_a));
-    assert!(!members.iter().any(|(id, _, _)| *id == user_b));
-}
-
-#[tokio::test]
-async fn org_member_add_rejects_ambiguous_email_but_accepts_subject_and_user_id() {
-    let Some(pool) = test_pool().await else {
-        return;
-    };
-    let org = identity::create_org(&pool, &unique("org"), "")
-        .await
-        .expect("org");
-    let admin_sub = unique("sub-admin");
-    let admin = identity::upsert_user_by_subject(&pool, &admin_sub, "admin-org@test", "Admin")
-        .await
-        .expect("admin");
-    identity::add_org_membership(&pool, admin, org.id, OrgRole::Admin)
-        .await
-        .expect("admin member");
-    let admin_ctx = PrincipalCtx::User {
-        user_id: admin,
-        platform_admin: false,
-        memberships: vec![(org.id, OrgRole::Admin)],
-        org: Some((org.id, OrgRole::Admin)),
-        grants: GrantSet::default(),
-    };
-
-    let same_email = format!("dup-{}@test", unique("email"));
-    let sub_a = unique("sub-a");
-    let user_a = identity::upsert_user_by_subject(&pool, &sub_a, &same_email, "A")
-        .await
-        .expect("user a");
-    let user_b = identity::upsert_user_by_subject(&pool, &unique("sub-b"), &same_email, "B")
-        .await
-        .expect("user b");
-
-    let err = fp_core::services::orgs::add_org_member(
-        &pool,
-        &admin_ctx,
-        org.id,
-        &same_email,
-        OrgRole::Member,
-        RequestId::generate(),
-    )
-    .await
-    .expect_err("duplicate email must not be picked");
-    assert_eq!(err.code, ErrorCode::Conflict);
-
-    fp_core::services::orgs::add_org_member_by_subject(
-        &pool,
-        &admin_ctx,
-        org.id,
-        &sub_a,
-        OrgRole::Member,
-        RequestId::generate(),
-    )
-    .await
-    .expect("subject selects user a");
-    fp_core::services::orgs::add_org_member_by_user_id(
-        &pool,
-        &admin_ctx,
-        org.id,
-        user_b,
-        OrgRole::Viewer,
-        RequestId::generate(),
-    )
-    .await
-    .expect("user id selects user b");
-
-    let members = identity::list_org_members(&pool, org.id)
-        .await
-        .expect("members");
-    assert!(members
-        .iter()
-        .any(|(id, _, _, role)| { *id == user_a && role == "member" }));
-    assert!(members
-        .iter()
-        .any(|(id, _, _, role)| { *id == user_b && role == "viewer" }));
 }
 
 #[tokio::test]

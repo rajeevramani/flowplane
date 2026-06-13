@@ -57,11 +57,15 @@ pub enum PrincipalCtx {
         user_id: UserId,
         /// True only for owners of the platform organization (v1's `admin:all`).
         platform_admin: bool,
-        /// All active org memberships for context selection and identity echo.
-        memberships: Vec<(OrgId, OrgRole)>,
-        /// The validated request org context. D-014 allows multi-org users, so this must not
-        /// be populated by implicitly choosing one membership.
+        /// The validated request org context. D-014 allows multi-org users, so this is set by
+        /// the auth middleware from an explicit selector (or the sole non-platform membership),
+        /// NEVER by implicitly choosing one of several memberships.
         org: Option<(OrgId, OrgRole)>,
+        /// `org` is `None` because the caller has multiple (or zero inferable) orgs and sent
+        /// no selector — a tenant-scoped request must fail closed with `org_selector_required`
+        /// rather than `not_found` (D-014). `false` when `org` is genuinely resolved or the
+        /// caller simply has no access.
+        org_selector_required: bool,
         grants: GrantSet,
     },
     Agent {
@@ -170,6 +174,10 @@ pub fn check_resource_access(
                 };
             }
         },
+        // The engine authorizes against the validated active `org`. When the middleware
+        // could not resolve one (multi-org + no selector), `org` is None and every
+        // tenant/org path below denies — the helpful `org_selector_required` error is
+        // produced earlier at the request seam (resolve_team / service org helpers).
         PrincipalCtx::User {
             platform_admin,
             org,
@@ -256,7 +264,7 @@ mod tests {
         PrincipalCtx::User {
             user_id: UserId::generate(),
             platform_admin,
-            memberships: org.into_iter().collect(),
+            org_selector_required: false,
             org,
             grants,
         }

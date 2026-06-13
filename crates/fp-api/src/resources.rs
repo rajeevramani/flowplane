@@ -38,6 +38,13 @@ pub async fn resolve_team(
             ..
         } => *org_id,
         PrincipalCtx::Agent { org_id, .. } => *org_id,
+        // D-014: ambiguous (multi-org, no selector) fails closed with a clear "pick an org",
+        // distinct from genuinely-no-access which stays 404 (anti-enumeration).
+        PrincipalCtx::User {
+            org: None,
+            org_selector_required: true,
+            ..
+        } => return Err(DomainError::org_selector_required()),
         PrincipalCtx::User { org: None, .. } => return Err(not_found()),
     };
     fp_storage::repos::identity::resolve_team_by_name(&state.pool, org_id, raw)

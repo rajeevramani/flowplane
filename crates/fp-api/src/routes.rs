@@ -87,26 +87,6 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             route_configs::update,
             route_configs::delete
         ))
-        .routes(routes!(
-            crate::dataplanes_api::list_dataplanes,
-            crate::dataplanes_api::create_dataplane
-        ))
-        .routes(routes!(crate::dataplanes_api::get_dataplane))
-        .routes(routes!(crate::dataplanes_api::record_dataplane_telemetry))
-        .routes(routes!(crate::dataplanes_api::get_envoy_config))
-        .routes(routes!(
-            crate::dataplanes_api::list_proxy_certificates,
-            crate::dataplanes_api::register_proxy_certificate
-        ))
-        .routes(routes!(crate::dataplanes_api::issue_proxy_certificate))
-        .routes(routes!(crate::dataplanes_api::revoke_proxy_certificate))
-        .routes(routes!(
-            crate::secrets_api::list_secrets,
-            crate::secrets_api::create_secret
-        ))
-        .routes(routes!(crate::secrets_api::get_secret))
-        .routes(routes!(crate::secrets_api::rotate_secret))
-        .routes(routes!(crate::dataplanes_api::stats_overview))
         .routes(routes!(crate::xds_api::list_nacks))
         .split_for_parts()
 }
@@ -156,18 +136,15 @@ pub fn build_router(state: AppState) -> Router {
 struct WhoAmI {
     user_id: String,
     platform_admin: bool,
-    memberships: Vec<WhoAmIMembership>,
+    /// The validated ACTIVE org for this request (from the `X-Flowplane-Org` selector or the
+    /// caller's sole non-platform membership), if resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     org_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     org_role: Option<&'static str>,
+    /// True when the caller must name an org (multi-org, no selector) for tenant-scoped ops.
+    org_selector_required: bool,
     grant_count: usize,
-}
-
-#[derive(Serialize, utoipa::ToSchema)]
-struct WhoAmIMembership {
-    org_id: String,
-    role: &'static str,
 }
 
 /// Identity echo: the authenticated principal as the authorization engine sees it.
@@ -181,21 +158,15 @@ async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI
         fp_core::PrincipalCtx::User {
             user_id,
             platform_admin,
-            memberships,
             org,
+            org_selector_required,
             grants,
         } => Json(WhoAmI {
             user_id: user_id.to_string(),
             platform_admin,
-            memberships: memberships
-                .into_iter()
-                .map(|(org_id, role)| WhoAmIMembership {
-                    org_id: org_id.to_string(),
-                    role: role.as_str(),
-                })
-                .collect(),
             org_id: org.map(|(id, _)| id.to_string()),
             org_role: org.map(|(_, role)| role.as_str()),
+            org_selector_required,
             grant_count: grants.len(),
         }),
         fp_core::PrincipalCtx::Agent {
@@ -206,12 +177,9 @@ async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI
         } => Json(WhoAmI {
             user_id: agent_id.to_string(),
             platform_admin: false,
-            memberships: vec![WhoAmIMembership {
-                org_id: org_id.to_string(),
-                role: "agent",
-            }],
             org_id: Some(org_id.to_string()),
             org_role: None,
+            org_selector_required: false,
             grant_count: grants.len(),
         }),
     }

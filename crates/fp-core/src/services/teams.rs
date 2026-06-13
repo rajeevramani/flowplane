@@ -12,13 +12,20 @@ use fp_domain::{DomainError, DomainResult, ErrorCode, OrgId, RequestId, Team, Te
 use fp_storage::repos::{audit, identity};
 use sqlx::PgPool;
 
-/// The caller's org id when (and only when) they hold an org-admin role there.
+/// The caller's org id when (and only when) they hold an org-admin role there. When the
+/// active org is unresolved because a selector is needed (D-014), fail closed with
+/// `org_selector_required` rather than a generic forbidden.
 fn require_org_admin(ctx: &PrincipalCtx) -> DomainResult<OrgId> {
     match ctx {
         PrincipalCtx::User {
             org: Some((org_id, role)),
             ..
         } if role.is_org_admin() => Ok(*org_id),
+        PrincipalCtx::User {
+            org: None,
+            org_selector_required: true,
+            ..
+        } => Err(DomainError::org_selector_required()),
         _ => Err(DomainError::new(
             ErrorCode::Forbidden,
             "team administration requires an org admin role",
@@ -34,6 +41,11 @@ fn member_org(ctx: &PrincipalCtx) -> DomainResult<OrgId> {
             ..
         } => Ok(*org_id),
         PrincipalCtx::Agent { org_id, .. } => Ok(*org_id),
+        PrincipalCtx::User {
+            org: None,
+            org_selector_required: true,
+            ..
+        } => Err(DomainError::org_selector_required()),
         PrincipalCtx::User { org: None, .. } => Err(DomainError::new(
             ErrorCode::Forbidden,
             "no active organization selected",

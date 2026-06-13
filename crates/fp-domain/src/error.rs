@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 pub enum ErrorCode {
     /// Request was syntactically or semantically invalid.
     ValidationFailed,
+    /// The caller belongs to multiple orgs (or none inferable) and must name one for this
+    /// tenant-scoped request (D-014): pass `X-Flowplane-Org` / `--org`.
+    OrgSelectorRequired,
     /// Authentication missing or invalid.
     Unauthorized,
     /// Authenticated but not permitted; message names the missing (resource, action).
@@ -45,6 +48,7 @@ impl ErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ValidationFailed => "validation_failed",
+            Self::OrgSelectorRequired => "org_selector_required",
             Self::Unauthorized => "unauthorized",
             Self::Forbidden => "forbidden",
             Self::NotFound => "not_found",
@@ -108,6 +112,17 @@ impl DomainError {
 
     pub fn validation(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::ValidationFailed, message)
+    }
+
+    /// The caller must name an org for this tenant-scoped request (D-014).
+    pub fn org_selector_required() -> Self {
+        Self::new(
+            ErrorCode::OrgSelectorRequired,
+            "this request needs an organization context",
+        )
+        .with_hint(
+            "pass the organization with `X-Flowplane-Org: <name|uuid>` (or `--org` on the CLI)",
+        )
     }
 
     pub fn not_found(resource_kind: &str, handle: &str) -> Self {
