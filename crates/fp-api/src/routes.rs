@@ -136,11 +136,18 @@ pub fn build_router(state: AppState) -> Router {
 struct WhoAmI {
     user_id: String,
     platform_admin: bool,
+    memberships: Vec<WhoAmIMembership>,
     #[serde(skip_serializing_if = "Option::is_none")]
     org_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     org_role: Option<&'static str>,
     grant_count: usize,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct WhoAmIMembership {
+    org_id: String,
+    role: &'static str,
 }
 
 /// Identity echo: the authenticated principal as the authorization engine sees it.
@@ -154,11 +161,19 @@ async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI
         fp_core::PrincipalCtx::User {
             user_id,
             platform_admin,
+            memberships,
             org,
             grants,
         } => Json(WhoAmI {
             user_id: user_id.to_string(),
             platform_admin,
+            memberships: memberships
+                .into_iter()
+                .map(|(org_id, role)| WhoAmIMembership {
+                    org_id: org_id.to_string(),
+                    role: role.as_str(),
+                })
+                .collect(),
             org_id: org.map(|(id, _)| id.to_string()),
             org_role: org.map(|(_, role)| role.as_str()),
             grant_count: grants.len(),
@@ -171,6 +186,10 @@ async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI
         } => Json(WhoAmI {
             user_id: agent_id.to_string(),
             platform_admin: false,
+            memberships: vec![WhoAmIMembership {
+                org_id: org_id.to_string(),
+                role: "agent",
+            }],
             org_id: Some(org_id.to_string()),
             org_role: None,
             grant_count: grants.len(),

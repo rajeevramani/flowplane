@@ -250,6 +250,29 @@ async fn multi_org_user_selects_active_org_with_header() {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
     });
 
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/auth/whoami")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("whoami");
+    assert_eq!(response.status(), StatusCode::OK);
+    let whoami = json_of(response).await;
+    assert!(
+        whoami["org_id"].is_null(),
+        "ambiguous users have no active org"
+    );
+    assert_eq!(
+        whoami["memberships"].as_array().expect("memberships").len(),
+        2
+    );
+
     let path = format!("/api/v1/teams/{}/clusters", team.name);
     let base = || {
         Request::builder()

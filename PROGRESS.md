@@ -65,7 +65,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S4.4 team/member/grant endpoints + org CRUD/member endpoints (32 ops total); agents endpoints deferred to S11 with the MCP agent auth path (one coherent unit)
   - [x] S4.5 contract diff recorded (D-010); agent smoke PASSED (doc-only workflow incl. If-Match discovery); `flowplane openapi` dump command
   - [x] S4 milestone ping to founder (Q-007) — sent 2026-06-12
-- [ ] S5 xDS: IR pipeline, ADS, mTLS, quarantine
+- [x] S5 xDS: IR pipeline, ADS, mTLS, quarantine
   - [x] S5.1 envoy-types translation: cluster (sorted endpoints, explicit TLS, HC/CB/outlier), route-config (exact/prefix/template, order-preserving), listener (HCM+RDS over ADS); determinism tests
   - [x] S5.2 per-team snapshot cache: outbox-driven rebuilds, per-type versions with byte-diff suppression, team isolation test, watch-channel change signal
   - [x] S5.3 ADS SOTW server: subscribe/ACK/NACK state machine, live pushes from snapshot watch, make-before-break type order, honest delta-unimplemented; gRPC stream integration tests
@@ -96,7 +96,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         fourth snapshot type with the same quarantine machinery; make-before-break order
         CDS→EDS→RDS→LDS; endpoint churn bumps ONLY the endpoints version (test-pinned); live
         Envoy E2E re-passed with EDS warming + post-restart pure-EDS endpoint switch
-  - [ ] S5.8 filter catalog: the 16 v1 filter types re-specced through IR + per-route overrides
+  - [x] S5.8 filter catalog: the 16 v1 filter types re-specced through IR + per-route overrides
         (spec/04 §4; v2 = typed IR on listener/route specs, translated at build time — NO v1-style
         post-hoc protobuf surgery)
     - [x] S5.8a domain: `HttpFilterSpec` {cors, local_rate_limit, header_mutation,
@@ -175,13 +175,15 @@ and scheduled — read these before trusting a green checkbox.
   Fixed: every service `authorize()` helper that wraps `check_resource_access` now writes a
   best-effort `authz.denied` audit row with request id, actor, resource, action, org/team, and
   reason before returning the existing 403/404 error.
-- **R5 — multi-org users require explicit request org context — IN PROGRESS.** Founder direction is
+- **R5 — multi-org users require explicit request org context — RESOLVED.** Founder direction is
   to allow a human user to belong to multiple orgs, so `org_memberships` must keep only
   `UNIQUE (user_id, org_id)` and must **not** gain a `UNIQUE (user_id)` constraint. The v2
   selector contract is `X-Flowplane-Org` for REST/MCP and `--org` / active config context for
-  CLI. Implemented so far: principal loading validates a selected org, infers only exactly one
-  active non-platform org, and otherwise leaves no active org for tenant-scoped APIs to fail
-  closed; path-scoped org member APIs validate membership against the path org directly.
+  CLI. Fixed: principal loading validates a selected org, infers only exactly one active
+  non-platform org, and otherwise leaves no active org for tenant-scoped APIs to fail closed;
+  path-scoped org member APIs validate membership against the path org directly; `/auth/whoami`
+  returns all active memberships so the CLI can build/select contexts without platform-admin
+  org listing.
 - **R6 — Email resolution is global and non-unique — RESOLVED.** `identity::find_user_by_email`
   selects across ALL orgs with `LIMIT 1`, and `users.email` has no `UNIQUE` constraint — so
   add-member / add-grant by email can resolve a user in another org or silently pick one of

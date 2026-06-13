@@ -71,6 +71,7 @@ async fn world() -> Option<World> {
     let admin = PrincipalCtx::User {
         user_id: admin_id,
         platform_admin: false,
+        memberships: vec![(org.id, OrgRole::Admin)],
         org: Some((org.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };
@@ -88,6 +89,7 @@ async fn world() -> Option<World> {
     let outsider = PrincipalCtx::User {
         user_id: outsider_id,
         platform_admin: false,
+        memberships: vec![(other_org.id, OrgRole::Owner)],
         org: Some((other_org.id, OrgRole::Owner)),
         grants: GrantSet::default(),
     };
@@ -297,6 +299,7 @@ async fn grantless_member_denied_with_actionable_forbidden() {
     let member = PrincipalCtx::User {
         user_id: member_id,
         platform_admin: false,
+        memberships: vec![(w.team.org_id, OrgRole::Member)],
         org: Some((w.team.org_id, OrgRole::Member)),
         grants: GrantSet::default(),
     };

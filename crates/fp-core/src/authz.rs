@@ -57,6 +57,8 @@ pub enum PrincipalCtx {
         user_id: UserId,
         /// True only for owners of the platform organization (v1's `admin:all`).
         platform_admin: bool,
+        /// All active org memberships for context selection and identity echo.
+        memberships: Vec<(OrgId, OrgRole)>,
         /// The validated request org context. D-014 allows multi-org users, so this must not
         /// be populated by implicitly choosing one membership.
         org: Option<(OrgId, OrgRole)>,
@@ -254,6 +256,7 @@ mod tests {
         PrincipalCtx::User {
             user_id: UserId::generate(),
             platform_admin,
+            memberships: org.into_iter().collect(),
             org,
             grants,
         }

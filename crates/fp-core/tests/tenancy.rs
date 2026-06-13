@@ -35,6 +35,7 @@ async fn principal_ctx(pool: &PgPool, subject: &str) -> PrincipalCtx {
     PrincipalCtx::User {
         user_id: loaded.user_id,
         platform_admin: loaded.platform_admin,
+        memberships: loaded.memberships,
         org: loaded.org,
         grants: GrantSet::new(loaded.grants),
     }
@@ -271,6 +272,7 @@ async fn team_member_email_resolution_is_scoped_to_selected_org() {
     let admin_ctx = PrincipalCtx::User {
         user_id: admin,
         platform_admin: false,
+        memberships: vec![(org_a.id, OrgRole::Admin)],
         org: Some((org_a.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };
@@ -328,6 +330,7 @@ async fn org_member_add_rejects_ambiguous_email_but_accepts_subject_and_user_id(
     let admin_ctx = PrincipalCtx::User {
         user_id: admin,
         platform_admin: false,
+        memberships: vec![(org.id, OrgRole::Admin)],
         org: Some((org.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };

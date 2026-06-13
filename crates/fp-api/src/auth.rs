@@ -123,6 +123,7 @@ pub async fn authenticate(
             let ctx = PrincipalCtx::User {
                 user_id: loaded.user_id,
                 platform_admin: loaded.platform_admin,
+                memberships: loaded.memberships,
                 org: loaded.org,
                 grants: GrantSet::new(loaded.grants),
             };

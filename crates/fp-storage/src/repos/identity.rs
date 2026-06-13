@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub struct LoadedPrincipal {
     pub user_id: UserId,
     pub platform_admin: bool,
+    pub memberships: Vec<(OrgId, OrgRole)>,
     pub org: Option<(OrgId, OrgRole)>,
     pub grants: Vec<(Resource, Action, TeamId)>,
 }
@@ -128,6 +129,7 @@ pub async fn load_principal_for_org(
     Ok(Some(LoadedPrincipal {
         user_id,
         platform_admin,
+        memberships: memberships.iter().map(|m| (m.org_id, m.role)).collect(),
         org,
         grants,
     }))

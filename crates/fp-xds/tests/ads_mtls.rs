@@ -231,6 +231,7 @@ async fn world() -> Option<World> {
         ctx: PrincipalCtx::User {
             user_id: user,
             platform_admin: false,
+            memberships: vec![(org.id, OrgRole::Admin)],
             org: Some((org.id, OrgRole::Admin)),
             grants: GrantSet::default(),
         },

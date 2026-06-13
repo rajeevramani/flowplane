@@ -208,9 +208,11 @@ operations:
 8. **Build `AuthContext`** and insert into request extensions:
    `token_id = "zitadel:{sub}"`, `token_name = "zitadel/{sub}"`, `user_id`, `user_email`,
    `user_name?`, `org_scopes` (private set, queried via `has_scope`), `grants`,
-   `agent_context?`, validated request `org_id?`/`org_name?`, plus `client_ip`/`user_agent`
-   for audit. A user with multiple tenant memberships and no selector must never receive an
-   implicit default org for tenant-scoped authorization.
+   `agent_context?`, all active org memberships, validated request `org_id?`/`org_name?`, plus
+   `client_ip`/`user_agent` for audit. A user with multiple tenant memberships and no selector
+   must never receive an implicit default org for tenant-scoped authorization; `/auth/whoami`
+   exposes the membership set so CLI context setup can offer/select an org without platform
+   governance access.
 
 ### 2.4 Dev mode: embedded mock OIDC (`src/dev/oidc_server.rs`, feature `dev-oidc`)
 

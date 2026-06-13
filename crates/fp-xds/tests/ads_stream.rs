@@ -68,6 +68,7 @@ async fn subscribe_receive_ack_and_live_push() {
     let ctx = PrincipalCtx::User {
         user_id: user,
         platform_admin: false,
+        memberships: vec![(org.id, OrgRole::Admin)],
         org: Some((org.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };
@@ -228,6 +229,7 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
     let ctx = PrincipalCtx::User {
         user_id: user,
         platform_admin: false,
+        memberships: vec![(org.id, OrgRole::Admin)],
         org: Some((org.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };
@@ -456,6 +458,7 @@ async fn subscription_change_echoing_last_nonce_is_answered() {
     let ctx = PrincipalCtx::User {
         user_id: user,
         platform_admin: false,
+        memberships: vec![(org.id, OrgRole::Admin)],
         org: Some((org.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };
