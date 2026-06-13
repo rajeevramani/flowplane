@@ -1,5 +1,6 @@
 //! Flowplane binary: server subcommands now, CLI client subcommands from S7.
 
+mod cli;
 mod serve;
 
 use clap::{Parser, Subcommand};
@@ -9,6 +10,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser)]
 #[command(name = "flowplane", version, about = "Flowplane control plane")]
 struct Cli {
+    #[command(flatten)]
+    client: cli::GlobalOptions,
     #[command(subcommand)]
     command: Command,
 }
@@ -24,6 +27,65 @@ enum Command {
     },
     /// Print the OpenAPI document this binary serves (the exact API contract).
     Openapi,
+    /// Client auth helpers.
+    Auth {
+        #[command(subcommand)]
+        command: cli::AuthCommand,
+    },
+    /// Client configuration.
+    Config {
+        #[command(subcommand)]
+        command: cli::ConfigCommand,
+    },
+    /// Organization management.
+    Org {
+        #[command(subcommand)]
+        command: cli::OrgCommand,
+    },
+    /// Team management.
+    Team {
+        #[command(subcommand)]
+        command: cli::TeamCommand,
+    },
+    /// Gateway clusters.
+    Cluster {
+        #[command(subcommand)]
+        command: cli::ResourceCommand,
+    },
+    /// Gateway listeners.
+    Listener {
+        #[command(subcommand)]
+        command: cli::ResourceCommand,
+    },
+    /// Route configs.
+    Route {
+        #[command(subcommand)]
+        command: cli::ResourceCommand,
+    },
+    /// Write-only secrets.
+    Secret {
+        #[command(subcommand)]
+        command: cli::SecretCommand,
+    },
+    /// Dataplane registration and certificates.
+    Dataplane {
+        #[command(subcommand)]
+        command: cli::DataplaneCommand,
+    },
+    /// Team stats.
+    Stats {
+        #[command(subcommand)]
+        command: cli::StatsCommand,
+    },
+    /// Operations diagnostics.
+    Ops {
+        #[command(subcommand)]
+        command: cli::OpsCommand,
+    },
+    /// Shell completion script.
+    Completion { shell: String },
+    /// Print version.
+    Version,
 }
 
 #[derive(Subcommand)]
@@ -51,5 +113,45 @@ fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::Auth { command } => runtime.block_on(cli::run_auth(cli.client, command)),
+        Command::Config { command } => cli::run_config(cli.client, command),
+        Command::Org { command } => runtime.block_on(cli::run_org(cli.client, command)),
+        Command::Team { command } => runtime.block_on(cli::run_team(cli.client, command)),
+        Command::Cluster { command } => {
+            runtime.block_on(cli::run_resource(cli.client, "clusters", command))
+        }
+        Command::Listener { command } => {
+            runtime.block_on(cli::run_resource(cli.client, "listeners", command))
+        }
+        Command::Route { command } => {
+            runtime.block_on(cli::run_resource(cli.client, "route-configs", command))
+        }
+        Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
+        Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),
+        Command::Stats { command } => runtime.block_on(cli::run_stats(cli.client, command)),
+        Command::Ops { command } => runtime.block_on(cli::run_ops(cli.client, command)),
+        Command::Completion { shell } => {
+            println!(
+                "# completion generation for {shell} will use clap_complete in the next S7 pass"
+            );
+            println!("# command tree is available via:");
+            println!("# flowplane --help");
+            Ok(())
+        }
+        Command::Version => {
+            println!("{VERSION}");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn command_tree_builds() {
+        Cli::command().debug_assert();
     }
 }

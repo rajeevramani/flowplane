@@ -176,6 +176,14 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 - [x] S6 exit: SDS rotation E2E passed in S6.4b; revoked cert stream-kill covered by S5.4;
       secret values are write-only over HTTP; stats relay covered by S6.5b.
 - [ ] S7 CLI core (+ commands for S2–S6)
+  - [x] S7.1 CLI foundation: shared global flags/config precedence (`--server`,
+        `--org`, `--team`, contexts, token file/env), REST client with bearer and
+        `X-Flowplane-Org`, table/json/yaml-ish output, API error rendering, dry-run plan
+        output, and typed commands for shipped S2–S6 REST endpoints (org/team/member/grant,
+        cluster/listener/route-config, secrets, dataplanes/certs, stats, xDS NACKs).
+        OpenAPI-vs-CLI path coverage test pins that every current secured S2–S6 path has a
+        CLI template. Remaining S7 scope: PKCE/device-code auth, real shell completions,
+        declarative `apply --diff`, transcript E2E polish.
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
 - [ ] S10 AI gateway
