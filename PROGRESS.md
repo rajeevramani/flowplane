@@ -183,12 +183,12 @@ and scheduled — read these before trusting a green checkbox.
   CLI. Implemented so far: principal loading validates a selected org, infers only exactly one
   active non-platform org, and otherwise leaves no active org for tenant-scoped APIs to fail
   closed; path-scoped org member APIs validate membership against the path org directly.
-- **R6 — Email resolution is global and non-unique — IN PROGRESS.** `identity::find_user_by_email`
+- **R6 — Email resolution is global and non-unique — RESOLVED.** `identity::find_user_by_email`
   selects across ALL orgs with `LIMIT 1`, and `users.email` has no `UNIQUE` constraint — so
   add-member / add-grant by email can resolve a user in another org or silently pick one of
-  several duplicates. Implemented so far: org member add rejects duplicate active global emails
-  instead of picking one; team member/grant add resolve email inside the selected org. Remaining:
-  add subject/user-id UX for ambiguous org-member add.
+  several duplicates. Fixed: org member add rejects duplicate active global emails instead of
+  picking one and also accepts immutable `subject`/`user_id` selectors; team member/grant add
+  resolve email inside the selected org.
 - **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — OPEN.**
   `refresh_keys` takes `cache.write()` *then* does the JWKS HTTP fetch while holding it, and
   `reqwest::Client::new()` sets no timeout — so a slow/hung IdP stalls every token validation

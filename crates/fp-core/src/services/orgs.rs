@@ -149,6 +149,53 @@ pub async fn add_org_member(
             DomainError::not_found("user", email)
                 .with_hint("the user must sign in once before being added to an organization")
         })?;
+    add_org_member_resolved(pool, ctx, org_id, user, email, role, request_id).await
+}
+
+pub async fn add_org_member_by_subject(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+    subject: &str,
+    role: OrgRole,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    authorize_member_admin(pool, ctx, org_id).await?;
+    let user = identity::find_user_by_subject(pool, subject)
+        .await?
+        .ok_or_else(|| {
+            DomainError::not_found("user", subject)
+                .with_hint("the user must sign in once before being added to an organization")
+        })?;
+    add_org_member_resolved(pool, ctx, org_id, user, subject, role, request_id).await
+}
+
+pub async fn add_org_member_by_user_id(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+    user: UserId,
+    role: OrgRole,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    authorize_member_admin(pool, ctx, org_id).await?;
+    if !identity::active_user_exists(pool, user).await? {
+        return Err(DomainError::not_found("user", &user.to_string())
+            .with_hint("the user must sign in once before being added to an organization"));
+    }
+    let label = user.to_string();
+    add_org_member_resolved(pool, ctx, org_id, user, &label, role, request_id).await
+}
+
+async fn add_org_member_resolved(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    org_id: OrgId,
+    user: UserId,
+    actor_label: &str,
+    role: OrgRole,
+    request_id: RequestId,
+) -> DomainResult<()> {
     identity::add_org_membership(pool, user, org_id, role).await?;
     audit::record_best_effort(
         pool,
@@ -157,7 +204,7 @@ pub async fn add_org_member(
             request_id,
             Some(org_id),
             "org.member.add",
-            format!("users/{email}:{}", role.as_str()),
+            format!("users/{actor_label}:{}", role.as_str()),
         ),
     )
     .await;

@@ -38,7 +38,12 @@ pub struct OrgMemberView {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddOrgMemberBody {
-    pub email: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<uuid::Uuid>,
     /// One of: viewer, member, admin, owner.
     pub role: String,
 }
@@ -57,6 +62,35 @@ fn view(org: fp_domain::Organization) -> OrgView {
         id: org.id.as_uuid(),
         name: org.name,
         display_name: org.display_name,
+    }
+}
+
+enum AddMemberTarget {
+    Email(String),
+    Subject(String),
+    UserId(UserId),
+}
+
+impl AddOrgMemberBody {
+    fn target(&self) -> DomainResult<AddMemberTarget> {
+        let supplied = usize::from(self.email.is_some())
+            + usize::from(self.subject.is_some())
+            + usize::from(self.user_id.is_some());
+        if supplied != 1 {
+            return Err(
+                DomainError::validation("exactly one member selector is required")
+                    .with_hint("send one of: email, subject, or user_id"),
+            );
+        }
+        if let Some(email) = &self.email {
+            return Ok(AddMemberTarget::Email(email.clone()));
+        }
+        if let Some(subject) = &self.subject {
+            return Ok(AddMemberTarget::Subject(subject.clone()));
+        }
+        Ok(AddMemberTarget::UserId(UserId::from(
+            self.user_id.expect("checked supplied"),
+        )))
     }
 }
 
@@ -166,7 +200,17 @@ pub async fn add_member(
     let run = async {
         let role = OrgRole::parse(&body.role)?;
         let org_id = resolve_org(&state, &org).await?;
-        svc::add_org_member(&state.pool, &ctx, org_id, &body.email, role, rid).await
+        match body.target()? {
+            AddMemberTarget::Email(email) => {
+                svc::add_org_member(&state.pool, &ctx, org_id, &email, role, rid).await
+            }
+            AddMemberTarget::Subject(subject) => {
+                svc::add_org_member_by_subject(&state.pool, &ctx, org_id, &subject, role, rid).await
+            }
+            AddMemberTarget::UserId(user_id) => {
+                svc::add_org_member_by_user_id(&state.pool, &ctx, org_id, user_id, role, rid).await
+            }
+        }
     };
     run.await
         .map(|_| StatusCode::NO_CONTENT)

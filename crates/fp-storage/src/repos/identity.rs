@@ -569,6 +569,27 @@ pub async fn find_user_by_email(pool: &PgPool, email: &str) -> DomainResult<Opti
     }
 }
 
+pub async fn find_user_by_subject(pool: &PgPool, subject: &str) -> DomainResult<Option<UserId>> {
+    let id: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE subject = $1 AND status = 'active'")
+            .bind(subject)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("find user by subject: {e}")))?;
+    Ok(id.map(UserId::from))
+}
+
+pub async fn active_user_exists(pool: &PgPool, user_id: UserId) -> DomainResult<bool> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active')",
+    )
+    .bind(user_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("active user exists: {e}")))?;
+    Ok(exists)
+}
+
 /// Find an active user by email only if they already belong to the target org.
 pub async fn find_org_user_by_email(
     pool: &PgPool,

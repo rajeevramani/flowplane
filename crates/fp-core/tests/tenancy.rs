@@ -311,6 +311,81 @@ async fn team_member_email_resolution_is_scoped_to_selected_org() {
 }
 
 #[tokio::test]
+async fn org_member_add_rejects_ambiguous_email_but_accepts_subject_and_user_id() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let admin_sub = unique("sub-admin");
+    let admin = identity::upsert_user_by_subject(&pool, &admin_sub, "admin-org@test", "Admin")
+        .await
+        .expect("admin");
+    identity::add_org_membership(&pool, admin, org.id, OrgRole::Admin)
+        .await
+        .expect("admin member");
+    let admin_ctx = PrincipalCtx::User {
+        user_id: admin,
+        platform_admin: false,
+        org: Some((org.id, OrgRole::Admin)),
+        grants: GrantSet::default(),
+    };
+
+    let same_email = format!("dup-{}@test", unique("email"));
+    let sub_a = unique("sub-a");
+    let user_a = identity::upsert_user_by_subject(&pool, &sub_a, &same_email, "A")
+        .await
+        .expect("user a");
+    let user_b = identity::upsert_user_by_subject(&pool, &unique("sub-b"), &same_email, "B")
+        .await
+        .expect("user b");
+
+    let err = fp_core::services::orgs::add_org_member(
+        &pool,
+        &admin_ctx,
+        org.id,
+        &same_email,
+        OrgRole::Member,
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("duplicate email must not be picked");
+    assert_eq!(err.code, ErrorCode::Conflict);
+
+    fp_core::services::orgs::add_org_member_by_subject(
+        &pool,
+        &admin_ctx,
+        org.id,
+        &sub_a,
+        OrgRole::Member,
+        RequestId::generate(),
+    )
+    .await
+    .expect("subject selects user a");
+    fp_core::services::orgs::add_org_member_by_user_id(
+        &pool,
+        &admin_ctx,
+        org.id,
+        user_b,
+        OrgRole::Viewer,
+        RequestId::generate(),
+    )
+    .await
+    .expect("user id selects user b");
+
+    let members = identity::list_org_members(&pool, org.id)
+        .await
+        .expect("members");
+    assert!(members
+        .iter()
+        .any(|(id, _, _, role)| { *id == user_a && role == "member" }));
+    assert!(members
+        .iter()
+        .any(|(id, _, _, role)| { *id == user_b && role == "viewer" }));
+}
+
+#[tokio::test]
 async fn duplicate_names_conflict_within_org_but_not_across_orgs() {
     let Some(pool) = test_pool().await else {
         return;
