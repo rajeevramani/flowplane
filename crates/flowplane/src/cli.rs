@@ -51,8 +51,18 @@ pub enum OutputFormat {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct CliConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     current_context: Option<String>,
+    #[serde(default)]
     contexts: Vec<NamedContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    team: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,9 +132,15 @@ fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
     let selected_name = global.context.as_ref().or(file.current_context.as_ref());
     let selected =
         selected_name.and_then(|name| file.contexts.iter().find(|ctx| &ctx.name == name));
+    if let Some(name) = &global.context {
+        if selected.is_none() {
+            anyhow::bail!("context \"{name}\" does not exist");
+        }
+    }
     let token = std::env::var("FLOWPLANE_TOKEN")
         .ok()
         .or_else(|| selected.and_then(|ctx| ctx.token.clone()))
+        .or_else(|| file.token.clone())
         .or_else(|| {
             fs::read_to_string(credentials_path())
                 .ok()
@@ -136,17 +152,20 @@ fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
             .server
             .clone()
             .or_else(|| selected.map(|ctx| ctx.server.clone()))
+            .or_else(|| file.base_url.clone())
             .unwrap_or_else(|| DEFAULT_SERVER.to_string()),
         org: global
             .org
             .clone()
             .or_else(|| std::env::var("FLOWPLANE_ORG").ok())
-            .or_else(|| selected.and_then(|ctx| ctx.org.clone())),
+            .or_else(|| selected.and_then(|ctx| ctx.org.clone()))
+            .or_else(|| file.org.clone()),
         team: global
             .team
             .clone()
             .or_else(|| std::env::var("FLOWPLANE_TEAM").ok())
-            .or_else(|| selected.and_then(|ctx| ctx.team.clone())),
+            .or_else(|| selected.and_then(|ctx| ctx.team.clone()))
+            .or_else(|| file.team.clone()),
         token,
     })
 }
@@ -155,7 +174,12 @@ fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
 pub enum AuthCommand {
     Whoami,
     Token,
-    Login { token: String },
+    Login {
+        #[arg(long)]
+        token: Option<String>,
+        #[arg(long)]
+        token_stdin: bool,
+    },
     Logout,
 }
 
@@ -476,6 +500,8 @@ impl RestClient {
             self.config.server.trim_end_matches('/'),
             path.trim_start_matches('/')
         );
+        let method_label = method.as_str().to_string();
+        let is_get = method == reqwest::Method::GET;
         let mut req = self.http.request(method, url);
         if let Some(token) = &self.config.token {
             req = req.bearer_auth(token);
@@ -502,12 +528,21 @@ impl RestClient {
         }
         if status == reqwest::StatusCode::NO_CONTENT || text.trim().is_empty() {
             if !self.global.quiet {
-                println!("ok");
+                print_mutation_summary(&self.global, &method_label, path, None)?;
             }
             return Ok(None);
         }
         let value: Value = serde_json::from_str(&text).context("parse response JSON")?;
-        render(&self.global, &value)?;
+        if is_get
+            || matches!(
+                self.global.format(),
+                OutputFormat::Json | OutputFormat::Yaml
+            )
+        {
+            render(&self.global, &value)?;
+        } else {
+            print_mutation_summary(&self.global, &method_label, path, Some(&value))?;
+        }
         Ok(Some(value))
     }
 
@@ -592,21 +627,82 @@ fn table(value: &Value) -> String {
             }
         }
     }
-    let columns: Vec<_> = columns.into_iter().collect();
+    let columns = ordered_columns(columns);
     if columns.is_empty() {
         return serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
     }
-    let mut out = String::new();
-    out.push_str(&columns.join("\t"));
-    for row in rows {
+    let matrix = rows
+        .iter()
+        .map(|row| {
+            columns
+                .iter()
+                .map(|c| cell(row.get(c).unwrap_or(&Value::Null)))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let headers = columns
+        .iter()
+        .map(|c| c.replace('_', " ").to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    let widths = (0..columns.len())
+        .map(|i| {
+            std::iter::once(headers[i].len())
+                .chain(matrix.iter().map(|row| row[i].len()))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect::<Vec<_>>();
+    let mut out = format_row(&headers, &widths);
+    for row in matrix {
         out.push('\n');
-        let cells = columns
-            .iter()
-            .map(|c| cell(row.get(c).unwrap_or(&Value::Null)))
-            .collect::<Vec<_>>();
-        out.push_str(&cells.join("\t"));
+        out.push_str(&format_row(&row, &widths));
     }
     out
+}
+
+fn ordered_columns(columns: BTreeSet<String>) -> Vec<String> {
+    let preferred = [
+        "name",
+        "id",
+        "display_name",
+        "description",
+        "role",
+        "email",
+        "resource",
+        "action",
+        "revision",
+        "live_dataplanes",
+        "stale_dataplanes",
+        "total_requests",
+        "total_errors",
+        "warming_failures",
+        "last_heartbeat_at",
+        "created_at",
+        "updated_at",
+    ];
+    let mut ordered = Vec::new();
+    for key in preferred {
+        if columns.contains(key) {
+            ordered.push(key.to_string());
+        }
+    }
+    for key in columns {
+        if !ordered.contains(&key) {
+            ordered.push(key);
+        }
+    }
+    ordered
+}
+
+fn format_row(cells: &[String], widths: &[usize]) -> String {
+    cells
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| format!("{cell:<width$}", width = widths[i]))
+        .collect::<Vec<_>>()
+        .join("  ")
+        .trim_end()
+        .to_string()
 }
 
 fn cell(value: &Value) -> String {
@@ -650,6 +746,59 @@ fn yaml_like(value: &Value, indent: usize) -> String {
     }
 }
 
+fn print_mutation_summary(
+    global: &GlobalOptions,
+    method: &str,
+    path: &str,
+    value: Option<&Value>,
+) -> Result<()> {
+    if global.quiet {
+        return Ok(());
+    }
+    if global.dry_run {
+        println!("plan: would {} {}", method.to_ascii_lowercase(), path);
+        return Ok(());
+    }
+    let verb = match method {
+        "POST" => "created",
+        "PATCH" => "updated",
+        "DELETE" => "deleted",
+        _ => "ok",
+    };
+    let label = value
+        .and_then(resource_label)
+        .unwrap_or_else(|| path.trim_start_matches('/').to_string());
+    let revision = value
+        .and_then(|v| v.get("revision"))
+        .and_then(Value::as_i64)
+        .map(|r| format!(" (revision {r})"))
+        .unwrap_or_default();
+    println!("{verb} {label}{revision}");
+    Ok(())
+}
+
+fn resource_label(value: &Value) -> Option<String> {
+    if let Some(cert) = value.get("certificate") {
+        return resource_label(cert);
+    }
+    value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(|name| format!("\"{name}\""))
+        .or_else(|| {
+            value
+                .get("serial_number")
+                .and_then(Value::as_str)
+                .map(|serial| format!("certificate \"{serial}\""))
+        })
+        .or_else(|| {
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|id| format!("resource {id}"))
+        })
+}
+
 fn body_from_file(path: &PathBuf) -> Result<Value> {
     let raw = if path == &PathBuf::from("-") {
         let mut raw = String::new();
@@ -672,7 +821,17 @@ pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()>
             println!("{token}");
             Ok(())
         }
-        AuthCommand::Login { token } => {
+        AuthCommand::Login { token, token_stdin } => {
+            let token = match (token, token_stdin) {
+                (Some(token), false) => token,
+                (None, true) => {
+                    let mut token = String::new();
+                    io::stdin().read_to_string(&mut token)?;
+                    token.trim().to_string()
+                }
+                (None, false) => anyhow::bail!("pass --token or --token-stdin"),
+                (Some(_), true) => anyhow::bail!("use only one of --token or --token-stdin"),
+            };
             let path = credentials_path();
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
@@ -727,19 +886,57 @@ pub fn run_config(_global: GlobalOptions, command: ConfigCommand) -> Result<()> 
         }
         ConfigCommand::GetContexts => {
             let config = read_config()?;
-            for ctx in config.contexts {
-                let mark = if Some(&ctx.name) == config.current_context.as_ref() {
+            let mut rows = config
+                .contexts
+                .iter()
+                .map(|ctx| {
+                    let mark = if config.current_context.as_deref() == Some(ctx.name.as_str()) {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    vec![
+                        mark.to_string(),
+                        ctx.name.clone(),
+                        ctx.server.clone(),
+                        ctx.org.clone().unwrap_or_default(),
+                        ctx.team.clone().unwrap_or_default(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            if rows.is_empty() && config.base_url.is_some() {
+                let mark = if config.current_context.is_none() {
                     "*"
                 } else {
                     " "
                 };
-                println!(
-                    "{mark} {}\t{}\t{}\t{}",
-                    ctx.name,
-                    ctx.server,
-                    ctx.org.unwrap_or_default(),
-                    ctx.team.unwrap_or_default()
-                );
+                rows.push(vec![
+                    mark.to_string(),
+                    "legacy".to_string(),
+                    config.base_url.clone().unwrap_or_default(),
+                    config.org.clone().unwrap_or_default(),
+                    config.team.clone().unwrap_or_default(),
+                ]);
+            }
+            if rows.is_empty() {
+                println!("no contexts");
+            } else {
+                let headers = ["", "NAME", "SERVER", "ORG", "TEAM"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                let widths = (0..headers.len())
+                    .map(|i| {
+                        std::iter::once(headers[i].len())
+                            .chain(rows.iter().map(|row| row[i].len()))
+                            .max()
+                            .unwrap_or(0)
+                    })
+                    .collect::<Vec<_>>();
+                println!("{}", format_row(&headers, &widths));
+                for row in rows {
+                    println!("{}", format_row(&row, &widths));
+                }
             }
         }
     }
@@ -1272,7 +1469,25 @@ mod tests {
     #[test]
     fn table_renders_page_items() {
         let rendered = table(&json!({"items":[{"name":"a","revision":1}]}));
-        assert!(rendered.contains("name"));
+        assert!(rendered.contains("NAME"));
         assert!(rendered.contains("a"));
+    }
+
+    #[test]
+    fn legacy_scalar_config_parses_with_defaults() -> Result<()> {
+        let parsed: CliConfig = toml::from_str(
+            r#"
+base_url = "http://localhost:8080"
+team = "default"
+org = "dev-org"
+oidc_issuer = "http://localhost:8081"
+oidc_client_id = "376872439851843590"
+"#,
+        )?;
+        assert_eq!(parsed.base_url.as_deref(), Some("http://localhost:8080"));
+        assert_eq!(parsed.org.as_deref(), Some("dev-org"));
+        assert_eq!(parsed.team.as_deref(), Some("default"));
+        assert!(parsed.contexts.is_empty());
+        Ok(())
     }
 }

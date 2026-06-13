@@ -3,7 +3,8 @@
 mod cli;
 mod serve;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -83,7 +84,7 @@ enum Command {
         command: cli::OpsCommand,
     },
     /// Shell completion script.
-    Completion { shell: String },
+    Completion { shell: Shell },
     /// Print version.
     Version,
 }
@@ -131,11 +132,8 @@ fn main() -> anyhow::Result<()> {
         Command::Stats { command } => runtime.block_on(cli::run_stats(cli.client, command)),
         Command::Ops { command } => runtime.block_on(cli::run_ops(cli.client, command)),
         Command::Completion { shell } => {
-            println!(
-                "# completion generation for {shell} will use clap_complete in the next S7 pass"
-            );
-            println!("# command tree is available via:");
-            println!("# flowplane --help");
+            let mut command = Cli::command();
+            clap_complete::generate(shell, &mut command, "flowplane", &mut std::io::stdout());
             Ok(())
         }
         Command::Version => {
@@ -148,7 +146,6 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     #[test]
     fn command_tree_builds() {

@@ -182,7 +182,13 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         output, and typed commands for shipped S2–S6 REST endpoints (org/team/member/grant,
         cluster/listener/route-config, secrets, dataplanes/certs, stats, xDS NACKs).
         OpenAPI-vs-CLI path coverage test pins that every current secured S2–S6 path has a
-        CLI template. Remaining S7 scope: PKCE/device-code auth, real shell completions,
+        CLI template.
+  - [x] S7.2 CLI UX pass: real `clap_complete` shell completions; safer
+        `auth login --token-stdin`; aligned table output with stable high-signal column order;
+        mutation commands print concise created/updated/deleted summaries unless JSON/YAML is
+        requested; `config get-contexts` renders aligned context rows and remains compatible with
+        v1-era scalar config fields (`base_url`, `org`, `team`, `token`) so existing local
+        installs do not fail on first run. Remaining S7 scope: PKCE/device-code auth,
         declarative `apply --diff`, transcript E2E polish.
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
