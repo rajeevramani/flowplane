@@ -70,6 +70,7 @@ pub struct OidcValidator {
 }
 
 impl OidcValidator {
+    #[allow(clippy::expect_used)]
     pub fn new(config: OidcConfig) -> Self {
         Self {
             config,

@@ -27,6 +27,7 @@ fn secret_from_row(row: &PgRow) -> DomainResult<Secret> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_secret(
     tx: &mut Transaction<'_, Postgres>,
     team: TeamRef,
@@ -109,6 +110,7 @@ pub async fn get_secret(
     row.as_ref().map(secret_from_row).transpose()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn rotate_secret(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,

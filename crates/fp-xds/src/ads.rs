@@ -17,7 +17,7 @@ use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service
 use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
-use fp_domain::TeamId;
+use fp_domain::{DataplaneId, TeamId};
 use prost::Message;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -42,6 +42,9 @@ const TYPE_ORDER: [&str; 5] = [
 #[derive(Debug, Clone, Copy)]
 pub struct PeerIdentity {
     pub team_id: TeamId,
+    /// Dataplane row bound by the certificate registry. `None` only under the dev
+    /// node-id resolver, which has no certificate registry row to bind.
+    pub dataplane_id: Option<DataplaneId>,
     /// The certificate-registry row backing this stream. Revocation of this id terminates
     /// the stream. `None` only under the dev node-id resolver.
     pub certificate_id: Option<Uuid>,
@@ -77,6 +80,7 @@ impl TeamResolver for NodeIdTeamResolver {
             .map_err(|_| Status::unauthenticated("node.id team segment is not a UUID"))?;
         Ok(PeerIdentity {
             team_id,
+            dataplane_id: None,
             certificate_id: None,
         })
     }
@@ -114,6 +118,7 @@ impl TeamResolver for CertRegistryResolver {
                     serial = %cert.serial_number, "dataplane authenticated via certificate registry");
                 Ok(PeerIdentity {
                     team_id: cert.team_id,
+                    dataplane_id: Some(cert.dataplane_id),
                     certificate_id: Some(cert.id.as_uuid()),
                 })
             }

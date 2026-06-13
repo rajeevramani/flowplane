@@ -15,11 +15,13 @@ fp-domain = { workspace = true }
 fp-storage = { workspace = true }
 metrics = { workspace = true }
 prost = { workspace = true }
+prost-types = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 x509-parser = { workspace = true }

@@ -832,6 +832,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fp-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fp-xds",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "fp-api"
 version = "0.1.0"
 dependencies = [
@@ -924,11 +942,13 @@ dependencies = [
  "fp-storage",
  "metrics",
  "prost",
+ "prost-types",
  "serde_json",
  "sqlx",
  "tokio",
  "tokio-stream",
  "tonic",
+ "tonic-prost",
  "tracing",
  "uuid",
  "x509-parser",

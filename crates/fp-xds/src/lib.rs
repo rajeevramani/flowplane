@@ -3,6 +3,7 @@
 //! reaches any encoded output (kills v1's version-churn class, spec/04 §8.6).
 
 pub mod ads;
+pub mod diagnostics;
 pub mod server;
 pub mod snapshot;
 pub mod translate;

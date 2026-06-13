@@ -88,9 +88,12 @@ impl AddOrgMemberBody {
         if let Some(subject) = &self.subject {
             return Ok(AddMemberTarget::Subject(subject.clone()));
         }
-        Ok(AddMemberTarget::UserId(UserId::from(
-            self.user_id.expect("checked supplied"),
-        )))
+        if let Some(user_id) = self.user_id {
+            return Ok(AddMemberTarget::UserId(UserId::from(user_id)));
+        }
+        Err(DomainError::internal(
+            "member selector validation reached an impossible state",
+        ))
     }
 }
 

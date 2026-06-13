@@ -71,6 +71,43 @@ pub async fn record_telemetry(
     }
 }
 
+pub async fn record_telemetry_by_id(
+    pool: &PgPool,
+    team_id: TeamId,
+    dataplane_id: DataplaneId,
+    requests_delta: i64,
+    errors_delta: i64,
+    warming_failures_delta: i64,
+    config_verified: bool,
+) -> DomainResult<Dataplane> {
+    let row = sqlx::query(&format!(
+        "UPDATE dataplanes SET \
+            last_heartbeat_at = now(), \
+            last_config_verify_at = CASE WHEN $1 THEN now() ELSE last_config_verify_at END, \
+            total_requests = total_requests + $2, \
+            total_errors = total_errors + $3, \
+            warming_failures = warming_failures + $4, \
+            updated_at = now() \
+         WHERE team_id = $5 AND id = $6 RETURNING {DP_COLUMNS}"
+    ))
+    .bind(config_verified)
+    .bind(requests_delta.max(0))
+    .bind(errors_delta.max(0))
+    .bind(warming_failures_delta.max(0))
+    .bind(team_id.as_uuid())
+    .bind(dataplane_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("record dataplane telemetry: {e}")))?;
+    match row {
+        Some(row) => Ok(dataplane_from_row(&row)),
+        None => {
+            let handle = dataplane_id.as_uuid().to_string();
+            Err(DomainError::not_found("dataplane", &handle))
+        }
+    }
+}
+
 pub async fn stats_overview(pool: &PgPool, team_id: TeamId) -> DomainResult<TeamStatsOverview> {
     let row = sqlx::query(
         "SELECT \

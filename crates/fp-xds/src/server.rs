@@ -3,6 +3,7 @@
 //! by their SPIFFE URI. [`serve_plaintext`] exists for tests and dev mode only.
 
 use crate::ads::{AdsService, TeamResolver};
+use crate::diagnostics::DiagnosticsService;
 use crate::snapshot::SnapshotCache;
 use fp_domain::{DomainError, DomainResult};
 use std::net::SocketAddr;
@@ -74,12 +75,20 @@ pub async fn serve_mtls(
         .identity(identity)
         .client_ca_root(client_ca);
 
-    let service = AdsService::new(cache, resolver, revocations, Some(nack_pool)).into_server();
+    let service = AdsService::new(
+        cache,
+        resolver.clone(),
+        revocations,
+        Some(nack_pool.clone()),
+    )
+    .into_server();
+    let diagnostics = DiagnosticsService::new(resolver, nack_pool).into_server();
     tracing::info!(%addr, "xDS ADS server starting (mTLS, certificate-registry binding)");
     tonic::transport::Server::builder()
         .tls_config(tls_config)
         .map_err(|e| DomainError::internal(format!("xds tls config: {e}")))?
         .add_service(service)
+        .add_service(diagnostics)
         .serve_with_shutdown(addr, shutdown)
         .await
         .map_err(|e| DomainError::internal(format!("xds server: {e}")))
@@ -98,11 +107,20 @@ pub async fn serve_plaintext(
     // The bus sender lives inside AdsService for the server's lifetime; plaintext mode has
     // no cert-bound streams so nothing ever publishes on it.
     let (revocations, _) = tokio::sync::broadcast::channel(16);
+    let diagnostics = nack_pool
+        .clone()
+        .map(|pool| DiagnosticsService::new(resolver.clone(), pool).into_server());
     let service = AdsService::new(cache, resolver, revocations, nack_pool).into_server();
     tracing::info!(%addr, "xDS ADS server starting (plaintext dev mode)");
-    tonic::transport::Server::builder()
-        .add_service(service)
-        .serve_with_shutdown(addr, shutdown)
-        .await
-        .map_err(|e| DomainError::internal(format!("xds server: {e}")))
+    let builder = tonic::transport::Server::builder().add_service(service);
+    match diagnostics {
+        Some(diagnostics) => {
+            builder
+                .add_service(diagnostics)
+                .serve_with_shutdown(addr, shutdown)
+                .await
+        }
+        None => builder.serve_with_shutdown(addr, shutdown).await,
+    }
+    .map_err(|e| DomainError::internal(format!("xds server: {e}")))
 }

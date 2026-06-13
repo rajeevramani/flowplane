@@ -284,7 +284,18 @@ mod tests {
             "bootstrap admin must be platform admin"
         );
         assert_eq!(loaded.user_id, admin);
-        assert_eq!(loaded.org.map(|(id, _)| id), Some(org_id));
+        assert!(
+            loaded
+                .memberships
+                .iter()
+                .any(|(id, role)| *id == org_id && *role == fp_domain::OrgRole::Owner),
+            "bootstrap admin must retain owner membership in the platform org"
+        );
+        assert_eq!(
+            loaded.org.map(|(id, _)| id),
+            None,
+            "platform org is not an implicit tenant context"
+        );
 
         // Cleanup so other instance-level tests (and dev seeding) see a clean slate.
         sqlx::query("DELETE FROM instance_meta WHERE key = 'platform_org_id'")

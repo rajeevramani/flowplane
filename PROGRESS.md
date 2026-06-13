@@ -135,7 +135,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           clean + foreign listener port closed)
     - [x] `SnapshotCache::prime_all` + regression test (fresh cache primed from DB byte-identical
           to the event-driven one)
-- [ ] S6 Secrets/SDS + dataplane & proxy-cert management surface (REST/CLI) + fp-agent telemetry
+- [x] S6 Secrets/SDS + dataplane & proxy-cert management surface (REST/CLI) + fp-agent telemetry
   - NOTE: the dataplane + proxy_certificate **internals** (migration 0006, repos, services,
     mTLS cert-registry binding, revocation) already shipped in S5.4 — do NOT rebuild them.
     S6's remaining scope: encrypted-at-rest secrets + SDS delivery; the REST/CLI surface for
@@ -164,11 +164,16 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
     - [x] S6.4b live Envoy SDS rotation E2E: listener `tls_context` can reference SDS TLS
           certificate secrets over ADS; `scripts/e2e-envoy.sh` proves HTTPS serves from an
           SDS secret and rotates to a new cert without restarting Envoy.
-  - [ ] S6.5 fp-agent telemetry relay, heartbeats, liveness, per-team stats aggregation
+  - [x] S6.5 fp-agent telemetry relay, heartbeats, liveness, per-team stats aggregation
     - [x] S6.5a dataplane telemetry/liveness foundation: heartbeat/config-verify timestamps
           and request/error/warming counters, REST telemetry ingest, and
           `/api/v1/teams/{team}/stats/overview` aggregation.
-    - [ ] S6.5b fp-agent diagnostics gRPC/mTLS relay + live stats E2E
+    - [x] S6.5b diagnostics gRPC service mounted beside ADS with certificate-registry
+          dataplane binding; `fp-agent` sidecar scrapes Envoy admin stats and relays heartbeat
+          deltas over the diagnostics stream (mTLS or dev plaintext); real mTLS integration test
+          verifies wrong dataplane claims are rejected and accepted heartbeats update live stats.
+- [x] S6 exit: SDS rotation E2E passed in S6.4b; revoked cert stream-kill covered by S5.4;
+      secret values are write-only over HTTP; stats relay covered by S6.5b.
 - [ ] S7 CLI core (+ commands for S2–S6)
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
