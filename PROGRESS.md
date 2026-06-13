@@ -156,6 +156,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         `FLOWPLANE_SECRET_ENCRYPTION_KEY`, metadata-only read/list/get responses, create/rotate
         REST surface at `/api/v1/teams/{team}/secrets[/{name}/rotate]`, OpenAPI operation pin 44.
   - [ ] S6.4 SDS delivery over ADS + live rotation E2E
+    - [x] S6.4a SDS resource type wired into ADS snapshots: active encrypted secrets decrypt
+          into Envoy `tls.v3.Secret` resources, SDS subscriptions are name-filtered
+          (empty subscription returns zero secrets), and secret upserts trigger xDS rebuilds.
+    - [ ] S6.4b live Envoy SDS rotation E2E
   - [ ] S6.5 fp-agent telemetry relay, heartbeats, liveness, per-team stats aggregation
 - [ ] S7 CLI core (+ commands for S2–S6)
 - [ ] S8 Learning config-first

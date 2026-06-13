@@ -9,6 +9,7 @@
 
 use crate::snapshot::{
     SnapshotCache, CLUSTER_TYPE_URL, ENDPOINT_TYPE_URL, LISTENER_TYPE_URL, ROUTE_TYPE_URL,
+    SECRET_TYPE_URL,
 };
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_server::{
     AggregatedDiscoveryService, AggregatedDiscoveryServiceServer,
@@ -17,6 +18,7 @@ use envoy_types::pb::envoy::service::discovery::v3::{
     DeltaDiscoveryRequest, DeltaDiscoveryResponse, DiscoveryRequest, DiscoveryResponse,
 };
 use fp_domain::TeamId;
+use prost::Message;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -28,10 +30,11 @@ use uuid::Uuid;
 
 /// Make-before-break push order (deletes are handled by SOTW full-set semantics):
 /// clusters warm before their endpoints arrive, routes before the listeners that bind them.
-const TYPE_ORDER: [&str; 4] = [
+const TYPE_ORDER: [&str; 5] = [
     CLUSTER_TYPE_URL,
     ENDPOINT_TYPE_URL,
     ROUTE_TYPE_URL,
+    SECRET_TYPE_URL,
     LISTENER_TYPE_URL,
 ];
 
@@ -203,6 +206,29 @@ fn response_for(
     )
 }
 
+fn resources_for_response(
+    type_url: &str,
+    set: &crate::snapshot::ResourceSet,
+    resource_names: &[String],
+) -> Vec<envoy_types::pb::google::protobuf::Any> {
+    if type_url != SECRET_TYPE_URL {
+        return set.resources.clone();
+    }
+    if resource_names.is_empty() {
+        return Vec::new();
+    }
+    set.resources
+        .iter()
+        .filter(|resource| {
+            envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::Secret::decode(
+                resource.value.as_slice(),
+            )
+            .is_ok_and(|secret| resource_names.binary_search(&secret.name).is_ok())
+        })
+        .cloned()
+        .collect()
+}
+
 #[tonic::async_trait]
 impl AggregatedDiscoveryService for AdsService {
     type StreamAggregatedResourcesStream =
@@ -335,8 +361,10 @@ impl AggregatedDiscoveryService for AdsService {
                         state.subscribed = true;
                         let snapshot = cache.team(team_id).await;
                         if let Some(set) = snapshot.for_type_url(&type_url) {
+                            let resources =
+                                resources_for_response(&type_url, set, &state.resource_names);
                             let (response, nonce) = response_for(
-                                &type_url, set.version, set.resources.clone(), &mut nonce_seq,
+                                &type_url, set.version, resources, &mut nonce_seq,
                             );
                             state.sent_version = Some(set.version);
                             state.last_nonce = nonce;
@@ -392,8 +420,10 @@ impl AggregatedDiscoveryService for AdsService {
                             if state.sent_version == Some(set.version) {
                                 continue;
                             }
+                            let resources =
+                                resources_for_response(type_url, set, &state.resource_names);
                             let (response, nonce) = response_for(
-                                type_url, set.version, set.resources.clone(), &mut nonce_seq,
+                                type_url, set.version, resources, &mut nonce_seq,
                             );
                             state.sent_version = Some(set.version);
                             state.last_nonce = nonce;

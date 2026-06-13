@@ -535,7 +535,7 @@ pub async fn count_listeners(pool: &PgPool, team_id: TeamId) -> DomainResult<i64
         .map_err(|e| DomainError::internal(format!("count listeners: {e}")))
 }
 
-/// Every team that owns at least one gateway resource. Used to prime the xDS snapshot
+/// Every team that owns at least one xDS-served resource. Used to prime the xDS snapshot
 /// cache at startup — the outbox cursor is durable, so already-consumed events never
 /// replay and a fresh process would otherwise serve empty snapshots to reconnecting
 /// dataplanes (which, under state-of-the-world semantics, wipes their config).
@@ -544,6 +544,7 @@ pub async fn teams_with_gateway_resources(pool: &PgPool) -> DomainResult<Vec<Tea
         "SELECT team_id FROM clusters
          UNION SELECT team_id FROM route_configs
          UNION SELECT team_id FROM listeners
+         UNION SELECT team_id FROM secrets
          ORDER BY team_id",
     )
     .fetch_all(pool)

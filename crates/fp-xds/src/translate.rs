@@ -1,5 +1,6 @@
 //! Domain → Envoy proto translation (the IR seam, spec/10 §5).
 
+use base64::Engine as _;
 use envoy_types::pb::envoy::config::cluster::v3 as exc;
 use envoy_types::pb::envoy::config::core::v3 as core;
 use envoy_types::pb::envoy::config::endpoint::v3 as ep;
@@ -12,7 +13,7 @@ use envoy_types::pb::google::protobuf as wkt;
 use fp_domain::gateway::cluster::{ClusterSpec, LbPolicy};
 use fp_domain::gateway::listener::ListenerSpec;
 use fp_domain::gateway::route_config::{PathMatch, RouteConfigSpec};
-use fp_domain::{DomainError, DomainResult};
+use fp_domain::{DomainError, DomainResult, SecretSpec};
 use prost::Message;
 
 fn any<M: Message>(type_url: &str, msg: &M) -> wkt::Any {
@@ -50,6 +51,90 @@ fn socket_address(host: &str, port: u16) -> core::Address {
             ..Default::default()
         })),
     }
+}
+
+fn inline_string(value: String) -> core::DataSource {
+    core::DataSource {
+        specifier: Some(core::data_source::Specifier::InlineString(value)),
+        ..Default::default()
+    }
+}
+
+fn inline_bytes(value: Vec<u8>) -> core::DataSource {
+    core::DataSource {
+        specifier: Some(core::data_source::Specifier::InlineBytes(value)),
+        ..Default::default()
+    }
+}
+
+fn decode_base64(label: &str, value: &str) -> DomainResult<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|_| DomainError::validation(format!("{label} must be base64")))
+}
+
+pub fn secret_to_proto(name: &str, spec: &SecretSpec) -> DomainResult<tls::Secret> {
+    let r#type = match spec {
+        SecretSpec::GenericSecret { secret } => {
+            tls::secret::Type::GenericSecret(tls::GenericSecret {
+                secret: Some(inline_bytes(decode_base64("generic secret", secret)?)),
+                ..Default::default()
+            })
+        }
+        SecretSpec::TlsCertificate {
+            certificate_chain,
+            private_key,
+            password,
+            ocsp_staple,
+        } => tls::secret::Type::TlsCertificate(tls::TlsCertificate {
+            certificate_chain: Some(inline_string(certificate_chain.clone())),
+            private_key: Some(inline_string(private_key.clone())),
+            password: password.clone().map(inline_string),
+            ocsp_staple: ocsp_staple
+                .as_ref()
+                .map(|staple| decode_base64("ocsp_staple", staple).map(inline_bytes))
+                .transpose()?,
+            ..Default::default()
+        }),
+        SecretSpec::CertificateValidationContext {
+            trusted_ca,
+            match_subject_alt_names,
+            crl,
+            only_verify_leaf_cert_crl,
+        } => tls::secret::Type::ValidationContext(tls::CertificateValidationContext {
+            trusted_ca: Some(inline_string(trusted_ca.clone())),
+            match_typed_subject_alt_names: match_subject_alt_names
+                .iter()
+                .map(|value| tls::SubjectAltNameMatcher {
+                    san_type: tls::subject_alt_name_matcher::SanType::Dns as i32,
+                    matcher: Some(envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+                        match_pattern: Some(
+                            envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Exact(
+                                value.clone(),
+                            ),
+                        ),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .collect(),
+            crl: crl.clone().map(inline_string),
+            only_verify_leaf_cert_crl: *only_verify_leaf_cert_crl,
+            ..Default::default()
+        }),
+        SecretSpec::SessionTicketKeys { keys } => {
+            tls::secret::Type::SessionTicketKeys(tls::TlsSessionTicketKeys {
+                keys: keys
+                    .iter()
+                    .map(|key| decode_base64("session ticket key", &key.key).map(inline_bytes))
+                    .collect::<DomainResult<Vec<_>>>()?,
+            })
+        }
+    };
+    Ok(tls::Secret {
+        name: name.to_string(),
+        r#type: Some(r#type),
+    })
 }
 
 /// EDS only carries socket addresses — Envoy never DNS-resolves EDS endpoints. Clusters
@@ -1237,6 +1322,43 @@ mod tests {
         assert!(disable.type_url.ends_with("route.v3.FilterConfig"));
         let cfg = rt::FilterConfig::decode(disable.value.as_slice()).expect("decode");
         assert!(cfg.disabled);
+    }
+
+    #[test]
+    fn secret_specs_translate_to_envoy_sds_secrets() {
+        let generic = secret_to_proto(
+            "api-token",
+            &SecretSpec::GenericSecret {
+                secret: "aGVsbG8=".into(),
+            },
+        )
+        .expect("generic secret");
+        assert_eq!(generic.name, "api-token");
+        match generic.r#type.expect("type") {
+            tls::secret::Type::GenericSecret(secret) => {
+                let data = secret.secret.expect("inline secret");
+                assert_eq!(
+                    data.specifier,
+                    Some(core::data_source::Specifier::InlineBytes(b"hello".to_vec()))
+                );
+            }
+            _ => panic!("expected generic secret"),
+        }
+
+        let tls_secret = secret_to_proto(
+            "edge-cert",
+            &SecretSpec::TlsCertificate {
+                certificate_chain: "CERT".into(),
+                private_key: "KEY".into(),
+                password: None,
+                ocsp_staple: None,
+            },
+        )
+        .expect("tls secret");
+        assert!(matches!(
+            tls_secret.r#type,
+            Some(tls::secret::Type::TlsCertificate(_))
+        ));
     }
 
     fn hcm_of(spec: &ListenerSpec) -> hcm::HttpConnectionManager {

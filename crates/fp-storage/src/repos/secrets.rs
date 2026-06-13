@@ -139,3 +139,33 @@ pub async fn rotate_secret(
         None => Err(DomainError::not_found("secret", name)),
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct EncryptedSecret {
+    pub metadata: Secret,
+    pub ciphertext: Vec<u8>,
+    pub nonce: Vec<u8>,
+}
+
+pub async fn list_encrypted_secrets(
+    pool: &PgPool,
+    team_id: TeamId,
+) -> DomainResult<Vec<EncryptedSecret>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {COLUMNS}, configuration_encrypted, nonce FROM secrets \
+         WHERE team_id = $1 AND (expires_at IS NULL OR expires_at > now()) ORDER BY name"
+    ))
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list encrypted secrets: {e}")))?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        items.push(EncryptedSecret {
+            metadata: secret_from_row(&row)?,
+            ciphertext: row.get("configuration_encrypted"),
+            nonce: row.get("nonce"),
+        });
+    }
+    Ok(items)
+}
