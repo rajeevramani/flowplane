@@ -5,6 +5,7 @@
 //! request id through error body, logs, and traces.
 
 pub mod auth;
+pub mod dataplanes_api;
 pub mod error;
 pub mod identity_api;
 pub mod middleware;

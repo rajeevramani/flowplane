@@ -141,6 +141,13 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
     S6's remaining scope: encrypted-at-rest secrets + SDS delivery; the REST/CLI surface for
     dataplane registration + bootstrap generation + cert issue/revoke; fp-agent telemetry
     relay + heartbeats (D-007); per-team stats aggregation.
+  - [x] S6.1 dataplane REST surface: list/create/get registered dataplanes at
+        `/api/v1/teams/{team}/dataplanes[/{name}]` over the existing S5.4 service internals;
+        OpenAPI operation pin updated to 36.
+  - [ ] S6.2 dataplane bootstrap generation + proxy-cert issue/revoke REST surface
+  - [ ] S6.3 encrypted-at-rest secrets + write-only API + rotation
+  - [ ] S6.4 SDS delivery over ADS + live rotation E2E
+  - [ ] S6.5 fp-agent telemetry relay, heartbeats, liveness, per-team stats aggregation
 - [ ] S7 CLI core (+ commands for S2–S6)
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
