@@ -19,6 +19,16 @@ fn unique(prefix: &str) -> String {
     )
 }
 
+async fn json_of(response: axum::response::Response) -> serde_json::Value {
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+}
+
 #[test]
 fn openapi_document_covers_every_registered_operation() {
     let doc = fp_api::routes::openapi_document();
@@ -103,15 +113,6 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
             }
             .expect("request")
         };
-    let json_of = |response: axum::response::Response| async {
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .expect("body")
-            .to_bytes();
-        serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
-    };
 
     let base = format!("/api/v1/teams/{}/clusters", team.name);
     let cluster = unique("crud");
@@ -200,4 +201,81 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         .expect("get");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(json_of(response).await["code"], "not_found");
+}
+
+#[tokio::test]
+async fn multi_org_user_selects_active_org_with_header() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+    let subject = unique("sub");
+    let token = issuer
+        .mint(&subject, "multi-http@test", "Multi HTTP", 600)
+        .expect("mint");
+
+    let org_a = identity::create_org(&pool, &unique("org-a"), "")
+        .await
+        .expect("org a");
+    let org_b = identity::create_org(&pool, &unique("org-b"), "")
+        .await
+        .expect("org b");
+    let team = identity::create_team(&pool, org_a.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let user = identity::upsert_user_by_subject(&pool, &subject, "multi-http@test", "Multi HTTP")
+        .await
+        .expect("user");
+    identity::add_org_membership(&pool, user, org_a.id, OrgRole::Admin)
+        .await
+        .expect("member a");
+    identity::add_org_membership(&pool, user, org_b.id, OrgRole::Viewer)
+        .await
+        .expect("member b");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+    });
+
+    let path = format!("/api/v1/teams/{}/clusters", team.name);
+    let base = || {
+        Request::builder()
+            .method("GET")
+            .uri(&path)
+            .header("authorization", format!("Bearer {token}"))
+    };
+
+    let response = app
+        .clone()
+        .oneshot(base().body(Body::empty()).expect("request"))
+        .await
+        .expect("ambiguous");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = app
+        .oneshot(
+            base()
+                .header("x-flowplane-org", org_a.name)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("selected");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["total"], 0);
+    assert!(body["items"].is_array());
 }

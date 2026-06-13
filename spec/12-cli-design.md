@@ -229,10 +229,11 @@ cascade preview — follow the same conventions; elided for brevity, covered in 
 
 `flowplane auth login` (PKCE loopback; `--device-code` for headless) → tokens in
 `~/.flowplane/credentials` (0600, auto-refresh). `FLOWPLANE_TOKEN` env supported for CI.
-Contexts: `flowplane config set-context prod --server https://fp.acme.com --team payments`,
-`flowplane config use-context prod`. `stack *` and `db migrate` are the only commands that
-don't go through the REST API (local compose / direct DB) and are clearly labeled as such in
-help.
+Contexts: `flowplane config set-context prod --server https://fp.acme.com --org acme --team payments`,
+`flowplane config use-context prod`. `--org` on a command overrides the active context and is sent
+as `X-Flowplane-Org`; when omitted, the server only infers an org for users with exactly one active
+non-platform membership. `stack *` and `db migrate` are the only commands that don't go through the
+REST API (local compose / direct DB) and are clearly labeled as such in help.
 
 ## 7. Acceptance criteria (tested in the CLI slice and every feature slice after)
 
