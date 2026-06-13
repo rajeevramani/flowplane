@@ -37,10 +37,21 @@ pub struct ListenerSpec {
     /// HTTP filter chain, in order (S5.8). The router filter is appended automatically.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub http_filters: Vec<crate::gateway::filters::HttpFilterEntry>,
+    /// File access logs attached to the HTTP connection manager.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access_logs: Vec<AccessLogConfig>,
     /// Downstream TLS for the single filter chain v2 currently emits. Certificate material
     /// may be inline file paths or SDS secret names delivered over ADS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_context: Option<ListenerTlsConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AccessLogConfig {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_format: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -144,7 +155,29 @@ impl ListenerSpec {
         if let Some(tls) = &self.tls_context {
             tls.validate()?;
         }
+        if self.access_logs.len() > 8 {
+            return Err(DomainError::validation(
+                "listener access_logs must contain at most 8 entries",
+            ));
+        }
+        for log in &self.access_logs {
+            log.validate()?;
+        }
         crate::gateway::filters::validate_filter_chain(&self.http_filters)?;
+        Ok(())
+    }
+}
+
+impl AccessLogConfig {
+    pub fn validate(&self) -> DomainResult<()> {
+        validate_path("access_log.path", &self.path)?;
+        if let Some(format) = &self.text_format {
+            if format.is_empty() || format.len() > 4096 || format.contains('\0') {
+                return Err(DomainError::validation(
+                    "access_log.text_format must be 1-4096 chars and contain no NUL",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -226,6 +259,7 @@ mod tests {
             protocol: ListenerProtocol::Http,
             route_config: None,
             http_filters: Vec::new(),
+            access_logs: Vec::new(),
             tls_context: None,
         }
     }
@@ -325,5 +359,18 @@ mod tests {
             validation_context_sds_secret_name: None,
         });
         assert!(spec.validate().is_ok(), "https with SDS TLS is valid");
+    }
+
+    #[test]
+    fn access_log_validation_is_bounded() {
+        let mut spec = spec("0.0.0.0", 8080);
+        spec.access_logs = vec![AccessLogConfig {
+            path: "/var/log/envoy/access.log".into(),
+            text_format: Some("%REQ(:METHOD)% %RESPONSE_CODE%\n".into()),
+        }];
+        assert!(spec.validate().is_ok());
+
+        spec.access_logs[0].path = "".into();
+        assert!(spec.validate().is_err(), "empty access log path rejected");
     }
 }

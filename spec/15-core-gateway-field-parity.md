@@ -138,7 +138,7 @@ For each field group below, "done" means:
 | Multiple filter chains | Missing | **Defer pre-S8** unless TLS/SNI routing requires it; V2 should avoid this complexity until needed |
 | Inline route config | Missing | **Reject by default.** Prefer RDS as the V2 architecture; add inline only for a concrete UX need |
 | TCP proxy | Missing | **Must implement** if TCP remains part of the V1 parity definition; otherwise explicitly defer |
-| Access logs | Missing as user config | **Must implement basic typed config.** Learning can later inject capture logs through the same IR |
+| Access logs | Basic file access logs implemented in S7.8d | Typed listener `access_logs` emit `envoy.access_loggers.file`; learning can later inject capture logs through the same IR |
 | Tracing | Missing | **Must implement basic typed config** for OTel/Zipkin-or-generic decision, or explicitly defer with impact |
 | Request ID behavior | Translator-owned | Verify and document default behavior |
 | HTTP filter chain order | Present for current subset | Keep router auto-append invariant |

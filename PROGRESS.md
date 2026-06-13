@@ -257,13 +257,15 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           (`request_headers` + `generic_key` actions).
         - Direct response remains explicitly deferred in `spec/15-core-gateway-field-parity.md`;
           global RLS enforcement filter remains tracked under filter parity, not route parity.
-  - [ ] S7.8d Listener parity: typed V2 support for protocol/listener kind, TCP proxy if retained,
+  - [x] S7.8d Listener parity: typed V2 support for protocol/listener kind, TCP proxy if retained,
         downstream TLS coverage, access logs, tracing, filter-chain decisions, and request-id
         behavior.
         - Implemented: explicit HTTP/HTTP2/HTTPS protocol field with backward-compatible default,
-          HTTPS TLS validation, and xDS HCM codec translation.
-        - Remaining before close: TCP retain/defer decision, access log config, tracing config,
-          and request-id behavior documentation/tests.
+          HTTPS TLS validation, xDS HCM codec translation, typed file access-log config, and
+          always-on Envoy request-id generation/response echo for learning correlation.
+        - Deferred: TCP listener/proxy support until V2 has a first-class TCP route/action model;
+          listener tracing config remains tracked under observability/filter parity because it
+          needs provider-specific API/cluster decisions rather than a lossy placeholder.
   - [ ] S7.8e Filter parity decisions and implementation: close or explicitly defer the remaining
         V1 filter catalog with owner slices and user-visible impact documented.
   - [ ] S7.8f DB/API/CLI/OpenAPI parity tests and examples: full specs round-trip through storage,

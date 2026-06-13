@@ -642,6 +642,7 @@ mod tests {
                 route_config: Some(rc.clone()),
                 tls_context: None,
                 http_filters: Vec::new(),
+                access_logs: Vec::new(),
             },
             RequestId::generate(),
         )

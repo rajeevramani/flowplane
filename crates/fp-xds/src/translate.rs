@@ -1,11 +1,13 @@
 //! Domain → Envoy proto translation (the IR seam, spec/10 §5).
 
 use base64::Engine as _;
+use envoy_types::pb::envoy::config::accesslog::v3 as accesslog;
 use envoy_types::pb::envoy::config::cluster::v3 as exc;
 use envoy_types::pb::envoy::config::core::v3 as core;
 use envoy_types::pb::envoy::config::endpoint::v3 as ep;
 use envoy_types::pb::envoy::config::listener::v3 as lst;
 use envoy_types::pb::envoy::config::route::v3 as rt;
+use envoy_types::pb::envoy::extensions::access_loggers::file::v3 as file_accesslog;
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
 use envoy_types::pb::envoy::extensions::path::rewrite::uri_template::v3 as uri_template_rewrite;
@@ -1455,6 +1457,9 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
             },
         )),
         http_filters,
+        access_log: access_logs_to_proto(&spec.access_logs),
+        generate_request_id: Some(bool_value(true)),
+        always_set_request_id_in_response: true,
         ..Default::default()
     };
     let transport_socket = spec
@@ -1479,6 +1484,42 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
         }],
         ..Default::default()
     })
+}
+
+fn access_logs_to_proto(
+    logs: &[fp_domain::gateway::listener::AccessLogConfig],
+) -> Vec<accesslog::AccessLog> {
+    logs.iter()
+        .map(|log| {
+            let access_log_format = log.text_format.as_ref().map(|format| {
+                file_accesslog::file_access_log::AccessLogFormat::LogFormat(
+                    core::SubstitutionFormatString {
+                        format: Some(core::substitution_format_string::Format::TextFormatSource(
+                            core::DataSource {
+                                specifier: Some(core::data_source::Specifier::InlineString(
+                                    format.clone(),
+                                )),
+                                ..Default::default()
+                            },
+                        )),
+                        ..Default::default()
+                    },
+                )
+            });
+            let file = file_accesslog::FileAccessLog {
+                path: log.path.clone(),
+                access_log_format,
+            };
+            accesslog::AccessLog {
+                name: "envoy.access_loggers.file".to_string(),
+                filter: None,
+                config_type: Some(accesslog::access_log::ConfigType::TypedConfig(any(
+                    "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+                    &file,
+                ))),
+            }
+        })
+        .collect()
 }
 
 fn listener_codec_type(spec: &ListenerSpec) -> hcm::http_connection_manager::CodecType {
@@ -1987,6 +2028,7 @@ mod tests {
             protocol: ListenerProtocol::Http,
             route_config: None,
             http_filters: Vec::new(),
+            access_logs: Vec::new(),
             tls_context: None,
         };
         assert!(listener_to_proto("edge", &unbound).is_err());
@@ -1997,6 +2039,10 @@ mod tests {
             protocol: ListenerProtocol::Http,
             route_config: Some("orders".into()),
             http_filters: Vec::new(),
+            access_logs: vec![fp_domain::gateway::listener::AccessLogConfig {
+                path: "/var/log/envoy/access.log".into(),
+                text_format: Some("%REQ(:METHOD)% %RESPONSE_CODE%\n".into()),
+            }],
             tls_context: None,
         };
         let proto = listener_to_proto("edge", &bound).expect("translate");
@@ -2011,6 +2057,20 @@ mod tests {
             manager.codec_type,
             hcm::http_connection_manager::CodecType::Http1 as i32
         );
+        assert_eq!(manager.generate_request_id, Some(bool_value(true)));
+        assert!(manager.always_set_request_id_in_response);
+        assert_eq!(manager.access_log.len(), 1);
+        let access_log = &manager.access_log[0];
+        assert_eq!(access_log.name, "envoy.access_loggers.file");
+        let file = match access_log.config_type.as_ref().expect("access log config") {
+            accesslog::access_log::ConfigType::TypedConfig(any) => {
+                assert!(any
+                    .type_url
+                    .ends_with("access_loggers.file.v3.FileAccessLog"));
+                file_accesslog::FileAccessLog::decode(any.value.as_slice()).expect("file log")
+            }
+        };
+        assert_eq!(file.path, "/var/log/envoy/access.log");
 
         let mut http2 = bound.clone();
         http2.protocol = ListenerProtocol::Http2;
@@ -2045,6 +2105,7 @@ mod tests {
             protocol: ListenerProtocol::Https,
             route_config: Some("orders".into()),
             http_filters: Vec::new(),
+            access_logs: Vec::new(),
             tls_context: Some(ListenerTlsConfig {
                 cert_chain_file: None,
                 private_key_file: None,
@@ -2135,6 +2196,7 @@ mod tests {
                 protocol: ListenerProtocol::Http,
                 route_config: Some("orders".into()),
                 http_filters: chain,
+                access_logs: Vec::new(),
                 tls_context: None,
             };
             let proto = listener_to_proto("edge", &spec).expect("translate");
@@ -2179,6 +2241,7 @@ mod tests {
                     }),
                     disabled: false,
                 }],
+                access_logs: Vec::new(),
                 tls_context: None,
             };
             let proto = listener_to_proto("edge2", &cors_spec).expect("cors chain marker");
@@ -2372,6 +2435,7 @@ mod tests {
                     disabled: false,
                 },
             ],
+            access_logs: Vec::new(),
             tls_context: None,
         };
         let manager = hcm_of(&spec);
