@@ -92,6 +92,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             crate::dataplanes_api::create_dataplane
         ))
         .routes(routes!(crate::dataplanes_api::get_dataplane))
+        .routes(routes!(crate::dataplanes_api::get_envoy_config))
         .routes(routes!(
             crate::dataplanes_api::list_proxy_certificates,
             crate::dataplanes_api::register_proxy_certificate

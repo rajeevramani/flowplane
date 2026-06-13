@@ -38,13 +38,13 @@ fn openapi_document_covers_every_registered_operation() {
     for item in paths.values() {
         operations += item.as_object().map(|o| o.len()).unwrap_or(0);
     }
-    // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 3 dataplane
+    // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 4 dataplane
     // + 3 proxy-certificate + 1 xds-nacks operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 39,
-        "expected 39 documented operations, got {operations}"
+        operations, 40,
+        "expected 40 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     for path in [
@@ -373,6 +373,37 @@ async fn proxy_certificate_registry_flow_over_http() {
         .await
         .expect("create dataplane");
     assert_eq!(response.status(), StatusCode::CREATED);
+
+    let config_path = format!(
+        "{dataplanes}/{dataplane}/envoy-config?cert_path=/certs/client.crt&key_path=/certs/client.key&ca_path=/certs/ca.crt&xds_host=cp.local&xds_port=18000"
+    );
+    let response = app
+        .clone()
+        .oneshot(request("GET", &config_path, None))
+        .await
+        .expect("envoy config");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/yaml; charset=utf-8")
+    );
+    let body = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes()
+            .to_vec(),
+    )
+    .expect("utf8");
+    assert!(body.contains("cluster_name: xds_cluster"));
+    assert!(body.contains("filename: \"/certs/client.crt\""));
+    assert!(body.contains("filename: \"/certs/client.key\""));
+    assert!(body.contains("filename: \"/certs/ca.crt\""));
 
     let certs = format!("/api/v1/teams/{}/proxy-certificates", team.name);
     let serial = unique("serial");

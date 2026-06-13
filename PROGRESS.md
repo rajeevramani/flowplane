@@ -148,7 +148,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
     - [x] S6.2a proxy-certificate REST registry surface: list/register/revoke at
           `/api/v1/teams/{team}/proxy-certificates[/{serial}/revoke]`, backed by the S5.4
           registry/revocation services; OpenAPI operation pin updated to 39.
-    - [ ] S6.2b actual certificate/key issuance + dataplane bootstrap generation
+    - [x] S6.2b dataplane Envoy bootstrap generation at
+          `/api/v1/teams/{team}/dataplanes/{name}/envoy-config` with explicit xDS mTLS
+          cert/key/CA file paths; OpenAPI operation pin updated to 40.
+    - [ ] S6.2c actual certificate/key issuance
   - [ ] S6.3 encrypted-at-rest secrets + write-only API + rotation
   - [ ] S6.4 SDS delivery over ADS + live rotation E2E
   - [ ] S6.5 fp-agent telemetry relay, heartbeats, liveness, per-team stats aggregation
