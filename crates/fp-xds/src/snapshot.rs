@@ -646,6 +646,7 @@ mod tests {
                 port: 19200,
                 route_config: Some(rc.clone()),
                 http_filters: Vec::new(),
+                tls_context: None,
             },
             RequestId::generate(),
         )

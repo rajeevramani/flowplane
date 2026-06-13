@@ -4,11 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-API=127.0.0.1:8096
-XDS_PORT=18000
-GW_PORT=10001
-UPSTREAM_PORT=3001
+API=${FLOWPLANE_E2E_API:-127.0.0.1:8096}
+XDS_PORT=${FLOWPLANE_E2E_XDS_PORT:-18000}
+GW_PORT=${FLOWPLANE_E2E_GW_PORT:-10001}
+UPSTREAM_PORT=${FLOWPLANE_E2E_UPSTREAM_PORT:-3001}
+ADMIN_PORT=${FLOWPLANE_E2E_ADMIN_PORT:-9901}
 DB=flowplane_e2e
+PG_ADMIN_URL=${FLOWPLANE_E2E_PG_ADMIN_URL:-postgres://postgres:postgres@127.0.0.1:5432/postgres}
+PG_DB_URL=${FLOWPLANE_E2E_DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:5432/$DB}
 
 cleanup() {
   docker rm -f fp-e2e-envoy >/dev/null 2>&1 || true
@@ -18,8 +21,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-bash scripts/ensure-postgres.sh >/dev/null
-su postgres -s /bin/bash -c "dropdb --if-exists $DB && createdb $DB"
+if psql "$PG_ADMIN_URL" -tc "select 1" >/dev/null 2>&1; then
+  psql "$PG_ADMIN_URL" -v ON_ERROR_STOP=1 \
+    -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" \
+    -c "CREATE DATABASE $DB" >/dev/null
+else
+  bash scripts/ensure-postgres.sh >/dev/null
+  su postgres -s /bin/bash -c "dropdb --if-exists $DB && createdb $DB"
+  PG_DB_URL=postgres://postgres:postgres@localhost/$DB
+fi
 
 # Distinctive upstream.
 mkdir -p /tmp/fp-e2e-www && echo "hello-from-upstream-$(date +%s)" > /tmp/fp-e2e-www/index.html
@@ -27,8 +37,9 @@ mkdir -p /tmp/fp-e2e-www && echo "hello-from-upstream-$(date +%s)" > /tmp/fp-e2e
 UP_PID=$!
 
 cargo build --bin flowplane -q
-FLOWPLANE_DATABASE_URL=postgres://postgres:postgres@localhost/$DB \
+FLOWPLANE_DATABASE_URL=$PG_DB_URL \
 FLOWPLANE_API_INSECURE=true FLOWPLANE_DEV_MODE=true \
+FLOWPLANE_SECRET_ENCRYPTION_KEY=12345678901234567890123456789012 \
 FLOWPLANE_API_ADDR=$API FLOWPLANE_XDS_ADDR=0.0.0.0:$XDS_PORT \
 ./target/debug/flowplane serve > /tmp/fp-e2e-cp.log 2>&1 &
 CP_PID=$!
@@ -53,7 +64,7 @@ node:
   id: "team=$TEAM_ID/dp-e2e"
   cluster: e2e
 admin:
-  address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }
+  address: { socket_address: { address: 127.0.0.1, port_value: $ADMIN_PORT } }
 dynamic_resources:
   ads_config:
     api_type: GRPC
@@ -91,7 +102,7 @@ fi
 
 fail() {
   echo "E2E FAILED: $1"
-  curl -fsS http://127.0.0.1:9901/config_dump > /tmp/fp-e2e-dump.json 2>/dev/null || true
+  curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump > /tmp/fp-e2e-dump.json 2>/dev/null || true
   echo "--- envoy logs:"; (docker logs fp-e2e-envoy 2>/dev/null || cat /tmp/fp-e2e-envoy.log) | tail -25
   echo "--- cp logs:"; tail -15 "${CP_LOG:-/tmp/fp-e2e-cp.log}"
   exit 1
@@ -122,8 +133,9 @@ trap '[ -n "${UP2_PID:-}" ] && kill $UP2_PID >/dev/null 2>&1 || true; cleanup' E
 
 kill "$CP_PID"; wait "$CP_PID" 2>/dev/null || true
 CP_LOG=/tmp/fp-e2e-cp2.log
-FLOWPLANE_DATABASE_URL=postgres://postgres:postgres@localhost/$DB \
+FLOWPLANE_DATABASE_URL=$PG_DB_URL \
 FLOWPLANE_API_INSECURE=true FLOWPLANE_DEV_MODE=true \
+FLOWPLANE_SECRET_ENCRYPTION_KEY=12345678901234567890123456789012 \
 FLOWPLANE_API_ADDR=$API FLOWPLANE_XDS_ADDR=0.0.0.0:$XDS_PORT \
 ./target/debug/flowplane serve > "$CP_LOG" 2>&1 &
 CP_PID=$!
@@ -154,7 +166,7 @@ curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/e2e-blue/route-configs \
 curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/e2e-blue/listeners \
   -d "{\"name\":\"blue-edge\",\"spec\":{\"address\":\"0.0.0.0\",\"port\":$((GW_PORT+1)),\"route_config\":\"blue-routes\"}}" >/dev/null
 sleep 3
-DUMP=$(curl -fsS http://127.0.0.1:9901/config_dump)
+DUMP=$(curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump)
 if echo "$DUMP" | grep -q "blue-upstream\|blue-edge\|blue-routes"; then
   fail "team e2e-blue resources leaked into team default's Envoy"
 fi
@@ -238,5 +250,65 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$AUTH_PORT/blocke
 [ "$CODE" = "403" ] || fail "rbac deny not enforced on /blocked (got $CODE)"
 echo "PHASE 5 OK: real Envoy ACKed jwt_auth + rbac; rbac DENY enforced on /blocked"
 
-echo "E2E PASSED: traffic, restart convergence, cross-team isolation, http filters, auth filters"
+# ---- Phase 6: SDS-backed downstream TLS rotation. The listener references a
+# tls_certificate secret by name; rotating the secret must update the certificate presented by
+# the already-running Envoy without restart.
+SDS_PORT=$((GW_PORT+4))
+command -v openssl >/dev/null || fail "openssl is required for SDS rotation phase"
+mkdir -p /tmp/fp-e2e-sds
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=fp-sds-one" \
+  -keyout /tmp/fp-e2e-sds/one.key -out /tmp/fp-e2e-sds/one.crt >/dev/null 2>&1
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=fp-sds-two" \
+  -keyout /tmp/fp-e2e-sds/two.key -out /tmp/fp-e2e-sds/two.crt >/dev/null 2>&1
+python3 - /tmp/fp-e2e-sds/one.crt /tmp/fp-e2e-sds/one.key > /tmp/fp-e2e-sds/secret-one.json <<'PY'
+import json, sys
+cert, key = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "name": "edge-sds",
+    "spec": {
+        "type": "tls_certificate",
+        "certificate_chain": open(cert).read(),
+        "private_key": open(key).read(),
+    },
+}))
+PY
+python3 - /tmp/fp-e2e-sds/two.crt /tmp/fp-e2e-sds/two.key > /tmp/fp-e2e-sds/secret-two.json <<'PY'
+import json, sys
+cert, key = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "spec": {
+        "type": "tls_certificate",
+        "certificate_chain": open(cert).read(),
+        "private_key": open(key).read(),
+    },
+}))
+PY
+curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  --data-binary @/tmp/fp-e2e-sds/secret-one.json >/dev/null
+curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/listeners -d "{
+  \"name\":\"e2e-sds\",
+  \"spec\":{\"address\":\"0.0.0.0\",\"port\":$SDS_PORT,\"route_config\":\"e2e-auth-routes\",
+    \"tls_context\":{\"tls_certificate_sds_secret_name\":\"edge-sds\"}}}" >/dev/null
+
+for i in $(seq 1 40); do
+  curl -fksS --max-time 2 https://127.0.0.1:$SDS_PORT/ >/dev/null 2>&1 && break
+  sleep 1
+done
+SUBJECT=$(echo | openssl s_client -connect 127.0.0.1:$SDS_PORT -servername localhost 2>/dev/null \
+  | openssl x509 -noout -subject 2>/dev/null || true)
+echo "$SUBJECT" | grep -q "fp-sds-one" || fail "SDS listener did not present initial cert (subject: $SUBJECT)"
+curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets/edge-sds/rotate \
+  --data-binary @/tmp/fp-e2e-sds/secret-two.json >/dev/null
+for i in $(seq 1 40); do
+  SUBJECT=$(echo | openssl s_client -connect 127.0.0.1:$SDS_PORT -servername localhost 2>/dev/null \
+    | openssl x509 -noout -subject 2>/dev/null || true)
+  echo "$SUBJECT" | grep -q "fp-sds-two" && break
+  sleep 1
+done
+echo "$SUBJECT" | grep -q "fp-sds-two" || fail "SDS rotation did not update Envoy cert (subject: $SUBJECT)"
+curl -fksS --max-time 2 https://127.0.0.1:$SDS_PORT/ >/dev/null 2>&1 \
+  || fail "HTTPS traffic failed after SDS rotation"
+echo "PHASE 6 OK: SDS TLS secret rotated live; Envoy presented the new certificate"
+
+echo "E2E PASSED: traffic, restart convergence, cross-team isolation, http filters, auth filters, SDS rotation"
 exit 0

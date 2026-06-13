@@ -399,6 +399,7 @@ mod referential {
                 port: 18443,
                 route_config: Some(rc_name.clone()),
                 http_filters: Vec::new(),
+                tls_context: None,
             },
             rid(),
         )
@@ -460,6 +461,7 @@ mod referential {
                     port,
                     route_config: None,
                     http_filters: Vec::new(),
+                    tls_context: None,
                 },
                 rid(),
             )

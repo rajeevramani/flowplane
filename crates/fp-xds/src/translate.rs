@@ -11,7 +11,7 @@ use envoy_types::pb::envoy::extensions::filters::network::http_connection_manage
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3 as tls;
 use envoy_types::pb::google::protobuf as wkt;
 use fp_domain::gateway::cluster::{ClusterSpec, LbPolicy};
-use fp_domain::gateway::listener::ListenerSpec;
+use fp_domain::gateway::listener::{ListenerSpec, ListenerTlsConfig};
 use fp_domain::gateway::route_config::{PathMatch, RouteConfigSpec};
 use fp_domain::{DomainError, DomainResult, SecretSpec};
 use prost::Message;
@@ -32,6 +32,10 @@ fn duration(secs: u32) -> wkt::Duration {
 
 fn u32_value(value: u32) -> wkt::UInt32Value {
     wkt::UInt32Value { value }
+}
+
+fn bool_value(value: bool) -> wkt::BoolValue {
+    wkt::BoolValue { value }
 }
 
 fn millis_duration(ms: u64) -> wkt::Duration {
@@ -63,6 +67,23 @@ fn inline_string(value: String) -> core::DataSource {
 fn inline_bytes(value: Vec<u8>) -> core::DataSource {
     core::DataSource {
         specifier: Some(core::data_source::Specifier::InlineBytes(value)),
+        ..Default::default()
+    }
+}
+
+fn filename(value: String) -> core::DataSource {
+    core::DataSource {
+        specifier: Some(core::data_source::Specifier::Filename(value)),
+        ..Default::default()
+    }
+}
+
+fn ads_config_source() -> core::ConfigSource {
+    core::ConfigSource {
+        resource_api_version: core::ApiVersion::V3 as i32,
+        config_source_specifier: Some(core::config_source::ConfigSourceSpecifier::Ads(
+            core::AggregatedConfigSource {},
+        )),
         ..Default::default()
     }
 }
@@ -979,18 +1000,17 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
         route_specifier: Some(hcm::http_connection_manager::RouteSpecifier::Rds(
             hcm::Rds {
                 route_config_name,
-                config_source: Some(core::ConfigSource {
-                    resource_api_version: core::ApiVersion::V3 as i32,
-                    config_source_specifier: Some(core::config_source::ConfigSourceSpecifier::Ads(
-                        core::AggregatedConfigSource {},
-                    )),
-                    ..Default::default()
-                }),
+                config_source: Some(ads_config_source()),
             },
         )),
         http_filters,
         ..Default::default()
     };
+    let transport_socket = spec
+        .tls_context
+        .as_ref()
+        .map(downstream_tls_transport_socket)
+        .transpose()?;
 
     Ok(lst::Listener {
         name: name.to_string(),
@@ -1003,10 +1023,71 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
                     &manager,
                 ))),
             }],
+            transport_socket,
             ..Default::default()
         }],
         ..Default::default()
     })
+}
+
+fn downstream_tls_transport_socket(
+    config: &ListenerTlsConfig,
+) -> DomainResult<core::TransportSocket> {
+    let mut common = tls::CommonTlsContext::default();
+    if let Some(secret_name) = &config.tls_certificate_sds_secret_name {
+        common
+            .tls_certificate_sds_secret_configs
+            .push(sds_secret_config(secret_name));
+    } else if let (Some(cert), Some(key)) = (&config.cert_chain_file, &config.private_key_file) {
+        common.tls_certificates.push(tls::TlsCertificate {
+            certificate_chain: Some(filename(cert.clone())),
+            private_key: Some(filename(key.clone())),
+            ..Default::default()
+        });
+    } else {
+        return Err(DomainError::validation(
+            "TLS context requires cert_chain_file/private_key_file or tls_certificate_sds_secret_name",
+        ));
+    }
+
+    common.validation_context_type =
+        if let Some(secret_name) = &config.validation_context_sds_secret_name {
+            Some(
+                tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
+                    sds_secret_config(secret_name),
+                ),
+            )
+        } else {
+            config.ca_cert_file.as_ref().map(|path| {
+                tls::common_tls_context::ValidationContextType::ValidationContext(
+                    tls::CertificateValidationContext {
+                        trusted_ca: Some(filename(path.clone())),
+                        ..Default::default()
+                    },
+                )
+            })
+        };
+
+    Ok(core::TransportSocket {
+        name: "envoy.transport_sockets.tls".to_string(),
+        config_type: Some(core::transport_socket::ConfigType::TypedConfig(any(
+            "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext",
+            &tls::DownstreamTlsContext {
+                common_tls_context: Some(common),
+                require_client_certificate: config
+                    .require_client_certificate
+                    .then(|| bool_value(true)),
+                ..Default::default()
+            },
+        ))),
+    })
+}
+
+fn sds_secret_config(name: &str) -> tls::SdsSecretConfig {
+    tls::SdsSecretConfig {
+        name: name.to_string(),
+        sds_config: Some(ads_config_source()),
+    }
 }
 
 #[cfg(test)]
@@ -1151,6 +1232,7 @@ mod tests {
             port: 10001,
             route_config: None,
             http_filters: Vec::new(),
+            tls_context: None,
         };
         assert!(listener_to_proto("edge", &unbound).is_err());
 
@@ -1159,6 +1241,7 @@ mod tests {
             port: 10001,
             route_config: Some("orders".into()),
             http_filters: Vec::new(),
+            tls_context: None,
         };
         let proto = listener_to_proto("edge", &bound).expect("translate");
         assert_eq!(proto.filter_chains.len(), 1);
@@ -1172,6 +1255,56 @@ mod tests {
                 .encode_to_vec()
         );
         drop(a);
+    }
+
+    #[test]
+    fn listener_tls_context_uses_sds_over_ads() {
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10443,
+            route_config: Some("orders".into()),
+            http_filters: Vec::new(),
+            tls_context: Some(ListenerTlsConfig {
+                cert_chain_file: None,
+                private_key_file: None,
+                ca_cert_file: None,
+                require_client_certificate: false,
+                tls_certificate_sds_secret_name: Some("edge-cert".into()),
+                validation_context_sds_secret_name: Some("edge-ca".into()),
+            }),
+        };
+        let proto = listener_to_proto("edge-tls", &spec).expect("translate");
+        let socket = proto.filter_chains[0]
+            .transport_socket
+            .as_ref()
+            .expect("transport socket");
+        assert_eq!(socket.name, "envoy.transport_sockets.tls");
+        let Some(core::transport_socket::ConfigType::TypedConfig(any)) = &socket.config_type else {
+            panic!("expected typed downstream tls context");
+        };
+        assert_eq!(
+            any.type_url,
+            "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext"
+        );
+        let tls_context =
+            tls::DownstreamTlsContext::decode(any.value.as_slice()).expect("downstream tls");
+        let common = tls_context.common_tls_context.expect("common");
+        assert_eq!(common.tls_certificate_sds_secret_configs.len(), 1);
+        assert_eq!(
+            common.tls_certificate_sds_secret_configs[0].name,
+            "edge-cert"
+        );
+        assert!(common.tls_certificate_sds_secret_configs[0]
+            .sds_config
+            .as_ref()
+            .and_then(|c| c.config_source_specifier.as_ref())
+            .is_some());
+        match common.validation_context_type.expect("validation context") {
+            tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
+                config,
+            ) => assert_eq!(config.name, "edge-ca"),
+            other => panic!("unexpected validation context: {other:?}"),
+        }
     }
 
     #[test]
@@ -1210,6 +1343,7 @@ mod tests {
                 port: 10001,
                 route_config: Some("orders".into()),
                 http_filters: chain,
+                tls_context: None,
             };
             let proto = listener_to_proto("edge", &spec).expect("translate");
             let manager = match &proto.filter_chains[0].filters[0].config_type {
@@ -1252,6 +1386,7 @@ mod tests {
                     }),
                     disabled: false,
                 }],
+                tls_context: None,
             };
             let proto = listener_to_proto("edge2", &cors_spec).expect("cors chain marker");
             let manager = match &proto.filter_chains[0].filters[0].config_type {
@@ -1445,6 +1580,7 @@ mod tests {
                     disabled: false,
                 },
             ],
+            tls_context: None,
         };
         let manager = hcm_of(&spec);
         let names: Vec<_> = manager
