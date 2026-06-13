@@ -17,10 +17,13 @@ fp-api = { path = "crates/fp-api" }
 fp-xds = { path = "crates/fp-xds" }
 
 anyhow = "1"
+aes-gcm = "0.10"
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
+getrandom = "0.3"
 envoy-types = "0.7"
 prost = "0.14"
 metrics = "0.24"

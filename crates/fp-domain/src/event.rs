@@ -58,6 +58,10 @@ pub enum DomainEvent {
         certificate_id: Uuid,
         spiffe_uri: String,
     },
+    SecretUpserted {
+        secret_id: Uuid,
+        name: String,
+    },
 }
 
 impl DomainEvent {
@@ -75,6 +79,7 @@ impl DomainEvent {
             Self::DataplaneCreated { .. } => "dataplane.created",
             Self::ProxyCertificateRegistered { .. } => "proxy_certificate.registered",
             Self::ProxyCertificateRevoked { .. } => "proxy_certificate.revoked",
+            Self::SecretUpserted { .. } => "secret.upserted",
         }
     }
 }

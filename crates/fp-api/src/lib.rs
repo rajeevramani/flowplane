@@ -12,6 +12,7 @@ pub mod middleware;
 pub mod orgs_api;
 pub mod resources;
 pub mod routes;
+pub mod secrets_api;
 pub mod state;
 pub mod throttle;
 pub mod xds_api;

@@ -6,6 +6,7 @@ pub mod dataplanes;
 pub mod gateway;
 pub mod orgs;
 pub mod quota;
+pub mod secrets;
 pub mod teams;
 pub mod xds_status;
 

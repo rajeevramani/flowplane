@@ -40,11 +40,12 @@ fn openapi_document_covers_every_registered_operation() {
     }
     // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 4 dataplane
     // + 3 proxy-certificate + 1 xds-nacks operations.
+    // + 4 secrets operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 40,
-        "expected 40 documented operations, got {operations}"
+        operations, 44,
+        "expected 44 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     for path in [
@@ -468,4 +469,127 @@ async fn proxy_certificate_registry_flow_over_http() {
         .expect("double revoke");
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(json_of(response).await["code"], "conflict");
+}
+
+#[tokio::test]
+async fn secret_values_are_write_only_over_http() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    std::env::set_var(
+        "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+        "12345678901234567890123456789012",
+    );
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+    let subject = unique("sub");
+    let token = issuer
+        .mint(&subject, "secret-http@test", "Secret HTTP", 600)
+        .expect("mint");
+
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let user = identity::upsert_user_by_subject(&pool, &subject, "secret-http@test", "Secret HTTP")
+        .await
+        .expect("user");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Admin)
+        .await
+        .expect("member");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+    });
+
+    let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"));
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        builder
+            .body(match body {
+                Some(json) => Body::from(json.to_string()),
+                None => Body::empty(),
+            })
+            .expect("request")
+    };
+
+    let base = format!("/api/v1/teams/{}/secrets", team.name);
+    let name = unique("secret");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &base,
+            Some(serde_json::json!({
+                "name": name,
+                "description": "token",
+                "spec": {"type": "generic_secret", "secret": "aGVsbG8="}
+            })),
+        ))
+        .await
+        .expect("create secret");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert_eq!(body["value_redacted"], true);
+    assert!(body.get("spec").is_none());
+    assert_eq!(body["revision"], 1);
+
+    let item = format!("{base}/{name}");
+    let response = app
+        .clone()
+        .oneshot(request("GET", &item, None))
+        .await
+        .expect("get secret");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["value_redacted"], true);
+    assert!(body.get("spec").is_none());
+
+    let response = app
+        .clone()
+        .oneshot(request("GET", &base, None))
+        .await
+        .expect("list secrets");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert!(body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .any(|secret| secret["name"] == name && secret["value_redacted"] == true));
+
+    let response = app
+        .oneshot(request(
+            "POST",
+            &format!("{item}/rotate"),
+            Some(serde_json::json!({
+                "spec": {"type": "generic_secret", "secret": "d29ybGQ="}
+            })),
+        ))
+        .await
+        .expect("rotate secret");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["revision"], 2);
+    assert_eq!(body["value_redacted"], true);
+    assert!(body.get("spec").is_none());
 }

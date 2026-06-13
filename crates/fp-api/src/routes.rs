@@ -98,6 +98,12 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             crate::dataplanes_api::register_proxy_certificate
         ))
         .routes(routes!(crate::dataplanes_api::revoke_proxy_certificate))
+        .routes(routes!(
+            crate::secrets_api::list_secrets,
+            crate::secrets_api::create_secret
+        ))
+        .routes(routes!(crate::secrets_api::get_secret))
+        .routes(routes!(crate::secrets_api::rotate_secret))
         .routes(routes!(crate::xds_api::list_nacks))
         .split_for_parts()
 }

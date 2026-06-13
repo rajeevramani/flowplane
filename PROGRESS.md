@@ -152,7 +152,9 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           `/api/v1/teams/{team}/dataplanes/{name}/envoy-config` with explicit xDS mTLS
           cert/key/CA file paths; OpenAPI operation pin updated to 40.
     - [ ] S6.2c actual certificate/key issuance
-  - [ ] S6.3 encrypted-at-rest secrets + write-only API + rotation
+  - [x] S6.3 encrypted-at-rest secrets + write-only API + rotation: AES-256-GCM
+        `FLOWPLANE_SECRET_ENCRYPTION_KEY`, metadata-only read/list/get responses, create/rotate
+        REST surface at `/api/v1/teams/{team}/secrets[/{name}/rotate]`, OpenAPI operation pin 44.
   - [ ] S6.4 SDS delivery over ADS + live rotation E2E
   - [ ] S6.5 fp-agent telemetry relay, heartbeats, liveness, per-team stats aggregation
 - [ ] S7 CLI core (+ commands for S2–S6)

@@ -106,6 +106,10 @@ domain_id!(
     /// Identifies a proxy certificate registry row (mTLS identity of a dataplane).
     ProxyCertificateId
 );
+domain_id!(
+    /// Identifies an SDS secret.
+    SecretId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
