@@ -26,6 +26,10 @@ pub struct ListenerSpec {
     pub address: String,
     /// 1024–65535 (privileged ports forbidden — dataplanes run unprivileged).
     pub port: u16,
+    /// Downstream HTTP protocol mode. `https` is HTTP over downstream TLS; TCP listener support
+    /// remains intentionally deferred until V2 has a first-class TCP route action.
+    #[serde(default, skip_serializing_if = "is_default_listener_protocol")]
+    pub protocol: ListenerProtocol,
     /// Route configuration served by this listener, by name (same team). Optional until
     /// bound; resolved and reference-tracked by the service layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,6 +41,24 @@ pub struct ListenerSpec {
     /// may be inline file paths or SDS secret names delivered over ADS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_context: Option<ListenerTlsConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListenerProtocol {
+    Http,
+    Http2,
+    Https,
+}
+
+impl Default for ListenerProtocol {
+    fn default() -> Self {
+        Self::Http
+    }
+}
+
+fn is_default_listener_protocol(protocol: &ListenerProtocol) -> bool {
+    *protocol == ListenerProtocol::Http
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -113,6 +135,11 @@ impl ListenerSpec {
         }
         if let Some(rc) = &self.route_config {
             crate::identity::validate_name(rc)?;
+        }
+        if self.protocol == ListenerProtocol::Https && self.tls_context.is_none() {
+            return Err(DomainError::validation(
+                "https listener protocol requires tls_context",
+            ));
         }
         if let Some(tls) = &self.tls_context {
             tls.validate()?;
@@ -196,6 +223,7 @@ mod tests {
         ListenerSpec {
             address: address.into(),
             port,
+            protocol: ListenerProtocol::Http,
             route_config: None,
             http_filters: Vec::new(),
             tls_context: None,
@@ -280,5 +308,22 @@ mod tests {
             spec.validate().is_err(),
             "ambiguous validation source rejected"
         );
+    }
+
+    #[test]
+    fn https_protocol_requires_tls_context() {
+        let mut spec = spec("0.0.0.0", 8443);
+        spec.protocol = ListenerProtocol::Https;
+        assert!(spec.validate().is_err(), "https must name TLS material");
+
+        spec.tls_context = Some(ListenerTlsConfig {
+            cert_chain_file: None,
+            private_key_file: None,
+            ca_cert_file: None,
+            require_client_certificate: false,
+            tls_certificate_sds_secret_name: Some("edge-cert".into()),
+            validation_context_sds_secret_name: None,
+        });
+        assert!(spec.validate().is_ok(), "https with SDS TLS is valid");
     }
 }

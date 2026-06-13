@@ -260,6 +260,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [ ] S7.8d Listener parity: typed V2 support for protocol/listener kind, TCP proxy if retained,
         downstream TLS coverage, access logs, tracing, filter-chain decisions, and request-id
         behavior.
+        - Implemented: explicit HTTP/HTTP2/HTTPS protocol field with backward-compatible default,
+          HTTPS TLS validation, and xDS HCM codec translation.
+        - Remaining before close: TCP retain/defer decision, access log config, tracing config,
+          and request-id behavior documentation/tests.
   - [ ] S7.8e Filter parity decisions and implementation: close or explicitly defer the remaining
         V1 filter catalog with owner slices and user-visible impact documented.
   - [ ] S7.8f DB/API/CLI/OpenAPI parity tests and examples: full specs round-trip through storage,

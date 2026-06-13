@@ -133,7 +133,7 @@ For each field group below, "done" means:
 | --- | --- | --- |
 | Address and port | Present | Keep |
 | HTTP listener with RDS | Present | Keep |
-| Protocol enum: HTTP, HTTP/2, HTTPS, TCP | Missing | **Must implement listener kind/protocol.** TCP can be first-class even if `expose` starts HTTP-only |
+| Protocol enum: HTTP, HTTP/2, HTTPS, TCP | Partial in S7.8d | HTTP/HTTP2/HTTPS implemented with HCM codec mapping and HTTPS TLS validation. TCP remains a retain/defer decision because it needs a first-class TCP route/action model |
 | HTTPS downstream TLS | Partial | Keep and expand only where Envoy fields are missing |
 | Multiple filter chains | Missing | **Defer pre-S8** unless TLS/SNI routing requires it; V2 should avoid this complexity until needed |
 | Inline route config | Missing | **Reject by default.** Prefer RDS as the V2 architecture; add inline only for a concrete UX need |

@@ -399,6 +399,7 @@ mod referential {
             ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 18443,
+                protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
                 route_config: Some(rc_name.clone()),
                 http_filters: Vec::new(),
                 tls_context: None,
@@ -461,6 +462,7 @@ mod referential {
                 ListenerSpec {
                     address: "0.0.0.0".into(),
                     port,
+                    protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
                     route_config: None,
                     http_filters: Vec::new(),
                     tls_context: None,

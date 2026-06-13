@@ -18,7 +18,7 @@ use fp_domain::gateway::cluster::{
     CircuitBreakerThresholds, ClusterSpec, DnsLookupFamily, HealthCheck, HttpHealthCheckMethod,
     LbPolicy, RingHashFunction, UpstreamProtocol,
 };
-use fp_domain::gateway::listener::{ListenerSpec, ListenerTlsConfig};
+use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec, ListenerTlsConfig};
 use fp_domain::gateway::route_config::{PathMatch, RouteConfigSpec};
 use fp_domain::{DomainError, DomainResult, SecretSpec};
 use prost::Message;
@@ -1446,6 +1446,7 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
     });
 
     let manager = hcm::HttpConnectionManager {
+        codec_type: listener_codec_type(spec) as i32,
         stat_prefix: name.to_string(),
         route_specifier: Some(hcm::http_connection_manager::RouteSpecifier::Rds(
             hcm::Rds {
@@ -1478,6 +1479,17 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
         }],
         ..Default::default()
     })
+}
+
+fn listener_codec_type(spec: &ListenerSpec) -> hcm::http_connection_manager::CodecType {
+    match spec.protocol {
+        ListenerProtocol::Http2 => hcm::http_connection_manager::CodecType::Http2,
+        ListenerProtocol::Https => hcm::http_connection_manager::CodecType::Auto,
+        ListenerProtocol::Http if spec.tls_context.is_some() => {
+            hcm::http_connection_manager::CodecType::Auto
+        }
+        ListenerProtocol::Http => hcm::http_connection_manager::CodecType::Http1,
+    }
 }
 
 fn downstream_tls_transport_socket(
@@ -1972,6 +1984,7 @@ mod tests {
         let unbound = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10001,
+            protocol: ListenerProtocol::Http,
             route_config: None,
             http_filters: Vec::new(),
             tls_context: None,
@@ -1981,12 +1994,37 @@ mod tests {
         let bound = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10001,
+            protocol: ListenerProtocol::Http,
             route_config: Some("orders".into()),
             http_filters: Vec::new(),
             tls_context: None,
         };
         let proto = listener_to_proto("edge", &bound).expect("translate");
         assert_eq!(proto.filter_chains.len(), 1);
+        let manager = match &proto.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(a)) => {
+                hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        };
+        assert_eq!(
+            manager.codec_type,
+            hcm::http_connection_manager::CodecType::Http1 as i32
+        );
+
+        let mut http2 = bound.clone();
+        http2.protocol = ListenerProtocol::Http2;
+        let proto = listener_to_proto("edge-h2", &http2).expect("translate h2");
+        let manager = match &proto.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(a)) => {
+                hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        };
+        assert_eq!(
+            manager.codec_type,
+            hcm::http_connection_manager::CodecType::Http2 as i32
+        );
 
         let a = cluster_to_proto("x", &cluster_spec()).expect("t");
         let b = listener_to_proto("edge", &bound).expect("t");
@@ -2004,6 +2042,7 @@ mod tests {
         let spec = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10443,
+            protocol: ListenerProtocol::Https,
             route_config: Some("orders".into()),
             http_filters: Vec::new(),
             tls_context: Some(ListenerTlsConfig {
@@ -2016,6 +2055,16 @@ mod tests {
             }),
         };
         let proto = listener_to_proto("edge-tls", &spec).expect("translate");
+        let manager = match &proto.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(a)) => {
+                hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        };
+        assert_eq!(
+            manager.codec_type,
+            hcm::http_connection_manager::CodecType::Auto as i32
+        );
         let socket = proto.filter_chains[0]
             .transport_socket
             .as_ref()
@@ -2083,6 +2132,7 @@ mod tests {
             let spec = ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 10001,
+                protocol: ListenerProtocol::Http,
                 route_config: Some("orders".into()),
                 http_filters: chain,
                 tls_context: None,
@@ -2114,6 +2164,7 @@ mod tests {
             let cors_spec = ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 10002,
+                protocol: ListenerProtocol::Http,
                 route_config: Some("orders".into()),
                 http_filters: vec![HttpFilterEntry {
                     filter: HttpFilterSpec::Cors(CorsConfig {
@@ -2289,6 +2340,7 @@ mod tests {
         let spec = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10001,
+            protocol: ListenerProtocol::Http,
             route_config: Some("orders".into()),
             http_filters: vec![
                 HttpFilterEntry {

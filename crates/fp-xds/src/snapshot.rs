@@ -638,6 +638,7 @@ mod tests {
             ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 19200,
+                protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
                 route_config: Some(rc.clone()),
                 tls_context: None,
                 http_filters: Vec::new(),
