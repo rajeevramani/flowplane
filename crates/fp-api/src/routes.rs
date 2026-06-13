@@ -44,8 +44,10 @@ impl utoipa::Modify for SecurityAddon {
 
 /// Build the OpenAPI router + document for the secured /api/v1 surface.
 fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
+    use crate::dataplanes_api;
     use crate::identity_api;
     use crate::resources::{clusters, listeners, route_configs};
+    use crate::secrets_api;
     use utoipa_axum::router::OpenApiRouter;
     use utoipa_axum::routes;
 
@@ -87,6 +89,26 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             route_configs::update,
             route_configs::delete
         ))
+        .routes(routes!(
+            dataplanes_api::list_dataplanes,
+            dataplanes_api::create_dataplane
+        ))
+        .routes(routes!(dataplanes_api::get_dataplane))
+        .routes(routes!(dataplanes_api::record_dataplane_telemetry))
+        .routes(routes!(dataplanes_api::get_envoy_config))
+        .routes(routes!(dataplanes_api::stats_overview))
+        .routes(routes!(
+            dataplanes_api::list_proxy_certificates,
+            dataplanes_api::register_proxy_certificate
+        ))
+        .routes(routes!(dataplanes_api::issue_proxy_certificate))
+        .routes(routes!(dataplanes_api::revoke_proxy_certificate))
+        .routes(routes!(
+            secrets_api::list_secrets,
+            secrets_api::create_secret
+        ))
+        .routes(routes!(secrets_api::get_secret))
+        .routes(routes!(secrets_api::rotate_secret))
         .routes(routes!(crate::xds_api::list_nacks))
         .split_for_parts()
 }
