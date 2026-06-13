@@ -109,6 +109,19 @@ fn openapi_document_covers_every_registered_operation() {
         "expected 47 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
+    let schemas = json["components"]["schemas"].as_object().expect("schemas");
+    for schema in [
+        "GlobalRateLimitConfig",
+        "RateLimitRequestType",
+        "RouteConfigSpec",
+        "ListenerSpec",
+        "ClusterSpec",
+    ] {
+        assert!(
+            schemas.contains_key(schema),
+            "missing OpenAPI schema {schema}"
+        );
+    }
     for path in [
         "/api/v1/teams/{team}/clusters",
         "/api/v1/teams/{team}/route-configs/{name}",
@@ -264,6 +277,161 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         .expect("get");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(json_of(response).await["code"], "not_found");
+
+    // S7.8f: advanced gateway specs round-trip through REST + storage without projection loss.
+    let primary = unique("primary");
+    let canary = unique("canary");
+    let rls = unique("rls");
+    for name in [&primary, &canary, &rls] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &base,
+                Some(serde_json::json!({
+                    "name": name,
+                    "spec": {"endpoints": [{"host": "10.0.0.10", "port": 8080}]}
+                })),
+                None,
+            ))
+            .await
+            .expect("create parity cluster");
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    let rc_name = unique("routes");
+    let route_base = format!("/api/v1/teams/{}/route-configs", team.name);
+    let route_spec = serde_json::json!({
+        "virtual_hosts": [{
+            "name": "default",
+            "domains": ["api.example.test"],
+            "rate_limits": [{
+                "stage": 1,
+                "actions": [{"type": "generic_key", "descriptor_value": "vhost", "descriptor_key": "scope"}]
+            }],
+            "routes": [{
+                "name": "items",
+                "matcher": {"regex": {"pattern": "^/v[0-9]+/items$"}},
+                "headers": [{"name": "x-api-version", "type": "exact", "value": "2"}],
+                "query_parameters": [{"name": "preview", "type": "present", "value": true}],
+                "action": {
+                    "weighted_clusters": [
+                        {"cluster": primary, "weight": 80},
+                        {"cluster": canary, "weight": 20}
+                    ],
+                    "timeout_secs": 10,
+                    "retry_policy": {
+                        "retry_on": "5xx,connect-failure",
+                        "num_retries": 2,
+                        "per_try_timeout_secs": 3,
+                        "retriable_status_codes": [502, 503]
+                    },
+                    "rate_limits": [{
+                        "actions": [{"type": "request_headers", "header_name": "x-api-key", "descriptor_key": "api_key"}]
+                    }]
+                }
+            }],
+            "filter_overrides": []
+        }]
+    });
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &route_base,
+            Some(serde_json::json!({"name": rc_name, "spec": route_spec})),
+            None,
+        ))
+        .await
+        .expect("create advanced route config");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{route_base}/{rc_name}"),
+            None,
+            None,
+        ))
+        .await
+        .expect("get advanced route config");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    let route = &body["spec"]["virtual_hosts"][0]["routes"][0];
+    assert_eq!(route["matcher"]["regex"]["pattern"], "^/v[0-9]+/items$");
+    assert_eq!(route["headers"][0]["type"], "exact");
+    assert_eq!(route["query_parameters"][0]["type"], "present");
+    assert_eq!(route["action"]["weighted_clusters"][1]["cluster"], canary);
+    assert_eq!(
+        route["action"]["retry_policy"]["retriable_status_codes"][1],
+        503
+    );
+    assert_eq!(
+        route["action"]["rate_limits"][0]["actions"][0]["type"],
+        "request_headers"
+    );
+
+    let listener_name = unique("edge");
+    let listener_base = format!("/api/v1/teams/{}/listeners", team.name);
+    let listener_spec = serde_json::json!({
+        "address": "0.0.0.0",
+        "port": 18080,
+        "protocol": "http2",
+        "route_config": rc_name,
+        "access_logs": [{"path": "/tmp/flowplane-access.log", "text_format": "%REQ(:METHOD)% %RESPONSE_CODE%\\n"}],
+        "http_filters": [{
+            "filter": {
+                "type": "global_rate_limit",
+                "domain": "flowplane",
+                "service_cluster": rls,
+                "timeout_ms": 50,
+                "failure_mode_deny": true,
+                "stage": 1,
+                "request_type": "external",
+                "stat_prefix": "edge_rls",
+                "enable_x_ratelimit_headers": true,
+                "disable_x_envoy_ratelimited_header": true,
+                "rate_limited_status": 429,
+                "status_on_error": 503
+            }
+        }]
+    });
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &listener_base,
+            Some(serde_json::json!({"name": listener_name, "spec": listener_spec})),
+            None,
+        ))
+        .await
+        .expect("create advanced listener");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{listener_base}/{listener_name}"),
+            None,
+            None,
+        ))
+        .await
+        .expect("get advanced listener");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["spec"]["protocol"], "http2");
+    assert_eq!(
+        body["spec"]["access_logs"][0]["path"],
+        "/tmp/flowplane-access.log"
+    );
+    assert_eq!(
+        body["spec"]["http_filters"][0]["filter"]["type"],
+        "global_rate_limit"
+    );
+    assert_eq!(
+        body["spec"]["http_filters"][0]["filter"]["service_cluster"],
+        rls
+    );
 }
 
 #[tokio::test]

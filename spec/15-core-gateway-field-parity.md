@@ -187,6 +187,9 @@ Field parity should improve the V2 UX, not expose raw Envoy complexity everywher
 - Advanced fields should be available through `apply`/resource-specific create commands, with
   examples rather than long flag sets.
 - OpenAPI examples should show at least one simple case and one advanced V1-parity case per resource.
+- S7.8f pins this contract with an authenticated REST create/get round-trip for advanced
+  route/listener specs, OpenAPI schema component assertions, and a CLI `apply` manifest test proving
+  advanced typed specs are preserved rather than projected into a smaller shape.
 
 ## PROGRESS.md Mapping
 

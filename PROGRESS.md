@@ -273,8 +273,13 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           stage, status, and x-rate-limit header controls.
         - Deferred: ExtProc to S8 learning capture; OAuth2, credential injection, custom response,
           MCP routing, quota, and WASM to later auth/AI-gateway/extension slices.
-  - [ ] S7.8f DB/API/CLI/OpenAPI parity tests and examples: full specs round-trip through storage,
+  - [x] S7.8f DB/API/CLI/OpenAPI parity tests and examples: full specs round-trip through storage,
         OpenAPI, CLI `apply`, and resource commands without lossy projections.
+        - Implemented: authenticated REST create/get round-trip for advanced route/listener specs
+          including regex/header/query matching, weighted clusters, retry policy, route/vhost RLS
+          descriptors, file access logs, and global RLS listener filter.
+        - Implemented: OpenAPI component pins for gateway spec schemas and CLI `apply` preservation
+          of advanced listener/filter spec JSON.
   - [ ] S7.8g Live Envoy parity E2E: advanced cluster/route/listener/filter examples ACK in Envoy,
         exercise at least one behavior per feature class, and expose useful NACK diagnostics.
 - [ ] S8 Learning config-first

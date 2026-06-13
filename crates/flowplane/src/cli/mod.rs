@@ -1491,6 +1491,50 @@ callback_url = "http://127.0.0.1:8976/callback"
     }
 
     #[test]
+    fn apply_manifest_preserves_advanced_gateway_specs() -> Result<()> {
+        let listener_spec = json!({
+            "address": "0.0.0.0",
+            "port": 18080,
+            "protocol": "http2",
+            "route_config": "edge-routes",
+            "access_logs": [{"path": "/tmp/flowplane-access.log"}],
+            "http_filters": [{
+                "filter": {
+                    "type": "global_rate_limit",
+                    "domain": "flowplane",
+                    "service_cluster": "flowplane-rls",
+                    "timeout_ms": 50,
+                    "failure_mode_deny": true,
+                    "stage": 1,
+                    "request_type": "external",
+                    "stat_prefix": "edge_rls",
+                    "enable_x_ratelimit_headers": true,
+                    "disable_x_envoy_ratelimited_header": true,
+                    "rate_limited_status": 429,
+                    "status_on_error": 503
+                }
+            }]
+        });
+        let target = apply_target(json!({
+            "kind": "listener",
+            "team": "platform",
+            "name": "edge",
+            "spec": listener_spec
+        }))?;
+        assert_eq!(target.kind, ApplyKind::Listener);
+        assert_eq!(target.create_body["spec"]["protocol"], "http2");
+        assert_eq!(
+            target.create_body["spec"]["http_filters"][0]["filter"]["type"],
+            "global_rate_limit"
+        );
+        assert_eq!(
+            target.update_body()?,
+            json!({"spec": target.create_body["spec"].clone()})
+        );
+        Ok(())
+    }
+
+    #[test]
     fn apply_diff_reports_update_or_noop() -> Result<()> {
         let target = apply_target(json!({
             "kind": "cluster",
