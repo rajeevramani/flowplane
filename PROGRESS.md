@@ -243,9 +243,15 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
     - Tests: parser coverage pins the `dataplane bootstrap --mode dev --out` form; REST coverage
       asserts dev bootstrap omits TLS transport sockets and mTLS bootstrap includes certificate
       paths.
-  - [ ] S7.7c Dataplane lifecycle decision: either document manual local Envoy as the supported
+  - [x] S7.7c Dataplane lifecycle decision: either document manual local Envoy as the supported
         pre-S8 path or implement V2-native `dataplane up/down/status` without porting v1 compose
         internals.
+    - Decision: pre-S8 supports manual local Envoy as the product/dev dataplane lifecycle.
+      `dataplane up/down/status` is deferred to packaging/S12 unless S7.7e proves it is needed
+      for reliable smoke tests.
+    - Rationale: it avoids porting V1 compose internals, works on macOS without Docker host
+      networking assumptions, and keeps the control plane/dataplane contract centered on xDS plus
+      persisted diagnostics.
   - [ ] S7.7d `expose`/`unexpose` shortcut over existing cluster/route-config/listener services,
         with explicit or allocated listener port and a curlable success message.
   - [ ] S7.7e Transcript/E2E: CP + dataplane + expose + curl + stats/NACK checks pinned so the

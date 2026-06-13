@@ -74,7 +74,7 @@ exists and what "done" means.
 | --- | --- | --- | --- | --- |
 | S7.7a | Dev runbook | A developer can manually start CP, authenticate CLI, start Envoy, create traffic, and troubleshoot failures | `README.md` plus `docs/dev-dataplane.md` or equivalent | Commands work from a fresh DB without reading source or `scripts/e2e-envoy.sh` |
 | S7.7b | Bootstrap UX | A dataplane bootstrap is generated with one clear command and written to a file | Add `dataplane bootstrap` alias/rename over existing `/envoy-config`; add `--out`; make dev/prod mode explicit | Generated YAML works for dev plaintext and non-dev mTLS; errors explain missing cert/xDS inputs |
-| S7.7c | Dataplane lifecycle | Operator knows the supported way to run Envoy in V2 | Decide manual local Envoy first vs V2-native `dataplane up/down/status`; do not port V1 compose internals | Decision recorded; chosen path documented or implemented; macOS path avoids Docker host-network dependency |
+| S7.7c | Dataplane lifecycle | Operator knows the supported way to run Envoy in V2 | Manual local Envoy is the supported pre-S8 lifecycle; defer V2-native `dataplane up/down/status` to packaging/S12 unless smoke tests prove it is needed | Decision recorded; macOS path avoids Docker host-network dependency; Envoy starts from generated bootstrap YAML |
 | S7.7d | Expose shortcut | One command turns an upstream into curlable traffic through Envoy | Implement `expose`/`unexpose` using V2 cluster/route-config/listener services and existing xDS propagation | `flowplane expose <url> --name demo` prints a listener port and curl hint; cleanup works |
 | S7.7e | Workflow validation | The CP + DP + expose loop cannot regress silently | Add transcript/parser test and one live e2e/smoke path around the happy path and key diagnostics | Test proves CP start, DP bootstrap/connect, expose, curl, stats/NACK checks |
 | S7.8 | Field parity | Core gateway resources represent the Envoy surface V1 exposed, without V1's architectural shortcuts | Follow `spec/15-core-gateway-field-parity.md`; add typed domain fields, service validation, storage/API/CLI round trips, xDS translation, and live Envoy checks | V1-equivalent cluster, route, listener, filter, and secret examples are accepted by V2, stored once, emitted to Envoy, and regression-tested |
@@ -116,14 +116,13 @@ Flowplane v2 product loop
 │   └── Done when: one command emits a bootstrap usable by local Envoy in dev mode
 │
 ├── 3. Dataplane process lifecycle
-│   ├── Status: e2e script proves it; product CLI absent
+│   ├── Status: decision recorded; e2e script proves it; product lifecycle CLI deferred
 │   ├── Progress anchor: S7 follow-up, S12 packaging
 │   ├── Existing: `scripts/e2e-envoy.sh` with Docker/local Envoy fallback
-│   ├── Need: V2-native `dataplane up/down/status` decision
-│   ├── Option A: manual local Envoy first, documented
-│   ├── Option B: CLI-managed local Envoy/agent stack like V1, but implemented fresh
-│   ├── Need: macOS-friendly path that does not depend on Docker host networking
-│   └── Done when: Envoy connects to xDS and appears in status without hand-written YAML
+│   ├── Decision: manual local Envoy is the supported pre-S8 lifecycle
+│   ├── Deferred: V2-native `dataplane up/down/status` belongs to packaging/S12 unless S7.7e needs it
+│   ├── Reason: macOS-friendly path does not depend on Docker host networking or V1 compose internals
+│   └── Done when: Envoy connects to xDS and appears in status from generated bootstrap YAML
 │
 ├── 4. Resource-to-traffic happy path
 │   ├── Status: low-level resources exist; shortcut absent

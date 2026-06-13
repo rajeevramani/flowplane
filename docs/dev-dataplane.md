@@ -17,6 +17,15 @@ development token. Non-dev xDS is mTLS-only.
 On macOS, prefer a local Envoy binary for this manual path. Docker host networking is not reliable
 across all Docker Desktop setups.
 
+## Dataplane Lifecycle Decision
+
+Before S8 learning resumes, the supported V2 dataplane lifecycle is manual local Envoy started from
+`flowplane dataplane bootstrap` output. V2 does not currently provide `dataplane up/down/status`.
+
+That is intentional for this phase: it keeps the product contract on registered dataplanes, xDS/SDS,
+and persisted diagnostics instead of porting V1's compose orchestration. A V2-native lifecycle
+wrapper can be added later in packaging/S12 if the validated smoke path needs it.
+
 ## 1. Start PostgreSQL
 
 The helper is idempotent:
