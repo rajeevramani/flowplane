@@ -34,7 +34,19 @@ fn body_from_file(path: &PathBuf) -> Result<Value> {
     } else {
         fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
     };
-    serde_json::from_str(&raw).with_context(|| format!("parse JSON body from {}", path.display()))
+    parse_json_or_yaml(&raw)
+        .with_context(|| format!("parse JSON/YAML body from {}", path.display()))
+}
+
+fn parse_json_or_yaml(raw: &str) -> Result<Value> {
+    match serde_json::from_str::<Value>(raw) {
+        Ok(value) => Ok(value),
+        Err(json_err) => serde_yaml::from_str::<Value>(raw).with_context(|| {
+            format!(
+                "input is not valid JSON and could not be parsed as YAML; JSON error: {json_err}"
+            )
+        }),
+    }
 }
 
 pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()> {
@@ -1548,6 +1560,41 @@ mod tests {
         assert!(rendered.contains("imported"));
         assert!(rendered.contains("1234567890ab"));
         assert!(!rendered.contains("{...}"));
+    }
+
+    #[test]
+    fn openapi_file_parser_accepts_json_and_yaml() -> Result<()> {
+        let json_doc = parse_json_or_yaml(
+            r#"{"openapi":"3.0.3","info":{"title":"Catalog","version":"1"},"paths":{}}"#,
+        )?;
+        assert_eq!(json_doc["openapi"], "3.0.3");
+
+        let yaml_doc = parse_json_or_yaml(
+            r#"
+openapi: 3.0.3
+info:
+  title: Catalog
+  version: "1"
+paths:
+  /items:
+    get:
+      operationId: listItems
+"#,
+        )?;
+        assert_eq!(yaml_doc["info"]["title"], "Catalog");
+        assert_eq!(
+            yaml_doc["paths"]["/items"]["get"]["operationId"],
+            "listItems"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn openapi_file_parser_reports_malformed_input() {
+        let err = parse_json_or_yaml("openapi: [").expect_err("malformed YAML");
+        let message = format!("{err:#}");
+        assert!(message.contains("not valid JSON"));
+        assert!(message.contains("could not be parsed as YAML"));
     }
 
     #[test]

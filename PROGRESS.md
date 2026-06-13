@@ -318,11 +318,15 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           topology mapping is designed instead of inferred from incomplete spec data.
         - Tests: API contract pin updated to 52 operations, REST import/status/delete test
           added, CLI path coverage includes the new API lifecycle paths.
-  - [ ] S8.2a OpenAPI import polish: CLI `--from-openapi` accepts JSON and YAML
+  - [x] S8.2a OpenAPI import polish: CLI `--from-openapi` accepts JSON and YAML
         (`.json`, `.yaml`, `.yml`, and stdin where practical), normalizes to JSON before REST
         submission, and returns graceful validation errors for malformed documents. Add
         lightweight OpenAPI semantic validation beyond the current object/paths/operation checks
         before imported specs feed publish/tool quality.
+        - Implemented: CLI file parsing now accepts JSON first, then YAML fallback, including
+          stdin (`-`) because parsing is content-based. REST continues receiving normalized JSON.
+        - Tests: parser unit tests cover JSON, YAML, and malformed input with combined
+          JSON/YAML error context.
   - [ ] S8.2b Operator diagnostics parity before learning: V1 had `xds status` and `trace`;
         V2 already has NACK history, diagnostics gRPC ingest, request IDs, trace IDs, W3C
         `traceparent`, and optional OTLP export, but needs user-facing REST/CLI rollups:
