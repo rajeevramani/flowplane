@@ -4,8 +4,10 @@ mod config;
 mod output;
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -50,31 +52,46 @@ pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()>
             token,
             token_stdin,
             device,
+            pkce,
             issuer,
             client_id,
+            callback_url,
             scope,
         } => {
-            let token = match (token, token_stdin, device) {
-                (Some(token), false, false) => token,
-                (None, true, false) => {
+            let token = match (token, token_stdin, device, pkce) {
+                (Some(token), false, false, false) => token,
+                (None, true, false, false) => {
                     let mut token = String::new();
                     io::stdin().read_to_string(&mut token)?;
                     token.trim().to_string()
                 }
-                (None, false, explicit_device) => {
+                (None, false, true, true) => {
+                    anyhow::bail!(
+                        "use only one login input: --token, --token-stdin, --device-code, or --pkce"
+                    )
+                }
+                (None, false, explicit_device, explicit_pkce) => {
                     let config = effective(&global)?;
-                    if explicit_device
+                    if explicit_device {
+                        device_login(&global, issuer, client_id, scope).await?
+                    } else if explicit_pkce
                         || (config.oidc_issuer.is_some() && config.oidc_client_id.is_some())
                     {
-                        device_login(&global, issuer, client_id, scope).await?
+                        pkce_login(&global, issuer, client_id, callback_url, scope).await?
                     } else {
                         anyhow::bail!(
-                            "pass --token, --token-stdin, or configure OIDC and use --device"
+                            "pass --token, --token-stdin, --device-code, or configure OIDC for PKCE"
                         )
                     }
                 }
-                (Some(_), true, _) | (Some(_), _, true) | (None, true, true) => {
-                    anyhow::bail!("use only one login input: --token, --token-stdin, or --device")
+                (Some(_), true, _, _)
+                | (Some(_), _, true, _)
+                | (Some(_), _, _, true)
+                | (None, true, true, _)
+                | (None, true, _, true) => {
+                    anyhow::bail!(
+                        "use only one login input: --token, --token-stdin, --device-code, or --pkce"
+                    )
                 }
             };
             save_token(&token)?;
@@ -103,7 +120,10 @@ fn save_token(token: &str) -> Result<()> {
 
 #[derive(Debug, Deserialize)]
 struct OidcDiscovery {
-    device_authorization_endpoint: String,
+    #[serde(default)]
+    authorization_endpoint: Option<String>,
+    #[serde(default)]
+    device_authorization_endpoint: Option<String>,
     token_endpoint: String,
 }
 
@@ -169,7 +189,16 @@ async fn device_login(
         .await
         .context("parse OIDC discovery")?;
     let device: DeviceCodeResponse = http
-        .post(&discovery.device_authorization_endpoint)
+        .post(
+            discovery
+                .device_authorization_endpoint
+                .as_ref()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "OIDC provider does not advertise device_authorization_endpoint"
+                    )
+                })?,
+        )
         .form(&[("client_id", client_id.as_str()), ("scope", scope.as_str())])
         .send()
         .await
@@ -237,6 +266,245 @@ async fn device_login(
             }
         }
     }
+}
+
+async fn pkce_login(
+    global: &GlobalOptions,
+    issuer: Option<String>,
+    client_id: Option<String>,
+    callback_url: Option<String>,
+    scope: String,
+) -> Result<String> {
+    let config = effective(global)?;
+    let issuer = issuer.or(config.oidc_issuer).ok_or_else(|| {
+        anyhow::anyhow!("OIDC issuer is required; pass --issuer or set oidc_issuer")
+    })?;
+    let client_id = client_id.or(config.oidc_client_id).ok_or_else(|| {
+        anyhow::anyhow!("OIDC client id is required; pass --client-id or set oidc_client_id")
+    })?;
+    let scope = config.oidc_scope.unwrap_or(scope);
+    let callback_url = callback_url
+        .or(config.callback_url)
+        .unwrap_or_else(|| "http://127.0.0.1:8976/callback".to_string());
+    let callback = CallbackUrl::parse(&callback_url)?;
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(global.timeout))
+        .build()?;
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    let discovery: OidcDiscovery = http
+        .get(&discovery_url)
+        .send()
+        .await
+        .with_context(|| format!("fetch OIDC discovery from {discovery_url}"))?
+        .error_for_status()
+        .with_context(|| format!("OIDC discovery failed at {discovery_url}"))?
+        .json()
+        .await
+        .context("parse OIDC discovery")?;
+    let authorization_endpoint = discovery.authorization_endpoint.ok_or_else(|| {
+        anyhow::anyhow!("OIDC provider does not advertise authorization_endpoint")
+    })?;
+
+    let code_verifier = random_base64url(32)?;
+    let code_challenge = base64url(&Sha256::digest(code_verifier.as_bytes()));
+    let state = random_base64url(16)?;
+    let authorize_url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
+        authorization_endpoint,
+        encode_component(&client_id),
+        encode_component(&callback.redirect_uri),
+        encode_component(&scope),
+        encode_component(&state),
+        encode_component(&code_challenge),
+    );
+
+    let listener = tokio::net::TcpListener::bind((callback.host.as_str(), callback.port))
+        .await
+        .with_context(|| format!("listen on {}", callback.origin()))?;
+    println!("Open {authorize_url}");
+    println!("Waiting for callback on {}", callback.redirect_uri);
+
+    let (code, returned_state) = receive_oauth_callback(listener, &callback.path).await?;
+    if returned_state.as_deref() != Some(state.as_str()) {
+        anyhow::bail!("OIDC callback state did not match; login aborted");
+    }
+    let response = http
+        .post(&discovery.token_endpoint)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", callback.redirect_uri.as_str()),
+            ("client_id", client_id.as_str()),
+            ("code_verifier", code_verifier.as_str()),
+        ])
+        .send()
+        .await
+        .context("exchange authorization code")?;
+    let status = response.status();
+    let text = response.text().await.context("read token response")?;
+    if !status.is_success() {
+        let error: TokenError = serde_json::from_str(&text).unwrap_or(TokenError {
+            error: status.to_string(),
+            error_description: Some(text),
+        });
+        let description = error.error_description.unwrap_or_default();
+        anyhow::bail!(
+            "authorization code exchange failed: {} {}",
+            error.error,
+            description
+        );
+    }
+    let token: TokenSuccess = serde_json::from_str(&text).context("parse token response")?;
+    token
+        .id_token
+        .or(token.access_token)
+        .ok_or_else(|| anyhow::anyhow!("token response did not include id_token or access_token"))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CallbackUrl {
+    redirect_uri: String,
+    host: String,
+    port: u16,
+    path: String,
+}
+
+impl CallbackUrl {
+    fn parse(raw: &str) -> Result<Self> {
+        let rest = raw
+            .strip_prefix("http://")
+            .ok_or_else(|| anyhow::anyhow!("callback URL must use http:// loopback"))?;
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, "callback"));
+        let (host, port) = authority
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("callback URL must include an explicit port"))?;
+        if !matches!(host, "127.0.0.1" | "localhost") {
+            anyhow::bail!("callback URL must use 127.0.0.1 or localhost");
+        }
+        let port = port
+            .parse::<u16>()
+            .with_context(|| format!("invalid callback port in {raw}"))?;
+        Ok(Self {
+            redirect_uri: raw.to_string(),
+            host: host.to_string(),
+            port,
+            path: format!("/{path}"),
+        })
+    }
+
+    fn origin(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+async fn receive_oauth_callback(
+    listener: tokio::net::TcpListener,
+    expected_path: &str,
+) -> Result<(String, Option<String>)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let accept = async {
+        let (mut stream, _) = listener.accept().await?;
+        let mut buf = vec![0_u8; 8192];
+        let n = stream.read(&mut buf).await?;
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let first_line = request
+            .lines()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("empty OAuth callback request"))?;
+        let target = first_line
+            .strip_prefix("GET ")
+            .and_then(|line| line.split_once(' ').map(|(target, _)| target))
+            .ok_or_else(|| anyhow::anyhow!("unexpected OAuth callback request"))?;
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        let result = if path == expected_path {
+            callback_param(query, "error")
+                .map(|err| Err(anyhow::anyhow!("OIDC provider returned error: {err}")))
+                .unwrap_or_else(|| {
+                    let code = callback_param(query, "code")
+                        .ok_or_else(|| anyhow::anyhow!("OIDC callback did not include code"))?;
+                    Ok((code, callback_param(query, "state")))
+                })
+        } else {
+            Err(anyhow::anyhow!("unexpected OAuth callback path {path}"))
+        };
+        let body = if result.is_ok() {
+            "Flowplane login complete. You can close this tab.\n"
+        } else {
+            "Flowplane login failed. Return to the terminal for details.\n"
+        };
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await?;
+        result
+    };
+    tokio::time::timeout(Duration::from_secs(300), accept)
+        .await
+        .context("timed out waiting for OIDC callback")?
+}
+
+fn random_base64url(len: usize) -> Result<String> {
+    let mut bytes = vec![0_u8; len];
+    getrandom::fill(&mut bytes).context("generate random bytes")?;
+    Ok(base64url(&bytes))
+}
+
+fn base64url(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn callback_param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|part| {
+        let (k, v) = part.split_once('=')?;
+        if k == key {
+            percent_decode(v).ok()
+        } else {
+            None
+        }
+    })
+}
+
+fn encode_component(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                vec![b as char]
+            }
+            _ => format!("%{b:02X}").chars().collect::<Vec<_>>(),
+        })
+        .collect()
+}
+
+fn percent_decode(value: &str) -> Result<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3])?;
+                out.push(u8::from_str_radix(hex, 16).context("invalid percent encoding")?);
+                i += 3;
+            }
+            b'%' => anyhow::bail!("truncated percent encoding"),
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).context("percent decoded value is not UTF-8")
 }
 
 pub fn run_config(_global: GlobalOptions, command: ConfigCommand) -> Result<()> {
@@ -1164,6 +1432,7 @@ team = "default"
 org = "dev-org"
 oidc_issuer = "http://localhost:8081"
 oidc_client_id = "376872439851843590"
+callback_url = "http://127.0.0.1:8976/callback"
 "#,
         )?;
         assert_eq!(parsed.base_url.as_deref(), Some("http://localhost:8080"));
@@ -1171,7 +1440,35 @@ oidc_client_id = "376872439851843590"
         assert_eq!(parsed.team.as_deref(), Some("default"));
         assert_eq!(parsed.oidc_issuer.as_deref(), Some("http://localhost:8081"));
         assert_eq!(parsed.oidc_client_id.as_deref(), Some("376872439851843590"));
+        assert_eq!(
+            parsed.callback_url.as_deref(),
+            Some("http://127.0.0.1:8976/callback")
+        );
         assert!(parsed.contexts.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pkce_callback_url_is_loopback_only() -> Result<()> {
+        let parsed = CallbackUrl::parse("http://127.0.0.1:8976/callback")?;
+        assert_eq!(
+            parsed,
+            CallbackUrl {
+                redirect_uri: "http://127.0.0.1:8976/callback".into(),
+                host: "127.0.0.1".into(),
+                port: 8976,
+                path: "/callback".into(),
+            }
+        );
+        assert!(CallbackUrl::parse("https://127.0.0.1:8976/callback").is_err());
+        assert!(CallbackUrl::parse("http://example.com:8976/callback").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn pkce_encoding_helpers_match_oauth_query_rules() -> Result<()> {
+        assert_eq!(encode_component("a b/c"), "a%20b%2Fc");
+        assert_eq!(percent_decode("a+b%2Fc")?, "a b/c");
         Ok(())
     }
 

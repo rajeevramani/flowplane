@@ -66,6 +66,8 @@ pub(crate) struct CliConfig {
     pub(crate) oidc_client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) oidc_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) callback_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +88,7 @@ pub(crate) struct EffectiveConfig {
     pub(crate) oidc_issuer: Option<String>,
     pub(crate) oidc_client_id: Option<String>,
     pub(crate) oidc_scope: Option<String>,
+    pub(crate) callback_url: Option<String>,
 }
 
 impl GlobalOptions {
@@ -182,5 +185,8 @@ pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
         oidc_scope: std::env::var("FLOWPLANE_OIDC_SCOPE")
             .ok()
             .or(file.oidc_scope),
+        callback_url: std::env::var("FLOWPLANE_OIDC_CALLBACK_URL")
+            .ok()
+            .or(file.callback_url),
     })
 }

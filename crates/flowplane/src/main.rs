@@ -15,6 +15,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
     about = "Flowplane control plane",
     after_help = "Examples:
   flowplane auth login --device-code --issuer https://issuer.example --client-id flowplane-cli
+  flowplane auth login --pkce --callback-url http://127.0.0.1:8976/callback
   flowplane config set-context prod --server https://fp.example --org acme --team payments
   flowplane apply -f gateway.json --diff
   flowplane cluster list --team payments"
@@ -180,6 +181,15 @@ mod tests {
             "flowplane-cli",
         ])
         .expect("device-code login form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "auth",
+            "login",
+            "--pkce",
+            "--callback-url",
+            "http://127.0.0.1:8976/callback",
+        ])
+        .expect("pkce login form should parse");
         Cli::try_parse_from(["flowplane", "apply", "-f", "gateway.json", "--diff"])
             .expect("apply diff form should parse");
         Cli::try_parse_from(["flowplane", "cluster", "list", "--team", "payments"])
@@ -190,6 +200,7 @@ mod tests {
     fn cli_help_contains_workflow_examples() {
         let help = Cli::command().render_long_help().to_string();
         assert!(help.contains("flowplane auth login --device-code"));
+        assert!(help.contains("flowplane auth login --pkce"));
         assert!(help.contains("flowplane config set-context prod"));
         assert!(help.contains("flowplane apply -f gateway.json --diff"));
     }

@@ -13,9 +13,13 @@ pub enum AuthCommand {
         #[arg(long, alias = "device-code")]
         device: bool,
         #[arg(long)]
+        pkce: bool,
+        #[arg(long)]
         issuer: Option<String>,
         #[arg(long)]
         client_id: Option<String>,
+        #[arg(long)]
+        callback_url: Option<String>,
         #[arg(long, default_value = "openid email profile")]
         scope: String,
     },

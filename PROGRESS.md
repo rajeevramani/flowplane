@@ -175,7 +175,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           dataplane claims are rejected and accepted heartbeats update live stats.
 - [x] S6 exit: SDS rotation E2E passed in S6.4b; revoked cert stream-kill covered by S5.4;
       secret values are write-only over HTTP; stats relay covered by S6.5b.
-- [ ] S7 CLI core (+ commands for S2–S6)
+- [x] S7 CLI core (+ commands for S2–S6)
   - [x] S7.1 CLI foundation: shared global flags/config precedence (`--server`,
         `--org`, `--team`, contexts, token file/env), REST client with bearer and
         `X-Flowplane-Org`, table/json/yaml-ish output, API error rendering, dry-run plan
@@ -199,8 +199,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         is accepted as the spec/v1-compatible alias.
   - [x] S7.5 Transcript polish: top-level help now carries the S7 happy-path examples (device-code
         login, context setup, `apply --diff`, resource list), and parser tests pin those command
-        forms so future CLI refactors cannot silently break the documented workflows. Remaining S7
-        scope: browser PKCE loopback.
+        forms so future CLI refactors cannot silently break the documented workflows.
+  - [x] S7.6 Browser PKCE loopback: configured OIDC defaults to PKCE login, `auth login --pkce`
+        prints the authorization URL, listens only on an explicit loopback callback URL, validates
+        state, exchanges the code with S256 verifier, and stores `id_token` when present (else
+        access token). `--device-code` remains the headless path.
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
 - [ ] S10 AI gateway
