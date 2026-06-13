@@ -6,8 +6,10 @@ use envoy_types::pb::envoy::config::cluster::v3 as exc;
 use envoy_types::pb::envoy::config::core::v3 as core;
 use envoy_types::pb::envoy::config::endpoint::v3 as ep;
 use envoy_types::pb::envoy::config::listener::v3 as lst;
+use envoy_types::pb::envoy::config::ratelimit::v3 as ratelimit_cfg;
 use envoy_types::pb::envoy::config::route::v3 as rt;
 use envoy_types::pb::envoy::extensions::access_loggers::file::v3 as file_accesslog;
+use envoy_types::pb::envoy::extensions::filters::http::ratelimit::v3 as rate_limit_filter;
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
 use envoy_types::pb::envoy::extensions::path::rewrite::uri_template::v3 as uri_template_rewrite;
@@ -986,6 +988,13 @@ fn http_filter_to_proto(
                 &rbac_to_proto(c),
             ),
         ),
+        HttpFilterSpec::GlobalRateLimit(c) => (
+            "envoy.filters.http.ratelimit",
+            any(
+                "type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit",
+                &global_rate_limit_to_proto(c),
+            ),
+        ),
     };
     Ok(hcm::HttpFilter {
         name: name.to_string(),
@@ -993,6 +1002,52 @@ fn http_filter_to_proto(
         disabled: entry.disabled,
         ..Default::default()
     })
+}
+
+fn global_rate_limit_to_proto(
+    c: &fp_domain::gateway::filters::GlobalRateLimitConfig,
+) -> rate_limit_filter::RateLimit {
+    use fp_domain::gateway::filters::RateLimitRequestType;
+
+    rate_limit_filter::RateLimit {
+        domain: c.domain.clone(),
+        stage: c.stage,
+        request_type: match c.request_type {
+            RateLimitRequestType::Both => "both",
+            RateLimitRequestType::Internal => "internal",
+            RateLimitRequestType::External => "external",
+        }
+        .to_string(),
+        timeout: Some(millis_duration(c.timeout_ms)),
+        failure_mode_deny: c.failure_mode_deny,
+        rate_limit_service: Some(ratelimit_cfg::RateLimitServiceConfig {
+            grpc_service: Some(core::GrpcService {
+                timeout: Some(millis_duration(c.timeout_ms)),
+                target_specifier: Some(core::grpc_service::TargetSpecifier::EnvoyGrpc(
+                    core::grpc_service::EnvoyGrpc {
+                        cluster_name: c.service_cluster.clone(),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }),
+            transport_api_version: core::ApiVersion::V3 as i32,
+        }),
+        enable_x_ratelimit_headers: if c.enable_x_ratelimit_headers {
+            rate_limit_filter::rate_limit::XRateLimitHeadersRfcVersion::DraftVersion03 as i32
+        } else {
+            rate_limit_filter::rate_limit::XRateLimitHeadersRfcVersion::Off as i32
+        },
+        disable_x_envoy_ratelimited_header: c.disable_x_envoy_ratelimited_header,
+        rate_limited_status: c
+            .rate_limited_status
+            .map(|code| envoy_type::HttpStatus { code: code as i32 }),
+        status_on_error: c
+            .status_on_error
+            .map(|code| envoy_type::HttpStatus { code: code as i32 }),
+        stat_prefix: c.stat_prefix.clone().unwrap_or_default(),
+        ..Default::default()
+    }
 }
 
 /// JwtAuthentication proto (spec/04 §4.1). One filter per chain (v2 invariant), so v1's
@@ -2189,6 +2244,22 @@ mod tests {
                     }),
                     disabled: true,
                 },
+                HttpFilterEntry {
+                    filter: HttpFilterSpec::GlobalRateLimit(GlobalRateLimitConfig {
+                        domain: "flowplane".into(),
+                        service_cluster: "flowplane-rls".into(),
+                        timeout_ms: 50,
+                        failure_mode_deny: true,
+                        stage: 1,
+                        request_type: RateLimitRequestType::External,
+                        stat_prefix: Some("edge_rls".into()),
+                        enable_x_ratelimit_headers: true,
+                        disable_x_envoy_ratelimited_header: true,
+                        rate_limited_status: Some(429),
+                        status_on_error: Some(503),
+                    }),
+                    disabled: false,
+                },
             ];
             let spec = ListenerSpec {
                 address: "0.0.0.0".into(),
@@ -2216,11 +2287,45 @@ mod tests {
                 vec![
                     "envoy.filters.http.local_ratelimit",
                     "envoy.filters.http.header_mutation",
+                    "envoy.filters.http.ratelimit",
                     "envoy.filters.http.router"
                 ],
                 "declared order, router appended last"
             );
             assert!(manager.http_filters[1].disabled, "disabled flag carried");
+            let rls = match manager.http_filters[2]
+                .config_type
+                .as_ref()
+                .expect("rls typed config")
+            {
+                hcm::http_filter::ConfigType::TypedConfig(any) => {
+                    assert!(any.type_url.ends_with("ratelimit.v3.RateLimit"));
+                    rate_limit_filter::RateLimit::decode(any.value.as_slice()).expect("rls")
+                }
+                other => panic!("unexpected rls filter config: {other:?}"),
+            };
+            assert_eq!(rls.domain, "flowplane");
+            assert_eq!(rls.stage, 1);
+            assert_eq!(rls.request_type, "external");
+            assert!(rls.failure_mode_deny);
+            assert_eq!(rls.stat_prefix, "edge_rls");
+            assert_eq!(
+                rls.enable_x_ratelimit_headers,
+                rate_limit_filter::rate_limit::XRateLimitHeadersRfcVersion::DraftVersion03 as i32
+            );
+            assert!(rls.disable_x_envoy_ratelimited_header);
+            assert_eq!(rls.rate_limited_status.expect("limited status").code, 429);
+            assert_eq!(rls.status_on_error.expect("error status").code, 503);
+            let service = rls.rate_limit_service.expect("rate limit service");
+            assert_eq!(service.transport_api_version, core::ApiVersion::V3 as i32);
+            let grpc = service.grpc_service.expect("grpc service");
+            assert_eq!(grpc.timeout.expect("grpc timeout").seconds, 0);
+            match grpc.target_specifier.expect("target") {
+                core::grpc_service::TargetSpecifier::EnvoyGrpc(target) => {
+                    assert_eq!(target.cluster_name, "flowplane-rls");
+                }
+                other => panic!("unexpected rate-limit grpc target: {other:?}"),
+            }
 
             // cors in the chain is the empty marker; the policy travels per-scope.
             let cors_spec = ListenerSpec {

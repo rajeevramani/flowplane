@@ -266,8 +266,13 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         - Deferred: TCP listener/proxy support until V2 has a first-class TCP route/action model;
           listener tracing config remains tracked under observability/filter parity because it
           needs provider-specific API/cluster decisions rather than a lossy placeholder.
-  - [ ] S7.8e Filter parity decisions and implementation: close or explicitly defer the remaining
+  - [x] S7.8e Filter parity decisions and implementation: close or explicitly defer the remaining
         V1 filter catalog with owner slices and user-visible impact documented.
+        - Implemented: typed global RLS HTTP filter client config (`envoy.filters.http.ratelimit`)
+          using a named same-team service cluster, timeout, fail-open/fail-closed, request type,
+          stage, status, and x-rate-limit header controls.
+        - Deferred: ExtProc to S8 learning capture; OAuth2, credential injection, custom response,
+          MCP routing, quota, and WASM to later auth/AI-gateway/extension slices.
   - [ ] S7.8f DB/API/CLI/OpenAPI parity tests and examples: full specs round-trip through storage,
         OpenAPI, CLI `apply`, and resource commands without lossy projections.
   - [ ] S7.8g Live Envoy parity E2E: advanced cluster/route/listener/filter examples ACK in Envoy,

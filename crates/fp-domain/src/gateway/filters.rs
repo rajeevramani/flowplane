@@ -35,6 +35,7 @@ pub enum HttpFilterSpec {
     JwtAuth(JwtAuthConfig),
     ExtAuthz(ExtAuthzConfig),
     Rbac(RbacConfig),
+    GlobalRateLimit(GlobalRateLimitConfig),
 }
 
 impl HttpFilterSpec {
@@ -48,6 +49,7 @@ impl HttpFilterSpec {
             Self::JwtAuth(_) => "jwt_auth",
             Self::ExtAuthz(_) => "ext_authz",
             Self::Rbac(_) => "rbac",
+            Self::GlobalRateLimit(_) => "global_rate_limit",
         }
     }
 
@@ -61,6 +63,7 @@ impl HttpFilterSpec {
             Self::JwtAuth(c) => c.validate(),
             Self::ExtAuthz(c) => c.validate(),
             Self::Rbac(c) => c.validate(),
+            Self::GlobalRateLimit(c) => c.validate(),
         }
     }
 }
@@ -96,6 +99,7 @@ impl FilterOverride {
                     "jwt_auth",
                     "ext_authz",
                     "rbac",
+                    "global_rate_limit",
                 ];
                 if !DISABLABLE.contains(&filter_type.as_str()) {
                     return Err(DomainError::validation(format!(
@@ -244,6 +248,96 @@ impl LocalRateLimitConfig {
                 return Err(DomainError::validation(
                     "local_rate_limit: status_code must be in 400..=599",
                 ));
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------- global_rate_limit ----------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitRequestType {
+    Both,
+    Internal,
+    External,
+}
+
+impl Default for RateLimitRequestType {
+    fn default() -> Self {
+        Self::Both
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalRateLimitConfig {
+    pub domain: String,
+    pub service_cluster: String,
+    #[serde(default = "default_global_rate_limit_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub failure_mode_deny: bool,
+    #[serde(default)]
+    pub stage: u32,
+    #[serde(default, skip_serializing_if = "is_default_rate_limit_request_type")]
+    pub request_type: RateLimitRequestType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stat_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enable_x_ratelimit_headers: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_x_envoy_ratelimited_header: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limited_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_on_error: Option<u16>,
+}
+
+fn default_global_rate_limit_timeout_ms() -> u64 {
+    20
+}
+
+fn is_default_rate_limit_request_type(value: &RateLimitRequestType) -> bool {
+    *value == RateLimitRequestType::Both
+}
+
+impl GlobalRateLimitConfig {
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.domain.is_empty() || self.domain.len() > 128 || self.domain.contains('\0') {
+            return Err(DomainError::validation(
+                "global_rate_limit: domain must be 1..=128 characters and contain no NUL",
+            ));
+        }
+        crate::identity::validate_name(&self.service_cluster)?;
+        if self.timeout_ms > 60_000 {
+            return Err(DomainError::validation(
+                "global_rate_limit: timeout_ms must be <= 60000",
+            ));
+        }
+        if self.stage > 10 {
+            return Err(DomainError::validation(
+                "global_rate_limit: stage must be in 0..=10",
+            ));
+        }
+        if self
+            .stat_prefix
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.len() > 128 || v.contains('\0'))
+        {
+            return Err(DomainError::validation(
+                "global_rate_limit: stat_prefix must be 1..=128 characters and contain no NUL",
+            ));
+        }
+        for (field, status) in [
+            ("rate_limited_status", self.rate_limited_status),
+            ("status_on_error", self.status_on_error),
+        ] {
+            if status.is_some_and(|code| !(400..=599).contains(&code)) {
+                return Err(DomainError::validation(format!(
+                    "global_rate_limit: {field} must be in 400..=599",
+                )));
             }
         }
         Ok(())
@@ -766,6 +860,31 @@ mod tests {
             status_code: Some(200),
         };
         assert!(bad.validate().is_err(), "2xx rate-limit status");
+
+        let bad = GlobalRateLimitConfig {
+            domain: "edge".into(),
+            service_cluster: "rls".into(),
+            timeout_ms: 20,
+            failure_mode_deny: false,
+            stage: 11,
+            request_type: RateLimitRequestType::Both,
+            stat_prefix: None,
+            enable_x_ratelimit_headers: false,
+            disable_x_envoy_ratelimited_header: false,
+            rate_limited_status: None,
+            status_on_error: None,
+        };
+        assert!(
+            bad.validate().is_err(),
+            "stage outside Envoy's 0..=10 range"
+        );
+
+        let bad = GlobalRateLimitConfig {
+            stage: 0,
+            rate_limited_status: Some(200),
+            ..bad
+        };
+        assert!(bad.validate().is_err(), "2xx global rate-limit status");
 
         // unknown filter type fails loud
         assert!(serde_json::from_value::<HttpFilterSpec>(

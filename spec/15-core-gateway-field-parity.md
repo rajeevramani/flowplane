@@ -155,9 +155,9 @@ For each field group below, "done" means:
 | JWT auth | Present | Keep |
 | Ext authz | Present | Keep |
 | RBAC | Present | Keep |
-| Global rate limit / RLS | Partial | Route/vhost descriptor hooks exist; **remaining pre-S8 decision:** add the listener-chain `envoy.filters.http.ratelimit` client config and decide how much of V1's RLS domain/policy workflow is required before learning |
+| Global rate limit / RLS | Implemented in S7.8e | Route/vhost descriptor hooks plus listener-chain `envoy.filters.http.ratelimit` client config. V2 intentionally stops at the Envoy IR/API surface here; RLS domain/policy storage is a separate policy-service slice, not a gateway parity blocker |
 | Rate limit quota | Missing | **Defer pre-S8** unless quota behavior is needed for AI gateway budgeting immediately |
-| ExtProc | Missing | **Must design now, implement learning-required subset in S8.** It must enter through typed IR, not post-hoc injection |
+| ExtProc | Deferred to S8 learning capture | Required for body capture, but not for core gateway parity. It must enter through typed IR, not post-hoc injection |
 | OAuth2 | Missing | **Defer pre-S8** to a later auth slice |
 | Credential injector | Missing | **Defer pre-S8** to AI gateway/security slice |
 | Custom response | Missing | **Defer pre-S8** unless core operator examples need it |
