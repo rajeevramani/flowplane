@@ -241,6 +241,26 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         with explicit or allocated listener port and a curlable success message.
   - [ ] S7.7e Transcript/E2E: CP + dataplane + expose + curl + stats/NACK checks pinned so the
         route-to-traffic loop cannot regress.
+- [ ] S7.8 Core gateway field parity before learning (see
+      `spec/15-core-gateway-field-parity.md`)
+  - [ ] S7.8a Finalize the field parity matrix against V1 examples and current V2 code:
+        clusters, routes, listeners, filters, secrets, API schema, DB round-trip, CLI examples,
+        and xDS translation.
+  - [ ] S7.8b Cluster parity: typed V2 support for V1-exposed Envoy cluster fields, including
+        richer load-balancing options, DNS behavior, upstream TLS/SNI/validation, upstream
+        protocol, health checks, circuit breakers, and outlier detection.
+  - [ ] S7.8c Route parity: typed V2 support for header/query/regex matching, weighted clusters,
+        retry policy, redirect/direct-response decisions, route/vhost rate-limit hooks, rewrites,
+        and per-filter config.
+  - [ ] S7.8d Listener parity: typed V2 support for protocol/listener kind, TCP proxy if retained,
+        downstream TLS coverage, access logs, tracing, filter-chain decisions, and request-id
+        behavior.
+  - [ ] S7.8e Filter parity decisions and implementation: close or explicitly defer the remaining
+        V1 filter catalog with owner slices and user-visible impact documented.
+  - [ ] S7.8f DB/API/CLI/OpenAPI parity tests and examples: full specs round-trip through storage,
+        OpenAPI, CLI `apply`, and resource commands without lossy projections.
+  - [ ] S7.8g Live Envoy parity E2E: advanced cluster/route/listener/filter examples ACK in Envoy,
+        exercise at least one behavior per feature class, and expose useful NACK diagnostics.
 - [ ] S8 Learning config-first
   - [ ] S8.1 API lifecycle foundation (D-017): domain types + migration for
         `api_definitions`, `api_route_bindings`, immutable `spec_versions`, generated

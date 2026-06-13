@@ -5,7 +5,8 @@ work with `PROGRESS.md` before S8 learning continues. V1 is inspiration for the 
 only (`init`, `expose`, `dataplane up`, runbooks, smoke tests); V2 keeps the existing Rust
 workspace boundaries, PostgreSQL source of truth, REST/CLI surfaces, xDS snapshot cache, and
 agent telemetry design. Architecture integrity rules for the seams and domain boundaries are in
-`spec/14-architecture-integrity.md`.
+`spec/14-architecture-integrity.md`. Core gateway API/DB/xDS field parity is tracked separately in
+`spec/15-core-gateway-field-parity.md` and is a pre-S8 gate.
 
 Principle: **V1 defines the user outcome; V2 defines the architecture and experience.** The goal is
 not feature-for-feature porting. The goal is core gateway workflow parity with a simpler, safer,
@@ -30,8 +31,10 @@ implementation.
 
 ## Core Gateway Capability Parity
 
-S7.7 is the immediate **deployment and route-to-traffic gate**. It should not absorb every remaining
-gateway feature from V1. The table below separates pre-S8 blockers from broader parity items.
+S7.7 is the immediate **deployment and route-to-traffic gate**. S7.8 is the **core gateway field
+parity gate**: V2 must be able to accept, store, validate, and emit the core Envoy-facing gateway
+fields that V1 made available before S8 learning resumes. The table below separates workflow
+blockers from field-parity blockers.
 
 | Capability | V1 outcome | V2 status | Focus next | Progress anchor |
 | --- | --- | --- | --- | --- |
@@ -42,20 +45,25 @@ gateway feature from V1. The table below separates pre-S8 blockers from broader 
 | Envoy bootstrap | CLI/scripts generate usable bootstrap | API/CLI exists, but naming and dev plaintext UX are rough | **Pre-S8 blocker:** `dataplane bootstrap`, `--out`, explicit dev/prod mode | S7.7b |
 | Dataplane process | `dataplane up/down`, bundle scripts | e2e script only | **Pre-S8 blocker:** choose manual Envoy or V2-native lifecycle command | S7.7c |
 | Route-to-traffic shortcut | `expose` creates cluster/route/listener | Low-level CRUD only | **Pre-S8 blocker:** implement `expose`/`unexpose` on V2 services | S7.7d |
-| Gateway CRUD | cluster/listener/route CRUD | Implemented with V2 REST/CLI and xDS | Keep as substrate for `expose`; no parity work now | S3, S4, S5, S7 |
+| Gateway CRUD | cluster/listener/route CRUD with broader Envoy field coverage | Implemented with V2 REST/CLI and xDS, but narrower typed specs | **Pre-S8 blocker:** close field parity across API schema, DB round-trip, xDS translation, CLI examples, and Envoy tests | S3, S4, S5, S7, S7.8 |
 | xDS delivery | ADS, ACK/NACK visibility | Implemented with stronger quarantine + persistence | Surface in runbook and diagnostics path | S5.5, S7.7a/e |
 | SDS/secrets | TLS secrets to Envoy | Implemented, stronger write-only API | Operator workflow docs; not a pre-S8 learning blocker unless used by examples | S6.3, S6.4, S12 |
 | Agent telemetry/stats | Agent reports warming/status; stats commands | Foundation implemented; CLI has stats overview | Pre-S8: prove happy path or clearly document dev plaintext limitations | S6.5, S7.7e |
 | Ops summary | `xds status`, `ops doctor`-style flow | NACKs/stats exist; no rich doctor | Not required before S8; record as S12 hardening unless needed for tests | S7.7e, S12 |
-| Filters | Broad V1 filter catalog | V2 typed IR subset shipped; some filters deferred | Not part of core deployment parity; continue in owning slices | S5.8, S10, S11, S12 |
-| Rate limiting | local/RLS workflows | local_rate_limit filter shipped; RLS/domain/policy deferred | Not a pre-S8 blocker; belongs with rate-limit/AI budget work | S5.8, S10/S12 |
+| Filters | Broad V1 filter catalog | V2 typed IR subset shipped; several filters missing | Field parity decision required before S8: implement core gateway filters now or explicitly document a signed-off deferral | S5.8, S7.8, S10, S11, S12 |
+| Rate limiting | local/RLS workflows | local_rate_limit filter shipped; RLS/domain/policy deferred | Field parity decision required before S8 because rate-limit config is part of the gateway contract V1 exposed | S5.8, S7.8, S10/S12 |
 | MCP gateway tools | api_* through Envoy | Deferred | Must wait for published specs/tools | S11 |
 | Learning capture | learn from live traffic | Deferred | Must use the S7.7-proven route-to-traffic loop | S8/S9 |
 | Packaging | release installer/platform bundle | None in V2 | Defer until CLI contract is clean; avoid premature V1 script port | S12 |
 
-Pre-S8 blockers are intentionally narrow: CP runbook, bootstrap UX, dataplane lifecycle decision,
-`expose`/`unexpose`, and workflow validation. Everything else is either already implemented enough
-for learning, belongs to a later feature slice, or should wait for the V2 CLI contract to stabilize.
+Pre-S8 blockers are now two gates:
+
+1. **S7.7 workflow parity:** CP runbook, bootstrap UX, dataplane lifecycle decision,
+   `expose`/`unexpose`, and workflow validation.
+2. **S7.8 field parity:** core gateway API/DB/xDS coverage for the Envoy fields V1 exposed, with
+   known V1 design smells fixed rather than ported.
+
+Only after both gates are closed should S8 learning resume.
 
 ## Execution Breakdown
 
@@ -69,9 +77,10 @@ exists and what "done" means.
 | S7.7c | Dataplane lifecycle | Operator knows the supported way to run Envoy in V2 | Decide manual local Envoy first vs V2-native `dataplane up/down/status`; do not port V1 compose internals | Decision recorded; chosen path documented or implemented; macOS path avoids Docker host-network dependency |
 | S7.7d | Expose shortcut | One command turns an upstream into curlable traffic through Envoy | Implement `expose`/`unexpose` using V2 cluster/route-config/listener services and existing xDS propagation | `flowplane expose <url> --name demo` prints a listener port and curl hint; cleanup works |
 | S7.7e | Workflow validation | The CP + DP + expose loop cannot regress silently | Add transcript/parser test and one live e2e/smoke path around the happy path and key diagnostics | Test proves CP start, DP bootstrap/connect, expose, curl, stats/NACK checks |
+| S7.8 | Field parity | Core gateway resources represent the Envoy surface V1 exposed, without V1's architectural shortcuts | Follow `spec/15-core-gateway-field-parity.md`; add typed domain fields, service validation, storage/API/CLI round trips, xDS translation, and live Envoy checks | V1-equivalent cluster, route, listener, filter, and secret examples are accepted by V2, stored once, emitted to Envoy, and regression-tested |
 
-After S7.7e, S8 may resume. S8 should depend on the core gateway loop instead of carrying its own
-bring-up logic.
+After S7.7e and S7.8, S8 may resume. S8 should depend on the core gateway loop and field model
+instead of carrying its own bring-up or gateway-shape logic.
 
 ## Mindmap
 
@@ -127,6 +136,16 @@ Flowplane v2 product loop
 │   ├── Need: `unexpose` or equivalent cleanup
 │   └── Done when: upstream -> expose -> curl through Envoy works from CLI
 │
+├── 4a. Core gateway field parity
+│   ├── Status: partial; V2 typed model is intentionally cleaner but narrower than V1
+│   ├── Progress anchor: S7.8
+│   ├── Existing: cluster/listener/route-config/filter CRUD and xDS translation for the simple path
+│   ├── Need: cluster field parity for LB options, TLS/SNI/validation, protocol, health, breakers, outliers
+│   ├── Need: route field parity for headers, query params, regex, weighted clusters, retry, redirects
+│   ├── Need: listener field parity for protocol, TCP proxy, access logs, tracing, richer filter chains
+│   ├── Need: filter catalog parity decisions and implementation
+│   └── Done when: V1-equivalent gateway examples round-trip through API/DB/CLI and ACK in Envoy
+│
 ├── 5. Observability and diagnostics baseline
 │   ├── Status: partial
 │   ├── Progress anchor: S5.5, S6.5, S7, S12
@@ -162,7 +181,8 @@ Flowplane v2 product loop
 3. Dataplane lifecycle: choose manual-local first or CLI-managed `dataplane up`.
 4. Expose shortcut: create the simplest route-to-traffic loop.
 5. E2E transcript: pin the workflow so it does not regress.
-6. Resume S8 config-first learning on top of that baseline.
+6. Close S7.8 core gateway field parity with typed V2 resources.
+7. Resume S8 config-first learning on top of that baseline.
 
 ## Open Questions
 
@@ -172,3 +192,6 @@ Flowplane v2 product loop
 3. Should the dev bootstrap endpoint generate plaintext xDS when `FLOWPLANE_DEV_MODE=true`, or
    should plaintext remain a CLI-only local convenience? Recommendation: API supports an explicit
    `mode=dev-plaintext` query only in dev mode, so the contract is testable and fail-closed.
+4. Which V1 gateway fields are intentionally out of scope for pre-S8? Recommendation: none by
+   default; every deferral should be explicit in `spec/15-core-gateway-field-parity.md` with the
+   reason and the later progress anchor.
