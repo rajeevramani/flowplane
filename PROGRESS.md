@@ -127,6 +127,8 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           unit-pinned.
   - [x] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
     - [x] xDS pipeline wired into `flowplane serve` (outbox consumer + dev-mode plaintext ADS listener)
+    - [x] target Envoy line: **1.37.x** (latest patch 1.37.4) — one release before the 1.38
+          stable line (D-013); docker tag `envoyproxy/envoy:v1.37-latest`, sandbox binary 1.37.4
     - [x] `scripts/e2e-envoy.sh` (real Envoy via docker, or Tetrate static binary fallback) — three
           phases all PASSED: ADS join + traffic; CP restart with snapshot prime-from-DB (found and
           fixed the empty-snapshot-wipes-dataplane restart bug); cross-team isolation (config_dump

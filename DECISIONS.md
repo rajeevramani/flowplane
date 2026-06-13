@@ -186,3 +186,20 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   rate_limit/rate_limit_quota (RLS), ext_proc, oauth2/credential_injector (SDS secrets, S6),
   custom_response, mcp (S11), wasm (custom-binary storage).
 - **Status:** decided (S5.8), founder can revisit at the S7 CLI review.
+
+## D-013: target Envoy 1.37.x (one release before the latest stable line)
+
+- **Context:** the data plane is Envoy; we test the translated xDS against a real proxy. As of
+  2026-06, the latest stable line is 1.38.x (1.38.1). Founder directive: track one release
+  before the latest stable — i.e. the 1.37.x line (latest patch 1.37.4).
+- **Rationale:** N-1 trades the newest features for a line that has had a full quarter of patch
+  hardening, while staying well inside Envoy's 4-minor support window. Flowplane targets the
+  stable xDS **v3** API, which 1.37 speaks; the live E2E confirms every resource type and all
+  eight shipped filters ACK on 1.37.4.
+- **What moved:** `scripts/e2e-envoy.sh` docker tag → `envoyproxy/envoy:v1.37-latest`; sandbox
+  binary → archive-envoy 1.37.4. `envoy-types` stays at 0.7.4 (xDS v3 is API-stable across
+  these minors; the E2E proves compatibility — no proto-path churn, so no reason to bump and
+  risk breakage).
+- **Revisit:** bump the pin one line behind whenever Envoy cuts a new stable (so we'd move to
+  1.38.x once 1.39.x ships), and re-bump `envoy-types` only if a NACK ever shows an API gap.
+- **Status:** decided (post-S5.8, founder directive).

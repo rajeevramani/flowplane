@@ -80,7 +80,7 @@ EOF
 
 if docker run -d --name fp-e2e-envoy --network host \
   -v /tmp/fp-e2e-bootstrap.yaml:/etc/envoy/envoy.yaml:ro \
-  envoyproxy/envoy:v1.31-latest -c /etc/envoy/envoy.yaml --log-level info >/dev/null 2>&1; then
+  envoyproxy/envoy:v1.37-latest -c /etc/envoy/envoy.yaml --log-level info >/dev/null 2>&1; then
   echo "envoy started (docker); waiting for traffic to flow"
 else
   command -v envoy >/dev/null || { echo "neither docker envoy nor local envoy binary available"; exit 1; }
