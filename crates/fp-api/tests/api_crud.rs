@@ -40,12 +40,12 @@ fn openapi_document_covers_every_registered_operation() {
     }
     // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 4 dataplane
     // + 3 proxy-certificate + 1 xds-nacks operations.
-    // + 4 secrets operations.
+    // + 4 secrets operations + 2 dataplane/stats telemetry operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 44,
-        "expected 44 documented operations, got {operations}"
+        operations, 46,
+        "expected 46 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     for path in [
@@ -374,6 +374,40 @@ async fn proxy_certificate_registry_flow_over_http() {
         .await
         .expect("create dataplane");
     assert_eq!(response.status(), StatusCode::CREATED);
+
+    let telemetry = format!("{dataplanes}/{dataplane}/telemetry");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &telemetry,
+            Some(serde_json::json!({
+                "requests_delta": 10,
+                "errors_delta": 2,
+                "warming_failures_delta": 1,
+                "config_verified": true
+            })),
+        ))
+        .await
+        .expect("telemetry");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["total_requests"], 10);
+    assert_eq!(body["total_errors"], 2);
+    assert_eq!(body["warming_failures"], 1);
+    assert!(body["last_heartbeat_at"].is_string());
+
+    let stats = format!("/api/v1/teams/{}/stats/overview", team.name);
+    let response = app
+        .clone()
+        .oneshot(request("GET", &stats, None))
+        .await
+        .expect("stats");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["total_dataplanes"], 1);
+    assert_eq!(body["live_dataplanes"], 1);
+    assert_eq!(body["total_requests"], 10);
 
     let config_path = format!(
         "{dataplanes}/{dataplane}/envoy-config?cert_path=/certs/client.crt&key_path=/certs/client.key&ca_path=/certs/ca.crt&xds_host=cp.local&xds_port=18000"

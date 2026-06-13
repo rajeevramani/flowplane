@@ -6,13 +6,17 @@
 
 use fp_domain::authz::TeamRef;
 use fp_domain::dataplane::{Dataplane, ProxyCertificate};
-use fp_domain::{DataplaneId, DomainError, DomainResult, ProxyCertificateId, TeamId, UserId};
+use fp_domain::{
+    DataplaneId, DomainError, DomainResult, ProxyCertificateId, TeamId, TeamStatsOverview, UserId,
+};
 use sqlx::postgres::PgRow;
 use sqlx::types::chrono;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-const DP_COLUMNS: &str = "id, team_id, name, description, version, created_at, updated_at";
+const DP_COLUMNS: &str = "id, team_id, name, description, version, last_heartbeat_at, \
+                          last_config_verify_at, total_requests, total_errors, \
+                          warming_failures, created_at, updated_at";
 const CERT_COLUMNS: &str = "id, team_id, dataplane_id, spiffe_uri, serial_number, issued_at, \
                             expires_at, revoked_at, revoked_reason, created_at";
 
@@ -23,9 +27,75 @@ fn dataplane_from_row(row: &PgRow) -> Dataplane {
         name: row.get("name"),
         description: row.get("description"),
         version: row.get("version"),
+        last_heartbeat_at: row.get("last_heartbeat_at"),
+        last_config_verify_at: row.get("last_config_verify_at"),
+        total_requests: row.get("total_requests"),
+        total_errors: row.get("total_errors"),
+        warming_failures: row.get("warming_failures"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
+}
+
+pub async fn record_telemetry(
+    pool: &PgPool,
+    team_id: TeamId,
+    name: &str,
+    requests_delta: i64,
+    errors_delta: i64,
+    warming_failures_delta: i64,
+    config_verified: bool,
+) -> DomainResult<Dataplane> {
+    let row = sqlx::query(&format!(
+        "UPDATE dataplanes SET \
+            last_heartbeat_at = now(), \
+            last_config_verify_at = CASE WHEN $1 THEN now() ELSE last_config_verify_at END, \
+            total_requests = total_requests + $2, \
+            total_errors = total_errors + $3, \
+            warming_failures = warming_failures + $4, \
+            updated_at = now() \
+         WHERE team_id = $5 AND name = $6 RETURNING {DP_COLUMNS}"
+    ))
+    .bind(config_verified)
+    .bind(requests_delta.max(0))
+    .bind(errors_delta.max(0))
+    .bind(warming_failures_delta.max(0))
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("record dataplane telemetry: {e}")))?;
+    match row {
+        Some(row) => Ok(dataplane_from_row(&row)),
+        None => Err(DomainError::not_found("dataplane", name)),
+    }
+}
+
+pub async fn stats_overview(pool: &PgPool, team_id: TeamId) -> DomainResult<TeamStatsOverview> {
+    let row = sqlx::query(
+        "SELECT \
+            count(*)::bigint AS total_dataplanes, \
+            count(*) FILTER (WHERE last_heartbeat_at > now() - interval '60 seconds')::bigint \
+                AS live_dataplanes, \
+            coalesce(sum(total_requests), 0)::bigint AS total_requests, \
+            coalesce(sum(total_errors), 0)::bigint AS total_errors, \
+            coalesce(sum(warming_failures), 0)::bigint AS warming_failures \
+         FROM dataplanes WHERE team_id = $1",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("dataplane stats overview: {e}")))?;
+    let total_dataplanes = row.get("total_dataplanes");
+    let live_dataplanes = row.get("live_dataplanes");
+    Ok(TeamStatsOverview {
+        total_dataplanes,
+        live_dataplanes,
+        stale_dataplanes: total_dataplanes - live_dataplanes,
+        total_requests: row.get("total_requests"),
+        total_errors: row.get("total_errors"),
+        warming_failures: row.get("warming_failures"),
+    })
 }
 
 fn cert_from_row(row: &PgRow) -> ProxyCertificate {

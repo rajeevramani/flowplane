@@ -11,7 +11,7 @@ use axum::Json;
 use fp_core::services::dataplanes as svc;
 use fp_core::PrincipalCtx;
 use fp_domain::dataplane::{Dataplane, ProxyCertificate};
-use fp_domain::{DomainError, RequestId};
+use fp_domain::{DomainError, RequestId, TeamStatsOverview};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -22,6 +22,11 @@ pub struct DataplaneView {
     pub name: String,
     pub description: String,
     pub revision: i64,
+    pub last_heartbeat_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_config_verify_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub total_requests: i64,
+    pub total_errors: i64,
+    pub warming_failures: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -34,6 +39,11 @@ impl From<Dataplane> for DataplaneView {
             name: value.name,
             description: value.description,
             revision: value.version,
+            last_heartbeat_at: value.last_heartbeat_at,
+            last_config_verify_at: value.last_config_verify_at,
+            total_requests: value.total_requests,
+            total_errors: value.total_errors,
+            warming_failures: value.warming_failures,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -92,6 +102,42 @@ pub struct RegisterProxyCertificateBody {
 #[serde(deny_unknown_fields)]
 pub struct RevokeProxyCertificateBody {
     pub reason: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DataplaneTelemetryBody {
+    #[serde(default)]
+    pub requests_delta: i64,
+    #[serde(default)]
+    pub errors_delta: i64,
+    #[serde(default)]
+    pub warming_failures_delta: i64,
+    #[serde(default)]
+    pub config_verified: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TeamStatsOverviewView {
+    pub total_dataplanes: i64,
+    pub live_dataplanes: i64,
+    pub stale_dataplanes: i64,
+    pub total_requests: i64,
+    pub total_errors: i64,
+    pub warming_failures: i64,
+}
+
+impl From<TeamStatsOverview> for TeamStatsOverviewView {
+    fn from(value: TeamStatsOverview) -> Self {
+        Self {
+            total_dataplanes: value.total_dataplanes,
+            live_dataplanes: value.live_dataplanes,
+            stale_dataplanes: value.stale_dataplanes,
+            total_requests: value.total_requests,
+            total_errors: value.total_errors,
+            warming_failures: value.warming_failures,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -201,6 +247,77 @@ pub async fn get_dataplane(
     };
     run.await
         .map(|v| Json(DataplaneView::from(v)))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(post, path = "/api/v1/teams/{team}/dataplanes/{name}/telemetry",
+    tag = "Dataplanes",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "Dataplane name"),
+    ),
+    request_body = DataplaneTelemetryBody,
+    responses(
+        (status = 200, body = DataplaneView),
+        (status = 400, body = ErrorBody),
+        (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+    ))]
+pub async fn record_dataplane_telemetry(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    Json(body): Json<DataplaneTelemetryBody>,
+) -> Result<Json<DataplaneView>, ApiError> {
+    let run = async {
+        if body.requests_delta < 0 || body.errors_delta < 0 || body.warming_failures_delta < 0 {
+            return Err(DomainError::validation(
+                "telemetry deltas must be non-negative",
+            ));
+        }
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::record_telemetry(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            svc::DataplaneTelemetry {
+                requests_delta: body.requests_delta,
+                errors_delta: body.errors_delta,
+                warming_failures_delta: body.warming_failures_delta,
+                config_verified: body.config_verified,
+            },
+            rid,
+        )
+        .await
+    };
+    run.await
+        .map(|dataplane| Json(DataplaneView::from(dataplane)))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/stats/overview",
+    tag = "Stats",
+    params(("team" = String, Path, description = "Team name or UUID")),
+    responses(
+        (status = 200, body = TeamStatsOverviewView),
+        (status = 401, body = ErrorBody),
+        (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+    ))]
+pub async fn stats_overview(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<TeamStatsOverviewView>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::stats_overview(&state.pool, &ctx, team, rid).await
+    };
+    run.await
+        .map(|overview| Json(TeamStatsOverviewView::from(overview)))
         .map_err(|e| ApiError::new(e, rid))
 }
 

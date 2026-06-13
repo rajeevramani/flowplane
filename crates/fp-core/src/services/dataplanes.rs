@@ -7,7 +7,7 @@ use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_contex
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate};
 use fp_domain::event::{DomainEvent, EventScope};
-use fp_domain::{validate_name, DomainResult, RequestId, UserId};
+use fp_domain::{validate_name, DomainResult, RequestId, TeamStatsOverview, UserId};
 use fp_storage::repos::{audit, dataplanes};
 use sqlx::PgPool;
 
@@ -283,6 +283,45 @@ pub async fn revoke_certificate(
         .await
         .map_err(crate::services::db_err("revoke certificate: commit"))?;
     Ok(cert)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DataplaneTelemetry {
+    pub requests_delta: i64,
+    pub errors_delta: i64,
+    pub warming_failures_delta: i64,
+    pub config_verified: bool,
+}
+
+pub async fn record_telemetry(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    telemetry: DataplaneTelemetry,
+    request_id: RequestId,
+) -> DomainResult<Dataplane> {
+    authorize(pool, ctx, Resource::Stats, Action::Update, team, request_id).await?;
+    dataplanes::record_telemetry(
+        pool,
+        team.id,
+        name,
+        telemetry.requests_delta,
+        telemetry.errors_delta,
+        telemetry.warming_failures_delta,
+        telemetry.config_verified,
+    )
+    .await
+}
+
+pub async fn stats_overview(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<TeamStatsOverview> {
+    authorize(pool, ctx, Resource::Stats, Action::Read, team, request_id).await?;
+    dataplanes::stats_overview(pool, team.id).await
 }
 
 fn mutation_audit(

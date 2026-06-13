@@ -161,6 +161,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           (empty subscription returns zero secrets), and secret upserts trigger xDS rebuilds.
     - [ ] S6.4b live Envoy SDS rotation E2E
   - [ ] S6.5 fp-agent telemetry relay, heartbeats, liveness, per-team stats aggregation
+    - [x] S6.5a dataplane telemetry/liveness foundation: heartbeat/config-verify timestamps
+          and request/error/warming counters, REST telemetry ingest, and
+          `/api/v1/teams/{team}/stats/overview` aggregation.
+    - [ ] S6.5b fp-agent diagnostics gRPC/mTLS relay + live stats E2E
 - [ ] S7 CLI core (+ commands for S2–S6)
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first

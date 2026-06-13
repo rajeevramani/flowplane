@@ -17,8 +17,23 @@ pub struct Dataplane {
     pub name: String,
     pub description: String,
     pub version: i64,
+    pub last_heartbeat_at: Option<DateTime<Utc>>,
+    pub last_config_verify_at: Option<DateTime<Utc>>,
+    pub total_requests: i64,
+    pub total_errors: i64,
+    pub warming_failures: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamStatsOverview {
+    pub total_dataplanes: i64,
+    pub live_dataplanes: i64,
+    pub stale_dataplanes: i64,
+    pub total_requests: i64,
+    pub total_errors: i64,
+    pub warming_failures: i64,
 }
 
 /// One issued client certificate. Private keys are never stored — this is the binding and

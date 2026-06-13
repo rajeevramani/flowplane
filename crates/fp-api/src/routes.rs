@@ -92,6 +92,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             crate::dataplanes_api::create_dataplane
         ))
         .routes(routes!(crate::dataplanes_api::get_dataplane))
+        .routes(routes!(crate::dataplanes_api::record_dataplane_telemetry))
         .routes(routes!(crate::dataplanes_api::get_envoy_config))
         .routes(routes!(
             crate::dataplanes_api::list_proxy_certificates,
@@ -104,6 +105,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         ))
         .routes(routes!(crate::secrets_api::get_secret))
         .routes(routes!(crate::secrets_api::rotate_secret))
+        .routes(routes!(crate::dataplanes_api::stats_overview))
         .routes(routes!(crate::xds_api::list_nacks))
         .split_for_parts()
 }

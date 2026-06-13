@@ -13,7 +13,7 @@ pub mod id;
 pub mod identity;
 pub mod secret;
 
-pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate};
+pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
 pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
     AgentId, AuditEntryId, ClusterId, DataplaneId, GrantId, ListenerId, MembershipId, OrgId,
