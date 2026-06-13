@@ -10,6 +10,14 @@ pub enum AuthCommand {
         token: Option<String>,
         #[arg(long)]
         token_stdin: bool,
+        #[arg(long)]
+        device: bool,
+        #[arg(long)]
+        issuer: Option<String>,
+        #[arg(long)]
+        client_id: Option<String>,
+        #[arg(long, default_value = "openid email profile")]
+        scope: String,
     },
     Logout,
 }

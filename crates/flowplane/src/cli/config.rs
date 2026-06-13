@@ -60,6 +60,12 @@ pub(crate) struct CliConfig {
     pub(crate) team: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) oidc_issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) oidc_client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) oidc_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +83,9 @@ pub(crate) struct EffectiveConfig {
     pub(crate) org: Option<String>,
     pub(crate) team: Option<String>,
     pub(crate) token: Option<String>,
+    pub(crate) oidc_issuer: Option<String>,
+    pub(crate) oidc_client_id: Option<String>,
+    pub(crate) oidc_scope: Option<String>,
 }
 
 impl GlobalOptions {
@@ -164,5 +173,14 @@ pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
             .or_else(|| selected.and_then(|ctx| ctx.team.clone()))
             .or_else(|| file.team.clone()),
         token,
+        oidc_issuer: std::env::var("FLOWPLANE_OIDC_ISSUER")
+            .ok()
+            .or(file.oidc_issuer),
+        oidc_client_id: std::env::var("FLOWPLANE_OIDC_CLIENT_ID")
+            .ok()
+            .or(file.oidc_client_id),
+        oidc_scope: std::env::var("FLOWPLANE_OIDC_SCOPE")
+            .ok()
+            .or(file.oidc_scope),
     })
 }

@@ -4,10 +4,12 @@ mod config;
 mod output;
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use client::RestClient;
 pub use commands::{
@@ -44,23 +46,38 @@ pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()>
             println!("{token}");
             Ok(())
         }
-        AuthCommand::Login { token, token_stdin } => {
-            let token = match (token, token_stdin) {
-                (Some(token), false) => token,
-                (None, true) => {
+        AuthCommand::Login {
+            token,
+            token_stdin,
+            device,
+            issuer,
+            client_id,
+            scope,
+        } => {
+            let token = match (token, token_stdin, device) {
+                (Some(token), false, false) => token,
+                (None, true, false) => {
                     let mut token = String::new();
                     io::stdin().read_to_string(&mut token)?;
                     token.trim().to_string()
                 }
-                (None, false) => anyhow::bail!("pass --token or --token-stdin"),
-                (Some(_), true) => anyhow::bail!("use only one of --token or --token-stdin"),
+                (None, false, explicit_device) => {
+                    let config = effective(&global)?;
+                    if explicit_device
+                        || (config.oidc_issuer.is_some() && config.oidc_client_id.is_some())
+                    {
+                        device_login(&global, issuer, client_id, scope).await?
+                    } else {
+                        anyhow::bail!(
+                            "pass --token, --token-stdin, or configure OIDC and use --device"
+                        )
+                    }
+                }
+                (Some(_), true, _) | (Some(_), _, true) | (None, true, true) => {
+                    anyhow::bail!("use only one login input: --token, --token-stdin, or --device")
+                }
             };
-            let path = credentials_path();
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&path, token)?;
-            println!("token saved to {}", path.display());
+            save_token(&token)?;
             Ok(())
         }
         AuthCommand::Logout => {
@@ -70,6 +87,154 @@ pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()>
             }
             println!("logged out");
             Ok(())
+        }
+    }
+}
+
+fn save_token(token: &str) -> Result<()> {
+    let path = credentials_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, token)?;
+    println!("token saved to {}", path.display());
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct OidcDiscovery {
+    device_authorization_endpoint: String,
+    token_endpoint: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
+    #[serde(default)]
+    interval: Option<u64>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenSuccess {
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    id_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenError {
+    error: String,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+async fn device_login(
+    global: &GlobalOptions,
+    issuer: Option<String>,
+    client_id: Option<String>,
+    scope: String,
+) -> Result<String> {
+    let config = effective(global)?;
+    let issuer = issuer.or(config.oidc_issuer).ok_or_else(|| {
+        anyhow::anyhow!("OIDC issuer is required; pass --issuer or set oidc_issuer")
+    })?;
+    let client_id = client_id.or(config.oidc_client_id).ok_or_else(|| {
+        anyhow::anyhow!("OIDC client id is required; pass --client-id or set oidc_client_id")
+    })?;
+    let scope = config.oidc_scope.unwrap_or(scope);
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(global.timeout))
+        .build()?;
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    let discovery: OidcDiscovery = http
+        .get(&discovery_url)
+        .send()
+        .await
+        .with_context(|| format!("fetch OIDC discovery from {discovery_url}"))?
+        .error_for_status()
+        .with_context(|| format!("OIDC discovery failed at {discovery_url}"))?
+        .json()
+        .await
+        .context("parse OIDC discovery")?;
+    let device: DeviceCodeResponse = http
+        .post(&discovery.device_authorization_endpoint)
+        .form(&[("client_id", client_id.as_str()), ("scope", scope.as_str())])
+        .send()
+        .await
+        .context("start device authorization")?
+        .error_for_status()
+        .context("device authorization failed")?
+        .json()
+        .await
+        .context("parse device authorization response")?;
+
+    if let Some(message) = &device.message {
+        println!("{message}");
+    } else if let Some(complete) = &device.verification_uri_complete {
+        println!("Open {complete}");
+        println!("Code: {}", device.user_code);
+    } else {
+        println!("Open {}", device.verification_uri);
+        println!("Code: {}", device.user_code);
+    }
+
+    let expires_at = Instant::now() + Duration::from_secs(device.expires_in.unwrap_or(900));
+    let mut interval = Duration::from_secs(device.interval.unwrap_or(5).max(1));
+    loop {
+        if Instant::now() >= expires_at {
+            anyhow::bail!(
+                "device authorization expired; run `flowplane auth login --device` again"
+            );
+        }
+        tokio::time::sleep(interval).await;
+        let response = http
+            .post(&discovery.token_endpoint)
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", device.device_code.as_str()),
+                ("client_id", client_id.as_str()),
+            ])
+            .send()
+            .await
+            .context("poll device token endpoint")?;
+        let status = response.status();
+        let text = response.text().await.context("read token response")?;
+        if status.is_success() {
+            let token: TokenSuccess =
+                serde_json::from_str(&text).context("parse token response")?;
+            return token.id_token.or(token.access_token).ok_or_else(|| {
+                anyhow::anyhow!("token response did not include id_token or access_token")
+            });
+        }
+        let error: TokenError = serde_json::from_str(&text).unwrap_or(TokenError {
+            error: status.to_string(),
+            error_description: Some(text),
+        });
+        match error.error.as_str() {
+            "authorization_pending" => {}
+            "slow_down" => interval += Duration::from_secs(5),
+            "access_denied" => anyhow::bail!("device authorization denied"),
+            "expired_token" => anyhow::bail!("device authorization expired"),
+            _ => {
+                let description = error.error_description.unwrap_or_default();
+                anyhow::bail!(
+                    "device token exchange failed: {} {}",
+                    error.error,
+                    description
+                )
+            }
         }
     }
 }
@@ -1004,6 +1169,8 @@ oidc_client_id = "376872439851843590"
         assert_eq!(parsed.base_url.as_deref(), Some("http://localhost:8080"));
         assert_eq!(parsed.org.as_deref(), Some("dev-org"));
         assert_eq!(parsed.team.as_deref(), Some("default"));
+        assert_eq!(parsed.oidc_issuer.as_deref(), Some("http://localhost:8081"));
+        assert_eq!(parsed.oidc_client_id.as_deref(), Some("376872439851843590"));
         assert!(parsed.contexts.is_empty());
         Ok(())
     }

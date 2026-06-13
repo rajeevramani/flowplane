@@ -192,7 +192,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S7.3 Declarative apply/diff: `flowplane apply -f manifest.json --diff` plans JSON
         manifests for clusters/listeners/route-configs, write-only secrets, and dataplanes;
         non-diff apply creates missing resources and uses live revisions for gateway PATCH.
-        Remaining S7 scope: PKCE/device-code auth and transcript E2E polish.
+  - [x] S7.4 Device-code auth: `auth login --device` discovers OIDC provider metadata,
+        starts the OAuth device-code flow, polls token exchange with pending/slow_down handling,
+        stores `id_token` when present (else access token), and promotes `oidc_issuer`,
+        `oidc_client_id`, and `oidc_scope` to first-class CLI config/env inputs. Remaining S7
+        scope: browser PKCE and transcript E2E polish.
 - [ ] S8 Learning config-first
 - [ ] S9 Learning traffic-first
 - [ ] S10 AI gateway
