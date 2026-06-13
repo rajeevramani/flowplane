@@ -100,6 +100,37 @@ pub struct RegisterProxyCertificateBody {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+pub struct IssueProxyCertificateBody {
+    pub dataplane: String,
+    #[serde(default = "default_certificate_ttl_hours")]
+    pub ttl_hours: i64,
+}
+
+fn default_certificate_ttl_hours() -> i64 {
+    24
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct IssuedProxyCertificateView {
+    pub certificate: ProxyCertificateView,
+    pub certificate_pem: String,
+    pub private_key_pem: String,
+    pub ca_certificate_pem: String,
+}
+
+impl From<svc::IssuedProxyCertificate> for IssuedProxyCertificateView {
+    fn from(value: svc::IssuedProxyCertificate) -> Self {
+        Self {
+            certificate: ProxyCertificateView::from(value.certificate),
+            certificate_pem: value.certificate_pem,
+            private_key_pem: value.private_key_pem,
+            ca_certificate_pem: value.ca_certificate_pem,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RevokeProxyCertificateBody {
     pub reason: String,
 }
@@ -411,6 +442,46 @@ pub async fn register_proxy_certificate(
     };
     let cert = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok((StatusCode::CREATED, Json(ProxyCertificateView::from(cert))))
+}
+
+#[utoipa::path(post, path = "/api/v1/teams/{team}/proxy-certificates/issue",
+    tag = "Dataplanes",
+    params(("team" = String, Path, description = "Team name or UUID")),
+    request_body = IssueProxyCertificateBody,
+    responses(
+        (status = 201, body = IssuedProxyCertificateView),
+        (status = 400, body = ErrorBody),
+        (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody),
+        (status = 500, body = ErrorBody),
+    ))]
+pub async fn issue_proxy_certificate(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    Json(body): Json<IssueProxyCertificateBody>,
+) -> Result<(StatusCode, Json<IssuedProxyCertificateView>), ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::issue_certificate(
+            &state.pool,
+            &ctx,
+            team,
+            svc::CertificateIssueRequest {
+                dataplane: &body.dataplane,
+                ttl_hours: body.ttl_hours,
+            },
+            rid,
+        )
+        .await
+    };
+    let cert = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(IssuedProxyCertificateView::from(cert)),
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/teams/{team}/proxy-certificates/{serial_number}/revoke",

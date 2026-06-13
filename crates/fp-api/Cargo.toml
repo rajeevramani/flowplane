@@ -29,6 +29,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 fp-core = { workspace = true, features = ["dev-oidc"] }
 http-body-util = { workspace = true }
+openssl = { workspace = true }
 uuid = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 

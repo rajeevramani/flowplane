@@ -23,6 +23,7 @@ jsonwebtoken = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+openssl = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 rsa = { workspace = true, optional = true }

@@ -151,7 +151,9 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
     - [x] S6.2b dataplane Envoy bootstrap generation at
           `/api/v1/teams/{team}/dataplanes/{name}/envoy-config` with explicit xDS mTLS
           cert/key/CA file paths; OpenAPI operation pin updated to 40.
-    - [ ] S6.2c actual certificate/key issuance
+    - [x] S6.2c actual certificate/key issuance: local CA-backed
+          `/api/v1/teams/{team}/proxy-certificates/issue` mints a SPIFFE SAN client cert/key,
+          registers the cert binding, and returns PEM material only in the one-time issue response.
   - [x] S6.3 encrypted-at-rest secrets + write-only API + rotation: AES-256-GCM
         `FLOWPLANE_SECRET_ENCRYPTION_KEY`, metadata-only read/list/get responses, create/rotate
         REST surface at `/api/v1/teams/{team}/secrets[/{name}/rotate]`, OpenAPI operation pin 44.

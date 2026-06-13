@@ -10,6 +10,14 @@ use fp_domain::OrgRole;
 use fp_storage::repos::identity;
 use http_body_util::BodyExt;
 use metrics_exporter_prometheus::PrometheusBuilder;
+use openssl::asn1::Asn1Time;
+use openssl::bn::BigNum;
+use openssl::hash::MessageDigest;
+use openssl::pkey::PKey;
+use openssl::rsa::Rsa;
+use openssl::x509::extension::{BasicConstraints, KeyUsage};
+use openssl::x509::X509NameBuilder;
+use std::path::PathBuf;
 use tower::ServiceExt;
 
 fn unique(prefix: &str) -> String {
@@ -29,6 +37,59 @@ async fn json_of(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
 }
 
+fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("flowplane-test-ca-{}", unique(prefix)));
+    std::fs::create_dir_all(&dir).expect("ca dir");
+    let ca_key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
+    let mut builder = openssl::x509::X509::builder().expect("x509");
+    builder.set_version(2).expect("version");
+    let serial = BigNum::from_u32(1)
+        .and_then(|n| n.to_asn1_integer())
+        .expect("serial");
+    builder.set_serial_number(&serial).expect("serial");
+    let mut name = X509NameBuilder::new().expect("name");
+    name.append_entry_by_text("CN", "Flowplane Test CA")
+        .expect("cn");
+    let name = name.build();
+    builder.set_subject_name(&name).expect("subject");
+    builder.set_issuer_name(&name).expect("issuer");
+    builder.set_pubkey(&ca_key).expect("pubkey");
+    let not_before = Asn1Time::days_from_now(0).expect("not before");
+    let not_after = Asn1Time::days_from_now(1).expect("not after");
+    builder.set_not_before(&not_before).expect("not before");
+    builder.set_not_after(&not_after).expect("not after");
+    builder
+        .append_extension(
+            BasicConstraints::new()
+                .critical()
+                .ca()
+                .build()
+                .expect("basic constraints"),
+        )
+        .expect("basic constraints");
+    builder
+        .append_extension(
+            KeyUsage::new()
+                .key_cert_sign()
+                .crl_sign()
+                .build()
+                .expect("key usage"),
+        )
+        .expect("key usage");
+    builder
+        .sign(&ca_key, MessageDigest::sha256())
+        .expect("sign");
+    let ca_cert_path = dir.join("ca.crt");
+    let ca_key_path = dir.join("ca.key");
+    std::fs::write(&ca_cert_path, builder.build().to_pem().expect("ca pem")).expect("write cert");
+    std::fs::write(
+        &ca_key_path,
+        ca_key.private_key_to_pem_pkcs8().expect("key pem"),
+    )
+    .expect("write key");
+    (ca_cert_path, ca_key_path)
+}
+
 #[test]
 fn openapi_document_covers_every_registered_operation() {
     let doc = fp_api::routes::openapi_document();
@@ -39,13 +100,13 @@ fn openapi_document_covers_every_registered_operation() {
         operations += item.as_object().map(|o| o.len()).unwrap_or(0);
     }
     // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 4 dataplane
-    // + 3 proxy-certificate + 1 xds-nacks operations.
+    // + 4 proxy-certificate + 1 xds-nacks operations.
     // + 4 secrets operations + 2 dataplane/stats telemetry operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 46,
-        "expected 46 documented operations, got {operations}"
+        operations, 47,
+        "expected 47 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     for path in [
@@ -441,6 +502,50 @@ async fn proxy_certificate_registry_flow_over_http() {
     assert!(body.contains("filename: \"/certs/ca.crt\""));
 
     let certs = format!("/api/v1/teams/{}/proxy-certificates", team.name);
+    let (ca_cert_path, ca_key_path) = write_test_ca("issue");
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_CERT_PATH", &ca_cert_path);
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_KEY_PATH", &ca_key_path);
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN", "flowplane.test");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(serde_json::json!({
+                "dataplane": dataplane,
+                "ttl_hours": 1
+            })),
+        ))
+        .await
+        .expect("issue cert");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    let issued_serial = body["certificate"]["serial_number"]
+        .as_str()
+        .expect("issued serial")
+        .to_owned();
+    assert_eq!(
+        body["certificate"]["spiffe_uri"],
+        format!(
+            "spiffe://flowplane.test/org/{}/team/{}/proxy/{}",
+            org.id.as_uuid(),
+            team.id.as_uuid(),
+            body["certificate"]["dataplane_id"].as_str().expect("dp id")
+        )
+    );
+    assert!(body["certificate_pem"]
+        .as_str()
+        .expect("cert pem")
+        .contains("BEGIN CERTIFICATE"));
+    assert!(body["private_key_pem"]
+        .as_str()
+        .expect("key pem")
+        .contains("BEGIN PRIVATE KEY"));
+    assert!(body["ca_certificate_pem"]
+        .as_str()
+        .expect("ca pem")
+        .contains("BEGIN CERTIFICATE"));
+
     let serial = unique("serial");
     let spiffe = format!(
         "spiffe://flowplane.test/org/{}/team/{}/proxy/{}",
@@ -477,6 +582,11 @@ async fn proxy_certificate_registry_flow_over_http() {
         .expect("cert list")
         .iter()
         .any(|cert| cert["serial_number"] == serial));
+    assert!(body
+        .as_array()
+        .expect("cert list")
+        .iter()
+        .any(|cert| cert["serial_number"] == issued_serial));
 
     let revoke = format!("{certs}/{serial}/revoke");
     let response = app
