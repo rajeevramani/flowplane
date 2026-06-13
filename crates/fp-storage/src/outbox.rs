@@ -358,11 +358,31 @@ mod tests {
         );
         assert!(attempts.load(Ordering::SeqCst) >= 1);
 
-        // After success the batch is NOT delivered a third time.
-        let again = process_batch(&pool, &consumer, 100, |_| async { Ok(()) })
-            .await
-            .expect("quiet");
-        assert_eq!(again, 0, "cursor advanced exactly once");
+        // After success OUR event is never delivered a third time. (Parallel tests may
+        // append unrelated events meanwhile, so we check for our marker, not count == 0.)
+        let seen_again = Arc::new(AtomicUsize::new(0));
+        let seen_again2 = seen_again.clone();
+        process_batch(&pool, &consumer, 10_000, move |events| {
+            let seen = seen_again2.clone();
+            async move {
+                for e in &events {
+                    if matches!(&e.event,
+                        fp_domain::event::DomainEvent::ClusterUpserted { name, .. }
+                            if name == "must-not-be-lost")
+                    {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                Ok(())
+            }
+        })
+        .await
+        .expect("quiet");
+        assert_eq!(
+            seen_again.load(Ordering::SeqCst),
+            0,
+            "cursor advanced exactly once"
+        );
     }
 
     #[tokio::test]
@@ -383,6 +403,15 @@ mod tests {
             .expect("b");
         assert!(got_a >= 1, "consumer A sees the event");
         assert!(got_b >= 1, "consumer B sees the same event independently");
-        assert_eq!(consumer_lag(&pool, &a).await.expect("lag"), 0);
+        // Parallel tests keep appending; drain until we observe zero lag (bounded).
+        let mut caught_up = false;
+        for _ in 0..50 {
+            if consumer_lag(&pool, &a).await.expect("lag") == 0 {
+                caught_up = true;
+                break;
+            }
+            let _ = process_batch(&pool, &a, 10_000, |_| async { Ok(()) }).await;
+        }
+        assert!(caught_up, "consumer A catches up to zero lag");
     }
 }

@@ -177,6 +177,10 @@ struct TypeState {
     subscribed: bool,
     sent_version: Option<u64>,
     last_nonce: String,
+    /// Sorted resource names of the last request — a request with different names is a
+    /// subscription change and must be answered, never classified as an ACK (the warming
+    /// listener that adds an RDS name echoes the last nonce; spec/04 §2.4).
+    resource_names: Vec<String>,
 }
 
 fn response_for(
@@ -280,10 +284,16 @@ impl AggregatedDiscoveryService for AdsService {
                             continue;
                         }
                         let state = states.entry(type_url.clone()).or_default();
+                        let mut requested_names = request.resource_names.clone();
+                        requested_names.sort();
+                        let subscription_changed = requested_names != state.resource_names;
+                        state.resource_names = requested_names;
 
-                        // ACK/NACK: a request echoing our last nonce is a response to our
-                        // last push, not a new subscription.
-                        if !request.response_nonce.is_empty()
+                        // ACK/NACK: a request echoing our last nonce WITH an unchanged
+                        // subscription is a response to our last push. A changed name set
+                        // is a subscription update and always gets a response.
+                        if !subscription_changed
+                            && !request.response_nonce.is_empty()
                             && request.response_nonce == state.last_nonce
                         {
                             if let Some(error) = &request.error_detail {

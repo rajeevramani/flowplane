@@ -12,7 +12,7 @@ use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
 use fp_domain::{OrgRole, RequestId};
 use fp_storage::repos::identity;
 use fp_xds::ads::NodeIdTeamResolver;
-use fp_xds::snapshot::{handle_events, SnapshotCache, CLUSTER_TYPE_URL};
+use fp_xds::snapshot::{handle_events, SnapshotCache, CLUSTER_TYPE_URL, ROUTE_TYPE_URL};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -422,6 +422,154 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
         2,
         "fixed resource rejoins the snapshot"
     );
+
+    let _ = stop_tx.send(());
+}
+
+/// A request that echoes the last nonce but CHANGES resource_names is a subscription
+/// update, not an ACK — it must be answered. (A warming listener adding an RDS name does
+/// exactly this; swallowing it stalls the listener — caught by the live Envoy E2E.)
+#[tokio::test]
+async fn subscription_change_echoing_last_nonce_is_answered() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 8).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team_row = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let team = TeamRef {
+        id: team_row.id,
+        org_id: org.id,
+    };
+    let user = identity::upsert_user_by_subject(&pool, &unique("sub"), "x@x.test", "X")
+        .await
+        .expect("u");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Admin)
+        .await
+        .expect("m");
+    let ctx = PrincipalCtx::User {
+        user_id: user,
+        platform_admin: false,
+        org: Some((org.id, OrgRole::Admin)),
+        grants: GrantSet::default(),
+    };
+    let upstream = unique("upstream");
+    fp_core::services::clusters::create_cluster(
+        &pool,
+        &ctx,
+        team,
+        &upstream,
+        cluster_spec("10.0.0.1"),
+        RequestId::generate(),
+    )
+    .await
+    .expect("cluster");
+    let rc = unique("routes");
+    fp_core::services::gateway::create_route_config(
+        &pool,
+        &ctx,
+        team,
+        &rc,
+        fp_domain::gateway::route_config::RouteConfigSpec {
+            virtual_hosts: vec![fp_domain::gateway::route_config::VirtualHost {
+                name: "default".into(),
+                domains: vec!["*".into()],
+                routes: vec![fp_domain::gateway::route_config::RouteRule {
+                    name: "all".into(),
+                    matcher: fp_domain::gateway::route_config::PathMatch::Prefix {
+                        prefix: "/".into(),
+                    },
+                    action: fp_domain::gateway::route_config::RouteAction {
+                        cluster: upstream.clone(),
+                        prefix_rewrite: None,
+                        template_rewrite: None,
+                        timeout_secs: 15,
+                    },
+                    filter_overrides: Vec::new(),
+                }],
+                filter_overrides: Vec::new(),
+            }],
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("rc");
+    let cache = SnapshotCache::new();
+    cache.rebuild_team(&pool, team.id).await.expect("prime");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    drop(listener);
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_cache = cache.clone();
+    tokio::spawn(async move {
+        fp_xds::server::serve_plaintext(
+            addr,
+            server_cache,
+            Arc::new(NodeIdTeamResolver),
+            None,
+            async {
+                let _ = stop_rx.await;
+            },
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut client = AggregatedDiscoveryServiceClient::connect(format!("http://{addr}"))
+        .await
+        .expect("connect");
+    let (req_tx, req_rx) = tokio::sync::mpsc::channel::<DiscoveryRequest>(8);
+    req_tx
+        .send(DiscoveryRequest {
+            node: Some(Node {
+                id: format!("team={}/dp-sub", team.id),
+                ..Default::default()
+            }),
+            type_url: ROUTE_TYPE_URL.to_string(),
+            resource_names: vec![rc.clone()],
+            ..Default::default()
+        })
+        .await
+        .expect("subscribe");
+    let mut responses = client
+        .stream_aggregated_resources(tokio_stream::wrappers::ReceiverStream::new(req_rx))
+        .await
+        .expect("stream")
+        .into_inner();
+    let first = tokio::time::timeout(Duration::from_secs(5), responses.message())
+        .await
+        .expect("timely")
+        .expect("ok")
+        .expect("response");
+    assert_eq!(first.type_url, ROUTE_TYPE_URL);
+
+    // Subscription update shaped exactly like Envoy's: echoes the last nonce + version,
+    // no error, but the name set grew. Must be answered, never swallowed as an ACK.
+    req_tx
+        .send(DiscoveryRequest {
+            type_url: ROUTE_TYPE_URL.to_string(),
+            version_info: first.version_info.clone(),
+            response_nonce: first.nonce.clone(),
+            resource_names: vec![rc.clone(), format!("{rc}-second")],
+            ..Default::default()
+        })
+        .await
+        .expect("subscription update");
+    let answered = tokio::time::timeout(Duration::from_secs(5), responses.message())
+        .await
+        .expect("subscription updates must be answered, not treated as ACKs")
+        .expect("ok")
+        .expect("response");
+    assert_eq!(answered.type_url, ROUTE_TYPE_URL);
 
     let _ = stop_tx.send(());
 }

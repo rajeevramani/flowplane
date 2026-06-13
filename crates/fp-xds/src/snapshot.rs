@@ -473,7 +473,9 @@ mod tests {
                         template_rewrite: None,
                         timeout_secs: 15,
                     },
+                    filter_overrides: Vec::new(),
                 }],
+                filter_overrides: Vec::new(),
             }],
         }
     }

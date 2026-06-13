@@ -25,9 +25,13 @@ pub struct HttpFilterEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HttpFilterSpec {
+    /// Chain marker only — the policy lives in per-scope `filter_overrides` (Envoy reads
+    /// CORS policy exclusively from per-route config).
     Cors(CorsConfig),
     LocalRateLimit(LocalRateLimitConfig),
     HeaderMutation(HeaderMutationConfig),
+    HealthCheck(HealthCheckConfig),
+    Compressor(CompressorConfig),
 }
 
 impl HttpFilterSpec {
@@ -36,6 +40,8 @@ impl HttpFilterSpec {
             Self::Cors(_) => "cors",
             Self::LocalRateLimit(_) => "local_rate_limit",
             Self::HeaderMutation(_) => "header_mutation",
+            Self::HealthCheck(_) => "health_check",
+            Self::Compressor(_) => "compressor",
         }
     }
 
@@ -44,20 +50,69 @@ impl HttpFilterSpec {
             Self::Cors(c) => c.validate(),
             Self::LocalRateLimit(c) => c.validate(),
             Self::HeaderMutation(c) => c.validate(),
+            Self::HealthCheck(c) => c.validate(),
+            Self::Compressor(c) => c.validate(),
         }
     }
 }
 
-/// Per-route/vhost override: disable a chain filter on this scope. Full per-route config
-/// overrides arrive with the rest of the catalog (S5.8c); disable is universal and safe
-/// for every type shipped so far.
+/// Per-vhost/per-route filter behavior (spec/04 §4.1 per-route column). Tagged by `type`;
+/// the variants encode exactly what each filter supports — unsupported combinations
+/// (oauth2 per-route, health_check per-route) cannot be expressed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FilterOverride {
-    /// `kind()` string of the chain filter this override targets.
-    pub filter_type: String,
-    /// Currently only `true` is meaningful: skip this filter for the scope.
-    pub disabled: bool,
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FilterOverride {
+    /// Skip a chain filter on this scope (universal; `filter_type` is a `kind()` string).
+    Disable { filter_type: String },
+    /// CORS policy for this scope (requires the cors marker in the listener chain).
+    Cors(CorsConfig),
+    /// Replace the local rate limit on this scope.
+    LocalRateLimit(LocalRateLimitConfig),
+}
+
+impl FilterOverride {
+    /// The chain filter type this override targets.
+    pub fn target_kind(&self) -> DomainResult<&str> {
+        match self {
+            Self::Disable { filter_type } => {
+                // health_check is listener-only (spec/04 §4.1): no per-route control at all.
+                const DISABLABLE: &[&str] =
+                    &["cors", "local_rate_limit", "header_mutation", "compressor"];
+                if !DISABLABLE.contains(&filter_type.as_str()) {
+                    return Err(DomainError::validation(format!(
+                        "filter type \"{filter_type}\" cannot be disabled per-route",
+                    ))
+                    .with_hint(format!("disablable types: {}", DISABLABLE.join(", "))));
+                }
+                Ok(filter_type)
+            }
+            Self::Cors(_) => Ok("cors"),
+            Self::LocalRateLimit(_) => Ok("local_rate_limit"),
+        }
+    }
+
+    pub fn validate(&self) -> DomainResult<()> {
+        match self {
+            Self::Disable { .. } => self.target_kind().map(|_| ()),
+            Self::Cors(c) => c.validate(),
+            Self::LocalRateLimit(c) => c.validate(),
+        }
+    }
+}
+
+/// Validate a scope's override list: each override valid, at most one per filter type.
+pub fn validate_filter_overrides(overrides: &[FilterOverride]) -> DomainResult<()> {
+    let mut seen = std::collections::HashSet::new();
+    for ov in overrides {
+        ov.validate()?;
+        let kind = ov.target_kind()?.to_string();
+        if !seen.insert(kind.clone()) {
+            return Err(DomainError::validation(format!(
+                "multiple overrides target filter type \"{kind}\" in the same scope"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ---------------- cors ----------------
@@ -203,6 +258,70 @@ impl HeaderMutationConfig {
                     "header_mutation: header key must be non-empty",
                 ));
             }
+        }
+        Ok(())
+    }
+}
+
+// ---------------- health_check ----------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HealthCheckConfig {
+    /// Path answered by the proxy itself (exact match), e.g. `/healthz`.
+    pub endpoint_path: String,
+    /// Pass health checks to the upstream instead of answering locally.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pass_through_mode: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_time_ms: Option<u64>,
+}
+
+impl HealthCheckConfig {
+    pub fn validate(&self) -> DomainResult<()> {
+        if !self.endpoint_path.starts_with('/') || self.endpoint_path.len() > 500 {
+            return Err(DomainError::validation(
+                "health_check: endpoint_path must start with '/' and be <= 500 chars",
+            ));
+        }
+        Ok(())
+    }
+}
+
+// ---------------- compressor (gzip) ----------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionLevel {
+    BestSpeed,
+    DefaultCompression,
+    BestCompression,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompressorConfig {
+    /// zlib memory level, 1-9 (Envoy default 5 when omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_level: Option<u32>,
+    /// zlib window bits, 9-15 (Envoy default 12 when omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_bits: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<CompressionLevel>,
+}
+
+impl CompressorConfig {
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.memory_level.is_some_and(|v| !(1..=9).contains(&v)) {
+            return Err(DomainError::validation(
+                "compressor: memory_level must be 1-9",
+            ));
+        }
+        if self.window_bits.is_some_and(|v| !(9..=15).contains(&v)) {
+            return Err(DomainError::validation(
+                "compressor: window_bits must be 9-15",
+            ));
         }
         Ok(())
     }

@@ -38,6 +38,9 @@ pub struct VirtualHost {
     /// Host-header matches: valid hostnames, `*.suffix` wildcards, or literal `*`.
     pub domains: Vec<String>,
     pub routes: Vec<RouteRule>,
+    /// Per-vhost filter behavior (S5.8); a route-level override wins over the vhost's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter_overrides: Vec<crate::gateway::filters::FilterOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -47,6 +50,9 @@ pub struct RouteRule {
     #[serde(rename = "match")]
     pub matcher: PathMatch,
     pub action: RouteAction,
+    /// Per-route filter behavior (S5.8); wins over the vhost-level override.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter_overrides: Vec<crate::gateway::filters::FilterOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -157,6 +163,7 @@ impl RouteConfigSpec {
                     )));
                 }
             }
+            crate::gateway::filters::validate_filter_overrides(&vhost.filter_overrides)?;
             if vhost.routes.is_empty() || vhost.routes.len() > MAX_ROUTES_PER_VHOST {
                 return Err(DomainError::validation(format!(
                     "virtual host \"{}\" needs 1-{MAX_ROUTES_PER_VHOST} routes",
@@ -212,6 +219,7 @@ impl RouteConfigSpec {
                         rule.name
                     )));
                 }
+                crate::gateway::filters::validate_filter_overrides(&rule.filter_overrides)?;
             }
         }
         Ok(())
@@ -246,9 +254,42 @@ mod tests {
                         template_rewrite: None,
                         timeout_secs: 15,
                     },
+                    filter_overrides: Vec::new(),
                 }],
+                filter_overrides: Vec::new(),
             }],
         }
+    }
+
+    #[test]
+    fn filter_override_rules_enforced() {
+        use crate::gateway::filters::FilterOverride;
+        let mut spec = minimal("c");
+        spec.virtual_hosts[0].routes[0].filter_overrides = vec![FilterOverride::Disable {
+            filter_type: "health_check".into(),
+        }];
+        assert!(spec.validate().is_err(), "health_check is listener-only");
+
+        let mut spec = minimal("c");
+        spec.virtual_hosts[0].filter_overrides = vec![
+            FilterOverride::Disable {
+                filter_type: "cors".into(),
+            },
+            FilterOverride::Cors(crate::gateway::filters::CorsConfig {
+                allow_origin: vec![crate::gateway::filters::OriginMatcher::Exact {
+                    value: "https://a.example".into(),
+                }],
+                allow_methods: vec![],
+                allow_headers: vec![],
+                expose_headers: vec![],
+                max_age_seconds: None,
+                allow_credentials: false,
+            }),
+        ];
+        assert!(
+            spec.validate().is_err(),
+            "two overrides for one filter type in a scope"
+        );
     }
 
     #[test]

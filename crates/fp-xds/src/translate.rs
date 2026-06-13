@@ -33,6 +33,13 @@ fn u32_value(value: u32) -> wkt::UInt32Value {
     wkt::UInt32Value { value }
 }
 
+fn millis_duration(ms: u64) -> wkt::Duration {
+    wkt::Duration {
+        seconds: (ms / 1000) as i64,
+        nanos: ((ms % 1000) * 1_000_000) as i32,
+    }
+}
+
 fn socket_address(host: &str, port: u16) -> core::Address {
     core::Address {
         address: Some(core::address::Address::SocketAddress(core::SocketAddress {
@@ -194,72 +201,197 @@ pub fn route_config_to_proto(
     name: &str,
     spec: &RouteConfigSpec,
 ) -> DomainResult<rt::RouteConfiguration> {
-    let virtual_hosts = spec
-        .virtual_hosts
-        .iter()
-        .map(|vhost| {
-            let routes = vhost
-                .routes
-                .iter()
-                .map(|rule| {
-                    let path_specifier = match &rule.matcher {
-                        PathMatch::Prefix { prefix } => {
-                            rt::route_match::PathSpecifier::Prefix(prefix.clone())
-                        }
-                        PathMatch::Exact { path } => {
-                            rt::route_match::PathSpecifier::Path(path.clone())
-                        }
-                        PathMatch::Template { template } => {
-                            rt::route_match::PathSpecifier::PathMatchPolicy(
-                                core::TypedExtensionConfig {
-                                    name: "envoy.path.match.uri_template.uri_template_matcher"
-                                        .to_string(),
-                                    typed_config: Some(any(
-                                        "type.googleapis.com/envoy.extensions.path.match.uri_template.v3.UriTemplateMatchConfig",
-                                        &envoy_types::pb::envoy::extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig {
-                                            path_template: template.clone(),
-                                        },
-                                    )),
+    let mut virtual_hosts = Vec::with_capacity(spec.virtual_hosts.len());
+    for vhost in &spec.virtual_hosts {
+        let mut routes = Vec::with_capacity(vhost.routes.len());
+        for rule in &vhost.routes {
+            let path_specifier = match &rule.matcher {
+                PathMatch::Prefix { prefix } => {
+                    rt::route_match::PathSpecifier::Prefix(prefix.clone())
+                }
+                PathMatch::Exact { path } => rt::route_match::PathSpecifier::Path(path.clone()),
+                PathMatch::Template { template } => {
+                    rt::route_match::PathSpecifier::PathMatchPolicy(
+                        core::TypedExtensionConfig {
+                            name: "envoy.path.match.uri_template.uri_template_matcher"
+                                .to_string(),
+                            typed_config: Some(any(
+                                "type.googleapis.com/envoy.extensions.path.match.uri_template.v3.UriTemplateMatchConfig",
+                                &envoy_types::pb::envoy::extensions::path::r#match::uri_template::v3::UriTemplateMatchConfig {
+                                    path_template: template.clone(),
                                 },
-                            )
-                        }
-                    };
-                    rt::Route {
-                        name: rule.name.clone(),
-                        r#match: Some(rt::RouteMatch {
-                            path_specifier: Some(path_specifier),
-                            ..Default::default()
-                        }),
-                        action: Some(rt::route::Action::Route(rt::RouteAction {
-                            cluster_specifier: Some(rt::route_action::ClusterSpecifier::Cluster(
-                                rule.action.cluster.clone(),
                             )),
-                            prefix_rewrite: rule
-                                .action
-                                .prefix_rewrite
-                                .clone()
-                                .unwrap_or_default(),
-                            timeout: Some(duration(rule.action.timeout_secs)),
-                            ..Default::default()
-                        })),
-                        ..Default::default()
-                    }
-                })
-                .collect();
-            rt::VirtualHost {
-                name: vhost.name.clone(),
-                domains: vhost.domains.clone(),
-                routes,
+                        },
+                    )
+                }
+            };
+            routes.push(rt::Route {
+                name: rule.name.clone(),
+                r#match: Some(rt::RouteMatch {
+                    path_specifier: Some(path_specifier),
+                    ..Default::default()
+                }),
+                action: Some(rt::route::Action::Route(rt::RouteAction {
+                    cluster_specifier: Some(rt::route_action::ClusterSpecifier::Cluster(
+                        rule.action.cluster.clone(),
+                    )),
+                    prefix_rewrite: rule.action.prefix_rewrite.clone().unwrap_or_default(),
+                    timeout: Some(duration(rule.action.timeout_secs)),
+                    ..Default::default()
+                })),
+                typed_per_filter_config: overrides_to_typed_config(&rule.filter_overrides)?,
                 ..Default::default()
-            }
-        })
-        .collect();
+            });
+        }
+        virtual_hosts.push(rt::VirtualHost {
+            name: vhost.name.clone(),
+            domains: vhost.domains.clone(),
+            routes,
+            typed_per_filter_config: overrides_to_typed_config(&vhost.filter_overrides)?,
+            ..Default::default()
+        });
+    }
 
     Ok(rt::RouteConfiguration {
         name: name.to_string(),
         virtual_hosts,
         ..Default::default()
     })
+}
+
+/// Per-scope `typed_per_filter_config` map from filter overrides (spec/04 §4.3). Keys are
+/// Envoy filter names; values are the per-route proto for each filter type.
+fn overrides_to_typed_config(
+    overrides: &[fp_domain::gateway::filters::FilterOverride],
+) -> DomainResult<std::collections::HashMap<String, wkt::Any>> {
+    use fp_domain::gateway::filters::FilterOverride;
+    let mut map = std::collections::HashMap::new();
+    for ov in overrides {
+        match ov {
+            FilterOverride::Disable { filter_type } => {
+                let envoy_name = envoy_filter_name(filter_type)?;
+                map.insert(
+                    envoy_name.to_string(),
+                    any(
+                        "type.googleapis.com/envoy.config.route.v3.FilterConfig",
+                        &rt::FilterConfig {
+                            disabled: true,
+                            ..Default::default()
+                        },
+                    ),
+                );
+            }
+            FilterOverride::Cors(c) => {
+                map.insert(
+                    "envoy.filters.http.cors".to_string(),
+                    any(
+                        "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy",
+                        &cors_policy_to_proto(c),
+                    ),
+                );
+            }
+            FilterOverride::LocalRateLimit(c) => {
+                map.insert(
+                    "envoy.filters.http.local_ratelimit".to_string(),
+                    local_rate_limit_to_any(c),
+                );
+            }
+        }
+    }
+    Ok(map)
+}
+
+fn envoy_filter_name(kind: &str) -> DomainResult<&'static str> {
+    match kind {
+        "cors" => Ok("envoy.filters.http.cors"),
+        "local_rate_limit" => Ok("envoy.filters.http.local_ratelimit"),
+        "header_mutation" => Ok("envoy.filters.http.header_mutation"),
+        "compressor" => Ok("envoy.filters.http.compressor"),
+        "health_check" => Ok("envoy.filters.http.health_check"),
+        other => Err(DomainError::validation(format!(
+            "unknown filter type \"{other}\""
+        ))),
+    }
+}
+
+/// LocalRateLimit proto, used both in the listener chain and as per-route override (same
+/// type URL in both positions, spec/04 §4.1).
+fn local_rate_limit_to_any(c: &fp_domain::gateway::filters::LocalRateLimitConfig) -> wkt::Any {
+    use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3 as lrl;
+    let percent_100 = || core::RuntimeFractionalPercent {
+        default_value: Some(envoy_types::pb::envoy::r#type::v3::FractionalPercent {
+            numerator: 100,
+            denominator: 0, // HUNDRED
+        }),
+        runtime_key: String::new(),
+    };
+    let proto = lrl::LocalRateLimit {
+        stat_prefix: c.stat_prefix.clone(),
+        token_bucket: Some(envoy_types::pb::envoy::r#type::v3::TokenBucket {
+            max_tokens: c.token_bucket.max_tokens,
+            tokens_per_fill: Some(u32_value(
+                c.token_bucket
+                    .tokens_per_fill
+                    .unwrap_or(c.token_bucket.max_tokens),
+            )),
+            fill_interval: Some(millis_duration(c.token_bucket.fill_interval_ms)),
+        }),
+        status: c
+            .status_code
+            .map(|code| envoy_types::pb::envoy::r#type::v3::HttpStatus {
+                code: i32::from(code),
+            }),
+        // Enforce 100% by default (spec/04 §4.1: enabled/enforced default 100%).
+        filter_enabled: Some(percent_100()),
+        filter_enforced: Some(percent_100()),
+        ..Default::default()
+    };
+    any(
+        "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
+        &proto,
+    )
+}
+
+fn cors_policy_to_proto(
+    c: &fp_domain::gateway::filters::CorsConfig,
+) -> envoy_types::pb::envoy::extensions::filters::http::cors::v3::CorsPolicy {
+    use envoy_types::pb::envoy::r#type::matcher::v3 as sm;
+    use fp_domain::gateway::filters::OriginMatcher;
+    let allow_origin_string_match = c
+        .allow_origin
+        .iter()
+        .map(|m| {
+            let pattern = match m {
+                OriginMatcher::Exact { value } => {
+                    sm::string_matcher::MatchPattern::Exact(value.clone())
+                }
+                OriginMatcher::Prefix { value } => {
+                    sm::string_matcher::MatchPattern::Prefix(value.clone())
+                }
+                OriginMatcher::Suffix { value } => {
+                    sm::string_matcher::MatchPattern::Suffix(value.clone())
+                }
+                OriginMatcher::Contains { value } => {
+                    sm::string_matcher::MatchPattern::Contains(value.clone())
+                }
+            };
+            sm::StringMatcher {
+                match_pattern: Some(pattern),
+                ..Default::default()
+            }
+        })
+        .collect();
+    envoy_types::pb::envoy::extensions::filters::http::cors::v3::CorsPolicy {
+        allow_origin_string_match,
+        allow_methods: c.allow_methods.join(","),
+        allow_headers: c.allow_headers.join(","),
+        expose_headers: c.expose_headers.join(","),
+        max_age: c.max_age_seconds.map(|v| v.to_string()).unwrap_or_default(),
+        allow_credentials: c
+            .allow_credentials
+            .then_some(wkt::BoolValue { value: true }),
+        ..Default::default()
+    }
 }
 
 const HCM_TYPE_URL: &str = "type.googleapis.com/envoy.extensions.filters.network.\
@@ -274,64 +406,98 @@ fn http_filter_to_proto(
     entry: &fp_domain::gateway::filters::HttpFilterEntry,
 ) -> DomainResult<hcm::HttpFilter> {
     use envoy_types::pb::envoy::extensions::filters::http::header_mutation::v3 as hm;
-    use envoy_types::pb::envoy::extensions::filters::http::local_ratelimit::v3 as lrl;
     use fp_domain::gateway::filters::HttpFilterSpec;
 
     let (name, typed) = match &entry.filter {
         HttpFilterSpec::Cors(_) => {
-            // The listener-level cors filter is an empty marker; the policy lives in
-            // per-route config, which lands with the override plumbing (S5.8b). Until
-            // then a cors chain entry would be a silent no-op — reject it loudly.
-            return Err(DomainError::validation(
-                "cors in the listener chain requires per-route policy support (not yet \
-                 available); remove it for now",
-            ));
-        }
-        HttpFilterSpec::LocalRateLimit(c) => {
-            let proto = lrl::LocalRateLimit {
-                stat_prefix: c.stat_prefix.clone(),
-                token_bucket: Some(envoy_types::pb::envoy::r#type::v3::TokenBucket {
-                    max_tokens: c.token_bucket.max_tokens,
-                    tokens_per_fill: Some(u32_value(
-                        c.token_bucket
-                            .tokens_per_fill
-                            .unwrap_or(c.token_bucket.max_tokens),
-                    )),
-                    fill_interval: Some(wkt::Duration {
-                        seconds: (c.token_bucket.fill_interval_ms / 1000) as i64,
-                        nanos: ((c.token_bucket.fill_interval_ms % 1000) * 1_000_000) as i32,
-                    }),
-                }),
-                status: c
-                    .status_code
-                    .map(|code| envoy_types::pb::envoy::r#type::v3::HttpStatus {
-                        code: i32::from(code),
-                    }),
-                // Enforce 100% by default (spec/04 §4.1: enabled/enforced default 100%).
-                filter_enabled: Some(core::RuntimeFractionalPercent {
-                    default_value: Some(envoy_types::pb::envoy::r#type::v3::FractionalPercent {
-                        numerator: 100,
-                        denominator: 0, // HUNDRED
-                    }),
-                    runtime_key: String::new(),
-                }),
-                filter_enforced: Some(core::RuntimeFractionalPercent {
-                    default_value: Some(envoy_types::pb::envoy::r#type::v3::FractionalPercent {
-                        numerator: 100,
-                        denominator: 0,
-                    }),
-                    runtime_key: String::new(),
-                }),
-                ..Default::default()
-            };
+            // The chain entry is an empty marker (spec/04 §4.1); the policy is read from
+            // per-scope typed_per_filter_config emitted by route_config_to_proto. The
+            // chain-level CorsConfig is validated but documents the default policy only.
             (
-                "envoy.filters.http.local_ratelimit",
+                "envoy.filters.http.cors",
                 any(
-                    "type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit",
+                    "type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors",
+                    &envoy_types::pb::envoy::extensions::filters::http::cors::v3::Cors::default(),
+                ),
+            )
+        }
+        HttpFilterSpec::HealthCheck(c) => {
+            let proto =
+                envoy_types::pb::envoy::extensions::filters::http::health_check::v3::HealthCheck {
+                    pass_through_mode: Some(wkt::BoolValue {
+                        value: c.pass_through_mode,
+                    }),
+                    cache_time: c.cache_time_ms.map(millis_duration),
+                    headers: vec![rt::HeaderMatcher {
+                        name: ":path".to_string(),
+                        header_match_specifier: Some(
+                            rt::header_matcher::HeaderMatchSpecifier::StringMatch(
+                                envoy_types::pb::envoy::r#type::matcher::v3::StringMatcher {
+                                    match_pattern: Some(
+                                        envoy_types::pb::envoy::r#type::matcher::v3::string_matcher::MatchPattern::Exact(
+                                            c.endpoint_path.clone(),
+                                        ),
+                                    ),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+            (
+                "envoy.filters.http.health_check",
+                any(
+                    "type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck",
                     &proto,
                 ),
             )
         }
+        HttpFilterSpec::Compressor(c) => {
+            use envoy_types::pb::envoy::extensions::compression::gzip::compressor::v3 as gz;
+            use envoy_types::pb::envoy::extensions::filters::http::compressor::v3 as comp;
+            let gzip = gz::Gzip {
+                memory_level: c.memory_level.map(u32_value),
+                window_bits: c.window_bits.map(u32_value),
+                compression_level: c
+                    .compression_level
+                    .map(|level| match level {
+                        fp_domain::gateway::filters::CompressionLevel::BestSpeed => {
+                            gz::gzip::CompressionLevel::BestSpeed as i32
+                        }
+                        fp_domain::gateway::filters::CompressionLevel::DefaultCompression => {
+                            gz::gzip::CompressionLevel::DefaultCompression as i32
+                        }
+                        fp_domain::gateway::filters::CompressionLevel::BestCompression => {
+                            gz::gzip::CompressionLevel::CompressionLevel9 as i32
+                        }
+                    })
+                    .unwrap_or_default(),
+                ..Default::default()
+            };
+            let proto = comp::Compressor {
+                compressor_library: Some(core::TypedExtensionConfig {
+                    name: "gzip".to_string(),
+                    typed_config: Some(any(
+                        "type.googleapis.com/envoy.extensions.compression.gzip.compressor.v3.Gzip",
+                        &gzip,
+                    )),
+                }),
+                ..Default::default()
+            };
+            (
+                "envoy.filters.http.compressor",
+                any(
+                    "type.googleapis.com/envoy.extensions.filters.http.compressor.v3.Compressor",
+                    &proto,
+                ),
+            )
+        }
+        HttpFilterSpec::LocalRateLimit(c) => (
+            "envoy.filters.http.local_ratelimit",
+            local_rate_limit_to_any(c),
+        ),
         HttpFilterSpec::HeaderMutation(c) => {
             let proto = hm::HeaderMutation {
                 mutations: Some(hm::Mutations {
@@ -552,6 +718,7 @@ mod tests {
                             template_rewrite: None,
                             timeout_secs: 15,
                         },
+                        filter_overrides: Vec::new(),
                     },
                     RouteRule {
                         name: "prefixed".into(),
@@ -564,6 +731,7 @@ mod tests {
                             template_rewrite: None,
                             timeout_secs: 30,
                         },
+                        filter_overrides: Vec::new(),
                     },
                     RouteRule {
                         name: "templated".into(),
@@ -576,8 +744,10 @@ mod tests {
                             template_rewrite: None,
                             timeout_secs: 15,
                         },
+                        filter_overrides: Vec::new(),
                     },
                 ],
+                filter_overrides: Vec::new(),
             }],
         };
         let proto = route_config_to_proto("orders", &spec).expect("translate");
@@ -686,7 +856,7 @@ mod tests {
             );
             assert!(manager.http_filters[1].disabled, "disabled flag carried");
 
-            // cors without per-route policy plumbing must fail loudly, not no-op.
+            // cors in the chain is the empty marker; the policy travels per-scope.
             let cors_spec = ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 10002,
@@ -705,8 +875,75 @@ mod tests {
                     disabled: false,
                 }],
             };
-            assert!(listener_to_proto("edge2", &cors_spec).is_err());
+            let proto = listener_to_proto("edge2", &cors_spec).expect("cors chain marker");
+            let manager = match &proto.filter_chains[0].filters[0].config_type {
+                Some(lst::filter::ConfigType::TypedConfig(a)) => {
+                    hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
+                }
+                _ => panic!("expected typed HCM"),
+            };
+            assert_eq!(manager.http_filters[0].name, "envoy.filters.http.cors");
         }
+    }
+
+    #[test]
+    fn filter_overrides_become_typed_per_filter_config() {
+        use fp_domain::gateway::filters::*;
+        use fp_domain::gateway::route_config::{RouteAction, RouteRule, VirtualHost};
+        let spec = RouteConfigSpec {
+            virtual_hosts: vec![VirtualHost {
+                name: "default".into(),
+                domains: vec!["*".into()],
+                routes: vec![RouteRule {
+                    name: "quiet".into(),
+                    matcher: PathMatch::Prefix {
+                        prefix: "/quiet".into(),
+                    },
+                    action: RouteAction {
+                        cluster: "c".into(),
+                        prefix_rewrite: None,
+                        template_rewrite: None,
+                        timeout_secs: 15,
+                    },
+                    filter_overrides: vec![FilterOverride::Disable {
+                        filter_type: "local_rate_limit".into(),
+                    }],
+                }],
+                filter_overrides: vec![FilterOverride::Cors(CorsConfig {
+                    allow_origin: vec![OriginMatcher::Suffix {
+                        value: ".example".into(),
+                    }],
+                    allow_methods: vec!["GET".into(), "POST".into()],
+                    allow_headers: vec![],
+                    expose_headers: vec![],
+                    max_age_seconds: Some(600),
+                    allow_credentials: true,
+                })],
+            }],
+        };
+        let proto = route_config_to_proto("orders", &spec).expect("translate");
+        let vhost = &proto.virtual_hosts[0];
+        let cors = vhost
+            .typed_per_filter_config
+            .get("envoy.filters.http.cors")
+            .expect("vhost cors policy");
+        assert!(cors.type_url.ends_with("cors.v3.CorsPolicy"));
+        let policy =
+            envoy_types::pb::envoy::extensions::filters::http::cors::v3::CorsPolicy::decode(
+                cors.value.as_slice(),
+            )
+            .expect("decode policy");
+        assert_eq!(policy.allow_methods, "GET,POST");
+        assert_eq!(policy.max_age, "600");
+        assert_eq!(policy.allow_origin_string_match.len(), 1);
+
+        let disable = vhost.routes[0]
+            .typed_per_filter_config
+            .get("envoy.filters.http.local_ratelimit")
+            .expect("route disable override");
+        assert!(disable.type_url.ends_with("route.v3.FilterConfig"));
+        let cfg = rt::FilterConfig::decode(disable.value.as_slice()).expect("decode");
+        assert!(cfg.disabled);
     }
 }
 
@@ -735,7 +972,9 @@ mod type_url_tests {
                         template_rewrite: None,
                         timeout_secs: 15,
                     },
+                    filter_overrides: Vec::new(),
                 }],
+                filter_overrides: Vec::new(),
             }],
         };
         let proto = route_config_to_proto("rc", &spec).expect("translate");

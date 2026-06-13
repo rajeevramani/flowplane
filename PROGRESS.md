@@ -99,25 +99,25 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [ ] S5.8 filter catalog: the 16 v1 filter types re-specced through IR + per-route overrides
         (spec/04 §4; v2 = typed IR on listener/route specs, translated at build time — NO v1-style
         post-hoc protobuf surgery)
-    - [~] S5.8a domain (first tranche DONE): `fp-domain/gateway/filters.rs` with
-          `HttpFilterSpec` {cors, local_rate_limit, header_mutation} + validation per spec/04
-          §4.1; `ListenerSpec.http_filters` chain (order semantic, one per type, validated);
-          chain translation in listener_to_proto (router auto-appended last, disabled flag
-          carried; local_rate_limit defaults enabled/enforced 100%); cors chain entries are
-          REJECTED until per-route policy plumbing exists (no silent no-op). REMAINING:
-          {jwt_auth, ext_authz, rbac, compressor, health_check} + per-route/vhost
-          `filter_overrides` on RouteRule/VirtualHost (disable + typed override per the
-          spec/04 per-route column; oauth2 per-route NACKs, health_check listener-only)
-    - [ ] S5.8b translate: chain assembly (declared order, router auto-appended last, at most
-          one explicit router), typed_per_filter_config on vhosts/routes, jwt provider merge
-          (single filter, remote-JWKS clusters into CDS as in v1 §4.4.4 but at build time);
-          determinism tests + an Envoy-NACK-shape regression test per filter
-    - [ ] S5.8c remaining catalog {rate_limit, rate_limit_quota, ext_proc, oauth2,
+    - [x] S5.8a domain: `HttpFilterSpec` {cors, local_rate_limit, header_mutation,
+          health_check, compressor} + validation per spec/04 §4.1; `ListenerSpec.http_filters`
+          chain (order semantic, one per type); `filter_overrides` on VirtualHost AND RouteRule
+          (tagged enum: Disable | Cors policy | LocalRateLimit replace; health_check is
+          listener-only by construction, one override per type per scope)
+    - [x] S5.8b translate: chain assembly (declared order, router auto-appended, disabled flag
+          carried); typed_per_filter_config emitted on vhosts/routes (Disable →
+          route.v3.FilterConfig{disabled}, Cors → cors.v3.CorsPolicy, LocalRateLimit → same
+          type URL as chain); translation + override decode tests. PROTOCOL FIX found by the
+          live E2E: a request echoing the last nonce with CHANGED resource_names is a
+          subscription update and is now answered (was swallowed as ACK → warming listener
+          stalled on RDS; regression test over real gRPC)
+    - [ ] S5.8c remaining catalog {jwt_auth (+ provider merge + remote-JWKS clusters into
+          CDS), ext_authz, rbac, rate_limit, rate_limit_quota, ext_proc, oauth2,
           credential_injector, custom_response, mcp, wasm} — wasm needs custom_wasm storage
           (defer binary upload to S6 secrets-adjacent work if needed; record decision)
-    - [ ] S5.8d live Envoy E2E extension: listener with cors + local_rate_limit + jwt_auth
-          serves traffic, per-route disable verified (429 on one route, clean on the disabled
-          one)
+    - [x] S5.8d live Envoy E2E phase 4: listener with local_rate_limit + header_mutation
+          serves traffic; 429 enforced; /quiet route exempt via per-route Disable; mutated
+          response header observed
   - [x] S5.6 live Envoy E2E: join, route traffic, restart convergence, cross-team isolation
     - [x] xDS pipeline wired into `flowplane serve` (outbox consumer + dev-mode plaintext ADS listener)
     - [x] `scripts/e2e-envoy.sh` (real Envoy via docker, or Tetrate static binary fallback) — three
