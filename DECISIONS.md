@@ -248,3 +248,30 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   artifacts must carry the resolved ports explicitly. Runtime code should read resolved config,
   not assume the documented defaults.
 - **Status:** decided (S6.4/S6.5 local-run hardening).
+
+## D-016: crate boundaries are layered, with explicit read-side exceptions
+
+- **Context:** The v2 workspace intentionally separates pure domain types, storage, core
+  services, REST transport, xDS serving, and binaries. Current dependency direction is acyclic
+  and mostly layered: `fp-domain` is pure; `fp-storage` owns SQL/migrations/outbox; `fp-core`
+  owns service mutations and authorization; `fp-api` exposes REST/OpenAPI; `fp-xds` owns Envoy
+  translation, ADS, diagnostics, and snapshot serving; binaries compose the pieces. However,
+  `fp-api` and `fp-xds` both have narrow direct storage reads for request context and
+  dataplane read models.
+- **Decision:** Keep the pragmatic layered model, but make the exceptions explicit. All
+  state-changing product behavior must go through `fp-core::services`; transport crates must
+  not create alternate mutation paths. `fp-api` may call `fp-storage` directly only for
+  authentication/request-context read helpers: JIT user provisioning, principal loading,
+  audit of authn failures, org selector resolution, and team path resolution. `fp-xds` may call
+  `fp-storage` directly only for read-side projection/snapshot assembly, certificate-registry
+  identity binding, NACK persistence, diagnostics telemetry persistence, and outbox event
+  consumption.
+- **Why:** Strict ports/traits everywhere would add ceremony before there is a real alternate
+  backend or test seam need. Unbounded direct storage access would erode the core service layer
+  and re-create v1-style coupling. This rule keeps the fast read paths close to their owning
+  runtime surfaces while preserving the important invariant: business mutations, authz checks,
+  audit/outbox writes, and tenant isolation rules live in core services.
+- **Revisit trigger:** If S8-S12 add another externally callable surface (MCP, learning workers,
+  admin jobs) that wants direct storage access, either route it through `fp-core::services` or
+  update this decision with a named read-side exception before implementation.
+- **Status:** decided (post-S7 crate-boundary review).
