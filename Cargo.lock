@@ -836,6 +836,7 @@ name = "fp-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "fp-xds",
  "reqwest",

@@ -1,16 +1,26 @@
-//! Minimal Flowplane dataplane agent. It scrapes Envoy admin stats and relays heartbeat
-//! telemetry to the CP diagnostics gRPC service over the dataplane certificate identity.
+//! Flowplane dataplane agent. The v2 shape is intentionally small: one outbound
+//! diagnostics stream, one bounded report queue, and a local health endpoint.
 
 use anyhow::{Context, Result};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::get;
+use axum::Router;
 use clap::Parser;
 use fp_xds::diagnostics::{
     diagnostics_report, AckStatus, DiagnosticsReport, EnvoyDiagnosticsServiceClient,
     HeartbeatReport,
 };
 use serde::Deserialize;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, RwLock};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
+
+const DEFAULT_QUEUE_CAP: usize = 256;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -31,10 +41,13 @@ struct Args {
     cp_endpoint: String,
     /// Dataplane UUID registered in Flowplane.
     #[arg(long, env = "FLOWPLANE_AGENT_DATAPLANE_ID")]
-    dataplane_id: String,
-    /// Poll interval for daemon mode.
+    dataplane_id: uuid::Uuid,
+    /// Poll interval for Envoy admin stats.
     #[arg(long, env = "FLOWPLANE_AGENT_POLL_INTERVAL_SECS", default_value_t = 10)]
     poll_interval_secs: u64,
+    /// Maximum queued reports before backpressure is applied.
+    #[arg(long, env = "FLOWPLANE_AGENT_QUEUE_CAP", default_value_t = DEFAULT_QUEUE_CAP)]
+    queue_cap: usize,
     /// Client certificate PEM for mTLS.
     #[arg(long, env = "FLOWPLANE_AGENT_TLS_CERT_PATH")]
     tls_cert_path: Option<PathBuf>,
@@ -51,9 +64,85 @@ struct Args {
         default_value = "localhost"
     )]
     tls_server_name: String,
+    /// Local health endpoint bind address.
+    #[arg(
+        long,
+        env = "FLOWPLANE_AGENT_HEALTH_BIND_ADDR",
+        default_value = "127.0.0.1:19902"
+    )]
+    health_bind_addr: SocketAddr,
     /// Scrape and report once, then exit.
     #[arg(long)]
     once: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Config {
+    envoy_admin_url: String,
+    cp_endpoint: String,
+    dataplane_id: uuid::Uuid,
+    poll_interval: Duration,
+    queue_cap: usize,
+    tls: Option<TlsConfig>,
+    health_bind_addr: SocketAddr,
+    once: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TlsConfig {
+    cert_path: PathBuf,
+    key_path: PathBuf,
+    ca_path: PathBuf,
+    server_name: String,
+}
+
+impl TryFrom<Args> for Config {
+    type Error = anyhow::Error;
+
+    fn try_from(args: Args) -> Result<Self> {
+        let poll_interval = Duration::from_secs(args.poll_interval_secs.max(1));
+        let queue_cap = args.queue_cap.clamp(1, 16_384);
+        warn_if_admin_url_is_not_loopback(&args.envoy_admin_url);
+        let tls = match (args.tls_cert_path, args.tls_key_path, args.tls_ca_path) {
+            (Some(cert_path), Some(key_path), Some(ca_path)) => Some(TlsConfig {
+                cert_path,
+                key_path,
+                ca_path,
+                server_name: args.tls_server_name,
+            }),
+            (None, None, None) => {
+                tracing::warn!("diagnostics connection has no TLS material; plaintext is dev-only");
+                None
+            }
+            _ => anyhow::bail!(
+                "FLOWPLANE_AGENT_TLS_CERT_PATH, _KEY_PATH, and _CA_PATH are all-or-none"
+            ),
+        };
+        Ok(Self {
+            envoy_admin_url: args.envoy_admin_url,
+            cp_endpoint: args.cp_endpoint,
+            dataplane_id: args.dataplane_id,
+            poll_interval,
+            queue_cap,
+            tls,
+            health_bind_addr: args.health_bind_addr,
+            once: args.once,
+        })
+    }
+}
+
+fn warn_if_admin_url_is_not_loopback(url: &str) {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return;
+    };
+    let Some(host) = parsed.host_str() else {
+        return;
+    };
+    let loopback =
+        host == "localhost" || host.parse::<IpAddr>().is_ok_and(|addr| addr.is_loopback());
+    if !loopback {
+        tracing::warn!(%host, "Envoy admin URL is not loopback; production should bind admin locally");
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -73,6 +162,14 @@ impl StatsSnapshot {
         }
     }
 }
+
+#[derive(Debug, Default)]
+struct HealthState {
+    last_admin_poll: Option<Instant>,
+    last_ack: Option<Instant>,
+}
+
+type SharedHealth = Arc<RwLock<HealthState>>;
 
 #[derive(Deserialize)]
 struct EnvoyStats {
@@ -123,40 +220,31 @@ async fn scrape_stats(client: &reqwest::Client, admin_url: &str) -> Result<Stats
     parse_envoy_stats(&body)
 }
 
-async fn diagnostics_channel(args: &Args) -> Result<Channel> {
-    let mut endpoint = Endpoint::from_shared(args.cp_endpoint.clone())
+async fn diagnostics_channel(config: &Config) -> Result<Channel> {
+    let mut endpoint = Endpoint::from_shared(config.cp_endpoint.clone())
         .context("parse FLOWPLANE_AGENT_CP_ENDPOINT")?
         .connect_timeout(Duration::from_secs(5));
-    match (&args.tls_cert_path, &args.tls_key_path, &args.tls_ca_path) {
-        (Some(cert), Some(key), Some(ca)) => {
-            let identity =
-                Identity::from_pem(tokio::fs::read(cert).await?, tokio::fs::read(key).await?);
-            let tls = ClientTlsConfig::new()
-                .ca_certificate(Certificate::from_pem(tokio::fs::read(ca).await?))
-                .identity(identity)
-                .domain_name(args.tls_server_name.clone());
-            endpoint = endpoint
-                .tls_config(tls)
-                .context("configure diagnostics mTLS")?;
-        }
-        (None, None, None) => {
-            tracing::warn!("diagnostics connection has no TLS material; plaintext is dev-only");
-        }
-        _ => {
-            anyhow::bail!("FLOWPLANE_AGENT_TLS_CERT_PATH, _KEY_PATH, and _CA_PATH are all-or-none")
-        }
+    if let Some(tls) = &config.tls {
+        let identity = Identity::from_pem(
+            tokio::fs::read(&tls.cert_path).await?,
+            tokio::fs::read(&tls.key_path).await?,
+        );
+        let tls_config = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(tokio::fs::read(&tls.ca_path).await?))
+            .identity(identity)
+            .domain_name(tls.server_name.clone());
+        endpoint = endpoint
+            .tls_config(tls_config)
+            .context("configure diagnostics mTLS")?;
     }
     endpoint.connect().await.context("connect diagnostics gRPC")
 }
 
-async fn send_heartbeat(args: &Args, delta: StatsSnapshot) -> Result<()> {
-    let channel = diagnostics_channel(args).await?;
-    let mut client = EnvoyDiagnosticsServiceClient::new(channel);
-    let report_id = uuid::Uuid::now_v7().to_string();
-    let report = DiagnosticsReport {
+fn heartbeat_report(config: &Config, delta: StatsSnapshot) -> DiagnosticsReport {
+    DiagnosticsReport {
         schema_version: 1,
-        report_id: report_id.clone(),
-        dataplane_id: args.dataplane_id.clone(),
+        report_id: uuid::Uuid::now_v7().to_string(),
+        dataplane_id: config.dataplane_id.to_string(),
         observed_at: None,
         payload: Some(diagnostics_report::Payload::Heartbeat(HeartbeatReport {
             requests_delta: delta.requests,
@@ -164,38 +252,128 @@ async fn send_heartbeat(args: &Args, delta: StatsSnapshot) -> Result<()> {
             warming_failures_delta: 0,
             config_verified: true,
         })),
-    };
+    }
+}
+
+async fn poll_loop(
+    config: Config,
+    http: reqwest::Client,
+    tx: mpsc::Sender<DiagnosticsReport>,
+    health: SharedHealth,
+) -> Result<()> {
+    let mut previous = None;
+    loop {
+        let snapshot = scrape_stats(&http, &config.envoy_admin_url).await?;
+        health.write().await.last_admin_poll = Some(Instant::now());
+        let delta = snapshot.delta_from(previous);
+        tx.send(heartbeat_report(&config, delta))
+            .await
+            .context("diagnostics queue closed")?;
+        previous = Some(snapshot);
+        if config.once {
+            return Ok(());
+        }
+        tokio::time::sleep(config.poll_interval).await;
+    }
+}
+
+async fn stream_loop(
+    config: Config,
+    rx: mpsc::Receiver<DiagnosticsReport>,
+    health: SharedHealth,
+) -> Result<()> {
+    let channel = diagnostics_channel(&config).await?;
+    let mut client = EnvoyDiagnosticsServiceClient::new(channel);
     let mut responses = client
-        .report_diagnostics(tokio_stream::iter([report]))
+        .report_diagnostics(ReceiverStream::new(rx))
         .await
         .context("open diagnostics stream")?
         .into_inner();
-    let ack = tokio::time::timeout(Duration::from_secs(10), responses.message())
+    while let Some(ack) = responses
+        .message()
         .await
-        .context("timed out waiting for diagnostics ack")?
         .context("receive diagnostics ack")?
-        .context("diagnostics stream closed before ack")?;
-    if ack.status != AckStatus::Ok as i32 {
-        anyhow::bail!("diagnostics report {report_id} rejected: {}", ack.message);
+    {
+        if ack.status != AckStatus::Ok as i32 {
+            anyhow::bail!(
+                "diagnostics reports {:?} rejected: {}",
+                ack.report_ids,
+                ack.message
+            );
+        }
+        health.write().await.last_ack = Some(Instant::now());
+        if config.once {
+            return Ok(());
+        }
     }
-    Ok(())
+    anyhow::bail!("diagnostics stream closed")
 }
 
-async fn run(args: Args) -> Result<()> {
+async fn healthz(
+    State((health, stale_after)): State<(SharedHealth, Duration)>,
+) -> (StatusCode, String) {
+    let state = health.read().await;
+    let now = Instant::now();
+    let Some(last_admin_poll) = state.last_admin_poll else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "never polled".to_string());
+    };
+    let admin_age = now.saturating_duration_since(last_admin_poll);
+    if admin_age > stale_after {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("admin poll stale {}s", admin_age.as_secs()),
+        );
+    }
+    let Some(last_ack) = state.last_ack else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "never acked".to_string());
+    };
+    let ack_age = now.saturating_duration_since(last_ack);
+    if ack_age > stale_after {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("diagnostics ack stale {}s", ack_age.as_secs()),
+        );
+    }
+    (StatusCode::OK, "ok".to_string())
+}
+
+async fn serve_health(config: Config, health: SharedHealth) -> Result<()> {
+    let stale_after = config
+        .poll_interval
+        .saturating_mul(2)
+        .max(Duration::from_secs(2));
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .with_state((health, stale_after));
+    let listener = tokio::net::TcpListener::bind(config.health_bind_addr)
+        .await
+        .with_context(|| format!("bind health endpoint {}", config.health_bind_addr))?;
+    axum::serve(listener, app)
+        .await
+        .context("serve health endpoint")
+}
+
+async fn run(config: Config) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .context("build HTTP client")?;
-    let mut previous = None;
-    loop {
-        let snapshot = scrape_stats(&http, &args.envoy_admin_url).await?;
-        let delta = snapshot.delta_from(previous);
-        send_heartbeat(&args, delta).await?;
-        previous = Some(snapshot);
-        if args.once {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_secs(args.poll_interval_secs.max(1))).await;
+    let (tx, rx) = mpsc::channel::<DiagnosticsReport>(config.queue_cap);
+    let health = Arc::new(RwLock::new(HealthState::default()));
+
+    if config.once {
+        let poll = poll_loop(config.clone(), http, tx, health.clone());
+        let stream = stream_loop(config, rx, health);
+        let (poll, stream) = tokio::join!(poll, stream);
+        poll?;
+        stream?;
+        return Ok(());
+    }
+
+    tokio::select! {
+        result = poll_loop(config.clone(), http, tx, health.clone()) => result,
+        result = stream_loop(config.clone(), rx, health.clone()) => result,
+        result = serve_health(config, health) => result,
     }
 }
 
@@ -206,12 +384,13 @@ async fn main() -> Result<()> {
             std::env::var("RUST_LOG").unwrap_or_else(|_| "fp_agent=info,warn".to_string()),
         )
         .init();
-    run(Args::parse()).await
+    run(Config::try_from(Args::parse())?).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_envoy_stats, StatsSnapshot};
+    use super::{parse_envoy_stats, Config, StatsSnapshot};
+    use std::time::Duration;
 
     #[test]
     fn envoy_stats_parser_sums_http_downstream_counters() -> anyhow::Result<()> {
@@ -251,5 +430,26 @@ mod tests {
                 errors: 0
             }
         );
+    }
+
+    #[test]
+    fn config_clamps_queue_and_poll_interval() -> anyhow::Result<()> {
+        let args = super::Args {
+            envoy_admin_url: "http://127.0.0.1:9901".to_string(),
+            cp_endpoint: "http://127.0.0.1:18000".to_string(),
+            dataplane_id: uuid::Uuid::now_v7(),
+            poll_interval_secs: 0,
+            queue_cap: 0,
+            tls_cert_path: None,
+            tls_key_path: None,
+            tls_ca_path: None,
+            tls_server_name: "localhost".to_string(),
+            health_bind_addr: "127.0.0.1:0".parse()?,
+            once: true,
+        };
+        let config = Config::try_from(args)?;
+        assert_eq!(config.poll_interval, Duration::from_secs(1));
+        assert_eq!(config.queue_cap, 1);
+        Ok(())
     }
 }

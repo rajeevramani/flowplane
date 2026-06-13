@@ -169,9 +169,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           and request/error/warming counters, REST telemetry ingest, and
           `/api/v1/teams/{team}/stats/overview` aggregation.
     - [x] S6.5b diagnostics gRPC service mounted beside ADS with certificate-registry
-          dataplane binding; `fp-agent` sidecar scrapes Envoy admin stats and relays heartbeat
-          deltas over the diagnostics stream (mTLS or dev plaintext); real mTLS integration test
-          verifies wrong dataplane claims are rejected and accepted heartbeats update live stats.
+          dataplane binding; `fp-agent` sidecar keeps one outbound diagnostics stream, uses a
+          bounded report queue, exposes loopback health, scrapes Envoy admin stats, and relays
+          heartbeat deltas (mTLS or dev plaintext); real mTLS integration test verifies wrong
+          dataplane claims are rejected and accepted heartbeats update live stats.
 - [x] S6 exit: SDS rotation E2E passed in S6.4b; revoked cert stream-kill covered by S5.4;
       secret values are write-only over HTTP; stats relay covered by S6.5b.
 - [ ] S7 CLI core (+ commands for S2–S6)
