@@ -169,13 +169,12 @@ and scheduled — read these before trusting a green checkbox.
   `std::future::pending()` shutdown futures (never drained); only the API drained. Fixed:
   `serve.rs::xds_shutdown_signal` feeds each task a real shutdown future off the watch
   channel, and shutdown now awaits all xDS task handles with a 10s bound.
-- **R2 — Service-layer authz denials are NOT audited — OPEN.** Authn *failures* are audited
+- **R2 — Service-layer authz denials are NOT audited — RESOLVED.** Authn *failures* are audited
   (auth middleware) and the `AuditEntry::denial` row primitive exists + is storage-tested,
-  but no service/middleware path writes a denial row when `check_resource_access` denies.
-  Spec/05 + 08a §6 want denials audited. Recommendation: in the service `authorize()` helpers
-  (they already hold ctx/resource/action/team) write a best-effort denial row before
-  returning the error — thread `pool`+`request_id` in. Target: S12 hardening or a focused
-  commit before the design-partner cut.
+  but no service/middleware path wrote a denial row when `check_resource_access` denied.
+  Fixed: every service `authorize()` helper that wraps `check_resource_access` now writes a
+  best-effort `authz.denied` audit row with request id, actor, resource, action, org/team, and
+  reason before returning the existing 403/404 error.
 - **R5 — multi-org users require explicit request org context — IN PROGRESS.** Founder direction is
   to allow a human user to belong to multiple orgs, so `org_memberships` must keep only
   `UNIQUE (user_id, org_id)` and must **not** gain a `UNIQUE (user_id)` constraint. The v2

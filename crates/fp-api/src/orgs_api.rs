@@ -101,7 +101,7 @@ pub async fn list_orgs(
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<Vec<OrgView>>, ApiError> {
-    let orgs = svc::list_orgs(&state.pool, &ctx)
+    let orgs = svc::list_orgs(&state.pool, &ctx, rid)
         .await
         .map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(orgs.into_iter().map(view).collect()))
@@ -134,7 +134,7 @@ pub async fn get_org(
 ) -> Result<Json<OrgView>, ApiError> {
     let run = async {
         let org_id = resolve_org(&state, &org).await?;
-        svc::get_org(&state.pool, &ctx, org_id).await
+        svc::get_org(&state.pool, &ctx, org_id, rid).await
     };
     run.await
         .map(|o| Json(view(o)))

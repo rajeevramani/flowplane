@@ -130,10 +130,21 @@ async fn create_emits_event_and_cross_org_caller_sees_not_found() {
     assert_eq!(audit_count, 1);
 
     // Cross-org caller: not_found, never forbidden (anti-enumeration).
-    let err = svc::get_cluster(&w.pool, &w.outsider, w.team, &name)
+    let deny_rid = RequestId::generate();
+    let err = svc::get_cluster(&w.pool, &w.outsider, w.team, &name, deny_rid)
         .await
         .expect_err("outsider must not see it");
     assert_eq!(err.code, ErrorCode::NotFound);
+    let (outcome, detail): (String, serde_json::Value) =
+        sqlx::query_as("SELECT outcome, detail FROM audit_log WHERE request_id = $1")
+            .bind(deny_rid.as_uuid())
+            .fetch_one(&w.pool)
+            .await
+            .expect("denial audit row");
+    assert_eq!(outcome, "denied");
+    assert_eq!(detail["resource"], "clusters");
+    assert_eq!(detail["action"], "read");
+    assert_eq!(detail["reason"], "cross_org");
 
     // Outsider cannot mutate either — and the failure discloses nothing.
     let err = svc::delete_cluster(
@@ -198,7 +209,7 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
     );
 
     // No lost update: the survivor's spec is what's stored, at revision 2.
-    let stored = svc::get_cluster(&w.pool, &w.admin, w.team, &name)
+    let stored = svc::get_cluster(&w.pool, &w.admin, w.team, &name, RequestId::generate())
         .await
         .expect("get");
     assert_eq!(stored.version, 2);

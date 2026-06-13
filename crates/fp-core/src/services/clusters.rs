@@ -3,7 +3,7 @@
 //! they commit together or not at all.
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
-use crate::services::{actor_of, deny_to_error, trace_context_json};
+use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::gateway::cluster::{validate_cluster_name, Cluster, ClusterSpec};
@@ -12,10 +12,28 @@ use fp_storage::repos::{audit, clusters};
 use fp_storage::scope::TeamScope;
 use sqlx::PgPool;
 
-fn authorize(ctx: &PrincipalCtx, action: Action, team: TeamRef) -> DomainResult<()> {
+async fn authorize(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    action: Action,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<()> {
     match check_resource_access(ctx, Resource::Clusters, action, Some(team)) {
         Decision::Allow(_) => Ok(()),
-        Decision::Deny(reason) => Err(deny_to_error(Resource::Clusters, action, reason)),
+        Decision::Deny(reason) => {
+            record_authz_denial(
+                pool,
+                ctx,
+                request_id,
+                Resource::Clusters,
+                action,
+                Some(team),
+                reason,
+            )
+            .await;
+            Err(deny_to_error(Resource::Clusters, action, reason))
+        }
     }
 }
 
@@ -27,7 +45,7 @@ pub async fn create_cluster(
     spec: ClusterSpec,
     request_id: RequestId,
 ) -> DomainResult<Cluster> {
-    authorize(ctx, Action::Create, team)?;
+    authorize(pool, ctx, Action::Create, team, request_id).await?;
     validate_cluster_name(name)?;
     spec.validate()?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Clusters).await?;
@@ -66,8 +84,9 @@ pub async fn get_cluster(
     ctx: &PrincipalCtx,
     team: TeamRef,
     name: &str,
+    request_id: RequestId,
 ) -> DomainResult<Cluster> {
-    authorize(ctx, Action::Read, team)?;
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
     clusters::get(pool, TeamScope::Team(team.id), name)
         .await?
         .ok_or_else(|| fp_domain::DomainError::not_found("cluster", name))
@@ -79,8 +98,9 @@ pub async fn list_clusters(
     team: TeamRef,
     limit: i64,
     offset: i64,
+    request_id: RequestId,
 ) -> DomainResult<(Vec<Cluster>, i64)> {
-    authorize(ctx, Action::Read, team)?;
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
     clusters::list(pool, TeamScope::Team(team.id), limit, offset).await
 }
 
@@ -93,7 +113,7 @@ pub async fn update_cluster(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<Cluster> {
-    authorize(ctx, Action::Update, team)?;
+    authorize(pool, ctx, Action::Update, team, request_id).await?;
     spec.validate()?;
     let mut tx = pool
         .begin()
@@ -132,7 +152,7 @@ pub async fn delete_cluster(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<()> {
-    authorize(ctx, Action::Delete, team)?;
+    authorize(pool, ctx, Action::Delete, team, request_id).await?;
     let mut tx = pool
         .begin()
         .await

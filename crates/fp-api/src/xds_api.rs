@@ -37,7 +37,7 @@ pub async fn list_nacks(
 ) -> Result<Json<Vec<NackEventView>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        fp_core::services::xds_status::list_nack_events(&state.pool, &ctx, team, 100).await
+        fp_core::services::xds_status::list_nack_events(&state.pool, &ctx, team, 100, rid).await
     };
     let events = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(

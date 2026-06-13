@@ -4,7 +4,7 @@
 //! platform admin may add the FIRST owner to an org they just created (provisioning).
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
-use crate::services::{actor_of, deny_to_error};
+use crate::services::{actor_of, deny_to_error, record_authz_denial};
 use fp_domain::authz::{Action, Resource};
 use fp_domain::{
     DomainError, DomainResult, ErrorCode, OrgId, OrgRole, Organization, RequestId, UserId,
@@ -12,10 +12,27 @@ use fp_domain::{
 use fp_storage::repos::{audit, identity};
 use sqlx::PgPool;
 
-fn authorize_governance(ctx: &PrincipalCtx, action: Action) -> DomainResult<()> {
+async fn authorize_governance(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    action: Action,
+    request_id: RequestId,
+) -> DomainResult<()> {
     match check_resource_access(ctx, Resource::Organizations, action, None) {
         Decision::Allow(_) => Ok(()),
-        Decision::Deny(reason) => Err(deny_to_error(Resource::Organizations, action, reason)),
+        Decision::Deny(reason) => {
+            record_authz_denial(
+                pool,
+                ctx,
+                request_id,
+                Resource::Organizations,
+                action,
+                None,
+                reason,
+            )
+            .await;
+            Err(deny_to_error(Resource::Organizations, action, reason))
+        }
     }
 }
 
@@ -49,7 +66,7 @@ pub async fn create_org(
     display_name: &str,
     request_id: RequestId,
 ) -> DomainResult<Organization> {
-    authorize_governance(ctx, Action::Create)?;
+    authorize_governance(pool, ctx, Action::Create, request_id).await?;
     let org = identity::create_org(pool, name, display_name).await?;
     audit::record_best_effort(
         pool,
@@ -65,8 +82,12 @@ pub async fn create_org(
     Ok(org)
 }
 
-pub async fn list_orgs(pool: &PgPool, ctx: &PrincipalCtx) -> DomainResult<Vec<Organization>> {
-    authorize_governance(ctx, Action::Read)?;
+pub async fn list_orgs(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    request_id: RequestId,
+) -> DomainResult<Vec<Organization>> {
+    authorize_governance(pool, ctx, Action::Read, request_id).await?;
     identity::list_orgs(pool).await
 }
 
@@ -74,8 +95,9 @@ pub async fn get_org(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     org_id: OrgId,
+    request_id: RequestId,
 ) -> DomainResult<Organization> {
-    authorize_governance(ctx, Action::Read)?;
+    authorize_governance(pool, ctx, Action::Read, request_id).await?;
     identity::get_org(pool, org_id)
         .await?
         .ok_or_else(|| DomainError::new(ErrorCode::NotFound, "organization not found"))
@@ -87,7 +109,7 @@ pub async fn delete_org(
     org_id: OrgId,
     request_id: RequestId,
 ) -> DomainResult<()> {
-    authorize_governance(ctx, Action::Delete)?;
+    authorize_governance(pool, ctx, Action::Delete, request_id).await?;
     identity::delete_org(pool, org_id).await?;
     audit::record_best_effort(
         pool,

@@ -180,7 +180,7 @@ macro_rules! endpoints {
             ) -> Result<Json<Page<$view>>, ApiError> {
                 let run = async {
                     let team = resolve_team(&state, &ctx, &team).await?;
-                    $svc_list(&state.pool, &ctx, team, query.limit, query.offset).await
+                    $svc_list(&state.pool, &ctx, team, query.limit, query.offset, rid).await
                 };
                 let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
                 Ok(Json(Page {
@@ -234,7 +234,7 @@ macro_rules! endpoints {
             ) -> Result<Json<$view>, ApiError> {
                 let run = async {
                     let team = resolve_team(&state, &ctx, &team).await?;
-                    $svc_get(&state.pool, &ctx, team, &name).await
+                    $svc_get(&state.pool, &ctx, team, &name, rid).await
                 };
                 run.await.map(|v| Json($view::from(v))).map_err(|e| ApiError::new(e, rid))
             }

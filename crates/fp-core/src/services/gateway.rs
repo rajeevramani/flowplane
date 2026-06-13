@@ -2,7 +2,7 @@
 //! one transaction of row + event + audit).
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
-use crate::services::{actor_of, deny_to_error, trace_context_json};
+use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::gateway::listener::{Listener, ListenerSpec};
@@ -11,15 +11,20 @@ use fp_domain::{validate_name, DomainResult, RequestId};
 use fp_storage::repos::{audit, gateway};
 use sqlx::PgPool;
 
-fn authorize(
+async fn authorize(
+    pool: &PgPool,
     ctx: &PrincipalCtx,
     resource: Resource,
     action: Action,
     team: TeamRef,
+    request_id: RequestId,
 ) -> DomainResult<()> {
     match check_resource_access(ctx, resource, action, Some(team)) {
         Decision::Allow(_) => Ok(()),
-        Decision::Deny(reason) => Err(deny_to_error(resource, action, reason)),
+        Decision::Deny(reason) => {
+            record_authz_denial(pool, ctx, request_id, resource, action, Some(team), reason).await;
+            Err(deny_to_error(resource, action, reason))
+        }
     }
 }
 
@@ -56,7 +61,15 @@ pub async fn create_route_config(
     spec: RouteConfigSpec,
     request_id: RequestId,
 ) -> DomainResult<RouteConfig> {
-    authorize(ctx, Resource::RouteConfigs, Action::Create, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::RouteConfigs,
+        Action::Create,
+        team,
+        request_id,
+    )
+    .await?;
     validate_name(name)?;
     spec.validate()?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::RouteConfigs)
@@ -101,8 +114,17 @@ pub async fn get_route_config(
     ctx: &PrincipalCtx,
     team: TeamRef,
     name: &str,
+    request_id: RequestId,
 ) -> DomainResult<RouteConfig> {
-    authorize(ctx, Resource::RouteConfigs, Action::Read, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::RouteConfigs,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
     gateway::get_route_config(pool, team.id, name)
         .await?
         .ok_or_else(|| fp_domain::DomainError::not_found("route config", name))
@@ -114,8 +136,17 @@ pub async fn list_route_configs(
     team: TeamRef,
     limit: i64,
     offset: i64,
+    request_id: RequestId,
 ) -> DomainResult<(Vec<RouteConfig>, i64)> {
-    authorize(ctx, Resource::RouteConfigs, Action::Read, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::RouteConfigs,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
     gateway::list_route_configs(pool, team.id, limit, offset).await
 }
 
@@ -128,7 +159,15 @@ pub async fn update_route_config(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<RouteConfig> {
-    authorize(ctx, Resource::RouteConfigs, Action::Update, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::RouteConfigs,
+        Action::Update,
+        team,
+        request_id,
+    )
+    .await?;
     spec.validate()?;
     let mut tx = pool
         .begin()
@@ -173,7 +212,15 @@ pub async fn delete_route_config(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<()> {
-    authorize(ctx, Resource::RouteConfigs, Action::Delete, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::RouteConfigs,
+        Action::Delete,
+        team,
+        request_id,
+    )
+    .await?;
     let mut tx = pool
         .begin()
         .await
@@ -219,7 +266,15 @@ pub async fn create_listener(
     spec: ListenerSpec,
     request_id: RequestId,
 ) -> DomainResult<Listener> {
-    authorize(ctx, Resource::Listeners, Action::Create, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::Listeners,
+        Action::Create,
+        team,
+        request_id,
+    )
+    .await?;
     validate_name(name)?;
     spec.validate()?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Listeners).await?;
@@ -263,8 +318,17 @@ pub async fn get_listener(
     ctx: &PrincipalCtx,
     team: TeamRef,
     name: &str,
+    request_id: RequestId,
 ) -> DomainResult<Listener> {
-    authorize(ctx, Resource::Listeners, Action::Read, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::Listeners,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
     gateway::get_listener(pool, team.id, name)
         .await?
         .ok_or_else(|| fp_domain::DomainError::not_found("listener", name))
@@ -276,8 +340,17 @@ pub async fn list_listeners(
     team: TeamRef,
     limit: i64,
     offset: i64,
+    request_id: RequestId,
 ) -> DomainResult<(Vec<Listener>, i64)> {
-    authorize(ctx, Resource::Listeners, Action::Read, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::Listeners,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
     gateway::list_listeners(pool, team.id, limit, offset).await
 }
 
@@ -290,7 +363,15 @@ pub async fn update_listener(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<Listener> {
-    authorize(ctx, Resource::Listeners, Action::Update, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::Listeners,
+        Action::Update,
+        team,
+        request_id,
+    )
+    .await?;
     spec.validate()?;
     let mut tx = pool
         .begin()
@@ -335,7 +416,15 @@ pub async fn delete_listener(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<()> {
-    authorize(ctx, Resource::Listeners, Action::Delete, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::Listeners,
+        Action::Delete,
+        team,
+        request_id,
+    )
+    .await?;
     let mut tx = pool
         .begin()
         .await

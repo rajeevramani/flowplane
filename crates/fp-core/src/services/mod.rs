@@ -10,9 +10,10 @@ pub mod teams;
 pub mod xds_status;
 
 use crate::authz::{PrincipalCtx, Reason};
-use fp_domain::authz::{Action, Resource};
-use fp_domain::{DomainError, ErrorCode};
-use fp_storage::repos::audit::ActorType;
+use fp_domain::authz::{Action, Resource, TeamRef};
+use fp_domain::{DomainError, ErrorCode, RequestId};
+use fp_storage::repos::audit::{self, ActorType};
+use sqlx::PgPool;
 
 /// Map an authorization denial to the wire error. Cross-org and no-grant denials on reads
 /// render as `not_found` (anti-enumeration, spec/05 §3.2.2); everything else is `forbidden`
@@ -42,6 +43,39 @@ pub fn actor_of(ctx: &PrincipalCtx) -> (ActorType, Option<uuid::Uuid>) {
         PrincipalCtx::User { user_id, .. } => (ActorType::User, Some(user_id.as_uuid())),
         PrincipalCtx::Agent { agent_id, .. } => (ActorType::Agent, Some(agent_id.as_uuid())),
     }
+}
+
+pub async fn record_authz_denial(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    request_id: RequestId,
+    resource: Resource,
+    action: Action,
+    team: Option<TeamRef>,
+    reason: Reason,
+) {
+    let (actor_type, actor_id) = actor_of(ctx);
+    audit::record_best_effort(
+        pool,
+        &audit::AuditEntry {
+            request_id: Some(request_id),
+            actor_type,
+            actor_id,
+            actor_label: String::new(),
+            surface: audit::Surface::Rest,
+            action: "authz.denied".into(),
+            resource: resource.as_str().into(),
+            org_id: team.map(|t| t.org_id),
+            team_id: team.map(|t| t.id),
+            outcome: audit::Outcome::Denied,
+            detail: serde_json::json!({
+                "resource": resource.as_str(),
+                "action": action.as_str(),
+                "reason": reason.as_str(),
+            }),
+        },
+    )
+    .await;
 }
 
 /// Capture the current span's W3C trace context for outbox rows (spec/10 §8a): the async

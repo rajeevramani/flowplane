@@ -3,7 +3,7 @@
 //! transaction holding the row change, its outbox event, and its audit entry.
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
-use crate::services::{actor_of, deny_to_error, trace_context_json};
+use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -11,15 +11,20 @@ use fp_domain::{validate_name, DomainResult, RequestId, UserId};
 use fp_storage::repos::{audit, dataplanes};
 use sqlx::PgPool;
 
-fn authorize(
+async fn authorize(
+    pool: &PgPool,
     ctx: &PrincipalCtx,
     resource: Resource,
     action: Action,
     team: TeamRef,
+    request_id: RequestId,
 ) -> DomainResult<()> {
     match check_resource_access(ctx, resource, action, Some(team)) {
         Decision::Allow(_) => Ok(()),
-        Decision::Deny(reason) => Err(deny_to_error(resource, action, reason)),
+        Decision::Deny(reason) => {
+            record_authz_denial(pool, ctx, request_id, resource, action, Some(team), reason).await;
+            Err(deny_to_error(resource, action, reason))
+        }
     }
 }
 
@@ -31,7 +36,15 @@ pub async fn create_dataplane(
     description: &str,
     request_id: RequestId,
 ) -> DomainResult<Dataplane> {
-    authorize(ctx, Resource::Dataplanes, Action::Create, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::Dataplanes,
+        Action::Create,
+        team,
+        request_id,
+    )
+    .await?;
     validate_name(name)?;
     let mut tx = pool
         .begin()
@@ -73,8 +86,17 @@ pub async fn get_dataplane(
     ctx: &PrincipalCtx,
     team: TeamRef,
     name: &str,
+    request_id: RequestId,
 ) -> DomainResult<Dataplane> {
-    authorize(ctx, Resource::Dataplanes, Action::Read, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::Dataplanes,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
     dataplanes::get_dataplane(pool, team.id, name)
         .await?
         .ok_or_else(|| fp_domain::DomainError::not_found("dataplane", name))
@@ -86,8 +108,17 @@ pub async fn list_dataplanes(
     team: TeamRef,
     limit: i64,
     offset: i64,
+    request_id: RequestId,
 ) -> DomainResult<(Vec<Dataplane>, i64)> {
-    authorize(ctx, Resource::Dataplanes, Action::Read, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::Dataplanes,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
     dataplanes::list_dataplanes(pool, team.id, limit, offset).await
 }
 
@@ -110,7 +141,15 @@ pub async fn register_certificate(
     registration: CertificateRegistration<'_>,
     request_id: RequestId,
 ) -> DomainResult<ProxyCertificate> {
-    authorize(ctx, Resource::ProxyCertificates, Action::Create, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::ProxyCertificates,
+        Action::Create,
+        team,
+        request_id,
+    )
+    .await?;
     validate_spiffe_uri(registration.spiffe_uri)?;
     if registration.serial_number.is_empty() || registration.serial_number.len() > 128 {
         return Err(fp_domain::DomainError::validation(
@@ -184,7 +223,15 @@ pub async fn revoke_certificate(
     reason: &str,
     request_id: RequestId,
 ) -> DomainResult<ProxyCertificate> {
-    authorize(ctx, Resource::ProxyCertificates, Action::Update, team)?;
+    authorize(
+        pool,
+        ctx,
+        Resource::ProxyCertificates,
+        Action::Update,
+        team,
+        request_id,
+    )
+    .await?;
     let mut tx = pool
         .begin()
         .await
