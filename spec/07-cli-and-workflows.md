@@ -137,7 +137,7 @@ spec) on create/update, `-o/--output` per conventions above.
 
 | Command | Flags | Behavior / API |
 |---|---|---|
-| `init` | `--api-port`, `--xds-port` (18000), `--postgres-port`, `--gateway-port-range`, `--cp-image`, `--agent-image` (all with env fallbacks) | Compose machinery (§1). Plain output. |
+| `init` | `--api-port`, `--xds-port` (18000), `--postgres-port`, `--admin-port`, `--agent-health-port`, `--gateway-port-range`, `--cp-image`, `--agent-image` (all with env fallbacks) | Compose machinery (§1). Defaults are examples only; resolved ports are written into generated artifacts. |
 | `down` | `--volumes`, `--purge-state` | Compose down. Plain output. |
 | `init-certs` | `--out`, `--trust-domain` (flowplane.local), `--lifetime-hours` (24), `--if-missing-or-expired`, `--refresh-buffer` (1h) | Local PKI generation. Plain output. |
 | `logs` | `-f/--follow` | `docker compose logs`. Loopback-only. |

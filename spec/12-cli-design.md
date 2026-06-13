@@ -113,9 +113,15 @@ a copy-pasteable command; never dump raw HTTP/JSON on TTY (full body available w
 $ flowplane stack up
 ✓ postgres ready   ✓ control plane ready (http://localhost:8080)   ✓ envoy ready   ✓ agent ready
 $ flowplane expose http://host.docker.internal:3000 --name demo
-✓ created cluster demo, route config demo, listener demo (port 10001)
+✓ created cluster demo, route config demo, listener demo (port 10001 from range 10000-10100)
   try: curl http://localhost:10001/
 ```
+
+Local ports shown in transcripts are defaults, not fixed contracts. `stack up`, `dataplane up`,
+and `expose` resolve ports from flags/env/config (`--api-port`, `--xds-port`, `--postgres-port`,
+`--admin-port`, `--gateway-port-range`) and write the resolved values into generated bootstrap
+and compose/systemd/K8s artifacts. If a requested/default port is occupied, the CLI fails before
+mutating CP state and prints the exact override to use.
 
 ### 5.2 Config-first loop: create → observe → review → publish → tools
 

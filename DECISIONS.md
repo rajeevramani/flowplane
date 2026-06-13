@@ -228,3 +228,23 @@ rejected). Decisions made without founder response to a question in `QUESTIONS.m
   membership against the path org directly. This is v2-native; v1 routes are input for desired
   functionality, not a surface to port wholesale.
 - **Status:** decided (post-S5.8, founder directive).
+
+## D-015: local/dev ports are defaults with explicit overrides, never fixed assumptions
+
+- **Context:** Flowplane local workflows bind several ports at once: API, xDS, Envoy admin,
+  gateway listeners, upstream fixtures, Postgres, and later fp-agent health/diagnostics. v1
+  examples frequently used literals such as `8080`, `18000`, `9901`, and `10001`; that is fine
+  for documentation but brittle for real developer machines, CI shards, and parallel E2E runs.
+- **Decision:** every local/dev bind must have an override path. Defaults remain stable and
+  copy-pasteable, but they are not architecture: CLI/dev commands accept flags and env vars
+  for API, xDS, Postgres, Envoy admin, agent health, and gateway listener ranges. Scripts use
+  `FLOWPLANE_E2E_*` variables; product CLI flows use named flags such as `--api-port`,
+  `--xds-port`, `--postgres-port`, `--admin-port`, and `--gateway-port-range`.
+- **Allocation rule:** multi-listener workflows allocate from a caller-provided gateway port
+  range, checking availability before writing control-plane state. If no port is available,
+  fail before mutation with the exact occupied range and the override flag/env var to change.
+  Do not silently skip, retry random ports, or leave the operator guessing which port was used.
+- **Config propagation:** generated Envoy bootstrap and dataplane compose/systemd/K8s
+  artifacts must carry the resolved ports explicitly. Runtime code should read resolved config,
+  not assume the documented defaults.
+- **Status:** decided (S6.4/S6.5 local-run hardening).

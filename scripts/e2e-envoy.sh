@@ -4,6 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Port contract: defaults are stable for copy/paste, but every local bind is overrideable so
+# concurrent runs and developer machines with occupied ports do not require editing this file.
 API=${FLOWPLANE_E2E_API:-127.0.0.1:8096}
 XDS_PORT=${FLOWPLANE_E2E_XDS_PORT:-18000}
 GW_PORT=${FLOWPLANE_E2E_GW_PORT:-10001}
