@@ -109,6 +109,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             learning_api::cancel_learning_session
         ))
         .routes(routes!(learning_api::stop_learning_session))
+        .routes(routes!(learning_api::create_learned_spec_version))
         .routes(routes!(
             crate::expose_api::expose,
             crate::expose_api::unexpose

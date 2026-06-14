@@ -667,6 +667,27 @@ pub async fn create_spec_version(
     spec_from_row(&row)
 }
 
+pub async fn find_spec_version_by_content(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    input: &SpecVersionInput,
+) -> DomainResult<Option<SpecVersion>> {
+    input.validate()?;
+    let spec_hash = canonical_hash(&input.spec)?;
+    let row = sqlx::query(&format!(
+        "SELECT {SPEC_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 AND spec_hash = $3"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(spec_hash)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("find spec version by content: {e}")))?;
+    row.as_ref().map(spec_from_row).transpose()
+}
+
 pub async fn create_api_tool(
     tx: &mut Transaction<'_, Postgres>,
     team: TeamRef,
@@ -955,6 +976,32 @@ pub async fn list_capturing_capture_sessions(
     .await
     .map_err(|e| DomainError::internal(format!("list active learning sessions: {e}")))?;
     rows.iter().map(capture_session_from_row).collect()
+}
+
+pub async fn completed_capture_session_observations_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    handle: &str,
+) -> DomainResult<(CaptureSession, Vec<RawObservation>)> {
+    let session = get_capture_session_for_update(tx, team_id, handle).await?;
+    if session.status != CaptureSessionStatus::Completed {
+        return Err(DomainError::conflict(format!(
+            "learning session \"{}\" is {}",
+            session.name,
+            session.status.as_str()
+        ))
+        .with_hint("stop the learning session before generating a learned spec"));
+    }
+    let rows = sqlx::query(&format!(
+        "SELECT {RAW_OBSERVATION_COLUMNS} FROM raw_observations \
+         WHERE team_id = $1 AND capture_session_id = $2 ORDER BY observed_at, id"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(session.id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("list raw observations: {e}")))?;
+    Ok((session, rows.iter().map(raw_observation_from_row).collect()))
 }
 
 pub async fn transition_capture_session(

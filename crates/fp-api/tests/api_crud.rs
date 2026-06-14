@@ -102,13 +102,13 @@ fn openapi_document_covers_every_registered_operation() {
     // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 4 dataplane
     // + 4 proxy-certificate + 3 ops/xds diagnostics operations.
     // + 4 secrets operations + 2 dataplane/stats telemetry operations.
-    // + 5 API lifecycle operations + 5 learning-session operations.
+    // + 5 API lifecycle operations + 6 learning-session operations.
     // + 2 expose shortcut operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 61,
-        "expected 61 documented operations, got {operations}"
+        operations, 62,
+        "expected 62 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -133,6 +133,7 @@ fn openapi_document_covers_every_registered_operation() {
         "/api/v1/teams/{team}/learning-sessions",
         "/api/v1/teams/{team}/learning-sessions/{session}",
         "/api/v1/teams/{team}/learning-sessions/{session}/stop",
+        "/api/v1/teams/{team}/learning-sessions/{session}/spec-version",
         "/api/v1/teams/{team}/xds/status",
         "/api/v1/teams/{team}/ops/trace",
     ] {

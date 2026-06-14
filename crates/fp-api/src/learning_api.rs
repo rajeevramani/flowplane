@@ -8,8 +8,9 @@ use axum::Json;
 use fp_core::services::learning as svc;
 use fp_core::PrincipalCtx;
 use fp_domain::api_lifecycle::{
-    CaptureSession, CaptureSessionSpec, CaptureSessionStatus, DEFAULT_CAPTURE_MAX_BYTES,
-    DEFAULT_CAPTURE_MAX_DISTINCT_PATHS, DEFAULT_CAPTURE_TARGET_SAMPLE_COUNT,
+    CaptureSession, CaptureSessionSpec, CaptureSessionStatus, SpecVersion,
+    DEFAULT_CAPTURE_MAX_BYTES, DEFAULT_CAPTURE_MAX_DISTINCT_PATHS,
+    DEFAULT_CAPTURE_TARGET_SAMPLE_COUNT,
 };
 use fp_domain::{ApiDefinitionId, ListenerId, RequestId, RouteConfigId};
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,31 @@ impl From<CaptureSession> for LearningSessionView {
             completed_at: value.completed_at,
             cancelled_at: value.cancelled_at,
             updated_at: value.updated_at,
+            created_at: value.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LearnedSpecVersionView {
+    pub id: uuid::Uuid,
+    pub api_definition_id: uuid::Uuid,
+    pub version: i64,
+    pub source_kind: String,
+    pub format: String,
+    pub spec_hash: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<SpecVersion> for LearnedSpecVersionView {
+    fn from(value: SpecVersion) -> Self {
+        Self {
+            id: value.id.as_uuid(),
+            api_definition_id: value.api_definition_id.as_uuid(),
+            version: value.version,
+            source_kind: value.source_kind.as_str().into(),
+            format: value.format.as_str().into(),
+            spec_hash: value.spec_hash,
             created_at: value.created_at,
         }
     }
@@ -270,6 +296,35 @@ pub async fn stop_learning_session(
     run.await
         .map(|v| Json(LearningSessionView::from(v)))
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(post, path = "/api/v1/teams/{team}/learning-sessions/{session}/spec-version",
+    tag = "LearningSessions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("session" = String, Path, description = "Completed learning session name or UUID"),
+    ),
+    responses(
+        (status = 201, body = LearnedSpecVersionView),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 409, body = crate::error::ErrorBody),
+    ))]
+pub async fn create_learned_spec_version(
+    State(state): State<AppState>,
+    Path((team, session)): Path<(String, String)>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<(axum::http::StatusCode, Json<LearnedSpecVersionView>), ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::create_spec_version_from_session(&state.pool, &ctx, team, &session, rid).await
+    };
+    let spec = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(LearnedSpecVersionView::from(spec)),
+    ))
 }
 
 #[utoipa::path(delete, path = "/api/v1/teams/{team}/learning-sessions/{session}",

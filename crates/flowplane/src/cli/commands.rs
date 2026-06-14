@@ -273,6 +273,11 @@ pub enum LearnCommand {
         team: Option<String>,
         session: String,
     },
+    GenerateSpec {
+        #[arg(long)]
+        team: Option<String>,
+        session: String,
+    },
     Cancel {
         #[arg(long)]
         team: Option<String>,
