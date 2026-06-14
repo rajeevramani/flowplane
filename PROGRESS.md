@@ -440,10 +440,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S8.7 Review/publish loop: landed via #42/#43; learned SpecVersions can be reviewed/rejected/published;
         publish regenerates `api_tools` rows from the published spec version and marks
         freshness. Tools remain data only until S11 serving.
-  - [ ] S8 exit: config-first E2E from CLI (create/import API → bind route → start learn →
-        traffic → learned spec → review/publish → generated tool rows → delete upstream →
-        zero orphans); poisoning tests for header flood and path explosion; retention test for
-        raw observations.
+  - [x] S8 exit: live Envoy E2E now covers config-first CLI flow (create API → bind route →
+        start learn → traffic → learned spec → review/publish → generated tool rows → delete API
+        → zero S8 orphans); existing poisoning tests cover header flood/path explosion, and
+        retention tests cover raw observations.
 - [ ] S9 Learning traffic-first
 - [ ] S10 AI gateway
 - [ ] S11 MCP server + tools
