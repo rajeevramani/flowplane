@@ -484,7 +484,7 @@ fn path_template(
     let mut template = Vec::with_capacity(segments.len());
     for (index, segment) in segments.iter().enumerate() {
         let distinct = stats.get(&index).map_or(1, BTreeSet::len);
-        if is_dynamic_segment(segment) || distinct > config.low_cardinality_literal_limit {
+        if is_strong_dynamic_segment(segment) || distinct > config.low_cardinality_literal_limit {
             template.push(parameter_name(&template, index, segment));
         } else {
             template.push(segment.clone());
@@ -502,12 +502,8 @@ fn path_segments(path: &str) -> Vec<String> {
         .collect()
 }
 
-fn is_dynamic_segment(segment: &str) -> bool {
-    is_uuid(segment)
-        || segment.chars().all(|c| c.is_ascii_digit())
-        || (segment.chars().any(|c| c.is_ascii_alphabetic())
-            && segment.chars().any(|c| c.is_ascii_digit()))
-        || (segment.contains('-') && segment.chars().any(|c| c.is_ascii_digit()))
+fn is_strong_dynamic_segment(segment: &str) -> bool {
+    is_uuid(segment) || segment.chars().all(|c| c.is_ascii_digit())
 }
 
 fn is_uuid(segment: &str) -> bool {
@@ -516,7 +512,7 @@ fn is_uuid(segment: &str) -> bool {
 }
 
 fn parameter_name(previous_template: &[String], index: usize, segment: &str) -> String {
-    let suffix = if is_uuid(segment) || segment.chars().all(|c| c.is_ascii_digit()) {
+    let suffix = if is_strong_dynamic_segment(segment) {
         "Id"
     } else {
         "Param"
@@ -774,6 +770,48 @@ mod tests {
             .map(|endpoint| endpoint.key.path_template.as_str())
             .collect::<Vec<_>>();
         assert_eq!(paths, vec!["/reports/daily", "/reports/weekly"]);
+    }
+
+    #[test]
+    fn grouping_preserves_stable_alphanumeric_version_segments() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation(team, session, "GET", "/v1/users/1", "api.example.test"),
+                observation(team, session, "GET", "/v2/users/2", "api.example.test"),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let paths = grouped
+            .iter()
+            .map(|endpoint| endpoint.key.path_template.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/v1/users/{userId}", "/v2/users/{userId}"]);
+    }
+
+    #[test]
+    fn grouping_templates_high_cardinality_alphanumeric_segments() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation(team, session, "GET", "/assets/a1", "api.example.test"),
+                observation(team, session, "GET", "/assets/b2", "api.example.test"),
+                observation(team, session, "GET", "/assets/c3", "api.example.test"),
+                observation(team, session, "GET", "/assets/d4", "api.example.test"),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let paths = grouped
+            .iter()
+            .map(|endpoint| endpoint.key.path_template.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/assets/{assetParam}"]);
     }
 
     #[test]

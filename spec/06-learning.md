@@ -52,6 +52,9 @@ immutable snapshot. Deterministic learned specs must not be generated directly f
 - `group_observations_by_endpoint()` is the pure S8.6b grouping primitive. It accepts one
   team/session observation set, preserves host separation, templates high-cardinality/id-like path
   segments, keeps stable low-cardinality literals, and buckets path overflow.
+- Strong ID signals (UUIDs and all-digit segments) template unconditionally; weaker alphanumeric
+  segments such as `v1`, `oauth2`, or `s3` stay literal while low-cardinality so API versions do
+  not merge.
 - `LearnedConfidence` is stable review metadata with score, sample count, body coverage, path
   cardinality, truncation, and drop signals.
 - `canonical_openapi()` emits OpenAPI 3.1 JSON with deterministic ordering for paths, methods,
