@@ -158,11 +158,16 @@ async fn apply_telemetry_delta(
     Ok(dataplane_from_row(&row))
 }
 
-pub async fn stats_overview(pool: &PgPool, team_id: TeamId) -> DomainResult<TeamStatsOverview> {
+pub async fn stats_overview(
+    pool: &PgPool,
+    team_id: TeamId,
+    now: chrono::DateTime<chrono::Utc>,
+) -> DomainResult<TeamStatsOverview> {
     let row = sqlx::query(
         "SELECT \
             count(*)::bigint AS total_dataplanes, \
-            count(*) FILTER (WHERE last_heartbeat_at > now() - interval '60 seconds')::bigint \
+            count(*) FILTER (WHERE last_heartbeat_at IS NOT NULL \
+                AND $2::timestamptz - last_heartbeat_at <= interval '60 seconds')::bigint \
                 AS live_dataplanes, \
             coalesce(sum(total_requests), 0)::bigint AS total_requests, \
             coalesce(sum(total_errors), 0)::bigint AS total_errors, \
@@ -170,6 +175,7 @@ pub async fn stats_overview(pool: &PgPool, team_id: TeamId) -> DomainResult<Team
          FROM dataplanes WHERE team_id = $1",
     )
     .bind(team_id.as_uuid())
+    .bind(now)
     .fetch_one(pool)
     .await
     .map_err(|e| DomainError::internal(format!("dataplane stats overview: {e}")))?;

@@ -250,15 +250,19 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temp_root() -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
+        let seq = TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "flowplane-cli-perms-{}-{suffix}",
+            "flowplane-cli-perms-{}-{suffix}-{seq}",
             std::process::id()
         ))
     }

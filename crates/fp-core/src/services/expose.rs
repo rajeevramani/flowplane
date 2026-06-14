@@ -136,7 +136,13 @@ pub async fn expose(
     {
         Ok(route_config) => route_config,
         Err(err) => {
-            cleanup_cluster(pool, ctx, team, &cluster, request_id).await;
+            if let Err(cleanup_err) = cleanup_cluster(pool, ctx, team, &cluster, request_id).await {
+                tracing::error!(
+                    cluster = %cluster.name,
+                    error = %cleanup_err,
+                    "failed to clean up cluster after expose route-config create failed"
+                );
+            }
             return Err(err);
         }
     };
@@ -146,8 +152,24 @@ pub async fn expose(
         {
             Ok(listener) => listener,
             Err(err) => {
-                cleanup_route_config(pool, ctx, team, &route_config, request_id).await;
-                cleanup_cluster(pool, ctx, team, &cluster, request_id).await;
+                if let Err(cleanup_err) =
+                    cleanup_route_config(pool, ctx, team, &route_config, request_id).await
+                {
+                    tracing::error!(
+                        route_config = %route_config.name,
+                        error = %cleanup_err,
+                        "failed to clean up route config after expose listener create failed"
+                    );
+                }
+                if let Err(cleanup_err) =
+                    cleanup_cluster(pool, ctx, team, &cluster, request_id).await
+                {
+                    tracing::error!(
+                        cluster = %cluster.name,
+                        error = %cleanup_err,
+                        "failed to clean up cluster after expose listener create failed"
+                    );
+                }
                 return Err(err);
             }
         };
@@ -235,8 +257,8 @@ async fn cleanup_route_config(
     team: TeamRef,
     route_config: &RouteConfig,
     request_id: RequestId,
-) {
-    let _ = gateway::delete_route_config(
+) -> DomainResult<()> {
+    gateway::delete_route_config(
         pool,
         ctx,
         team,
@@ -244,7 +266,8 @@ async fn cleanup_route_config(
         route_config.version,
         request_id,
     )
-    .await;
+    .await?;
+    Ok(())
 }
 
 async fn cleanup_cluster(
@@ -253,9 +276,9 @@ async fn cleanup_cluster(
     team: TeamRef,
     cluster: &Cluster,
     request_id: RequestId,
-) {
-    let _ =
-        clusters::delete_cluster(pool, ctx, team, &cluster.name, cluster.version, request_id).await;
+) -> DomainResult<()> {
+    clusters::delete_cluster(pool, ctx, team, &cluster.name, cluster.version, request_id).await?;
+    Ok(())
 }
 
 #[derive(Debug)]
