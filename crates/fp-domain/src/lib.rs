@@ -19,7 +19,8 @@ pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
     AgentId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId, CaptureSessionId,
     ClusterId, DataplaneId, GrantId, ListenerId, MembershipId, OrgId, ProxyCertificateId,
-    RequestId, RetentionPolicyId, RouteConfigId, SecretId, SpecVersionId, TeamId, UserId,
+    RawObservationId, RequestId, RetentionPolicyId, RouteConfigId, SecretId, SpecVersionId, TeamId,
+    UserId,
 };
 pub use identity::{
     validate_name, Agent, AgentKind, EntityStatus, OrgRole, Organization, Team, User,

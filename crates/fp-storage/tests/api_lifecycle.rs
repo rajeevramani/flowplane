@@ -2,11 +2,13 @@
 
 use fp_domain::api_lifecycle::{
     ApiDefinitionSpec, ApiRouteBindingSpec, ApiToolSpec, CaptureSessionSpec, CaptureSessionStatus,
-    HttpMethod, RetentionPolicySpec, SpecFormat, SpecSourceKind, SpecVersionInput,
+    HttpMethod, ObservationIngest, RetentionPolicySpec, SpecFormat, SpecSourceKind,
+    SpecVersionInput,
 };
 use fp_domain::authz::TeamRef;
 use fp_domain::{ErrorCode, ListenerId, RouteConfigId};
 use fp_storage::repos::{api_lifecycle, identity};
+use sqlx::types::chrono::Utc;
 use sqlx::{PgPool, Row};
 
 fn unique(prefix: &str) -> String {
@@ -104,6 +106,24 @@ fn openapi(title: &str) -> SpecVersionInput {
             "info": { "title": title, "version": "1.0.0" },
             "paths": {}
         }),
+    }
+}
+
+fn observation(request_id: &str, path: &str) -> ObservationIngest {
+    ObservationIngest {
+        request_id: request_id.into(),
+        method: "GET".into(),
+        path: path.into(),
+        response_status: Some(200),
+        request_headers: serde_json::Map::new(),
+        response_headers: serde_json::Map::new(),
+        request_body: None,
+        response_body: None,
+        request_body_truncated: false,
+        response_body_truncated: false,
+        metadata_seen: true,
+        body_seen: false,
+        observed_at: Utc::now(),
     }
 }
 
@@ -524,4 +544,233 @@ async fn capture_ingest_binding_validates_active_team_and_scope() {
     .await
     .expect_err("terminal session rejected");
     assert_eq!(err.code, ErrorCode::Conflict);
+}
+
+#[tokio::test]
+async fn raw_observation_ingest_redacts_and_counts_accepted_rows() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let listener = insert_listener(&w.pool, w.team_a, &unique("listener")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("capture"),
+        &CaptureSessionSpec {
+            api_definition_id: None,
+            route_config_id: Some(route),
+            listener_id: Some(listener),
+            virtual_host: Some("default".into()),
+            route: Some("all".into()),
+            target_sample_count: 10,
+            max_duration_seconds: Some(60),
+            max_bytes: 4096,
+            max_distinct_paths: 10,
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit session");
+
+    let mut input = observation("req-redact", "/orders");
+    input
+        .request_headers
+        .insert("authorization".into(), serde_json::json!("Bearer secret"));
+    input
+        .request_headers
+        .insert("x-envoy-internal".into(), serde_json::json!("true"));
+    input
+        .request_headers
+        .insert("accept".into(), serde_json::json!("application/json"));
+    input.response_body = Some("{\"ok\":true}".into());
+    input.body_seen = true;
+
+    let mut tx = w.pool.begin().await.expect("ingest tx");
+    let row = api_lifecycle::ingest_raw_observation(
+        &mut tx,
+        w.team_a,
+        session.id,
+        None,
+        route,
+        Some(listener),
+        &input,
+    )
+    .await
+    .expect("ingest");
+    tx.commit().await.expect("commit ingest");
+
+    assert_eq!(row.request_headers["authorization"], "[REDACTED]");
+    assert!(row.request_headers.get("x-envoy-internal").is_none());
+    assert_eq!(row.request_headers["accept"], "application/json");
+
+    let refreshed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(refreshed.sample_count, 1);
+    assert_eq!(refreshed.path_count, 1);
+    assert_eq!(refreshed.byte_count, row.response_body_bytes);
+    assert_eq!(refreshed.drop_count, 0);
+}
+
+#[tokio::test]
+async fn raw_observation_body_merge_does_not_increment_sample_count() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("merge"),
+        &CaptureSessionSpec {
+            api_definition_id: None,
+            route_config_id: Some(route),
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+            target_sample_count: 10,
+            max_duration_seconds: Some(60),
+            max_bytes: 4096,
+            max_distinct_paths: 10,
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit session");
+
+    let metadata = observation("req-merge", "/items");
+    let mut tx = w.pool.begin().await.expect("metadata tx");
+    api_lifecycle::ingest_raw_observation(
+        &mut tx, w.team_a, session.id, None, route, None, &metadata,
+    )
+    .await
+    .expect("metadata ingest");
+    tx.commit().await.expect("commit metadata");
+
+    let mut body = observation("req-merge", "/items");
+    body.request_headers.clear();
+    body.response_headers.clear();
+    body.response_status = None;
+    body.metadata_seen = false;
+    body.body_seen = true;
+    body.request_body = Some("hello".into());
+    body.response_body = Some("world".into());
+    let mut tx = w.pool.begin().await.expect("body tx");
+    let merged = api_lifecycle::ingest_raw_observation(
+        &mut tx, w.team_a, session.id, None, route, None, &body,
+    )
+    .await
+    .expect("body ingest");
+    tx.commit().await.expect("commit body");
+
+    assert_eq!(merged.request_body.as_deref(), Some("hello"));
+    assert_eq!(merged.response_body.as_deref(), Some("world"));
+    let refreshed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(refreshed.sample_count, 1);
+    assert_eq!(refreshed.path_count, 1);
+    assert_eq!(refreshed.byte_count, 10);
+}
+
+#[tokio::test]
+async fn raw_observation_quota_drop_does_not_insert_or_move_sample_count() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("quota"),
+        &CaptureSessionSpec {
+            api_definition_id: None,
+            route_config_id: Some(route),
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+            target_sample_count: 10,
+            max_duration_seconds: Some(60),
+            max_bytes: 5,
+            max_distinct_paths: 10,
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit session");
+
+    let mut too_large = observation("req-large", "/large");
+    too_large.body_seen = true;
+    too_large.response_body = Some("too-large".into());
+    let mut tx = w.pool.begin().await.expect("ingest tx");
+    let err = api_lifecycle::ingest_raw_observation(
+        &mut tx, w.team_a, session.id, None, route, None, &too_large,
+    )
+    .await
+    .expect_err("quota drop");
+    assert_eq!(err.code, ErrorCode::QuotaExceeded);
+    tx.commit().await.expect("commit drop count");
+
+    let refreshed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(refreshed.sample_count, 0);
+    assert_eq!(refreshed.byte_count, 0);
+    assert_eq!(refreshed.drop_count, 1);
+    let raw_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM raw_observations WHERE capture_session_id = $1")
+            .bind(session.id.as_uuid())
+            .fetch_one(&w.pool)
+            .await
+            .expect("raw count");
+    assert_eq!(raw_count, 0);
+}
+
+#[tokio::test]
+async fn raw_observation_target_sample_count_completes_session() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("complete"),
+        &CaptureSessionSpec {
+            api_definition_id: None,
+            route_config_id: Some(route),
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+            target_sample_count: 1,
+            max_duration_seconds: Some(60),
+            max_bytes: 4096,
+            max_distinct_paths: 10,
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit session");
+
+    let mut tx = w.pool.begin().await.expect("ingest tx");
+    api_lifecycle::ingest_raw_observation(
+        &mut tx,
+        w.team_a,
+        session.id,
+        None,
+        route,
+        None,
+        &observation("req-complete", "/done"),
+    )
+    .await
+    .expect("ingest");
+    tx.commit().await.expect("commit ingest");
+
+    let refreshed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(refreshed.status, CaptureSessionStatus::Completed);
+    assert!(refreshed.completed_at.is_some());
+    assert_eq!(refreshed.sample_count, 1);
 }

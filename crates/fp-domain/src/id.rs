@@ -134,6 +134,10 @@ domain_id!(
     /// Identifies one bounded traffic capture session for learning.
     CaptureSessionId
 );
+domain_id!(
+    /// Identifies one accepted raw observation for a learning capture session.
+    RawObservationId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]

@@ -6,8 +6,8 @@
 
 use crate::error::{DomainError, DomainResult};
 use crate::id::{
-    ApiDefinitionId, ApiRouteBindingId, ApiToolId, CaptureSessionId, ListenerId, RetentionPolicyId,
-    RouteConfigId, SpecVersionId, TeamId,
+    ApiDefinitionId, ApiRouteBindingId, ApiToolId, CaptureSessionId, ListenerId, RawObservationId,
+    RetentionPolicyId, RouteConfigId, SpecVersionId, TeamId,
 };
 use crate::identity::validate_name;
 use chrono::{DateTime, Utc};
@@ -460,6 +460,142 @@ impl CaptureSessionSpec {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RawObservation {
+    pub id: RawObservationId,
+    pub team_id: TeamId,
+    pub capture_session_id: CaptureSessionId,
+    pub request_id: String,
+    pub method: String,
+    pub path: String,
+    pub response_status: Option<i32>,
+    pub request_headers: serde_json::Value,
+    pub response_headers: serde_json::Value,
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+    pub request_body_truncated: bool,
+    pub response_body_truncated: bool,
+    pub request_body_bytes: i64,
+    pub response_body_bytes: i64,
+    pub metadata_seen: bool,
+    pub body_seen: bool,
+    pub observed_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationIngest {
+    pub request_id: String,
+    pub method: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_status: Option<i32>,
+    #[serde(default)]
+    pub request_headers: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub response_headers: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<String>,
+    #[serde(default)]
+    pub request_body_truncated: bool,
+    #[serde(default)]
+    pub response_body_truncated: bool,
+    #[serde(default)]
+    pub metadata_seen: bool,
+    #[serde(default)]
+    pub body_seen: bool,
+    pub observed_at: DateTime<Utc>,
+}
+
+impl ObservationIngest {
+    pub fn validate(&self) -> DomainResult<()> {
+        validate_selector("request_id", &self.request_id)?;
+        if self.method.is_empty()
+            || self.method.len() > 16
+            || !self.method.chars().all(|c| c.is_ascii_uppercase())
+        {
+            return Err(DomainError::validation(
+                "observation method must be an uppercase HTTP method",
+            ));
+        }
+        if !self.path.starts_with('/') || self.path.contains('\0') || self.path.len() > 2048 {
+            return Err(DomainError::validation(
+                "observation path must start with / and be at most 2048 characters",
+            ));
+        }
+        if let Some(status) = self.response_status {
+            if !(100..=599).contains(&status) {
+                return Err(DomainError::validation(
+                    "observation response_status must be between 100 and 599",
+                ));
+            }
+        }
+        for (label, headers) in [
+            ("request_headers", &self.request_headers),
+            ("response_headers", &self.response_headers),
+        ] {
+            if headers.len() > 64 {
+                return Err(DomainError::validation(format!(
+                    "{label} must contain at most 64 headers"
+                )));
+            }
+            for (name, value) in headers {
+                validate_header_name(name)?;
+                if !value.is_string() {
+                    return Err(DomainError::validation(format!(
+                        "{label}.{name} must be a string"
+                    )));
+                }
+                if value
+                    .as_str()
+                    .is_some_and(|v| v.len() > 4096 || v.contains('\0'))
+                {
+                    return Err(DomainError::validation(format!(
+                        "{label}.{name} must be at most 4096 chars and contain no NUL"
+                    )));
+                }
+            }
+        }
+        if self
+            .request_body
+            .as_ref()
+            .is_some_and(|v| v.len() > 64 * 1024)
+            || self
+                .response_body
+                .as_ref()
+                .is_some_and(|v| v.len() > 64 * 1024)
+        {
+            return Err(DomainError::validation(
+                "observation bodies must be at most 65536 characters each",
+            ));
+        }
+        if !(self.metadata_seen || self.body_seen) {
+            return Err(DomainError::validation(
+                "observation must include metadata_seen or body_seen",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_header_name(name: &str) -> DomainResult<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err(DomainError::validation(
+            "header names must be 1-128 chars of ASCII alnum, - or _",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_optional_selector(label: &str, value: Option<&str>) -> DomainResult<()> {
