@@ -1,7 +1,7 @@
 mod client;
 mod commands;
 mod config;
-mod output;
+pub(crate) mod output;
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
