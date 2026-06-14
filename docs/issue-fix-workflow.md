@@ -40,6 +40,10 @@ git merge --no-ff issue/<issue-number>-<short-slug>
 git push origin claude/optimistic-lamport-j38tuy
 ```
 
+9. Move the GitHub issue to `Review`.
+
+Prefer the repository's GitHub Project status field when one is configured. If the repository uses labels instead, apply the established `Review` label. Do not invent a second tracking mechanism without checking the existing issue/project setup.
+
 ## Conflict Policy
 
 If the remote branch moved while the fix branch was in progress, integrate the remote changes and keep the local issue fix for conflicted files unless the remote clearly contains a newer equivalent fix.
@@ -71,3 +75,4 @@ An issue is done when:
 - tests relevant to the touched area pass
 - the issue branch is merged into `claude/optimistic-lamport-j38tuy`
 - the integration branch is pushed to `origin`
+- the GitHub issue is moved to `Review`
