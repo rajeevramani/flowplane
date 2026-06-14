@@ -33,6 +33,35 @@ rows from OpenAPI HTTP operations. Route binding is supported only to existing g
 by typed IDs; automatic gateway topology creation from OpenAPI is deferred until the
 OpenAPI-to-cluster/listener/route mapping is explicit.
 
+## 0.2 V2 S8.6 aggregation contract
+
+S8.6 starts from a frozen observation set: a completed/stopped capture session or an explicit
+immutable snapshot. Deterministic learned specs must not be generated directly from a still-mutating
+`capturing` session.
+
+`fp-domain::learning` owns the canonical contract:
+
+- `LearnedSpecCandidate` is the learned OpenAPI candidate before persistence.
+- `LearnedEndpointKey` is sorted by `host`, `method`, and `path_template`; grouping is host-aware
+  and method-aware.
+- `LearnedEndpointAggregate` carries request schema, response schemas, learned headers, and
+  confidence metadata.
+- `LearnedConfidence` is stable review metadata with score, sample count, body coverage, path
+  cardinality, truncation, and drop signals.
+- `canonical_openapi()` emits OpenAPI 3.1 JSON with deterministic ordering for paths, methods,
+  parameters, headers, responses, schemas, and `x-flowplane-learning` metadata.
+- `spec_version_input()` returns `source_kind = learned`, `format = openapi3`, and validates
+  against the same `SpecVersionInput::validate` path used by imported specs.
+
+Lifecycle state is intentionally not part of `spec_versions` content. `source_kind = learned` is
+source/type vocabulary only; candidate/rejected/published state belongs to the S8.7 lifecycle model.
+
+Confidence metadata is embedded in the learned OpenAPI as the stable vendor extension
+`x-flowplane-learning`. Because it is part of the candidate spec body, it participates in
+`spec_hash`; later changes to confidence scoring intentionally produce a different learned
+candidate version. S8.7 may copy selected review/publish state into separate tables, but it must not
+mutate the immutable spec content.
+
 ---
 
 ## 1. End-to-end narrative

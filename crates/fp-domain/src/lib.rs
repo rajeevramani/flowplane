@@ -12,6 +12,7 @@ pub mod event;
 pub mod gateway;
 pub mod id;
 pub mod identity;
+pub mod learning;
 pub mod secret;
 
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
