@@ -3,11 +3,97 @@
 //! Domain owns the shape and deterministic OpenAPI output. Core/storage/API decide when and
 //! where to run or persist it.
 
-use crate::api_lifecycle::{HttpMethod, SpecFormat, SpecSourceKind, SpecVersionInput};
+use crate::api_lifecycle::{
+    HttpMethod, RawObservation, SpecFormat, SpecSourceKind, SpecVersionInput,
+};
 use crate::error::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+
+pub const DEFAULT_LEARNED_OUTLIER_PATH: &str = "/_flowplane/outliers/{path}";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EndpointGroupingConfig {
+    pub low_cardinality_literal_limit: usize,
+    pub max_path_templates: usize,
+}
+
+impl Default for EndpointGroupingConfig {
+    fn default() -> Self {
+        Self {
+            low_cardinality_literal_limit: 3,
+            max_path_templates: 500,
+        }
+    }
+}
+
+impl EndpointGroupingConfig {
+    pub fn validate(&self) -> DomainResult<()> {
+        if !(1..=32).contains(&self.low_cardinality_literal_limit) {
+            return Err(DomainError::validation(
+                "low_cardinality_literal_limit must be between 1 and 32",
+            ));
+        }
+        if !(1..=10_000).contains(&self.max_path_templates) {
+            return Err(DomainError::validation(
+                "max_path_templates must be between 1 and 10000",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn group_observations_by_endpoint(
+    observations: &[RawObservation],
+    config: EndpointGroupingConfig,
+) -> DomainResult<Vec<LearnedEndpointAggregate>> {
+    config.validate()?;
+    if let Some(first) = observations.first() {
+        for observation in observations {
+            if observation.team_id != first.team_id
+                || observation.capture_session_id != first.capture_session_id
+            {
+                return Err(DomainError::validation(
+                    "learned endpoint grouping requires one team and capture session",
+                ));
+            }
+        }
+    }
+    let mut contexts: BTreeMap<(Option<String>, &'static str), Vec<&RawObservation>> =
+        BTreeMap::new();
+    for observation in observations {
+        let method = HttpMethod::parse(&observation.method)?;
+        contexts
+            .entry((observation_host(observation), method.openapi_method()))
+            .or_default()
+            .push(observation);
+    }
+
+    let mut endpoints = Vec::new();
+    for ((host, method), rows) in contexts {
+        let segment_stats = segment_stats(&rows);
+        let mut grouped: BTreeMap<String, Vec<&RawObservation>> = BTreeMap::new();
+        for row in rows {
+            grouped
+                .entry(path_template(row.path.as_str(), &segment_stats, config))
+                .or_default()
+                .push(row);
+        }
+        grouped = bucket_path_overflow(grouped, config.max_path_templates);
+        for (path_template, rows) in grouped {
+            endpoints.push(endpoint_from_group(
+                host.clone(),
+                parse_openapi_method(method),
+                path_template,
+                &rows,
+            ));
+        }
+    }
+
+    Ok(endpoints)
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -342,6 +428,203 @@ fn validate_status(status: &str) -> DomainResult<()> {
     ))
 }
 
+fn parse_openapi_method(method: &str) -> HttpMethod {
+    match method {
+        "get" => HttpMethod::Get,
+        "post" => HttpMethod::Post,
+        "put" => HttpMethod::Put,
+        "patch" => HttpMethod::Patch,
+        "delete" => HttpMethod::Delete,
+        "options" => HttpMethod::Options,
+        "head" => HttpMethod::Head,
+        _ => unreachable!("method came from HttpMethod::openapi_method"),
+    }
+}
+
+fn observation_host(observation: &RawObservation) -> Option<String> {
+    header_string(&observation.request_headers, "host")
+        .or_else(|| header_string(&observation.request_headers, "authority"))
+        .map(|host| host.to_ascii_lowercase())
+}
+
+fn header_string(headers: &Value, name: &str) -> Option<String> {
+    headers.as_object().and_then(|headers| {
+        headers.iter().find_map(|(key, value)| {
+            if key.eq_ignore_ascii_case(name) {
+                value.as_str().map(str::to_owned)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn segment_stats(rows: &[&RawObservation]) -> BTreeMap<usize, BTreeSet<String>> {
+    let mut stats = BTreeMap::new();
+    for row in rows {
+        for (index, segment) in path_segments(&row.path).into_iter().enumerate() {
+            stats
+                .entry(index)
+                .or_insert_with(BTreeSet::new)
+                .insert(segment);
+        }
+    }
+    stats
+}
+
+fn path_template(
+    path: &str,
+    stats: &BTreeMap<usize, BTreeSet<String>>,
+    config: EndpointGroupingConfig,
+) -> String {
+    let segments = path_segments(path);
+    if segments.is_empty() {
+        return "/".into();
+    }
+    let mut template = Vec::with_capacity(segments.len());
+    for (index, segment) in segments.iter().enumerate() {
+        let distinct = stats.get(&index).map_or(1, BTreeSet::len);
+        if is_dynamic_segment(segment) || distinct > config.low_cardinality_literal_limit {
+            template.push(parameter_name(&template, index, segment));
+        } else {
+            template.push(segment.clone());
+        }
+    }
+    format!("/{}", template.join("/"))
+}
+
+fn path_segments(path: &str) -> Vec<String> {
+    path.split_once('?')
+        .map_or(path, |(path, _)| path)
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn is_dynamic_segment(segment: &str) -> bool {
+    is_uuid(segment)
+        || segment.chars().all(|c| c.is_ascii_digit())
+        || (segment.chars().any(|c| c.is_ascii_alphabetic())
+            && segment.chars().any(|c| c.is_ascii_digit()))
+        || (segment.contains('-') && segment.chars().any(|c| c.is_ascii_digit()))
+}
+
+fn is_uuid(segment: &str) -> bool {
+    let parts = segment.split('-').map(str::len).collect::<Vec<_>>();
+    parts == [8, 4, 4, 4, 12] && segment.chars().all(|c| c == '-' || c.is_ascii_hexdigit())
+}
+
+fn parameter_name(previous_template: &[String], index: usize, segment: &str) -> String {
+    let suffix = if is_uuid(segment) || segment.chars().all(|c| c.is_ascii_digit()) {
+        "Id"
+    } else {
+        "Param"
+    };
+    let stem = previous_template
+        .iter()
+        .rev()
+        .find(|segment| !segment.starts_with('{'))
+        .map(|segment| singularize(segment))
+        .unwrap_or_else(|| format!("param{}", index + 1));
+    format!("{{{stem}{suffix}}}")
+}
+
+fn singularize(segment: &str) -> String {
+    if segment.ends_with("ies") && segment.len() > 3 {
+        format!("{}y", &segment[..segment.len() - 3])
+    } else if segment.ends_with('s') && !segment.ends_with("ss") && segment.len() > 1 {
+        segment[..segment.len() - 1].to_owned()
+    } else {
+        segment.to_owned()
+    }
+}
+
+fn bucket_path_overflow(
+    grouped: BTreeMap<String, Vec<&RawObservation>>,
+    max_path_templates: usize,
+) -> BTreeMap<String, Vec<&RawObservation>> {
+    if grouped.len() <= max_path_templates {
+        return grouped;
+    }
+    let mut ranked = grouped.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|(a_path, a_rows), (b_path, b_rows)| {
+        b_rows
+            .len()
+            .cmp(&a_rows.len())
+            .then_with(|| a_path.cmp(b_path))
+    });
+
+    let keep = max_path_templates.saturating_sub(1);
+    let mut result = BTreeMap::new();
+    let mut outliers = Vec::new();
+    for (index, (path, rows)) in ranked.into_iter().enumerate() {
+        if index < keep {
+            result.insert(path, rows);
+        } else {
+            outliers.extend(rows);
+        }
+    }
+    result.insert(DEFAULT_LEARNED_OUTLIER_PATH.into(), outliers);
+    result
+}
+
+fn endpoint_from_group(
+    host: Option<String>,
+    method: HttpMethod,
+    path_template: String,
+    rows: &[&RawObservation],
+) -> LearnedEndpointAggregate {
+    let mut statuses = BTreeMap::new();
+    for row in rows {
+        let status = row
+            .response_status
+            .map(|status| status.to_string())
+            .unwrap_or_else(|| "default".into());
+        statuses.entry(status).or_insert(None);
+    }
+    let body_sample_count = rows
+        .iter()
+        .filter(|row| row.request_body.is_some() || row.response_body.is_some())
+        .count() as u64;
+    let truncated_body_count = rows
+        .iter()
+        .filter(|row| row.request_body_truncated || row.response_body_truncated)
+        .count() as u64;
+    LearnedEndpointAggregate {
+        key: LearnedEndpointKey {
+            host,
+            method,
+            path_template,
+        },
+        operation_id: String::new(),
+        request_schema: None,
+        response_schemas: statuses,
+        request_headers: Vec::new(),
+        response_headers: Vec::new(),
+        confidence: LearnedConfidence {
+            score: grouping_confidence(rows.len()),
+            sample_count: rows.len() as u64,
+            body_sample_count,
+            distinct_path_count: rows
+                .iter()
+                .map(|row| row.path.as_str())
+                .collect::<BTreeSet<_>>()
+                .len() as u64,
+            truncated_body_count,
+            dropped_observation_count: 0,
+        },
+    }
+}
+
+fn grouping_confidence(sample_count: usize) -> f64 {
+    if sample_count >= 10 {
+        1.0
+    } else {
+        sample_count as f64 / 10.0
+    }
+}
+
 fn path_parameters(path: &str) -> Vec<String> {
     let mut params = path
         .split('/')
@@ -417,6 +700,8 @@ fn canonicalize_json(value: Value) -> Value {
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::{CaptureSessionId, RawObservationId, TeamId};
+    use chrono::Utc;
 
     #[test]
     fn canonical_openapi_is_stable_for_shuffled_aggregates() {
@@ -448,6 +733,120 @@ mod tests {
         assert_eq!(input.source_kind, SpecSourceKind::Learned);
         assert_eq!(input.format, SpecFormat::OpenApi3);
         assert!(input.validate().is_ok());
+    }
+
+    #[test]
+    fn grouping_keeps_static_paths_and_detects_id_params() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation(team, session, "GET", "/users/123", "api.example.test"),
+                observation(team, session, "GET", "/users/456", "api.example.test"),
+                observation(team, session, "GET", "/health", "api.example.test"),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let paths = grouped
+            .iter()
+            .map(|endpoint| endpoint.key.path_template.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/health", "/users/{userId}"]);
+    }
+
+    #[test]
+    fn grouping_preserves_low_cardinality_literal_segments() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation(team, session, "GET", "/reports/daily", "api.example.test"),
+                observation(team, session, "GET", "/reports/weekly", "api.example.test"),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let paths = grouped
+            .iter()
+            .map(|endpoint| endpoint.key.path_template.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/reports/daily", "/reports/weekly"]);
+    }
+
+    #[test]
+    fn grouping_keeps_hosts_separate() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation(team, session, "GET", "/users/123", "api.example.test"),
+                observation(team, session, "GET", "/users/123", "admin.example.test"),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let hosts = grouped
+            .iter()
+            .map(|endpoint| endpoint.key.host.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hosts,
+            vec![Some("admin.example.test"), Some("api.example.test")]
+        );
+    }
+
+    #[test]
+    fn grouping_buckets_path_explosion() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation(team, session, "GET", "/alpha", "api.example.test"),
+                observation(team, session, "GET", "/bravo", "api.example.test"),
+                observation(team, session, "GET", "/charlie", "api.example.test"),
+            ],
+            EndpointGroupingConfig {
+                low_cardinality_literal_limit: 3,
+                max_path_templates: 2,
+            },
+        )
+        .expect("group observations");
+
+        let paths = grouped
+            .iter()
+            .map(|endpoint| endpoint.key.path_template.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/_flowplane/outliers/{path}", "/alpha"]);
+    }
+
+    #[test]
+    fn grouping_rejects_mixed_team_observations() {
+        let session = CaptureSessionId::generate();
+        let err = group_observations_by_endpoint(
+            &[
+                observation(
+                    TeamId::generate(),
+                    session,
+                    "GET",
+                    "/users/123",
+                    "api.example.test",
+                ),
+                observation(
+                    TeamId::generate(),
+                    session,
+                    "GET",
+                    "/users/456",
+                    "api.example.test",
+                ),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect_err("mixed teams rejected");
+        assert!(err.message.contains("one team and capture session"));
     }
 
     #[test]
@@ -545,6 +944,38 @@ mod tests {
             request_headers: vec![],
             response_headers: vec![],
             confidence: confidence(),
+        }
+    }
+
+    fn observation(
+        team_id: TeamId,
+        capture_session_id: CaptureSessionId,
+        method: &str,
+        path: &str,
+        host: &str,
+    ) -> RawObservation {
+        let now = Utc::now();
+        RawObservation {
+            id: RawObservationId::generate(),
+            team_id,
+            capture_session_id,
+            request_id: format!("{method}-{path}-{host}"),
+            method: method.into(),
+            path: path.into(),
+            response_status: Some(200),
+            request_headers: serde_json::json!({ "host": host }),
+            response_headers: serde_json::json!({}),
+            request_body: None,
+            response_body: None,
+            request_body_truncated: false,
+            response_body_truncated: false,
+            request_body_bytes: 0,
+            response_body_bytes: 0,
+            metadata_seen: true,
+            body_seen: false,
+            observed_at: now,
+            updated_at: now,
+            created_at: now,
         }
     }
 }
