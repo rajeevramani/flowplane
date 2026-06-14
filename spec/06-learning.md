@@ -44,6 +44,9 @@ immutable snapshot. Deterministic learned specs must not be generated directly f
 - `LearnedSpecCandidate` is the learned OpenAPI candidate before persistence.
 - `LearnedEndpointKey` is sorted by `host`, `method`, and `path_template`; grouping is host-aware
   and method-aware.
+- One learned OpenAPI document cannot contain two endpoints that flatten to the same
+  `(path_template, method)`. Host-distinct collisions must be split into separate learned specs or
+  snapshots before rendering OpenAPI.
 - `LearnedEndpointAggregate` carries request schema, response schemas, learned headers, and
   confidence metadata.
 - `LearnedConfidence` is stable review metadata with score, sample count, body coverage, path
