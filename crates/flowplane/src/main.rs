@@ -131,7 +131,17 @@ enum DbCommand {
     Migrate,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
+    if let Err(err) = run() {
+        if let Some(http) = err.downcast_ref::<cli::output::CliHttpError>() {
+            std::process::exit(http.exit_code());
+        }
+        eprintln!("Error: {err:?}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

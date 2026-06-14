@@ -1,43 +1,114 @@
 use crate::cli::config::{GlobalOptions, OutputFormat};
 use anyhow::{Context, Result};
+use reqwest::StatusCode;
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::fmt;
 use std::fs;
 
+#[derive(Debug)]
+pub(crate) struct CliHttpError {
+    status: StatusCode,
+}
+
+impl CliHttpError {
+    pub(crate) fn exit_code(&self) -> i32 {
+        exit_code_for_status(self.status)
+    }
+}
+
+impl fmt::Display for CliHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "request failed with status {}", self.status)
+    }
+}
+
+impl std::error::Error for CliHttpError {}
+
 pub(crate) fn render_error(
-    status: reqwest::StatusCode,
+    global: &GlobalOptions,
+    status: StatusCode,
     request_id: Option<String>,
     text: &str,
 ) -> anyhow::Error {
-    let parsed: Option<Value> = serde_json::from_str(text).ok();
+    let (envelope, code, message, hint, request_id) = error_envelope(status, request_id, text);
+    if matches!(global.format(), OutputFormat::Json) {
+        match serde_json::to_string_pretty(&envelope) {
+            Ok(json) => eprintln!("{json}"),
+            Err(_) => eprintln!("{}", envelope),
+        }
+    } else {
+        eprintln!("error ({code}): {message}");
+        if let Some(hint) = hint {
+            eprintln!("  -> {hint}");
+        }
+        if let Some(rid) = request_id {
+            eprintln!("  request id: {rid}");
+        }
+    }
+    anyhow::Error::new(CliHttpError { status })
+}
+
+fn error_envelope(
+    status: StatusCode,
+    request_id: Option<String>,
+    text: &str,
+) -> (Value, String, String, Option<String>, Option<String>) {
+    let parsed = serde_json::from_str::<Value>(text).ok();
     let code = parsed
         .as_ref()
         .and_then(|v| v.get("code"))
         .and_then(Value::as_str)
-        .unwrap_or_else(|| status.as_str());
+        .unwrap_or_else(|| status.as_str())
+        .to_string();
     let message = parsed
         .as_ref()
         .and_then(|v| v.get("message"))
         .and_then(Value::as_str)
-        .unwrap_or(text);
+        .unwrap_or(text)
+        .to_string();
     let hint = parsed
         .as_ref()
         .and_then(|v| v.get("hint"))
-        .and_then(Value::as_str);
-    eprintln!("error ({code}): {message}");
-    if let Some(hint) = hint {
-        eprintln!("  -> {hint}");
-    }
-    if let Some(rid) = request_id.or_else(|| {
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let request_id = request_id.or_else(|| {
         parsed
             .as_ref()
             .and_then(|v| v.get("request_id"))
             .and_then(Value::as_str)
             .map(str::to_string)
-    }) {
-        eprintln!("  request id: {rid}");
+    });
+
+    let mut envelope = parsed.unwrap_or_else(|| {
+        serde_json::json!({
+            "code": code,
+            "message": message,
+        })
+    });
+    if let Value::Object(obj) = &mut envelope {
+        obj.entry("code").or_insert(Value::String(code.clone()));
+        obj.entry("message")
+            .or_insert(Value::String(message.clone()));
+        obj.entry("status")
+            .or_insert(Value::Number(status.as_u16().into()));
+        if let Some(rid) = &request_id {
+            obj.entry("request_id")
+                .or_insert(Value::String(rid.clone()));
+        }
     }
-    anyhow::anyhow!("request failed with status {status}")
+    (envelope, code, message, hint, request_id)
+}
+
+pub(crate) fn exit_code_for_status(status: StatusCode) -> i32 {
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => 2,
+        StatusCode::NOT_FOUND | StatusCode::CONFLICT | StatusCode::PRECONDITION_FAILED => 3,
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => 4,
+        StatusCode::TOO_MANY_REQUESTS => 5,
+        s if s.is_server_error() => 6,
+        _ => 1,
+    }
 }
 
 pub(crate) fn render(global: &GlobalOptions, value: &Value) -> Result<()> {
@@ -454,4 +525,52 @@ fn resource_label(value: &Value) -> Option<String> {
                 .and_then(Value::as_str)
                 .map(|id| format!("resource {id}"))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_statuses_map_to_scriptable_exit_codes() {
+        assert_eq!(exit_code_for_status(StatusCode::UNAUTHORIZED), 2);
+        assert_eq!(exit_code_for_status(StatusCode::FORBIDDEN), 2);
+        assert_eq!(exit_code_for_status(StatusCode::NOT_FOUND), 3);
+        assert_eq!(exit_code_for_status(StatusCode::CONFLICT), 3);
+        assert_eq!(exit_code_for_status(StatusCode::BAD_REQUEST), 4);
+        assert_eq!(exit_code_for_status(StatusCode::TOO_MANY_REQUESTS), 5);
+        assert_eq!(exit_code_for_status(StatusCode::INTERNAL_SERVER_ERROR), 6);
+    }
+
+    #[test]
+    fn error_envelope_preserves_server_json_and_request_id_header() {
+        let (value, code, message, hint, request_id) = error_envelope(
+            StatusCode::NOT_FOUND,
+            Some("req-1".into()),
+            r#"{"code":"not_found","message":"missing","hint":"check name"}"#,
+        );
+
+        assert_eq!(code, "not_found");
+        assert_eq!(message, "missing");
+        assert_eq!(hint.as_deref(), Some("check name"));
+        assert_eq!(request_id.as_deref(), Some("req-1"));
+        assert_eq!(value["code"], "not_found");
+        assert_eq!(value["message"], "missing");
+        assert_eq!(value["status"], 404);
+        assert_eq!(value["request_id"], "req-1");
+    }
+
+    #[test]
+    fn error_envelope_wraps_plain_text_failures() {
+        let (value, code, message, hint, request_id) =
+            error_envelope(StatusCode::BAD_GATEWAY, None, "upstream unavailable");
+
+        assert_eq!(code, "502");
+        assert_eq!(message, "upstream unavailable");
+        assert_eq!(hint, None);
+        assert_eq!(request_id, None);
+        assert_eq!(value["code"], "502");
+        assert_eq!(value["message"], "upstream unavailable");
+        assert_eq!(value["status"], 502);
+    }
 }

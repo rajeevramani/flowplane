@@ -71,7 +71,7 @@ impl RestClient {
             .map(str::to_string);
         let text = response.text().await.context("read response body")?;
         if !status.is_success() {
-            return Err(render_error(status, request_id, &text));
+            return Err(render_error(&self.global, status, request_id, &text));
         }
         if text.trim().is_empty() {
             return Ok(None);
@@ -99,7 +99,7 @@ impl RestClient {
             .map(str::to_string);
         let text = response.text().await.context("read response body")?;
         if !status.is_success() {
-            return Err(render_error(status, request_id, &text));
+            return Err(render_error(&self.global, status, request_id, &text));
         }
         if let Some(out) = &self.global.out {
             fs::write(out, &text).with_context(|| format!("write {}", out.display()))?;
@@ -140,7 +140,7 @@ impl RestClient {
             .map(str::to_string);
         let text = response.text().await.context("read response body")?;
         if !status.is_success() {
-            return Err(render_error(status, request_id, &text));
+            return Err(render_error(&self.global, status, request_id, &text));
         }
         if status == reqwest::StatusCode::NO_CONTENT || text.trim().is_empty() {
             if !self.global.quiet {
