@@ -433,7 +433,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           verifies raw observations/body capture/header redaction/counters in Postgres, and then
           continues through restart convergence, cross-team isolation, filters, SDS rotation, and
           advanced parity.
-  - [ ] S8.6 Inference and aggregation v2: v1-inspired JSON schema/path heuristics, but with
+  - [x] S8.6 Inference and aggregation v2: landed via #36-#42; v1-inspired JSON schema/path heuristics, but with
         host-aware endpoint keys, frequency/min-sample required thresholds, header
         allowlist/frequency rules, path-cardinality caps with outlier bucket, confidence that
         does not penalize legitimate optional fields, and deterministic SpecVersion diffs.
