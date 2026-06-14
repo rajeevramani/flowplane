@@ -18,6 +18,7 @@ use fp_domain::{
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgRow;
+use sqlx::types::chrono;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
@@ -1204,6 +1205,21 @@ pub async fn ingest_raw_observation(
     )
     .await?;
     Ok(raw_observation_from_row(&row))
+}
+
+pub async fn delete_expired_raw_observations_for_team(
+    pool: &PgPool,
+    team_id: TeamId,
+    as_of: chrono::DateTime<chrono::Utc>,
+) -> DomainResult<u64> {
+    let result =
+        sqlx::query("DELETE FROM raw_observations WHERE team_id = $1 AND expires_at <= $2")
+            .bind(team_id.as_uuid())
+            .bind(as_of)
+            .execute(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("delete expired raw observations: {e}")))?;
+    Ok(result.rows_affected())
 }
 
 async fn get_capture_session_for_update(
