@@ -410,6 +410,17 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [ ] S8.5 Observation ingest pipeline: bounded sharded merge by `(team, session,
         request_id)`, batched counter updates, body/header redaction, raw observation TTL, and
         health-visible drop accounting so sample counters cannot lie.
+        - [x] S8.5a durable ingest core: `raw_observations` table with composite team/session
+          FKs and TTL, domain `ObservationIngest` validation, storage-level merge by
+          `(team, session, request_id)`, credential/proxy header redaction, byte/path/sample
+          quota enforcement, drop accounting, and counter recalculation from stored rows so
+          accepted sample counts are auditable.
+        - [x] S8.5a tests: real-Postgres storage tests cover redaction, metadata/body merge
+          without double-counting, quota drops without inserting raw rows, and target sample
+          auto-completion.
+        - [ ] S8.5b concrete ALS/ExtProc gRPC handlers: generate/mount Envoy ALS and ExtProc
+          service surfaces on the xDS listener, parse `x-flowplane-*` metadata into the ingest
+          core, continue/fail-open ExtProc, and add an end-to-end capture test.
   - [ ] S8.6 Inference and aggregation v2: v1-inspired JSON schema/path heuristics, but with
         host-aware endpoint keys, frequency/min-sample required thresholds, header
         allowlist/frequency rules, path-cardinality caps with outlier bucket, confidence that

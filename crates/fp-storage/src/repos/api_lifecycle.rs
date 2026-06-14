@@ -1224,7 +1224,7 @@ async fn enforce_observation_quotas(
         sqlx::query_as(
             "SELECT \
                 count(*) FILTER (WHERE request_id <> $3), \
-                COALESCE(sum(request_body_bytes + response_body_bytes) FILTER (WHERE request_id <> $3), 0), \
+                COALESCE(sum(request_body_bytes + response_body_bytes) FILTER (WHERE request_id <> $3), 0)::bigint, \
                 EXISTS(SELECT 1 FROM raw_observations \
                     WHERE team_id = $1 AND capture_session_id = $2 AND path = $4 AND request_id <> $3) \
              FROM raw_observations WHERE team_id = $1 AND capture_session_id = $2",
