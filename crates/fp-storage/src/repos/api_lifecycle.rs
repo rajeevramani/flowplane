@@ -822,16 +822,25 @@ pub async fn get_capture_session(
     team_id: TeamId,
     handle: &str,
 ) -> DomainResult<Option<CaptureSession>> {
-    let id = Uuid::parse_str(handle).ok();
-    let row = sqlx::query(&format!(
-        "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
-         WHERE team_id = $1 AND (name = $2 OR id = $3)"
-    ))
-    .bind(team_id.as_uuid())
-    .bind(handle)
-    .bind(id)
-    .fetch_optional(pool)
-    .await
+    let row = if let Ok(id) = Uuid::parse_str(handle) {
+        sqlx::query(&format!(
+            "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
+             WHERE team_id = $1 AND id = $2"
+        ))
+        .bind(team_id.as_uuid())
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+    } else {
+        sqlx::query(&format!(
+            "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
+             WHERE team_id = $1 AND name = $2"
+        ))
+        .bind(team_id.as_uuid())
+        .bind(handle)
+        .fetch_optional(pool)
+        .await
+    }
     .map_err(|e| DomainError::internal(format!("get learning session: {e}")))?;
     row.as_ref().map(capture_session_from_row).transpose()
 }
@@ -1150,16 +1159,25 @@ async fn get_capture_session_for_update(
     team_id: TeamId,
     handle: &str,
 ) -> DomainResult<CaptureSession> {
-    let id = Uuid::parse_str(handle).ok();
-    let row = sqlx::query(&format!(
-        "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
-         WHERE team_id = $1 AND (name = $2 OR id = $3) FOR UPDATE"
-    ))
-    .bind(team_id.as_uuid())
-    .bind(handle)
-    .bind(id)
-    .fetch_optional(&mut **tx)
-    .await
+    let row = if let Ok(id) = Uuid::parse_str(handle) {
+        sqlx::query(&format!(
+            "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
+             WHERE team_id = $1 AND id = $2 FOR UPDATE"
+        ))
+        .bind(team_id.as_uuid())
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await
+    } else {
+        sqlx::query(&format!(
+            "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
+             WHERE team_id = $1 AND name = $2 FOR UPDATE"
+        ))
+        .bind(team_id.as_uuid())
+        .bind(handle)
+        .fetch_optional(&mut **tx)
+        .await
+    }
     .map_err(|e| DomainError::internal(format!("lock learning session: {e}")))?;
     row.as_ref()
         .map(capture_session_from_row)

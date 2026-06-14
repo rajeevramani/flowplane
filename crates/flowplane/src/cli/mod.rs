@@ -25,7 +25,7 @@ use config::{
     config_path, credentials_path, effective, read_config, write_config, write_private_file,
     NamedContext,
 };
-use output::format_row;
+use output::{format_row, render};
 
 #[cfg(test)]
 use std::collections::BTreeSet;
@@ -124,6 +124,27 @@ fn save_token(token: &str) -> Result<()> {
     let path = credentials_path();
     write_private_file(&path, token)?;
     println!("token saved to {}", path.display());
+    warn_if_current_context_token_overrides_credentials()?;
+    Ok(())
+}
+
+fn warn_if_current_context_token_overrides_credentials() -> Result<()> {
+    let config = read_config()?;
+    let Some(current) = &config.current_context else {
+        return Ok(());
+    };
+    let Some(context) = config.contexts.iter().find(|ctx| &ctx.name == current) else {
+        return Ok(());
+    };
+    if context
+        .token
+        .as_deref()
+        .is_some_and(|token| !token.is_empty())
+    {
+        eprintln!(
+            "warning: current context \"{current}\" has its own token; it takes precedence over saved credentials"
+        );
+    }
     Ok(())
 }
 
@@ -1187,6 +1208,7 @@ pub async fn run_secret(global: GlobalOptions, command: SecretCommand) -> Result
 }
 
 pub async fn run_dataplane(global: GlobalOptions, command: DataplaneCommand) -> Result<()> {
+    let dry_run_global = global.clone();
     let client = RestClient::new(global)?;
     match command {
         DataplaneCommand::List { team } => {
@@ -1272,12 +1294,15 @@ pub async fn run_dataplane(global: GlobalOptions, command: DataplaneCommand) -> 
                 .map(|(key, value)| format!("{key}={}", query_component(&value)))
                 .collect::<Vec<_>>()
                 .join("&");
-            client
-                .request_text(
-                    reqwest::Method::GET,
-                    &format!("/api/v1/teams/{team}/dataplanes/{name}/envoy-config?{query}"),
-                )
-                .await?;
+            let path = format!("/api/v1/teams/{team}/dataplanes/{name}/envoy-config?{query}");
+            if dry_run_global.dry_run {
+                render(
+                    &dry_run_global,
+                    &json!({"method": reqwest::Method::GET.as_str(), "path": path}),
+                )?;
+            } else {
+                client.request_text(reqwest::Method::GET, &path).await?;
+            }
             None
         }
         DataplaneCommand::Cert { command } => return run_cert(client, command).await,

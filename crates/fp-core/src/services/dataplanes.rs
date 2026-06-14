@@ -458,7 +458,7 @@ pub async fn stats_overview(
     request_id: RequestId,
 ) -> DomainResult<TeamStatsOverview> {
     authorize(pool, ctx, Resource::Stats, Action::Read, team, request_id).await?;
-    dataplanes::stats_overview(pool, team.id).await
+    dataplanes::stats_overview(pool, team.id, chrono::Utc::now()).await
 }
 
 fn mutation_audit(

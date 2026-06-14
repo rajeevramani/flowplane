@@ -196,17 +196,11 @@ pub async fn create_api(
         .await
         .map_err(crate::services::db_err("create api: commit"))?;
 
-    let route_binding_count = api_lifecycle::count_route_bindings(pool, team.id, api.id).await?;
-    let tool_count = if latest_spec.is_some() {
-        api_lifecycle::count_api_tools(pool, team.id, api.id).await?
-    } else {
-        tool_count
-    };
     Ok(ApiStatus {
         api,
         latest_spec,
         tool_count,
-        route_binding_count,
+        route_binding_count: if input.route_binding.is_some() { 1 } else { 0 },
     })
 }
 
