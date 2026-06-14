@@ -102,6 +102,20 @@ pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64>
         .map_err(|e| DomainError::internal(format!("count secrets: {e}")))
 }
 
+pub async fn delete_expired_for_team(
+    pool: &PgPool,
+    team_id: TeamId,
+    as_of: chrono::DateTime<chrono::Utc>,
+) -> DomainResult<u64> {
+    let result = sqlx::query("DELETE FROM secrets WHERE team_id = $1 AND expires_at <= $2")
+        .bind(team_id.as_uuid())
+        .bind(as_of)
+        .execute(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete expired secrets: {e}")))?;
+    Ok(result.rows_affected())
+}
+
 pub async fn get_secret(
     pool: &PgPool,
     team_id: TeamId,
