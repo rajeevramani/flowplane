@@ -79,6 +79,40 @@ Confidence metadata is embedded in the learned OpenAPI as the stable vendor exte
 candidate version. S8.7 may copy selected review/publish state into separate tables, but it must not
 mutate the immutable spec content.
 
+## 0.3 V2 S8.7 review and publish lifecycle
+
+Spec content stays immutable. S8.7 must not add candidate/rejected/published columns to
+`spec_versions` or weaken the `forbid_spec_version_update()` trigger.
+
+Lifecycle state is modeled outside the content row:
+
+- `api_definitions.published_spec_version_id` is the single current pointer for an API. It is
+  nullable, same-team, and must reference a `spec_versions` row for the same `api_definition_id`.
+- `spec_version_review_events` is append-only audit state keyed by `spec_version_id`. Events use a
+  closed decision vocabulary: `submitted`, `reviewed`, `rejected`, `published`, `unpublished`.
+  Rows record actor, timestamp, optional reason, and optional machine metadata.
+- Candidate state is not a mutable status. A learned `spec_versions` row with `source_kind =
+  learned` plus a `submitted` event is a candidate until later review events supersede it.
+- Rejecting appends `rejected`; it does not delete or mutate the spec. Rejected specs cannot become
+  the published pointer unless a later explicit review event reopens them.
+- Publishing is one transaction: verify the spec belongs to the API and is not rejected, set
+  `api_definitions.published_spec_version_id`, append `published`, and regenerate `api_tools` from
+  that exact spec version. Previous generated tools for the API are replaced or disabled in the
+  same transaction.
+- Unpublishing clears the pointer, appends `unpublished`, and removes or disables current generated
+  `api_tools`.
+
+REST and CLI expose the same service operations:
+
+- `api spec list/get/diff` show derived lifecycle state and the current published pointer.
+- `api spec review --approve` appends `reviewed`.
+- `api spec reject --reason TEXT` appends `rejected`.
+- `api spec publish VERSION` updates the pointer and regenerates tools.
+- `api spec unpublish` clears the pointer and retires generated tools.
+
+Only the published pointer drives tool regeneration. `source_kind` remains source/type vocabulary
+only; lifecycle is derived from review events plus the API's current published pointer.
+
 ---
 
 ## 1. End-to-end narrative

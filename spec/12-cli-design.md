@@ -136,7 +136,7 @@ SESSION   API      STATE      SAMPLES   ENDPOINTS   CONFIDENCE
 lrn-7f3a  orders   observing  3 214     14          0.87
 $ flowplane api spec list --api orders
 VERSION  STATE      SOURCE     ENDPOINTS  CONFIDENCE  CREATED
-v2       learned    lrn-7f3a   14         0.87        2m ago     ← 2 endpoints not in v1
+v2       candidate  learned    14         0.87        2m ago     ← from lrn-7f3a; 2 endpoints not in v1
 v1       published  imported   12         —           1h ago
 $ flowplane api spec diff orders v1 v2
 + GET /orders/{orderId}/refunds          (new, 412 samples, confidence 0.91)
@@ -145,7 +145,7 @@ $ flowplane api spec diff orders v1 v2
 $ flowplane api spec review orders v2 --approve
 ✓ spec v2 → reviewed
 $ flowplane api spec publish orders v2
-✓ spec v2 → published; 14 MCP tools regenerated (2 new); routes unchanged
+✓ spec v2 → published; current pointer updated; 14 MCP tools regenerated (2 new); routes unchanged
 $ flowplane api status orders
 API     STATE   SPEC  ROUTES SERVED  TOOLS  DATAPLANE ACK
 orders  served  v2    14/14          14     dp-main ✓ (2s ago)
@@ -164,7 +164,7 @@ DISCOVERY  STATE      SAMPLES  CANDIDATE APIS
 active     observing  18 402   2  (billing-internal: 9 endpoints · partners: 4 endpoints)
 $ flowplane api list --origin discovered
 NAME              STATE    SPEC  ENDPOINTS  CONFIDENCE
-billing-internal  learned  v1    9          0.83
+billing-internal  candidate  v1    9          0.83
 $ flowplane api spec review billing-internal v1 --approve
 ✓ spec v1 → reviewed
 $ flowplane route generate --from-spec billing-internal/v1 --port 10003 --dry-run
