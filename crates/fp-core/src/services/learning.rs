@@ -2,9 +2,14 @@
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
-use fp_domain::api_lifecycle::{CaptureSession, CaptureSessionSpec, CaptureSessionStatus};
+use fp_domain::api_lifecycle::{
+    CaptureSession, CaptureSessionSpec, CaptureSessionStatus, SpecVersion,
+};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
+use fp_domain::learning::{
+    group_observations_by_endpoint, EndpointGroupingConfig, LearnedSpecCandidate,
+};
 use fp_domain::{ApiDefinitionId, DomainError, DomainResult, RequestId};
 use fp_storage::repos::{api_lifecycle, audit};
 use sqlx::PgPool;
@@ -178,6 +183,104 @@ pub async fn cancel_session(
         request_id,
     )
     .await
+}
+
+pub async fn create_spec_version_from_session(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    session: &str,
+    request_id: RequestId,
+) -> DomainResult<SpecVersion> {
+    authorize(pool, ctx, Action::Execute, team, request_id).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("learn spec version: begin"))?;
+    let (session_row, observations) =
+        api_lifecycle::completed_capture_session_observations_for_update(&mut tx, team.id, session)
+            .await?;
+    let api_id = session_row.api_definition_id.ok_or_else(|| {
+        DomainError::validation("learning session is not attached to an API definition")
+            .with_hint("start learning with --api or --api-definition-id before generating a spec")
+    })?;
+    if observations.is_empty() {
+        return Err(DomainError::validation(
+            "learning session has no raw observations to aggregate",
+        ));
+    }
+
+    let endpoints =
+        group_observations_by_endpoint(&observations, EndpointGroupingConfig::default())?;
+    let candidate = LearnedSpecCandidate {
+        title: format!("Learned {}", session_row.name),
+        version: format!("learned-{}", session_row.id),
+        endpoints,
+    };
+    let mut input = candidate.spec_version_input()?;
+    add_source_metadata(&mut input.spec, &session_row, api_id);
+    input.validate()?;
+
+    if let Some(existing) =
+        api_lifecycle::find_spec_version_by_content(&mut tx, team.id, api_id, &input).await?
+    {
+        tx.commit().await.map_err(crate::services::db_err(
+            "learn spec version: commit existing",
+        ))?;
+        return Ok(existing);
+    }
+
+    let spec_version = api_lifecycle::create_spec_version(&mut tx, team, api_id, &input).await?;
+    fp_storage::outbox::append(
+        &mut tx,
+        &DomainEvent::SpecVersionCreated {
+            spec_version_id: spec_version.id.as_uuid(),
+            api_definition_id: api_id.as_uuid(),
+            version: spec_version.version,
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "learn.spec_version",
+            format!("learning-sessions/{}", session_row.name),
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("learn spec version: commit"))?;
+    Ok(spec_version)
+}
+
+fn add_source_metadata(
+    spec: &mut serde_json::Value,
+    session: &CaptureSession,
+    api_id: ApiDefinitionId,
+) {
+    if let Some(object) = spec.as_object_mut() {
+        object.insert(
+            "x-flowplane-learning-source".into(),
+            serde_json::json!({
+                "api_definition_id": api_id,
+                "capture_session_id": session.id,
+                "capture_session_name": session.name,
+                "route_config_id": session.route_config_id,
+                "listener_id": session.listener_id,
+                "virtual_host": session.virtual_host,
+                "route": session.route,
+            }),
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

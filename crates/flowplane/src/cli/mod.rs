@@ -1137,6 +1137,19 @@ pub async fn run_learn(global: GlobalOptions, command: LearnCommand) -> Result<(
                 )
                 .await?
         }
+        LearnCommand::GenerateSpec { team, session } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::POST,
+                    &format!(
+                        "/api/v1/teams/{team}/learning-sessions/{}/spec-version",
+                        query_component(&session)
+                    ),
+                    None,
+                )
+                .await?
+        }
         LearnCommand::Cancel { team, session } => {
             let team = client.team(team)?;
             client
@@ -1942,6 +1955,7 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/learning-sessions",
         "/api/v1/teams/{team}/learning-sessions/{session}",
         "/api/v1/teams/{team}/learning-sessions/{session}/stop",
+        "/api/v1/teams/{team}/learning-sessions/{session}/spec-version",
         "/api/v1/teams/{team}/dataplanes",
         "/api/v1/teams/{team}/dataplanes/{name}",
         "/api/v1/teams/{team}/dataplanes/{name}/telemetry",
