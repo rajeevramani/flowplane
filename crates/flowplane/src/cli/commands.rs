@@ -200,6 +200,10 @@ pub enum ApiCommand {
         team: Option<String>,
         name: String,
     },
+    Spec {
+        #[command(subcommand)]
+        command: ApiSpecCommand,
+    },
     Create {
         #[arg(long)]
         team: Option<String>,
@@ -223,6 +227,26 @@ pub enum ApiCommand {
         #[arg(long)]
         team: Option<String>,
         name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ApiSpecCommand {
+    Reject {
+        #[arg(long)]
+        team: Option<String>,
+        api: String,
+        version: i64,
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    Publish {
+        #[arg(long)]
+        team: Option<String>,
+        api: String,
+        version: i64,
+        #[arg(long, default_value = "")]
+        reason: String,
     },
 }
 

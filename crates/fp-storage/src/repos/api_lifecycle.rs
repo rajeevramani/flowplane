@@ -7,13 +7,13 @@ use fp_domain::api_lifecycle::{
     validate_api_name, ApiDefinition, ApiDefinitionSpec, ApiRouteBinding, ApiRouteBindingSpec,
     ApiTool, ApiToolSpec, CaptureSession, CaptureSessionSpec, CaptureSessionStatus, HttpMethod,
     ObservationIngest, RawObservation, RetentionPolicy, RetentionPolicySpec, SpecFormat,
-    SpecSourceKind, SpecVersion, SpecVersionInput,
+    SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput, SpecVersionReviewEvent,
 };
 use fp_domain::authz::TeamRef;
 use fp_domain::{
     ApiDefinitionId, ApiRouteBindingId, ApiToolId, CaptureSessionId, DomainError, DomainResult,
     ErrorCode, ListenerId, RawObservationId, RetentionPolicyId, RouteConfigId, SpecVersionId,
-    TeamId,
+    SpecVersionReviewEventId, TeamId,
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -23,7 +23,7 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 const API_COLUMNS: &str =
-    "id, team_id, name, display_name, description, version, created_at, updated_at";
+    "id, team_id, name, display_name, description, published_spec_version_id, version, created_at, updated_at";
 const BINDING_COLUMNS: &str = "id, team_id, api_definition_id, route_config_id, listener_id, \
     name, virtual_host, route, created_at";
 const SPEC_COLUMNS: &str = "id, team_id, api_definition_id, version, source_kind, format, spec, \
@@ -40,7 +40,19 @@ const RAW_OBSERVATION_COLUMNS: &str = "id, team_id, capture_session_id, request_
     response_status, request_headers, response_headers, request_body, response_body, \
     request_body_truncated, response_body_truncated, request_body_bytes, response_body_bytes, \
     metadata_seen, body_seen, observed_at, updated_at, created_at";
+const REVIEW_EVENT_COLUMNS: &str = "id, team_id, api_definition_id, spec_version_id, decision, \
+    actor_type, actor_id, reason, metadata, created_at";
 const DEFAULT_RAW_OBSERVATION_TTL_DAYS: i32 = 30;
+
+pub struct SpecReviewEventInsert<'a> {
+    pub api_id: ApiDefinitionId,
+    pub spec_version_id: SpecVersionId,
+    pub decision: SpecReviewDecision,
+    pub actor_type: &'a str,
+    pub actor_id: Option<Uuid>,
+    pub reason: &'a str,
+    pub metadata: serde_json::Value,
+}
 
 fn map_unique(e: sqlx::Error, kind: &str, name: &str) -> DomainError {
     if let sqlx::Error::Database(db) = &e {
@@ -101,10 +113,28 @@ fn api_from_row(row: &PgRow) -> ApiDefinition {
         name: row.get("name"),
         display_name: row.get("display_name"),
         description: row.get("description"),
+        published_spec_version_id: row
+            .get::<Option<Uuid>, _>("published_spec_version_id")
+            .map(SpecVersionId::from),
         version: row.get("version"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
+}
+
+fn review_event_from_row(row: &PgRow) -> DomainResult<SpecVersionReviewEvent> {
+    Ok(SpecVersionReviewEvent {
+        id: SpecVersionReviewEventId::from(row.get::<Uuid, _>("id")),
+        team_id: TeamId::from(row.get::<Uuid, _>("team_id")),
+        api_definition_id: ApiDefinitionId::from(row.get::<Uuid, _>("api_definition_id")),
+        spec_version_id: SpecVersionId::from(row.get::<Uuid, _>("spec_version_id")),
+        decision: SpecReviewDecision::parse(&row.get::<String, _>("decision"))?,
+        actor_type: row.get("actor_type"),
+        actor_id: row.get("actor_id"),
+        reason: row.get("reason"),
+        metadata: row.get("metadata"),
+        created_at: row.get("created_at"),
+    })
 }
 
 fn binding_from_row(row: &PgRow) -> ApiRouteBinding {
@@ -686,6 +716,112 @@ pub async fn find_spec_version_by_content(
     .await
     .map_err(|e| DomainError::internal(format!("find spec version by content: {e}")))?;
     row.as_ref().map(spec_from_row).transpose()
+}
+
+pub async fn get_spec_version_for_api_by_version(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    version: i64,
+) -> DomainResult<SpecVersion> {
+    let row = sqlx::query(&format!(
+        "SELECT {SPEC_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 AND version = $3"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(version)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("get spec version: {e}")))?;
+    row.as_ref()
+        .map(spec_from_row)
+        .transpose()?
+        .ok_or_else(|| DomainError::not_found("spec version", &version.to_string()))
+}
+
+pub async fn append_spec_review_event(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    input: SpecReviewEventInsert<'_>,
+) -> DomainResult<SpecVersionReviewEvent> {
+    let row = sqlx::query(&format!(
+        "INSERT INTO spec_version_review_events \
+         (id, team_id, org_id, api_definition_id, spec_version_id, decision, actor_type, actor_id, reason, metadata) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {REVIEW_EVENT_COLUMNS}"
+    ))
+    .bind(SpecVersionReviewEventId::generate().as_uuid())
+    .bind(team.id.as_uuid())
+    .bind(team.org_id.as_uuid())
+    .bind(input.api_id.as_uuid())
+    .bind(input.spec_version_id.as_uuid())
+    .bind(input.decision.as_str())
+    .bind(input.actor_type)
+    .bind(input.actor_id)
+    .bind(input.reason)
+    .bind(input.metadata)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("append spec review event: {e}")))?;
+    review_event_from_row(&row)
+}
+
+pub async fn latest_spec_review_decision(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    spec_version_id: SpecVersionId,
+) -> DomainResult<Option<SpecReviewDecision>> {
+    let decision: Option<String> = sqlx::query_scalar(
+        "SELECT decision FROM spec_version_review_events \
+         WHERE team_id = $1 AND spec_version_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(team_id.as_uuid())
+    .bind(spec_version_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("latest spec review decision: {e}")))?;
+    decision
+        .as_deref()
+        .map(SpecReviewDecision::parse)
+        .transpose()
+}
+
+pub async fn set_published_spec_version(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    spec_version_id: SpecVersionId,
+) -> DomainResult<()> {
+    let rows = sqlx::query(
+        "UPDATE api_definitions \
+         SET published_spec_version_id = $3, version = version + 1, updated_at = now() \
+         WHERE team_id = $1 AND id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(spec_version_id.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("publish spec version: {e}")))?
+    .rows_affected();
+    if rows == 0 {
+        return Err(DomainError::not_found("api", &api_id.to_string()));
+    }
+    Ok(())
+}
+
+pub async fn delete_api_tools_for_api(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+) -> DomainResult<u64> {
+    sqlx::query("DELETE FROM api_tools WHERE team_id = $1 AND api_definition_id = $2")
+        .bind(team_id.as_uuid())
+        .bind(api_id.as_uuid())
+        .execute(&mut **tx)
+        .await
+        .map(|done| done.rows_affected())
+        .map_err(|e| DomainError::internal(format!("delete api tools: {e}")))
 }
 
 pub async fn create_api_tool(

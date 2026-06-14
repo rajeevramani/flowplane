@@ -3,7 +3,7 @@
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::api_lifecycle::{
-    CaptureSession, CaptureSessionSpec, CaptureSessionStatus, SpecVersion,
+    CaptureSession, CaptureSessionSpec, CaptureSessionStatus, SpecReviewDecision, SpecVersion,
 };
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -224,6 +224,7 @@ pub async fn create_spec_version_from_session(
     if let Some(existing) =
         api_lifecycle::find_spec_version_by_content(&mut tx, team.id, api_id, &input).await?
     {
+        submit_spec_if_needed(&mut tx, ctx, team, api_id, existing.id).await?;
         tx.commit().await.map_err(crate::services::db_err(
             "learn spec version: commit existing",
         ))?;
@@ -231,6 +232,7 @@ pub async fn create_spec_version_from_session(
     }
 
     let spec_version = api_lifecycle::create_spec_version(&mut tx, team, api_id, &input).await?;
+    submit_spec_if_needed(&mut tx, ctx, team, api_id, spec_version.id).await?;
     fp_storage::outbox::append(
         &mut tx,
         &DomainEvent::SpecVersionCreated {
@@ -260,6 +262,41 @@ pub async fn create_spec_version_from_session(
         .await
         .map_err(crate::services::db_err("learn spec version: commit"))?;
     Ok(spec_version)
+}
+
+async fn submit_spec_if_needed(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_id: ApiDefinitionId,
+    spec_version_id: fp_domain::SpecVersionId,
+) -> DomainResult<()> {
+    if api_lifecycle::latest_spec_review_decision(tx, team.id, spec_version_id)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let (_, actor_id) = actor_of(ctx);
+    let actor_type = match ctx {
+        PrincipalCtx::User { .. } => "user",
+        PrincipalCtx::Agent { .. } => "agent",
+    };
+    api_lifecycle::append_spec_review_event(
+        tx,
+        team,
+        api_lifecycle::SpecReviewEventInsert {
+            api_id,
+            spec_version_id,
+            decision: SpecReviewDecision::Submitted,
+            actor_type,
+            actor_id,
+            reason: "",
+            metadata: serde_json::json!({}),
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 fn add_source_metadata(
