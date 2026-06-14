@@ -3,6 +3,8 @@
 use anyhow::Context;
 use fp_core::config::{LogFormat, ServerConfig};
 use metrics_exporter_prometheus::PrometheusBuilder;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -61,6 +63,7 @@ pub async fn run() -> anyhow::Result<()> {
     // the outbox consumer, which also feeds certificate revocations to live streams.
     let (xds_shutdown_tx, xds_shutdown_rx) = tokio::sync::watch::channel(false);
     let snapshot_cache = fp_xds::snapshot::SnapshotCache::new();
+    let xds_consumer_failed = Arc::new(AtomicBool::new(false));
     let primed = snapshot_cache
         .prime_all(&pool)
         .await
@@ -74,6 +77,7 @@ pub async fn run() -> anyhow::Result<()> {
         let cache = snapshot_cache.clone();
         let consumer_pool = pool.clone();
         let revocations = revocation_tx.clone();
+        let consumer_failed = xds_consumer_failed.clone();
         xds_tasks.push(tokio::spawn(async move {
             let handler_pool = consumer_pool.clone();
             let result = fp_storage::outbox::run_consumer(
@@ -92,6 +96,7 @@ pub async fn run() -> anyhow::Result<()> {
             )
             .await;
             if let Err(e) = result {
+                consumer_failed.store(true, Ordering::SeqCst);
                 tracing::error!("xds outbox consumer exited with error: {e}");
             }
         }));
@@ -157,6 +162,11 @@ pub async fn run() -> anyhow::Result<()> {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(
             config.tenant_write_limit_per_minute,
         )),
+        xds_readiness: Some(fp_api::state::XdsReadiness {
+            consumer: fp_xds::snapshot::XDS_CONSUMER,
+            max_lag: 0,
+            failed: xds_consumer_failed,
+        }),
     };
     let router = fp_api::build_router(state);
 
