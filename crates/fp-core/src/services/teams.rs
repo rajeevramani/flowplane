@@ -197,9 +197,13 @@ pub async fn add_member(
             DomainError::not_found("user", email)
                 .with_hint("add the user to this organization before adding them to a team")
         })?;
-    identity::add_team_membership(pool, user, team.id).await?;
-    audit::record_best_effort(
-        pool,
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("add team member: begin"))?;
+    identity::add_team_membership_in_tx(&mut tx, user, team.id).await?;
+    audit::record_in_tx(
+        &mut tx,
         &admin_audit(
             ctx,
             request_id,
@@ -209,7 +213,10 @@ pub async fn add_member(
             format!("users/{email}"),
         ),
     )
-    .await;
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("add team member: commit"))?;
     Ok(())
 }
 
@@ -232,14 +239,18 @@ pub async fn remove_member(
 ) -> DomainResult<()> {
     let org_id = require_org_admin(ctx)?;
     require_same_org(team, org_id)?;
-    if !identity::remove_team_membership(pool, user_id, team.id).await? {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("remove team member: begin"))?;
+    if !identity::remove_team_membership_in_tx(&mut tx, user_id, team.id).await? {
         return Err(DomainError::new(
             ErrorCode::NotFound,
             "membership not found",
         ));
     }
-    audit::record_best_effort(
-        pool,
+    audit::record_in_tx(
+        &mut tx,
         &admin_audit(
             ctx,
             request_id,
@@ -249,7 +260,10 @@ pub async fn remove_member(
             format!("users/{user_id}"),
         ),
     )
-    .await;
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("remove team member: commit"))?;
     Ok(())
 }
 
@@ -279,9 +293,13 @@ pub async fn add_grant(
         PrincipalCtx::User { user_id, .. } => Some(*user_id),
         PrincipalCtx::Agent { .. } => None,
     };
-    identity::add_grant(pool, user, org_id, team.id, resource, action, granter).await?;
-    audit::record_best_effort(
-        pool,
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("add grant: begin"))?;
+    identity::add_grant_in_tx(&mut tx, user, org_id, team.id, resource, action, granter).await?;
+    audit::record_in_tx(
+        &mut tx,
         &admin_audit(
             ctx,
             request_id,
@@ -291,7 +309,10 @@ pub async fn add_grant(
             format!("users/{email}:{}:{}", resource.as_str(), action.as_str()),
         ),
     )
-    .await;
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("add grant: commit"))?;
     Ok(())
 }
 
@@ -314,11 +335,15 @@ pub async fn remove_grant(
 ) -> DomainResult<()> {
     let org_id = require_org_admin(ctx)?;
     require_same_org(team, org_id)?;
-    if !identity::delete_grant(pool, team.id, grant_id).await? {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("remove grant: begin"))?;
+    if !identity::delete_grant_in_tx(&mut tx, team.id, grant_id).await? {
         return Err(DomainError::new(ErrorCode::NotFound, "grant not found"));
     }
-    audit::record_best_effort(
-        pool,
+    audit::record_in_tx(
+        &mut tx,
         &admin_audit(
             ctx,
             request_id,
@@ -328,6 +353,9 @@ pub async fn remove_grant(
             format!("grants/{grant_id}"),
         ),
     )
-    .await;
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("remove grant: commit"))?;
     Ok(())
 }

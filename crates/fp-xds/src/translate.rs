@@ -746,7 +746,7 @@ pub fn route_config_to_proto(
         for rule in &vhost.routes {
             routes.push(rt::Route {
                 name: rule.name.clone(),
-                r#match: Some(route_match_proto(rule)),
+                r#match: Some(route_match_proto(rule)?),
                 action: Some(route_action_proto(rule)?),
                 typed_per_filter_config: overrides_to_typed_config(&rule.filter_overrides)?,
                 ..Default::default()
@@ -1564,18 +1564,24 @@ fn cidr_range(cidr: &str) -> core::CidrRange {
 }
 
 /// RouteMatch from a domain route rule.
-fn route_match_proto(rule: &fp_domain::gateway::route_config::RouteRule) -> rt::RouteMatch {
+fn route_match_proto(
+    rule: &fp_domain::gateway::route_config::RouteRule,
+) -> DomainResult<rt::RouteMatch> {
     let path_specifier = route_path_specifier(&rule.matcher);
-    rt::RouteMatch {
+    Ok(rt::RouteMatch {
         path_specifier: Some(path_specifier),
-        headers: rule.headers.iter().map(header_match_to_proto).collect(),
+        headers: rule
+            .headers
+            .iter()
+            .map(header_match_to_proto)
+            .collect::<DomainResult<Vec<_>>>()?,
         query_parameters: rule
             .query_parameters
             .iter()
             .map(query_match_to_proto)
-            .collect(),
+            .collect::<DomainResult<Vec<_>>>()?,
         ..Default::default()
-    }
+    })
 }
 
 fn route_path_specifier(matcher: &PathMatch) -> rt::route_match::PathSpecifier {
@@ -1609,9 +1615,9 @@ fn safe_regex(pattern: &str) -> matcher_type::RegexMatcher {
     }
 }
 
-fn string_match_to_proto(
+fn query_string_match_to_proto(
     matcher: &fp_domain::gateway::route_config::QueryValueMatch,
-) -> matcher_type::StringMatcher {
+) -> DomainResult<matcher_type::StringMatcher> {
     use fp_domain::gateway::route_config::QueryValueMatch;
     let match_pattern = match matcher {
         QueryValueMatch::Exact { value } => {
@@ -1629,17 +1635,21 @@ fn string_match_to_proto(
         QueryValueMatch::Regex { pattern } => {
             matcher_type::string_matcher::MatchPattern::SafeRegex(safe_regex(pattern))
         }
-        QueryValueMatch::Present { .. } => unreachable!("present is not a string matcher"),
+        QueryValueMatch::Present { .. } => {
+            return Err(DomainError::internal(
+                "present query matcher cannot be translated as a string matcher",
+            ));
+        }
     };
-    matcher_type::StringMatcher {
+    Ok(matcher_type::StringMatcher {
         match_pattern: Some(match_pattern),
         ..Default::default()
-    }
+    })
 }
 
 fn header_string_match_to_proto(
     matcher: &fp_domain::gateway::route_config::HeaderValueMatch,
-) -> matcher_type::StringMatcher {
+) -> DomainResult<matcher_type::StringMatcher> {
     use fp_domain::gateway::route_config::HeaderValueMatch;
     let query_equivalent = match matcher {
         HeaderValueMatch::Exact { value } => {
@@ -1667,47 +1677,51 @@ fn header_string_match_to_proto(
                 pattern: pattern.clone(),
             }
         }
-        HeaderValueMatch::Present { .. } => unreachable!("present is not a string matcher"),
+        HeaderValueMatch::Present { .. } => {
+            return Err(DomainError::internal(
+                "present header matcher cannot be translated as a string matcher",
+            ));
+        }
     };
-    string_match_to_proto(&query_equivalent)
+    query_string_match_to_proto(&query_equivalent)
 }
 
 fn header_match_to_proto(
     header: &fp_domain::gateway::route_config::HeaderMatch,
-) -> rt::HeaderMatcher {
+) -> DomainResult<rt::HeaderMatcher> {
     use fp_domain::gateway::route_config::HeaderValueMatch;
     let header_match_specifier = match &header.matcher {
         HeaderValueMatch::Present { value } => {
             rt::header_matcher::HeaderMatchSpecifier::PresentMatch(*value)
         }
         other => rt::header_matcher::HeaderMatchSpecifier::StringMatch(
-            header_string_match_to_proto(other),
+            header_string_match_to_proto(other)?,
         ),
     };
-    rt::HeaderMatcher {
+    Ok(rt::HeaderMatcher {
         name: header.name.clone(),
         invert_match: header.invert_match,
         header_match_specifier: Some(header_match_specifier),
         ..Default::default()
-    }
+    })
 }
 
 fn query_match_to_proto(
     query: &fp_domain::gateway::route_config::QueryParameterMatch,
-) -> rt::QueryParameterMatcher {
+) -> DomainResult<rt::QueryParameterMatcher> {
     use fp_domain::gateway::route_config::QueryValueMatch;
     let query_parameter_match_specifier = match &query.matcher {
         QueryValueMatch::Present { value } => {
             rt::query_parameter_matcher::QueryParameterMatchSpecifier::PresentMatch(*value)
         }
         other => rt::query_parameter_matcher::QueryParameterMatchSpecifier::StringMatch(
-            string_match_to_proto(other),
+            query_string_match_to_proto(other)?,
         ),
     };
-    rt::QueryParameterMatcher {
+    Ok(rt::QueryParameterMatcher {
         name: query.name.clone(),
         query_parameter_match_specifier: Some(query_parameter_match_specifier),
-    }
+    })
 }
 
 fn header_mutation_entry(

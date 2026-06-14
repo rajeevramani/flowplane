@@ -76,11 +76,7 @@ pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()>
         } => {
             let token = match (token, token_stdin, device, pkce) {
                 (Some(token), false, false, false) => token,
-                (None, true, false, false) => {
-                    let mut token = String::new();
-                    io::stdin().read_to_string(&mut token)?;
-                    token.trim().to_string()
-                }
+                (None, true, false, false) => read_token_from_stdin()?,
                 (None, false, true, true) => {
                     anyhow::bail!(
                         "use only one login input: --token, --token-stdin, --device-code, or --pkce"
@@ -129,6 +125,12 @@ fn save_token(token: &str) -> Result<()> {
     write_private_file(&path, token)?;
     println!("token saved to {}", path.display());
     Ok(())
+}
+
+fn read_token_from_stdin() -> Result<String> {
+    let mut token = String::new();
+    io::stdin().read_to_string(&mut token)?;
+    Ok(token.trim().to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -530,7 +532,11 @@ pub fn run_config(_global: GlobalOptions, command: ConfigCommand) -> Result<()> 
             org,
             team,
             token,
+            token_stdin,
         } => {
+            if token.is_some() && token_stdin {
+                anyhow::bail!("use only one token input: --token or --token-stdin");
+            }
             let mut config = read_config()?;
             config.contexts.retain(|ctx| ctx.name != name);
             config.contexts.push(NamedContext {
@@ -538,7 +544,11 @@ pub fn run_config(_global: GlobalOptions, command: ConfigCommand) -> Result<()> 
                 server,
                 org,
                 team,
-                token,
+                token: if token_stdin {
+                    Some(read_token_from_stdin()?)
+                } else {
+                    token
+                },
             });
             config.current_context.get_or_insert(name);
             write_config(&config)?;

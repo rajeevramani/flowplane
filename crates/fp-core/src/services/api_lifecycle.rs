@@ -9,7 +9,7 @@ use fp_domain::api_lifecycle::{
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::identity::NAME_MAX_LEN;
-use fp_domain::{ApiDefinitionId, DomainError, DomainResult, ErrorCode, RequestId};
+use fp_domain::{DomainError, DomainResult, ErrorCode, RequestId};
 use fp_storage::repos::{api_lifecycle, audit};
 use sqlx::PgPool;
 
@@ -438,15 +438,6 @@ fn generated_tool_name(api_name: &str, operation_id: &str) -> String {
         }
     }
     name
-}
-
-#[allow(dead_code)]
-pub async fn get_api_by_id(
-    pool: &PgPool,
-    team: TeamRef,
-    api_id: ApiDefinitionId,
-) -> DomainResult<Option<ApiDefinition>> {
-    api_lifecycle::get_api_definition_by_id(pool, team.id, api_id).await
 }
 
 #[cfg(test)]

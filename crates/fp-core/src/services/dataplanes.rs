@@ -424,6 +424,9 @@ pub async fn record_telemetry(
 ) -> DomainResult<Dataplane> {
     authorize(pool, ctx, Resource::Stats, Action::Update, team, request_id).await?;
     validate_idempotency_key(&telemetry.idempotency_key)?;
+    // Deliberate audit exemption: telemetry heartbeats are high-frequency derived diagnostics,
+    // not operator intent. They are authorized, idempotent, and persisted in dataplane counters;
+    // auditing each heartbeat would drown out human/admin changes.
     dataplanes::record_telemetry(
         pool,
         team.id,

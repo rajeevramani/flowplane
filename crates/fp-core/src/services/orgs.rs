@@ -218,9 +218,13 @@ async fn add_org_member_resolved(
     role: OrgRole,
     request_id: RequestId,
 ) -> DomainResult<()> {
-    identity::add_org_membership(pool, user, org_id, role).await?;
-    audit::record_best_effort(
-        pool,
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("add org member: begin"))?;
+    identity::add_org_membership_in_tx(&mut tx, user, org_id, role).await?;
+    audit::record_in_tx(
+        &mut tx,
         &org_audit(
             ctx,
             request_id,
@@ -229,7 +233,10 @@ async fn add_org_member_resolved(
             format!("users/{actor_label}:{}", role.as_str()),
         ),
     )
-    .await;
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("add org member: commit"))?;
     Ok(())
 }
 
@@ -279,14 +286,18 @@ pub async fn remove_org_member(
                 .with_hint("promote another member to owner first"),
         );
     }
-    if !identity::remove_org_membership(pool, user_id, org_id).await? {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("remove org member: begin"))?;
+    if !identity::remove_org_membership_in_tx(&mut tx, user_id, org_id).await? {
         return Err(DomainError::new(
             ErrorCode::NotFound,
             "membership not found",
         ));
     }
-    audit::record_best_effort(
-        pool,
+    audit::record_in_tx(
+        &mut tx,
         &org_audit(
             ctx,
             request_id,
@@ -295,6 +306,9 @@ pub async fn remove_org_member(
             format!("users/{user_id}"),
         ),
     )
-    .await;
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("remove org member: commit"))?;
     Ok(())
 }

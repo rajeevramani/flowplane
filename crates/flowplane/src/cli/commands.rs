@@ -40,6 +40,8 @@ pub enum ConfigCommand {
         team: Option<String>,
         #[arg(long)]
         token: Option<String>,
+        #[arg(long)]
+        token_stdin: bool,
     },
     UseContext {
         name: String,

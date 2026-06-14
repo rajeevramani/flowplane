@@ -6,7 +6,7 @@ use fp_domain::{
     DomainError, DomainResult, EntityStatus, OrgId, OrgRole, Organization, Team, TeamId, UserId,
 };
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 /// Everything the authorization engine needs about a user principal, loaded in one pass.
@@ -270,6 +270,23 @@ pub async fn add_org_membership(
     org_id: OrgId,
     role: OrgRole,
 ) -> DomainResult<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("add org membership: begin: {e}")))?;
+    add_org_membership_in_tx(&mut tx, user_id, org_id, role).await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("add org membership: commit: {e}")))?;
+    Ok(())
+}
+
+pub async fn add_org_membership_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: UserId,
+    org_id: OrgId,
+    role: OrgRole,
+) -> DomainResult<()> {
     sqlx::query(
         "INSERT INTO org_memberships (id, user_id, org_id, role) VALUES (gen_random_uuid(), $1, $2, $3) \
          ON CONFLICT (user_id, org_id) DO UPDATE SET role = EXCLUDED.role",
@@ -277,7 +294,7 @@ pub async fn add_org_membership(
     .bind(user_id.as_uuid())
     .bind(org_id.as_uuid())
     .bind(role.as_str())
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("add org membership: {e}")))?;
     Ok(())
@@ -285,6 +302,35 @@ pub async fn add_org_membership(
 
 pub async fn add_grant(
     pool: &PgPool,
+    principal_user: UserId,
+    org_id: OrgId,
+    team_id: TeamId,
+    resource: Resource,
+    action: Action,
+    created_by: Option<UserId>,
+) -> DomainResult<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("add grant: begin: {e}")))?;
+    add_grant_in_tx(
+        &mut tx,
+        principal_user,
+        org_id,
+        team_id,
+        resource,
+        action,
+        created_by,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("add grant: commit: {e}")))?;
+    Ok(())
+}
+
+pub async fn add_grant_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
     principal_user: UserId,
     org_id: OrgId,
     team_id: TeamId,
@@ -303,7 +349,7 @@ pub async fn add_grant(
     .bind(resource.as_str())
     .bind(action.as_str())
     .bind(created_by.map(|u| u.as_uuid()))
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| {
         // The composite (team_id, org_id) FK rejects cross-org grants by construction.
@@ -411,13 +457,29 @@ pub async fn add_team_membership(
     user_id: UserId,
     team_id: TeamId,
 ) -> DomainResult<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("add team membership: begin: {e}")))?;
+    add_team_membership_in_tx(&mut tx, user_id, team_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("add team membership: commit: {e}")))?;
+    Ok(())
+}
+
+pub async fn add_team_membership_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: UserId,
+    team_id: TeamId,
+) -> DomainResult<()> {
     sqlx::query(
         "INSERT INTO team_memberships (id, user_id, team_id) \
          VALUES (gen_random_uuid(), $1, $2) ON CONFLICT (user_id, team_id) DO NOTHING",
     )
     .bind(user_id.as_uuid())
     .bind(team_id.as_uuid())
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| {
         if matches!(&e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23503")) {
@@ -458,10 +520,26 @@ pub async fn remove_team_membership(
     user_id: UserId,
     team_id: TeamId,
 ) -> DomainResult<bool> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("remove team membership: begin: {e}")))?;
+    let deleted = remove_team_membership_in_tx(&mut tx, user_id, team_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("remove team membership: commit: {e}")))?;
+    Ok(deleted)
+}
+
+pub async fn remove_team_membership_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: UserId,
+    team_id: TeamId,
+) -> DomainResult<bool> {
     let deleted = sqlx::query("DELETE FROM team_memberships WHERE user_id = $1 AND team_id = $2")
         .bind(user_id.as_uuid())
         .bind(team_id.as_uuid())
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| DomainError::internal(format!("remove team membership: {e}")))?;
     Ok(deleted.rows_affected() > 0)
@@ -494,10 +572,26 @@ pub async fn list_grants_for_team(
 }
 
 pub async fn delete_grant(pool: &PgPool, team_id: TeamId, grant_id: Uuid) -> DomainResult<bool> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("delete grant: begin: {e}")))?;
+    let deleted = delete_grant_in_tx(&mut tx, team_id, grant_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("delete grant: commit: {e}")))?;
+    Ok(deleted)
+}
+
+pub async fn delete_grant_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    grant_id: Uuid,
+) -> DomainResult<bool> {
     let deleted = sqlx::query("DELETE FROM grants WHERE id = $1 AND team_id = $2")
         .bind(grant_id)
         .bind(team_id.as_uuid())
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| DomainError::internal(format!("delete grant: {e}")))?;
     Ok(deleted.rows_affected() > 0)
@@ -690,10 +784,26 @@ pub async fn remove_org_membership(
     user_id: UserId,
     org_id: OrgId,
 ) -> DomainResult<bool> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("remove org membership: begin: {e}")))?;
+    let deleted = remove_org_membership_in_tx(&mut tx, user_id, org_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("remove org membership: commit: {e}")))?;
+    Ok(deleted)
+}
+
+pub async fn remove_org_membership_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: UserId,
+    org_id: OrgId,
+) -> DomainResult<bool> {
     let deleted = sqlx::query("DELETE FROM org_memberships WHERE user_id = $1 AND org_id = $2")
         .bind(user_id.as_uuid())
         .bind(org_id.as_uuid())
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| DomainError::internal(format!("remove org membership: {e}")))?;
     Ok(deleted.rows_affected() > 0)
