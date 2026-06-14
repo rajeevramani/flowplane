@@ -210,13 +210,13 @@ pub async fn trace_rows(
     path: Option<&str>,
     limit: i64,
 ) -> DomainResult<Vec<EventTraceRow>> {
-    let trace_like = trace_id.map(|id| format!("%{id}%"));
+    let trace_like = trace_id.map(like_contains_pattern);
     let path_like = path.map(like_contains_pattern);
     let rows = sqlx::query(
         "SELECT seq, event_type, payload, trace_context, occurred_at \
          FROM events \
          WHERE team_id = $1 \
-           AND ($2::text IS NULL OR trace_context::text LIKE $2) \
+           AND ($2::text IS NULL OR trace_context::text LIKE $2 ESCAPE '\\') \
            AND ($3::text IS NULL OR payload::text ILIKE $3 ESCAPE '\\' OR event_type ILIKE $3 ESCAPE '\\') \
          ORDER BY occurred_at DESC \
          LIMIT $4",
@@ -538,5 +538,6 @@ mod tests {
             like_contains_pattern(r"clusters/%_orders"),
             r"%clusters/\%\_orders%"
         );
+        assert_eq!(like_contains_pattern(r"trace\%_id"), r"%trace\\\%\_id%");
     }
 }

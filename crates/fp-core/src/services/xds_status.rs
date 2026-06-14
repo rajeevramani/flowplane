@@ -15,6 +15,8 @@ const LIVE_HEARTBEAT_SECONDS: i64 = 60;
 const RECENT_NACK_MINUTES: i64 = 15;
 const MIN_TRACE_PATH_QUERY_LEN: usize = 3;
 const MAX_TRACE_PATH_QUERY_LEN: usize = 256;
+const MIN_TRACE_ID_QUERY_LEN: usize = 3;
+const MAX_TRACE_ID_QUERY_LEN: usize = 256;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct XdsCounterTotals {
@@ -162,6 +164,7 @@ pub async fn trace(
         );
     }
     let path = bounded_trace_path(query.path.as_deref())?;
+    let trace_id = bounded_trace_id(query.trace_id.as_deref())?;
     let limit = query.limit.clamp(1, 200);
     let audit = fp_storage::repos::audit::trace_rows(
         pool,
@@ -171,14 +174,9 @@ pub async fn trace(
         limit,
     )
     .await?;
-    let events = fp_storage::outbox::trace_rows(
-        pool,
-        team.id,
-        query.trace_id.as_deref(),
-        path.as_deref(),
-        limit,
-    )
-    .await?;
+    let events =
+        fp_storage::outbox::trace_rows(pool, team.id, trace_id.as_deref(), path.as_deref(), limit)
+            .await?;
     Ok(OpsTrace { audit, events })
 }
 
@@ -199,6 +197,25 @@ fn bounded_trace_path(path: Option<&str>) -> DomainResult<Option<String>> {
         .with_hint("use a request_id or trace_id for exact correlation, or a longer resource/path fragment"));
     }
     Ok(Some(path.to_string()))
+}
+
+fn bounded_trace_id(trace_id: Option<&str>) -> DomainResult<Option<String>> {
+    let Some(trace_id) = trace_id else {
+        return Ok(None);
+    };
+    if trace_id.chars().any(char::is_control) {
+        return Err(DomainError::validation(
+            "trace id search must not contain control characters",
+        ));
+    }
+    let trace_id = trace_id.trim();
+    if trace_id.len() < MIN_TRACE_ID_QUERY_LEN || trace_id.len() > MAX_TRACE_ID_QUERY_LEN {
+        return Err(DomainError::validation(format!(
+            "trace id search must be {MIN_TRACE_ID_QUERY_LEN}-{MAX_TRACE_ID_QUERY_LEN} characters"
+        ))
+        .with_hint("use a request_id for exact correlation, or a longer trace id fragment"));
+    }
+    Ok(Some(trace_id.to_string()))
 }
 
 async fn authorize_read(
@@ -280,5 +297,19 @@ mod tests {
         assert!(bounded_trace_path(Some(&"x".repeat(MAX_TRACE_PATH_QUERY_LEN + 1))).is_err());
         assert!(bounded_trace_path(Some("abc\n")).is_err());
         assert_eq!(bounded_trace_path(None).expect("none"), None);
+    }
+
+    #[test]
+    fn trace_id_search_is_bounded() {
+        assert_eq!(
+            bounded_trace_id(Some("  abc123  "))
+                .expect("valid")
+                .as_deref(),
+            Some("abc123")
+        );
+        assert!(bounded_trace_id(Some("%")).is_err());
+        assert!(bounded_trace_id(Some(&"x".repeat(MAX_TRACE_ID_QUERY_LEN + 1))).is_err());
+        assert!(bounded_trace_id(Some("abc\n")).is_err());
+        assert_eq!(bounded_trace_id(None).expect("none"), None);
     }
 }
