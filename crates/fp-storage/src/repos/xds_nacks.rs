@@ -91,3 +91,17 @@ pub async fn count_recent(pool: &PgPool, team_id: TeamId, minutes: i64) -> Domai
     .await
     .map_err(|e| DomainError::internal(format!("count recent nacks: {e}")))
 }
+
+pub async fn delete_older_than_for_team(
+    pool: &PgPool,
+    team_id: TeamId,
+    older_than: DateTime<Utc>,
+) -> DomainResult<u64> {
+    let result = sqlx::query("DELETE FROM xds_nack_events WHERE team_id = $1 AND created_at < $2")
+        .bind(team_id.as_uuid())
+        .bind(older_than)
+        .execute(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete old xds nacks: {e}")))?;
+    Ok(result.rows_affected())
+}
