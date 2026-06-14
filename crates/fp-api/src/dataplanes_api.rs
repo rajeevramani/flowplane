@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn mtls_bootstrap_validation_requires_concrete_paths() {
-        let err = validate_bootstrap_query(EnvoyConfigQuery {
+        let result = validate_bootstrap_query(EnvoyConfigQuery {
             mode: BootstrapMode::Mtls,
             xds_host: "cp.local".into(),
             xds_port: 18000,
@@ -716,15 +716,17 @@ mod tests {
             cert_path: Some("/cert.pem".into()),
             key_path: Some("/key.pem".into()),
             ca_path: None,
-        })
-        .expect_err("missing ca path must fail validation");
+        });
+        let Err(err) = result else {
+            panic!("missing ca path must fail validation");
+        };
 
         assert!(err.message.contains("ca_path is required"));
     }
 
     #[test]
     fn mtls_bootstrap_validation_returns_non_optional_paths() {
-        let config = validate_bootstrap_query(EnvoyConfigQuery {
+        let result = validate_bootstrap_query(EnvoyConfigQuery {
             mode: BootstrapMode::Mtls,
             xds_host: "cp.local".into(),
             xds_port: 18000,
@@ -732,8 +734,10 @@ mod tests {
             cert_path: Some("/cert.pem".into()),
             key_path: Some("/key.pem".into()),
             ca_path: Some("/ca.pem".into()),
-        })
-        .expect("valid mTLS bootstrap");
+        });
+        let Ok(config) = result else {
+            panic!("valid mTLS bootstrap must pass");
+        };
 
         assert_eq!(
             config.mode,

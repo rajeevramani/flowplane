@@ -39,6 +39,14 @@ pub struct SecretWrite<'a> {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SecretRotate<'a> {
+    pub name: &'a str,
+    pub expected_version: i64,
+    pub spec: SecretSpec,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 pub async fn create_secret(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -136,10 +144,7 @@ pub async fn rotate_secret(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
-    name: &str,
-    expected_version: i64,
-    spec: SecretSpec,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    rotate: SecretRotate<'_>,
     request_id: RequestId,
 ) -> DomainResult<Secret> {
     authorize(
@@ -151,9 +156,9 @@ pub async fn rotate_secret(
         request_id,
     )
     .await?;
-    spec.validate()?;
-    validate_expiry(expires_at)?;
-    let encrypted = encrypt_spec(&spec)?;
+    rotate.spec.validate()?;
+    validate_expiry(rotate.expires_at)?;
+    let encrypted = encrypt_spec(&rotate.spec)?;
 
     let mut tx = pool
         .begin()
@@ -162,13 +167,13 @@ pub async fn rotate_secret(
     let secret = secrets::rotate_secret(
         &mut tx,
         team.id,
-        name,
-        expected_version,
-        spec.secret_type(),
+        rotate.name,
+        rotate.expected_version,
+        rotate.spec.secret_type(),
         &encrypted.ciphertext,
         &encrypted.nonce,
         KEY_ID,
-        expires_at,
+        rotate.expires_at,
     )
     .await?;
     fp_storage::outbox::append(
@@ -191,7 +196,7 @@ pub async fn rotate_secret(
             request_id,
             team,
             "secret.rotate",
-            &format!("secrets/{name}"),
+            &format!("secrets/{}", rotate.name),
         ),
     )
     .await?;

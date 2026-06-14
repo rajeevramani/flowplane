@@ -186,10 +186,12 @@ pub async fn rotate_secret(
             &state.pool,
             &ctx,
             team,
-            &name,
-            revision,
-            parse_spec(body.spec)?,
-            body.expires_at,
+            svc::SecretRotate {
+                name: &name,
+                expected_version: revision,
+                spec: parse_spec(body.spec)?,
+                expires_at: body.expires_at,
+            },
             rid,
         )
         .await
