@@ -83,8 +83,8 @@ pub async fn serve_mtls(
         Some(nack_pool.clone()),
     )
     .into_server();
-    let diagnostics = DiagnosticsService::new(resolver, nack_pool.clone()).into_server();
-    let capture = LearningCaptureService::new(nack_pool.clone());
+    let diagnostics = DiagnosticsService::new(resolver.clone(), nack_pool.clone()).into_server();
+    let capture = LearningCaptureService::new(nack_pool.clone(), resolver);
     tracing::info!(%addr, "xDS ADS server starting (mTLS, certificate-registry binding)");
     tonic::transport::Server::builder()
         .tls_config(tls_config)
@@ -114,7 +114,9 @@ pub async fn serve_plaintext(
     let diagnostics = nack_pool
         .clone()
         .map(|pool| DiagnosticsService::new(resolver.clone(), pool).into_server());
-    let capture = nack_pool.clone().map(LearningCaptureService::new);
+    let capture = nack_pool
+        .clone()
+        .map(|pool| LearningCaptureService::new(pool, resolver.clone()));
     let service = AdsService::new(cache, resolver, revocations, nack_pool).into_server();
     tracing::info!(%addr, "xDS ADS server starting (plaintext dev mode)");
     let builder = tonic::transport::Server::builder().add_service(service);
