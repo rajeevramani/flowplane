@@ -10,9 +10,13 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use base64::Engine as _;
 use envoy_types::pb::google::protobuf::Any;
+use fp_domain::gateway::cluster::{Cluster, ClusterSpec};
+use fp_domain::gateway::listener::{Listener, ListenerSpec};
+use fp_domain::gateway::route_config::{RouteConfig, RouteConfigSpec};
+use fp_domain::{ClusterId, ListenerId, RouteConfigId};
 use fp_domain::{DomainError, DomainResult, SecretSpec, TeamId};
 use prost::Message;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -333,7 +337,10 @@ impl SnapshotCache {
         let teams = fp_storage::repos::gateway::teams_with_gateway_resources(pool).await?;
         let count = teams.len();
         for team_id in teams {
-            self.rebuild_team(pool, team_id).await?;
+            if let Err(err) = self.rebuild_team(pool, team_id).await {
+                metrics::counter!("fp_xds_prime_team_failures_total").increment(1);
+                tracing::error!(team = %team_id, error = %err, "skipping failed xDS prime for team");
+            }
         }
         Ok(count)
     }
@@ -343,24 +350,29 @@ impl SnapshotCache {
     pub async fn rebuild_team(&self, pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
         // Load everything the team owns. The 500-row repo cap is the current ceiling per
         // type; quotas (50/25/100) keep real teams far below it.
-        let (clusters, _) = fp_storage::repos::clusters::list(
-            pool,
-            fp_storage::scope::TeamScope::Team(team_id),
-            500,
-            0,
-        )
-        .await?;
-        let (route_configs, _) =
-            fp_storage::repos::gateway::list_route_configs(pool, team_id, 500, 0).await?;
-        let (listeners, _) =
-            fp_storage::repos::gateway::list_listeners(pool, team_id, 500, 0).await?;
+        let XdsResources {
+            clusters,
+            route_configs,
+            listeners,
+            mut cluster_failures,
+            mut route_failures,
+            mut listener_failures,
+        } = load_xds_resources(pool, team_id).await?;
         let secrets = fp_storage::repos::secrets::list_encrypted_secrets(pool, team_id).await?;
         let capture_plan = learning_capture_plan(pool, team_id, &route_configs).await?;
 
         let mut cluster_named = Vec::with_capacity(clusters.len());
         let mut endpoint_named = Vec::new();
         for cluster in &clusters {
-            let proto = translate::cluster_to_proto(&cluster.name, &cluster.spec)?;
+            let proto = match translate::cluster_to_proto(&cluster.name, &cluster.spec) {
+                Ok(proto) => proto,
+                Err(err) => {
+                    let error = format!("cluster translation failed: {err}");
+                    skip_xds_resource(team_id, "cluster", &cluster.name, &error);
+                    cluster_failures.insert(cluster.name.clone(), error);
+                    continue;
+                }
+            };
             cluster_named.push(NamedResource {
                 name: cluster.name.clone(),
                 any: Any {
@@ -383,12 +395,29 @@ impl SnapshotCache {
         }
         let mut route_named = Vec::with_capacity(route_configs.len());
         for rc in &route_configs {
-            let proto = translate::route_config_to_proto(&rc.name, &rc.spec)?;
+            let proto = match translate::route_config_to_proto(&rc.name, &rc.spec) {
+                Ok(proto) => proto,
+                Err(err) => {
+                    let error = format!("route-config translation failed: {err}");
+                    skip_xds_resource(team_id, "route-config", &rc.name, &error);
+                    route_failures.insert(rc.name.clone(), error);
+                    continue;
+                }
+            };
+            let value = match translate::encode_route_config_deterministic(&proto) {
+                Ok(value) => value,
+                Err(err) => {
+                    let error = format!("route-config translation failed: {err}");
+                    skip_xds_resource(team_id, "route-config", &rc.name, &error);
+                    route_failures.insert(rc.name.clone(), error);
+                    continue;
+                }
+            };
             route_named.push(NamedResource {
                 name: rc.name.clone(),
                 any: Any {
                     type_url: ROUTE_TYPE_URL.to_string(),
-                    value: translate::encode_route_config_deterministic(&proto)?,
+                    value,
                 },
             });
         }
@@ -435,6 +464,17 @@ impl SnapshotCache {
                     "skipping unbound listener in snapshot");
                 continue;
             }
+            if listener
+                .spec
+                .route_config
+                .as_ref()
+                .is_some_and(|name| !route_configs.iter().any(|rc| rc.name == *name))
+            {
+                let error = "listener references an unavailable route config".to_string();
+                skip_xds_resource(team_id, "listener", &listener.name, &error);
+                listener_failures.insert(listener.name.clone(), error);
+                continue;
+            }
             let route_config_id = listener
                 .spec
                 .route_config
@@ -455,11 +495,19 @@ impl SnapshotCache {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let proto = translate::listener_to_proto_with_learning(
+            let proto = match translate::listener_to_proto_with_learning(
                 &listener.name,
                 &listener.spec,
                 &captures,
-            )?;
+            ) {
+                Ok(proto) => proto,
+                Err(err) => {
+                    let error = format!("listener translation failed: {err}");
+                    skip_xds_resource(team_id, "listener", &listener.name, &error);
+                    listener_failures.insert(listener.name.clone(), error);
+                    continue;
+                }
+            };
             listener_named.push(NamedResource {
                 name: listener.name.clone(),
                 any: Any {
@@ -473,14 +521,16 @@ impl SnapshotCache {
         {
             let mut snapshots = self.snapshots.write().await;
             let entry = snapshots.entry(team_id).or_default();
-            for (state, fresh) in [
-                (&mut entry.clusters, cluster_named),
-                (&mut entry.endpoints, endpoint_named),
-                (&mut entry.routes, route_named),
-                (&mut entry.listeners, listener_named),
-            ] {
-                changed |= state.install_raw(fresh);
-            }
+            changed |= entry
+                .clusters
+                .install_raw_with_failures(cluster_named, cluster_failures);
+            changed |= entry.endpoints.install_raw(endpoint_named);
+            changed |= entry
+                .routes
+                .install_raw_with_failures(route_named, route_failures);
+            changed |= entry
+                .listeners
+                .install_raw_with_failures(listener_named, listener_failures);
             changed |= entry
                 .secrets
                 .install_raw_with_failures(secret_named, secret_failures);
@@ -497,6 +547,139 @@ impl SnapshotCache {
         }
         Ok(())
     }
+}
+
+struct XdsResources {
+    clusters: Vec<Cluster>,
+    route_configs: Vec<RouteConfig>,
+    listeners: Vec<Listener>,
+    cluster_failures: HashMap<String, String>,
+    route_failures: HashMap<String, String>,
+    listener_failures: HashMap<String, String>,
+}
+
+async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsResources> {
+    let cluster_rows = sqlx::query(
+        "SELECT id, team_id, name, spec, version, created_at, updated_at \
+         FROM clusters WHERE team_id = $1 ORDER BY name LIMIT 500",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|err| DomainError::internal(format!("list xDS clusters: {err}")))?;
+    let route_rows = sqlx::query(
+        "SELECT id, team_id, name, spec, version, created_at, updated_at \
+         FROM route_configs WHERE team_id = $1 ORDER BY name LIMIT 500",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|err| DomainError::internal(format!("list xDS route configs: {err}")))?;
+    let listener_rows = sqlx::query(
+        "SELECT id, team_id, name, spec, version, created_at, updated_at \
+         FROM listeners WHERE team_id = $1 ORDER BY name LIMIT 500",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|err| DomainError::internal(format!("list xDS listeners: {err}")))?;
+
+    let mut clusters = Vec::with_capacity(cluster_rows.len());
+    let mut cluster_failures = HashMap::new();
+    for row in cluster_rows {
+        let name: String = row.get("name");
+        match cluster_from_xds_row(&row) {
+            Ok(cluster) => clusters.push(cluster),
+            Err(error) => {
+                skip_xds_resource(team_id, "cluster", &name, &error);
+                cluster_failures.insert(name, error);
+            }
+        }
+    }
+
+    let mut route_configs = Vec::with_capacity(route_rows.len());
+    let mut route_failures = HashMap::new();
+    for row in route_rows {
+        let name: String = row.get("name");
+        match route_config_from_xds_row(&row) {
+            Ok(route_config) => route_configs.push(route_config),
+            Err(error) => {
+                skip_xds_resource(team_id, "route-config", &name, &error);
+                route_failures.insert(name, error);
+            }
+        }
+    }
+
+    let mut listeners = Vec::with_capacity(listener_rows.len());
+    let mut listener_failures = HashMap::new();
+    for row in listener_rows {
+        let name: String = row.get("name");
+        match listener_from_xds_row(&row) {
+            Ok(listener) => listeners.push(listener),
+            Err(error) => {
+                skip_xds_resource(team_id, "listener", &name, &error);
+                listener_failures.insert(name, error);
+            }
+        }
+    }
+
+    Ok(XdsResources {
+        clusters,
+        route_configs,
+        listeners,
+        cluster_failures,
+        route_failures,
+        listener_failures,
+    })
+}
+
+fn cluster_from_xds_row(row: &sqlx::postgres::PgRow) -> Result<Cluster, String> {
+    let spec = serde_json::from_value::<ClusterSpec>(row.get::<serde_json::Value, _>("spec"))
+        .map_err(|err| format!("cluster spec in DB does not parse: {err}"))?;
+    Ok(Cluster {
+        id: ClusterId::from(row.get::<uuid::Uuid, _>("id")),
+        team_id: TeamId::from(row.get::<uuid::Uuid, _>("team_id")),
+        name: row.get("name"),
+        spec,
+        version: row.get("version"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+fn route_config_from_xds_row(row: &sqlx::postgres::PgRow) -> Result<RouteConfig, String> {
+    let spec = serde_json::from_value::<RouteConfigSpec>(row.get::<serde_json::Value, _>("spec"))
+        .map_err(|err| format!("route-config spec in DB does not parse: {err}"))?;
+    Ok(RouteConfig {
+        id: RouteConfigId::from(row.get::<uuid::Uuid, _>("id")),
+        team_id: TeamId::from(row.get::<uuid::Uuid, _>("team_id")),
+        name: row.get("name"),
+        spec,
+        version: row.get("version"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+fn listener_from_xds_row(row: &sqlx::postgres::PgRow) -> Result<Listener, String> {
+    let spec = serde_json::from_value::<ListenerSpec>(row.get::<serde_json::Value, _>("spec"))
+        .map_err(|err| format!("listener spec in DB does not parse: {err}"))?;
+    Ok(Listener {
+        id: ListenerId::from(row.get::<uuid::Uuid, _>("id")),
+        team_id: TeamId::from(row.get::<uuid::Uuid, _>("team_id")),
+        name: row.get("name"),
+        spec,
+        version: row.get("version"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+fn skip_xds_resource(team_id: TeamId, kind: &'static str, name: &str, error: &str) {
+    tracing::error!(team = %team_id, resource_kind = kind, resource = %name, error = %error,
+        "skipping invalid resource during xDS rebuild");
+    metrics::counter!("fp_xds_resource_translation_failures_total", "resource_kind" => kind)
+        .increment(1);
 }
 
 async fn learning_capture_plan(
@@ -1136,6 +1319,134 @@ mod tests {
         assert_eq!(degraded[0].type_url, SECRET_TYPE_URL);
         assert_eq!(degraded[0].name, bad_secret.name);
         assert!(degraded[0].error.contains("secret translation failed"));
+    }
+
+    #[tokio::test]
+    async fn malformed_route_config_degrades_without_blocking_rebuild_or_outbox() {
+        let Some((pool, team_a, team_b, ctx_a, ctx_b)) = world().await else {
+            return;
+        };
+        let cache = SnapshotCache::new();
+        let consumer = format!("xds-test-{}", unique("c"));
+        fp_storage::outbox::register_consumer_at_head(&pool, &consumer)
+            .await
+            .expect("register");
+
+        let good_cluster = unique("good-upstream");
+        fp_core::services::clusters::create_cluster(
+            &pool,
+            &ctx_a,
+            team_a,
+            &good_cluster,
+            cluster_spec("10.0.0.1"),
+            RequestId::generate(),
+        )
+        .await
+        .expect("good cluster");
+        let good_route = fp_core::services::gateway::create_route_config(
+            &pool,
+            &ctx_a,
+            team_a,
+            &unique("good-routes"),
+            rc_spec(&good_cluster),
+            RequestId::generate(),
+        )
+        .await
+        .expect("good rc");
+        fp_core::services::gateway::create_listener(
+            &pool,
+            &ctx_a,
+            team_a,
+            &unique("good-edge"),
+            ListenerSpec {
+                address: "0.0.0.0".into(),
+                port: 19210,
+                protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
+                route_config: Some(good_route.name.clone()),
+                tls_context: None,
+                http_filters: Vec::new(),
+                access_logs: Vec::new(),
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("good listener");
+
+        let bad_route_name = unique("bad-routes");
+        {
+            let mut tx = pool.begin().await.expect("tx");
+            let bad_route_id = RouteConfigId::generate();
+            sqlx::query(
+                "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+                 VALUES ($1, $2, $3, $4, '{}'::jsonb)",
+            )
+            .bind(bad_route_id.as_uuid())
+            .bind(team_a.id.as_uuid())
+            .bind(team_a.org_id.as_uuid())
+            .bind(&bad_route_name)
+            .execute(&mut *tx)
+            .await
+            .expect("bad route row");
+            fp_storage::outbox::append(
+                &mut tx,
+                &DomainEvent::RouteConfigUpserted {
+                    route_config_id: bad_route_id.as_uuid(),
+                    name: bad_route_name.clone(),
+                },
+                EventScope {
+                    org_id: Some(team_a.org_id),
+                    team_id: Some(team_a.id),
+                },
+                serde_json::json!({}),
+            )
+            .await
+            .expect("bad route event");
+            tx.commit().await.expect("commit");
+        }
+
+        fp_core::services::clusters::create_cluster(
+            &pool,
+            &ctx_b,
+            team_b,
+            &unique("other"),
+            cluster_spec("10.9.9.9"),
+            RequestId::generate(),
+        )
+        .await
+        .expect("b cluster");
+
+        let processed = fp_storage::outbox::process_batch(&pool, &consumer, 100, |events| {
+            let cache = cache.clone();
+            let pool = pool.clone();
+            async move { handle_events(&cache, &pool, events).await }
+        })
+        .await
+        .expect("malformed route-config must not poison the batch");
+        assert!(processed >= 4);
+
+        let snap_a = cache.team(team_a.id).await;
+        assert_eq!(snap_a.clusters.resources.len(), 1);
+        assert_eq!(snap_a.routes.resources.len(), 1);
+        assert_eq!(snap_a.listeners.resources.len(), 1);
+        let snap_b = cache.team(team_b.id).await;
+        assert_eq!(snap_b.clusters.resources.len(), 1);
+
+        let degraded = cache.degraded(team_a.id).await;
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(degraded[0].type_url, ROUTE_TYPE_URL);
+        assert_eq!(degraded[0].name, bad_route_name);
+        assert!(
+            degraded[0]
+                .error
+                .contains("route-config spec in DB does not parse"),
+            "{:?}",
+            degraded[0]
+        );
+
+        cache
+            .rebuild_team(&pool, team_a.id)
+            .await
+            .expect("direct rebuild also isolates malformed route config");
     }
 
     fn decode_hcm(any: &Any) -> hcm::HttpConnectionManager {

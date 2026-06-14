@@ -62,7 +62,7 @@ async fn insert_route_config(pool: &PgPool, team: TeamRef, name: &str) -> RouteC
     let id = RouteConfigId::generate();
     sqlx::query(
         "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
-         VALUES ($1, $2, $3, $4, '{}'::jsonb)",
+         VALUES ($1, $2, $3, $4, '{\"virtual_hosts\":[]}'::jsonb)",
     )
     .bind(id.as_uuid())
     .bind(team.id.as_uuid())
