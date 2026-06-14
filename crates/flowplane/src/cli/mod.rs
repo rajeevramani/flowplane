@@ -967,6 +967,44 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
                 )
                 .await?
         }
+        ApiCommand::Spec { command } => match command {
+            commands::ApiSpecCommand::Reject {
+                team,
+                api,
+                version,
+                reason,
+            } => {
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::POST,
+                        &format!(
+                            "/api/v1/teams/{team}/api-definitions/{}/specs/{version}/reject",
+                            query_component(&api)
+                        ),
+                        Some(json!({ "reason": reason })),
+                    )
+                    .await?
+            }
+            commands::ApiSpecCommand::Publish {
+                team,
+                api,
+                version,
+                reason,
+            } => {
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::POST,
+                        &format!(
+                            "/api/v1/teams/{team}/api-definitions/{}/specs/{version}/publish",
+                            query_component(&api)
+                        ),
+                        Some(json!({ "reason": reason })),
+                    )
+                    .await?
+            }
+        },
         ApiCommand::Create {
             team,
             name,
@@ -1952,6 +1990,8 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions",
         "/api/v1/teams/{team}/api-definitions/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
         "/api/v1/teams/{team}/learning-sessions",
         "/api/v1/teams/{team}/learning-sessions/{session}",
         "/api/v1/teams/{team}/learning-sessions/{session}/stop",

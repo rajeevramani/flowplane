@@ -19,6 +19,8 @@ pub struct ApiDefinitionView {
     pub name: String,
     pub display_name: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_spec_version_id: Option<uuid::Uuid>,
     pub revision: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -31,6 +33,7 @@ impl From<ApiDefinition> for ApiDefinitionView {
             name: value.name,
             display_name: value.display_name,
             description: value.description,
+            published_spec_version_id: value.published_spec_version_id.map(|id| id.as_uuid()),
             revision: value.version,
             created_at: value.created_at,
             updated_at: value.updated_at,
@@ -55,6 +58,35 @@ pub struct SpecVersionSummary {
     pub format: String,
     pub spec_hash: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PublishSpecView {
+    pub spec: SpecVersionSummary,
+    pub tool_count: i64,
+}
+
+impl From<svc::PublishSpecResult> for PublishSpecView {
+    fn from(value: svc::PublishSpecResult) -> Self {
+        Self {
+            spec: SpecVersionSummary {
+                id: value.spec.id.as_uuid(),
+                version: value.spec.version,
+                source_kind: value.spec.source_kind.as_str().into(),
+                format: value.spec.format.as_str().into(),
+                spec_hash: value.spec.spec_hash,
+                created_at: value.spec.created_at,
+            },
+            tool_count: value.tool_count,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpecReviewBody {
+    #[serde(default)]
+    pub reason: String,
 }
 
 impl From<svc::ApiStatus> for ApiStatusView {
@@ -228,6 +260,92 @@ pub async fn api_status(
     };
     run.await
         .map(|v| Json(ApiStatusView::from(v)))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(post, path = "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ("version" = i64, Path, description = "Spec version"),
+    ),
+    request_body = SpecReviewBody,
+    responses(
+        (status = 200, body = SpecVersionSummary),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 409, body = crate::error::ErrorBody),
+    ))]
+pub async fn reject_spec_version(
+    State(state): State<AppState>,
+    Path((team, name, version)): Path<(String, String, i64)>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    Json(body): Json<SpecReviewBody>,
+) -> Result<Json<SpecVersionSummary>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::reject_spec_version(
+            &state.pool,
+            &ctx,
+            team,
+            svc::SpecReviewInput {
+                api: name,
+                version,
+                reason: body.reason,
+            },
+            rid,
+        )
+        .await
+    };
+    let spec = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(SpecVersionSummary {
+        id: spec.id.as_uuid(),
+        version: spec.version,
+        source_kind: spec.source_kind.as_str().into(),
+        format: spec.format.as_str().into(),
+        spec_hash: spec.spec_hash,
+        created_at: spec.created_at,
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ("version" = i64, Path, description = "Spec version"),
+    ),
+    request_body = SpecReviewBody,
+    responses(
+        (status = 200, body = PublishSpecView),
+        (status = 404, body = crate::error::ErrorBody),
+        (status = 409, body = crate::error::ErrorBody),
+    ))]
+pub async fn publish_spec_version(
+    State(state): State<AppState>,
+    Path((team, name, version)): Path<(String, String, i64)>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    Json(body): Json<SpecReviewBody>,
+) -> Result<Json<PublishSpecView>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::publish_spec_version(
+            &state.pool,
+            &ctx,
+            team,
+            svc::SpecReviewInput {
+                api: name,
+                version,
+                reason: body.reason,
+            },
+            rid,
+        )
+        .await
+    };
+    run.await
+        .map(|v| Json(PublishSpecView::from(v)))
         .map_err(|e| ApiError::new(e, rid))
 }
 

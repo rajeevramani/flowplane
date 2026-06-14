@@ -8,7 +8,8 @@ use fp_core::services::learning::{self as learning_svc, StartLearningSessionInpu
 use fp_core::services::secrets::{self as secret_svc, SecretWrite};
 use fp_core::{GrantSet, PrincipalCtx};
 use fp_domain::api_lifecycle::{
-    ApiDefinitionSpec, ApiToolSpec, CaptureSessionSpec, HttpMethod, SpecSourceKind,
+    ApiDefinitionSpec, ApiToolSpec, CaptureSessionSpec, HttpMethod, SpecFormat, SpecSourceKind,
+    SpecVersionInput,
 };
 use fp_domain::authz::TeamRef;
 use fp_domain::{ErrorCode, OrgRole, RequestId, SecretSpec};
@@ -242,6 +243,14 @@ async fn learned_spec_generation_persists_deterministic_candidate() {
 
     assert_eq!(first.id, second.id);
     assert_eq!(first.source_kind, SpecSourceKind::Learned);
+    let submitted_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM spec_version_review_events WHERE spec_version_id = $1 AND decision = 'submitted'",
+    )
+    .bind(first.id.as_uuid())
+    .fetch_one(&w.pool)
+    .await
+    .expect("submitted event count");
+    assert_eq!(submitted_count, 1);
     assert_eq!(
         first
             .spec
@@ -254,6 +263,27 @@ async fn learned_spec_generation_persists_deterministic_candidate() {
             .pointer("/paths/~1users~1{userId}/get/operationId"),
         Some(&json!("get_users_userId"))
     );
+
+    let other_team = identity::create_team(&w.pool, w.team.org_id, &unique("other-team"), "")
+        .await
+        .expect("other team");
+    let cross_team_err = api_svc::publish_spec_version(
+        &w.pool,
+        &w.admin,
+        TeamRef {
+            id: other_team.id,
+            org_id: w.team.org_id,
+        },
+        api_svc::SpecReviewInput {
+            api: api.api.name.clone(),
+            version: first.version,
+            reason: String::new(),
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("cross-team publish cannot see spec");
+    assert_eq!(cross_team_err.code, ErrorCode::NotFound);
 
     let mut tx = w.pool.begin().await.expect("tool tx");
     let tool = storage_api_lifecycle::create_api_tool(
@@ -275,6 +305,98 @@ async fn learned_spec_generation_persists_deterministic_candidate() {
     .expect("learned tool projection");
     tx.commit().await.expect("tool commit");
     assert_eq!(tool.spec_version_id, first.id);
+
+    let published = api_svc::publish_spec_version(
+        &w.pool,
+        &w.admin,
+        w.team,
+        api_svc::SpecReviewInput {
+            api: api.api.name.clone(),
+            version: first.version,
+            reason: "approved".into(),
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("publish learned spec");
+    assert_eq!(published.spec.id, first.id);
+    assert_eq!(published.tool_count, 1);
+    let tools = storage_api_lifecycle::list_api_tools(&w.pool, w.team.id, api.api.id)
+        .await
+        .expect("published tools");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].spec_version_id, first.id);
+
+    let republished = api_svc::publish_spec_version(
+        &w.pool,
+        &w.admin,
+        w.team,
+        api_svc::SpecReviewInput {
+            api: api.api.name.clone(),
+            version: first.version,
+            reason: "same".into(),
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("republish learned spec");
+    assert_eq!(republished.tool_count, 1);
+    let status = api_svc::api_status(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &api.api.name,
+        RequestId::generate(),
+    )
+    .await
+    .expect("api status");
+    assert_eq!(status.api.published_spec_version_id, Some(first.id));
+
+    let mut tx = w.pool.begin().await.expect("rejected tx");
+    let rejected = storage_api_lifecycle::create_spec_version(
+        &mut tx,
+        w.team,
+        api.api.id,
+        &SpecVersionInput {
+            source_kind: SpecSourceKind::Learned,
+            format: SpecFormat::OpenApi3,
+            spec: json!({
+                "openapi": "3.0.3",
+                "info": {"title": "Rejected", "version": "1"},
+                "paths": {"/orders": {"get": {"operationId": "get_orders"}}}
+            }),
+        },
+    )
+    .await
+    .expect("rejected candidate");
+    tx.commit().await.expect("rejected commit");
+    api_svc::reject_spec_version(
+        &w.pool,
+        &w.admin,
+        w.team,
+        api_svc::SpecReviewInput {
+            api: api.api.name.clone(),
+            version: rejected.version,
+            reason: "bad shape".into(),
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("reject learned spec");
+    let err = api_svc::publish_spec_version(
+        &w.pool,
+        &w.admin,
+        w.team,
+        api_svc::SpecReviewInput {
+            api: api.api.name.clone(),
+            version: rejected.version,
+            reason: String::new(),
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("rejected spec cannot publish");
+    assert_eq!(err.code, ErrorCode::Conflict);
 }
 
 async fn insert_raw_observation(

@@ -100,6 +100,8 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             api_lifecycle_api::delete_api
         ))
         .routes(routes!(api_lifecycle_api::api_status))
+        .routes(routes!(api_lifecycle_api::reject_spec_version))
+        .routes(routes!(api_lifecycle_api::publish_spec_version))
         .routes(routes!(
             learning_api::list_learning_sessions,
             learning_api::start_learning_session

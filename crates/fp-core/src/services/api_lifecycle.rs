@@ -4,7 +4,7 @@ use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::api_lifecycle::{
     ApiDefinition, ApiDefinitionSpec, ApiRouteBindingSpec, ApiToolSpec, HttpMethod, SpecFormat,
-    SpecSourceKind, SpecVersion, SpecVersionInput,
+    SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput,
 };
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -28,6 +28,19 @@ pub struct ApiStatus {
     pub latest_spec: Option<SpecVersion>,
     pub tool_count: i64,
     pub route_binding_count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecReviewInput {
+    pub api: String,
+    pub version: i64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublishSpecResult {
+    pub spec: SpecVersion,
+    pub tool_count: i64,
 }
 
 async fn authorize(
@@ -75,6 +88,13 @@ fn mutation_audit(
         team_id: Some(team.id),
         outcome: audit::Outcome::Success,
         detail: serde_json::json!({}),
+    }
+}
+
+fn actor_type_name(ctx: &PrincipalCtx) -> &'static str {
+    match ctx {
+        PrincipalCtx::User { .. } => "user",
+        PrincipalCtx::Agent { .. } => "agent",
     }
 }
 
@@ -280,6 +300,152 @@ pub async fn delete_api(
         .await
         .map_err(crate::services::db_err("delete api: commit"))?;
     Ok(())
+}
+
+pub async fn reject_spec_version(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    input: SpecReviewInput,
+    request_id: RequestId,
+) -> DomainResult<SpecVersion> {
+    authorize(pool, ctx, Action::Update, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, &input.api)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", &input.api))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("reject spec version: begin"))?;
+    let spec =
+        api_lifecycle::get_spec_version_for_api_by_version(&mut tx, team.id, api.id, input.version)
+            .await?;
+    if spec.source_kind != SpecSourceKind::Learned {
+        return Err(DomainError::validation(
+            "only learned spec versions can be rejected",
+        ));
+    }
+    if api.published_spec_version_id == Some(spec.id) {
+        return Err(DomainError::conflict(
+            "published spec versions cannot be rejected",
+        ));
+    }
+    let (_, actor_id) = actor_of(ctx);
+    api_lifecycle::append_spec_review_event(
+        &mut tx,
+        team,
+        api_lifecycle::SpecReviewEventInsert {
+            api_id: api.id,
+            spec_version_id: spec.id,
+            decision: SpecReviewDecision::Rejected,
+            actor_type: actor_type_name(ctx),
+            actor_id,
+            reason: &input.reason,
+            metadata: serde_json::json!({}),
+        },
+    )
+    .await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "api.spec.reject",
+            format!("apis/{}/specs/{}", api.name, spec.version),
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("reject spec version: commit"))?;
+    Ok(spec)
+}
+
+pub async fn publish_spec_version(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    input: SpecReviewInput,
+    request_id: RequestId,
+) -> DomainResult<PublishSpecResult> {
+    authorize(pool, ctx, Action::Update, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, &input.api)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", &input.api))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("publish spec version: begin"))?;
+    let spec =
+        api_lifecycle::get_spec_version_for_api_by_version(&mut tx, team.id, api.id, input.version)
+            .await?;
+    if spec.source_kind != SpecSourceKind::Learned {
+        return Err(DomainError::validation(
+            "only learned spec versions can be published through the review loop",
+        ));
+    }
+    if api_lifecycle::latest_spec_review_decision(&mut tx, team.id, spec.id).await?
+        == Some(SpecReviewDecision::Rejected)
+    {
+        return Err(DomainError::conflict(
+            "rejected spec versions cannot be published",
+        ));
+    }
+    let tools = tools_from_openapi(&api.name, &spec.spec)?;
+    api_lifecycle::set_published_spec_version(&mut tx, team.id, api.id, spec.id).await?;
+    api_lifecycle::delete_api_tools_for_api(&mut tx, team.id, api.id).await?;
+    for tool in &tools {
+        api_lifecycle::create_api_tool(&mut tx, team, api.id, spec.id, &tool.name, &tool.spec)
+            .await?;
+    }
+    let (_, actor_id) = actor_of(ctx);
+    api_lifecycle::append_spec_review_event(
+        &mut tx,
+        team,
+        api_lifecycle::SpecReviewEventInsert {
+            api_id: api.id,
+            spec_version_id: spec.id,
+            decision: SpecReviewDecision::Published,
+            actor_type: actor_type_name(ctx),
+            actor_id,
+            reason: &input.reason,
+            metadata: serde_json::json!({ "tool_count": tools.len() }),
+        },
+    )
+    .await?;
+    fp_storage::outbox::append(
+        &mut tx,
+        &DomainEvent::ApiToolsGenerated {
+            api_definition_id: api.id.as_uuid(),
+            spec_version_id: spec.id.as_uuid(),
+            count: tools.len(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "api.spec.publish",
+            format!("apis/{}/specs/{}", api.name, spec.version),
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("publish spec version: commit"))?;
+    Ok(PublishSpecResult {
+        spec,
+        tool_count: tools.len() as i64,
+    })
 }
 
 async fn status_for_api(

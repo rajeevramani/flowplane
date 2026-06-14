@@ -7,7 +7,7 @@
 use crate::error::{DomainError, DomainResult};
 use crate::id::{
     ApiDefinitionId, ApiRouteBindingId, ApiToolId, CaptureSessionId, ListenerId, RawObservationId,
-    RetentionPolicyId, RouteConfigId, SpecVersionId, TeamId,
+    RetentionPolicyId, RouteConfigId, SpecVersionId, SpecVersionReviewEventId, TeamId,
 };
 use crate::identity::validate_name;
 use chrono::{DateTime, Utc};
@@ -31,6 +31,7 @@ pub struct ApiDefinition {
     pub name: String,
     pub display_name: String,
     pub description: String,
+    pub published_spec_version_id: Option<SpecVersionId>,
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -164,6 +165,55 @@ pub struct SpecVersion {
     pub format: SpecFormat,
     pub spec: serde_json::Value,
     pub spec_hash: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecReviewDecision {
+    Submitted,
+    Reviewed,
+    Rejected,
+    Published,
+    Unpublished,
+}
+
+impl SpecReviewDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Submitted => "submitted",
+            Self::Reviewed => "reviewed",
+            Self::Rejected => "rejected",
+            Self::Published => "published",
+            Self::Unpublished => "unpublished",
+        }
+    }
+
+    pub fn parse(raw: &str) -> DomainResult<Self> {
+        match raw {
+            "submitted" => Ok(Self::Submitted),
+            "reviewed" => Ok(Self::Reviewed),
+            "rejected" => Ok(Self::Rejected),
+            "published" => Ok(Self::Published),
+            "unpublished" => Ok(Self::Unpublished),
+            other => Err(DomainError::internal(format!(
+                "unknown spec review decision \"{other}\" in database"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpecVersionReviewEvent {
+    pub id: SpecVersionReviewEventId,
+    pub team_id: TeamId,
+    pub api_definition_id: ApiDefinitionId,
+    pub spec_version_id: SpecVersionId,
+    pub decision: SpecReviewDecision,
+    pub actor_type: String,
+    pub actor_id: Option<uuid::Uuid>,
+    pub reason: String,
+    pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
 

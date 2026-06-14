@@ -127,6 +127,10 @@ domain_id!(
     ApiToolId
 );
 domain_id!(
+    /// Identifies one SpecVersion review/publish audit event.
+    SpecVersionReviewEventId
+);
+domain_id!(
     /// Identifies one API observation/spec retention policy.
     RetentionPolicyId
 );
