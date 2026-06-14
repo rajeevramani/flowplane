@@ -5,7 +5,8 @@ Rules recap: v1 at `/tmp/flowplane-v1` (cloud) is read-only reference (clone fro
 `https://github.com/rajeevramani/flowplane.git` if missing). Never port code verbatim. Every
 architectural decision goes in `DECISIONS.md`; founder questions in `QUESTIONS.md` (always with a
 recommendation). Architecture integrity rules live in `spec/14-architecture-integrity.md`.
-Commit+push at every green checkpoint.
+Commit+push at every green checkpoint. GitHub issue fixes follow
+`docs/issue-fix-workflow.md`.
 
 **Checkpoint gates:** stop and notify the founder at end of Phase 0 (review of 08, 08a, 09) and end
 of Phase 1 (architecture + slice plan). Between gates, do not wait.
