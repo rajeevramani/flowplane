@@ -209,6 +209,24 @@ pub struct EnvoyConfigQuery {
     pub ca_path: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BootstrapRenderConfig {
+    mode: BootstrapRenderMode,
+    xds_host: String,
+    xds_port: u16,
+    admin_port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BootstrapRenderMode {
+    Dev,
+    Mtls {
+        cert_path: String,
+        key_path: String,
+        ca_path: String,
+    },
+}
+
 fn default_xds_host() -> String {
     "127.0.0.1".into()
 }
@@ -393,10 +411,10 @@ pub async fn get_envoy_config(
     Extension(rid): Extension<RequestId>,
 ) -> Result<Response, ApiError> {
     let run = async {
-        validate_bootstrap_query(&query)?;
+        let bootstrap = validate_bootstrap_query(query)?;
         let team_ref = resolve_team(&state, &ctx, &team).await?;
         let dataplane = svc::get_dataplane(&state.pool, &ctx, team_ref, &name, rid).await?;
-        Ok::<_, fp_domain::DomainError>(render_envoy_bootstrap(team_ref, &dataplane, &query))
+        Ok::<_, fp_domain::DomainError>(render_envoy_bootstrap(team_ref, &dataplane, &bootstrap))
     };
     let body = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(([(header::CONTENT_TYPE, "text/yaml; charset=utf-8")], body).into_response())
@@ -534,7 +552,7 @@ pub async fn revoke_proxy_certificate(
         .map_err(|e| ApiError::new(e, rid))
 }
 
-fn validate_bootstrap_query(query: &EnvoyConfigQuery) -> Result<(), DomainError> {
+fn validate_bootstrap_query(query: EnvoyConfigQuery) -> Result<BootstrapRenderConfig, DomainError> {
     let name = "xds_host";
     let value = query.xds_host.as_str();
     if value.trim().is_empty() {
@@ -545,43 +563,56 @@ fn validate_bootstrap_query(query: &EnvoyConfigQuery) -> Result<(), DomainError>
             "{name} must not contain control characters"
         )));
     }
-    if matches!(query.mode, BootstrapMode::Mtls) {
-        for (name, value) in [
-            ("cert_path", query.cert_path.as_deref()),
-            ("key_path", query.key_path.as_deref()),
-            ("ca_path", query.ca_path.as_deref()),
-        ] {
-            let Some(value) = value else {
-                return Err(
-                    DomainError::validation(format!("{name} is required when mode=mtls"))
-                        .with_hint("use mode=dev only for local FLOWPLANE_DEV_MODE plaintext xDS"),
-                );
-            };
-            if value.trim().is_empty() {
-                return Err(DomainError::validation(format!("{name} must not be empty")));
-            }
-            if value.chars().any(|c| c.is_control()) {
-                return Err(DomainError::validation(format!(
-                    "{name} must not contain control characters"
-                )));
-            }
-        }
+    let mode = match query.mode {
+        BootstrapMode::Dev => BootstrapRenderMode::Dev,
+        BootstrapMode::Mtls => BootstrapRenderMode::Mtls {
+            cert_path: required_bootstrap_path("cert_path", query.cert_path)?,
+            key_path: required_bootstrap_path("key_path", query.key_path)?,
+            ca_path: required_bootstrap_path("ca_path", query.ca_path)?,
+        },
+    };
+    Ok(BootstrapRenderConfig {
+        mode,
+        xds_host: query.xds_host,
+        xds_port: query.xds_port,
+        admin_port: query.admin_port,
+    })
+}
+
+fn required_bootstrap_path(name: &str, value: Option<String>) -> Result<String, DomainError> {
+    let Some(value) = value else {
+        return Err(
+            DomainError::validation(format!("{name} is required when mode=mtls"))
+                .with_hint("use mode=dev only for local FLOWPLANE_DEV_MODE plaintext xDS"),
+        );
+    };
+    if value.trim().is_empty() {
+        return Err(DomainError::validation(format!("{name} must not be empty")));
     }
-    Ok(())
+    if value.chars().any(|c| c.is_control()) {
+        return Err(DomainError::validation(format!(
+            "{name} must not contain control characters"
+        )));
+    }
+    Ok(value)
 }
 
 fn render_envoy_bootstrap(
     team: TeamRef,
     dataplane: &Dataplane,
-    query: &EnvoyConfigQuery,
+    query: &BootstrapRenderConfig,
 ) -> String {
     let team_id = team.id.as_uuid().to_string();
     let node_id = format!("team={team_id}/dp-{}", dataplane.id.as_uuid());
     let cluster = format!("{team_id}-cluster");
     let dataplane_id = dataplane.id.as_uuid().to_string();
-    let transport_socket = match query.mode {
-        BootstrapMode::Dev => String::new(),
-        BootstrapMode::Mtls => format!(
+    let transport_socket = match &query.mode {
+        BootstrapRenderMode::Dev => String::new(),
+        BootstrapRenderMode::Mtls {
+            cert_path,
+            key_path,
+            ca_path,
+        } => format!(
             r#"      transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
@@ -596,9 +627,9 @@ fn render_envoy_bootstrap(
               trusted_ca:
                 filename: {ca_path}
 "#,
-            cert_path = yaml_quote(query.cert_path.as_deref().unwrap_or_default()),
-            key_path = yaml_quote(query.key_path.as_deref().unwrap_or_default()),
-            ca_path = yaml_quote(query.ca_path.as_deref().unwrap_or_default()),
+            cert_path = yaml_quote(cert_path),
+            key_path = yaml_quote(key_path),
+            ca_path = yaml_quote(ca_path),
         ),
     };
     format!(
@@ -673,5 +704,44 @@ mod tests {
     #[test]
     fn yaml_quote_escapes_double_quotes_and_backslashes() {
         assert_eq!(yaml_quote(r#"a\b"c"#), r#""a\\b\"c""#);
+    }
+
+    #[test]
+    fn mtls_bootstrap_validation_requires_concrete_paths() {
+        let err = validate_bootstrap_query(EnvoyConfigQuery {
+            mode: BootstrapMode::Mtls,
+            xds_host: "cp.local".into(),
+            xds_port: 18000,
+            admin_port: 9901,
+            cert_path: Some("/cert.pem".into()),
+            key_path: Some("/key.pem".into()),
+            ca_path: None,
+        })
+        .expect_err("missing ca path must fail validation");
+
+        assert!(err.message.contains("ca_path is required"));
+    }
+
+    #[test]
+    fn mtls_bootstrap_validation_returns_non_optional_paths() {
+        let config = validate_bootstrap_query(EnvoyConfigQuery {
+            mode: BootstrapMode::Mtls,
+            xds_host: "cp.local".into(),
+            xds_port: 18000,
+            admin_port: 9901,
+            cert_path: Some("/cert.pem".into()),
+            key_path: Some("/key.pem".into()),
+            ca_path: Some("/ca.pem".into()),
+        })
+        .expect("valid mTLS bootstrap");
+
+        assert_eq!(
+            config.mode,
+            BootstrapRenderMode::Mtls {
+                cert_path: "/cert.pem".into(),
+                key_path: "/key.pem".into(),
+                ca_path: "/ca.pem".into(),
+            }
+        );
     }
 }
