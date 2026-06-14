@@ -14,6 +14,23 @@ use sqlx::PgPool;
 const LIVE_HEARTBEAT_SECONDS: i64 = 60;
 const RECENT_NACK_MINUTES: i64 = 15;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct XdsCounterTotals {
+    total_requests: i64,
+    total_errors: i64,
+    warming_failures: i64,
+}
+
+impl XdsCounterTotals {
+    fn add_dataplane(&mut self, dataplane: &Dataplane) {
+        self.total_requests = self.total_requests.saturating_add(dataplane.total_requests);
+        self.total_errors = self.total_errors.saturating_add(dataplane.total_errors);
+        self.warming_failures = self
+            .warming_failures
+            .saturating_add(dataplane.warming_failures);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct XdsStatus {
     pub total_dataplanes: i64,
@@ -93,9 +110,7 @@ pub async fn status(
     let now = chrono::Utc::now();
     let mut live_dataplanes = 0;
     let mut config_verified_dataplanes = 0;
-    let mut total_requests = 0;
-    let mut total_errors = 0;
-    let mut warming_failures = 0;
+    let mut counters = XdsCounterTotals::default();
     let dataplanes = dataplanes
         .into_iter()
         .map(|dataplane| {
@@ -109,9 +124,7 @@ pub async fn status(
             if dataplane.last_config_verify_at.is_some() {
                 config_verified_dataplanes += 1;
             }
-            total_requests += dataplane.total_requests;
-            total_errors += dataplane.total_errors;
-            warming_failures += dataplane.warming_failures;
+            counters.add_dataplane(&dataplane);
             DataplaneXdsStatus { dataplane, live }
         })
         .collect::<Vec<_>>();
@@ -122,9 +135,9 @@ pub async fn status(
         live_dataplanes,
         stale_dataplanes: total_dataplanes - live_dataplanes,
         config_verified_dataplanes,
-        total_requests,
-        total_errors,
-        warming_failures,
+        total_requests: counters.total_requests,
+        total_errors: counters.total_errors,
+        warming_failures: counters.warming_failures,
         recent_nack_count,
         latest_nack,
         dataplanes,
@@ -187,5 +200,49 @@ async fn authorize_read(
             .await;
             Err(deny_to_error(Resource::Stats, Action::Read, reason))
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn dataplane_counters(
+        total_requests: i64,
+        total_errors: i64,
+        warming_failures: i64,
+    ) -> Dataplane {
+        let now = chrono::Utc::now();
+        Dataplane {
+            id: fp_domain::DataplaneId::generate(),
+            team_id: fp_domain::TeamId::generate(),
+            name: "dp".into(),
+            description: String::new(),
+            version: 1,
+            last_heartbeat_at: None,
+            last_config_verify_at: None,
+            total_requests,
+            total_errors,
+            warming_failures,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn xds_counter_totals_saturate_instead_of_overflowing() {
+        let mut counters = XdsCounterTotals::default();
+        counters.add_dataplane(&dataplane_counters(i64::MAX - 1, i64::MAX - 2, 7));
+        counters.add_dataplane(&dataplane_counters(10, 20, i64::MAX));
+
+        assert_eq!(
+            counters,
+            XdsCounterTotals {
+                total_requests: i64::MAX,
+                total_errors: i64::MAX,
+                warming_failures: i64::MAX,
+            }
+        );
     }
 }
