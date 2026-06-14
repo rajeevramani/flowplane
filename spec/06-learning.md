@@ -59,8 +59,12 @@ immutable snapshot. Deterministic learned specs must not be generated directly f
   per-status response schemas from valid JSON, represents mixed types with `oneOf`, and marks object
   fields required only when they meet the min-sample/frequency threshold. Optional sparse fields do
   not reduce confidence by themselves.
+- S8.6d header learning is conservative: structural, auth, volatile tracing/proxy, and
+  infrastructure headers are excluded; only allowlisted safe headers can be documented, and only
+  after meeting min-sample/frequency thresholds. Header value size and learned header count are
+  capped so header floods cannot create unbounded OpenAPI output.
 - `LearnedConfidence` is stable review metadata with score, sample count, body coverage, path
-  cardinality, truncation, and drop signals.
+  cardinality, truncation, and drop signals including dropped header count.
 - `canonical_openapi()` emits OpenAPI 3.1 JSON with deterministic ordering for paths, methods,
   parameters, headers, responses, schemas, and `x-flowplane-learning` metadata.
 - `spec_version_input()` returns `source_kind = learned`, `format = openapi3`, and validates

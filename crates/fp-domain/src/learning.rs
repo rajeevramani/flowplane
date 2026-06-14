@@ -14,6 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const DEFAULT_LEARNED_OUTLIER_PATH: &str = "/_flowplane/outliers/{path}";
 const REQUIRED_FIELD_THRESHOLD: f64 = 0.8;
 const REQUIRED_FIELD_MIN_SAMPLES: u64 = 2;
+const LEARNED_HEADER_THRESHOLD: f64 = 0.5;
+const LEARNED_HEADER_MIN_SAMPLES: u64 = 2;
+const MAX_LEARNED_HEADERS: usize = 16;
+const MAX_LEARNED_HEADER_VALUE_LEN: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -372,6 +376,7 @@ pub struct LearnedConfidence {
     pub body_sample_count: u64,
     pub distinct_path_count: u64,
     pub truncated_body_count: u64,
+    pub dropped_header_count: u64,
     pub dropped_observation_count: u64,
 }
 
@@ -602,6 +607,10 @@ fn endpoint_from_group(
         .iter()
         .filter(|row| row.request_body_truncated || row.response_body_truncated)
         .count() as u64;
+    let (request_headers, dropped_request_headers) = learn_headers(rows, HeaderDirection::Request);
+    let (response_headers, dropped_response_headers) =
+        learn_headers(rows, HeaderDirection::Response);
+    let dropped_header_count = dropped_request_headers.saturating_add(dropped_response_headers);
     LearnedEndpointAggregate {
         key: LearnedEndpointKey {
             host,
@@ -611,10 +620,15 @@ fn endpoint_from_group(
         operation_id: String::new(),
         request_schema,
         response_schemas,
-        request_headers: Vec::new(),
-        response_headers: Vec::new(),
+        request_headers,
+        response_headers,
         confidence: LearnedConfidence {
-            score: endpoint_confidence(rows, body_sample_count, truncated_body_count),
+            score: endpoint_confidence(
+                rows,
+                body_sample_count,
+                truncated_body_count,
+                dropped_header_count,
+            ),
             sample_count: rows.len() as u64,
             body_sample_count,
             distinct_path_count: rows
@@ -623,9 +637,134 @@ fn endpoint_from_group(
                 .collect::<BTreeSet<_>>()
                 .len() as u64,
             truncated_body_count,
+            dropped_header_count,
             dropped_observation_count: 0,
         },
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HeaderDirection {
+    Request,
+    Response,
+}
+
+fn learn_headers(
+    rows: &[&RawObservation],
+    direction: HeaderDirection,
+) -> (Vec<LearnedHeader>, u64) {
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut dropped_count = 0_u64;
+
+    for row in rows {
+        let headers = match direction {
+            HeaderDirection::Request => &row.request_headers,
+            HeaderDirection::Response => &row.response_headers,
+        };
+        let Some(headers) = headers.as_object() else {
+            continue;
+        };
+
+        let mut seen_in_row = BTreeSet::new();
+        for (name, value) in headers {
+            let normalized = name.to_ascii_lowercase();
+            if is_structural_header(&normalized) {
+                continue;
+            }
+            if !is_safe_learned_header(direction, &normalized)
+                || value
+                    .as_str()
+                    .is_none_or(|v| v.len() > MAX_LEARNED_HEADER_VALUE_LEN)
+            {
+                dropped_count = dropped_count.saturating_add(1);
+                continue;
+            }
+            if seen_in_row.insert(normalized.clone()) {
+                counts
+                    .entry(normalized)
+                    .and_modify(|count| *count = count.saturating_add(1))
+                    .or_insert(1);
+            }
+        }
+    }
+
+    let min_count = LEARNED_HEADER_MIN_SAMPLES
+        .max(((rows.len() as f64) * LEARNED_HEADER_THRESHOLD).ceil() as u64);
+    let mut learned = counts
+        .into_iter()
+        .filter(|(_, count)| *count >= min_count)
+        .map(|(name, _)| LearnedHeader { name, schema: None })
+        .collect::<Vec<_>>();
+    if learned.len() > MAX_LEARNED_HEADERS {
+        dropped_count = dropped_count.saturating_add((learned.len() - MAX_LEARNED_HEADERS) as u64);
+        learned.truncate(MAX_LEARNED_HEADERS);
+    }
+
+    (learned, dropped_count)
+}
+
+fn is_structural_header(name: &str) -> bool {
+    matches!(
+        name,
+        "host" | "authority" | ":authority" | ":method" | ":path" | ":scheme"
+    )
+}
+
+fn is_safe_learned_header(direction: HeaderDirection, name: &str) -> bool {
+    if is_blocked_header(name) {
+        return false;
+    }
+    match direction {
+        HeaderDirection::Request => matches!(
+            name,
+            "accept"
+                | "accept-language"
+                | "content-type"
+                | "user-agent"
+                | "x-account"
+                | "x-api-version"
+                | "x-client-version"
+                | "x-requested-with"
+                | "x-tenant"
+        ),
+        HeaderDirection::Response => matches!(
+            name,
+            "cache-control"
+                | "content-type"
+                | "etag"
+                | "location"
+                | "x-ratelimit-limit"
+                | "x-ratelimit-remaining"
+                | "x-ratelimit-reset"
+        ),
+    }
+}
+
+fn is_blocked_header(name: &str) -> bool {
+    matches!(
+        name,
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "x-auth-token"
+            | "x-csrf-token"
+            | "x-session-id"
+            | "connection"
+            | "content-length"
+            | "date"
+            | "server"
+            | "traceparent"
+            | "tracestate"
+            | "transfer-encoding"
+            | "via"
+            | "x-request-id"
+    ) || name.starts_with("x-amzn-")
+        || name.starts_with("x-b3-")
+        || name.starts_with("x-envoy-")
+        || name.starts_with("x-forwarded-")
+        || name.starts_with("x-trace-")
 }
 
 #[derive(Debug, Clone, Default)]
@@ -747,6 +886,7 @@ fn endpoint_confidence(
     rows: &[&RawObservation],
     body_sample_count: u64,
     truncated_body_count: u64,
+    dropped_header_count: u64,
 ) -> f64 {
     let sample_score = (rows.len().min(10) as f64) / 10.0;
     let body_score = if body_sample_count == 0 {
@@ -755,7 +895,11 @@ fn endpoint_confidence(
         body_sample_count as f64 / rows.len() as f64
     };
     let truncation_penalty = truncated_body_count as f64 / rows.len() as f64;
-    ((0.6 * sample_score) + (0.4 * body_score) - (0.3 * truncation_penalty)).clamp(0.0, 1.0)
+    let header_penalty = (dropped_header_count as f64 / rows.len() as f64).min(1.0);
+    ((0.6 * sample_score) + (0.4 * body_score)
+        - (0.3 * truncation_penalty)
+        - (0.1 * header_penalty))
+        .clamp(0.0, 1.0)
 }
 
 fn path_parameters(path: &str) -> Vec<String> {
@@ -1164,6 +1308,125 @@ mod tests {
     }
 
     #[test]
+    fn grouping_excludes_auth_and_volatile_headers() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let mut first = observation(team, session, "GET", "/users", "api.example.test");
+        first.request_headers = serde_json::json!({
+            "host": "api.example.test",
+            "authorization": "Bearer secret",
+            "x-request-id": "req-1",
+            "x-account": "acct_1"
+        });
+        let mut second = observation(team, session, "GET", "/users", "api.example.test");
+        second.request_headers = serde_json::json!({
+            "host": "api.example.test",
+            "Authorization": "Bearer other",
+            "traceparent": "00-00000000000000000000000000000000-0000000000000000-01",
+            "X-Account": "acct_1"
+        });
+
+        let grouped =
+            group_observations_by_endpoint(&[first, second], EndpointGroupingConfig::default())
+                .expect("group observations");
+
+        let endpoint = &grouped[0];
+        assert_eq!(
+            endpoint
+                .request_headers
+                .iter()
+                .map(|header| header.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["x-account"]
+        );
+        assert_eq!(endpoint.confidence.dropped_header_count, 4);
+    }
+
+    #[test]
+    fn grouping_requires_frequency_before_learning_headers() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let mut sparse = observation(team, session, "GET", "/users", "api.example.test");
+        sparse.request_headers = serde_json::json!({
+            "host": "api.example.test",
+            "x-client-version": "2026.06"
+        });
+
+        let grouped = group_observations_by_endpoint(
+            &[
+                sparse,
+                observation(team, session, "GET", "/users", "api.example.test"),
+                observation(team, session, "GET", "/users", "api.example.test"),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        assert!(grouped[0].request_headers.is_empty());
+    }
+
+    #[test]
+    fn grouping_caps_header_output_and_records_flood_drops() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let mut headers =
+            Map::from_iter([("host".into(), Value::String("api.example.test".into()))]);
+        for index in 0..64 {
+            headers.insert(format!("x-noise-{index}"), Value::String("junk".into()));
+        }
+        let mut first = observation(team, session, "GET", "/users", "api.example.test");
+        first.request_headers = Value::Object(headers.clone());
+        let mut second = observation(team, session, "GET", "/users", "api.example.test");
+        second.request_headers = Value::Object(headers);
+
+        let grouped =
+            group_observations_by_endpoint(&[first, second], EndpointGroupingConfig::default())
+                .expect("group observations");
+
+        let endpoint = &grouped[0];
+        assert!(endpoint.request_headers.len() <= MAX_LEARNED_HEADERS);
+        assert_eq!(endpoint.confidence.dropped_header_count, 128);
+        assert!(endpoint.confidence.score < 0.68);
+    }
+
+    #[test]
+    fn grouping_learns_headers_in_deterministic_order() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let mut first = observation(team, session, "GET", "/users", "api.example.test");
+        first.request_headers = serde_json::json!({
+            "host": "api.example.test",
+            "x-tenant": "tenant_1",
+            "accept-language": "en-AU",
+            "content-type": "application/json"
+        });
+        let mut second = observation(team, session, "GET", "/users", "api.example.test");
+        second.request_headers = serde_json::json!({
+            "host": "api.example.test",
+            "Content-Type": "application/json",
+            "Accept-Language": "en-AU",
+            "X-Tenant": "tenant_1"
+        });
+
+        let grouped =
+            group_observations_by_endpoint(&[first, second], EndpointGroupingConfig::default())
+                .expect("group observations");
+
+        assert_eq!(
+            grouped[0]
+                .request_headers
+                .iter()
+                .map(|header| header.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["accept-language", "content-type", "x-tenant"]
+        );
+        let spec = candidate(grouped).canonical_openapi().expect("openapi");
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.find("accept-language").unwrap() < json.find("content-type").unwrap());
+        assert!(json.find("content-type").unwrap() < json.find("x-tenant").unwrap());
+    }
+
+    #[test]
     fn grouping_keeps_hosts_separate() {
         let team = TeamId::generate();
         let session = CaptureSessionId::generate();
@@ -1273,6 +1536,7 @@ mod tests {
             body_sample_count: 10,
             distinct_path_count: 2,
             truncated_body_count: 1,
+            dropped_header_count: 0,
             dropped_observation_count: 0,
         }
     }
