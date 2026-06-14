@@ -544,6 +544,10 @@ pub struct ObservationIngest {
     pub request_body_truncated: bool,
     #[serde(default)]
     pub response_body_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_body_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body_bytes: Option<i64>,
     #[serde(default)]
     pub metadata_seen: bool,
     #[serde(default)]
@@ -612,6 +616,31 @@ impl ObservationIngest {
             return Err(DomainError::validation(
                 "observation bodies must be at most 65536 characters each",
             ));
+        }
+        for (label, reported, body) in [
+            (
+                "request_body_bytes",
+                self.request_body_bytes,
+                self.request_body.as_deref(),
+            ),
+            (
+                "response_body_bytes",
+                self.response_body_bytes,
+                self.response_body.as_deref(),
+            ),
+        ] {
+            if let Some(reported) = reported {
+                if !(0..=1_073_741_824).contains(&reported) {
+                    return Err(DomainError::validation(format!(
+                        "{label} must be between 0 and 1073741824"
+                    )));
+                }
+                if body.is_some_and(|body| reported < body.len() as i64) {
+                    return Err(DomainError::validation(format!(
+                        "{label} cannot be smaller than the stored body"
+                    )));
+                }
+            }
         }
         if !(self.metadata_seen || self.body_seen) {
             return Err(DomainError::validation(

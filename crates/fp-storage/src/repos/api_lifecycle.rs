@@ -238,6 +238,18 @@ fn body_bytes(value: Option<&str>) -> i64 {
     value.map_or(0, |body| body.len() as i64)
 }
 
+fn merged_body_bytes(
+    body: Option<&str>,
+    existing_bytes: Option<i64>,
+    incoming_bytes: Option<i64>,
+) -> i64 {
+    [Some(body_bytes(body)), existing_bytes, incoming_bytes]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(0)
+}
+
 fn sanitize_headers(headers: &Map<String, Value>) -> Value {
     const REDACTED_HEADERS: &[&str] = &[
         "authorization",
@@ -1135,8 +1147,16 @@ pub async fn ingest_raw_observation(
             created_at: input.observed_at,
         },
     };
-    let merged_request_bytes = body_bytes(merged.request_body.as_deref());
-    let merged_response_bytes = body_bytes(merged.response_body.as_deref());
+    let merged_request_bytes = merged_body_bytes(
+        merged.request_body.as_deref(),
+        existing.as_ref().map(|row| row.request_body_bytes),
+        input.request_body_bytes,
+    );
+    let merged_response_bytes = merged_body_bytes(
+        merged.response_body.as_deref(),
+        existing.as_ref().map(|row| row.response_body_bytes),
+        input.response_body_bytes,
+    );
     enforce_observation_quotas(
         tx,
         &session,

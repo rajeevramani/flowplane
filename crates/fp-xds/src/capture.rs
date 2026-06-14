@@ -284,6 +284,8 @@ fn observation_from_access_log(entry: &HttpAccessLogEntry) -> Option<Observation
         response_body: None,
         request_body_truncated: false,
         response_body_truncated: false,
+        request_body_bytes: Some(u64_to_i64(request.request_body_bytes)),
+        response_body_bytes: response.map(|r| u64_to_i64(r.response_body_bytes)),
         metadata_seen: true,
         body_seen: false,
         observed_at: Utc::now(),
@@ -352,10 +354,16 @@ fn base_ext_proc_observation(
         response_body: None,
         request_body_truncated: false,
         response_body_truncated: false,
+        request_body_bytes: None,
+        response_body_bytes: None,
         metadata_seen,
         body_seen,
         observed_at: Utc::now(),
     })
+}
+
+fn u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn headers_from_header_map(headers: Option<&HeaderMap>) -> Map<String, Value> {
@@ -539,11 +547,13 @@ mod tests {
                 request_method: RequestMethod::Post as i32,
                 path: "/orders".into(),
                 request_id: "req-1".into(),
+                request_body_bytes: 123,
                 request_headers: HashMap::from([("authorization".into(), "Bearer secret".into())]),
                 ..Default::default()
             }),
             response: Some(HttpResponseProperties {
                 response_code: Some(UInt32Value { value: 201 }),
+                response_body_bytes: 456,
                 response_headers: HashMap::from([(
                     "content-type".into(),
                     "application/json".into(),
@@ -558,6 +568,8 @@ mod tests {
         assert_eq!(input.method, "POST");
         assert_eq!(input.path, "/orders");
         assert_eq!(input.response_status, Some(201));
+        assert_eq!(input.request_body_bytes, Some(123));
+        assert_eq!(input.response_body_bytes, Some(456));
         assert_eq!(input.request_headers["authorization"], "Bearer secret");
         assert_eq!(input.response_headers["content-type"], "application/json");
         assert!(input.metadata_seen);

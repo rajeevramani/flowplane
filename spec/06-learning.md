@@ -203,6 +203,24 @@ Bidirectional ExtProc stream. Per request:
   a streamed multi-MB body is held in CP memory before truncation (and in Envoy's buffer,
   bounded by the listener's buffer limits).
 
+### 3.4 Raw Observation Size Contract (v2)
+
+`ObservationIngest` separates stored payloads from quota accounting:
+
+- `request_body` and `response_body` are optional captured payload excerpts. They may be
+  truncated before ingest and remain subject to the storage validation cap.
+- `request_body_truncated` and `response_body_truncated` only describe whether the stored
+  payload is incomplete; they do not change byte accounting by themselves.
+- `request_body_bytes` and `response_body_bytes`, when present, are the original L7 body sizes
+  reported by the dataplane before Flowplane truncation. They must be non-negative and cannot be
+  smaller than the stored payload excerpt.
+- Capture-session `max_bytes` accounting uses the larger of the stored payload length, the
+  existing persisted byte count for the request id, and the newly reported original byte count.
+  This makes ALS-before-ExtProc and ExtProc-before-ALS arrival order safe, and prevents truncated
+  payloads from under-counting real traffic volume.
+- If no original size is reported, v2 preserves the compatibility fallback: stored string length
+  is used for byte accounting.
+
 ---
 
 ## 4. Worker pipeline (`src/services/access_log_processor.rs`)
