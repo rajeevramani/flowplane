@@ -437,7 +437,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         host-aware endpoint keys, frequency/min-sample required thresholds, header
         allowlist/frequency rules, path-cardinality caps with outlier bucket, confidence that
         does not penalize legitimate optional fields, and deterministic SpecVersion diffs.
-  - [ ] S8.7 Review/publish loop: learned SpecVersions can be reviewed/rejected/published;
+  - [x] S8.7 Review/publish loop: landed via #42/#43; learned SpecVersions can be reviewed/rejected/published;
         publish regenerates `api_tools` rows from the published spec version and marks
         freshness. Tools remain data only until S11 serving.
   - [ ] S8 exit: config-first E2E from CLI (create/import API → bind route → start learn →
