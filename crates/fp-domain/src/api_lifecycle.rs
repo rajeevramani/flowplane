@@ -90,6 +90,14 @@ impl ApiRouteBindingSpec {
     pub fn validate(&self) -> DomainResult<()> {
         validate_optional_selector("virtual_host", self.virtual_host.as_deref())?;
         validate_optional_selector("route", self.route.as_deref())?;
+        if self.route.is_some() && self.virtual_host.is_none() {
+            return Err(DomainError::validation(
+                "api route binding route selector requires virtual_host",
+            )
+            .with_hint(
+                "set virtual_host with route, or omit both for a route-config-wide binding",
+            ));
+        }
         Ok(())
     }
 }

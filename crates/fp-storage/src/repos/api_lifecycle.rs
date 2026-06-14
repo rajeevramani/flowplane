@@ -74,6 +74,11 @@ fn map_route_binding_write(e: sqlx::Error, name: &str) -> DomainError {
         {
             return unscoped_route_binding_conflict();
         }
+        if db.code().as_deref() == Some("23505")
+            && db.constraint() == Some("idx_api_route_bindings_one_vhost_scope")
+        {
+            return vhost_route_binding_conflict();
+        }
     }
     map_unique(e, "api route binding", name)
 }
@@ -81,6 +86,11 @@ fn map_route_binding_write(e: sqlx::Error, name: &str) -> DomainError {
 fn unscoped_route_binding_conflict() -> DomainError {
     DomainError::conflict("an unscoped api route binding already exists for this route config")
         .with_hint("scope the binding to a virtual host/route or update the existing binding")
+}
+
+fn vhost_route_binding_conflict() -> DomainError {
+    DomainError::conflict("a virtual-host api route binding already exists for this route config")
+        .with_hint("scope the binding to a route or update the existing binding")
 }
 
 fn api_from_row(row: &PgRow) -> ApiDefinition {
