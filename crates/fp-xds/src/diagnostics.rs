@@ -314,11 +314,13 @@ async fn process_report(
         pool,
         team_id,
         bound_dataplane_id,
-        &report.report_id,
-        requests_delta,
-        errors_delta,
-        warming_delta,
-        verified,
+        fp_storage::repos::dataplanes::TelemetryDelta {
+            idempotency_key: &report.report_id,
+            requests_delta,
+            errors_delta,
+            warming_failures_delta: warming_delta,
+            config_verified: verified,
+        },
     )
     .await
     .map_err(|e| Status::internal(e.to_string()))?;

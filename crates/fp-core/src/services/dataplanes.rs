@@ -428,11 +428,13 @@ pub async fn record_telemetry(
         pool,
         team.id,
         name,
-        &telemetry.idempotency_key,
-        telemetry.requests_delta,
-        telemetry.errors_delta,
-        telemetry.warming_failures_delta,
-        telemetry.config_verified,
+        dataplanes::TelemetryDelta {
+            idempotency_key: &telemetry.idempotency_key,
+            requests_delta: telemetry.requests_delta,
+            errors_delta: telemetry.errors_delta,
+            warming_failures_delta: telemetry.warming_failures_delta,
+            config_verified: telemetry.config_verified,
+        },
     )
     .await
 }
