@@ -70,6 +70,24 @@ pub async fn register_consumer(pool: &PgPool, consumer: &str) -> DomainResult<()
     Ok(())
 }
 
+/// Register a consumer cursor at the current event head.
+///
+/// Useful for tests and one-off diagnostic consumers that only want events produced after
+/// registration, not historical residue already present in the database.
+pub async fn register_consumer_at_head(pool: &PgPool, consumer: &str) -> DomainResult<()> {
+    sqlx::query(
+        "INSERT INTO event_cursors (consumer, last_seq) \
+         VALUES ($1, (SELECT coalesce(max(seq), 0) FROM events)) \
+         ON CONFLICT (consumer) DO UPDATE SET \
+           last_seq = EXCLUDED.last_seq, updated_at = now()",
+    )
+    .bind(consumer)
+    .execute(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("outbox: register consumer at head: {e}")))?;
+    Ok(())
+}
+
 /// Process at most one batch for `consumer`. Returns the number of events handled.
 ///
 /// The cursor row is locked (SKIP LOCKED) for the duration: if another replica holds it,
@@ -430,6 +448,41 @@ mod tests {
             0,
             "cursor advanced exactly once"
         );
+    }
+
+    #[tokio::test]
+    async fn register_consumer_at_head_skips_existing_events_only() {
+        let Some(pool) = pool().await else { return };
+        let consumer = unique_consumer();
+        let old = format!("old-{}", unique_consumer());
+        let new = format!("new-{}", unique_consumer());
+
+        append_one(&pool, &old).await;
+        register_consumer_at_head(&pool, &consumer)
+            .await
+            .expect("register at head");
+        append_one(&pool, &new).await;
+
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let seen2 = seen.clone();
+        process_batch(&pool, &consumer, 10_000, |events| {
+            let seen = seen2.clone();
+            async move {
+                let mut guard = seen.lock().unwrap_or_else(|p| p.into_inner());
+                for e in events {
+                    if let DomainEvent::ClusterUpserted { name, .. } = e.event {
+                        guard.push(name);
+                    }
+                }
+                Ok(())
+            }
+        })
+        .await
+        .expect("process");
+
+        let names = seen.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert!(names.contains(&new), "new event is delivered");
+        assert!(!names.contains(&old), "historical event is skipped");
     }
 
     #[tokio::test]

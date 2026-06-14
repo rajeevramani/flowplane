@@ -78,22 +78,11 @@ async fn subscribe_receive_ack_and_live_push() {
         org: Some((org.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };
-    let upstream = unique("upstream");
-    fp_core::services::clusters::create_cluster(
-        &pool,
-        &ctx,
-        team,
-        &upstream,
-        cluster_spec("10.0.0.1"),
-        RequestId::generate(),
-    )
-    .await
-    .expect("cluster");
-
-    // Snapshot cache primed by the outbox consumer.
+    // Snapshot cache primed by the outbox consumer. Start the consumer at the current head
+    // so this test only drains events it creates.
     let cache = SnapshotCache::new();
     let consumer = format!("ads-test-{}", unique("c"));
-    fp_storage::outbox::register_consumer(&pool, &consumer)
+    fp_storage::outbox::register_consumer_at_head(&pool, &consumer)
         .await
         .expect("register");
     let drain = |cache: Arc<SnapshotCache>, pool: sqlx::PgPool, consumer: String| async move {
@@ -107,6 +96,19 @@ async fn subscribe_receive_ack_and_live_push() {
             > 0
         {}
     };
+
+    let upstream = unique("upstream");
+    fp_core::services::clusters::create_cluster(
+        &pool,
+        &ctx,
+        team,
+        &upstream,
+        cluster_spec("10.0.0.1"),
+        RequestId::generate(),
+    )
+    .await
+    .expect("cluster");
+
     drain(cache.clone(), pool.clone(), consumer.clone()).await;
 
     // ADS server on an ephemeral port.
@@ -239,21 +241,9 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
         org: Some((org.id, OrgRole::Admin)),
         grants: GrantSet::default(),
     };
-    let good = unique("good");
-    fp_core::services::clusters::create_cluster(
-        &pool,
-        &ctx,
-        team,
-        &good,
-        cluster_spec("10.0.0.1"),
-        RequestId::generate(),
-    )
-    .await
-    .expect("cluster");
-
     let cache = SnapshotCache::new();
     let consumer = format!("nack-test-{}", unique("c"));
-    fp_storage::outbox::register_consumer(&pool, &consumer)
+    fp_storage::outbox::register_consumer_at_head(&pool, &consumer)
         .await
         .expect("register");
     let drain = |cache: Arc<SnapshotCache>, pool: sqlx::PgPool, consumer: String| async move {
@@ -267,6 +257,19 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
             > 0
         {}
     };
+
+    let good = unique("good");
+    fp_core::services::clusters::create_cluster(
+        &pool,
+        &ctx,
+        team,
+        &good,
+        cluster_spec("10.0.0.1"),
+        RequestId::generate(),
+    )
+    .await
+    .expect("cluster");
+
     drain(cache.clone(), pool.clone(), consumer.clone()).await;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

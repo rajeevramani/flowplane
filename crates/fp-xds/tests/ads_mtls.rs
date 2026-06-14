@@ -389,6 +389,10 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     );
 
     // Revoke; drive the event through the consumer path (publish + snapshot handler).
+    let consumer = unique("mtls-consumer");
+    fp_storage::outbox::register_consumer_at_head(&w.pool, &consumer)
+        .await
+        .expect("register consumer");
     fp_core::services::dataplanes::revoke_certificate(
         &w.pool,
         &w.ctx,
@@ -399,10 +403,6 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     )
     .await
     .expect("revoke");
-    let consumer = unique("mtls-consumer");
-    fp_storage::outbox::register_consumer(&w.pool, &consumer)
-        .await
-        .expect("register consumer");
     while fp_storage::outbox::process_batch(&w.pool, &consumer, 1000, |events| {
         let cache = cache.clone();
         let pool = w.pool.clone();
