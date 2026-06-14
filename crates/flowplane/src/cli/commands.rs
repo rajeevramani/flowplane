@@ -299,6 +299,8 @@ pub enum SecretCommand {
         #[arg(long)]
         team: Option<String>,
         name: String,
+        #[arg(long)]
+        revision: i64,
         #[arg(short, long)]
         file: PathBuf,
     },

@@ -2,7 +2,7 @@
 //! accidentally echo plaintext because this module has no API that returns decrypted values.
 
 use fp_domain::authz::TeamRef;
-use fp_domain::{DomainError, DomainResult, Secret, SecretId, SecretType, TeamId};
+use fp_domain::{DomainError, DomainResult, ErrorCode, Secret, SecretId, SecretType, TeamId};
 use sqlx::postgres::PgRow;
 use sqlx::types::chrono;
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -123,6 +123,7 @@ pub async fn rotate_secret(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
     name: &str,
+    expected_version: i64,
     secret_type: SecretType,
     ciphertext: &[u8],
     nonce: &[u8],
@@ -132,7 +133,7 @@ pub async fn rotate_secret(
     let row = sqlx::query(&format!(
         "UPDATE secrets SET configuration_encrypted = $1, nonce = $2, encryption_key_id = $3, \
             secret_type = $4, expires_at = $5, version = version + 1, updated_at = now() \
-         WHERE team_id = $6 AND name = $7 RETURNING {COLUMNS}"
+         WHERE team_id = $6 AND name = $7 AND version = $8 RETURNING {COLUMNS}"
     ))
     .bind(ciphertext)
     .bind(nonce)
@@ -141,12 +142,31 @@ pub async fn rotate_secret(
     .bind(expires_at)
     .bind(team_id.as_uuid())
     .bind(name)
+    .bind(expected_version)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("rotate secret: {e}")))?;
     match row {
         Some(row) => secret_from_row(&row),
-        None => Err(DomainError::not_found("secret", name)),
+        None => {
+            let current: Option<i64> =
+                sqlx::query_scalar("SELECT version FROM secrets WHERE team_id = $1 AND name = $2")
+                    .bind(team_id.as_uuid())
+                    .bind(name)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(|e| DomainError::internal(format!("rotate secret: recheck: {e}")))?;
+            Err(match current {
+                Some(version) => DomainError::new(
+                    ErrorCode::RevisionMismatch,
+                    format!(
+                        "secret \"{name}\" is at revision {version}, you supplied {expected_version}"
+                    ),
+                )
+                .with_hint("re-read the secret metadata and retry with the current revision"),
+                None => DomainError::not_found("secret", name),
+            })
+        }
     }
 }
 

@@ -933,7 +933,6 @@ async fn proxy_certificate_registry_flow_over_http() {
             })
             .expect("request")
     };
-
     let dataplanes = format!("/api/v1/teams/{}/dataplanes", team.name);
     let dataplane = unique("dp");
     let response = app
@@ -1233,6 +1232,15 @@ async fn secret_values_are_write_only_over_http() {
             })
             .expect("request")
     };
+    let request_with_revision =
+        |method: &str, path: &str, revision: i64, body: Option<serde_json::Value>| {
+            let mut req = request(method, path, body);
+            req.headers_mut().insert(
+                axum::http::header::IF_MATCH,
+                revision.to_string().parse().expect("revision header"),
+            );
+            req
+        };
 
     let base = format!("/api/v1/teams/{}/secrets", team.name);
     let name = unique("secret");
@@ -1280,9 +1288,25 @@ async fn secret_values_are_write_only_over_http() {
         .any(|secret| secret["name"] == name && secret["value_redacted"] == true));
 
     let response = app
-        .oneshot(request(
+        .clone()
+        .oneshot(request_with_revision(
             "POST",
             &format!("{item}/rotate"),
+            99,
+            Some(serde_json::json!({
+                "spec": {"type": "generic_secret", "secret": "d29ybGQ="}
+            })),
+        ))
+        .await
+        .expect("stale rotate secret");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(json_of(response).await["code"], "revision_mismatch");
+
+    let response = app
+        .oneshot(request_with_revision(
+            "POST",
+            &format!("{item}/rotate"),
+            1,
             Some(serde_json::json!({
                 "spec": {"type": "generic_secret", "secret": "d29ybGQ="}
             })),

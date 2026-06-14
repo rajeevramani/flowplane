@@ -1156,13 +1156,19 @@ pub async fn run_secret(global: GlobalOptions, command: SecretCommand) -> Result
                 )
                 .await?
         }
-        SecretCommand::Rotate { team, name, file } => {
+        SecretCommand::Rotate {
+            team,
+            name,
+            revision,
+            file,
+        } => {
             let team = client.team(team)?;
             client
-                .request(
+                .request_with_revision(
                     reqwest::Method::POST,
                     &format!("/api/v1/teams/{team}/secrets/{name}/rotate"),
                     Some(body_from_file(&file)?),
+                    Some(revision),
                 )
                 .await?
         }
