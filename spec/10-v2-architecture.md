@@ -63,8 +63,9 @@ string conventions:
 - **`ApiDefinition`** (team-owned): a named API surface. Origin ∈ {`declared` (operator-created
   routes), `imported` (OpenAPI), `discovered` (traffic-first)}. Owns:
   - **`SpecVersion`s** — immutable versions of the API's schema (source: imported file or
-    aggregation over observations), each carrying lifecycle state and provenance (sample
-    counts, confidence, first/last seen — per element).
+    aggregation over observations). Review/publish lifecycle is separate audit state plus the API's
+    current published-spec pointer; provenance that changes the learned content stays in the spec
+    body.
   - **Gateway bindings** — FKs to the routes/clusters that serve it (a route may exist without
     an ApiDefinition; attaching one is cheap and automatic for `expose`/import/generate paths).
   - **MCP tool set** — generated projection of the *published* SpecVersion; never hand-edited
@@ -79,7 +80,7 @@ Identity: one `domain_id!`-style newtype per entity (UUIDv7 for index locality),
 typed as `TeamId` everywhere. One human handle per resource type (name, unique **per team** —
 fixes 08a §2.2.2), UUID accepted as an alternate key on the API.
 
-### 3.2 Lifecycle state machine (per SpecVersion)
+### 3.2 Lifecycle state machine (per API/spec review)
 
 ```
 observed ──aggregation──▶ learned ──operator review──▶ reviewed ──publish──▶ published ──xDS ACK──▶ served
@@ -87,8 +88,8 @@ observed ──aggregation──▶ learned ──operator review──▶ revie
    └────── discard ◀────────┴──────────── reject ◀────────┘     unpublish ◀─────┘
 ```
 
-- Transitions are domain methods emitting events; illegal transitions are unrepresentable
-  (compile-time enum methods, DB CHECK on state column).
+- Transitions are domain methods emitting append-only review events; illegal transitions are
+  rejected by the service and DB constraints. Spec content rows are never updated.
 - `published` is the only state that generates MCP tools and (traffic-first) route proposals
   → live config. Everything left of `reviewed` is **data, never config** (08a §4.3.1).
 - `served` is asserted by xDS ACK feedback, making "is my API actually live?" a first-class
