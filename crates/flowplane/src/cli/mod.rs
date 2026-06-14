@@ -1422,34 +1422,41 @@ fn query_component(value: &str) -> String {
 }
 
 pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<()> {
-    let manifests = read_apply_manifests(&command.file)?;
+    if command.prune {
+        anyhow::bail!(
+            "apply --prune is not supported yet; apply is additive-only and will not delete \
+             resources removed from the manifest"
+        );
+    }
+    let targets = ordered_apply_targets(read_apply_manifests(&command.file)?)?;
     let client = RestClient::new(global.clone())?;
     let mut diff_lines = Vec::new();
-    for manifest in manifests {
-        let target = apply_target(manifest)?;
-        let team = client.team(target.team.clone())?;
-        let path = format!(
-            "/api/v1/teams/{team}/{}/{}",
-            target.kind.segment(),
-            target.name
-        );
-        let existing = client.get_optional(&path).await?;
+    let mut outcomes = Vec::new();
+    for target in targets {
+        let team = match client.team(target.team.clone()) {
+            Ok(team) => team,
+            Err(e) => {
+                outcomes.push(ApplyOutcome::failed(&target, e));
+                continue;
+            }
+        };
+        let path = resource_path(&team, &target);
+        let existing = match client.get_optional(&path).await {
+            Ok(existing) => existing,
+            Err(e) => {
+                outcomes.push(ApplyOutcome::failed(&target, e));
+                continue;
+            }
+        };
         if command.diff || global.dry_run {
             diff_lines.push(diff_line(&target, existing.as_ref()));
             continue;
         }
-        match existing {
-            None => {
-                client
-                    .request(
-                        reqwest::Method::POST,
-                        &format!("/api/v1/teams/{team}/{}", target.kind.segment()),
-                        Some(target.create_body),
-                    )
-                    .await?;
-            }
-            Some(existing) => apply_existing(&client, &path, target, existing).await?,
-        }
+        let result = match existing {
+            None => create_apply_target(&client, &team, &target).await,
+            Some(existing) => apply_existing(&client, &path, &target, existing).await,
+        };
+        outcomes.push(ApplyOutcome::from_result(&target, result));
     }
     if command.diff || global.dry_run {
         let text = diff_lines.join("\n");
@@ -1458,21 +1465,41 @@ pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<(
         } else if !global.quiet {
             println!("{text}");
         }
+    } else if !global.quiet {
+        print_apply_summary(&outcomes);
+    }
+    let failures = outcomes.iter().filter(|outcome| outcome.failed).count();
+    if failures > 0 {
+        anyhow::bail!("apply failed for {failures} resource(s); see summary above");
     }
     Ok(())
+}
+
+async fn create_apply_target(
+    client: &RestClient,
+    team: &str,
+    target: &ApplyTarget,
+) -> Result<ApplyAction> {
+    client
+        .request(
+            reqwest::Method::POST,
+            &format!("/api/v1/teams/{team}/{}", target.kind.segment()),
+            Some(target.create_body.clone()),
+        )
+        .await?;
+    Ok(ApplyAction::Created)
 }
 
 async fn apply_existing(
     client: &RestClient,
     path: &str,
-    target: ApplyTarget,
+    target: &ApplyTarget,
     existing: Value,
-) -> Result<()> {
+) -> Result<ApplyAction> {
     match target.kind {
         ApplyKind::Cluster | ApplyKind::Listener | ApplyKind::RouteConfig => {
-            if unchanged(&target, &existing) {
-                println!("unchanged {} \"{}\"", target.kind.label(), target.name);
-                return Ok(());
+            if unchanged(target, &existing) {
+                return Ok(ApplyAction::Unchanged);
             }
             let revision = existing.get("revision").and_then(Value::as_i64);
             client
@@ -1483,20 +1510,28 @@ async fn apply_existing(
                     revision,
                 )
                 .await?;
+            Ok(ApplyAction::Updated)
         }
         ApplyKind::Secret => {
+            if !target.rotate_secret {
+                return Ok(ApplyAction::Skipped(
+                    "write-only; set rotate:true to rotate existing secret".into(),
+                ));
+            }
+            let revision = existing.get("revision").and_then(Value::as_i64);
             client
-                .request(
+                .request_with_revision(
                     reqwest::Method::POST,
                     &format!("{path}/rotate"),
                     Some(target.update_body()?),
+                    revision,
                 )
                 .await?;
+            Ok(ApplyAction::Rotated)
         }
         ApplyKind::Dataplane => {
-            if unchanged(&target, &existing) {
-                println!("unchanged {} \"{}\"", target.kind.label(), target.name);
-                return Ok(());
+            if unchanged(target, &existing) {
+                return Ok(ApplyAction::Unchanged);
             }
             anyhow::bail!(
                 "dataplane \"{}\" exists and cannot be updated by the current API",
@@ -1504,7 +1539,107 @@ async fn apply_existing(
             );
         }
     }
-    Ok(())
+}
+
+fn resource_path(team: &str, target: &ApplyTarget) -> String {
+    format!(
+        "/api/v1/teams/{team}/{}/{}",
+        target.kind.segment(),
+        target.name
+    )
+}
+
+fn ordered_apply_targets(manifests: Vec<Value>) -> Result<Vec<ApplyTarget>> {
+    let mut targets = manifests
+        .into_iter()
+        .enumerate()
+        .map(|(index, manifest)| {
+            let target = apply_target(manifest)?;
+            Ok((target.kind.order(), index, target))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    targets.sort_by_key(|(order, index, _)| (*order, *index));
+    Ok(targets.into_iter().map(|(_, _, target)| target).collect())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ApplyAction {
+    Created,
+    Updated,
+    Rotated,
+    Unchanged,
+    Skipped(String),
+}
+
+impl ApplyAction {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Updated => "updated",
+            Self::Rotated => "rotated",
+            Self::Unchanged => "unchanged",
+            Self::Skipped(_) => "skipped",
+        }
+    }
+
+    fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Skipped(detail) => Some(detail),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ApplyOutcome {
+    kind: ApplyKind,
+    name: String,
+    action: String,
+    detail: Option<String>,
+    failed: bool,
+}
+
+impl ApplyOutcome {
+    fn from_result(target: &ApplyTarget, result: Result<ApplyAction>) -> Self {
+        match result {
+            Ok(action) => Self {
+                kind: target.kind,
+                name: target.name.clone(),
+                action: action.label().into(),
+                detail: action.detail().map(str::to_string),
+                failed: false,
+            },
+            Err(e) => Self::failed(target, e),
+        }
+    }
+
+    fn failed(target: &ApplyTarget, error: anyhow::Error) -> Self {
+        Self {
+            kind: target.kind,
+            name: target.name.clone(),
+            action: "failed".into(),
+            detail: Some(error.to_string()),
+            failed: true,
+        }
+    }
+}
+
+fn print_apply_summary(outcomes: &[ApplyOutcome]) {
+    println!("apply summary:");
+    for outcome in outcomes {
+        let detail = outcome
+            .detail
+            .as_ref()
+            .map(|detail| format!(" ({detail})"))
+            .unwrap_or_default();
+        println!(
+            "  {} {} \"{}\"{}",
+            outcome.action,
+            outcome.kind.label(),
+            outcome.name,
+            detail
+        );
+    }
 }
 
 fn read_apply_manifests(path: &PathBuf) -> Result<Vec<Value>> {
@@ -1524,6 +1659,7 @@ struct ApplyTarget {
     name: String,
     team: Option<String>,
     create_body: Value,
+    rotate_secret: bool,
 }
 
 impl ApplyTarget {
@@ -1600,6 +1736,16 @@ impl ApplyKind {
             Self::Dataplane => "dataplane",
         }
     }
+
+    fn order(self) -> u8 {
+        match self {
+            Self::Cluster => 0,
+            Self::RouteConfig => 1,
+            Self::Listener => 2,
+            Self::Secret => 3,
+            Self::Dataplane => 4,
+        }
+    }
 }
 
 fn apply_target(value: Value) -> Result<ApplyTarget> {
@@ -1618,6 +1764,18 @@ fn apply_target(value: Value) -> Result<ApplyTarget> {
         .ok_or_else(|| anyhow::anyhow!("apply manifest requires string field name"))?
         .to_string();
     let team = obj.get("team").and_then(Value::as_str).map(str::to_string);
+    let rotate_secret = obj
+        .get("rotate")
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| anyhow::anyhow!("apply manifest field rotate must be boolean"))
+        })
+        .transpose()?
+        .unwrap_or(false);
+    if rotate_secret && kind != ApplyKind::Secret {
+        anyhow::bail!("apply manifest field rotate is only supported for secrets");
+    }
     let create_body = if let Some(body) = obj.get("body") {
         with_name(body.clone(), &name)?
     } else {
@@ -1628,6 +1786,7 @@ fn apply_target(value: Value) -> Result<ApplyTarget> {
         name,
         team,
         create_body,
+        rotate_secret,
     })
 }
 
@@ -1680,6 +1839,13 @@ fn build_apply_body(kind: ApplyKind, name: &str, obj: &Map<String, Value>) -> Re
 fn diff_line(target: &ApplyTarget, existing: Option<&Value>) -> String {
     match existing {
         None => format!("+ {} \"{}\" create", target.kind.label(), target.name),
+        Some(_) if target.kind == ApplyKind::Secret && !target.rotate_secret => {
+            format!(
+                "= {} \"{}\" skipped (write-only; set rotate:true to rotate)",
+                target.kind.label(),
+                target.name
+            )
+        }
         Some(existing) if unchanged(target, existing) => {
             format!("= {} \"{}\" unchanged", target.kind.label(), target.name)
         }
@@ -1706,7 +1872,7 @@ fn unchanged(target: &ApplyTarget, existing: &Value) -> bool {
         ApplyKind::Cluster | ApplyKind::Listener | ApplyKind::RouteConfig => {
             existing.get("spec") == target.create_body.get("spec")
         }
-        ApplyKind::Secret => false,
+        ApplyKind::Secret => !target.rotate_secret,
         ApplyKind::Dataplane => {
             existing.get("description") == target.create_body.get("description")
         }
@@ -2061,10 +2227,27 @@ callback_url = "http://127.0.0.1:8976/callback"
     }
 
     #[test]
-    fn apply_secret_existing_is_write_only_rotate() -> Result<()> {
+    fn apply_secret_existing_is_skipped_without_explicit_rotate() -> Result<()> {
         let target = apply_target(json!({
             "kind": "secret",
             "name": "api-key",
+            "spec": {"type": "generic_secret", "secret": "new-value"}
+        }))?;
+        let current = json!({"name": "api-key", "value_redacted": true, "revision": 1});
+        assert_eq!(
+            diff_line(&target, Some(&current)),
+            "= secret \"api-key\" skipped (write-only; set rotate:true to rotate)"
+        );
+        assert!(unchanged(&target, &current));
+        Ok(())
+    }
+
+    #[test]
+    fn apply_secret_existing_rotates_only_with_marker() -> Result<()> {
+        let target = apply_target(json!({
+            "kind": "secret",
+            "name": "api-key",
+            "rotate": true,
             "spec": {"type": "generic_secret", "secret": "new-value"}
         }))?;
         let current = json!({"name": "api-key", "value_redacted": true, "revision": 1});
@@ -2075,6 +2258,30 @@ callback_url = "http://127.0.0.1:8976/callback"
         assert_eq!(
             target.update_body()?,
             json!({"spec": {"type": "generic_secret", "secret": "new-value"}})
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_targets_are_dependency_ordered_stably() -> Result<()> {
+        let targets = ordered_apply_targets(vec![
+            json!({"kind": "listener", "name": "listener", "spec": {"address":"0.0.0.0","port":8080,"route_config":"routes"}}),
+            json!({"kind": "secret", "name": "secret", "spec": {"type":"generic_secret","secret":"x"}}),
+            json!({"kind": "cluster", "name": "cluster", "spec": {"type":"strict_dns","connect_timeout_ms":250}}),
+            json!({"kind": "route-config", "name": "routes", "spec": {"virtual_hosts":[]}}),
+        ])?;
+        let ordered = targets
+            .iter()
+            .map(|target| (target.kind.label(), target.name.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            vec![
+                ("cluster", "cluster"),
+                ("route-config", "routes"),
+                ("listener", "listener"),
+                ("secret", "secret"),
+            ]
         );
         Ok(())
     }

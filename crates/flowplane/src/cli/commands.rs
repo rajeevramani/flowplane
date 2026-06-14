@@ -468,4 +468,7 @@ pub struct ApplyCommand {
     pub file: PathBuf,
     #[arg(long)]
     pub diff: bool,
+    /// Refuse silently ignoring prune requests; apply is additive-only until server batch support.
+    #[arg(long)]
+    pub prune: bool,
 }
