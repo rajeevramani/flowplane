@@ -7,10 +7,12 @@ use fp_core::services::dataplanes as dataplane_svc;
 use fp_core::services::learning::{self as learning_svc, StartLearningSessionInput};
 use fp_core::services::secrets::{self as secret_svc, SecretWrite};
 use fp_core::{GrantSet, PrincipalCtx};
-use fp_domain::api_lifecycle::{ApiDefinitionSpec, CaptureSessionSpec, SpecSourceKind};
+use fp_domain::api_lifecycle::{
+    ApiDefinitionSpec, ApiToolSpec, CaptureSessionSpec, HttpMethod, SpecSourceKind,
+};
 use fp_domain::authz::TeamRef;
 use fp_domain::{ErrorCode, OrgRole, RequestId, SecretSpec};
-use fp_storage::repos::identity;
+use fp_storage::repos::{api_lifecycle as storage_api_lifecycle, identity};
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -198,6 +200,17 @@ async fn learned_spec_generation_persists_deterministic_candidate() {
     insert_raw_observation(&w.pool, w.team, session.id.as_uuid())
         .await
         .expect("raw observation");
+    let active_err = learning_svc::create_spec_version_from_session(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &session.name,
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("active sessions are not frozen");
+    assert_eq!(active_err.code, ErrorCode::Conflict);
+
     learning_svc::stop_session(
         &w.pool,
         &w.admin,
@@ -235,7 +248,33 @@ async fn learned_spec_generation_persists_deterministic_candidate() {
             .pointer("/x-flowplane-learning-source/capture_session_id"),
         Some(&json!(session.id))
     );
-    assert!(first.spec.pointer("/paths/~1users~1{userId}/get").is_some());
+    assert_eq!(
+        first
+            .spec
+            .pointer("/paths/~1users~1{userId}/get/operationId"),
+        Some(&json!("get_users_userId"))
+    );
+
+    let mut tx = w.pool.begin().await.expect("tool tx");
+    let tool = storage_api_lifecycle::create_api_tool(
+        &mut tx,
+        w.team,
+        api.api.id,
+        first.id,
+        &unique("get-user"),
+        &ApiToolSpec {
+            operation_id: "get_users_userId".into(),
+            method: HttpMethod::Get,
+            path: "/users/{userId}".into(),
+            input_schema: json!({}),
+            output_schema: json!({}),
+            enabled: true,
+        },
+    )
+    .await
+    .expect("learned tool projection");
+    tx.commit().await.expect("tool commit");
+    assert_eq!(tool.spec_version_id, first.id);
 }
 
 async fn insert_raw_observation(
