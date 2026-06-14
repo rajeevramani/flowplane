@@ -118,6 +118,7 @@ impl TryFrom<Args> for Config {
                 "FLOWPLANE_AGENT_TLS_CERT_PATH, _KEY_PATH, and _CA_PATH are all-or-none"
             ),
         };
+        validate_cp_transport(&args.cp_endpoint, tls.is_some())?;
         Ok(Self {
             envoy_admin_url: args.envoy_admin_url,
             cp_endpoint: args.cp_endpoint,
@@ -129,6 +130,21 @@ impl TryFrom<Args> for Config {
             once: args.once,
         })
     }
+}
+
+fn validate_cp_transport(endpoint: &str, tls_configured: bool) -> Result<()> {
+    let parsed = reqwest::Url::parse(endpoint).context("parse FLOWPLANE_AGENT_CP_ENDPOINT")?;
+    let Some(host) = parsed.host_str() else {
+        anyhow::bail!("FLOWPLANE_AGENT_CP_ENDPOINT must include a host");
+    };
+    let loopback =
+        host == "localhost" || host.parse::<IpAddr>().is_ok_and(|addr| addr.is_loopback());
+    if parsed.scheme() != "https" && !tls_configured && !loopback {
+        anyhow::bail!(
+            "plaintext diagnostics is allowed only for loopback control-plane endpoints; configure TLS for {host}"
+        );
+    }
+    Ok(())
 }
 
 fn warn_if_admin_url_is_not_loopback(url: &str) {
@@ -263,7 +279,17 @@ async fn poll_loop(
 ) -> Result<()> {
     let mut previous = None;
     loop {
-        let snapshot = scrape_stats(&http, &config.envoy_admin_url).await?;
+        let snapshot = match scrape_stats(&http, &config.envoy_admin_url).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(%error, "Envoy admin scrape failed; retrying");
+                if config.once {
+                    return Err(error);
+                }
+                tokio::time::sleep(config.poll_interval).await;
+                continue;
+            }
+        };
         health.write().await.last_admin_poll = Some(Instant::now());
         let delta = snapshot.delta_from(previous);
         tx.send(heartbeat_report(&config, delta))
@@ -450,6 +476,50 @@ mod tests {
         let config = Config::try_from(args)?;
         assert_eq!(config.poll_interval, Duration::from_secs(1));
         assert_eq!(config.queue_cap, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn config_rejects_plaintext_cp_endpoint_off_loopback() -> anyhow::Result<()> {
+        let args = super::Args {
+            envoy_admin_url: "http://127.0.0.1:9901".to_string(),
+            cp_endpoint: "http://10.0.0.10:18000".to_string(),
+            dataplane_id: uuid::Uuid::now_v7(),
+            poll_interval_secs: 10,
+            queue_cap: 10,
+            tls_cert_path: None,
+            tls_key_path: None,
+            tls_ca_path: None,
+            tls_server_name: "localhost".to_string(),
+            health_bind_addr: "127.0.0.1:0".parse()?,
+            once: false,
+        };
+        let err = Config::try_from(args)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("plaintext remote CP was accepted"))?;
+        assert!(
+            err.to_string().contains("plaintext diagnostics"),
+            "unexpected error: {err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn config_allows_plaintext_cp_endpoint_on_loopback() -> anyhow::Result<()> {
+        let args = super::Args {
+            envoy_admin_url: "http://127.0.0.1:9901".to_string(),
+            cp_endpoint: "http://localhost:18000".to_string(),
+            dataplane_id: uuid::Uuid::now_v7(),
+            poll_interval_secs: 10,
+            queue_cap: 10,
+            tls_cert_path: None,
+            tls_key_path: None,
+            tls_ca_path: None,
+            tls_server_name: "localhost".to_string(),
+            health_bind_addr: "127.0.0.1:0".parse()?,
+            once: false,
+        };
+        Config::try_from(args)?;
         Ok(())
     }
 }

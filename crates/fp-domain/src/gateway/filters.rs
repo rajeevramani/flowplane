@@ -10,6 +10,24 @@
 use crate::error::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 
+const MAX_CORS_ORIGINS: usize = 64;
+const MAX_CORS_LIST_VALUES: usize = 128;
+const MAX_CORS_ORIGIN_VALUE_LEN: usize = 2048;
+const MAX_CORS_TOKEN_VALUE_LEN: usize = 256;
+const MAX_HEADER_MUTATIONS_PER_DIRECTION: usize = 128;
+const MAX_HEADER_NAME_LEN: usize = 256;
+const MAX_HEADER_VALUE_LEN: usize = 4096;
+const DISABLABLE_FILTER_TYPES: &[&str] = &[
+    "cors",
+    "local_rate_limit",
+    "header_mutation",
+    "compressor",
+    "jwt_auth",
+    "ext_authz",
+    "rbac",
+    "global_rate_limit",
+];
+
 /// One entry in a listener's HTTP filter chain. Order is semantic (chain order); the
 /// router filter is appended automatically at translation and may not appear here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -91,21 +109,14 @@ impl FilterOverride {
         match self {
             Self::Disable { filter_type } => {
                 // health_check is listener-only (spec/04 §4.1): no per-route control at all.
-                const DISABLABLE: &[&str] = &[
-                    "cors",
-                    "local_rate_limit",
-                    "header_mutation",
-                    "compressor",
-                    "jwt_auth",
-                    "ext_authz",
-                    "rbac",
-                    "global_rate_limit",
-                ];
-                if !DISABLABLE.contains(&filter_type.as_str()) {
+                if !DISABLABLE_FILTER_TYPES.contains(&filter_type.as_str()) {
                     return Err(DomainError::validation(format!(
                         "filter type \"{filter_type}\" cannot be disabled per-route",
                     ))
-                    .with_hint(format!("disablable types: {}", DISABLABLE.join(", "))));
+                    .with_hint(format!(
+                        "disablable types: {}",
+                        DISABLABLE_FILTER_TYPES.join(", ")
+                    )));
                 }
                 Ok(filter_type)
             }
@@ -184,6 +195,32 @@ impl CorsConfig {
                 "cors: allow_origin must list at least one origin matcher",
             ));
         }
+        if self.allow_origin.len() > MAX_CORS_ORIGINS {
+            return Err(DomainError::validation(format!(
+                "cors: allow_origin may contain at most {MAX_CORS_ORIGINS} matchers",
+            )));
+        }
+        for origin in &self.allow_origin {
+            validate_origin_matcher(origin)?;
+        }
+        validate_bounded_string_list(
+            "cors: allow_methods",
+            &self.allow_methods,
+            MAX_CORS_LIST_VALUES,
+            MAX_CORS_TOKEN_VALUE_LEN,
+        )?;
+        validate_bounded_string_list(
+            "cors: allow_headers",
+            &self.allow_headers,
+            MAX_CORS_LIST_VALUES,
+            MAX_CORS_TOKEN_VALUE_LEN,
+        )?;
+        validate_bounded_string_list(
+            "cors: expose_headers",
+            &self.expose_headers,
+            MAX_CORS_LIST_VALUES,
+            MAX_CORS_TOKEN_VALUE_LEN,
+        )?;
         let wildcard = self.allow_origin.iter().any(|m| {
             matches!(m, OriginMatcher::Exact { value } | OriginMatcher::Prefix { value }
                 if value == "*")
@@ -365,6 +402,22 @@ pub struct HeaderMutationConfig {
 
 impl HeaderMutationConfig {
     pub fn validate(&self) -> DomainResult<()> {
+        validate_header_values(
+            "header_mutation: request_headers_to_add",
+            &self.request_headers_to_add,
+        )?;
+        validate_header_names(
+            "header_mutation: request_headers_to_remove",
+            &self.request_headers_to_remove,
+        )?;
+        validate_header_values(
+            "header_mutation: response_headers_to_add",
+            &self.response_headers_to_add,
+        )?;
+        validate_header_names(
+            "header_mutation: response_headers_to_remove",
+            &self.response_headers_to_remove,
+        )?;
         for hv in self
             .request_headers_to_add
             .iter()
@@ -378,6 +431,72 @@ impl HeaderMutationConfig {
         }
         Ok(())
     }
+}
+
+fn validate_origin_matcher(matcher: &OriginMatcher) -> DomainResult<()> {
+    let value = match matcher {
+        OriginMatcher::Exact { value }
+        | OriginMatcher::Prefix { value }
+        | OriginMatcher::Suffix { value }
+        | OriginMatcher::Contains { value } => value,
+    };
+    validate_bounded_string(
+        "cors: allow_origin matcher value",
+        value,
+        MAX_CORS_ORIGIN_VALUE_LEN,
+    )
+}
+
+fn validate_bounded_string_list(
+    label: &str,
+    values: &[String],
+    max_items: usize,
+    max_len: usize,
+) -> DomainResult<()> {
+    if values.len() > max_items {
+        return Err(DomainError::validation(format!(
+            "{label} may contain at most {max_items} values",
+        )));
+    }
+    for value in values {
+        validate_bounded_string(label, value, max_len)?;
+    }
+    Ok(())
+}
+
+fn validate_bounded_string(label: &str, value: &str, max_len: usize) -> DomainResult<()> {
+    if value.is_empty() || value.len() > max_len || value.chars().any(char::is_control) {
+        return Err(DomainError::validation(format!(
+            "{label} values must be 1..={max_len} printable characters",
+        )));
+    }
+    Ok(())
+}
+
+fn validate_header_values(label: &str, values: &[HeaderValue]) -> DomainResult<()> {
+    if values.len() > MAX_HEADER_MUTATIONS_PER_DIRECTION {
+        return Err(DomainError::validation(format!(
+            "{label} may contain at most {MAX_HEADER_MUTATIONS_PER_DIRECTION} headers",
+        )));
+    }
+    for hv in values {
+        validate_bounded_string("header_mutation: header key", &hv.key, MAX_HEADER_NAME_LEN)?;
+        validate_bounded_string(
+            "header_mutation: header value",
+            &hv.value,
+            MAX_HEADER_VALUE_LEN,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_header_names(label: &str, values: &[String]) -> DomainResult<()> {
+    validate_bounded_string_list(
+        label,
+        values,
+        MAX_HEADER_MUTATIONS_PER_DIRECTION,
+        MAX_HEADER_NAME_LEN,
+    )
 }
 
 // ---------------- health_check ----------------
@@ -896,6 +1015,74 @@ mod tests {
             serde_json::json!({"type": "telnet_proxy"})
         )
         .is_err());
+    }
+
+    #[test]
+    fn cors_rejects_unbounded_lists_and_values() {
+        let mut bad = CorsConfig {
+            allow_origin: (0..=MAX_CORS_ORIGINS)
+                .map(|i| OriginMatcher::Exact {
+                    value: format!("https://app{i}.example"),
+                })
+                .collect(),
+            allow_methods: vec!["GET".into()],
+            allow_headers: vec![],
+            expose_headers: vec![],
+            max_age_seconds: None,
+            allow_credentials: false,
+        };
+        assert!(bad.validate().is_err(), "too many origins");
+
+        bad.allow_origin = vec![OriginMatcher::Exact {
+            value: "https://app.example".into(),
+        }];
+        bad.allow_headers = vec!["x\nbad".into()];
+        assert!(bad.validate().is_err(), "control chars rejected");
+
+        bad.allow_headers = (0..=MAX_CORS_LIST_VALUES)
+            .map(|i| format!("x-header-{i}"))
+            .collect();
+        assert!(bad.validate().is_err(), "too many header entries");
+    }
+
+    #[test]
+    fn header_mutation_rejects_unbounded_lists_and_values() {
+        let too_many = HeaderMutationConfig {
+            request_headers_to_add: (0..=MAX_HEADER_MUTATIONS_PER_DIRECTION)
+                .map(|i| HeaderValue {
+                    key: format!("x-header-{i}"),
+                    value: "ok".into(),
+                    append: false,
+                })
+                .collect(),
+            request_headers_to_remove: vec![],
+            response_headers_to_add: vec![],
+            response_headers_to_remove: vec![],
+        };
+        assert!(too_many.validate().is_err(), "too many add mutations");
+
+        let bad_value = HeaderMutationConfig {
+            request_headers_to_add: vec![HeaderValue {
+                key: "x-test".into(),
+                value: "bad\nvalue".into(),
+                append: false,
+            }],
+            request_headers_to_remove: vec![],
+            response_headers_to_add: vec![],
+            response_headers_to_remove: vec![],
+        };
+        assert!(bad_value.validate().is_err(), "control chars rejected");
+
+        let bad_remove = HeaderMutationConfig {
+            request_headers_to_add: vec![],
+            request_headers_to_remove: vec!["".into()],
+            response_headers_to_add: vec![],
+            response_headers_to_remove: vec![],
+        };
+        assert!(
+            bad_remove.validate().is_err(),
+            "empty remove header rejected"
+        );
     }
 
     #[test]

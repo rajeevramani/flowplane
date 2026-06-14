@@ -52,7 +52,7 @@ impl IntoResponse for ApiError {
         let status = self.status();
         let code = self.error.code;
 
-        // Internal details go to logs (keyed by request id), never to the caller.
+        // Internal/invalid-config details go to logs (keyed by request id), never to the caller.
         let message = if code == ErrorCode::Internal || code == ErrorCode::InvalidConfig {
             tracing::error!(
                 request_id = %self.request_id,
@@ -68,7 +68,7 @@ impl IntoResponse for ApiError {
             code: code.as_str(),
             message,
             hint: self.error.hint,
-            details: if code == ErrorCode::Internal {
+            details: if matches!(code, ErrorCode::Internal | ErrorCode::InvalidConfig) {
                 None
             } else {
                 self.error.details
@@ -90,6 +90,7 @@ impl IntoResponse for ApiError {
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt;
 
     #[test]
     fn internal_errors_redact_detail_but_keep_request_id() {
@@ -97,6 +98,32 @@ mod tests {
         let err = ApiError::new(DomainError::internal("db column foo missing"), rid);
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn invalid_config_errors_redact_message_and_detail() {
+        let rid = RequestId::generate();
+        let err = ApiError::new(
+            DomainError::invalid_config("tls private key missing")
+                .with_details(serde_json::json!({"path": "/run/secrets/server.key"})),
+            rid,
+        );
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(json["code"], "invalid_config");
+        assert_eq!(json["request_id"], rid.to_string());
+        assert_eq!(
+            json["message"],
+            "an internal error occurred; report the request_id to your operator"
+        );
+        assert!(json.get("details").is_none());
     }
 
     #[test]
