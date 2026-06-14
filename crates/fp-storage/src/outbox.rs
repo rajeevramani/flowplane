@@ -132,6 +132,9 @@ where
     .map_err(|e| DomainError::internal(format!("outbox: fetch batch: {e}")))?;
 
     if rows.is_empty() {
+        tx.rollback()
+            .await
+            .map_err(|e| DomainError::internal(format!("outbox: empty batch rollback: {e}")))?;
         return Ok(0);
     }
 
