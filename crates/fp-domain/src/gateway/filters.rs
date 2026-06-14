@@ -749,11 +749,7 @@ impl RbacConfig {
             for principal in &policy.principals {
                 match principal {
                     RbacPrincipal::SourceCidr { cidr } => {
-                        let valid = cidr.split_once('/').is_some_and(|(ip, len)| {
-                            ip.parse::<std::net::IpAddr>().is_ok()
-                                && len.parse::<u8>().is_ok_and(|l| l <= 128)
-                        });
-                        if !valid {
+                        if !valid_cidr(cidr) {
                             return Err(DomainError::validation(format!(
                                 "rbac: \"{cidr}\" is not a valid CIDR"
                             )));
@@ -771,6 +767,20 @@ impl RbacConfig {
             }
         }
         Ok(())
+    }
+}
+
+fn valid_cidr(cidr: &str) -> bool {
+    let Some((ip, len)) = cidr.split_once('/') else {
+        return false;
+    };
+    let Ok(len) = len.parse::<u8>() else {
+        return false;
+    };
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(_)) => len <= 32,
+        Ok(std::net::IpAddr::V6(_)) => len <= 128,
+        Err(_) => false,
     }
 }
 
@@ -1034,6 +1044,43 @@ mod tests {
         }
         .validate()
         .is_err());
+
+        for cidr in ["10.0.0.0/64", "2001:db8::/129"] {
+            let mut policies = std::collections::BTreeMap::new();
+            policies.insert(
+                "x".to_string(),
+                RbacPolicy {
+                    permissions: vec![RbacPermission::Any],
+                    principals: vec![RbacPrincipal::SourceCidr { cidr: cidr.into() }],
+                },
+            );
+            assert!(
+                RbacConfig {
+                    action: RbacAction::Deny,
+                    policies,
+                }
+                .validate()
+                .is_err(),
+                "{cidr} must be rejected"
+            );
+        }
+
+        let mut ipv6_policies = std::collections::BTreeMap::new();
+        ipv6_policies.insert(
+            "ipv6".to_string(),
+            RbacPolicy {
+                permissions: vec![RbacPermission::Any],
+                principals: vec![RbacPrincipal::SourceCidr {
+                    cidr: "2001:db8::/128".into(),
+                }],
+            },
+        );
+        assert!(RbacConfig {
+            action: RbacAction::Allow,
+            policies: ipv6_policies,
+        }
+        .validate()
+        .is_ok());
 
         // Empty policies rejected.
         assert!(RbacConfig {
