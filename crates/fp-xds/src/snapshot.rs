@@ -425,7 +425,11 @@ impl SnapshotCache {
         let mut secret_failures = HashMap::new();
         for secret in &secrets {
             let name = &secret.metadata.name;
-            let spec = match decrypt_secret_spec(&secret.ciphertext, &secret.nonce) {
+            let spec = match decrypt_secret_spec(
+                &secret.ciphertext,
+                &secret.nonce,
+                &secret.metadata.encryption_key_id,
+            ) {
                 Ok(spec) => spec,
                 Err(e) => {
                     let error = format!("secret translation failed: {e}");
@@ -749,8 +753,8 @@ async fn learning_capture_plan(
     Ok(captures)
 }
 
-fn decrypt_secret_spec(ciphertext: &[u8], nonce: &[u8]) -> DomainResult<SecretSpec> {
-    let key = secret_key()?;
+fn decrypt_secret_spec(ciphertext: &[u8], nonce: &[u8], key_id: &str) -> DomainResult<SecretSpec> {
+    let key = keyring_secret_key(key_id)?;
     let nonce = <[u8; 12]>::try_from(nonce)
         .map_err(|_| DomainError::internal("secret nonce must be 12 bytes"))?;
     let cipher = Aes256Gcm::new_from_slice(&key)
@@ -762,25 +766,85 @@ fn decrypt_secret_spec(ciphertext: &[u8], nonce: &[u8]) -> DomainResult<SecretSp
         .map_err(|e| DomainError::internal(format!("parse decrypted secret spec: {e}")))
 }
 
-fn secret_key() -> DomainResult<[u8; 32]> {
-    let raw = std::env::var("FLOWPLANE_SECRET_ENCRYPTION_KEY").map_err(|_| {
+const DEFAULT_KEY_ID: &str = "default";
+const ACTIVE_KEY_ID_ENV: &str = "FLOWPLANE_SECRET_ENCRYPTION_KEY_ID";
+const ACTIVE_KEY_ENV: &str = "FLOWPLANE_SECRET_ENCRYPTION_KEY";
+const KEYRING_ENV: &str = "FLOWPLANE_SECRET_ENCRYPTION_KEYS";
+
+struct SecretKey {
+    id: String,
+    bytes: [u8; 32],
+}
+
+fn active_secret_key() -> DomainResult<SecretKey> {
+    let id = active_key_id()?;
+    let raw = std::env::var(ACTIVE_KEY_ENV).map_err(|_| {
         DomainError::unavailable("secret encryption key is not configured")
             .with_hint("set FLOWPLANE_SECRET_ENCRYPTION_KEY to a 32-byte or base64-encoded key")
     })?;
-    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&raw) {
+    Ok(SecretKey {
+        id,
+        bytes: parse_secret_key(ACTIVE_KEY_ENV, &raw)?,
+    })
+}
+
+fn active_key_id() -> DomainResult<String> {
+    let id = std::env::var(ACTIVE_KEY_ID_ENV).unwrap_or_else(|_| DEFAULT_KEY_ID.to_string());
+    validate_key_id(&id)?;
+    Ok(id)
+}
+
+fn keyring_secret_key(key_id: &str) -> DomainResult<[u8; 32]> {
+    validate_key_id(key_id)?;
+    let active = active_secret_key()?;
+    if active.id == key_id {
+        return Ok(active.bytes);
+    }
+    let raw = std::env::var(KEYRING_ENV).map_err(|_| {
+        DomainError::unavailable(format!(
+            "secret encryption key \"{key_id}\" is not configured"
+        ))
+        .with_hint(
+            "keep retired keys in FLOWPLANE_SECRET_ENCRYPTION_KEYS until old secrets are rotated",
+        )
+    })?;
+    let values: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&raw).map_err(|e| {
+            DomainError::invalid_config(format!("{KEYRING_ENV} must be a JSON object: {e}"))
+        })?;
+    let Some(value) = values.get(key_id).and_then(|value| value.as_str()) else {
+        return Err(DomainError::unavailable(format!(
+            "secret encryption key \"{key_id}\" is not configured"
+        ))
+        .with_hint(
+            "add the retired key to FLOWPLANE_SECRET_ENCRYPTION_KEYS or rotate the secret",
+        ));
+    };
+    parse_secret_key(&format!("{KEYRING_ENV}.{key_id}"), value)
+}
+
+fn validate_key_id(id: &str) -> DomainResult<()> {
+    if id.is_empty() || id.len() > 128 || id.chars().any(|c| c.is_control() || c == '\0') {
+        return Err(DomainError::invalid_config(format!(
+            "{ACTIVE_KEY_ID_ENV} must be 1..=128 printable characters"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_secret_key(label: &str, raw: &str) -> DomainResult<[u8; 32]> {
+    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) {
         if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
             return Ok(key);
         }
     }
-    if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&raw) {
+    if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw) {
         if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
             return Ok(key);
         }
     }
     <[u8; 32]>::try_from(raw.as_bytes()).map_err(|_| {
-        DomainError::invalid_config(
-            "FLOWPLANE_SECRET_ENCRYPTION_KEY must be exactly 32 bytes after decoding",
-        )
+        DomainError::invalid_config(format!("{label} must be exactly 32 bytes after decoding"))
     })
 }
 
@@ -819,6 +883,9 @@ mod tests {
     use fp_domain::{OrgRole, RequestId, SecretSpec, SecretType};
     use fp_storage::repos::identity;
     use prost::Message;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn unique(prefix: &str) -> String {
         format!(
@@ -847,6 +914,34 @@ mod tests {
             circuit_breakers: None,
             outlier_detection: None,
         }
+    }
+
+    #[test]
+    fn decrypt_secret_spec_reads_retired_key_from_keyring() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let retired_key = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        std::env::set_var("FLOWPLANE_SECRET_ENCRYPTION_KEY_ID", "v2");
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEYS",
+            serde_json::json!({"v1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).to_string(),
+        );
+
+        let spec = SecretSpec::GenericSecret {
+            secret: "c2VjcmV0".into(),
+        };
+        let nonce = [7_u8; 12];
+        let plaintext = serde_json::to_vec(&spec).expect("secret json");
+        let cipher = Aes256Gcm::new_from_slice(&retired_key).expect("cipher");
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+            .expect("encrypt");
+
+        let decoded = decrypt_secret_spec(&ciphertext, &nonce, "v1").expect("decrypt");
+        assert_eq!(decoded, spec);
     }
 
     fn rc_spec(cluster: &str) -> RouteConfigSpec {

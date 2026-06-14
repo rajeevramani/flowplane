@@ -12,7 +12,9 @@ use fp_domain::{validate_name, DomainError, DomainResult, RequestId, Secret, Sec
 use fp_storage::repos::{audit, secrets};
 use sqlx::PgPool;
 
-const KEY_ID: &str = "default";
+const DEFAULT_KEY_ID: &str = "default";
+const ACTIVE_KEY_ID_ENV: &str = "FLOWPLANE_SECRET_ENCRYPTION_KEY_ID";
+const ACTIVE_KEY_ENV: &str = "FLOWPLANE_SECRET_ENCRYPTION_KEY";
 
 async fn authorize(
     pool: &PgPool,
@@ -81,7 +83,7 @@ pub async fn create_secret(
         write.spec.secret_type(),
         &encrypted.ciphertext,
         &encrypted.nonce,
-        KEY_ID,
+        &encrypted.key_id,
         write.expires_at,
     )
     .await?;
@@ -172,7 +174,7 @@ pub async fn rotate_secret(
         rotate.spec.secret_type(),
         &encrypted.ciphertext,
         &encrypted.nonce,
-        KEY_ID,
+        &encrypted.key_id,
         rotate.expires_at,
     )
     .await?;
@@ -207,44 +209,75 @@ pub async fn rotate_secret(
 }
 
 struct EncryptedSpec {
+    key_id: String,
     ciphertext: Vec<u8>,
     nonce: [u8; 12],
 }
 
 fn encrypt_spec(spec: &SecretSpec) -> DomainResult<EncryptedSpec> {
-    let key = secret_key()?;
+    let key = active_secret_key()?;
     let mut nonce = [0_u8; 12];
     getrandom::fill(&mut nonce)
         .map_err(|e| DomainError::internal(format!("generate secret nonce: {e}")))?;
     let plaintext = serde_json::to_vec(spec)
         .map_err(|e| DomainError::internal(format!("serialize secret spec: {e}")))?;
-    let cipher = Aes256Gcm::new_from_slice(&key)
+    let cipher = Aes256Gcm::new_from_slice(&key.bytes)
         .map_err(|_| DomainError::invalid_config("FLOWPLANE_SECRET_ENCRYPTION_KEY is invalid"))?;
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
         .map_err(|_| DomainError::internal("encrypt secret spec"))?;
-    Ok(EncryptedSpec { ciphertext, nonce })
+    Ok(EncryptedSpec {
+        key_id: key.id,
+        ciphertext,
+        nonce,
+    })
 }
 
-fn secret_key() -> DomainResult<[u8; 32]> {
-    let raw = std::env::var("FLOWPLANE_SECRET_ENCRYPTION_KEY").map_err(|_| {
+struct SecretKey {
+    id: String,
+    bytes: [u8; 32],
+}
+
+fn active_secret_key() -> DomainResult<SecretKey> {
+    let id = active_key_id()?;
+    let raw = std::env::var(ACTIVE_KEY_ENV).map_err(|_| {
         DomainError::unavailable("secret encryption key is not configured")
             .with_hint("set FLOWPLANE_SECRET_ENCRYPTION_KEY to a 32-byte or base64-encoded key")
     })?;
-    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&raw) {
+    Ok(SecretKey {
+        id,
+        bytes: parse_secret_key(ACTIVE_KEY_ENV, &raw)?,
+    })
+}
+
+fn active_key_id() -> DomainResult<String> {
+    let id = std::env::var(ACTIVE_KEY_ID_ENV).unwrap_or_else(|_| DEFAULT_KEY_ID.to_string());
+    validate_key_id(&id)?;
+    Ok(id)
+}
+
+fn validate_key_id(id: &str) -> DomainResult<()> {
+    if id.is_empty() || id.len() > 128 || id.chars().any(|c| c.is_control() || c == '\0') {
+        return Err(DomainError::invalid_config(format!(
+            "{ACTIVE_KEY_ID_ENV} must be 1..=128 printable characters"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_secret_key(label: &str, raw: &str) -> DomainResult<[u8; 32]> {
+    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) {
         if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
             return Ok(key);
         }
     }
-    if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&raw) {
+    if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw) {
         if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
             return Ok(key);
         }
     }
     <[u8; 32]>::try_from(raw.as_bytes()).map_err(|_| {
-        DomainError::invalid_config(
-            "FLOWPLANE_SECRET_ENCRYPTION_KEY must be exactly 32 bytes after decoding",
-        )
+        DomainError::invalid_config(format!("{label} must be exactly 32 bytes after decoding"))
     })
 }
 
@@ -281,16 +314,36 @@ fn mutation_audit(
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn raw_32_byte_key_is_accepted() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         std::env::set_var(
             "FLOWPLANE_SECRET_ENCRYPTION_KEY",
             "12345678901234567890123456789012",
         );
-        assert!(secret_key().is_ok());
+        std::env::remove_var("FLOWPLANE_SECRET_ENCRYPTION_KEY_ID");
+        assert!(active_secret_key().is_ok());
+    }
+
+    #[test]
+    fn active_key_id_is_written_with_ciphertext() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        std::env::set_var("FLOWPLANE_SECRET_ENCRYPTION_KEY_ID", "v2");
+        let encrypted = encrypt_spec(&SecretSpec::GenericSecret {
+            secret: "c2VjcmV0".into(),
+        })
+        .expect("encrypt");
+        assert_eq!(encrypted.key_id, "v2");
     }
 }
