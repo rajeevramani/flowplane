@@ -86,6 +86,8 @@ pub async fn create_api(
     request_id: RequestId,
 ) -> DomainResult<ApiStatus> {
     authorize(pool, ctx, Action::Create, team, request_id).await?;
+    crate::services::quota::check_team_resource_quota(pool, team.id, Resource::ApiDefinitions)
+        .await?;
     let tools = input
         .imported_spec
         .as_ref()

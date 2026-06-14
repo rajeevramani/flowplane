@@ -12,6 +12,7 @@ pub fn default_limit(resource: Resource) -> i64 {
         Resource::Listeners => 25,
         Resource::RouteConfigs => 100,
         Resource::LearningSessions => 5,
+        Resource::ApiDefinitions | Resource::Secrets | Resource::Dataplanes => 200,
         _ => 200,
     }
 }
@@ -27,7 +28,16 @@ pub async fn check_team_resource_quota(
             fp_storage::repos::gateway::count_route_configs(pool, team_id).await?
         }
         Resource::Listeners => fp_storage::repos::gateway::count_listeners(pool, team_id).await?,
-        // Other resources adopt this check as their verticals land.
+        Resource::ApiDefinitions => {
+            fp_storage::repos::api_lifecycle::count_api_definitions_for_team(pool, team_id).await?
+        }
+        Resource::LearningSessions => {
+            fp_storage::repos::api_lifecycle::count_capture_sessions_for_team(pool, team_id).await?
+        }
+        Resource::Secrets => fp_storage::repos::secrets::count_for_team(pool, team_id).await?,
+        Resource::Dataplanes => {
+            fp_storage::repos::dataplanes::count_for_team(pool, team_id).await?
+        }
         _ => return Ok(()),
     };
     let limit = default_limit(resource);

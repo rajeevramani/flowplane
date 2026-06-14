@@ -54,6 +54,7 @@ pub async fn create_dataplane(
     )
     .await?;
     validate_name(name)?;
+    crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Dataplanes).await?;
     let mut tx = pool
         .begin()
         .await

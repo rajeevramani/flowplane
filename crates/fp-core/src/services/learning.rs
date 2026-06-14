@@ -72,6 +72,8 @@ pub async fn start_session(
     request_id: RequestId,
 ) -> DomainResult<CaptureSession> {
     authorize(pool, ctx, Action::Create, team, request_id).await?;
+    crate::services::quota::check_team_resource_quota(pool, team.id, Resource::LearningSessions)
+        .await?;
     let spec = resolve_api_name(pool, team, input.api, input.spec).await?;
     let mut tx = pool
         .begin()

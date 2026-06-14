@@ -289,6 +289,14 @@ pub async fn list_dataplanes(
     Ok((rows.iter().map(dataplane_from_row).collect(), total))
 }
 
+pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
+    sqlx::query_scalar("SELECT count(*) FROM dataplanes WHERE team_id = $1")
+        .bind(team_id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("count dataplanes: {e}")))
+}
+
 pub async fn register_certificate(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
