@@ -6,3 +6,6 @@
 
 # ai-dev-framework local config
 .aidf.yml
+
+# local
+.local/
