@@ -12,6 +12,8 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DEFAULT_LEARNED_OUTLIER_PATH: &str = "/_flowplane/outliers/{path}";
+const REQUIRED_FIELD_THRESHOLD: f64 = 0.8;
+const REQUIRED_FIELD_MIN_SAMPLES: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -577,8 +579,21 @@ fn endpoint_from_group(
             .response_status
             .map(|status| status.to_string())
             .unwrap_or_else(|| "default".into());
-        statuses.entry(status).or_insert(None);
+        statuses.entry(status).or_insert_with(Vec::new).push(
+            row.response_body
+                .as_deref()
+                .filter(|_| !row.response_body_truncated),
+        );
     }
+    let response_schemas = statuses
+        .into_iter()
+        .map(|(status, bodies)| (status, infer_body_schema(bodies.into_iter().flatten())))
+        .collect();
+    let request_schema = infer_body_schema(
+        rows.iter()
+            .filter(|row| !row.request_body_truncated)
+            .filter_map(|row| row.request_body.as_deref()),
+    );
     let body_sample_count = rows
         .iter()
         .filter(|row| row.request_body.is_some() || row.response_body.is_some())
@@ -594,12 +609,12 @@ fn endpoint_from_group(
             path_template,
         },
         operation_id: String::new(),
-        request_schema: None,
-        response_schemas: statuses,
+        request_schema,
+        response_schemas,
         request_headers: Vec::new(),
         response_headers: Vec::new(),
         confidence: LearnedConfidence {
-            score: grouping_confidence(rows.len()),
+            score: endpoint_confidence(rows, body_sample_count, truncated_body_count),
             sample_count: rows.len() as u64,
             body_sample_count,
             distinct_path_count: rows
@@ -613,12 +628,134 @@ fn endpoint_from_group(
     }
 }
 
-fn grouping_confidence(sample_count: usize) -> f64 {
-    if sample_count >= 10 {
-        1.0
-    } else {
-        sample_count as f64 / 10.0
+#[derive(Debug, Clone, Default)]
+struct JsonSchemaStats {
+    total: u64,
+    types: BTreeSet<&'static str>,
+    object_count: u64,
+    properties: BTreeMap<String, JsonSchemaStats>,
+    array_items: Option<Box<JsonSchemaStats>>,
+}
+
+impl JsonSchemaStats {
+    fn observe(&mut self, value: &Value) {
+        self.total = self.total.saturating_add(1);
+        self.types.insert(json_type(value));
+        match value {
+            Value::Object(map) => {
+                self.object_count = self.object_count.saturating_add(1);
+                for (key, value) in map {
+                    self.properties
+                        .entry(key.clone())
+                        .or_default()
+                        .observe(value);
+                }
+            }
+            Value::Array(items) => {
+                let items_stats = self.array_items.get_or_insert_with(Default::default);
+                for item in items {
+                    items_stats.observe(item);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
     }
+
+    fn schema(&self) -> Value {
+        if self.types.len() > 1 {
+            return Value::Object(Map::from_iter([(
+                "oneOf".into(),
+                Value::Array(self.types.iter().map(|kind| type_schema(kind)).collect()),
+            )]));
+        }
+        match self.types.iter().next().copied() {
+            Some("object") => self.object_schema(),
+            Some("array") => {
+                let mut schema = Map::from_iter([("type".into(), Value::String("array".into()))]);
+                if let Some(items) = &self.array_items {
+                    if items.total > 0 {
+                        schema.insert("items".into(), items.schema());
+                    }
+                }
+                Value::Object(schema)
+            }
+            Some(kind) => type_schema(kind),
+            None => Value::Object(Map::new()),
+        }
+    }
+
+    fn object_schema(&self) -> Value {
+        let mut schema = Map::from_iter([("type".into(), Value::String("object".into()))]);
+        if !self.properties.is_empty() {
+            schema.insert(
+                "properties".into(),
+                Value::Object(
+                    self.properties
+                        .iter()
+                        .map(|(name, stats)| (name.clone(), stats.schema()))
+                        .collect(),
+                ),
+            );
+            let required = self
+                .properties
+                .iter()
+                .filter(|(_, stats)| {
+                    self.object_count >= REQUIRED_FIELD_MIN_SAMPLES
+                        && (stats.total as f64 / self.object_count as f64)
+                            >= REQUIRED_FIELD_THRESHOLD
+                })
+                .map(|(name, _)| Value::String(name.clone()))
+                .collect::<Vec<_>>();
+            if !required.is_empty() {
+                schema.insert("required".into(), Value::Array(required));
+            }
+        }
+        Value::Object(schema)
+    }
+}
+
+fn infer_body_schema<'a>(bodies: impl Iterator<Item = &'a str>) -> Option<Value> {
+    let mut stats = JsonSchemaStats::default();
+    for body in bodies {
+        if let Ok(value) = serde_json::from_str::<Value>(body) {
+            stats.observe(&value);
+        }
+    }
+    (stats.total > 0).then(|| stats.schema())
+}
+
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn type_schema(kind: &str) -> Value {
+    Value::Object(Map::from_iter([(
+        "type".into(),
+        Value::String(kind.to_owned()),
+    )]))
+}
+
+fn endpoint_confidence(
+    rows: &[&RawObservation],
+    body_sample_count: u64,
+    truncated_body_count: u64,
+) -> f64 {
+    let sample_score = (rows.len().min(10) as f64) / 10.0;
+    let body_score = if body_sample_count == 0 {
+        0.8
+    } else {
+        body_sample_count as f64 / rows.len() as f64
+    };
+    let truncation_penalty = truncated_body_count as f64 / rows.len() as f64;
+    ((0.6 * sample_score) + (0.4 * body_score) - (0.3 * truncation_penalty)).clamp(0.0, 1.0)
 }
 
 fn path_parameters(path: &str) -> Vec<String> {
@@ -693,7 +830,12 @@ fn canonicalize_json(value: Value) -> Value {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::too_many_arguments,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
     use crate::{CaptureSessionId, RawObservationId, TeamId};
@@ -812,6 +954,213 @@ mod tests {
             .map(|endpoint| endpoint.key.path_template.as_str())
             .collect::<Vec<_>>();
         assert_eq!(paths, vec!["/assets/{assetParam}"]);
+    }
+
+    #[test]
+    fn grouping_infers_json_schema_without_requiring_sparse_optional_fields() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation_with_bodies(
+                    team,
+                    session,
+                    "POST",
+                    "/users",
+                    "api.example.test",
+                    Some(r#"{"email":"a@example.test","nickname":"a"}"#),
+                    Some(r#"{"id":1,"email":"a@example.test"}"#),
+                    false,
+                    false,
+                ),
+                observation_with_bodies(
+                    team,
+                    session,
+                    "POST",
+                    "/users",
+                    "api.example.test",
+                    Some(r#"{"email":"b@example.test"}"#),
+                    Some(r#"{"id":2,"email":"b@example.test"}"#),
+                    false,
+                    false,
+                ),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let request = grouped[0].request_schema.as_ref().expect("request schema");
+        assert_eq!(
+            request.pointer("/properties/email/type"),
+            Some(&Value::String("string".into()))
+        );
+        assert_eq!(
+            request.pointer("/properties/nickname/type"),
+            Some(&Value::String("string".into()))
+        );
+        assert_eq!(
+            request.pointer("/required"),
+            Some(&serde_json::json!(["email"]))
+        );
+    }
+
+    #[test]
+    fn grouping_infers_mixed_arrays_and_nullability() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation_with_bodies(
+                    team,
+                    session,
+                    "POST",
+                    "/events",
+                    "api.example.test",
+                    Some(r#"{"tags":["a",1],"memo":null}"#),
+                    Some(r#"{"ok":true}"#),
+                    false,
+                    false,
+                ),
+                observation_with_bodies(
+                    team,
+                    session,
+                    "POST",
+                    "/events",
+                    "api.example.test",
+                    Some(r#"{"tags":["b"],"memo":"later"}"#),
+                    Some(r#"{"ok":true}"#),
+                    false,
+                    false,
+                ),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let request = grouped[0].request_schema.as_ref().expect("request schema");
+        assert_eq!(
+            request.pointer("/properties/tags/type"),
+            Some(&Value::String("array".into()))
+        );
+        assert_eq!(
+            request.pointer("/properties/tags/items/oneOf"),
+            Some(&serde_json::json!([{"type":"integer"},{"type":"string"}]))
+        );
+        assert_eq!(
+            request.pointer("/properties/memo/oneOf"),
+            Some(&serde_json::json!([{"type":"null"},{"type":"string"}]))
+        );
+    }
+
+    #[test]
+    fn grouping_excludes_truncated_bodies_from_schema_and_confidence() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let grouped = group_observations_by_endpoint(
+            &[
+                observation_with_bodies(
+                    team,
+                    session,
+                    "POST",
+                    "/uploads",
+                    "api.example.test",
+                    Some(r#"{"name":"ok"}"#),
+                    Some(r#"{"accepted":true}"#),
+                    false,
+                    false,
+                ),
+                observation_with_bodies(
+                    team,
+                    session,
+                    "POST",
+                    "/uploads",
+                    "api.example.test",
+                    Some(r#"{"name":"broken""#),
+                    Some(r#"{"accepted":true"#),
+                    true,
+                    true,
+                ),
+            ],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let endpoint = &grouped[0];
+        assert_eq!(endpoint.confidence.truncated_body_count, 1);
+        assert_eq!(
+            endpoint
+                .request_schema
+                .as_ref()
+                .and_then(|s| s.pointer("/properties/name/type")),
+            Some(&Value::String("string".into()))
+        );
+    }
+
+    #[test]
+    fn grouping_schema_output_is_stable_for_shuffled_observations() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let rows = vec![
+            observation_with_bodies(
+                team,
+                session,
+                "POST",
+                "/users",
+                "api.example.test",
+                Some(r#"{"email":"a@example.test","admin":true}"#),
+                Some(r#"{"id":1}"#),
+                false,
+                false,
+            ),
+            observation_with_bodies(
+                team,
+                session,
+                "POST",
+                "/users",
+                "api.example.test",
+                Some(r#"{"email":"b@example.test","admin":false}"#),
+                Some(r#"{"id":2}"#),
+                false,
+                false,
+            ),
+        ];
+        let mut shuffled = rows.clone();
+        shuffled.reverse();
+
+        let a = group_observations_by_endpoint(&rows, EndpointGroupingConfig::default())
+            .expect("group observations");
+        let b = group_observations_by_endpoint(&shuffled, EndpointGroupingConfig::default())
+            .expect("group observations");
+        assert_eq!(
+            serde_json::to_value(&a).unwrap(),
+            serde_json::to_value(&b).unwrap()
+        );
+    }
+
+    #[test]
+    fn grouped_schema_candidate_validates_as_spec_version_input() {
+        let team = TeamId::generate();
+        let session = CaptureSessionId::generate();
+        let endpoints = group_observations_by_endpoint(
+            &[observation_with_bodies(
+                team,
+                session,
+                "POST",
+                "/users",
+                "api.example.test",
+                Some(r#"{"email":"a@example.test"}"#),
+                Some(r#"{"id":1}"#),
+                false,
+                false,
+            )],
+            EndpointGroupingConfig::default(),
+        )
+        .expect("group observations");
+
+        let input = candidate(endpoints)
+            .spec_version_input()
+            .expect("spec input");
+        assert!(input.validate().is_ok());
     }
 
     #[test]
@@ -1015,5 +1364,27 @@ mod tests {
             updated_at: now,
             created_at: now,
         }
+    }
+
+    fn observation_with_bodies(
+        team_id: TeamId,
+        capture_session_id: CaptureSessionId,
+        method: &str,
+        path: &str,
+        host: &str,
+        request_body: Option<&str>,
+        response_body: Option<&str>,
+        request_body_truncated: bool,
+        response_body_truncated: bool,
+    ) -> RawObservation {
+        let mut observation = observation(team_id, capture_session_id, method, path, host);
+        observation.request_body = request_body.map(str::to_owned);
+        observation.response_body = response_body.map(str::to_owned);
+        observation.request_body_truncated = request_body_truncated;
+        observation.response_body_truncated = response_body_truncated;
+        observation.request_body_bytes = request_body.map_or(0, |body| body.len() as i64);
+        observation.response_body_bytes = response_body.map_or(0, |body| body.len() as i64);
+        observation.body_seen = request_body.is_some() || response_body.is_some();
+        observation
     }
 }

@@ -55,6 +55,10 @@ immutable snapshot. Deterministic learned specs must not be generated directly f
 - Strong ID signals (UUIDs and all-digit segments) template unconditionally; weaker alphanumeric
   segments such as `v1`, `oauth2`, or `s3` stay literal while low-cardinality so API versions do
   not merge.
+- S8.6c JSON schema inference ignores truncated and malformed bodies, infers request and
+  per-status response schemas from valid JSON, represents mixed types with `oneOf`, and marks object
+  fields required only when they meet the min-sample/frequency threshold. Optional sparse fields do
+  not reduce confidence by themselves.
 - `LearnedConfidence` is stable review metadata with score, sample count, body coverage, path
   cardinality, truncation, and drop signals.
 - `canonical_openapi()` emits OpenAPI 3.1 JSON with deterministic ordering for paths, methods,
