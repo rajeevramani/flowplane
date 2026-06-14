@@ -1881,10 +1881,6 @@ fn learning_access_log(capture: &LearningCaptureInjection) -> accesslog::AccessL
                     "content-length".into(),
                     "accept".into(),
                     "user-agent".into(),
-                    "authorization".into(),
-                    "proxy-authorization".into(),
-                    "x-api-key".into(),
-                    "x-auth-token".into(),
                     "x-request-id".into(),
                     "x-envoy-original-path".into(),
                 ],
@@ -2980,6 +2976,30 @@ mod tests {
         assert!(log_any.type_url.ends_with("HttpGrpcAccessLogConfig"));
         let als =
             grpc_accesslog::HttpGrpcAccessLogConfig::decode(log_any.value.as_slice()).expect("als");
+        assert_eq!(
+            als.additional_request_headers_to_log,
+            vec![
+                "content-type",
+                "content-length",
+                "accept",
+                "user-agent",
+                "x-request-id",
+                "x-envoy-original-path"
+            ]
+        );
+        for sensitive in [
+            "authorization",
+            "proxy-authorization",
+            "x-api-key",
+            "x-auth-token",
+        ] {
+            assert!(
+                !als.additional_request_headers_to_log
+                    .iter()
+                    .any(|header| header == sensitive),
+                "learning ALS must not export credential header values"
+            );
+        }
         let common = als.common_config.expect("common");
         assert_eq!(
             common.log_name,
