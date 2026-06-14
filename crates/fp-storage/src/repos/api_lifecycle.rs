@@ -67,6 +67,22 @@ fn default_retention_policy_conflict() -> DomainError {
         .with_hint("create an API-specific retention policy or update the existing team default")
 }
 
+fn map_route_binding_write(e: sqlx::Error, name: &str) -> DomainError {
+    if let sqlx::Error::Database(db) = &e {
+        if db.code().as_deref() == Some("23505")
+            && db.constraint() == Some("idx_api_route_bindings_one_unscoped")
+        {
+            return unscoped_route_binding_conflict();
+        }
+    }
+    map_unique(e, "api route binding", name)
+}
+
+fn unscoped_route_binding_conflict() -> DomainError {
+    DomainError::conflict("an unscoped api route binding already exists for this route config")
+        .with_hint("scope the binding to a virtual host/route or update the existing binding")
+}
+
 fn api_from_row(row: &PgRow) -> ApiDefinition {
     ApiDefinition {
         id: ApiDefinitionId::from(row.get::<Uuid, _>("id")),
@@ -361,6 +377,30 @@ async fn ensure_route_scope_in_team(
     Ok(())
 }
 
+async fn ensure_no_unscoped_route_binding(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    api_definition_id: ApiDefinitionId,
+    route_config_id: RouteConfigId,
+) -> DomainResult<()> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM api_route_bindings \
+         WHERE team_id = $1 AND api_definition_id = $2 AND route_config_id = $3 \
+         AND virtual_host IS NULL AND route IS NULL)",
+    )
+    .bind(team_id.as_uuid())
+    .bind(api_definition_id.as_uuid())
+    .bind(route_config_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("check unscoped route binding: {e}")))?;
+    if exists {
+        Err(unscoped_route_binding_conflict())
+    } else {
+        Ok(())
+    }
+}
+
 async fn ensure_capture_route_scope_in_team(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
@@ -506,6 +546,9 @@ pub async fn create_route_binding(
     spec.validate()?;
     lock_api_in_team(tx, team.id, api_id).await?;
     ensure_route_scope_in_team(tx, team.id, spec).await?;
+    if spec.virtual_host.is_none() && spec.route.is_none() {
+        ensure_no_unscoped_route_binding(tx, team.id, api_id, spec.route_config_id).await?;
+    }
     let row = sqlx::query(&format!(
         "INSERT INTO api_route_bindings \
          (id, team_id, org_id, api_definition_id, route_config_id, listener_id, name, virtual_host, route) \
@@ -522,7 +565,7 @@ pub async fn create_route_binding(
     .bind(&spec.route)
     .fetch_one(&mut **tx)
     .await
-    .map_err(|e| map_unique(e, "api route binding", name))?;
+    .map_err(|e| map_route_binding_write(e, name))?;
     Ok(binding_from_row(&row))
 }
 

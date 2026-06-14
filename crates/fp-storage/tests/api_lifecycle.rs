@@ -189,6 +189,63 @@ async fn route_bindings_reject_cross_team_gateway_references() {
 }
 
 #[tokio::test]
+async fn route_bindings_allow_only_one_unscoped_binding_per_api_route_config() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("API"))
+            .await
+            .expect("api");
+    api_lifecycle::create_route_binding(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &unique("whole-rc"),
+        &ApiRouteBindingSpec {
+            route_config_id: route,
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+        },
+    )
+    .await
+    .expect("first unscoped binding");
+
+    let err = api_lifecycle::create_route_binding(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &unique("whole-rc-duplicate"),
+        &ApiRouteBindingSpec {
+            route_config_id: route,
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+        },
+    )
+    .await
+    .expect_err("duplicate unscoped binding");
+    assert_eq!(err.code, ErrorCode::Conflict);
+
+    api_lifecycle::create_route_binding(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &unique("scoped"),
+        &ApiRouteBindingSpec {
+            route_config_id: route,
+            listener_id: None,
+            virtual_host: Some("default".into()),
+            route: Some("all".into()),
+        },
+    )
+    .await
+    .expect("scoped binding remains allowed");
+    tx.commit().await.expect("commit");
+}
+
+#[tokio::test]
 async fn spec_versions_are_append_only_and_tools_reference_same_api_spec() {
     let Some(w) = world().await else { return };
     let mut tx = w.pool.begin().await.expect("tx");
