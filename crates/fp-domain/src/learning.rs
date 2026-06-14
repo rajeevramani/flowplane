@@ -7,7 +7,7 @@ use crate::api_lifecycle::{HttpMethod, SpecFormat, SpecSourceKind, SpecVersionIn
 use crate::error::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +29,21 @@ impl LearnedSpecCandidate {
         }
         for endpoint in &self.endpoints {
             endpoint.validate()?;
+        }
+        let mut openapi_operations = BTreeSet::new();
+        for endpoint in &self.endpoints {
+            let key = (
+                endpoint.key.path_template.as_str(),
+                endpoint.key.method.openapi_method(),
+            );
+            if !openapi_operations.insert(key) {
+                return Err(DomainError::validation(
+                    "learned spec candidate cannot contain duplicate OpenAPI path/method operations",
+                )
+                .with_hint(
+                    "split host-distinct endpoints into separate learned specs or snapshots before rendering OpenAPI",
+                ));
+            }
         }
         Ok(())
     }
@@ -433,6 +448,28 @@ mod tests {
         assert_eq!(input.source_kind, SpecSourceKind::Learned);
         assert_eq!(input.format, SpecFormat::OpenApi3);
         assert!(input.validate().is_ok());
+    }
+
+    #[test]
+    fn duplicate_path_method_operations_are_rejected() {
+        let mut duplicate = users_get();
+        duplicate.key.host = Some("api.example.test".into());
+
+        let err = candidate(vec![users_get(), duplicate])
+            .canonical_openapi()
+            .expect_err("duplicate operation is rejected");
+        assert!(err.message.contains("duplicate OpenAPI path/method"));
+    }
+
+    #[test]
+    fn host_distinct_path_method_collisions_are_rejected() {
+        let mut other_host = users_get();
+        other_host.key.host = Some("admin.example.test".into());
+
+        let err = candidate(vec![users_get(), other_host])
+            .canonical_openapi()
+            .expect_err("host-flattened operation collision is rejected");
+        assert!(err.message.contains("duplicate OpenAPI path/method"));
     }
 
     fn candidate(endpoints: Vec<LearnedEndpointAggregate>) -> LearnedSpecCandidate {
