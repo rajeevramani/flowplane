@@ -1676,7 +1676,7 @@ fn ext_proc_filter(capture: &LearningCaptureInjection) -> hcm::HttpFilter {
                 }),
                 message_timeout: Some(millis_duration(5_000)),
                 stat_prefix: format!("flowplane_learning_{}", capture.session_id.simple()),
-                observability_mode: true,
+                observability_mode: false,
                 disable_immediate_response: true,
                 route_cache_action: ext_proc::external_processor::RouteCacheAction::Retain as i32,
                 ..Default::default()
@@ -2712,7 +2712,7 @@ mod tests {
         assert!(ext_any.type_url.ends_with("ExternalProcessor"));
         let ext = ext_proc::ExternalProcessor::decode(ext_any.value.as_slice()).expect("ext proc");
         assert!(ext.failure_mode_allow);
-        assert!(ext.observability_mode);
+        assert!(!ext.observability_mode);
         assert_eq!(
             ext.processing_mode.expect("mode").request_body_mode,
             ext_proc::processing_mode::BodySendMode::BufferedPartial as i32

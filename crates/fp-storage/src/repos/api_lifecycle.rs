@@ -907,6 +907,8 @@ pub async fn ingest_raw_observation(
 ) -> DomainResult<RawObservation> {
     input.validate()?;
     let session = get_capture_session_for_update(tx, team.id, &session_id.to_string()).await?;
+    let existing =
+        get_raw_observation_for_update(tx, team.id, session.id, &input.request_id).await?;
     validate_locked_capture_ingest_binding(
         tx,
         &session,
@@ -914,12 +916,12 @@ pub async fn ingest_raw_observation(
         api_definition_id,
         route_config_id,
         listener_id,
+        existing.is_some(),
     )
     .await?;
-    reject_expired_session(tx, &session).await?;
-
-    let existing =
-        get_raw_observation_for_update(tx, team.id, session.id, &input.request_id).await?;
+    if existing.is_none() {
+        reject_expired_session(tx, &session).await?;
+    }
     if let Some(existing) = &existing {
         if existing.method != input.method || existing.path != input.path {
             return Err(DomainError::conflict(
@@ -1076,8 +1078,9 @@ async fn validate_locked_capture_ingest_binding(
     api_definition_id: Option<ApiDefinitionId>,
     route_config_id: RouteConfigId,
     listener_id: Option<ListenerId>,
+    allow_existing_observation_merge: bool,
 ) -> DomainResult<()> {
-    if session.status != CaptureSessionStatus::Capturing {
+    if session.status != CaptureSessionStatus::Capturing && !allow_existing_observation_merge {
         return Err(DomainError::conflict(format!(
             "learning session \"{}\" is {}",
             session.name,

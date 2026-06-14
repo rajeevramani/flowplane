@@ -774,3 +774,66 @@ async fn raw_observation_target_sample_count_completes_session() {
     assert!(refreshed.completed_at.is_some());
     assert_eq!(refreshed.sample_count, 1);
 }
+
+#[tokio::test]
+async fn raw_observation_body_can_merge_after_target_completion() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("late-body"),
+        &CaptureSessionSpec {
+            api_definition_id: None,
+            route_config_id: Some(route),
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+            target_sample_count: 1,
+            max_duration_seconds: Some(60),
+            max_bytes: 4096,
+            max_distinct_paths: 10,
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit session");
+
+    let metadata = observation("req-late", "/late");
+    let mut tx = w.pool.begin().await.expect("metadata tx");
+    api_lifecycle::ingest_raw_observation(
+        &mut tx, w.team_a, session.id, None, route, None, &metadata,
+    )
+    .await
+    .expect("metadata ingest");
+    tx.commit().await.expect("commit metadata");
+    let completed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(completed.status, CaptureSessionStatus::Completed);
+
+    let mut body = observation("req-late", "/late");
+    body.metadata_seen = false;
+    body.body_seen = true;
+    body.response_status = None;
+    body.response_body = Some("late-body".into());
+    let mut tx = w.pool.begin().await.expect("body tx");
+    let merged = api_lifecycle::ingest_raw_observation(
+        &mut tx, w.team_a, session.id, None, route, None, &body,
+    )
+    .await
+    .expect("late body merge");
+    tx.commit().await.expect("commit body");
+
+    assert!(merged.body_seen);
+    assert_eq!(merged.response_body.as_deref(), Some("late-body"));
+    let refreshed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(refreshed.status, CaptureSessionStatus::Completed);
+    assert_eq!(refreshed.sample_count, 1);
+    assert_eq!(refreshed.byte_count, 9);
+}

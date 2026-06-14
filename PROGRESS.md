@@ -407,9 +407,13 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           rejection, and terminal-session rejection.
         - Deferred to S8.5: concrete ALS/ExtProc service handlers, observation persistence,
           counter updates, and drop/truncation accounting.
-  - [ ] S8.5 Observation ingest pipeline: bounded sharded merge by `(team, session,
-        request_id)`, batched counter updates, body/header redaction, raw observation TTL, and
-        health-visible drop accounting so sample counters cannot lie.
+  - [x] S8.5 Observation ingest pipeline: bounded merge by `(team, session, request_id)`,
+        truthful counter updates, body/header redaction, raw observation TTL, and health-visible
+        drop accounting so sample counters cannot lie.
+        - V2 design note: this intentionally starts with transactional durable merge and
+          counter recalculation from stored rows, not v1's in-memory sharded worker. A batched
+          worker can be added later as a performance optimization without changing the storage
+          contract.
         - [x] S8.5a durable ingest core: `raw_observations` table with composite team/session
           FKs and TTL, domain `ObservationIngest` validation, storage-level merge by
           `(team, session, request_id)`, credential/proxy header redaction, byte/path/sample
@@ -423,9 +427,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           `x-flowplane-*` gRPC metadata into the ingest core. ALS captures method/path/status and
           logged headers. ExtProc captures request/response headers and bounded body payloads in
           observability/fail-open mode, with unit tests for protobuf-to-ingest mapping.
-        - [ ] S8.5c live Envoy capture E2E: prove manual `learn start` + traffic produces
-          persisted raw observations and truthful counters through the real injected ALS/ExtProc
-          path.
+        - [x] S8.5c live Envoy capture E2E: `scripts/e2e-envoy.sh` now starts a route-scoped
+          learning session against the `expose` resources, sends traffic through real Envoy,
+          verifies raw observations/body capture/header redaction/counters in Postgres, and then
+          continues through restart convergence, cross-team isolation, filters, SDS rotation, and
+          advanced parity.
   - [ ] S8.6 Inference and aggregation v2: v1-inspired JSON schema/path heuristics, but with
         host-aware endpoint keys, frequency/min-sample required thresholds, header
         allowlist/frequency rules, path-cardinality caps with outlier bucket, confidence that

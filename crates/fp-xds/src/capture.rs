@@ -11,8 +11,10 @@ use envoy_types::pb::envoy::service::accesslog::v3::{
     stream_access_logs_message, StreamAccessLogsMessage, StreamAccessLogsResponse,
 };
 use envoy_types::pb::envoy::service::ext_proc::v3::{
+    common_response,
     external_processor_server::{ExternalProcessor, ExternalProcessorServer},
-    processing_request, ProcessingRequest, ProcessingResponse,
+    processing_request, processing_response, BodyResponse, CommonResponse, HeadersResponse,
+    ProcessingRequest, ProcessingResponse, TrailersResponse,
 };
 use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::{
@@ -141,12 +143,15 @@ impl ExternalProcessor for LearningCaptureService {
         let ctx = capture_context(request.metadata())?;
         let mut stream = request.into_inner();
         let service = self.clone();
-        let (_tx, rx) = tokio::sync::mpsc::channel::<Result<ProcessingResponse, Status>>(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProcessingResponse, Status>>(16);
         tokio::spawn(async move {
             let mut state = ExtProcState::default();
             loop {
                 match stream.message().await {
                     Ok(Some(message)) => {
+                        if tx.send(Ok(continue_response(&message))).await.is_err() {
+                            break;
+                        }
                         if let Some(input) = observation_from_ext_proc(&mut state, message) {
                             if let Err(status) = service.ingest(ctx, input).await {
                                 tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ExtProc learning observation");
@@ -356,6 +361,52 @@ fn capture_body(bytes: Vec<u8>, partial: bool) -> (String, bool) {
         &bytes
     };
     (String::from_utf8_lossy(bytes).to_string(), truncated)
+}
+
+fn continue_response(request: &ProcessingRequest) -> ProcessingResponse {
+    let common = || CommonResponse {
+        status: common_response::ResponseStatus::Continue as i32,
+        ..Default::default()
+    };
+    let response = match request.request.as_ref() {
+        Some(processing_request::Request::RequestHeaders(_)) => {
+            processing_response::Response::RequestHeaders(HeadersResponse {
+                response: Some(common()),
+            })
+        }
+        Some(processing_request::Request::ResponseHeaders(_)) => {
+            processing_response::Response::ResponseHeaders(HeadersResponse {
+                response: Some(common()),
+            })
+        }
+        Some(processing_request::Request::RequestBody(_)) => {
+            processing_response::Response::RequestBody(BodyResponse {
+                response: Some(common()),
+            })
+        }
+        Some(processing_request::Request::ResponseBody(_)) => {
+            processing_response::Response::ResponseBody(BodyResponse {
+                response: Some(common()),
+            })
+        }
+        Some(processing_request::Request::RequestTrailers(_)) => {
+            processing_response::Response::RequestTrailers(TrailersResponse {
+                header_mutation: None,
+            })
+        }
+        Some(processing_request::Request::ResponseTrailers(_)) => {
+            processing_response::Response::ResponseTrailers(TrailersResponse {
+                header_mutation: None,
+            })
+        }
+        None => processing_response::Response::RequestHeaders(HeadersResponse {
+            response: Some(common()),
+        }),
+    };
+    ProcessingResponse {
+        response: Some(response),
+        ..Default::default()
+    }
 }
 
 fn status_from_domain(err: DomainError) -> Status {

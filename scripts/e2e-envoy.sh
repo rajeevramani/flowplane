@@ -114,6 +114,39 @@ grep -q "TOTAL DATAPLANES" /tmp/fp-e2e-xds-status.txt || fail "xds status did no
 grep -q "no rows" /tmp/fp-e2e-xds-nacks.txt || fail "unexpected xDS NACKs after happy-path expose"
 echo "PHASE 1 OK: '$BODY' served through Envoy via ADS-delivered config"
 
+# ---- Phase 1b: learning capture through the real injected ALS/ExtProc path. Start a
+# route-scoped session on the resources created by expose, then send traffic with stable
+# request IDs so ALS metadata and ExtProc body observations merge into raw_observations.
+RC_ID=$(curl -fsS "${auth[@]}" http://$API/api/v1/teams/default/route-configs/e2e-routes \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+LISTENER_ID=$(curl -fsS "${auth[@]}" http://$API/api/v1/teams/default/listeners/e2e \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+./target/debug/flowplane learn start e2e-capture \
+  --route-config-id "$RC_ID" --listener-id "$LISTENER_ID" \
+  --target-sample-count 2 --max-bytes 65536 --max-distinct-paths 5 >/tmp/fp-e2e-learn-start.txt
+grep -q "e2e-capture" /tmp/fp-e2e-learn-start.txt || fail "learn start did not render session"
+for i in $(seq 1 40); do
+  curl -fsS -H "x-request-id: fp-e2e-learn-1" -H "x-api-key: secret-one" \
+    http://127.0.0.1:$GW_PORT/ >/dev/null 2>&1 || true
+  curl -fsS -H "x-request-id: fp-e2e-learn-2" -H "x-api-key: secret-two" \
+    http://127.0.0.1:$GW_PORT/ >/dev/null 2>&1 || true
+  LEARN_COUNTS=$(psql "$PG_DB_URL" -Atc "SELECT sample_count || ',' || path_count || ',' || drop_count || ',' || status FROM capture_sessions WHERE name = 'e2e-capture'" 2>/dev/null || true)
+  RAW_COUNT=$(psql "$PG_DB_URL" -Atc "SELECT count(*) FROM raw_observations ro JOIN capture_sessions cs ON cs.id = ro.capture_session_id WHERE cs.name = 'e2e-capture'" 2>/dev/null || echo 0)
+  BODY_COUNT=$(psql "$PG_DB_URL" -Atc "SELECT count(*) FROM raw_observations ro JOIN capture_sessions cs ON cs.id = ro.capture_session_id WHERE cs.name = 'e2e-capture' AND ro.body_seen" 2>/dev/null || echo 0)
+  if [ "$LEARN_COUNTS" = "2,1,0,completed" ] && [ "$RAW_COUNT" = "2" ] && [ "$BODY_COUNT" -ge 1 ]; then
+    break
+  fi
+  sleep 1
+done
+[ "$LEARN_COUNTS" = "2,1,0,completed" ] || fail "learning counters unexpected: $LEARN_COUNTS"
+[ "$RAW_COUNT" = "2" ] || fail "expected two raw observations, got $RAW_COUNT"
+[ "$BODY_COUNT" -ge 1 ] || fail "expected ExtProc body capture, got $BODY_COUNT body rows"
+REDACTED_KEYS=$(psql "$PG_DB_URL" -Atc "SELECT count(*) FROM raw_observations ro JOIN capture_sessions cs ON cs.id = ro.capture_session_id WHERE cs.name = 'e2e-capture' AND ro.request_headers->>'x-api-key' = '[REDACTED]'" 2>/dev/null || echo 0)
+[ "$REDACTED_KEYS" = "2" ] || fail "expected x-api-key redaction on both raw observations, got $REDACTED_KEYS"
+./target/debug/flowplane learn get e2e-capture >/tmp/fp-e2e-learn-get.txt
+grep -q "completed" /tmp/fp-e2e-learn-get.txt || fail "learn get did not show completed session"
+echo "PHASE 1b OK: live ALS/ExtProc capture persisted raw observations with truthful counters"
+
 # ---- Phase 2: restart convergence. Kill the CP while Envoy keeps running; the restarted
 # CP must prime its snapshot cache from the DB (not wipe the dataplane) and a post-restart
 # mutation must reach the already-connected Envoy.
@@ -379,5 +412,5 @@ curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump \
   || fail "advanced config dump missing global rate-limit filter"
 echo "PHASE 7 OK: advanced route/listener/filter parity ACKed and served traffic"
 
-echo "E2E PASSED: traffic, restart convergence, cross-team isolation, http filters, auth filters, SDS rotation, advanced parity"
+echo "E2E PASSED: traffic, learning capture, restart convergence, cross-team isolation, http filters, auth filters, SDS rotation, advanced parity"
 exit 0
