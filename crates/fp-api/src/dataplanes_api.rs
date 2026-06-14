@@ -533,15 +533,15 @@ pub async fn revoke_proxy_certificate(
 }
 
 fn validate_bootstrap_query(query: &EnvoyConfigQuery) -> Result<(), DomainError> {
-    for (name, value) in [("xds_host", query.xds_host.as_str())] {
-        if value.trim().is_empty() {
-            return Err(DomainError::validation(format!("{name} must not be empty")));
-        }
-        if value.chars().any(|c| c.is_control()) {
-            return Err(DomainError::validation(format!(
-                "{name} must not contain control characters"
-            )));
-        }
+    let name = "xds_host";
+    let value = query.xds_host.as_str();
+    if value.trim().is_empty() {
+        return Err(DomainError::validation(format!("{name} must not be empty")));
+    }
+    if value.chars().any(|c| c.is_control()) {
+        return Err(DomainError::validation(format!(
+            "{name} must not contain control characters"
+        )));
     }
     if matches!(query.mode, BootstrapMode::Mtls) {
         for (name, value) in [
@@ -594,14 +594,9 @@ fn render_envoy_bootstrap(
               trusted_ca:
                 filename: {ca_path}
 "#,
-            cert_path = yaml_quote(
-                query
-                    .cert_path
-                    .as_deref()
-                    .expect("validated mTLS cert_path")
-            ),
-            key_path = yaml_quote(query.key_path.as_deref().expect("validated mTLS key_path")),
-            ca_path = yaml_quote(query.ca_path.as_deref().expect("validated mTLS ca_path")),
+            cert_path = yaml_quote(query.cert_path.as_deref().unwrap_or_default()),
+            key_path = yaml_quote(query.key_path.as_deref().unwrap_or_default()),
+            ca_path = yaml_quote(query.ca_path.as_deref().unwrap_or_default()),
         ),
     };
     format!(

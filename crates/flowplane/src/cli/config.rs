@@ -244,6 +244,7 @@ pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
 
 #[cfg(test)]
 #[cfg(unix)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::write_private_file;
     use std::fs;

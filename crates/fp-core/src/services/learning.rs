@@ -146,9 +146,11 @@ pub async fn stop_session(
         ctx,
         team,
         session,
-        CaptureSessionStatus::Completed,
-        Action::Execute,
-        "learn.stop",
+        SessionTransition {
+            status: CaptureSessionStatus::Completed,
+            action: Action::Execute,
+            audit_action: "learn.stop",
+        },
         request_id,
     )
     .await
@@ -166,12 +168,21 @@ pub async fn cancel_session(
         ctx,
         team,
         session,
-        CaptureSessionStatus::Cancelled,
-        Action::Delete,
-        "learn.cancel",
+        SessionTransition {
+            status: CaptureSessionStatus::Cancelled,
+            action: Action::Delete,
+            audit_action: "learn.cancel",
+        },
         request_id,
     )
     .await
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SessionTransition {
+    status: CaptureSessionStatus,
+    action: Action,
+    audit_action: &'static str,
 }
 
 async fn transition_session(
@@ -179,18 +190,17 @@ async fn transition_session(
     ctx: &PrincipalCtx,
     team: TeamRef,
     session: &str,
-    status: CaptureSessionStatus,
-    action: Action,
-    audit_action: &'static str,
+    transition: SessionTransition,
     request_id: RequestId,
 ) -> DomainResult<CaptureSession> {
-    authorize(pool, ctx, action, team, request_id).await?;
+    authorize(pool, ctx, transition.action, team, request_id).await?;
     let mut tx = pool.begin().await.map_err(crate::services::db_err(
         "transition learning session: begin",
     ))?;
     let updated =
-        api_lifecycle::transition_capture_session(&mut tx, team.id, session, status).await?;
-    let event = match status {
+        api_lifecycle::transition_capture_session(&mut tx, team.id, session, transition.status)
+            .await?;
+    let event = match transition.status {
         CaptureSessionStatus::Completed => DomainEvent::CaptureSessionStopped {
             capture_session_id: updated.id.as_uuid(),
             name: updated.name.clone(),
@@ -221,7 +231,7 @@ async fn transition_session(
             ctx,
             request_id,
             team,
-            audit_action,
+            transition.audit_action,
             format!("learning-sessions/{}", updated.name),
         ),
     )

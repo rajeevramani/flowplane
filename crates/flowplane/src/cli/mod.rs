@@ -1755,6 +1755,7 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::cli::config::CliConfig;
