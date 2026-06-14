@@ -121,6 +121,8 @@ fn observation(request_id: &str, path: &str) -> ObservationIngest {
         response_body: None,
         request_body_truncated: false,
         response_body_truncated: false,
+        request_body_bytes: None,
+        response_body_bytes: None,
         metadata_seen: true,
         body_seen: false,
         observed_at: Utc::now(),
@@ -1001,6 +1003,54 @@ async fn raw_observation_quota_drop_does_not_insert_or_move_sample_count() {
             .await
             .expect("raw count");
     assert_eq!(raw_count, 0);
+}
+
+#[tokio::test]
+async fn raw_observation_truncated_body_quota_uses_reported_original_bytes() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("truncated-quota"),
+        &CaptureSessionSpec {
+            api_definition_id: None,
+            route_config_id: Some(route),
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+            target_sample_count: 10,
+            max_duration_seconds: Some(60),
+            max_bytes: 5,
+            max_distinct_paths: 10,
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit session");
+
+    let mut truncated = observation("req-truncated", "/truncated");
+    truncated.body_seen = true;
+    truncated.request_body = Some("abc".into());
+    truncated.request_body_truncated = true;
+    truncated.request_body_bytes = Some(10);
+    let mut tx = w.pool.begin().await.expect("ingest tx");
+    let err = api_lifecycle::ingest_raw_observation(
+        &mut tx, w.team_a, session.id, None, route, None, &truncated,
+    )
+    .await
+    .expect_err("reported original size exceeds quota");
+    assert_eq!(err.code, ErrorCode::QuotaExceeded);
+    tx.commit().await.expect("commit drop count");
+
+    let refreshed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(refreshed.sample_count, 0);
+    assert_eq!(refreshed.byte_count, 0);
+    assert_eq!(refreshed.drop_count, 1);
 }
 
 #[tokio::test]
