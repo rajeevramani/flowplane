@@ -306,11 +306,15 @@ async fn process_report(
             }
         }
     };
+    if requests_delta < 0 || errors_delta < 0 || warming_delta < 0 {
+        return Ok(ack(ids, AckStatus::Invalid, "negative telemetry delta"));
+    }
 
     fp_storage::repos::dataplanes::record_telemetry_by_id(
         pool,
         team_id,
         bound_dataplane_id,
+        &report.report_id,
         requests_delta,
         errors_delta,
         warming_delta,
