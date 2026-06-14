@@ -1055,11 +1055,17 @@ pub async fn ingest_raw_observation(
 
     let incoming_request_headers = sanitize_headers(&input.request_headers);
     let incoming_response_headers = sanitize_headers(&input.response_headers);
-    let merged = match existing {
+    let merged = match existing.as_ref() {
         Some(existing) => RawObservation {
             response_status: input.response_status.or(existing.response_status),
-            request_headers: merge_headers(existing.request_headers, incoming_request_headers),
-            response_headers: merge_headers(existing.response_headers, incoming_response_headers),
+            request_headers: merge_headers(
+                existing.request_headers.clone(),
+                incoming_request_headers,
+            ),
+            response_headers: merge_headers(
+                existing.response_headers.clone(),
+                incoming_response_headers,
+            ),
             request_body: input
                 .request_body
                 .clone()
@@ -1074,7 +1080,7 @@ pub async fn ingest_raw_observation(
             metadata_seen: existing.metadata_seen || input.metadata_seen,
             body_seen: existing.body_seen || input.body_seen,
             observed_at: existing.observed_at.min(input.observed_at),
-            ..existing
+            ..existing.clone()
         },
         None => RawObservation {
             id: RawObservationId::generate(),
@@ -1101,11 +1107,10 @@ pub async fn ingest_raw_observation(
     };
     let merged_request_bytes = body_bytes(merged.request_body.as_deref());
     let merged_response_bytes = body_bytes(merged.response_body.as_deref());
-    let existing = existing_row_exists(tx, team.id, session.id, &input.request_id).await?;
     enforce_observation_quotas(
         tx,
         &session,
-        existing,
+        existing.as_ref(),
         &merged.path,
         merged_request_bytes + merged_response_bytes,
         &input.request_id,
@@ -1160,7 +1165,15 @@ pub async fn ingest_raw_observation(
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("ingest raw observation: {e}")))?;
-    recalculate_capture_counters(tx, team.id, session.id).await?;
+    update_capture_counters_incremental(
+        tx,
+        &session,
+        existing.as_ref(),
+        &merged.path,
+        merged_request_bytes + merged_response_bytes,
+        &input.request_id,
+    )
+    .await?;
     Ok(raw_observation_from_row(&row))
 }
 
@@ -1303,24 +1316,6 @@ async fn get_raw_observation_for_update(
     Ok(row.as_ref().map(raw_observation_from_row))
 }
 
-async fn existing_row_exists(
-    tx: &mut Transaction<'_, Postgres>,
-    team_id: TeamId,
-    session_id: CaptureSessionId,
-    request_id: &str,
-) -> DomainResult<bool> {
-    sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM raw_observations \
-         WHERE team_id = $1 AND capture_session_id = $2 AND request_id = $3)",
-    )
-    .bind(team_id.as_uuid())
-    .bind(session_id.as_uuid())
-    .bind(request_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|e| DomainError::internal(format!("check raw observation existence: {e}")))
-}
-
 async fn raw_observation_ttl_days(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
@@ -1344,31 +1339,18 @@ async fn raw_observation_ttl_days(
 async fn enforce_observation_quotas(
     tx: &mut Transaction<'_, Postgres>,
     session: &CaptureSession,
-    existing: bool,
+    existing: Option<&RawObservation>,
     path: &str,
     merged_body_bytes: i64,
     request_id: &str,
 ) -> DomainResult<()> {
-    let (sample_count_without_request, bytes_without_request, path_already_present): (i64, i64, bool) =
-        sqlx::query_as(
-            "SELECT \
-                count(*) FILTER (WHERE request_id <> $3), \
-                COALESCE(sum(request_body_bytes + response_body_bytes) FILTER (WHERE request_id <> $3), 0)::bigint, \
-                EXISTS(SELECT 1 FROM raw_observations \
-                    WHERE team_id = $1 AND capture_session_id = $2 AND path = $4 AND request_id <> $3) \
-             FROM raw_observations WHERE team_id = $1 AND capture_session_id = $2",
-        )
-        .bind(session.team_id.as_uuid())
-        .bind(session.id.as_uuid())
-        .bind(request_id)
-        .bind(path)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| DomainError::internal(format!("count raw observations for quota: {e}")))?;
-
-    let next_sample_count = sample_count_without_request + 1;
-    let next_byte_count = bytes_without_request + merged_body_bytes;
-    if !existing && next_sample_count > i64::from(session.target_sample_count) {
+    let existing_body_bytes = existing
+        .map(|row| row.request_body_bytes + row.response_body_bytes)
+        .unwrap_or(0);
+    let sample_delta = if existing.is_some() { 0 } else { 1 };
+    let next_sample_count = session.sample_count + sample_delta;
+    let next_byte_count = session.byte_count - existing_body_bytes + merged_body_bytes;
+    if existing.is_none() && next_sample_count > i64::from(session.target_sample_count) {
         increment_capture_drop_count(tx, session.team_id, session.id).await?;
         return Err(DomainError::new(
             ErrorCode::QuotaExceeded,
@@ -1384,16 +1366,17 @@ async fn enforce_observation_quotas(
         )
         .with_hint("raise max_bytes or start a narrower learning session"));
     }
-    if !existing
-        && !path_already_present
-        && session.path_count + 1 > i64::from(session.max_distinct_paths)
-    {
-        increment_capture_drop_count(tx, session.team_id, session.id).await?;
-        return Err(DomainError::new(
-            ErrorCode::QuotaExceeded,
-            "learning session has reached its distinct path limit",
-        )
-        .with_hint("raise max_distinct_paths or scope capture to fewer routes"));
+    if existing.is_none() {
+        let path_already_present =
+            raw_observation_path_exists(tx, session.team_id, session.id, path, request_id).await?;
+        if !path_already_present && session.path_count + 1 > i64::from(session.max_distinct_paths) {
+            increment_capture_drop_count(tx, session.team_id, session.id).await?;
+            return Err(DomainError::new(
+                ErrorCode::QuotaExceeded,
+                "learning session has reached its distinct path limit",
+            )
+            .with_hint("raise max_distinct_paths or scope capture to fewer routes"));
+        }
     }
     Ok(())
 }
@@ -1415,39 +1398,71 @@ async fn increment_capture_drop_count(
     Ok(())
 }
 
-async fn recalculate_capture_counters(
+async fn raw_observation_path_exists(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
     session_id: CaptureSessionId,
+    path: &str,
+    request_id: &str,
+) -> DomainResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM raw_observations \
+         WHERE team_id = $1 AND capture_session_id = $2 AND path = $3 AND request_id <> $4)",
+    )
+    .bind(team_id.as_uuid())
+    .bind(session_id.as_uuid())
+    .bind(path)
+    .bind(request_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("check raw observation path: {e}")))
+}
+
+async fn update_capture_counters_incremental(
+    tx: &mut Transaction<'_, Postgres>,
+    session: &CaptureSession,
+    existing: Option<&RawObservation>,
+    path: &str,
+    merged_body_bytes: i64,
+    request_id: &str,
 ) -> DomainResult<()> {
+    let existing_body_bytes = existing
+        .map(|row| row.request_body_bytes + row.response_body_bytes)
+        .unwrap_or(0);
+    let sample_delta = if existing.is_some() { 0 } else { 1 };
+    let path_delta = if existing.is_some()
+        || raw_observation_path_exists(tx, session.team_id, session.id, path, request_id).await?
+    {
+        0
+    } else {
+        1
+    };
+    let byte_delta = merged_body_bytes - existing_body_bytes;
     sqlx::query(
-        "WITH counts AS ( \
-            SELECT count(*)::bigint AS sample_count, \
-                   COALESCE(sum(request_body_bytes + response_body_bytes), 0)::bigint AS byte_count, \
-                   count(DISTINCT path)::bigint AS path_count \
-            FROM raw_observations WHERE team_id = $1 AND capture_session_id = $2 \
-         ) \
-         UPDATE capture_sessions SET \
-            sample_count = counts.sample_count, \
-            byte_count = counts.byte_count, \
-            path_count = counts.path_count, \
+        "UPDATE capture_sessions SET \
+            sample_count = sample_count + $3, \
+            byte_count = byte_count + $4, \
+            path_count = path_count + $5, \
             status = CASE \
-                WHEN status = 'capturing' AND counts.sample_count >= target_sample_count \
+                WHEN status = 'capturing' AND sample_count + $3 >= target_sample_count \
                     THEN 'completed' \
                 ELSE status \
             END, \
             completed_at = CASE \
-                WHEN status = 'capturing' AND counts.sample_count >= target_sample_count \
+                WHEN status = 'capturing' AND sample_count + $3 >= target_sample_count \
                     THEN COALESCE(completed_at, now()) \
                 ELSE completed_at \
             END, \
             updated_at = now() \
-         FROM counts WHERE capture_sessions.team_id = $1 AND capture_sessions.id = $2",
+         WHERE team_id = $1 AND id = $2",
     )
-    .bind(team_id.as_uuid())
-    .bind(session_id.as_uuid())
+    .bind(session.team_id.as_uuid())
+    .bind(session.id.as_uuid())
+    .bind(sample_delta)
+    .bind(byte_delta)
+    .bind(path_delta)
     .execute(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("recalculate learning counters: {e}")))?;
+    .map_err(|e| DomainError::internal(format!("update learning counters: {e}")))?;
     Ok(())
 }
