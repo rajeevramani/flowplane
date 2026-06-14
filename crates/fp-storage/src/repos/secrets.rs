@@ -94,6 +94,14 @@ pub async fn list_secrets(
     Ok((items, total))
 }
 
+pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
+    sqlx::query_scalar("SELECT count(*) FROM secrets WHERE team_id = $1")
+        .bind(team_id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("count secrets: {e}")))
+}
+
 pub async fn get_secret(
     pool: &PgPool,
     team_id: TeamId,

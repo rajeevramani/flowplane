@@ -58,6 +58,7 @@ pub async fn create_secret(
     validate_name(write.name)?;
     write.spec.validate()?;
     validate_expiry(write.expires_at)?;
+    crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Secrets).await?;
     let encrypted = encrypt_spec(&write.spec)?;
 
     let mut tx = pool

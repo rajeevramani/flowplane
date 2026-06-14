@@ -495,6 +495,14 @@ pub async fn list_api_definitions(
     Ok((rows.iter().map(api_from_row).collect(), total))
 }
 
+pub async fn count_api_definitions_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
+    sqlx::query_scalar("SELECT count(*) FROM api_definitions WHERE team_id = $1")
+        .bind(team_id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("count apis: {e}")))
+}
+
 pub async fn delete_api_definition(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
@@ -863,6 +871,14 @@ pub async fn list_capture_sessions(
             .collect::<DomainResult<Vec<_>>>()?,
         total,
     ))
+}
+
+pub async fn count_capture_sessions_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
+    sqlx::query_scalar("SELECT count(*) FROM capture_sessions WHERE team_id = $1")
+        .bind(team_id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("count learning sessions: {e}")))
 }
 
 pub async fn list_capturing_capture_sessions(
