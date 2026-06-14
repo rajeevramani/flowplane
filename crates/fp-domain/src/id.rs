@@ -130,6 +130,10 @@ domain_id!(
     /// Identifies one API observation/spec retention policy.
     RetentionPolicyId
 );
+domain_id!(
+    /// Identifies one bounded traffic capture session for learning.
+    CaptureSessionId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]

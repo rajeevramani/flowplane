@@ -6,6 +6,7 @@ pub mod clusters;
 pub mod dataplanes;
 pub mod expose;
 pub mod gateway;
+pub mod learning;
 pub mod orgs;
 pub mod quota;
 pub mod secrets;

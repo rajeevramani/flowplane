@@ -5,13 +5,14 @@
 
 use fp_domain::api_lifecycle::{
     validate_api_name, ApiDefinition, ApiDefinitionSpec, ApiRouteBinding, ApiRouteBindingSpec,
-    ApiTool, ApiToolSpec, HttpMethod, RetentionPolicy, RetentionPolicySpec, SpecFormat,
-    SpecSourceKind, SpecVersion, SpecVersionInput,
+    ApiTool, ApiToolSpec, CaptureSession, CaptureSessionSpec, CaptureSessionStatus, HttpMethod,
+    RetentionPolicy, RetentionPolicySpec, SpecFormat, SpecSourceKind, SpecVersion,
+    SpecVersionInput,
 };
 use fp_domain::authz::TeamRef;
 use fp_domain::{
-    ApiDefinitionId, ApiRouteBindingId, ApiToolId, DomainError, DomainResult, ErrorCode,
-    ListenerId, RetentionPolicyId, RouteConfigId, SpecVersionId, TeamId,
+    ApiDefinitionId, ApiRouteBindingId, ApiToolId, CaptureSessionId, DomainError, DomainResult,
+    ErrorCode, ListenerId, RetentionPolicyId, RouteConfigId, SpecVersionId, TeamId,
 };
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgRow;
@@ -28,6 +29,10 @@ const TOOL_COLUMNS: &str = "id, team_id, api_definition_id, spec_version_id, nam
     method, path, input_schema, output_schema, enabled, created_at, updated_at";
 const RETENTION_COLUMNS: &str = "id, team_id, api_definition_id, name, raw_observation_ttl_days, \
     max_spec_versions, created_at, updated_at";
+const CAPTURE_SESSION_COLUMNS: &str = "id, team_id, name, status, api_definition_id, \
+    route_config_id, listener_id, virtual_host, route, target_sample_count, max_duration_seconds, \
+    max_bytes, max_distinct_paths, sample_count, byte_count, path_count, drop_count, started_at, \
+    completed_at, cancelled_at, updated_at, created_at";
 
 fn map_unique(e: sqlx::Error, kind: &str, name: &str) -> DomainError {
     if let sqlx::Error::Database(db) = &e {
@@ -115,6 +120,39 @@ fn retention_from_row(row: &PgRow) -> RetentionPolicy {
     }
 }
 
+fn capture_session_from_row(row: &PgRow) -> DomainResult<CaptureSession> {
+    Ok(CaptureSession {
+        id: CaptureSessionId::from(row.get::<Uuid, _>("id")),
+        team_id: TeamId::from(row.get::<Uuid, _>("team_id")),
+        name: row.get("name"),
+        status: CaptureSessionStatus::parse(&row.get::<String, _>("status"))?,
+        api_definition_id: row
+            .get::<Option<Uuid>, _>("api_definition_id")
+            .map(ApiDefinitionId::from),
+        route_config_id: row
+            .get::<Option<Uuid>, _>("route_config_id")
+            .map(RouteConfigId::from),
+        listener_id: row
+            .get::<Option<Uuid>, _>("listener_id")
+            .map(ListenerId::from),
+        virtual_host: row.get("virtual_host"),
+        route: row.get("route"),
+        target_sample_count: row.get("target_sample_count"),
+        max_duration_seconds: row.get("max_duration_seconds"),
+        max_bytes: row.get("max_bytes"),
+        max_distinct_paths: row.get("max_distinct_paths"),
+        sample_count: row.get("sample_count"),
+        byte_count: row.get("byte_count"),
+        path_count: row.get("path_count"),
+        drop_count: row.get("drop_count"),
+        started_at: row.get("started_at"),
+        completed_at: row.get("completed_at"),
+        cancelled_at: row.get("cancelled_at"),
+        updated_at: row.get("updated_at"),
+        created_at: row.get("created_at"),
+    })
+}
+
 fn canonical_hash(value: &serde_json::Value) -> DomainResult<String> {
     let bytes = serde_json::to_vec(value)
         .map_err(|e| DomainError::internal(format!("serialize api spec for hash: {e}")))?;
@@ -199,6 +237,21 @@ async fn ensure_route_scope_in_team(
         }
     }
     Ok(())
+}
+
+async fn ensure_capture_route_scope_in_team(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    route_config_id: RouteConfigId,
+    listener_id: Option<ListenerId>,
+) -> DomainResult<()> {
+    let spec = ApiRouteBindingSpec {
+        route_config_id,
+        listener_id,
+        virtual_host: None,
+        route: None,
+    };
+    ensure_route_scope_in_team(tx, team_id, &spec).await
 }
 
 pub async fn create_api_definition(
@@ -485,6 +538,23 @@ pub async fn count_route_bindings(
     .map_err(|e| DomainError::internal(format!("count api route bindings: {e}")))
 }
 
+pub async fn list_route_bindings_for_api(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+) -> DomainResult<Vec<ApiRouteBinding>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {BINDING_COLUMNS} FROM api_route_bindings \
+         WHERE team_id = $1 AND api_definition_id = $2 ORDER BY name"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list api route bindings: {e}")))?;
+    Ok(rows.iter().map(binding_from_row).collect())
+}
+
 pub async fn list_api_tools(
     pool: &PgPool,
     team_id: TeamId,
@@ -529,4 +599,234 @@ pub async fn create_retention_policy(
     .await
     .map_err(|e| map_unique(e, "api retention policy", name))?;
     Ok(retention_from_row(&row))
+}
+
+pub async fn create_capture_session(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    name: &str,
+    spec: &CaptureSessionSpec,
+) -> DomainResult<CaptureSession> {
+    validate_api_name(name)?;
+    spec.validate()?;
+    if let Some(api_id) = spec.api_definition_id {
+        ensure_api_in_team(tx, team.id, api_id).await?;
+    }
+    if let Some(route_config_id) = spec.route_config_id {
+        ensure_capture_route_scope_in_team(tx, team.id, route_config_id, spec.listener_id).await?;
+    }
+    let row = sqlx::query(&format!(
+        "INSERT INTO capture_sessions \
+         (id, team_id, org_id, name, status, api_definition_id, route_config_id, listener_id, \
+          virtual_host, route, target_sample_count, max_duration_seconds, max_bytes, \
+          max_distinct_paths) \
+         VALUES ($1, $2, $3, $4, 'capturing', $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+         RETURNING {CAPTURE_SESSION_COLUMNS}"
+    ))
+    .bind(CaptureSessionId::generate().as_uuid())
+    .bind(team.id.as_uuid())
+    .bind(team.org_id.as_uuid())
+    .bind(name)
+    .bind(spec.api_definition_id.map(|id| id.as_uuid()))
+    .bind(spec.route_config_id.map(|id| id.as_uuid()))
+    .bind(spec.listener_id.map(|id| id.as_uuid()))
+    .bind(&spec.virtual_host)
+    .bind(&spec.route)
+    .bind(spec.target_sample_count)
+    .bind(spec.max_duration_seconds)
+    .bind(spec.max_bytes)
+    .bind(spec.max_distinct_paths)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| map_unique(e, "learning session", name))?;
+    capture_session_from_row(&row)
+}
+
+pub async fn get_capture_session(
+    pool: &PgPool,
+    team_id: TeamId,
+    handle: &str,
+) -> DomainResult<Option<CaptureSession>> {
+    let id = Uuid::parse_str(handle).ok();
+    let row = sqlx::query(&format!(
+        "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
+         WHERE team_id = $1 AND (name = $2 OR id = $3)"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(handle)
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get learning session: {e}")))?;
+    row.as_ref().map(capture_session_from_row).transpose()
+}
+
+pub async fn list_capture_sessions(
+    pool: &PgPool,
+    team_id: TeamId,
+    status: Option<CaptureSessionStatus>,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<CaptureSession>, i64)> {
+    let status = status.map(|s| s.as_str().to_string());
+    let rows = sqlx::query(&format!(
+        "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
+         WHERE team_id = $1 AND ($2::text IS NULL OR status = $2) \
+         ORDER BY created_at DESC, name LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(status.as_deref())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list learning sessions: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM capture_sessions \
+         WHERE team_id = $1 AND ($2::text IS NULL OR status = $2)",
+    )
+    .bind(team_id.as_uuid())
+    .bind(status.as_deref())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count learning sessions: {e}")))?;
+    Ok((
+        rows.iter()
+            .map(capture_session_from_row)
+            .collect::<DomainResult<Vec<_>>>()?,
+        total,
+    ))
+}
+
+pub async fn list_capturing_capture_sessions(
+    pool: &PgPool,
+    team_id: TeamId,
+) -> DomainResult<Vec<CaptureSession>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
+         WHERE team_id = $1 AND status = 'capturing' ORDER BY created_at, name"
+    ))
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list active learning sessions: {e}")))?;
+    rows.iter().map(capture_session_from_row).collect()
+}
+
+pub async fn transition_capture_session(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    handle: &str,
+    status: CaptureSessionStatus,
+) -> DomainResult<CaptureSession> {
+    let current = get_capture_session_for_update(tx, team_id, handle).await?;
+    if current.status.terminal() {
+        return Err(DomainError::conflict(format!(
+            "learning session \"{}\" is already {}",
+            current.name,
+            current.status.as_str()
+        ))
+        .with_hint("start a new learning session for additional capture"));
+    }
+    if current.status == status {
+        return Ok(current);
+    }
+    let row = sqlx::query(&format!(
+        "UPDATE capture_sessions SET \
+            status = $3, \
+            completed_at = CASE WHEN $3 = 'completed' THEN now() ELSE completed_at END, \
+            cancelled_at = CASE WHEN $3 = 'cancelled' THEN now() ELSE cancelled_at END, \
+            updated_at = now() \
+         WHERE team_id = $1 AND id = $2 RETURNING {CAPTURE_SESSION_COLUMNS}"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(current.id.as_uuid())
+    .bind(status.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("transition learning session: {e}")))?;
+    capture_session_from_row(&row)
+}
+
+pub async fn validate_capture_ingest_binding(
+    pool: &PgPool,
+    team_id: TeamId,
+    session_id: CaptureSessionId,
+    api_definition_id: Option<ApiDefinitionId>,
+    route_config_id: RouteConfigId,
+    listener_id: Option<ListenerId>,
+) -> DomainResult<CaptureSession> {
+    let session = get_capture_session(pool, team_id, &session_id.to_string())
+        .await?
+        .ok_or_else(|| DomainError::not_found("learning session", &session_id.to_string()))?;
+    if session.status != CaptureSessionStatus::Capturing {
+        return Err(DomainError::conflict(format!(
+            "learning session \"{}\" is {}",
+            session.name,
+            session.status.as_str()
+        ))
+        .with_hint("only capturing sessions can accept observations"));
+    }
+    if let Some(session_api_id) = session.api_definition_id {
+        if api_definition_id != Some(session_api_id) {
+            return Err(DomainError::not_found(
+                "learning session binding",
+                &session_id.to_string(),
+            ));
+        }
+        let binding_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM api_route_bindings \
+             WHERE team_id = $1 AND api_definition_id = $2 AND route_config_id = $3 \
+             AND (listener_id IS NULL OR listener_id = $4))",
+        )
+        .bind(team_id.as_uuid())
+        .bind(session_api_id.as_uuid())
+        .bind(route_config_id.as_uuid())
+        .bind(listener_id.map(|id| id.as_uuid()))
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("validate learning api binding: {e}")))?;
+        if !binding_exists {
+            return Err(DomainError::not_found(
+                "learning session binding",
+                &session_id.to_string(),
+            ));
+        }
+        return Ok(session);
+    }
+    if session.route_config_id != Some(route_config_id) {
+        return Err(DomainError::not_found(
+            "learning session binding",
+            &session_id.to_string(),
+        ));
+    }
+    if session.listener_id.is_some() && session.listener_id != listener_id {
+        return Err(DomainError::not_found(
+            "learning session binding",
+            &session_id.to_string(),
+        ));
+    }
+    Ok(session)
+}
+
+async fn get_capture_session_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    handle: &str,
+) -> DomainResult<CaptureSession> {
+    let id = Uuid::parse_str(handle).ok();
+    let row = sqlx::query(&format!(
+        "SELECT {CAPTURE_SESSION_COLUMNS} FROM capture_sessions \
+         WHERE team_id = $1 AND (name = $2 OR id = $3) FOR UPDATE"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(handle)
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("lock learning session: {e}")))?;
+    row.as_ref()
+        .map(capture_session_from_row)
+        .transpose()?
+        .ok_or_else(|| DomainError::not_found("learning session", handle))
 }

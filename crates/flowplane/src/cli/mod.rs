@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 use client::RestClient;
 pub use commands::{
     ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneBootstrapMode,
-    DataplaneCommand, ExposeCommand, GrantCommand, OpsCommand, OrgCommand, OrgMemberCommand,
-    ResourceCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand,
-    XdsCommand,
+    DataplaneCommand, ExposeCommand, GrantCommand, LearnCommand, OpsCommand, OrgCommand,
+    OrgMemberCommand, ResourceCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand,
+    UnexposeCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{config_path, credentials_path, effective, read_config, write_config, NamedContext};
@@ -998,6 +998,131 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
     Ok(())
 }
 
+pub async fn run_learn(global: GlobalOptions, command: LearnCommand) -> Result<()> {
+    let client = RestClient::new(global)?;
+    match command {
+        LearnCommand::Start {
+            team,
+            name,
+            api,
+            api_definition_id,
+            route_config_id,
+            listener_id,
+            virtual_host,
+            route,
+            target_sample_count,
+            max_duration_seconds,
+            max_bytes,
+            max_distinct_paths,
+        } => {
+            let team = client.team(team)?;
+            let target_count = [
+                api.is_some(),
+                api_definition_id.is_some(),
+                route_config_id.is_some(),
+            ]
+            .into_iter()
+            .filter(|set| *set)
+            .count();
+            if target_count != 1 {
+                anyhow::bail!(
+                    "pass exactly one target: --api, --api-definition-id, or --route-config-id"
+                );
+            }
+            if route_config_id.is_none()
+                && (listener_id.is_some() || virtual_host.is_some() || route.is_some())
+            {
+                anyhow::bail!(
+                    "--listener-id, --virtual-host, and --route require --route-config-id"
+                );
+            }
+            client
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/api/v1/teams/{team}/learning-sessions"),
+                    Some(json!({
+                        "name": name,
+                        "api": api,
+                        "api_definition_id": api_definition_id,
+                        "route_config_id": route_config_id,
+                        "listener_id": listener_id,
+                        "virtual_host": virtual_host,
+                        "route": route,
+                        "target_sample_count": target_sample_count,
+                        "max_duration_seconds": max_duration_seconds,
+                        "max_bytes": max_bytes,
+                        "max_distinct_paths": max_distinct_paths,
+                    })),
+                )
+                .await?
+        }
+        LearnCommand::List {
+            team,
+            status,
+            limit,
+            offset,
+        } => {
+            let team = client.team(team)?;
+            let mut query = vec![("limit", limit.to_string()), ("offset", offset.to_string())];
+            if let Some(status) = status {
+                query.push(("status", status));
+            }
+            let query = query
+                .into_iter()
+                .map(|(key, value)| format!("{key}={}", query_component(&value)))
+                .collect::<Vec<_>>()
+                .join("&");
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/learning-sessions?{query}"),
+                    None,
+                )
+                .await?
+        }
+        LearnCommand::Get { team, session } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!(
+                        "/api/v1/teams/{team}/learning-sessions/{}",
+                        query_component(&session)
+                    ),
+                    None,
+                )
+                .await?
+        }
+        LearnCommand::Stop { team, session } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::POST,
+                    &format!(
+                        "/api/v1/teams/{team}/learning-sessions/{}/stop",
+                        query_component(&session)
+                    ),
+                    None,
+                )
+                .await?
+        }
+        LearnCommand::Cancel { team, session } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::DELETE,
+                    &format!(
+                        "/api/v1/teams/{team}/learning-sessions/{}",
+                        query_component(&session)
+                    ),
+                    None,
+                )
+                .await?
+        }
+    };
+    Ok(())
+}
+
 pub async fn run_secret(global: GlobalOptions, command: SecretCommand) -> Result<()> {
     let client = RestClient::new(global)?;
     match command {
@@ -1607,6 +1732,9 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions",
         "/api/v1/teams/{team}/api-definitions/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
+        "/api/v1/teams/{team}/learning-sessions",
+        "/api/v1/teams/{team}/learning-sessions/{session}",
+        "/api/v1/teams/{team}/learning-sessions/{session}/stop",
         "/api/v1/teams/{team}/dataplanes",
         "/api/v1/teams/{team}/dataplanes/{name}",
         "/api/v1/teams/{team}/dataplanes/{name}/telemetry",

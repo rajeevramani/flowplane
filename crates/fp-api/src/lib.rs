@@ -10,6 +10,7 @@ pub mod dataplanes_api;
 pub mod error;
 pub mod expose_api;
 pub mod identity_api;
+pub mod learning_api;
 pub mod middleware;
 pub mod orgs_api;
 pub mod resources;

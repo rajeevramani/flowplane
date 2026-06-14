@@ -6,8 +6,8 @@
 
 use crate::error::{DomainError, DomainResult};
 use crate::id::{
-    ApiDefinitionId, ApiRouteBindingId, ApiToolId, ListenerId, RetentionPolicyId, RouteConfigId,
-    SpecVersionId, TeamId,
+    ApiDefinitionId, ApiRouteBindingId, ApiToolId, CaptureSessionId, ListenerId, RetentionPolicyId,
+    RouteConfigId, SpecVersionId, TeamId,
 };
 use crate::identity::validate_name;
 use chrono::{DateTime, Utc};
@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_RAW_OBSERVATION_TTL_DAYS: i32 = 14;
 pub const DEFAULT_MAX_SPEC_VERSIONS: i32 = 50;
+pub const DEFAULT_CAPTURE_TARGET_SAMPLE_COUNT: i32 = 1000;
+pub const DEFAULT_CAPTURE_MAX_BYTES: i64 = 10 * 1024 * 1024;
+pub const DEFAULT_CAPTURE_MAX_DISTINCT_PATHS: i32 = 500;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiDefinition {
@@ -312,6 +315,147 @@ impl RetentionPolicySpec {
         if !(1..=500).contains(&self.max_spec_versions) {
             return Err(DomainError::validation(
                 "max_spec_versions must be between 1 and 500",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSessionStatus {
+    Capturing,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+impl CaptureSessionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Capturing => "capturing",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(raw: &str) -> DomainResult<Self> {
+        match raw {
+            "capturing" => Ok(Self::Capturing),
+            "completed" => Ok(Self::Completed),
+            "cancelled" => Ok(Self::Cancelled),
+            "failed" => Ok(Self::Failed),
+            other => Err(DomainError::internal(format!(
+                "unknown capture session status \"{other}\" in database"
+            ))),
+        }
+    }
+
+    pub fn terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureSession {
+    pub id: CaptureSessionId,
+    pub team_id: TeamId,
+    pub name: String,
+    pub status: CaptureSessionStatus,
+    pub api_definition_id: Option<ApiDefinitionId>,
+    pub route_config_id: Option<RouteConfigId>,
+    pub listener_id: Option<ListenerId>,
+    pub virtual_host: Option<String>,
+    pub route: Option<String>,
+    pub target_sample_count: i32,
+    pub max_duration_seconds: Option<i32>,
+    pub max_bytes: i64,
+    pub max_distinct_paths: i32,
+    pub sample_count: i64,
+    pub byte_count: i64,
+    pub path_count: i64,
+    pub drop_count: i64,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub cancelled_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureSessionSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_definition_id: Option<ApiDefinitionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_config_id: Option<RouteConfigId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listener_id: Option<ListenerId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(default = "default_capture_target_sample_count")]
+    pub target_sample_count: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_seconds: Option<i32>,
+    #[serde(default = "default_capture_max_bytes")]
+    pub max_bytes: i64,
+    #[serde(default = "default_capture_max_distinct_paths")]
+    pub max_distinct_paths: i32,
+}
+
+fn default_capture_target_sample_count() -> i32 {
+    DEFAULT_CAPTURE_TARGET_SAMPLE_COUNT
+}
+
+fn default_capture_max_bytes() -> i64 {
+    DEFAULT_CAPTURE_MAX_BYTES
+}
+
+fn default_capture_max_distinct_paths() -> i32 {
+    DEFAULT_CAPTURE_MAX_DISTINCT_PATHS
+}
+
+impl CaptureSessionSpec {
+    pub fn validate(&self) -> DomainResult<()> {
+        let api_scoped = self.api_definition_id.is_some();
+        let route_scoped = self.route_config_id.is_some();
+        if api_scoped == route_scoped {
+            return Err(DomainError::validation(
+                "learning session must target exactly one of api_definition_id or route_config_id",
+            ));
+        }
+        if api_scoped
+            && (self.listener_id.is_some() || self.virtual_host.is_some() || self.route.is_some())
+        {
+            return Err(DomainError::validation(
+                "listener_id, virtual_host, and route are only valid with route_config_id scope",
+            ));
+        }
+        validate_optional_selector("virtual_host", self.virtual_host.as_deref())?;
+        validate_optional_selector("route", self.route.as_deref())?;
+        if !(1..=100_000).contains(&self.target_sample_count) {
+            return Err(DomainError::validation(
+                "target_sample_count must be between 1 and 100000",
+            ));
+        }
+        if let Some(seconds) = self.max_duration_seconds {
+            if !(1..=86_400).contains(&seconds) {
+                return Err(DomainError::validation(
+                    "max_duration_seconds must be between 1 and 86400",
+                ));
+            }
+        }
+        if !(1..=1_073_741_824).contains(&self.max_bytes) {
+            return Err(DomainError::validation(
+                "max_bytes must be between 1 and 1073741824",
+            ));
+        }
+        if !(1..=10_000).contains(&self.max_distinct_paths) {
+            return Err(DomainError::validation(
+                "max_distinct_paths must be between 1 and 10000",
             ));
         }
         Ok(())

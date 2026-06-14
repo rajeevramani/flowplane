@@ -102,12 +102,13 @@ fn openapi_document_covers_every_registered_operation() {
     // whoami + 3 resources x 5 + 9 team/member/grant + 7 org + 4 dataplane
     // + 4 proxy-certificate + 3 ops/xds diagnostics operations.
     // + 4 secrets operations + 2 dataplane/stats telemetry operations.
-    // + 5 API lifecycle operations + 2 expose shortcut operations.
+    // + 5 API lifecycle operations + 5 learning-session operations.
+    // + 2 expose shortcut operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 56,
-        "expected 56 documented operations, got {operations}"
+        operations, 61,
+        "expected 61 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -129,11 +130,166 @@ fn openapi_document_covers_every_registered_operation() {
         "/api/v1/teams/{team}/expose",
         "/api/v1/teams/{team}/expose/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
+        "/api/v1/teams/{team}/learning-sessions",
+        "/api/v1/teams/{team}/learning-sessions/{session}",
+        "/api/v1/teams/{team}/learning-sessions/{session}/stop",
         "/api/v1/teams/{team}/xds/status",
         "/api/v1/teams/{team}/ops/trace",
     ] {
         assert!(paths.contains_key(path), "missing {path}");
     }
+}
+
+#[tokio::test]
+async fn learning_session_lifecycle_over_http() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+    let subject = unique("sub");
+    let token = issuer
+        .mint(&subject, "learn@test", "Learn", 600)
+        .expect("mint");
+
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let user = identity::upsert_user_by_subject(&pool, &subject, "learn@test", "Learn")
+        .await
+        .expect("user");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Admin)
+        .await
+        .expect("member");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+    });
+
+    let request =
+        |method: &str, path: &str, body: Option<serde_json::Value>, revision: Option<i64>| {
+            let mut builder = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if let Some(revision) = revision {
+                builder = builder.header("if-match", revision.to_string());
+            }
+            match body {
+                Some(json) => builder
+                    .header("content-type", "application/json")
+                    .body(Body::from(json.to_string())),
+                None => builder.body(Body::empty()),
+            }
+            .expect("request")
+        };
+
+    let api_name = unique("catalog");
+    let api_base = format!("/api/v1/teams/{}/api-definitions", team.name);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &api_base,
+            Some(serde_json::json!({
+                "name": api_name,
+                "display_name": "Catalog"
+            })),
+            None,
+        ))
+        .await
+        .expect("create api");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let session_name = unique("capture");
+    let learn_base = format!("/api/v1/teams/{}/learning-sessions", team.name);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &learn_base,
+            Some(serde_json::json!({
+                "name": session_name,
+                "api": api_name,
+                "target_sample_count": 25,
+                "max_duration_seconds": 60,
+                "max_bytes": 4096,
+                "max_distinct_paths": 20
+            })),
+            None,
+        ))
+        .await
+        .expect("start learning session");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert_eq!(body["name"], session_name);
+    assert_eq!(body["status"], "capturing");
+    assert_eq!(body["sample_count"], 0);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("{learn_base}/{session_name}"),
+            None,
+            None,
+        ))
+        .await
+        .expect("get session");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["target_sample_count"], 25);
+
+    let response = app
+        .clone()
+        .oneshot(request("GET", &learn_base, None, None))
+        .await
+        .expect("list sessions");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["total"], 1);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{learn_base}/{session_name}/stop"),
+            None,
+            None,
+        ))
+        .await
+        .expect("stop session");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["status"], "completed");
+    assert!(body["completed_at"].is_string());
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("{learn_base}/{session_name}"),
+            None,
+            None,
+        ))
+        .await
+        .expect("cancel completed session");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
 }
 
 #[tokio::test]

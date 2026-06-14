@@ -1,8 +1,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use fp_domain::api_lifecycle::{
-    ApiDefinitionSpec, ApiRouteBindingSpec, ApiToolSpec, HttpMethod, RetentionPolicySpec,
-    SpecFormat, SpecSourceKind, SpecVersionInput,
+    ApiDefinitionSpec, ApiRouteBindingSpec, ApiToolSpec, CaptureSessionSpec, CaptureSessionStatus,
+    HttpMethod, RetentionPolicySpec, SpecFormat, SpecSourceKind, SpecVersionInput,
 };
 use fp_domain::authz::TeamRef;
 use fp_domain::{ErrorCode, ListenerId, RouteConfigId};
@@ -318,4 +318,210 @@ async fn retention_policy_can_be_scoped_to_api() {
     assert_eq!(policy.api_definition_id, Some(api.id));
     assert_eq!(policy.raw_observation_ttl_days, 30);
     assert_eq!(policy.max_spec_versions, 25);
+}
+
+#[tokio::test]
+async fn capture_sessions_are_bounded_and_transitioned_per_team() {
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api = api_lifecycle::create_api_definition(
+        &mut tx,
+        w.team_a,
+        &unique("learn-api"),
+        &api_spec("Learn"),
+    )
+    .await
+    .expect("api");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("learn"),
+        &CaptureSessionSpec {
+            api_definition_id: Some(api.id),
+            route_config_id: None,
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+            target_sample_count: 25,
+            max_duration_seconds: Some(60),
+            max_bytes: 4096,
+            max_distinct_paths: 20,
+        },
+    )
+    .await
+    .expect("session");
+    assert_eq!(session.status, CaptureSessionStatus::Capturing);
+    assert_eq!(session.api_definition_id, Some(api.id));
+    tx.commit().await.expect("commit");
+
+    let (items, total) = api_lifecycle::list_capture_sessions(
+        &w.pool,
+        w.team_a.id,
+        Some(CaptureSessionStatus::Capturing),
+        50,
+        0,
+    )
+    .await
+    .expect("list");
+    assert_eq!(total, 1);
+    assert_eq!(items[0].id, session.id);
+
+    let mut tx = w.pool.begin().await.expect("transition tx");
+    let completed = api_lifecycle::transition_capture_session(
+        &mut tx,
+        w.team_a.id,
+        &session.name,
+        CaptureSessionStatus::Completed,
+    )
+    .await
+    .expect("complete");
+    assert_eq!(completed.status, CaptureSessionStatus::Completed);
+    assert!(completed.completed_at.is_some());
+    let err = api_lifecycle::transition_capture_session(
+        &mut tx,
+        w.team_a.id,
+        &session.name,
+        CaptureSessionStatus::Cancelled,
+    )
+    .await
+    .expect_err("terminal session rejects second transition");
+    assert_eq!(err.code, ErrorCode::Conflict);
+    tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+async fn capture_sessions_reject_cross_team_route_scope() {
+    let Some(w) = world().await else { return };
+    let route_b = insert_route_config(&w.pool, w.team_b, &unique("rc-b")).await;
+    let listener_b = insert_listener(&w.pool, w.team_b, &unique("listener-b")).await;
+
+    let mut tx = w.pool.begin().await.expect("tx");
+    let err = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("learn-route"),
+        &CaptureSessionSpec {
+            api_definition_id: None,
+            route_config_id: Some(route_b),
+            listener_id: Some(listener_b),
+            virtual_host: Some("api".into()),
+            route: Some("list".into()),
+            target_sample_count: 10,
+            max_duration_seconds: None,
+            max_bytes: 1024,
+            max_distinct_paths: 10,
+        },
+    )
+    .await
+    .expect_err("cross-team route scope rejected before insert");
+    assert_eq!(err.code, ErrorCode::ValidationFailed);
+    tx.rollback().await.expect("rollback");
+}
+
+#[tokio::test]
+async fn capture_ingest_binding_validates_active_team_and_scope() {
+    let Some(w) = world().await else { return };
+    let route_a = insert_route_config(&w.pool, w.team_a, &unique("rc-a")).await;
+    let route_b = insert_route_config(&w.pool, w.team_b, &unique("rc-b")).await;
+    let listener_a = insert_listener(&w.pool, w.team_a, &unique("listener-a")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api = api_lifecycle::create_api_definition(
+        &mut tx,
+        w.team_a,
+        &unique("ingest-api"),
+        &api_spec("Ingest"),
+    )
+    .await
+    .expect("api");
+    api_lifecycle::create_route_binding(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &unique("binding"),
+        &ApiRouteBindingSpec {
+            route_config_id: route_a,
+            listener_id: Some(listener_a),
+            virtual_host: Some("default".into()),
+            route: Some("all".into()),
+        },
+    )
+    .await
+    .expect("binding");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("ingest-session"),
+        &CaptureSessionSpec {
+            api_definition_id: Some(api.id),
+            route_config_id: None,
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+            target_sample_count: 25,
+            max_duration_seconds: Some(60),
+            max_bytes: 4096,
+            max_distinct_paths: 20,
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit");
+
+    let valid = api_lifecycle::validate_capture_ingest_binding(
+        &w.pool,
+        w.team_a.id,
+        session.id,
+        Some(api.id),
+        route_a,
+        Some(listener_a),
+    )
+    .await
+    .expect("valid binding");
+    assert_eq!(valid.id, session.id);
+
+    let err = api_lifecycle::validate_capture_ingest_binding(
+        &w.pool,
+        w.team_a.id,
+        session.id,
+        Some(api.id),
+        route_b,
+        Some(listener_a),
+    )
+    .await
+    .expect_err("wrong route rejected");
+    assert_eq!(err.code, ErrorCode::NotFound);
+
+    let err = api_lifecycle::validate_capture_ingest_binding(
+        &w.pool,
+        w.team_b.id,
+        session.id,
+        Some(api.id),
+        route_b,
+        None,
+    )
+    .await
+    .expect_err("wrong team rejected");
+    assert_eq!(err.code, ErrorCode::NotFound);
+
+    let mut tx = w.pool.begin().await.expect("transition tx");
+    api_lifecycle::transition_capture_session(
+        &mut tx,
+        w.team_a.id,
+        &session.name,
+        CaptureSessionStatus::Completed,
+    )
+    .await
+    .expect("complete");
+    tx.commit().await.expect("commit complete");
+    let err = api_lifecycle::validate_capture_ingest_binding(
+        &w.pool,
+        w.team_a.id,
+        session.id,
+        Some(api.id),
+        route_a,
+        Some(listener_a),
+    )
+    .await
+    .expect_err("terminal session rejected");
+    assert_eq!(err.code, ErrorCode::Conflict);
 }

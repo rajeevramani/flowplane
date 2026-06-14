@@ -346,7 +346,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           (`--route-config-id`, optional `--listener-id`, `--virtual-host`, `--route`).
           Automatic OpenAPI-to-cluster/listener/route creation is deferred until the gateway
           topology mapping is designed instead of inferred from incomplete spec data.
-        - Tests: API contract pin updated to 52 operations, REST import/status/delete test
+        - Tests: API contract pin updated, REST import/status/delete test
           added, CLI path coverage includes the new API lifecycle paths.
   - [x] S8.2a OpenAPI import polish: CLI `--from-openapi` accepts JSON and YAML
         (`.json`, `.yaml`, `.yml`, and stdin where practical), normalizes to JSON before REST
@@ -374,12 +374,39 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
           default while JSON/YAML expose the full persisted rows.
         - Tests: OpenAPI operation-count/path pin, CLI endpoint parity, and table renderer
           tests cover the new diagnostics surfaces.
-  - [ ] S8.3 Capture-session model: `learn start|list|get|stop|cancel` against an
+  - [x] S8.3 Capture-session model: `learn start|list|get|stop|cancel` against an
         `ApiDefinition` or explicit bound route scope; session state machine, sample/byte/path
         quotas, health counters, target sample/timeout completion, and transactional events.
-  - [ ] S8.4 Team-scoped capture injection: xDS adds ALS/ExtProc only for the selected team's
+        - Implemented: durable `capture_sessions` table with team composite FKs to
+          `api_definitions`, `route_configs`, and `listeners`; exactly-one target scope
+          validation; bounded sample/byte/path quotas; zeroed health counters; and terminal
+          `capturing -> completed|cancelled` transitions.
+        - REST/CLI: `/api/v1/teams/{team}/learning-sessions` list/start/get/cancel and
+          `/stop`; CLI `flowplane learn start|list|get|stop|cancel` accepts `--api`,
+          `--api-definition-id`, or explicit `--route-config-id` scope.
+        - Events/audit: start/stop/cancel append transactional outbox events and audit rows.
+          Actual xDS capture injection, observation ingest, timeout workers, and target-count
+          auto-completion are intentionally deferred to S8.4/S8.5.
+        - Tests: storage covers bounded sessions, terminal transition rejection, and
+          cross-team route-scope rejection; REST covers lifecycle behavior and OpenAPI/CLI
+          path parity pins now include learning sessions.
+  - [x] S8.4 Team-scoped capture injection: xDS adds ALS/ExtProc only for the selected team's
         listener/route scopes; per-message team/api/session binding is validated before ingest.
         Cross-team broad-session poaching test must prove A cannot receive B traffic.
+        - Implemented: xDS snapshot rebuild expands active capture sessions into typed
+          `LearningCaptureInjection` plans from explicit route scope or `ApiDefinition` route
+          bindings. Listener translation injects gRPC ALS plus HTTP ExtProc only into matching
+          team-owned HCMs, before the router filter, with request-id generation preserved.
+        - Capture gRPC streams carry `x-flowplane-*` metadata for team/session/API/route/listener
+          binding. Storage exposes `validate_capture_ingest_binding` so S8.5 ingest rejects
+          observations whose team/session/API/route/listener tuple does not match an active
+          capturing session.
+        - Tests: translator verifies ALS/ExtProc shape and metadata; snapshot test creates two
+          teams with matching route/listener names and proves only the session-owning team receives
+          capture filters; storage tests cover valid binding, cross-team rejection, wrong-route
+          rejection, and terminal-session rejection.
+        - Deferred to S8.5: concrete ALS/ExtProc service handlers, observation persistence,
+          counter updates, and drop/truncation accounting.
   - [ ] S8.5 Observation ingest pipeline: bounded sharded merge by `(team, session,
         request_id)`, batched counter updates, body/header redaction, raw observation TTL, and
         health-visible drop accounting so sample counters cannot lie.

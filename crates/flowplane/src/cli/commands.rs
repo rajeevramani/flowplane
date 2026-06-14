@@ -225,6 +225,60 @@ pub enum ApiCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum LearnCommand {
+    Start {
+        #[arg(long)]
+        team: Option<String>,
+        name: String,
+        #[arg(long)]
+        api: Option<String>,
+        #[arg(long)]
+        api_definition_id: Option<String>,
+        #[arg(long)]
+        route_config_id: Option<String>,
+        #[arg(long)]
+        listener_id: Option<String>,
+        #[arg(long)]
+        virtual_host: Option<String>,
+        #[arg(long)]
+        route: Option<String>,
+        #[arg(long, default_value_t = 1000)]
+        target_sample_count: i32,
+        #[arg(long)]
+        max_duration_seconds: Option<i32>,
+        #[arg(long, default_value_t = 10 * 1024 * 1024)]
+        max_bytes: i64,
+        #[arg(long, default_value_t = 500)]
+        max_distinct_paths: i32,
+    },
+    List {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
+    Get {
+        #[arg(long)]
+        team: Option<String>,
+        session: String,
+    },
+    Stop {
+        #[arg(long)]
+        team: Option<String>,
+        session: String,
+    },
+    Cancel {
+        #[arg(long)]
+        team: Option<String>,
+        session: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum SecretCommand {
     List {
         #[arg(long)]

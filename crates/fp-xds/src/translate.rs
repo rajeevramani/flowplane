@@ -9,6 +9,8 @@ use envoy_types::pb::envoy::config::listener::v3 as lst;
 use envoy_types::pb::envoy::config::ratelimit::v3 as ratelimit_cfg;
 use envoy_types::pb::envoy::config::route::v3 as rt;
 use envoy_types::pb::envoy::extensions::access_loggers::file::v3 as file_accesslog;
+use envoy_types::pb::envoy::extensions::access_loggers::grpc::v3 as grpc_accesslog;
+use envoy_types::pb::envoy::extensions::filters::http::ext_proc::v3 as ext_proc;
 use envoy_types::pb::envoy::extensions::filters::http::ratelimit::v3 as rate_limit_filter;
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
@@ -26,6 +28,23 @@ use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec, ListenerTlsCo
 use fp_domain::gateway::route_config::{PathMatch, RouteConfigSpec};
 use fp_domain::{DomainError, DomainResult, SecretSpec};
 use prost::Message;
+
+pub const LEARNING_ALS_CLUSTER: &str = "xds_cluster";
+pub const LEARNING_EXT_PROC_CLUSTER: &str = "xds_cluster";
+const LEARNING_ALS_NAME: &str = "envoy.access_loggers.http_grpc";
+pub(crate) const LEARNING_EXT_PROC_FILTER_PREFIX: &str =
+    "envoy.filters.http.ext_proc.flowplane_learning.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LearningCaptureInjection {
+    pub session_id: uuid::Uuid,
+    pub team_id: uuid::Uuid,
+    pub api_definition_id: Option<uuid::Uuid>,
+    pub route_config_id: uuid::Uuid,
+    pub listener_id: Option<uuid::Uuid>,
+    pub virtual_host: Option<String>,
+    pub route: Option<String>,
+}
 
 fn any<M: Message>(type_url: &str, msg: &M) -> wkt::Any {
     wkt::Any {
@@ -1482,6 +1501,14 @@ fn header_removal_entry(
 }
 
 pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::Listener> {
+    listener_to_proto_with_learning(name, spec, &[])
+}
+
+pub fn listener_to_proto_with_learning(
+    name: &str,
+    spec: &ListenerSpec,
+    captures: &[LearningCaptureInjection],
+) -> DomainResult<lst::Listener> {
     let route_config_name = spec.route_config.clone().ok_or_else(|| {
         DomainError::validation(format!(
             "listener \"{name}\" has no route_config bound; it cannot serve traffic yet"
@@ -1489,9 +1516,12 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
     })?;
 
     // Chain: declared filters in order, router appended last (spec/04 §4.2).
-    let mut http_filters = Vec::with_capacity(spec.http_filters.len() + 1);
+    let mut http_filters = Vec::with_capacity(spec.http_filters.len() + captures.len() + 1);
     for entry in &spec.http_filters {
         http_filters.push(http_filter_to_proto(entry)?);
+    }
+    for capture in captures {
+        http_filters.push(ext_proc_filter(capture));
     }
     http_filters.push(hcm::HttpFilter {
         name: "envoy.filters.http.router".to_string(),
@@ -1512,7 +1542,10 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
             },
         )),
         http_filters,
-        access_log: access_logs_to_proto(&spec.access_logs),
+        access_log: access_logs_to_proto(&spec.access_logs)
+            .into_iter()
+            .chain(captures.iter().map(learning_access_log))
+            .collect(),
         generate_request_id: Some(bool_value(true)),
         always_set_request_id_in_response: true,
         ..Default::default()
@@ -1539,6 +1572,119 @@ pub fn listener_to_proto(name: &str, spec: &ListenerSpec) -> DomainResult<lst::L
         }],
         ..Default::default()
     })
+}
+
+fn grpc_service(cluster: &'static str, capture: &LearningCaptureInjection) -> core::GrpcService {
+    let mut initial_metadata = vec![
+        header("x-flowplane-team-id", capture.team_id.to_string()),
+        header(
+            "x-flowplane-capture-session-id",
+            capture.session_id.to_string(),
+        ),
+        header(
+            "x-flowplane-route-config-id",
+            capture.route_config_id.to_string(),
+        ),
+    ];
+    if let Some(api_id) = capture.api_definition_id {
+        initial_metadata.push(header("x-flowplane-api-definition-id", api_id.to_string()));
+    }
+    if let Some(listener_id) = capture.listener_id {
+        initial_metadata.push(header("x-flowplane-listener-id", listener_id.to_string()));
+    }
+    if let Some(virtual_host) = &capture.virtual_host {
+        initial_metadata.push(header("x-flowplane-virtual-host", virtual_host.clone()));
+    }
+    if let Some(route) = &capture.route {
+        initial_metadata.push(header("x-flowplane-route", route.clone()));
+    }
+    core::GrpcService {
+        timeout: Some(millis_duration(5_000)),
+        initial_metadata,
+        target_specifier: Some(core::grpc_service::TargetSpecifier::EnvoyGrpc(
+            core::grpc_service::EnvoyGrpc {
+                cluster_name: cluster.to_string(),
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+}
+
+fn header(key: &'static str, value: String) -> core::HeaderValue {
+    core::HeaderValue {
+        key: key.to_string(),
+        value,
+        raw_value: Vec::new(),
+    }
+}
+
+fn learning_access_log(capture: &LearningCaptureInjection) -> accesslog::AccessLog {
+    accesslog::AccessLog {
+        name: LEARNING_ALS_NAME.to_string(),
+        filter: None,
+        config_type: Some(accesslog::access_log::ConfigType::TypedConfig(any(
+            "type.googleapis.com/envoy.extensions.access_loggers.grpc.v3.HttpGrpcAccessLogConfig",
+            &grpc_accesslog::HttpGrpcAccessLogConfig {
+                common_config: Some(grpc_accesslog::CommonGrpcAccessLogConfig {
+                    log_name: format!("flowplane_learning_session_{}", capture.session_id),
+                    grpc_service: Some(grpc_service(LEARNING_ALS_CLUSTER, capture)),
+                    transport_api_version: core::ApiVersion::V3 as i32,
+                    buffer_size_bytes: Some(u32_value(16_384)),
+                    ..Default::default()
+                }),
+                additional_request_headers_to_log: vec![
+                    "content-type".into(),
+                    "content-length".into(),
+                    "accept".into(),
+                    "user-agent".into(),
+                    "authorization".into(),
+                    "proxy-authorization".into(),
+                    "x-api-key".into(),
+                    "x-auth-token".into(),
+                    "x-request-id".into(),
+                    "x-envoy-original-path".into(),
+                ],
+                additional_response_headers_to_log: vec![
+                    "content-type".into(),
+                    "content-length".into(),
+                    "www-authenticate".into(),
+                ],
+                additional_response_trailers_to_log: Vec::new(),
+            },
+        ))),
+    }
+}
+
+fn ext_proc_filter(capture: &LearningCaptureInjection) -> hcm::HttpFilter {
+    hcm::HttpFilter {
+        name: format!("{LEARNING_EXT_PROC_FILTER_PREFIX}{}", capture.session_id),
+        config_type: Some(hcm::http_filter::ConfigType::TypedConfig(any(
+            "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
+            &ext_proc::ExternalProcessor {
+                grpc_service: Some(grpc_service(LEARNING_EXT_PROC_CLUSTER, capture)),
+                failure_mode_allow: true,
+                processing_mode: Some(ext_proc::ProcessingMode {
+                    request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
+                    response_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
+                    request_body_mode: ext_proc::processing_mode::BodySendMode::BufferedPartial
+                        as i32,
+                    response_body_mode: ext_proc::processing_mode::BodySendMode::BufferedPartial
+                        as i32,
+                    request_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                    response_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                }),
+                message_timeout: Some(millis_duration(5_000)),
+                stat_prefix: format!("flowplane_learning_{}", capture.session_id.simple()),
+                observability_mode: true,
+                disable_immediate_response: true,
+                route_cache_action: ext_proc::external_processor::RouteCacheAction::Retain as i32,
+                ..Default::default()
+            },
+        ))),
+        is_optional: true,
+        ..Default::default()
+    }
 }
 
 fn access_logs_to_proto(
@@ -2462,6 +2608,125 @@ mod tests {
                 hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
             }
             _ => panic!("expected typed HCM"),
+        }
+    }
+
+    fn hcm_of_with_learning(
+        spec: &ListenerSpec,
+        captures: &[LearningCaptureInjection],
+    ) -> hcm::HttpConnectionManager {
+        let proto =
+            listener_to_proto_with_learning("edge", spec, captures).expect("translate learning");
+        match &proto.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(a)) => {
+                hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        }
+    }
+
+    #[test]
+    fn learning_capture_injects_als_and_ext_proc_before_router() {
+        let session_id = uuid::Uuid::now_v7();
+        let team_id = uuid::Uuid::now_v7();
+        let api_id = uuid::Uuid::now_v7();
+        let route_config_id = uuid::Uuid::now_v7();
+        let listener_id = uuid::Uuid::now_v7();
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10000,
+            protocol: ListenerProtocol::Http,
+            route_config: Some("orders".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+        let capture = LearningCaptureInjection {
+            session_id,
+            team_id,
+            api_definition_id: Some(api_id),
+            route_config_id,
+            listener_id: Some(listener_id),
+            virtual_host: Some("default".into()),
+            route: Some("all".into()),
+        };
+        let manager = hcm_of_with_learning(&spec, &[capture]);
+        let names = manager
+            .http_filters
+            .iter()
+            .map(|filter| filter.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                format!("{LEARNING_EXT_PROC_FILTER_PREFIX}{session_id}"),
+                "envoy.filters.http.router".to_string()
+            ]
+        );
+        assert_eq!(manager.access_log.len(), 1);
+        let log_any = match manager.access_log[0]
+            .config_type
+            .as_ref()
+            .expect("als config")
+        {
+            accesslog::access_log::ConfigType::TypedConfig(any) => any,
+        };
+        assert!(log_any.type_url.ends_with("HttpGrpcAccessLogConfig"));
+        let als =
+            grpc_accesslog::HttpGrpcAccessLogConfig::decode(log_any.value.as_slice()).expect("als");
+        let common = als.common_config.expect("common");
+        assert_eq!(
+            common.log_name,
+            format!("flowplane_learning_session_{session_id}")
+        );
+        let grpc = common.grpc_service.expect("grpc");
+        let metadata = grpc
+            .initial_metadata
+            .iter()
+            .map(|header| (header.key.as_str(), header.value.as_str()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(metadata["x-flowplane-team-id"], team_id.to_string());
+        assert_eq!(
+            metadata["x-flowplane-capture-session-id"],
+            session_id.to_string()
+        );
+        assert_eq!(
+            metadata["x-flowplane-api-definition-id"],
+            api_id.to_string()
+        );
+        match grpc.target_specifier.expect("als target") {
+            core::grpc_service::TargetSpecifier::EnvoyGrpc(target) => {
+                assert_eq!(target.cluster_name, LEARNING_ALS_CLUSTER);
+            }
+            other => panic!("unexpected ALS target: {other:?}"),
+        }
+
+        let ext_any = match manager.http_filters[0]
+            .config_type
+            .as_ref()
+            .expect("ext proc config")
+        {
+            hcm::http_filter::ConfigType::TypedConfig(any) => any,
+            other => panic!("unexpected ExtProc config: {other:?}"),
+        };
+        assert!(ext_any.type_url.ends_with("ExternalProcessor"));
+        let ext = ext_proc::ExternalProcessor::decode(ext_any.value.as_slice()).expect("ext proc");
+        assert!(ext.failure_mode_allow);
+        assert!(ext.observability_mode);
+        assert_eq!(
+            ext.processing_mode.expect("mode").request_body_mode,
+            ext_proc::processing_mode::BodySendMode::BufferedPartial as i32
+        );
+        match ext
+            .grpc_service
+            .expect("ext grpc")
+            .target_specifier
+            .expect("ext target")
+        {
+            core::grpc_service::TargetSpecifier::EnvoyGrpc(target) => {
+                assert_eq!(target.cluster_name, LEARNING_EXT_PROC_CLUSTER);
+            }
+            other => panic!("unexpected ExtProc target: {other:?}"),
         }
     }
 

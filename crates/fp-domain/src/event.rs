@@ -81,6 +81,18 @@ pub enum DomainEvent {
         spec_version_id: Uuid,
         count: usize,
     },
+    CaptureSessionStarted {
+        capture_session_id: Uuid,
+        name: String,
+    },
+    CaptureSessionStopped {
+        capture_session_id: Uuid,
+        name: String,
+    },
+    CaptureSessionCancelled {
+        capture_session_id: Uuid,
+        name: String,
+    },
 }
 
 impl DomainEvent {
@@ -103,6 +115,9 @@ impl DomainEvent {
             Self::ApiDefinitionDeleted { .. } => "api_definition.deleted",
             Self::SpecVersionCreated { .. } => "spec_version.created",
             Self::ApiToolsGenerated { .. } => "api_tools.generated",
+            Self::CaptureSessionStarted { .. } => "capture_session.started",
+            Self::CaptureSessionStopped { .. } => "capture_session.stopped",
+            Self::CaptureSessionCancelled { .. } => "capture_session.cancelled",
         }
     }
 }

@@ -79,6 +79,11 @@ enum Command {
         #[command(subcommand)]
         command: cli::ApiCommand,
     },
+    /// Learning capture sessions.
+    Learn {
+        #[command(subcommand)]
+        command: cli::LearnCommand,
+    },
     /// Write-only secrets.
     Secret {
         #[command(subcommand)]
@@ -159,6 +164,7 @@ fn main() -> anyhow::Result<()> {
             runtime.block_on(cli::run_resource(cli.client, "route-configs", command))
         }
         Command::Api { command } => runtime.block_on(cli::run_api(cli.client, command)),
+        Command::Learn { command } => runtime.block_on(cli::run_learn(cli.client, command)),
         Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
         Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),
         Command::Expose { command } => runtime.block_on(cli::run_expose(cli.client, command)),
@@ -224,6 +230,17 @@ mod tests {
             "payments",
         ])
         .expect("api import form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "learn",
+            "start",
+            "catalog-capture",
+            "--api",
+            "catalog",
+            "--target-sample-count",
+            "25",
+        ])
+        .expect("learn start form should parse");
         Cli::try_parse_from([
             "flowplane",
             "--out",

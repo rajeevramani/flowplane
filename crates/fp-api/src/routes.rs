@@ -47,6 +47,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
     use crate::api_lifecycle_api;
     use crate::dataplanes_api;
     use crate::identity_api;
+    use crate::learning_api;
     use crate::resources::{clusters, listeners, route_configs};
     use crate::secrets_api;
     use utoipa_axum::router::OpenApiRouter;
@@ -99,6 +100,15 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             api_lifecycle_api::delete_api
         ))
         .routes(routes!(api_lifecycle_api::api_status))
+        .routes(routes!(
+            learning_api::list_learning_sessions,
+            learning_api::start_learning_session
+        ))
+        .routes(routes!(
+            learning_api::get_learning_session,
+            learning_api::cancel_learning_session
+        ))
+        .routes(routes!(learning_api::stop_learning_session))
         .routes(routes!(
             crate::expose_api::expose,
             crate::expose_api::unexpose

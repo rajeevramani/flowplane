@@ -13,6 +13,7 @@ use envoy_types::pb::google::protobuf::Any;
 use fp_domain::{DomainError, DomainResult, SecretSpec, TeamId};
 use prost::Message;
 use sqlx::PgPool;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
@@ -335,6 +336,7 @@ impl SnapshotCache {
         let (listeners, _) =
             fp_storage::repos::gateway::list_listeners(pool, team_id, 500, 0).await?;
         let secrets = fp_storage::repos::secrets::list_encrypted_secrets(pool, team_id).await?;
+        let capture_plan = learning_capture_plan(pool, team_id, &route_configs).await?;
 
         let mut cluster_named = Vec::with_capacity(clusters.len());
         let mut endpoint_named = Vec::new();
@@ -392,7 +394,31 @@ impl SnapshotCache {
                     "skipping unbound listener in snapshot");
                 continue;
             }
-            let proto = translate::listener_to_proto(&listener.name, &listener.spec)?;
+            let route_config_id = listener
+                .spec
+                .route_config
+                .as_ref()
+                .and_then(|name| route_configs.iter().find(|rc| rc.name == *name))
+                .map(|rc| rc.id);
+            let captures = route_config_id
+                .map(|id| {
+                    capture_plan
+                        .iter()
+                        .filter(|capture| {
+                            capture.route_config_id == id.as_uuid()
+                                && capture
+                                    .listener_id
+                                    .is_none_or(|scope| scope == listener.id.as_uuid())
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let proto = translate::listener_to_proto_with_learning(
+                &listener.name,
+                &listener.spec,
+                &captures,
+            )?;
             listener_named.push(NamedResource {
                 name: listener.name.clone(),
                 any: Any {
@@ -428,6 +454,73 @@ impl SnapshotCache {
         }
         Ok(())
     }
+}
+
+async fn learning_capture_plan(
+    pool: &PgPool,
+    team_id: TeamId,
+    route_configs: &[fp_domain::gateway::route_config::RouteConfig],
+) -> DomainResult<Vec<translate::LearningCaptureInjection>> {
+    let route_config_ids = route_configs
+        .iter()
+        .map(|rc| (rc.id, rc.name.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let sessions =
+        fp_storage::repos::api_lifecycle::list_capturing_capture_sessions(pool, team_id).await?;
+    let mut captures = Vec::new();
+    for session in sessions {
+        if let Some(route_config_id) = session.route_config_id {
+            if route_config_ids.contains_key(&route_config_id) {
+                captures.push(translate::LearningCaptureInjection {
+                    session_id: session.id.as_uuid(),
+                    team_id: team_id.as_uuid(),
+                    api_definition_id: session.api_definition_id.map(|id| id.as_uuid()),
+                    route_config_id: route_config_id.as_uuid(),
+                    listener_id: session.listener_id.map(|id| id.as_uuid()),
+                    virtual_host: session.virtual_host.clone(),
+                    route: session.route.clone(),
+                });
+            }
+            continue;
+        }
+        let Some(api_id) = session.api_definition_id else {
+            continue;
+        };
+        let bindings =
+            fp_storage::repos::api_lifecycle::list_route_bindings_for_api(pool, team_id, api_id)
+                .await?;
+        for binding in bindings {
+            if route_config_ids.contains_key(&binding.route_config_id) {
+                captures.push(translate::LearningCaptureInjection {
+                    session_id: session.id.as_uuid(),
+                    team_id: team_id.as_uuid(),
+                    api_definition_id: Some(api_id.as_uuid()),
+                    route_config_id: binding.route_config_id.as_uuid(),
+                    listener_id: binding.listener_id.map(|id| id.as_uuid()),
+                    virtual_host: binding.virtual_host.clone(),
+                    route: binding.route.clone(),
+                });
+            }
+        }
+    }
+    captures.sort_by(|a, b| {
+        (
+            a.route_config_id,
+            a.listener_id,
+            a.virtual_host.as_deref(),
+            a.route.as_deref(),
+            a.session_id,
+        )
+            .cmp(&(
+                b.route_config_id,
+                b.listener_id,
+                b.virtual_host.as_deref(),
+                b.route.as_deref(),
+                b.session_id,
+            ))
+    });
+    captures.dedup();
+    Ok(captures)
 }
 
 fn decrypt_secret_spec(ciphertext: &[u8], nonce: &[u8]) -> DomainResult<SecretSpec> {
@@ -486,7 +579,10 @@ pub const XDS_CONSUMER: &str = "xds-snapshot";
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use envoy_types::pb::envoy::config::listener::v3 as lst;
+    use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
     use fp_core::{GrantSet, PrincipalCtx};
+    use fp_domain::api_lifecycle::{ApiDefinitionSpec, ApiRouteBindingSpec, CaptureSessionSpec};
     use fp_domain::authz::TeamRef;
     use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
     use fp_domain::gateway::listener::ListenerSpec;
@@ -495,6 +591,7 @@ mod tests {
     };
     use fp_domain::{OrgRole, RequestId};
     use fp_storage::repos::identity;
+    use prost::Message;
 
     fn unique(prefix: &str) -> String {
         format!(
@@ -747,6 +844,182 @@ mod tests {
             primed.clusters.resources, after.clusters.resources,
             "primed snapshot matches the event-driven one byte for byte"
         );
+    }
+
+    #[tokio::test]
+    async fn learning_capture_injection_is_scoped_to_the_session_team() {
+        let Some((pool, team_a, team_b, ctx_a, ctx_b)) = world().await else {
+            return;
+        };
+        let cluster_a = unique("upstream-a");
+        let cluster_b = unique("upstream-b");
+        fp_core::services::clusters::create_cluster(
+            &pool,
+            &ctx_a,
+            team_a,
+            &cluster_a,
+            cluster_spec("10.0.0.1"),
+            RequestId::generate(),
+        )
+        .await
+        .expect("a cluster");
+        fp_core::services::clusters::create_cluster(
+            &pool,
+            &ctx_b,
+            team_b,
+            &cluster_b,
+            cluster_spec("10.0.0.2"),
+            RequestId::generate(),
+        )
+        .await
+        .expect("b cluster");
+        let route_name = unique("shared-routes");
+        let listener_name = unique("edge");
+        let rc_a = fp_core::services::gateway::create_route_config(
+            &pool,
+            &ctx_a,
+            team_a,
+            &route_name,
+            rc_spec(&cluster_a),
+            RequestId::generate(),
+        )
+        .await
+        .expect("a rc");
+        fp_core::services::gateway::create_route_config(
+            &pool,
+            &ctx_b,
+            team_b,
+            &route_name,
+            rc_spec(&cluster_b),
+            RequestId::generate(),
+        )
+        .await
+        .expect("b rc");
+        let listener_a = fp_core::services::gateway::create_listener(
+            &pool,
+            &ctx_a,
+            team_a,
+            &listener_name,
+            ListenerSpec {
+                address: "0.0.0.0".into(),
+                port: 19300,
+                protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
+                route_config: Some(route_name.clone()),
+                tls_context: None,
+                http_filters: Vec::new(),
+                access_logs: Vec::new(),
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("a listener");
+        fp_core::services::gateway::create_listener(
+            &pool,
+            &ctx_b,
+            team_b,
+            &listener_name,
+            ListenerSpec {
+                address: "0.0.0.0".into(),
+                port: 19301,
+                protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
+                route_config: Some(route_name),
+                tls_context: None,
+                http_filters: Vec::new(),
+                access_logs: Vec::new(),
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("b listener");
+
+        let mut tx = pool.begin().await.expect("tx");
+        let api = fp_storage::repos::api_lifecycle::create_api_definition(
+            &mut tx,
+            team_a,
+            &unique("learn-api"),
+            &ApiDefinitionSpec {
+                display_name: "Learn".into(),
+                description: String::new(),
+            },
+        )
+        .await
+        .expect("api");
+        fp_storage::repos::api_lifecycle::create_route_binding(
+            &mut tx,
+            team_a,
+            api.id,
+            &unique("binding"),
+            &ApiRouteBindingSpec {
+                route_config_id: rc_a.id,
+                listener_id: Some(listener_a.id),
+                virtual_host: Some("default".into()),
+                route: Some("all".into()),
+            },
+        )
+        .await
+        .expect("binding");
+        fp_storage::repos::api_lifecycle::create_capture_session(
+            &mut tx,
+            team_a,
+            &unique("capture"),
+            &CaptureSessionSpec {
+                api_definition_id: Some(api.id),
+                route_config_id: None,
+                listener_id: None,
+                virtual_host: None,
+                route: None,
+                target_sample_count: 10,
+                max_duration_seconds: Some(60),
+                max_bytes: 4096,
+                max_distinct_paths: 10,
+            },
+        )
+        .await
+        .expect("session");
+        tx.commit().await.expect("commit");
+
+        let cache = SnapshotCache::new();
+        cache
+            .rebuild_team(&pool, team_a.id)
+            .await
+            .expect("a rebuild");
+        cache
+            .rebuild_team(&pool, team_b.id)
+            .await
+            .expect("b rebuild");
+        let a = cache.team(team_a.id).await;
+        let b = cache.team(team_b.id).await;
+        assert_eq!(a.listeners.resources.len(), 1);
+        assert_eq!(b.listeners.resources.len(), 1);
+
+        let hcm_a = decode_hcm(&a.listeners.resources[0]);
+        let hcm_b = decode_hcm(&b.listeners.resources[0]);
+        assert_eq!(learning_filter_count(&hcm_a), 1);
+        assert_eq!(learning_filter_count(&hcm_b), 0);
+        assert_eq!(hcm_a.access_log.len(), 1);
+        assert!(hcm_b.access_log.is_empty());
+    }
+
+    fn decode_hcm(any: &Any) -> hcm::HttpConnectionManager {
+        let listener = lst::Listener::decode(any.value.as_slice()).expect("listener");
+        match &listener.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(any)) => {
+                hcm::HttpConnectionManager::decode(any.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed hcm"),
+        }
+    }
+
+    fn learning_filter_count(manager: &hcm::HttpConnectionManager) -> usize {
+        manager
+            .http_filters
+            .iter()
+            .filter(|filter| {
+                filter
+                    .name
+                    .starts_with(translate::LEARNING_EXT_PROC_FILTER_PREFIX)
+            })
+            .count()
     }
 
     #[tokio::test]
