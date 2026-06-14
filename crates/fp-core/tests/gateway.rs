@@ -480,3 +480,76 @@ mod referential {
         assert!(err.hint.is_some());
     }
 }
+
+mod expose_shortcut {
+    use super::*;
+    use fp_core::services::expose as exp;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+
+    #[tokio::test]
+    async fn auto_port_expose_retries_concurrent_collisions() {
+        let Some(w) = world().await else { return };
+        let count = 8;
+        let barrier = Arc::new(Barrier::new(count));
+        let mut tasks = Vec::new();
+
+        for _ in 0..count {
+            let pool = w.pool.clone();
+            let ctx = w.admin.clone();
+            let team = w.team;
+            let barrier = Arc::clone(&barrier);
+            let name = unique("expose");
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                exp::expose(
+                    &pool,
+                    &ctx,
+                    team,
+                    exp::ExposeRequest {
+                        name,
+                        upstream: "http://127.0.0.1:3001".into(),
+                        path: "/".into(),
+                        port: None,
+                    },
+                    RequestId::generate(),
+                )
+                .await
+            }));
+        }
+
+        let mut ports = BTreeSet::new();
+        for task in tasks {
+            let exposed = task.await.expect("join").expect("expose");
+            assert!(
+                ports.insert(exposed.port),
+                "auto-allocated duplicate port {}",
+                exposed.port
+            );
+        }
+
+        let (listener_count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM listeners WHERE team_id = $1")
+                .bind(w.team.id.as_uuid())
+                .fetch_one(&w.pool)
+                .await
+                .expect("listener count");
+        let (cluster_count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM clusters WHERE team_id = $1")
+                .bind(w.team.id.as_uuid())
+                .fetch_one(&w.pool)
+                .await
+                .expect("cluster count");
+        let (route_config_count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM route_configs WHERE team_id = $1")
+                .bind(w.team.id.as_uuid())
+                .fetch_one(&w.pool)
+                .await
+                .expect("route config count");
+
+        assert_eq!(listener_count, count as i64);
+        assert_eq!(cluster_count, count as i64);
+        assert_eq!(route_config_count, count as i64);
+    }
+}

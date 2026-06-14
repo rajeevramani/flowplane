@@ -10,13 +10,14 @@ use fp_domain::gateway::listener::{Listener, ListenerProtocol, ListenerSpec};
 use fp_domain::gateway::route_config::{
     PathMatch, RouteAction, RouteConfig, RouteConfigSpec, RouteRule, VirtualHost,
 };
-use fp_domain::{DomainError, DomainResult, RequestId};
+use fp_domain::{DomainError, DomainResult, ErrorCode, RequestId};
 use reqwest::Url;
 use sqlx::PgPool;
 use std::collections::BTreeSet;
 
 const DEFAULT_PORT_START: u16 = 10_000;
 const DEFAULT_PORT_END: u16 = 10_999;
+const DEFAULT_PORT_ATTEMPTS: usize = (DEFAULT_PORT_END - DEFAULT_PORT_START + 1) as usize;
 
 #[derive(Debug, Clone)]
 pub struct ExposeRequest {
@@ -56,10 +57,6 @@ pub async fn expose(
     fp_domain::validate_name(&request.name)?;
     let upstream = parse_upstream(&request.upstream)?;
     let path = normalize_path(&request.path)?;
-    let port = match request.port {
-        Some(port) => port,
-        None => allocate_port(pool, ctx, team, request_id).await?,
-    };
     let names = ExposeNames::new(&request.name);
 
     let cluster_spec = ClusterSpec {
@@ -112,24 +109,78 @@ pub async fn expose(
             filter_overrides: Vec::new(),
         }],
     };
+    let template = ExposeTemplate {
+        names,
+        cluster_spec,
+        route_config_spec,
+    };
+
+    for attempt in 0..DEFAULT_PORT_ATTEMPTS {
+        let port = match request.port {
+            Some(port) => port,
+            None => allocate_port(pool, ctx, team, request_id).await?,
+        };
+        match create_resources_for_port(pool, ctx, team, &template, port, request_id).await {
+            Ok((cluster, route_config, listener)) => {
+                return Ok(ExposedService {
+                    name: request.name,
+                    upstream: request.upstream,
+                    path: path.clone(),
+                    port,
+                    cluster,
+                    route_config,
+                    listener,
+                    curl_url: format!("http://127.0.0.1:{port}{path}"),
+                });
+            }
+            Err(err) if request.port.is_none() && is_listener_port_conflict(&err) => {
+                tracing::debug!(
+                    attempt = attempt + 1,
+                    port,
+                    "auto-selected expose listener port raced with another writer; retrying"
+                );
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(no_ports_available())
+}
+
+async fn create_resources_for_port(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    template: &ExposeTemplate,
+    port: u16,
+    request_id: RequestId,
+) -> DomainResult<(Cluster, RouteConfig, Listener)> {
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
         port,
         protocol: ListenerProtocol::Http,
-        route_config: Some(names.route_config.clone()),
+        route_config: Some(template.names.route_config.clone()),
         http_filters: Vec::new(),
         access_logs: Vec::new(),
         tls_context: None,
     };
 
-    let cluster =
-        clusters::create_cluster(pool, ctx, team, &names.cluster, cluster_spec, request_id).await?;
+    let cluster = clusters::create_cluster(
+        pool,
+        ctx,
+        team,
+        &template.names.cluster,
+        template.cluster_spec.clone(),
+        request_id,
+    )
+    .await?;
     let route_config = match gateway::create_route_config(
         pool,
         ctx,
         team,
-        &names.route_config,
-        route_config_spec,
+        &template.names.route_config,
+        template.route_config_spec.clone(),
         request_id,
     )
     .await
@@ -146,44 +197,39 @@ pub async fn expose(
             return Err(err);
         }
     };
-    let listener =
-        match gateway::create_listener(pool, ctx, team, &names.listener, listener_spec, request_id)
-            .await
-        {
-            Ok(listener) => listener,
-            Err(err) => {
-                if let Err(cleanup_err) =
-                    cleanup_route_config(pool, ctx, team, &route_config, request_id).await
-                {
-                    tracing::error!(
-                        route_config = %route_config.name,
-                        error = %cleanup_err,
-                        "failed to clean up route config after expose listener create failed"
-                    );
-                }
-                if let Err(cleanup_err) =
-                    cleanup_cluster(pool, ctx, team, &cluster, request_id).await
-                {
-                    tracing::error!(
-                        cluster = %cluster.name,
-                        error = %cleanup_err,
-                        "failed to clean up cluster after expose listener create failed"
-                    );
-                }
-                return Err(err);
+    let listener = match gateway::create_listener(
+        pool,
+        ctx,
+        team,
+        &template.names.listener,
+        listener_spec,
+        request_id,
+    )
+    .await
+    {
+        Ok(listener) => listener,
+        Err(err) => {
+            if let Err(cleanup_err) =
+                cleanup_route_config(pool, ctx, team, &route_config, request_id).await
+            {
+                tracing::error!(
+                    route_config = %route_config.name,
+                    error = %cleanup_err,
+                    "failed to clean up route config after expose listener create failed"
+                );
             }
-        };
+            if let Err(cleanup_err) = cleanup_cluster(pool, ctx, team, &cluster, request_id).await {
+                tracing::error!(
+                    cluster = %cluster.name,
+                    error = %cleanup_err,
+                    "failed to clean up cluster after expose listener create failed"
+                );
+            }
+            return Err(err);
+        }
+    };
 
-    Ok(ExposedService {
-        name: request.name,
-        upstream: request.upstream,
-        path: path.clone(),
-        port,
-        cluster,
-        route_config,
-        listener,
-        curl_url: format!("http://127.0.0.1:{port}{path}"),
-    })
+    Ok((cluster, route_config, listener))
 }
 
 pub async fn unexpose(
@@ -243,12 +289,21 @@ async fn allocate_port(
         .collect::<BTreeSet<_>>();
     (DEFAULT_PORT_START..=DEFAULT_PORT_END)
         .find(|port| !used.contains(port))
-        .ok_or_else(|| {
-            DomainError::conflict(format!(
-                "no listener ports available in {DEFAULT_PORT_START}-{DEFAULT_PORT_END}"
-            ))
-            .with_hint("pass --port with an available listener port")
-        })
+        .ok_or_else(no_ports_available)
+}
+
+fn no_ports_available() -> DomainError {
+    DomainError::conflict(format!(
+        "no listener ports available in {DEFAULT_PORT_START}-{DEFAULT_PORT_END}"
+    ))
+    .with_hint("pass --port with an available listener port")
+}
+
+fn is_listener_port_conflict(err: &DomainError) -> bool {
+    err.code == ErrorCode::Conflict
+        && err
+            .message
+            .contains("the listener port is already bound by another listener in this team")
 }
 
 async fn cleanup_route_config(
@@ -286,6 +341,13 @@ struct ExposeNames {
     listener: String,
     route_config: String,
     cluster: String,
+}
+
+#[derive(Debug)]
+struct ExposeTemplate {
+    names: ExposeNames,
+    cluster_spec: ClusterSpec,
+    route_config_spec: RouteConfigSpec,
 }
 
 impl ExposeNames {

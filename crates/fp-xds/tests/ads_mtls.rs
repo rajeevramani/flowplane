@@ -57,9 +57,7 @@ impl TestPki {
                 "req",
                 "-x509",
                 "-newkey",
-                "ec",
-                "-pkeyopt",
-                "ec_paramgen_curve:P-256",
+                "rsa:2048",
                 "-keyout",
                 "ca.key",
                 "-out",
@@ -81,9 +79,7 @@ impl TestPki {
             &[
                 "req",
                 "-newkey",
-                "ec",
-                "-pkeyopt",
-                "ec_paramgen_curve:P-256",
+                "rsa:2048",
                 "-keyout",
                 "server.key",
                 "-out",
@@ -91,6 +87,18 @@ impl TestPki {
                 "-nodes",
                 "-subj",
                 "/CN=fp-xds-server",
+            ],
+        );
+        openssl(
+            &dir,
+            &[
+                "pkcs8",
+                "-topk8",
+                "-nocrypt",
+                "-in",
+                "server.key",
+                "-out",
+                "server.pk8.key",
             ],
         );
         openssl(
@@ -119,7 +127,7 @@ impl TestPki {
     fn tls_paths(&self) -> XdsTlsPaths {
         XdsTlsPaths {
             cert_path: self.dir.join("server.crt"),
-            key_path: self.dir.join("server.key"),
+            key_path: self.dir.join("server.pk8.key"),
             client_ca_path: self.dir.join("ca.crt"),
         }
     }
@@ -137,9 +145,7 @@ impl TestPki {
             &[
                 "req",
                 "-newkey",
-                "ec",
-                "-pkeyopt",
-                "ec_paramgen_curve:P-256",
+                "rsa:2048",
                 "-keyout",
                 &format!("{name}.key"),
                 "-out",
@@ -147,6 +153,18 @@ impl TestPki {
                 "-nodes",
                 "-subj",
                 &format!("/CN={name}"),
+            ],
+        );
+        openssl(
+            &self.dir,
+            &[
+                "pkcs8",
+                "-topk8",
+                "-nocrypt",
+                "-in",
+                &format!("{name}.key"),
+                "-out",
+                &format!("{name}.pk8.key"),
             ],
         );
         openssl(
@@ -171,7 +189,7 @@ impl TestPki {
         );
         Identity::from_pem(
             std::fs::read(self.dir.join(format!("{name}.crt"))).expect("crt"),
-            std::fs::read(self.dir.join(format!("{name}.key"))).expect("key"),
+            std::fs::read(self.dir.join(format!("{name}.pk8.key"))).expect("key"),
         )
     }
 
