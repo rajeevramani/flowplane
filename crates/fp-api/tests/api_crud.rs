@@ -179,6 +179,7 @@ async fn learning_session_lifecycle_over_http() {
         version: "test",
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
     });
 
     let request =
@@ -329,6 +330,7 @@ async fn api_definition_import_status_and_delete_over_http() {
         version: "test",
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
     });
 
     let request =
@@ -452,6 +454,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         version: "test",
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
     });
 
     let request =
@@ -821,6 +824,7 @@ async fn multi_org_user_selects_active_org_with_header() {
         version: "test",
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
     });
 
     let response = app
@@ -916,6 +920,7 @@ async fn proxy_certificate_registry_flow_over_http() {
         version: "test",
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
     });
 
     let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
@@ -1215,6 +1220,7 @@ async fn secret_values_are_write_only_over_http() {
         version: "test",
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
     });
 
     let request = |method: &str, path: &str, body: Option<serde_json::Value>| {

@@ -3,6 +3,7 @@
 use fp_core::OidcValidator;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -15,4 +16,13 @@ pub struct AppState {
     pub validator: Option<Arc<OidcValidator>>,
     /// Per-tenant write throttle (spec/10 §4a edge hardening).
     pub write_throttle: Arc<crate::throttle::WriteThrottle>,
+    /// Optional xDS outbox consumer readiness. API-only tests and deployments can leave this off.
+    pub xds_readiness: Option<XdsReadiness>,
+}
+
+#[derive(Clone)]
+pub struct XdsReadiness {
+    pub consumer: &'static str,
+    pub max_lag: i64,
+    pub failed: Arc<AtomicBool>,
 }

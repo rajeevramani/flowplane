@@ -286,18 +286,39 @@ struct ReadyCheck {
     detail: Option<String>,
 }
 
-/// Readiness: dependencies answer. Returns 503 with per-check detail when not ready
-/// (spec/10 §10; outbox-lag check joins in S3).
+/// Readiness: dependencies answer. Returns 503 with per-check detail when not ready.
 async fn readyz(
     State(state): State<AppState>,
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<Ready>, ApiError> {
     let db = fp_storage::ping(&state.pool).await;
-    let checks = vec![ReadyCheck {
+    let mut checks = vec![ReadyCheck {
         name: "database",
         ok: db.is_ok(),
         detail: db.as_ref().err().map(|e| e.message.clone()),
     }];
+    if let Some(xds) = &state.xds_readiness {
+        let failed = xds.failed.load(std::sync::atomic::Ordering::SeqCst);
+        checks.push(ReadyCheck {
+            name: "xds_outbox_consumer",
+            ok: !failed,
+            detail: failed.then(|| "consumer task exited with error".to_string()),
+        });
+        let lag = fp_storage::outbox::consumer_lag(&state.pool, xds.consumer).await;
+        checks.push(match lag {
+            Ok(lag) => ReadyCheck {
+                name: "xds_outbox_lag",
+                ok: lag <= xds.max_lag,
+                detail: (lag > xds.max_lag)
+                    .then(|| format!("lag {lag} exceeds threshold {}", xds.max_lag)),
+            },
+            Err(e) => ReadyCheck {
+                name: "xds_outbox_lag",
+                ok: false,
+                detail: Some(e.message),
+            },
+        });
+    }
 
     if checks.iter().all(|c| c.ok) {
         Ok(Json(Ready {

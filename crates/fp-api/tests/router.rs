@@ -13,6 +13,12 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use tower::ServiceExt;
 
 async fn test_app() -> Option<axum::Router> {
+    test_app_with_xds_readiness(None).await
+}
+
+async fn test_app_with_xds_readiness(
+    xds_readiness: Option<fp_api::state::XdsReadiness>,
+) -> Option<axum::Router> {
     let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
         return None;
@@ -29,6 +35,7 @@ async fn test_app() -> Option<axum::Router> {
         version: "test",
         validator: None,
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(120)),
+        xds_readiness,
     }))
 }
 
@@ -75,6 +82,36 @@ async fn readyz_passes_with_live_database() {
     assert_eq!(json["status"], "ready");
     assert_eq!(json["checks"][0]["name"], "database");
     assert_eq!(json["checks"][0]["ok"], true);
+}
+
+#[tokio::test]
+async fn readyz_fails_when_xds_consumer_failed() {
+    let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let Some(app) = test_app_with_xds_readiness(Some(fp_api::state::XdsReadiness {
+        consumer: "test-xds",
+        max_lag: 0,
+        failed,
+    }))
+    .await
+    else {
+        return;
+    };
+    let response = app
+        .oneshot(
+            Request::get("/readyz")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let json = body_json(response).await;
+    let checks = json["details"]["checks"].as_array().expect("checks");
+    assert!(checks.iter().any(|check| {
+        check["name"] == "xds_outbox_consumer"
+            && check["ok"] == false
+            && check["detail"] == "consumer task exited with error"
+    }));
 }
 
 #[tokio::test]
