@@ -51,6 +51,22 @@ fn map_unique(e: sqlx::Error, kind: &str, name: &str) -> DomainError {
     DomainError::internal(format!("write {kind}: {e}"))
 }
 
+fn map_retention_policy_write(e: sqlx::Error, name: &str) -> DomainError {
+    if let sqlx::Error::Database(db) = &e {
+        if db.code().as_deref() == Some("23505")
+            && db.constraint() == Some("idx_api_retention_policies_one_team_default")
+        {
+            return default_retention_policy_conflict();
+        }
+    }
+    map_unique(e, "api retention policy", name)
+}
+
+fn default_retention_policy_conflict() -> DomainError {
+    DomainError::conflict("a team-default api retention policy already exists")
+        .with_hint("create an API-specific retention policy or update the existing team default")
+}
+
 fn api_from_row(row: &PgRow) -> ApiDefinition {
     ApiDefinition {
         id: ApiDefinitionId::from(row.get::<Uuid, _>("id")),
@@ -265,6 +281,25 @@ async fn ensure_api_in_team(
         Err(DomainError::validation(
             "api definition does not exist in this team",
         ))
+    }
+}
+
+async fn ensure_no_team_default_retention_policy(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+) -> DomainResult<()> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM api_retention_policies \
+         WHERE team_id = $1 AND api_definition_id IS NULL)",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("check team-default retention policy: {e}")))?;
+    if exists {
+        Err(default_retention_policy_conflict())
+    } else {
+        Ok(())
     }
 }
 
@@ -669,6 +704,8 @@ pub async fn create_retention_policy(
     spec.validate()?;
     if let Some(api_id) = spec.api_definition_id {
         ensure_api_in_team(tx, team.id, api_id).await?;
+    } else {
+        ensure_no_team_default_retention_policy(tx, team.id).await?;
     }
     let row = sqlx::query(&format!(
         "INSERT INTO api_retention_policies \
@@ -684,7 +721,7 @@ pub async fn create_retention_policy(
     .bind(spec.max_spec_versions)
     .fetch_one(&mut **tx)
     .await
-    .map_err(|e| map_unique(e, "api retention policy", name))?;
+    .map_err(|e| map_retention_policy_write(e, name))?;
     Ok(retention_from_row(&row))
 }
 
@@ -1202,10 +1239,12 @@ async fn raw_observation_ttl_days(
     team_id: TeamId,
     api_definition_id: Option<ApiDefinitionId>,
 ) -> DomainResult<i32> {
+    // Most-specific within the team wins: API policy, then the single team default,
+    // then the built-in default if no policy exists.
     let ttl_days: Option<i32> = sqlx::query_scalar(
         "SELECT raw_observation_ttl_days FROM api_retention_policies \
          WHERE team_id = $1 AND (api_definition_id = $2 OR api_definition_id IS NULL) \
-         ORDER BY api_definition_id IS NULL, created_at DESC LIMIT 1",
+         ORDER BY api_definition_id IS NULL, created_at DESC, id DESC LIMIT 1",
     )
     .bind(team_id.as_uuid())
     .bind(api_definition_id.map(|id| id.as_uuid()))

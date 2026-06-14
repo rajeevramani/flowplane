@@ -341,6 +341,55 @@ async fn retention_policy_can_be_scoped_to_api() {
 }
 
 #[tokio::test]
+async fn retention_policy_allows_one_team_default_per_team() {
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let default = api_lifecycle::create_retention_policy(
+        &mut tx,
+        w.team_a,
+        &unique("team-default"),
+        &RetentionPolicySpec {
+            api_definition_id: None,
+            raw_observation_ttl_days: 14,
+            max_spec_versions: 25,
+        },
+    )
+    .await
+    .expect("first default");
+    assert_eq!(default.api_definition_id, None);
+
+    let err = api_lifecycle::create_retention_policy(
+        &mut tx,
+        w.team_a,
+        &unique("team-default-2"),
+        &RetentionPolicySpec {
+            api_definition_id: None,
+            raw_observation_ttl_days: 7,
+            max_spec_versions: 10,
+        },
+    )
+    .await
+    .expect_err("second default in same team");
+    assert_eq!(err.code, ErrorCode::Conflict);
+    tx.commit().await.expect("commit");
+
+    let mut tx = w.pool.begin().await.expect("other team tx");
+    api_lifecycle::create_retention_policy(
+        &mut tx,
+        w.team_b,
+        &unique("team-default"),
+        &RetentionPolicySpec {
+            api_definition_id: None,
+            raw_observation_ttl_days: 21,
+            max_spec_versions: 30,
+        },
+    )
+    .await
+    .expect("other team default");
+    tx.commit().await.expect("other team commit");
+}
+
+#[tokio::test]
 async fn capture_sessions_are_bounded_and_transitioned_per_team() {
     let Some(w) = world().await else { return };
     let mut tx = w.pool.begin().await.expect("tx");
