@@ -211,18 +211,19 @@ pub async fn trace_rows(
     limit: i64,
 ) -> DomainResult<Vec<EventTraceRow>> {
     let trace_like = trace_id.map(|id| format!("%{id}%"));
+    let path_like = path.map(like_contains_pattern);
     let rows = sqlx::query(
         "SELECT seq, event_type, payload, trace_context, occurred_at \
          FROM events \
          WHERE team_id = $1 \
            AND ($2::text IS NULL OR trace_context::text LIKE $2) \
-           AND ($3::text IS NULL OR payload::text ILIKE ('%' || $3 || '%') OR event_type ILIKE ('%' || $3 || '%')) \
+           AND ($3::text IS NULL OR payload::text ILIKE $3 ESCAPE '\\' OR event_type ILIKE $3 ESCAPE '\\') \
          ORDER BY occurred_at DESC \
          LIMIT $4",
     )
     .bind(team_id.as_uuid())
     .bind(trace_like.as_deref())
-    .bind(path)
+    .bind(path_like.as_deref())
     .bind(limit.clamp(1, 200))
     .fetch_all(pool)
     .await
@@ -238,6 +239,19 @@ pub async fn trace_rows(
             occurred_at: row.get("occurred_at"),
         })
         .collect())
+}
+
+fn like_contains_pattern(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 2);
+    out.push('%');
+    for c in raw.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
 }
 
 /// Long-running consumer loop: LISTEN for wakeups with a poll fallback, drain batches,
@@ -516,5 +530,13 @@ mod tests {
             let _ = process_batch(&pool, &a, 10_000, |_| async { Ok(()) }).await;
         }
         assert!(caught_up, "consumer A catches up to zero lag");
+    }
+
+    #[test]
+    fn trace_like_pattern_escapes_wildcards() {
+        assert_eq!(
+            like_contains_pattern(r"clusters/%_orders"),
+            r"%clusters/\%\_orders%"
+        );
     }
 }
