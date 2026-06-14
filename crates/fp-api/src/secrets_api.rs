@@ -2,10 +2,10 @@
 //! but every response is metadata plus `value_redacted = true`.
 
 use crate::error::{ApiError, ErrorBody};
-use crate::resources::{resolve_team, ListQuery, Page};
+use crate::resources::{resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use fp_core::services::secrets as svc;
 use fp_core::PrincipalCtx;
@@ -160,11 +160,13 @@ pub async fn get_secret(
     params(
         ("team" = String, Path, description = "Team name or UUID"),
         ("name" = String, Path, description = "Secret name"),
+        ("If-Match" = i64, Header, description = "Current secret revision"),
     ),
     request_body = RotateSecretBody,
     responses(
         (status = 200, body = SecretView),
         (status = 400, body = ErrorBody),
+        (status = 409, body = ErrorBody),
         (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody),
         (status = 503, body = ErrorBody),
@@ -172,17 +174,20 @@ pub async fn get_secret(
 pub async fn rotate_secret(
     State(state): State<AppState>,
     Path((team, name)): Path<(String, String)>,
+    headers: HeaderMap,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
     Json(body): Json<RotateSecretBody>,
 ) -> Result<Json<SecretView>, ApiError> {
     let run = async {
+        let revision = revision_from(&headers)?;
         let team = resolve_team(&state, &ctx, &team).await?;
         svc::rotate_secret(
             &state.pool,
             &ctx,
             team,
             &name,
+            revision,
             parse_spec(body.spec)?,
             body.expires_at,
             rid,
