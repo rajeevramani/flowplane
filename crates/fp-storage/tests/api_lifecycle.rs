@@ -576,6 +576,16 @@ async fn raw_observation_ingest_redacts_and_counts_accepted_rows() {
     input
         .request_headers
         .insert("authorization".into(), serde_json::json!("Bearer secret"));
+    input.request_headers.insert(
+        "proxy-authorization".into(),
+        serde_json::json!("Basic secret"),
+    );
+    input
+        .request_headers
+        .insert("x-api-key".into(), serde_json::json!("key-secret"));
+    input
+        .request_headers
+        .insert("x-auth-token".into(), serde_json::json!("token-secret"));
     input
         .request_headers
         .insert("x-envoy-internal".into(), serde_json::json!("true"));
@@ -600,6 +610,9 @@ async fn raw_observation_ingest_redacts_and_counts_accepted_rows() {
     tx.commit().await.expect("commit ingest");
 
     assert_eq!(row.request_headers["authorization"], "[REDACTED]");
+    assert_eq!(row.request_headers["proxy-authorization"], "[REDACTED]");
+    assert_eq!(row.request_headers["x-api-key"], "[REDACTED]");
+    assert_eq!(row.request_headers["x-auth-token"], "[REDACTED]");
     assert!(row.request_headers.get("x-envoy-internal").is_none());
     assert_eq!(row.request_headers["accept"], "application/json");
 
