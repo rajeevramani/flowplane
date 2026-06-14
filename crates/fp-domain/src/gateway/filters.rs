@@ -17,16 +17,65 @@ const MAX_CORS_TOKEN_VALUE_LEN: usize = 256;
 const MAX_HEADER_MUTATIONS_PER_DIRECTION: usize = 128;
 const MAX_HEADER_NAME_LEN: usize = 256;
 const MAX_HEADER_VALUE_LEN: usize = 4096;
-const DISABLABLE_FILTER_TYPES: &[&str] = &[
-    "cors",
-    "local_rate_limit",
-    "header_mutation",
-    "compressor",
-    "jwt_auth",
-    "ext_authz",
-    "rbac",
-    "global_rate_limit",
-];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpFilterKind {
+    Cors,
+    LocalRateLimit,
+    HeaderMutation,
+    HealthCheck,
+    Compressor,
+    JwtAuth,
+    ExtAuthz,
+    Rbac,
+    GlobalRateLimit,
+}
+
+impl HttpFilterKind {
+    const ALL: [Self; 9] = [
+        Self::Cors,
+        Self::LocalRateLimit,
+        Self::HeaderMutation,
+        Self::HealthCheck,
+        Self::Compressor,
+        Self::JwtAuth,
+        Self::ExtAuthz,
+        Self::Rbac,
+        Self::GlobalRateLimit,
+    ];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cors => "cors",
+            Self::LocalRateLimit => "local_rate_limit",
+            Self::HeaderMutation => "header_mutation",
+            Self::HealthCheck => "health_check",
+            Self::Compressor => "compressor",
+            Self::JwtAuth => "jwt_auth",
+            Self::ExtAuthz => "ext_authz",
+            Self::Rbac => "rbac",
+            Self::GlobalRateLimit => "global_rate_limit",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|kind| kind.as_str() == raw)
+    }
+
+    fn is_disablable(self) -> bool {
+        !matches!(self, Self::HealthCheck)
+    }
+
+    fn disablable_hint() -> String {
+        Self::ALL
+            .iter()
+            .copied()
+            .filter(|kind| kind.is_disablable())
+            .map(Self::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
 
 /// One entry in a listener's HTTP filter chain. Order is semantic (chain order); the
 /// router filter is appended automatically at translation and may not appear here.
@@ -58,16 +107,20 @@ pub enum HttpFilterSpec {
 
 impl HttpFilterSpec {
     pub fn kind(&self) -> &'static str {
+        self.kind_value().as_str()
+    }
+
+    fn kind_value(&self) -> HttpFilterKind {
         match self {
-            Self::Cors(_) => "cors",
-            Self::LocalRateLimit(_) => "local_rate_limit",
-            Self::HeaderMutation(_) => "header_mutation",
-            Self::HealthCheck(_) => "health_check",
-            Self::Compressor(_) => "compressor",
-            Self::JwtAuth(_) => "jwt_auth",
-            Self::ExtAuthz(_) => "ext_authz",
-            Self::Rbac(_) => "rbac",
-            Self::GlobalRateLimit(_) => "global_rate_limit",
+            Self::Cors(_) => HttpFilterKind::Cors,
+            Self::LocalRateLimit(_) => HttpFilterKind::LocalRateLimit,
+            Self::HeaderMutation(_) => HttpFilterKind::HeaderMutation,
+            Self::HealthCheck(_) => HttpFilterKind::HealthCheck,
+            Self::Compressor(_) => HttpFilterKind::Compressor,
+            Self::JwtAuth(_) => HttpFilterKind::JwtAuth,
+            Self::ExtAuthz(_) => HttpFilterKind::ExtAuthz,
+            Self::Rbac(_) => HttpFilterKind::Rbac,
+            Self::GlobalRateLimit(_) => HttpFilterKind::GlobalRateLimit,
         }
     }
 
@@ -109,16 +162,25 @@ impl FilterOverride {
         match self {
             Self::Disable { filter_type } => {
                 // health_check is listener-only (spec/04 §4.1): no per-route control at all.
-                if !DISABLABLE_FILTER_TYPES.contains(&filter_type.as_str()) {
+                let Some(kind) = HttpFilterKind::parse(filter_type) else {
                     return Err(DomainError::validation(format!(
                         "filter type \"{filter_type}\" cannot be disabled per-route",
                     ))
                     .with_hint(format!(
                         "disablable types: {}",
-                        DISABLABLE_FILTER_TYPES.join(", ")
+                        HttpFilterKind::disablable_hint()
+                    )));
+                };
+                if !kind.is_disablable() {
+                    return Err(DomainError::validation(format!(
+                        "filter type \"{filter_type}\" cannot be disabled per-route",
+                    ))
+                    .with_hint(format!(
+                        "disablable types: {}",
+                        HttpFilterKind::disablable_hint()
                     )));
                 }
-                Ok(filter_type)
+                Ok(kind.as_str())
             }
             Self::Cors(_) => Ok("cors"),
             Self::LocalRateLimit(_) => Ok("local_rate_limit"),
@@ -1294,6 +1356,27 @@ mod tests {
         assert!(ov.validate().is_ok());
         assert!(FilterOverride::JwtAuth {
             requirement_name: String::new(),
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn per_route_disable_uses_filter_kind_disablability() {
+        for kind in HttpFilterKind::ALL {
+            let result = FilterOverride::Disable {
+                filter_type: kind.as_str().into(),
+            }
+            .validate();
+            assert_eq!(
+                result.is_ok(),
+                kind.is_disablable(),
+                "{} disablability must come from HttpFilterKind",
+                kind.as_str()
+            );
+        }
+        assert!(FilterOverride::Disable {
+            filter_type: "not_a_filter".into(),
         }
         .validate()
         .is_err());

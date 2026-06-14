@@ -1,7 +1,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use fp_domain::authz::TeamRef;
-use fp_storage::repos::{identity, secrets, xds_nacks};
+use fp_storage::repos::{api_lifecycle, identity, secrets, xds_nacks};
 use sqlx::types::chrono::Utc;
 use sqlx::{PgPool, Row};
 
@@ -96,6 +96,74 @@ async fn expired_secret_reaper_is_team_scoped() {
             .expect("count b"),
         1
     );
+}
+
+#[tokio::test]
+async fn expired_raw_observation_reaper_is_team_scoped() {
+    let Some(w) = world().await else { return };
+    let now = Utc::now();
+    let route_a = uuid::Uuid::now_v7();
+    let route_b = uuid::Uuid::now_v7();
+    let session_a = uuid::Uuid::now_v7();
+    let session_b = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO route_configs (id, team_id, org_id, name, spec) VALUES \
+           ($1, $2, $3, $4, '{\"virtual_hosts\":[]}'::jsonb), \
+           ($5, $6, $7, $8, '{\"virtual_hosts\":[]}'::jsonb); \
+         INSERT INTO capture_sessions \
+           (id, team_id, org_id, name, status, route_config_id, target_sample_count, \
+            max_duration_seconds, max_bytes, max_distinct_paths) \
+         VALUES \
+           ($9, $2, $3, $10, 'capturing', $1, 10, 60, 4096, 10), \
+           ($11, $6, $7, $12, 'capturing', $5, 10, 60, 4096, 10); \
+         INSERT INTO raw_observations \
+           (id, team_id, org_id, capture_session_id, request_id, method, path, \
+            request_headers, response_headers, metadata_seen, observed_at, expires_at) \
+         VALUES \
+           ($13, $2, $3, $9, 'expired-a', 'GET', '/expired', '{}'::jsonb, '{}'::jsonb, true, $16, $16::timestamptz - interval '5 minutes'), \
+           ($14, $2, $3, $9, 'current-a', 'GET', '/current', '{}'::jsonb, '{}'::jsonb, true, $16, $16::timestamptz + interval '5 minutes'), \
+           ($15, $6, $7, $11, 'expired-b', 'GET', '/expired', '{}'::jsonb, '{}'::jsonb, true, $16, $16::timestamptz - interval '5 minutes')",
+    )
+    .bind(route_a)
+    .bind(w.team_a.id.as_uuid())
+    .bind(w.team_a.org_id.as_uuid())
+    .bind(unique("rc-a"))
+    .bind(route_b)
+    .bind(w.team_b.id.as_uuid())
+    .bind(w.team_b.org_id.as_uuid())
+    .bind(unique("rc-b"))
+    .bind(session_a)
+    .bind(unique("session-a"))
+    .bind(session_b)
+    .bind(unique("session-b"))
+    .bind(uuid::Uuid::now_v7())
+    .bind(uuid::Uuid::now_v7())
+    .bind(uuid::Uuid::now_v7())
+    .bind(now)
+    .execute(&w.pool)
+    .await
+    .expect("insert raw observations");
+
+    let deleted =
+        api_lifecycle::delete_expired_raw_observations_for_team(&w.pool, w.team_a.id, now)
+            .await
+            .expect("reap raw observations");
+    assert_eq!(deleted, 1);
+
+    let count_a: i64 = sqlx::query("SELECT count(*) FROM raw_observations WHERE team_id = $1")
+        .bind(w.team_a.id.as_uuid())
+        .fetch_one(&w.pool)
+        .await
+        .expect("count a")
+        .get(0);
+    let count_b: i64 = sqlx::query("SELECT count(*) FROM raw_observations WHERE team_id = $1")
+        .bind(w.team_b.id.as_uuid())
+        .fetch_one(&w.pool)
+        .await
+        .expect("count b")
+        .get(0);
+    assert_eq!(count_a, 1);
+    assert_eq!(count_b, 1);
 }
 
 #[tokio::test]
