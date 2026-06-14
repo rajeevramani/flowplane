@@ -15,6 +15,9 @@ use std::str::FromStr;
 /// Header carrying the active-org selector (D-014): an org name or UUID.
 const ORG_SELECTOR_HEADER: &str = "x-flowplane-org";
 
+#[derive(Debug, Clone)]
+pub struct OrgMemberships(pub Vec<(OrgId, OrgRole)>);
+
 fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
         .get(axum::http::header::AUTHORIZATION)?
@@ -38,12 +41,7 @@ async fn resolve_active_org(
     loaded: &identity::LoadedPrincipal,
     headers: &axum::http::HeaderMap,
 ) -> DomainResult<(Option<(OrgId, OrgRole)>, bool)> {
-    let candidates: Vec<(OrgId, OrgRole)> = loaded
-        .memberships
-        .iter()
-        .copied()
-        .filter(|(org_id, _)| Some(*org_id) != loaded.platform_org_id)
-        .collect();
+    let candidates = selectable_org_memberships(loaded);
 
     let selector = headers
         .get(ORG_SELECTOR_HEADER)
@@ -63,6 +61,15 @@ async fn resolve_active_org(
         selected_id,
         selector.is_some(),
     ))
+}
+
+fn selectable_org_memberships(loaded: &identity::LoadedPrincipal) -> Vec<(OrgId, OrgRole)> {
+    loaded
+        .memberships
+        .iter()
+        .copied()
+        .filter(|(org_id, _)| Some(*org_id) != loaded.platform_org_id)
+        .collect()
 }
 
 /// The pure D-014 selection rule (no IO), given the caller's non-platform candidate orgs, the
@@ -162,6 +169,7 @@ pub async fn authenticate(
                     Ok(resolved) => resolved,
                     Err(e) => return ApiError::new(e, rid).into_response(),
                 };
+            let memberships = OrgMemberships(selectable_org_memberships(&loaded));
             let ctx = PrincipalCtx::User {
                 user_id: loaded.user_id,
                 platform_admin: loaded.platform_admin,
@@ -169,6 +177,7 @@ pub async fn authenticate(
                 org_selector_required,
                 grants: GrantSet::new(loaded.grants),
             };
+            request.extensions_mut().insert(memberships);
             request.extensions_mut().insert(ctx);
             next.run(request).await
         }

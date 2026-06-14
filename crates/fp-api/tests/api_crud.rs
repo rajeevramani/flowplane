@@ -859,7 +859,8 @@ async fn multi_org_user_selects_active_org_with_header() {
         .oneshot(base().body(Body::empty()).expect("request"))
         .await
         .expect("ambiguous");
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_of(response).await["code"], "org_selector_required");
 
     let response = app
         .oneshot(
