@@ -369,7 +369,7 @@ impl SnapshotCache {
                 name: rc.name.clone(),
                 any: Any {
                     type_url: ROUTE_TYPE_URL.to_string(),
-                    value: proto.encode_to_vec(),
+                    value: translate::encode_route_config_deterministic(&proto)?,
                 },
             });
         }
