@@ -49,6 +49,9 @@ immutable snapshot. Deterministic learned specs must not be generated directly f
   snapshots before rendering OpenAPI.
 - `LearnedEndpointAggregate` carries request schema, response schemas, learned headers, and
   confidence metadata.
+- `group_observations_by_endpoint()` is the pure S8.6b grouping primitive. It accepts one
+  team/session observation set, preserves host separation, templates high-cardinality/id-like path
+  segments, keeps stable low-cardinality literals, and buckets path overflow.
 - `LearnedConfidence` is stable review metadata with score, sample count, body coverage, path
   cardinality, truncation, and drop signals.
 - `canonical_openapi()` emits OpenAPI 3.1 JSON with deterministic ordering for paths, methods,
