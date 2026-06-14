@@ -182,18 +182,19 @@ pub async fn trace_rows(
     path: Option<&str>,
     limit: i64,
 ) -> DomainResult<Vec<AuditTraceRow>> {
+    let path_like = path.map(like_contains_pattern);
     let rows = sqlx::query(
         "SELECT id, request_id, actor_label, surface, action, resource, outcome, detail, occurred_at \
          FROM audit_log \
          WHERE team_id = $1 \
            AND ($2::uuid IS NULL OR request_id = $2) \
-           AND ($3::text IS NULL OR resource ILIKE ('%' || $3 || '%') OR action ILIKE ('%' || $3 || '%')) \
+           AND ($3::text IS NULL OR resource ILIKE $3 ESCAPE '\\' OR action ILIKE $3 ESCAPE '\\') \
          ORDER BY occurred_at DESC \
          LIMIT $4",
     )
     .bind(team_id.as_uuid())
     .bind(request_id.map(|r| r.as_uuid()))
-    .bind(path)
+    .bind(path_like.as_deref())
     .bind(limit.clamp(1, 200))
     .fetch_all(pool)
     .await
@@ -217,10 +218,31 @@ pub async fn trace_rows(
         .collect())
 }
 
+fn like_contains_pattern(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 2);
+    out.push('%');
+    for c in raw.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_like_pattern_escapes_wildcards() {
+        assert_eq!(
+            like_contains_pattern(r"listeners/%_edge"),
+            r"%listeners/\%\_edge%"
+        );
+    }
 
     #[tokio::test]
     async fn denial_entries_persist_with_reason() {

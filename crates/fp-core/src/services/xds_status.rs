@@ -13,6 +13,8 @@ use sqlx::PgPool;
 
 const LIVE_HEARTBEAT_SECONDS: i64 = 60;
 const RECENT_NACK_MINUTES: i64 = 15;
+const MIN_TRACE_PATH_QUERY_LEN: usize = 3;
+const MAX_TRACE_PATH_QUERY_LEN: usize = 256;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct XdsCounterTotals {
@@ -159,12 +161,13 @@ pub async fn trace(
             ),
         );
     }
+    let path = bounded_trace_path(query.path.as_deref())?;
     let limit = query.limit.clamp(1, 200);
     let audit = fp_storage::repos::audit::trace_rows(
         pool,
         team.id,
         query.request_id,
-        query.path.as_deref(),
+        path.as_deref(),
         limit,
     )
     .await?;
@@ -172,11 +175,30 @@ pub async fn trace(
         pool,
         team.id,
         query.trace_id.as_deref(),
-        query.path.as_deref(),
+        path.as_deref(),
         limit,
     )
     .await?;
     Ok(OpsTrace { audit, events })
+}
+
+fn bounded_trace_path(path: Option<&str>) -> DomainResult<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if path.chars().any(char::is_control) {
+        return Err(DomainError::validation(
+            "trace path search must not contain control characters",
+        ));
+    }
+    let path = path.trim();
+    if path.len() < MIN_TRACE_PATH_QUERY_LEN || path.len() > MAX_TRACE_PATH_QUERY_LEN {
+        return Err(DomainError::validation(format!(
+            "trace path search must be {MIN_TRACE_PATH_QUERY_LEN}-{MAX_TRACE_PATH_QUERY_LEN} characters"
+        ))
+        .with_hint("use a request_id or trace_id for exact correlation, or a longer resource/path fragment"));
+    }
+    Ok(Some(path.to_string()))
 }
 
 async fn authorize_read(
@@ -204,7 +226,7 @@ async fn authorize_read(
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -244,5 +266,19 @@ mod tests {
                 warming_failures: i64::MAX,
             }
         );
+    }
+
+    #[test]
+    fn trace_path_search_is_bounded() {
+        assert_eq!(
+            bounded_trace_path(Some("  clusters/orders  "))
+                .expect("valid")
+                .as_deref(),
+            Some("clusters/orders")
+        );
+        assert!(bounded_trace_path(Some("/")).is_err());
+        assert!(bounded_trace_path(Some(&"x".repeat(MAX_TRACE_PATH_QUERY_LEN + 1))).is_err());
+        assert!(bounded_trace_path(Some("abc\n")).is_err());
+        assert_eq!(bounded_trace_path(None).expect("none"), None);
     }
 }
