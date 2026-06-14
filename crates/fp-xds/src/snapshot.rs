@@ -741,12 +741,9 @@ mod tests {
         };
         let cache = SnapshotCache::new();
         let consumer = format!("xds-test-{}", unique("c"));
-        fp_storage::outbox::register_consumer(&pool, &consumer)
+        fp_storage::outbox::register_consumer_at_head(&pool, &consumer)
             .await
             .expect("register");
-        // Fast-forward past unrelated events from parallel tests.
-        let _ = fp_storage::outbox::process_batch(&pool, &consumer, 100_000, |_| async { Ok(()) })
-            .await;
 
         // Team A: cluster + bound route config + listener. Team B: one cluster only.
         let upstream = unique("upstream");
@@ -879,7 +876,7 @@ mod tests {
         // event replay) primed from the DB must serve the same resources — never empty
         // snapshots that would wipe a reconnecting dataplane.
         let fresh = SnapshotCache::new();
-        fresh.prime_all(&pool).await.expect("prime");
+        fresh.rebuild_team(&pool, team_a.id).await.expect("prime");
         let primed = fresh.team(team_a.id).await;
         assert_eq!(primed.clusters.resources.len(), 1);
         assert_eq!(primed.routes.resources.len(), 1);
@@ -1055,11 +1052,9 @@ mod tests {
         );
         let cache = SnapshotCache::new();
         let consumer = format!("xds-test-{}", unique("c"));
-        fp_storage::outbox::register_consumer(&pool, &consumer)
+        fp_storage::outbox::register_consumer_at_head(&pool, &consumer)
             .await
             .expect("register");
-        let _ = fp_storage::outbox::process_batch(&pool, &consumer, 100_000, |_| async { Ok(()) })
-            .await;
 
         fp_core::services::secrets::create_secret(
             &pool,
