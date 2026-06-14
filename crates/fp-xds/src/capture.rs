@@ -4,6 +4,7 @@
 //! thin: it parses Envoy protobufs into the domain `ObservationIngest` shape and delegates all
 //! tenancy, quota, merge, TTL, and counter rules to storage.
 
+use crate::ads::TeamResolver;
 use envoy_types::pb::envoy::config::core::v3::{HeaderMap, RequestMethod};
 use envoy_types::pb::envoy::data::accesslog::v3::HttpAccessLogEntry;
 use envoy_types::pb::envoy::service::accesslog::v3::{
@@ -23,6 +24,7 @@ use fp_domain::{
 use fp_storage::repos::{api_lifecycle, identity};
 use serde_json::{Map, Value};
 use sqlx::types::chrono::Utc;
+use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status, Streaming};
@@ -33,6 +35,7 @@ const MAX_CAPTURE_BODY_BYTES: usize = 64 * 1024;
 #[derive(Clone)]
 pub struct LearningCaptureService {
     pool: sqlx::PgPool,
+    resolver: Arc<dyn TeamResolver>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -55,8 +58,8 @@ struct ExtProcState {
 }
 
 impl LearningCaptureService {
-    pub fn new(pool: sqlx::PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: sqlx::PgPool, resolver: Arc<dyn TeamResolver>) -> Self {
+        Self { pool, resolver }
     }
 
     pub fn access_log_server(self) -> AccessLogServiceServer<Self> {
@@ -108,7 +111,7 @@ impl AccessLogService for LearningCaptureService {
         &self,
         request: Request<Streaming<StreamAccessLogsMessage>>,
     ) -> Result<Response<StreamAccessLogsResponse>, Status> {
-        let ctx = capture_context(request.metadata())?;
+        let ctx = capture_context(&request, &self.resolver).await?;
         let mut stream = request.into_inner();
         while let Some(message) = stream.message().await? {
             if let Some(stream_access_logs_message::LogEntries::HttpLogs(entries)) =
@@ -140,7 +143,7 @@ impl ExternalProcessor for LearningCaptureService {
         &self,
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
-        let ctx = capture_context(request.metadata())?;
+        let ctx = capture_context(&request, &self.resolver).await?;
         let mut stream = request.into_inner();
         let service = self.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProcessingResponse, Status>>(16);
@@ -170,9 +173,35 @@ impl ExternalProcessor for LearningCaptureService {
     }
 }
 
-fn capture_context(metadata: &MetadataMap) -> Result<CaptureContext, Status> {
+async fn capture_context<T>(
+    request: &Request<T>,
+    resolver: &Arc<dyn TeamResolver>,
+) -> Result<CaptureContext, Status> {
+    let metadata = request.metadata();
+    let claimed_team_id = TeamId::from(metadata_uuid(metadata, "x-flowplane-team-id")?);
+    let peer_spiffe = request
+        .peer_certs()
+        .and_then(|certs| {
+            certs
+                .first()
+                .and_then(|der| crate::server::spiffe_uri_from_der(der.as_ref()))
+        })
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<crate::server::PeerSpiffe>()
+                .map(|p| p.0.clone())
+        });
+    let identity = resolver
+        .resolve(&format!("team={claimed_team_id}"), peer_spiffe.as_deref())
+        .await?;
+    if identity.team_id != claimed_team_id {
+        return Err(Status::permission_denied(
+            "capture team_id does not match the client certificate",
+        ));
+    }
     Ok(CaptureContext {
-        team_id: TeamId::from(metadata_uuid(metadata, "x-flowplane-team-id")?),
+        team_id: identity.team_id,
         session_id: CaptureSessionId::from(metadata_uuid(
             metadata,
             "x-flowplane-capture-session-id",
@@ -426,12 +455,82 @@ fn status_from_domain(err: DomainError) -> Status {
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::ads::PeerIdentity;
     use envoy_types::pb::envoy::config::core::v3::{HeaderValue, RequestMethod};
     use envoy_types::pb::envoy::data::accesslog::v3::{
         HttpRequestProperties, HttpResponseProperties,
     };
     use envoy_types::pb::google::protobuf::UInt32Value;
     use std::collections::HashMap;
+    use tonic::Code;
+
+    struct FixedTeamResolver {
+        team_id: TeamId,
+    }
+
+    #[tonic::async_trait]
+    impl TeamResolver for FixedTeamResolver {
+        async fn resolve(
+            &self,
+            _node_id: &str,
+            _peer_spiffe: Option<&str>,
+        ) -> Result<PeerIdentity, Status> {
+            Ok(PeerIdentity {
+                team_id: self.team_id,
+                dataplane_id: None,
+                certificate_id: None,
+            })
+        }
+    }
+
+    fn capture_request(team_id: TeamId) -> Request<()> {
+        let mut request = Request::new(());
+        let metadata = request.metadata_mut();
+        metadata.insert(
+            "x-flowplane-team-id",
+            team_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-capture-session-id",
+            Uuid::now_v7().to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-route-config-id",
+            Uuid::now_v7().to_string().parse().expect("metadata value"),
+        );
+        request
+    }
+
+    #[tokio::test]
+    async fn capture_context_accepts_cert_bound_team_match() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let resolver = Arc::new(FixedTeamResolver { team_id }) as Arc<dyn TeamResolver>;
+        let request = capture_request(team_id);
+
+        let ctx = capture_context(&request, &resolver).await.expect("context");
+
+        assert_eq!(ctx.team_id, team_id);
+    }
+
+    #[tokio::test]
+    async fn capture_context_rejects_cert_bound_team_mismatch() {
+        let claimed_team_id = TeamId::from(Uuid::now_v7());
+        let bound_team_id = TeamId::from(Uuid::now_v7());
+        let resolver = Arc::new(FixedTeamResolver {
+            team_id: bound_team_id,
+        }) as Arc<dyn TeamResolver>;
+        let request = capture_request(claimed_team_id);
+
+        let err = capture_context(&request, &resolver)
+            .await
+            .expect_err("mismatch should be rejected");
+
+        assert_eq!(err.code(), Code::PermissionDenied);
+        assert_eq!(
+            err.message(),
+            "capture team_id does not match the client certificate"
+        );
+    }
 
     #[test]
     fn als_entry_maps_request_response_metadata() {
