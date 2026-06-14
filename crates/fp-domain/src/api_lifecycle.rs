@@ -12,12 +12,17 @@ use crate::id::{
 use crate::identity::validate_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 
 pub const DEFAULT_RAW_OBSERVATION_TTL_DAYS: i32 = 14;
 pub const DEFAULT_MAX_SPEC_VERSIONS: i32 = 50;
 pub const DEFAULT_CAPTURE_TARGET_SAMPLE_COUNT: i32 = 1000;
 pub const DEFAULT_CAPTURE_MAX_BYTES: i64 = 10 * 1024 * 1024;
 pub const DEFAULT_CAPTURE_MAX_DISTINCT_PATHS: i32 = 500;
+pub const MAX_API_SPEC_BYTES: usize = 512 * 1024;
+pub const MAX_API_TOOL_SCHEMA_BYTES: usize = 64 * 1024;
+const MAX_API_JSON_DEPTH: usize = 64;
+const MAX_API_JSON_KEYS: usize = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiDefinition {
@@ -172,6 +177,13 @@ impl SpecVersionInput {
         if !self.spec.is_object() {
             return Err(DomainError::validation("api spec must be a JSON object"));
         }
+        validate_json_bounds(
+            "api spec",
+            &self.spec,
+            MAX_API_SPEC_BYTES,
+            MAX_API_JSON_DEPTH,
+            MAX_API_JSON_KEYS,
+        )?;
         Ok(())
     }
 }
@@ -265,10 +277,28 @@ impl ApiToolSpec {
                 "api tool input_schema must be null or a JSON object",
             ));
         }
+        if !self.input_schema.is_null() {
+            validate_json_bounds(
+                "api tool input_schema",
+                &self.input_schema,
+                MAX_API_TOOL_SCHEMA_BYTES,
+                MAX_API_JSON_DEPTH,
+                MAX_API_JSON_KEYS,
+            )?;
+        }
         if !(self.output_schema.is_null() || self.output_schema.is_object()) {
             return Err(DomainError::validation(
                 "api tool output_schema must be null or a JSON object",
             ));
+        }
+        if !self.output_schema.is_null() {
+            validate_json_bounds(
+                "api tool output_schema",
+                &self.output_schema,
+                MAX_API_TOOL_SCHEMA_BYTES,
+                MAX_API_JSON_DEPTH,
+                MAX_API_JSON_KEYS,
+            )?;
         }
         Ok(())
     }
@@ -598,6 +628,79 @@ fn validate_header_name(name: &str) -> DomainResult<()> {
     Ok(())
 }
 
+fn validate_json_bounds(
+    label: &str,
+    value: &serde_json::Value,
+    max_bytes: usize,
+    max_depth: usize,
+    max_keys: usize,
+) -> DomainResult<()> {
+    let mut stack = vec![(value, 1usize)];
+    let mut keys = 0usize;
+
+    while let Some((value, depth)) = stack.pop() {
+        if depth > max_depth {
+            return Err(DomainError::validation(format!(
+                "{label} nesting depth must be at most {max_depth}"
+            )));
+        }
+        match value {
+            serde_json::Value::Object(map) => {
+                keys = keys.saturating_add(map.len());
+                if keys > max_keys {
+                    return Err(DomainError::validation(format!(
+                        "{label} must contain at most {max_keys} object keys"
+                    )));
+                }
+                stack.extend(map.values().map(|value| (value, depth + 1)));
+            }
+            serde_json::Value::Array(items) => {
+                stack.extend(items.iter().map(|value| (value, depth + 1)));
+            }
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_) => {}
+        }
+    }
+
+    serde_json::to_writer(
+        CappedJsonWriter {
+            written: 0,
+            cap: max_bytes,
+        },
+        value,
+    )
+    .map_err(|_| {
+        DomainError::validation(format!(
+            "{label} JSON encoding must be at most {max_bytes} bytes"
+        ))
+    })?;
+    Ok(())
+}
+
+struct CappedJsonWriter {
+    written: usize,
+    cap: usize,
+}
+
+impl Write for CappedJsonWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.written = self.written.saturating_add(buf.len());
+        if self.written > self.cap {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "json byte limit exceeded",
+            ));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 fn validate_optional_selector(label: &str, value: Option<&str>) -> DomainResult<()> {
     if let Some(value) = value {
         validate_selector(label, value)?;
@@ -639,6 +742,36 @@ mod tests {
     }
 
     #[test]
+    fn spec_versions_reject_oversized_json() {
+        let input = SpecVersionInput {
+            source_kind: SpecSourceKind::Imported,
+            format: SpecFormat::OpenApi3,
+            spec: serde_json::json!({
+                "openapi": "3.1.0",
+                "info": { "title": "large", "version": "1" },
+                "paths": {},
+                "description": "x".repeat(MAX_API_SPEC_BYTES),
+            }),
+        };
+        assert!(input.validate().is_err());
+    }
+
+    #[test]
+    fn spec_versions_reject_excessive_nesting() {
+        let mut nested = serde_json::json!({});
+        for _ in 0..MAX_API_JSON_DEPTH {
+            nested = serde_json::json!({ "next": nested });
+        }
+
+        let input = SpecVersionInput {
+            source_kind: SpecSourceKind::Imported,
+            format: SpecFormat::OpenApi3,
+            spec: nested,
+        };
+        assert!(input.validate().is_err());
+    }
+
+    #[test]
     fn tool_specs_validate_path_and_schema_shape() {
         let tool = ApiToolSpec {
             operation_id: "listUsers".into(),
@@ -655,6 +788,22 @@ mod tests {
             ..tool
         };
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn tool_specs_reject_oversized_schemas() {
+        let tool = ApiToolSpec {
+            operation_id: "listUsers".into(),
+            method: HttpMethod::Get,
+            path: "/users".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "description": "x".repeat(MAX_API_TOOL_SCHEMA_BYTES),
+            }),
+            output_schema: serde_json::Value::Null,
+            enabled: true,
+        };
+        assert!(tool.validate().is_err());
     }
 
     #[test]
