@@ -867,6 +867,90 @@ async fn raw_observation_body_merge_does_not_increment_sample_count() {
 }
 
 #[tokio::test]
+async fn raw_observation_duplicate_merges_and_same_path_counts_are_incremental() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let session = api_lifecycle::create_capture_session(
+        &mut tx,
+        w.team_a,
+        &unique("incremental"),
+        &CaptureSessionSpec {
+            api_definition_id: None,
+            route_config_id: Some(route),
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+            target_sample_count: 3,
+            max_duration_seconds: Some(60),
+            max_bytes: 4096,
+            max_distinct_paths: 1,
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit session");
+
+    let first_metadata = observation("req-incremental-a", "/same");
+    let mut tx = w.pool.begin().await.expect("first metadata tx");
+    api_lifecycle::ingest_raw_observation(
+        &mut tx,
+        w.team_a,
+        session.id,
+        None,
+        route,
+        None,
+        &first_metadata,
+    )
+    .await
+    .expect("first metadata ingest");
+    tx.commit().await.expect("commit first metadata");
+
+    let mut first_body = observation("req-incremental-a", "/same");
+    first_body.metadata_seen = false;
+    first_body.body_seen = true;
+    first_body.request_body = Some("hello".into());
+    first_body.response_body = Some("world".into());
+    let mut tx = w.pool.begin().await.expect("first body tx");
+    api_lifecycle::ingest_raw_observation(
+        &mut tx,
+        w.team_a,
+        session.id,
+        None,
+        route,
+        None,
+        &first_body,
+    )
+    .await
+    .expect("first body ingest");
+    tx.commit().await.expect("commit first body");
+
+    let second_metadata = observation("req-incremental-b", "/same");
+    let mut tx = w.pool.begin().await.expect("second metadata tx");
+    api_lifecycle::ingest_raw_observation(
+        &mut tx,
+        w.team_a,
+        session.id,
+        None,
+        route,
+        None,
+        &second_metadata,
+    )
+    .await
+    .expect("second metadata ingest");
+    tx.commit().await.expect("commit second metadata");
+
+    let refreshed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(refreshed.sample_count, 2);
+    assert_eq!(refreshed.path_count, 1);
+    assert_eq!(refreshed.byte_count, 10);
+    assert_eq!(refreshed.status, CaptureSessionStatus::Capturing);
+}
+
+#[tokio::test]
 async fn raw_observation_quota_drop_does_not_insert_or_move_sample_count() {
     let Some(w) = world().await else { return };
     let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
