@@ -139,6 +139,7 @@ pub struct RevokeProxyCertificateBody {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DataplaneTelemetryBody {
+    pub idempotency_key: String,
     #[serde(default)]
     pub requests_delta: i64,
     #[serde(default)]
@@ -332,6 +333,7 @@ pub async fn record_dataplane_telemetry(
             team,
             &name,
             svc::DataplaneTelemetry {
+                idempotency_key: body.idempotency_key,
                 requests_delta: body.requests_delta,
                 errors_delta: body.errors_delta,
                 warming_failures_delta: body.warming_failures_delta,

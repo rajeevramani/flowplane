@@ -41,45 +41,124 @@ pub async fn record_telemetry(
     pool: &PgPool,
     team_id: TeamId,
     name: &str,
+    idempotency_key: &str,
     requests_delta: i64,
     errors_delta: i64,
     warming_failures_delta: i64,
     config_verified: bool,
 ) -> DomainResult<Dataplane> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("record dataplane telemetry: begin: {e}")))?;
     let row = sqlx::query(&format!(
-        "UPDATE dataplanes SET \
-            last_heartbeat_at = now(), \
-            last_config_verify_at = CASE WHEN $1 THEN now() ELSE last_config_verify_at END, \
-            total_requests = total_requests + $2, \
-            total_errors = total_errors + $3, \
-            warming_failures = warming_failures + $4, \
-            updated_at = now() \
-         WHERE team_id = $5 AND name = $6 RETURNING {DP_COLUMNS}"
+        "SELECT {DP_COLUMNS} FROM dataplanes WHERE team_id = $1 AND name = $2 FOR UPDATE"
     ))
-    .bind(config_verified)
-    .bind(requests_delta.max(0))
-    .bind(errors_delta.max(0))
-    .bind(warming_failures_delta.max(0))
     .bind(team_id.as_uuid())
     .bind(name)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await
-    .map_err(|e| DomainError::internal(format!("record dataplane telemetry: {e}")))?;
-    match row {
-        Some(row) => Ok(dataplane_from_row(&row)),
-        None => Err(DomainError::not_found("dataplane", name)),
-    }
+    .map_err(|e| DomainError::internal(format!("lock dataplane telemetry target: {e}")))?;
+    let Some(row) = row else {
+        return Err(DomainError::not_found("dataplane", name));
+    };
+    let current = dataplane_from_row(&row);
+    let dataplane = apply_telemetry_delta(
+        &mut tx,
+        team_id,
+        current,
+        idempotency_key,
+        requests_delta,
+        errors_delta,
+        warming_failures_delta,
+        config_verified,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("record dataplane telemetry: commit: {e}")))?;
+    Ok(dataplane)
 }
 
 pub async fn record_telemetry_by_id(
     pool: &PgPool,
     team_id: TeamId,
     dataplane_id: DataplaneId,
+    idempotency_key: &str,
     requests_delta: i64,
     errors_delta: i64,
     warming_failures_delta: i64,
     config_verified: bool,
 ) -> DomainResult<Dataplane> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("record dataplane telemetry: begin: {e}")))?;
+    let row = sqlx::query(&format!(
+        "SELECT {DP_COLUMNS} FROM dataplanes WHERE team_id = $1 AND id = $2 FOR UPDATE"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(dataplane_id.as_uuid())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("lock dataplane telemetry target: {e}")))?;
+    let Some(row) = row else {
+        let handle = dataplane_id.as_uuid().to_string();
+        return Err(DomainError::not_found("dataplane", &handle));
+    };
+    let current = dataplane_from_row(&row);
+    let dataplane = apply_telemetry_delta(
+        &mut tx,
+        team_id,
+        current,
+        idempotency_key,
+        requests_delta,
+        errors_delta,
+        warming_failures_delta,
+        config_verified,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("record dataplane telemetry: commit: {e}")))?;
+    Ok(dataplane)
+}
+
+async fn apply_telemetry_delta(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    current: Dataplane,
+    idempotency_key: &str,
+    requests_delta: i64,
+    errors_delta: i64,
+    warming_failures_delta: i64,
+    config_verified: bool,
+) -> DomainResult<Dataplane> {
+    let requests_delta = requests_delta.max(0);
+    let errors_delta = errors_delta.max(0);
+    let warming_failures_delta = warming_failures_delta.max(0);
+    let inserted = sqlx::query(
+        "INSERT INTO dataplane_telemetry_reports \
+         (id, team_id, dataplane_id, idempotency_key, requests_delta, errors_delta, \
+          warming_failures_delta, config_verified) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         ON CONFLICT (team_id, dataplane_id, idempotency_key) DO NOTHING",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(team_id.as_uuid())
+    .bind(current.id.as_uuid())
+    .bind(idempotency_key)
+    .bind(requests_delta)
+    .bind(errors_delta)
+    .bind(warming_failures_delta)
+    .bind(config_verified)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("record dataplane telemetry idempotency: {e}")))?;
+    if inserted.rows_affected() == 0 {
+        return Ok(current);
+    }
+
     let row = sqlx::query(&format!(
         "UPDATE dataplanes SET \
             last_heartbeat_at = now(), \
@@ -91,21 +170,15 @@ pub async fn record_telemetry_by_id(
          WHERE team_id = $5 AND id = $6 RETURNING {DP_COLUMNS}"
     ))
     .bind(config_verified)
-    .bind(requests_delta.max(0))
-    .bind(errors_delta.max(0))
-    .bind(warming_failures_delta.max(0))
+    .bind(requests_delta)
+    .bind(errors_delta)
+    .bind(warming_failures_delta)
     .bind(team_id.as_uuid())
-    .bind(dataplane_id.as_uuid())
-    .fetch_optional(pool)
+    .bind(current.id.as_uuid())
+    .fetch_one(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("record dataplane telemetry: {e}")))?;
-    match row {
-        Some(row) => Ok(dataplane_from_row(&row)),
-        None => {
-            let handle = dataplane_id.as_uuid().to_string();
-            Err(DomainError::not_found("dataplane", &handle))
-        }
-    }
+    Ok(dataplane_from_row(&row))
 }
 
 pub async fn stats_overview(pool: &PgPool, team_id: TeamId) -> DomainResult<TeamStatsOverview> {

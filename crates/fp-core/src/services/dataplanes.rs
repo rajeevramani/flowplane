@@ -404,8 +404,9 @@ pub async fn revoke_certificate(
     Ok(cert)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DataplaneTelemetry {
+    pub idempotency_key: String,
     pub requests_delta: i64,
     pub errors_delta: i64,
     pub warming_failures_delta: i64,
@@ -421,16 +422,27 @@ pub async fn record_telemetry(
     request_id: RequestId,
 ) -> DomainResult<Dataplane> {
     authorize(pool, ctx, Resource::Stats, Action::Update, team, request_id).await?;
+    validate_idempotency_key(&telemetry.idempotency_key)?;
     dataplanes::record_telemetry(
         pool,
         team.id,
         name,
+        &telemetry.idempotency_key,
         telemetry.requests_delta,
         telemetry.errors_delta,
         telemetry.warming_failures_delta,
         telemetry.config_verified,
     )
     .await
+}
+
+fn validate_idempotency_key(key: &str) -> DomainResult<()> {
+    if key.is_empty() || key.len() > 200 || key.chars().any(|c| c.is_control() || c == '\0') {
+        return Err(DomainError::validation(
+            "telemetry idempotency_key must be 1-200 printable characters",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn stats_overview(

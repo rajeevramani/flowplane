@@ -954,6 +954,7 @@ async fn proxy_certificate_registry_flow_over_http() {
             "POST",
             &telemetry,
             Some(serde_json::json!({
+                "idempotency_key": "telemetry-1",
                 "requests_delta": 10,
                 "errors_delta": 2,
                 "warming_failures_delta": 1,
@@ -968,6 +969,27 @@ async fn proxy_certificate_registry_flow_over_http() {
     assert_eq!(body["total_errors"], 2);
     assert_eq!(body["warming_failures"], 1);
     assert!(body["last_heartbeat_at"].is_string());
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &telemetry,
+            Some(serde_json::json!({
+                "idempotency_key": "telemetry-1",
+                "requests_delta": 10,
+                "errors_delta": 2,
+                "warming_failures_delta": 1,
+                "config_verified": true
+            })),
+        ))
+        .await
+        .expect("telemetry retry");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["total_requests"], 10);
+    assert_eq!(body["total_errors"], 2);
+    assert_eq!(body["warming_failures"], 1);
 
     let stats = format!("/api/v1/teams/{}/stats/overview", team.name);
     let response = app
