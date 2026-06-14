@@ -28,6 +28,7 @@ use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec, ListenerTlsCo
 use fp_domain::gateway::route_config::{PathMatch, RouteConfigSpec};
 use fp_domain::{DomainError, DomainResult, SecretSpec};
 use prost::Message;
+use std::collections::BTreeMap;
 
 pub const LEARNING_ALS_CLUSTER: &str = "xds_cluster";
 pub const LEARNING_EXT_PROC_CLUSTER: &str = "xds_cluster";
@@ -51,6 +52,248 @@ fn any<M: Message>(type_url: &str, msg: &M) -> wkt::Any {
         type_url: type_url.to_string(),
         value: msg.encode_to_vec(),
     }
+}
+
+fn any_with_value(type_url: &str, value: Vec<u8>) -> wkt::Any {
+    wkt::Any {
+        type_url: type_url.to_string(),
+        value,
+    }
+}
+
+// envoy-types emits prost map fields as HashMap, whose randomized iteration order can change
+// encoded bytes across control-plane restarts. These wrappers cover the subset Flowplane emits
+// and use BTreeMap for maps; every stable encode is decoded back to the generated type below.
+#[derive(Clone, PartialEq, Message)]
+struct StableRouteConfiguration {
+    #[prost(string, tag = "1")]
+    name: String,
+    #[prost(message, repeated, tag = "2")]
+    virtual_hosts: Vec<StableVirtualHost>,
+    #[prost(btree_map = "string, message", tag = "16")]
+    typed_per_filter_config: BTreeMap<String, wkt::Any>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct StableVirtualHost {
+    #[prost(string, tag = "1")]
+    name: String,
+    #[prost(string, repeated, tag = "2")]
+    domains: Vec<String>,
+    #[prost(message, repeated, tag = "3")]
+    routes: Vec<StableRoute>,
+    #[prost(enumeration = "rt::virtual_host::TlsRequirementType", tag = "4")]
+    require_tls: i32,
+    #[prost(message, repeated, tag = "6")]
+    rate_limits: Vec<rt::RateLimit>,
+    #[prost(bool, tag = "14")]
+    include_request_attempt_count: bool,
+    #[prost(btree_map = "string, message", tag = "15")]
+    typed_per_filter_config: BTreeMap<String, wkt::Any>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct StableRoute {
+    #[prost(message, optional, tag = "1")]
+    r#match: Option<rt::RouteMatch>,
+    #[prost(btree_map = "string, message", tag = "13")]
+    typed_per_filter_config: BTreeMap<String, wkt::Any>,
+    #[prost(string, tag = "14")]
+    name: String,
+    #[prost(oneof = "rt::route::Action", tags = "2, 3, 7, 17, 18")]
+    action: Option<rt::route::Action>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct StableJwtAuthentication {
+    #[prost(btree_map = "string, message", tag = "1")]
+    providers: BTreeMap<
+        String,
+        envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::JwtProvider,
+    >,
+    #[prost(message, repeated, tag = "2")]
+    rules: Vec<envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::RequirementRule>,
+    #[prost(message, optional, tag = "3")]
+    filter_state_rules:
+        Option<envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::FilterStateRule>,
+    #[prost(bool, tag = "4")]
+    bypass_cors_preflight: bool,
+    #[prost(btree_map = "string, message", tag = "5")]
+    requirement_map: BTreeMap<
+        String,
+        envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::JwtRequirement,
+    >,
+    #[prost(bool, tag = "6")]
+    strip_failure_response: bool,
+    #[prost(string, tag = "7")]
+    stat_prefix: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct StableHttpRbac {
+    #[prost(message, optional, tag = "1")]
+    rules: Option<StableConfigRbac>,
+    #[prost(message, optional, tag = "4")]
+    matcher: Option<envoy_types::pb::xds::r#type::matcher::v3::Matcher>,
+    #[prost(string, tag = "6")]
+    rules_stat_prefix: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct StableConfigRbac {
+    #[prost(
+        enumeration = "envoy_types::pb::envoy::config::rbac::v3::rbac::Action",
+        tag = "1"
+    )]
+    action: i32,
+    #[prost(btree_map = "string, message", tag = "2")]
+    policies: BTreeMap<String, envoy_types::pb::envoy::config::rbac::v3::Policy>,
+    #[prost(message, optional, tag = "3")]
+    audit_logging_options:
+        Option<envoy_types::pb::envoy::config::rbac::v3::rbac::AuditLoggingOptions>,
+}
+
+impl From<&rt::RouteConfiguration> for StableRouteConfiguration {
+    fn from(proto: &rt::RouteConfiguration) -> Self {
+        Self {
+            name: proto.name.clone(),
+            virtual_hosts: proto
+                .virtual_hosts
+                .iter()
+                .map(StableVirtualHost::from)
+                .collect(),
+            typed_per_filter_config: proto
+                .typed_per_filter_config
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        }
+    }
+}
+
+impl From<&rt::VirtualHost> for StableVirtualHost {
+    fn from(proto: &rt::VirtualHost) -> Self {
+        Self {
+            name: proto.name.clone(),
+            domains: proto.domains.clone(),
+            routes: proto.routes.iter().map(StableRoute::from).collect(),
+            require_tls: proto.require_tls,
+            rate_limits: proto.rate_limits.clone(),
+            include_request_attempt_count: proto.include_request_attempt_count,
+            typed_per_filter_config: proto
+                .typed_per_filter_config
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        }
+    }
+}
+
+impl From<&rt::Route> for StableRoute {
+    fn from(proto: &rt::Route) -> Self {
+        Self {
+            r#match: proto.r#match.clone(),
+            typed_per_filter_config: proto
+                .typed_per_filter_config
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            name: proto.name.clone(),
+            action: proto.action.clone(),
+        }
+    }
+}
+
+impl From<&envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication>
+    for StableJwtAuthentication
+{
+    fn from(
+        proto: &envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication,
+    ) -> Self {
+        Self {
+            providers: proto
+                .providers
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            rules: proto.rules.clone(),
+            filter_state_rules: proto.filter_state_rules.clone(),
+            bypass_cors_preflight: proto.bypass_cors_preflight,
+            requirement_map: proto
+                .requirement_map
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            strip_failure_response: proto.strip_failure_response,
+            stat_prefix: proto.stat_prefix.clone(),
+        }
+    }
+}
+
+impl From<&envoy_types::pb::envoy::extensions::filters::http::rbac::v3::Rbac> for StableHttpRbac {
+    fn from(proto: &envoy_types::pb::envoy::extensions::filters::http::rbac::v3::Rbac) -> Self {
+        Self {
+            rules: proto.rules.as_ref().map(StableConfigRbac::from),
+            matcher: proto.matcher.clone(),
+            rules_stat_prefix: proto.rules_stat_prefix.clone(),
+        }
+    }
+}
+
+impl From<&envoy_types::pb::envoy::config::rbac::v3::Rbac> for StableConfigRbac {
+    fn from(proto: &envoy_types::pb::envoy::config::rbac::v3::Rbac) -> Self {
+        Self {
+            action: proto.action,
+            policies: proto
+                .policies
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            audit_logging_options: proto.audit_logging_options.clone(),
+        }
+    }
+}
+
+fn verified_stable_encode<M, S>(label: &str, original: &M, stable: S) -> DomainResult<Vec<u8>>
+where
+    M: Message + Default + PartialEq,
+    S: Message,
+{
+    let bytes = stable.encode_to_vec();
+    let decoded = M::decode(bytes.as_slice())
+        .map_err(|err| DomainError::internal(format!("decode stable {label}: {err}")))?;
+    if &decoded != original {
+        return Err(DomainError::internal(format!(
+            "stable {label} encoder does not cover all populated fields"
+        )));
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn encode_route_config_deterministic(
+    proto: &rt::RouteConfiguration,
+) -> DomainResult<Vec<u8>> {
+    verified_stable_encode(
+        "route configuration",
+        proto,
+        StableRouteConfiguration::from(proto),
+    )
+}
+
+fn encode_jwt_auth_deterministic(
+    proto: &envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication,
+) -> DomainResult<Vec<u8>> {
+    verified_stable_encode(
+        "JWT authentication",
+        proto,
+        StableJwtAuthentication::from(proto),
+    )
+}
+
+fn encode_http_rbac_deterministic(
+    proto: &envoy_types::pb::envoy::extensions::filters::http::rbac::v3::Rbac,
+) -> DomainResult<Vec<u8>> {
+    verified_stable_encode("HTTP RBAC", proto, StableHttpRbac::from(proto))
 }
 
 fn duration(secs: u32) -> wkt::Duration {
@@ -985,9 +1228,9 @@ fn http_filter_to_proto(
         }
         HttpFilterSpec::JwtAuth(c) => (
             "envoy.filters.http.jwt_authn",
-            any(
+            any_with_value(
                 "type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication",
-                &jwt_auth_to_proto(c),
+                encode_jwt_auth_deterministic(&jwt_auth_to_proto(c))?,
             ),
         ),
         HttpFilterSpec::ExtAuthz(c) => (
@@ -1002,9 +1245,9 @@ fn http_filter_to_proto(
             // The proto message is `RBAC` (all-caps); prost names the Rust type `Rbac` but
             // the wire type URL must match the proto name or Envoy NACKs (caught by the
             // live E2E against a real proxy).
-            any(
+            any_with_value(
                 "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
-                &rbac_to_proto(c),
+                encode_http_rbac_deterministic(&rbac_to_proto(c))?,
             ),
         ),
         HttpFilterSpec::GlobalRateLimit(c) => (
@@ -2562,6 +2805,72 @@ mod tests {
         assert!(disable.type_url.ends_with("route.v3.FilterConfig"));
         let cfg = rt::FilterConfig::decode(disable.value.as_slice()).expect("decode");
         assert!(cfg.disabled);
+    }
+
+    #[test]
+    fn route_config_deterministic_encoding_has_golden_bytes_for_multi_entry_maps() {
+        use fp_domain::gateway::filters::*;
+        use fp_domain::gateway::route_config::{RouteRule, VirtualHost};
+        use sha2::{Digest, Sha256};
+
+        let spec = RouteConfigSpec {
+            virtual_hosts: vec![VirtualHost {
+                name: "default".into(),
+                domains: vec!["*".into()],
+                routes: vec![RouteRule {
+                    name: "admin".into(),
+                    matcher: PathMatch::Prefix {
+                        prefix: "/admin".into(),
+                    },
+                    headers: Vec::new(),
+                    query_parameters: Vec::new(),
+                    action: route_action("backend"),
+                    filter_overrides: vec![
+                        FilterOverride::Disable {
+                            filter_type: "jwt_auth".into(),
+                        },
+                        FilterOverride::LocalRateLimit(LocalRateLimitConfig {
+                            stat_prefix: "admin".into(),
+                            token_bucket: TokenBucket {
+                                max_tokens: 20,
+                                tokens_per_fill: Some(10),
+                                fill_interval_ms: 1000,
+                            },
+                            status_code: Some(429),
+                        }),
+                    ],
+                }],
+                rate_limits: Vec::new(),
+                filter_overrides: vec![
+                    FilterOverride::Cors(CorsConfig {
+                        allow_origin: vec![OriginMatcher::Suffix {
+                            value: ".example".into(),
+                        }],
+                        allow_methods: vec!["GET".into(), "POST".into()],
+                        allow_headers: vec![],
+                        expose_headers: vec![],
+                        max_age_seconds: Some(600),
+                        allow_credentials: true,
+                    }),
+                    FilterOverride::Disable {
+                        filter_type: "rbac".into(),
+                    },
+                ],
+            }],
+        };
+        let proto = route_config_to_proto("orders", &spec).expect("translate");
+        let encoded = encode_route_config_deterministic(&proto).expect("stable encode");
+        let digest = Sha256::digest(&encoded);
+        let digest_hex = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        assert_eq!(encoded.len(), 538);
+        assert_eq!(
+            digest_hex,
+            "f0a413620e23b34c8222978335e9d0c1638248950824e79b7f21b687dddee38d"
+        );
     }
 
     #[test]
