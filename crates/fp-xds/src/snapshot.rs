@@ -85,6 +85,8 @@ struct TypeInternal {
     /// Previous raw generation — what a NACKing dataplane last accepted, best effort.
     raw_prev: Vec<NamedResource>,
     quarantine: HashMap<String, Quarantined>,
+    /// Resources skipped during control-plane translation before Envoy ever saw them.
+    translation_failures: HashMap<String, String>,
     served: Vec<NamedResource>,
 }
 
@@ -93,6 +95,16 @@ impl TypeInternal {
     /// or its bytes changed = operator pushed a fix), and recompute the served set.
     /// Returns true when the served bytes changed.
     fn install_raw(&mut self, fresh: Vec<NamedResource>) -> bool {
+        self.install_raw_with_failures(fresh, HashMap::new())
+    }
+
+    fn install_raw_with_failures(
+        &mut self,
+        fresh: Vec<NamedResource>,
+        translation_failures: HashMap<String, String>,
+    ) -> bool {
+        let failures_changed = self.translation_failures != translation_failures;
+        self.translation_failures = translation_failures;
         if fresh != self.raw {
             self.raw_prev = std::mem::replace(&mut self.raw, fresh);
         }
@@ -101,7 +113,7 @@ impl TypeInternal {
             raw.iter()
                 .any(|r| r.name == *name && r.any.value == q.offending)
         });
-        self.recompute_served()
+        self.recompute_served() || failures_changed
     }
 
     fn recompute_served(&mut self) -> bool {
@@ -263,6 +275,13 @@ impl SnapshotCache {
                     error: q.error.clone(),
                 });
             }
+            for (name, error) in &state.translation_failures {
+                out.push(DegradedResource {
+                    type_url: type_url.to_string(),
+                    name: name.clone(),
+                    error: error.clone(),
+                });
+            }
         }
         out.sort_by(|a, b| (&a.type_url, &a.name).cmp(&(&b.type_url, &b.name)));
         out
@@ -374,11 +393,33 @@ impl SnapshotCache {
             });
         }
         let mut secret_named = Vec::with_capacity(secrets.len());
+        let mut secret_failures = HashMap::new();
         for secret in &secrets {
-            let spec = decrypt_secret_spec(&secret.ciphertext, &secret.nonce)?;
-            let proto = translate::secret_to_proto(&secret.metadata.name, &spec)?;
+            let name = &secret.metadata.name;
+            let spec = match decrypt_secret_spec(&secret.ciphertext, &secret.nonce) {
+                Ok(spec) => spec,
+                Err(e) => {
+                    let error = format!("secret translation failed: {e}");
+                    tracing::error!(team = %team_id, secret = %name, error = %error,
+                        "skipping undecryptable SDS secret during xDS rebuild");
+                    metrics::counter!("fp_xds_secret_translation_failures_total").increment(1);
+                    secret_failures.insert(name.clone(), error);
+                    continue;
+                }
+            };
+            let proto = match translate::secret_to_proto(name, &spec) {
+                Ok(proto) => proto,
+                Err(e) => {
+                    let error = format!("secret translation failed: {e}");
+                    tracing::error!(team = %team_id, secret = %name, error = %error,
+                        "skipping invalid SDS secret during xDS rebuild");
+                    metrics::counter!("fp_xds_secret_translation_failures_total").increment(1);
+                    secret_failures.insert(name.clone(), error);
+                    continue;
+                }
+            };
             secret_named.push(NamedResource {
-                name: secret.metadata.name.clone(),
+                name: name.clone(),
                 any: Any {
                     type_url: SECRET_TYPE_URL.to_string(),
                     value: proto.encode_to_vec(),
@@ -436,11 +477,13 @@ impl SnapshotCache {
                 (&mut entry.clusters, cluster_named),
                 (&mut entry.endpoints, endpoint_named),
                 (&mut entry.routes, route_named),
-                (&mut entry.secrets, secret_named),
                 (&mut entry.listeners, listener_named),
             ] {
                 changed |= state.install_raw(fresh);
             }
+            changed |= entry
+                .secrets
+                .install_raw_with_failures(secret_named, secret_failures);
         }
 
         if changed {
@@ -584,12 +627,13 @@ mod tests {
     use fp_core::{GrantSet, PrincipalCtx};
     use fp_domain::api_lifecycle::{ApiDefinitionSpec, ApiRouteBindingSpec, CaptureSessionSpec};
     use fp_domain::authz::TeamRef;
+    use fp_domain::event::{DomainEvent, EventScope};
     use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
     use fp_domain::gateway::listener::ListenerSpec;
     use fp_domain::gateway::route_config::{
         PathMatch, RouteAction, RouteConfigSpec, RouteRule, VirtualHost,
     };
-    use fp_domain::{OrgRole, RequestId};
+    use fp_domain::{OrgRole, RequestId, SecretSpec, SecretType};
     use fp_storage::repos::identity;
     use prost::Message;
 
@@ -998,6 +1042,105 @@ mod tests {
         assert_eq!(learning_filter_count(&hcm_b), 0);
         assert_eq!(hcm_a.access_log.len(), 1);
         assert!(hcm_b.access_log.is_empty());
+    }
+
+    #[tokio::test]
+    async fn undecryptable_secret_degrades_only_that_secret_and_does_not_block_outbox() {
+        let Some((pool, team_a, team_b, ctx_a, ctx_b)) = world().await else {
+            return;
+        };
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "12345678901234567890123456789012",
+        );
+        let cache = SnapshotCache::new();
+        let consumer = format!("xds-test-{}", unique("c"));
+        fp_storage::outbox::register_consumer(&pool, &consumer)
+            .await
+            .expect("register");
+        let _ = fp_storage::outbox::process_batch(&pool, &consumer, 100_000, |_| async { Ok(()) })
+            .await;
+
+        fp_core::services::secrets::create_secret(
+            &pool,
+            &ctx_a,
+            team_a,
+            fp_core::services::secrets::SecretWrite {
+                name: "good-secret",
+                description: "",
+                spec: SecretSpec::GenericSecret {
+                    secret: "aGVsbG8=".into(),
+                },
+                expires_at: None,
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("good secret");
+
+        let bad_secret = {
+            let mut tx = pool.begin().await.expect("tx");
+            let secret = fp_storage::repos::secrets::create_secret(
+                &mut tx,
+                team_a,
+                "bad-secret",
+                "",
+                SecretType::GenericSecret,
+                b"not-a-valid-ciphertext",
+                &[0; 12],
+                "stale-key",
+                None,
+            )
+            .await
+            .expect("bad secret row");
+            fp_storage::outbox::append(
+                &mut tx,
+                &DomainEvent::SecretUpserted {
+                    secret_id: secret.id.as_uuid(),
+                    name: secret.name.clone(),
+                },
+                EventScope {
+                    org_id: Some(team_a.org_id),
+                    team_id: Some(team_a.id),
+                },
+                serde_json::json!({}),
+            )
+            .await
+            .expect("bad secret event");
+            tx.commit().await.expect("commit");
+            secret
+        };
+
+        fp_core::services::clusters::create_cluster(
+            &pool,
+            &ctx_b,
+            team_b,
+            &unique("other"),
+            cluster_spec("10.9.9.9"),
+            RequestId::generate(),
+        )
+        .await
+        .expect("b cluster");
+
+        let processed = fp_storage::outbox::process_batch(&pool, &consumer, 100, |events| {
+            let cache = cache.clone();
+            let pool = pool.clone();
+            async move { handle_events(&cache, &pool, events).await }
+        })
+        .await
+        .expect("poisoned batch must not fail");
+        assert!(processed >= 3);
+
+        let snap_a = cache.team(team_a.id).await;
+        assert_eq!(snap_a.secrets.resources.len(), 1);
+        let snap_b = cache.team(team_b.id).await;
+        assert_eq!(snap_b.clusters.resources.len(), 1);
+
+        let degraded = cache.degraded(team_a.id).await;
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(degraded[0].type_url, SECRET_TYPE_URL);
+        assert_eq!(degraded[0].name, bad_secret.name);
+        assert!(degraded[0].error.contains("secret translation failed"));
     }
 
     fn decode_hcm(any: &Any) -> hcm::HttpConnectionManager {
