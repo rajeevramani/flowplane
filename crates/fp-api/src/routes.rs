@@ -181,6 +181,12 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
+struct WhoAmIMembership {
+    org_id: String,
+    org_role: &'static str,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
 struct WhoAmI {
     user_id: String,
     platform_admin: bool,
@@ -192,6 +198,8 @@ struct WhoAmI {
     org_role: Option<&'static str>,
     /// True when the caller must name an org (multi-org, no selector) for tenant-scoped ops.
     org_selector_required: bool,
+    /// Selectable non-platform org memberships for the `X-Flowplane-Org` active-org header.
+    memberships: Vec<WhoAmIMembership>,
     grant_count: usize,
 }
 
@@ -201,7 +209,22 @@ struct WhoAmI {
         (status = 200, body = WhoAmI),
         (status = 401, body = crate::error::ErrorBody),
     ))]
-async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI> {
+async fn whoami(
+    Extension(ctx): Extension<fp_core::PrincipalCtx>,
+    memberships: Option<Extension<crate::auth::OrgMemberships>>,
+) -> Json<WhoAmI> {
+    let memberships = memberships
+        .map(|Extension(memberships)| {
+            memberships
+                .0
+                .into_iter()
+                .map(|(org_id, org_role)| WhoAmIMembership {
+                    org_id: org_id.to_string(),
+                    org_role: org_role.as_str(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     match ctx {
         fp_core::PrincipalCtx::User {
             user_id,
@@ -215,6 +238,7 @@ async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI
             org_id: org.map(|(id, _)| id.to_string()),
             org_role: org.map(|(_, role)| role.as_str()),
             org_selector_required,
+            memberships,
             grant_count: grants.len(),
         }),
         fp_core::PrincipalCtx::Agent {
@@ -228,6 +252,7 @@ async fn whoami(Extension(ctx): Extension<fp_core::PrincipalCtx>) -> Json<WhoAmI
             org_id: Some(org_id.to_string()),
             org_role: None,
             org_selector_required: false,
+            memberships,
             grant_count: grants.len(),
         }),
     }
