@@ -3,6 +3,7 @@
 //! by their SPIFFE URI. [`serve_plaintext`] exists for tests and dev mode only.
 
 use crate::ads::{AdsService, TeamResolver};
+use crate::capture::LearningCaptureService;
 use crate::diagnostics::DiagnosticsService;
 use crate::snapshot::SnapshotCache;
 use fp_domain::{DomainError, DomainResult};
@@ -82,13 +83,16 @@ pub async fn serve_mtls(
         Some(nack_pool.clone()),
     )
     .into_server();
-    let diagnostics = DiagnosticsService::new(resolver, nack_pool).into_server();
+    let diagnostics = DiagnosticsService::new(resolver, nack_pool.clone()).into_server();
+    let capture = LearningCaptureService::new(nack_pool.clone());
     tracing::info!(%addr, "xDS ADS server starting (mTLS, certificate-registry binding)");
     tonic::transport::Server::builder()
         .tls_config(tls_config)
         .map_err(|e| DomainError::internal(format!("xds tls config: {e}")))?
         .add_service(service)
         .add_service(diagnostics)
+        .add_service(capture.clone().access_log_server())
+        .add_service(capture.ext_proc_server())
         .serve_with_shutdown(addr, shutdown)
         .await
         .map_err(|e| DomainError::internal(format!("xds server: {e}")))
@@ -110,17 +114,33 @@ pub async fn serve_plaintext(
     let diagnostics = nack_pool
         .clone()
         .map(|pool| DiagnosticsService::new(resolver.clone(), pool).into_server());
+    let capture = nack_pool.clone().map(LearningCaptureService::new);
     let service = AdsService::new(cache, resolver, revocations, nack_pool).into_server();
     tracing::info!(%addr, "xDS ADS server starting (plaintext dev mode)");
     let builder = tonic::transport::Server::builder().add_service(service);
-    match diagnostics {
-        Some(diagnostics) => {
+    match (diagnostics, capture) {
+        (Some(diagnostics), Some(capture)) => {
+            builder
+                .add_service(diagnostics)
+                .add_service(capture.clone().access_log_server())
+                .add_service(capture.ext_proc_server())
+                .serve_with_shutdown(addr, shutdown)
+                .await
+        }
+        (Some(diagnostics), None) => {
             builder
                 .add_service(diagnostics)
                 .serve_with_shutdown(addr, shutdown)
                 .await
         }
-        None => builder.serve_with_shutdown(addr, shutdown).await,
+        (None, Some(capture)) => {
+            builder
+                .add_service(capture.clone().access_log_server())
+                .add_service(capture.ext_proc_server())
+                .serve_with_shutdown(addr, shutdown)
+                .await
+        }
+        (None, None) => builder.serve_with_shutdown(addr, shutdown).await,
     }
     .map_err(|e| DomainError::internal(format!("xds server: {e}")))
 }

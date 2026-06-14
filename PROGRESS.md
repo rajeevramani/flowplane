@@ -418,9 +418,14 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         - [x] S8.5a tests: real-Postgres storage tests cover redaction, metadata/body merge
           without double-counting, quota drops without inserting raw rows, and target sample
           auto-completion.
-        - [ ] S8.5b concrete ALS/ExtProc gRPC handlers: generate/mount Envoy ALS and ExtProc
-          service surfaces on the xDS listener, parse `x-flowplane-*` metadata into the ingest
-          core, continue/fail-open ExtProc, and add an end-to-end capture test.
+        - [x] S8.5b concrete ALS/ExtProc gRPC handlers: mounted Envoy ALS and ExtProc service
+          surfaces on the xDS listener from generated `envoy-types` services; both parse
+          `x-flowplane-*` gRPC metadata into the ingest core. ALS captures method/path/status and
+          logged headers. ExtProc captures request/response headers and bounded body payloads in
+          observability/fail-open mode, with unit tests for protobuf-to-ingest mapping.
+        - [ ] S8.5c live Envoy capture E2E: prove manual `learn start` + traffic produces
+          persisted raw observations and truthful counters through the real injected ALS/ExtProc
+          path.
   - [ ] S8.6 Inference and aggregation v2: v1-inspired JSON schema/path heuristics, but with
         host-aware endpoint keys, frequency/min-sample required thresholds, header
         allowlist/frequency rules, path-cardinality caps with outlier bucket, confidence that
