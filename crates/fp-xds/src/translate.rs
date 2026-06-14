@@ -2973,13 +2973,10 @@ mod tests {
             ]
         );
         assert_eq!(manager.access_log.len(), 1);
-        let log_any = match manager.access_log[0]
+        let accesslog::access_log::ConfigType::TypedConfig(log_any) = manager.access_log[0]
             .config_type
             .as_ref()
-            .expect("als config")
-        {
-            accesslog::access_log::ConfigType::TypedConfig(any) => any,
-        };
+            .expect("als config");
         assert!(log_any.type_url.ends_with("HttpGrpcAccessLogConfig"));
         let als =
             grpc_accesslog::HttpGrpcAccessLogConfig::decode(log_any.value.as_slice()).expect("als");

@@ -256,18 +256,13 @@ impl LocalRateLimitConfig {
 
 // ---------------- global_rate_limit ----------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitRequestType {
+    #[default]
     Both,
     Internal,
     External,
-}
-
-impl Default for RateLimitRequestType {
-    fn default() -> Self {
-        Self::Both
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]

@@ -54,18 +54,13 @@ pub struct AccessLogConfig {
     pub text_format: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ListenerProtocol {
+    #[default]
     Http,
     Http2,
     Https,
-}
-
-impl Default for ListenerProtocol {
-    fn default() -> Self {
-        Self::Http
-    }
 }
 
 fn is_default_listener_protocol(protocol: &ListenerProtocol) -> bool {

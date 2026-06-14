@@ -75,7 +75,7 @@ pub async fn expose(
         dns_lookup_family: None,
         connect_timeout_secs: 5,
         use_tls: upstream.use_tls,
-        upstream_tls: upstream.use_tls.then(|| UpstreamTlsConfig {
+        upstream_tls: upstream.use_tls.then_some(UpstreamTlsConfig {
             sni: Some(upstream.sni),
             validation_context_sds_secret_name: None,
             auto_sni_san_validation: true,
