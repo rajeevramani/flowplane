@@ -3,11 +3,13 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use fp_core::services::api_lifecycle::{self as api_svc, CreateApiInput};
+use fp_core::services::dataplanes as dataplane_svc;
 use fp_core::services::learning::{self as learning_svc, StartLearningSessionInput};
+use fp_core::services::secrets::{self as secret_svc, SecretWrite};
 use fp_core::{GrantSet, PrincipalCtx};
 use fp_domain::api_lifecycle::{ApiDefinitionSpec, CaptureSessionSpec};
 use fp_domain::authz::TeamRef;
-use fp_domain::{ErrorCode, OrgRole, RequestId};
+use fp_domain::{ErrorCode, OrgRole, RequestId, SecretSpec};
 use fp_storage::repos::identity;
 use sqlx::PgPool;
 
@@ -22,6 +24,30 @@ struct World {
     pool: PgPool,
     team: TeamRef,
     admin: PrincipalCtx,
+}
+
+fn api_input(name: String) -> CreateApiInput {
+    CreateApiInput {
+        name,
+        definition: ApiDefinitionSpec {
+            display_name: "Quota API".into(),
+            description: String::new(),
+        },
+        imported_spec: None,
+        route_binding_name: None,
+        route_binding: None,
+    }
+}
+
+fn generic_secret(name: &str) -> SecretWrite<'_> {
+    SecretWrite {
+        name,
+        description: "",
+        spec: SecretSpec::GenericSecret {
+            secret: "cXVvdGEtdGVzdA==".into(),
+        },
+        expires_at: None,
+    }
 }
 
 async fn world() -> Option<World> {
@@ -130,5 +156,95 @@ async fn learning_session_create_path_enforces_default_quota() {
     )
     .await
     .expect_err("sixth learning session must trip quota");
+    assert_eq!(err.code, ErrorCode::QuotaExceeded);
+}
+
+#[tokio::test]
+async fn api_definition_create_path_enforces_default_quota() {
+    let Some(w) = world().await else { return };
+    for i in 0..200 {
+        api_svc::create_api(
+            &w.pool,
+            &w.admin,
+            w.team,
+            api_input(unique(&format!("api-{i}"))),
+            RequestId::generate(),
+        )
+        .await
+        .expect("within api-definition quota");
+    }
+
+    let err = api_svc::create_api(
+        &w.pool,
+        &w.admin,
+        w.team,
+        api_input(unique("api-over")),
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("201st api definition must trip quota");
+    assert_eq!(err.code, ErrorCode::QuotaExceeded);
+}
+
+#[tokio::test]
+async fn secret_create_path_enforces_default_quota() {
+    let Some(w) = world().await else { return };
+    std::env::set_var(
+        "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+        "12345678901234567890123456789012",
+    );
+
+    for i in 0..200 {
+        let name = unique(&format!("secret-{i}"));
+        secret_svc::create_secret(
+            &w.pool,
+            &w.admin,
+            w.team,
+            generic_secret(&name),
+            RequestId::generate(),
+        )
+        .await
+        .expect("within secret quota");
+    }
+
+    let name = unique("secret-over");
+    let err = secret_svc::create_secret(
+        &w.pool,
+        &w.admin,
+        w.team,
+        generic_secret(&name),
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("201st secret must trip quota");
+    assert_eq!(err.code, ErrorCode::QuotaExceeded);
+}
+
+#[tokio::test]
+async fn dataplane_create_path_enforces_default_quota() {
+    let Some(w) = world().await else { return };
+    for i in 0..200 {
+        dataplane_svc::create_dataplane(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &unique(&format!("dp-{i}")),
+            "",
+            RequestId::generate(),
+        )
+        .await
+        .expect("within dataplane quota");
+    }
+
+    let err = dataplane_svc::create_dataplane(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &unique("dp-over"),
+        "",
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("201st dataplane must trip quota");
     assert_eq!(err.code, ErrorCode::QuotaExceeded);
 }
