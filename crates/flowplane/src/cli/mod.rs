@@ -21,7 +21,10 @@ pub use commands::{
     UnexposeCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
-use config::{config_path, credentials_path, effective, read_config, write_config, NamedContext};
+use config::{
+    config_path, credentials_path, effective, read_config, write_config, write_private_file,
+    NamedContext,
+};
 use output::format_row;
 
 #[cfg(test)]
@@ -123,10 +126,7 @@ pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()>
 
 fn save_token(token: &str) -> Result<()> {
     let path = credentials_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&path, token)?;
+    write_private_file(&path, token)?;
     println!("token saved to {}", path.display());
     Ok(())
 }
