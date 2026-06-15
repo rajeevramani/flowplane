@@ -19,9 +19,11 @@ pub mod route_generation;
 pub mod secret;
 
 pub use ai::{
+    openai_usage_from_json, prepare_openai_chat_request, strip_synthetic_openai_usage_sse,
     validate_ai_provider_name, validate_ai_route_name, AiProvider, AiProviderKind, AiProviderSpec,
     AiRoute, AiRouteBackend, AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus,
-    AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+    OpenAiChatRequest, OpenAiTokenUsage, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+    MAX_AI_REQUEST_BODY_BYTES,
 };
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
 pub use discovery::{
