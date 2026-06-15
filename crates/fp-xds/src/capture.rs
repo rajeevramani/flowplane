@@ -39,6 +39,7 @@ use uuid::Uuid;
 
 const MAX_CAPTURE_BODY_BYTES: usize = 64 * 1024;
 const MAX_AI_USAGE_JSON_BYTES: usize = 1024 * 1024;
+const MAX_AI_SSE_REMAINDER_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct LearningCaptureService {
@@ -660,6 +661,10 @@ fn ai_response_body_mutation(
 
     let body_text = String::from_utf8_lossy(&body);
     state.response_sse_remainder.push_str(&body_text);
+    if state.response_sse_remainder.len() > MAX_AI_SSE_REMAINDER_BYTES {
+        state.response_sse_remainder.clear();
+        return None;
+    }
 
     let (complete, remainder) = complete_sse_prefix(&state.response_sse_remainder, end_of_stream);
     let (stripped, usage) =
@@ -1164,6 +1169,35 @@ mod tests {
             .contains("\"content\":\"hi\""));
         assert_eq!(String::from_utf8(second).expect("utf8"), "");
         assert_eq!(state.last_usage.expect("usage").total_tokens, 3);
+    }
+
+    #[test]
+    fn ai_ext_proc_caps_unfinished_sse_remainder() {
+        let mut state = AiExtProcState {
+            include_usage_injected: true,
+            ..Default::default()
+        };
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: vec![b'a'; MAX_AI_SSE_REMAINDER_BYTES + 1],
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::ResponseBody(body) =
+            response.response.expect("response")
+        else {
+            panic!("expected response body response");
+        };
+        assert!(body.response.expect("common").body_mutation.is_none());
+        assert!(state.response_sse_remainder.is_empty());
     }
 
     #[test]
