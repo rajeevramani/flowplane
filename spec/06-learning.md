@@ -756,6 +756,52 @@ Minimum session fields:
 `capture_sessions` remains the config-first capture model from S8. S9 may create API-scoped
 capture sessions after candidate APIs are materialized, but discovery intake itself is separate.
 
+#### Discovery forwarding hardening
+
+The S9 explicit-upstream forwarder is a same-host pivot risk, so discovery start must validate the
+dial target before any listener is served. The validator is net-new; RBAC CIDR matching is not an
+upstream-destination validator.
+
+Rules:
+
+- S9 starts with `--upstream host:port` only. Dynamic host-routed discovery is deferred until it has
+  an explicit destination allowlist.
+- Parse `--upstream` as a host and port, not a URL. Reject schemes, paths, credentials, empty hosts,
+  wildcard hosts, and port 0.
+- Resolve the host to concrete A/AAAA addresses at start. Reject hosts with no usable address.
+- Validate every resolved address against the denylist before persisting the session.
+- If more than one address remains allowed, choose the lexicographically first canonical IP so the
+  persisted dial target is deterministic.
+- Persist the selected `validated_upstream_ip` and connect the discovery forwarder to that IP, not
+  the hostname. Preserve the original hostname only for HTTP `Host` and TLS SNI when TLS is enabled.
+- Re-resolve only when starting a new discovery session. Apply/route generation does not reuse the
+  pinned discovery IP for long-lived generated clusters.
+
+Always denied destinations:
+
+- loopback, unspecified, multicast, link-local, IPv6 unique-local, and IPv4 private ranges unless a
+  future admin-scoped allowlist explicitly admits the private CIDR;
+- cloud metadata ranges, including `169.254.169.254` and `fd00:ec2::254`;
+- the configured CP/API bind address and port;
+- the configured xDS bind address and port;
+- Flowplane admin, metrics, diagnostics, RLS, and Envoy admin ports when known;
+- the configured Postgres host/port;
+- any hostname that resolves to a mix of allowed and denied addresses.
+
+Denied errors are user-actionable but not topology-leaking: return the input host/port and a coarse
+reason such as `denied_internal_destination`, `denied_link_local`, or `denied_flowplane_port`, not
+the full internal address set. Audit entries include the same coarse reason plus the denied IP class;
+do not record request headers, credentials, or resolved address lists in user-visible errors.
+
+Required tests for the validator:
+
+- allow a public IP/hostname and persist the exact dial IP;
+- allow an RFC1918/private destination only when the future admin allowlist admits that CIDR;
+- deny loopback, link-local, unspecified, multicast, ULA, and cloud metadata addresses;
+- deny configured CP/API, xDS, admin/metrics/diagnostics/RLS/Envoy-admin, and Postgres ports;
+- deny a rebinding-style hostname whose resolution set contains both allowed and denied IPs;
+- prove the forwarder uses the persisted IP as the dial target rather than re-dialing the hostname.
+
 #### Discovery-owned gateway resources
 
 Discovery listener/config rows are not ordinary user resources. Add an ownership marker such as
