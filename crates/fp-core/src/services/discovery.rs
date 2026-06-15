@@ -439,6 +439,9 @@ fn deny_reason(ip: &IpAddr, port: u16, policy: &DiscoveryForwardingPolicy) -> Op
     {
         return Some("denied_flowplane_destination");
     }
+    if always_denied_destination(ip) {
+        return Some("denied_internal_destination");
+    }
     if policy
         .allowed_destinations
         .iter()
@@ -448,32 +451,38 @@ fn deny_reason(ip: &IpAddr, port: u16, policy: &DiscoveryForwardingPolicy) -> Op
     }
     match ip {
         IpAddr::V4(ip) => {
-            if ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_multicast()
-                || ip.is_unspecified()
-                || *ip == Ipv4Addr::new(169, 254, 169, 254)
-            {
+            if ip.is_loopback() || ip.is_private() {
                 Some("denied_internal_destination")
             } else {
                 None
             }
         }
         IpAddr::V6(ip) => {
-            if ip.is_loopback()
+            if ip.is_loopback() {
+                Some("denied_internal_destination")
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn always_denied_destination(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_link_local()
+                || ip.is_multicast()
                 || ip.is_unspecified()
+                || *ip == Ipv4Addr::new(169, 254, 169, 254)
+        }
+        IpAddr::V6(ip) => {
+            ip.is_unspecified()
                 || ip.is_multicast()
                 || is_ipv6_link_local(ip)
                 || is_ipv6_unique_local(ip)
                 || is_6to4(ip)
                 || is_nat64_well_known(ip)
-                || *ip == "fd00:ec2::254".parse::<Ipv6Addr>().ok()?
-            {
-                Some("denied_internal_destination")
-            } else {
-                None
-            }
+                || *ip == Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254)
         }
     }
 }
@@ -659,6 +668,17 @@ mod tests {
         assert_eq!(
             deny_reason(&ip, 3001, &denied),
             Some("denied_flowplane_destination")
+        );
+    }
+
+    #[test]
+    fn explicit_allowlist_cannot_admit_metadata_destination() {
+        let ip = "169.254.169.254".parse::<IpAddr>().unwrap();
+        let policy =
+            DiscoveryForwardingPolicy::with_allowed(Vec::new(), vec![SocketAddr::new(ip, 80)]);
+        assert_eq!(
+            deny_reason(&ip, 80, &policy),
+            Some("denied_internal_destination")
         );
     }
 
