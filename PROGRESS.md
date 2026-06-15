@@ -444,12 +444,12 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         start learn → traffic → learned spec → review/publish → generated tool rows → delete API
         → zero S8 orphans); existing poisoning tests cover header flood/path explosion, and
         retention tests cover raw observations.
-- [ ] S9 Learning traffic-first
+- [x] S9 Learning traffic-first
   - [x] S9a/S9b contract and SSRF design: `spec/06-learning.md` defines explicit-upstream
         discovery, user-hidden discovery-owned resources, discovery provenance storage,
         per-host/SNI/upstream clustering, deterministic learned-spec-to-gateway mapping, and
-        resolve/validate/pin/dial SSRF hardening with public-only S9c lifecycle until admin
-        private-CIDR allowlists land.
+        resolve/validate/pin/dial SSRF hardening with exact destination allowlisting for
+        intentionally permitted private/local upstreams.
   - [x] S9c discovery lifecycle: discovery sessions create xDS-served/user-hidden
         cluster/route/listener rows, stop tears them down, and REST/CLI user paths cannot
         list/get/delete those temporary resources.
@@ -461,6 +461,14 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         produce persisted gateway plans with concrete cluster/route-config/listener specs;
         apply replays that preview through the existing gateway services and fails on
         intervening conflicts instead of re-planning.
+  - [x] S9f approval-bypass adversarial tests: unreviewed/rejected learned specs cannot
+        create or apply route config, observed discovery traffic alone remains data, and
+        unsafe forwarding attempts fail closed.
+  - [x] S9 exit: `scripts/e2e-envoy.sh` now covers traffic-first discovery end to end
+        (start explicit-upstream discovery listener → send traffic → persist discovery
+        observations → stop/freeze session → learned candidate API/spec → review/publish →
+        generated tools → persisted route dry-run/apply equivalence → traffic through the
+        generated listener).
 - [ ] S10 AI gateway
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag

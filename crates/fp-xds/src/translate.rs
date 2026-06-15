@@ -45,6 +45,15 @@ pub struct LearningCaptureInjection {
     pub listener_id: Option<uuid::Uuid>,
     pub virtual_host: Option<String>,
     pub route: Option<String>,
+    pub discovery: Option<DiscoveryCaptureMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveryCaptureMetadata {
+    pub forwarded_upstream_host: String,
+    pub forwarded_upstream_port: i32,
+    pub forwarded_upstream_ip: String,
+    pub forwarded_upstream_tls: bool,
 }
 
 fn any<M: Message>(type_url: &str, msg: &M) -> wkt::Any {
@@ -1832,28 +1841,59 @@ pub fn listener_to_proto_with_learning(
 }
 
 fn grpc_service(cluster: &'static str, capture: &LearningCaptureInjection) -> core::GrpcService {
-    let mut initial_metadata = vec![
-        header("x-flowplane-team-id", capture.team_id.to_string()),
-        header(
-            "x-flowplane-capture-session-id",
-            capture.session_id.to_string(),
-        ),
-        header(
-            "x-flowplane-route-config-id",
-            capture.route_config_id.to_string(),
-        ),
-    ];
-    if let Some(api_id) = capture.api_definition_id {
-        initial_metadata.push(header("x-flowplane-api-definition-id", api_id.to_string()));
-    }
-    if let Some(listener_id) = capture.listener_id {
-        initial_metadata.push(header("x-flowplane-listener-id", listener_id.to_string()));
-    }
-    if let Some(virtual_host) = &capture.virtual_host {
-        initial_metadata.push(header("x-flowplane-virtual-host", virtual_host.clone()));
-    }
-    if let Some(route) = &capture.route {
-        initial_metadata.push(header("x-flowplane-route", route.clone()));
+    let mut initial_metadata = vec![header("x-flowplane-team-id", capture.team_id.to_string())];
+    if let Some(discovery) = &capture.discovery {
+        initial_metadata.extend([
+            header(
+                "x-flowplane-discovery-session-id",
+                capture.session_id.to_string(),
+            ),
+            header(
+                "x-flowplane-forwarded-upstream-host",
+                discovery.forwarded_upstream_host.clone(),
+            ),
+            header(
+                "x-flowplane-forwarded-upstream-port",
+                discovery.forwarded_upstream_port.to_string(),
+            ),
+            header(
+                "x-flowplane-forwarded-upstream-ip",
+                discovery.forwarded_upstream_ip.clone(),
+            ),
+            header(
+                "x-flowplane-forwarded-upstream-tls",
+                discovery.forwarded_upstream_tls.to_string(),
+            ),
+        ]);
+        if let Some(listener_id) = capture.listener_id {
+            initial_metadata.push(header(
+                "x-flowplane-discovery-listener-id",
+                listener_id.to_string(),
+            ));
+        }
+    } else {
+        initial_metadata.extend([
+            header(
+                "x-flowplane-capture-session-id",
+                capture.session_id.to_string(),
+            ),
+            header(
+                "x-flowplane-route-config-id",
+                capture.route_config_id.to_string(),
+            ),
+        ]);
+        if let Some(api_id) = capture.api_definition_id {
+            initial_metadata.push(header("x-flowplane-api-definition-id", api_id.to_string()));
+        }
+        if let Some(listener_id) = capture.listener_id {
+            initial_metadata.push(header("x-flowplane-listener-id", listener_id.to_string()));
+        }
+        if let Some(virtual_host) = &capture.virtual_host {
+            initial_metadata.push(header("x-flowplane-virtual-host", virtual_host.clone()));
+        }
+        if let Some(route) = &capture.route {
+            initial_metadata.push(header("x-flowplane-route", route.clone()));
+        }
     }
     core::GrpcService {
         timeout: Some(millis_duration(5_000)),
@@ -2968,6 +3008,7 @@ mod tests {
             listener_id: Some(listener_id),
             virtual_host: Some("default".into()),
             route: Some("all".into()),
+            discovery: None,
         };
         let manager = hcm_of_with_learning(&spec, &[capture]);
         let names = manager
