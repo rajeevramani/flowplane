@@ -766,10 +766,19 @@ Rules:
 
 - S9 starts with `--upstream host:port` only. Dynamic host-routed discovery is deferred until it has
   an explicit destination allowlist.
+- Internal/private upstreams are usable in S9 only through an org/team-scoped admin allowlist of
+  destination CIDRs and optional ports. The allowlist is checked after the global denylist below,
+  so it cannot admit Flowplane control-plane ports, metadata ranges, loopback, link-local,
+  unspecified, or multicast destinations.
 - Parse `--upstream` as a host and port, not a URL. Reject schemes, paths, credentials, empty hosts,
   wildcard hosts, and port 0.
 - Resolve the host to concrete A/AAAA addresses at start. Reject hosts with no usable address.
-- Validate every resolved address against the denylist before persisting the session.
+- Canonicalize every resolved address before checking it. Collapse IPv4-mapped IPv6
+  (`::ffff:0:0/96`) to IPv4 before CIDR/metadata checks. Reject 6to4 (`2002::/16`) and NAT64
+  well-known prefix (`64:ff9b::/96`) unless a later implementation explicitly extracts and checks
+  the embedded IPv4 address with the same denylist.
+- Validate every canonical resolved address against the denylist and allowlist before persisting
+  the session.
 - If more than one address remains allowed, choose the lexicographically first canonical IP so the
   persisted dial target is deterministic.
 - Persist the selected `validated_upstream_ip` and connect the discovery forwarder to that IP, not
@@ -779,14 +788,22 @@ Rules:
 
 Always denied destinations:
 
-- loopback, unspecified, multicast, link-local, IPv6 unique-local, and IPv4 private ranges unless a
-  future admin-scoped allowlist explicitly admits the private CIDR;
+- loopback, unspecified, multicast, link-local, and IPv6 unique-local ranges;
 - cloud metadata ranges, including `169.254.169.254` and `fd00:ec2::254`;
 - the configured CP/API bind address and port;
 - the configured xDS bind address and port;
 - Flowplane admin, metrics, diagnostics, RLS, and Envoy admin ports when known;
 - the configured Postgres host/port;
 - any hostname that resolves to a mix of allowed and denied addresses.
+
+Denied by default, but allowlistable:
+
+- IPv4 private ranges;
+- other operator-owned internal CIDRs explicitly added to the org/team-scoped discovery upstream
+  allowlist.
+
+The discovery forwarder is a pass-through proxy for the single validated upstream. It must not
+follow upstream 3xx redirects or open a second outbound connection based on response headers.
 
 Denied errors are user-actionable but not topology-leaking: return the input host/port and a coarse
 reason such as `denied_internal_destination`, `denied_link_local`, or `denied_flowplane_port`, not
@@ -796,11 +813,15 @@ do not record request headers, credentials, or resolved address lists in user-vi
 Required tests for the validator:
 
 - allow a public IP/hostname and persist the exact dial IP;
-- allow an RFC1918/private destination only when the future admin allowlist admits that CIDR;
+- allow an RFC1918/private destination only when the org/team admin allowlist admits that CIDR;
 - deny loopback, link-local, unspecified, multicast, ULA, and cloud metadata addresses;
+- deny IPv4-mapped IPv6 forms of denied IPv4 addresses such as `::ffff:169.254.169.254` and
+  `::ffff:10.0.0.1` unless the mapped private address is allowlisted;
+- deny 6to4/NAT64 embedded-address forms until embedded IPv4 extraction is implemented;
 - deny configured CP/API, xDS, admin/metrics/diagnostics/RLS/Envoy-admin, and Postgres ports;
 - deny a rebinding-style hostname whose resolution set contains both allowed and denied IPs;
-- prove the forwarder uses the persisted IP as the dial target rather than re-dialing the hostname.
+- prove the forwarder uses the persisted IP as the dial target rather than re-dialing the hostname;
+- prove upstream redirects are observed as responses, not followed.
 
 #### Discovery-owned gateway resources
 
