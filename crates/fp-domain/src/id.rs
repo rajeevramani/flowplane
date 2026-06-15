@@ -115,6 +115,10 @@ domain_id!(
     AiProviderId
 );
 domain_id!(
+    /// Identifies an AI route.
+    AiRouteId
+);
+domain_id!(
     /// Identifies an API definition, the config-first lifecycle root for learning/tools.
     ApiDefinitionId
 );

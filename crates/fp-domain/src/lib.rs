@@ -18,7 +18,11 @@ pub mod learning;
 pub mod route_generation;
 pub mod secret;
 
-pub use ai::{validate_ai_provider_name, AiProvider, AiProviderKind, AiProviderSpec};
+pub use ai::{
+    validate_ai_provider_name, validate_ai_route_name, AiProvider, AiProviderKind, AiProviderSpec,
+    AiRoute, AiRouteBackend, AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus,
+    AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+};
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
 pub use discovery::{
     cluster_discovery_observations, DiscoveryCandidateCluster, DiscoveryObservation,
@@ -27,7 +31,7 @@ pub use discovery::{
 };
 pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
-    AgentId, AiProviderId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId,
+    AgentId, AiProviderId, AiRouteId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId,
     CaptureSessionId, ClusterId, DataplaneId, DiscoverySessionId, GrantId, ListenerId,
     MembershipId, OrgId, ProxyCertificateId, RawObservationId, RequestId, RetentionPolicyId,
     RouteConfigId, RouteGenerationPlanId, SecretId, SpecVersionId, SpecVersionReviewEventId,

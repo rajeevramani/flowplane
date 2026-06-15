@@ -476,6 +476,9 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         authz scopes, and route materialization constraints.
   - [x] S10b provider resources: team-scoped `AiProvider` storage/API/CLI using S6 secret
         references.
+  - [x] S10c route resources/materialization: team-scoped `AiRoute` storage/API/CLI,
+        ordered provider backends, deterministic gateway resource materialization, provider
+        dependency guards, and stale marking on provider mutation.
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
 

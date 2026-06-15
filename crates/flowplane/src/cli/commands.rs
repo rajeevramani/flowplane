@@ -234,6 +234,10 @@ pub enum AiCommand {
         #[command(subcommand)]
         command: ResourceCommand,
     },
+    Routes {
+        #[command(subcommand)]
+        command: ResourceCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]

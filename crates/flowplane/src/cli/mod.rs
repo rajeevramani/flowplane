@@ -990,6 +990,7 @@ pub async fn run_route(global: GlobalOptions, command: RouteCommand) -> Result<(
 pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
     match command {
         AiCommand::Providers { command } => run_resource(global, "ai/providers", command).await,
+        AiCommand::Routes { command } => run_resource(global, "ai/routes", command).await,
     }
 }
 
@@ -2170,6 +2171,8 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
         "/api/v1/teams/{team}/ai/providers",
         "/api/v1/teams/{team}/ai/providers/{name}",
+        "/api/v1/teams/{team}/ai/routes",
+        "/api/v1/teams/{team}/ai/routes/{name}",
         "/api/v1/teams/{team}/learning-sessions",
         "/api/v1/teams/{team}/learning-sessions/{session}",
         "/api/v1/teams/{team}/learning-sessions/{session}/stop",
