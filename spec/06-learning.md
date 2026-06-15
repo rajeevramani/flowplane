@@ -733,6 +733,109 @@ gateway config.
 Mark for spec/08: this design removes three of v1's four manual steps (route creation, export,
 import) and leaves two human actions: start discovery, approve plan.
 
+### 9.3 [V2 S9 CONTRACT] Discovery and route generation
+
+S9 traffic-first starts with the explicit-upstream path only. Dynamic forward proxy / host-routed
+discovery is deferred until the explicit-upstream safety and planning path is complete.
+
+#### Discovery sessions
+
+Use a separate `discovery_sessions` table rather than overloading `capture_sessions`. The current
+`capture_sessions` CHECK constraint admits only API-scoped or route-config-scoped sessions, while a
+discovery session starts with neither a user API nor a user route config. Discovery sessions own the
+temporary discovery listener/config rows and reference the validated forwarding target.
+
+Minimum session fields:
+
+- `id`, `team_id`, `org_id`, `name`, `status`, `created_at`, `updated_at`
+- `listener_port`, `upstream_host`, `upstream_port`, `upstream_tls`
+- `validated_upstream_ip`, `validated_upstream_port`
+- `target_sample_count`, `max_duration_seconds`, `max_bytes`, `max_distinct_paths`
+- `started_at`, `completed_at`, `cancelled_at`, `drop_count`
+
+`capture_sessions` remains the config-first capture model from S8. S9 may create API-scoped
+capture sessions after candidate APIs are materialized, but discovery intake itself is separate.
+
+#### Discovery-owned gateway resources
+
+Discovery listener/config rows are not ordinary user resources. Add an ownership marker such as
+`owner_kind = 'user' | 'discovery'` plus `owner_id` on the gateway rows that need to be xDS-served.
+
+Rules:
+
+- xDS translation includes discovery-owned listeners/config because Envoy must receive them.
+- REST/CLI user list/get endpoints exclude discovery-owned rows by default.
+- User update/delete endpoints reject discovery-owned rows with a conflict/forbidden error.
+- Stopping/cancelling a discovery session deletes its discovery-owned rows and triggers xDS rebuild.
+- Discovery-owned rows must not be eligible for API route bindings.
+
+#### Discovery provenance
+
+Discovery observations need first-class provenance; `Host` alone is not enough. Store these fields
+either directly on `raw_observations` when `discovery_session_id` is set or in a one-to-one
+discovery observation extension table:
+
+- `discovery_session_id`
+- `discovery_listener_id`
+- `observed_host` from `Host` / `:authority`
+- `observed_sni` when TLS/SNI is available
+- `route_matched` boolean, false for discovery catch-all traffic
+- `forwarded_upstream_host`
+- `forwarded_upstream_port`
+- `forwarded_upstream_ip`
+- `forwarded_upstream_tls`
+
+S9 candidate clustering groups observations by `(observed_host, observed_sni,
+forwarded_upstream_host, forwarded_upstream_port, forwarded_upstream_tls)` before invoking S8
+aggregation. Each cluster becomes one candidate API. A multi-host discovery set must never be fed
+directly into S8 aggregation; the S8 host-collision guard should remain a backstop, not the primary
+split mechanism.
+
+#### Learned spec to gateway resources
+
+Route generation consumes a reviewed or published learned `spec_version_id` plus the persisted
+discovery provenance for its candidate API. It produces a persisted plan; apply replays that plan.
+
+Mapping rules for the explicit-upstream mode:
+
+- One generated cluster targets the discovery session's validated upstream IP/port/TLS, not the raw
+  hostname. The original upstream host is retained as metadata and, when needed, as upstream
+  authority/SNI configuration.
+- One route config is generated for the candidate API.
+- One virtual host is generated per observed host. If no host was observed, use a deterministic
+  wildcard virtual host and record that lower confidence in plan metadata.
+- Each OpenAPI HTTP operation becomes one route. The learned OpenAPI path template maps directly to
+  the route match path template; method constraints come from the OpenAPI operation method.
+- The generated listener port is operator-supplied for the plan. If omitted, the API must reject the
+  plan request rather than picking an implicit port.
+- Deterministic names use the candidate API name plus stable suffixes:
+  - cluster: `<api>-upstream`
+  - route config: `<api>-routes`
+  - listener: `<api>`
+  - virtual host: normalized observed host, or `wildcard`
+  - route: normalized `operationId`, falling back to method + path template
+- Name/port conflicts are surfaced in the dry-run plan as blocking conflicts. The planner must not
+  silently rename, remap ports, or choose a different upstream.
+
+Apply must compose the existing gateway services (`clusters::create_cluster`,
+`gateway::create_route_config`, `gateway::create_listener`, and the expose ordering/conflict
+patterns) instead of writing a parallel config path. This keeps generated resources subject to the
+same validation, port uniqueness, dependency ordering, audit, and cleanup behavior as manual
+gateway resources.
+
+#### Route generation plans
+
+Dry-run creates a persisted plan pinned to:
+
+- `spec_version_id`
+- discovery session / candidate API provenance
+- exact cluster, route config, listener, virtual host, route, and API binding specs to apply
+- detected conflicts at preview time
+
+Apply replays the persisted plan. It does not regenerate from the current spec or current discovery
+observations. If the world changed and a planned resource now conflicts, apply fails with that
+conflict instead of silently re-planning.
+
 ---
 
 ## 10. Security-relevant behavior (feeds 08a)
