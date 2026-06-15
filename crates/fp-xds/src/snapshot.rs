@@ -674,7 +674,7 @@ async fn ai_cluster_metadata(
 ) -> DomainResult<HashMap<String, translate::AiUpstreamProcessorMetadata>> {
     let rows = sqlx::query(
         "SELECT r.cluster_names[b.position + 1] AS cluster_name, rc.id AS route_config_id, \
-                b.provider_id \
+                b.provider_id, b.position \
          FROM ai_routes r \
          JOIN ai_route_backends b ON b.team_id = r.team_id AND b.ai_route_id = r.id \
          JOIN route_configs rc ON rc.team_id = r.team_id AND rc.name = r.route_config_name \
@@ -693,6 +693,7 @@ async fn ai_cluster_metadata(
                 route_config_id: RouteConfigId::from(row.get::<uuid::Uuid, _>("route_config_id"))
                     .as_uuid(),
                 provider_id: AiProviderId::from(row.get::<uuid::Uuid, _>("provider_id")).as_uuid(),
+                backend_position: row.get("position"),
             },
         );
     }

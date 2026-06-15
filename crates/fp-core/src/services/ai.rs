@@ -750,10 +750,9 @@ fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
 
 fn ai_route_config_spec(
     spec: &AiRouteSpec,
-    providers: &[AiProvider],
+    _providers: &[AiProvider],
     names: &AiRouteMaterializedResources,
 ) -> DomainResult<RouteConfigSpec> {
-    let prefix_rewrite = common_prefix(providers)?;
     let mut by_model: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut catch_all = Vec::new();
     for (idx, backend) in spec.backends.iter().enumerate() {
@@ -778,7 +777,6 @@ fn ai_route_config_spec(
             &indexes,
             spec,
             names,
-            prefix_rewrite.clone(),
         )?);
     }
     if !catch_all.is_empty() {
@@ -789,7 +787,6 @@ fn ai_route_config_spec(
             &catch_all,
             spec,
             names,
-            prefix_rewrite,
         )?);
     } else {
         routes.push(no_eligible_backend_route(&spec.path));
@@ -844,7 +841,6 @@ fn route_rule(
     indexes: &[usize],
     spec: &AiRouteSpec,
     names: &AiRouteMaterializedResources,
-    prefix_rewrite: Option<String>,
 ) -> DomainResult<RouteRule> {
     let targets = indexes
         .iter()
@@ -867,7 +863,7 @@ fn route_rule(
             weighted_clusters,
             redirect: None,
             direct_response: None,
-            prefix_rewrite,
+            prefix_rewrite: None,
             template_rewrite: None,
             timeout_secs: DEFAULT_AI_ROUTE_TIMEOUT_SECS,
             retry_policy: None,
@@ -875,21 +871,6 @@ fn route_rule(
         },
         filter_overrides: Vec::new(),
     })
-}
-
-fn common_prefix(providers: &[AiProvider]) -> DomainResult<Option<String>> {
-    let prefix = providers
-        .first()
-        .and_then(|provider| provider.spec.path_prefix.clone());
-    if providers
-        .iter()
-        .any(|provider| provider.spec.path_prefix != prefix)
-    {
-        return Err(DomainError::validation(
-            "AI route backends must share the same path_prefix setting",
-        ));
-    }
-    Ok(prefix)
 }
 
 fn route_token(value: &str) -> String {

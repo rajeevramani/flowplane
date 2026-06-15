@@ -71,6 +71,7 @@ pub struct AiUpstreamProcessorMetadata {
     pub team_id: uuid::Uuid,
     pub route_config_id: uuid::Uuid,
     pub provider_id: uuid::Uuid,
+    pub backend_position: i32,
 }
 
 fn any<M: Message>(type_url: &str, msg: &M) -> wkt::Any {
@@ -819,7 +820,7 @@ fn ai_upstream_ext_proc_filter(ai: &AiUpstreamProcessorMetadata) -> hcm::HttpFil
                 processing_mode: Some(ext_proc::ProcessingMode {
                     request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
                     response_header_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
-                    request_body_mode: ext_proc::processing_mode::BodySendMode::None as i32,
+                    request_body_mode: ext_proc::processing_mode::BodySendMode::Buffered as i32,
                     response_body_mode: ext_proc::processing_mode::BodySendMode::None as i32,
                     request_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
                     response_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
@@ -848,6 +849,10 @@ fn ai_upstream_grpc_service(ai: &AiUpstreamProcessorMetadata) -> core::GrpcServi
                 ai.route_config_id.to_string(),
             ),
             header("x-flowplane-ai-provider-id", ai.provider_id.to_string()),
+            header(
+                "x-flowplane-ai-backend-position",
+                ai.backend_position.to_string(),
+            ),
         ],
         target_specifier: Some(core::grpc_service::TargetSpecifier::EnvoyGrpc(
             core::grpc_service::EnvoyGrpc {
@@ -2479,6 +2484,7 @@ mod tests {
             team_id: uuid::Uuid::now_v7(),
             route_config_id: uuid::Uuid::now_v7(),
             provider_id: uuid::Uuid::now_v7(),
+            backend_position: 7,
         };
         let cluster =
             cluster_to_proto_with_ai("ai-chat-b1", &cluster_spec(), Some(&ai)).expect("cluster");
@@ -2519,6 +2525,11 @@ mod tests {
         assert_eq!(
             metadata["x-flowplane-ai-provider-id"],
             ai.provider_id.to_string()
+        );
+        assert_eq!(metadata["x-flowplane-ai-backend-position"], "7");
+        assert_eq!(
+            ext.processing_mode.expect("mode").request_body_mode,
+            ext_proc::processing_mode::BodySendMode::Buffered as i32
         );
         assert!(
             !options_any

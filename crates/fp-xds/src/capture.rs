@@ -24,9 +24,10 @@ use envoy_types::pb::envoy::service::ext_proc::v3::{
 use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
-    openai_usage_from_json, prepare_openai_chat_request, strip_synthetic_openai_usage_sse,
-    AiProviderId, ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId,
-    OpenAiTokenUsage, RouteConfigId, SecretSpec, TeamId, AI_MODEL_HEADER,
+    openai_usage_from_json, prepare_openai_chat_request, rewrite_openai_chat_request_model,
+    strip_synthetic_openai_usage_sse, AiProviderId, ApiDefinitionId, CaptureSessionId,
+    DiscoverySessionId, DomainError, ListenerId, OpenAiTokenUsage, RouteConfigId, SecretSpec,
+    TeamId, AI_MODEL_HEADER,
 };
 use fp_storage::repos::{ai, api_lifecycle, discovery, identity, secrets};
 use serde_json::{Map, Value};
@@ -92,6 +93,7 @@ struct AiExtProcState {
     response_sse_remainder: String,
     response_json_body: Vec<u8>,
     last_usage: Option<OpenAiTokenUsage>,
+    upstream_model_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +102,7 @@ struct AiExtProcContext {
     listener_id: Option<ListenerId>,
     route_config_id: RouteConfigId,
     provider_id: Option<AiProviderId>,
+    backend_position: Option<i32>,
 }
 
 impl LearningCaptureService {
@@ -292,24 +295,33 @@ fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status
     let listener_id = optional_metadata_uuid(metadata, "x-flowplane-listener-id")?;
     let route_config_id = optional_metadata_uuid(metadata, "x-flowplane-route-config-id")?;
     let provider_id = optional_metadata_uuid(metadata, "x-flowplane-ai-provider-id")?;
-    match (team_id, listener_id, route_config_id, provider_id) {
-        (Some(team_id), Some(listener_id), Some(route_config_id), None) => {
+    let backend_position = optional_metadata_i32(metadata, "x-flowplane-ai-backend-position")?;
+    match (
+        team_id,
+        listener_id,
+        route_config_id,
+        provider_id,
+        backend_position,
+    ) {
+        (Some(team_id), Some(listener_id), Some(route_config_id), None, None) => {
             Ok(Some(AiExtProcContext {
                 team_id: TeamId::from(team_id),
                 listener_id: Some(ListenerId::from(listener_id)),
                 route_config_id: RouteConfigId::from(route_config_id),
                 provider_id: None,
+                backend_position: None,
             }))
         }
-        (Some(team_id), None, Some(route_config_id), Some(provider_id)) => {
+        (Some(team_id), None, Some(route_config_id), Some(provider_id), Some(backend_position)) => {
             Ok(Some(AiExtProcContext {
                 team_id: TeamId::from(team_id),
                 listener_id: None,
                 route_config_id: RouteConfigId::from(route_config_id),
                 provider_id: Some(AiProviderId::from(provider_id)),
+                backend_position: Some(backend_position),
             }))
         }
-        (None, None, None, None) => Ok(None),
+        (None, None, None, None, None) => Ok(None),
         _ => Err(Status::invalid_argument(
             "AI processor metadata must include either router or upstream context",
         )),
@@ -395,6 +407,22 @@ fn optional_metadata_uuid(
                 .map_err(|_| Status::invalid_argument(format!("invalid capture metadata {key}")))
                 .and_then(|raw| {
                     Uuid::parse_str(raw).map_err(|_| {
+                        Status::invalid_argument(format!("invalid capture metadata {key}"))
+                    })
+                })
+        })
+        .transpose()
+}
+
+fn optional_metadata_i32(metadata: &MetadataMap, key: &'static str) -> Result<Option<i32>, Status> {
+    metadata
+        .get(key)
+        .map(|value| {
+            value
+                .to_str()
+                .map_err(|_| Status::invalid_argument(format!("invalid capture metadata {key}")))
+                .and_then(|raw| {
+                    raw.parse::<i32>().map_err(|_| {
                         Status::invalid_argument(format!("invalid capture metadata {key}"))
                     })
                 })
@@ -652,9 +680,47 @@ async fn ai_response_with_pool(
         .and_then(|context| context.provider_id)
         .is_some()
     {
-        return ai_request_headers_response(pool, state).await;
+        return ai_request_headers_response(pool, state, request).await;
+    }
+    if matches!(
+        request.request,
+        Some(processing_request::Request::RequestBody(_))
+    ) && state
+        .context
+        .and_then(|context| context.provider_id)
+        .is_some()
+    {
+        return ai_upstream_request_body_response(state, request);
     }
     ai_response(state, request)
+}
+
+fn ai_upstream_request_body_response(
+    state: &AiExtProcState,
+    request: ProcessingRequest,
+) -> ProcessingResponse {
+    let Some(processing_request::Request::RequestBody(body)) = request.request else {
+        return request_body_response(CommonResponse {
+            status: common_response::ResponseStatus::Continue as i32,
+            ..Default::default()
+        });
+    };
+    let Some(model) = state.upstream_model_override.as_deref() else {
+        return request_body_response(CommonResponse {
+            status: common_response::ResponseStatus::Continue as i32,
+            ..Default::default()
+        });
+    };
+    match rewrite_openai_chat_request_model(&body.body, model) {
+        Ok(body) => request_body_response(CommonResponse {
+            status: common_response::ResponseStatus::Continue as i32,
+            body_mutation: Some(BodyMutation {
+                mutation: Some(body_mutation::Mutation::Body(body)),
+            }),
+            ..Default::default()
+        }),
+        Err(err) => immediate_response(400, err.message),
+    }
 }
 
 fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> ProcessingResponse {
@@ -732,7 +798,8 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
 
 async fn ai_request_headers_response(
     pool: &sqlx::PgPool,
-    state: &AiExtProcState,
+    state: &mut AiExtProcState,
+    request: ProcessingRequest,
 ) -> ProcessingResponse {
     let Some(context) = state.context else {
         return request_headers_response(remove_internal_model_header());
@@ -740,39 +807,87 @@ async fn ai_request_headers_response(
     let Some(provider_id) = context.provider_id else {
         return request_headers_response(remove_internal_model_header());
     };
-    match selected_provider_auth(pool, context.team_id, context.route_config_id, provider_id).await
+    let request_path = match request.request {
+        Some(processing_request::Request::RequestHeaders(headers)) => {
+            let map = headers_from_header_map(headers.headers.as_ref());
+            header_value(&map, ":path")
+        }
+        _ => None,
+    };
+    match selected_backend_runtime(
+        pool,
+        context.team_id,
+        context.route_config_id,
+        provider_id,
+        context.backend_position,
+        request_path.as_deref(),
+    )
+    .await
     {
-        Ok((header_name, header_value)) => request_headers_response(CommonResponse {
-            status: common_response::ResponseStatus::Continue as i32,
-            header_mutation: Some(HeaderMutation {
-                set_headers: vec![HeaderValueOption {
+        Ok(runtime) => {
+            state.upstream_model_override = runtime.model_override;
+            let mut set_headers = vec![HeaderValueOption {
+                header: Some(HeaderValue {
+                    key: runtime.auth_header,
+                    value: runtime.auth_value,
+                    raw_value: Vec::new(),
+                }),
+                append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
+                    as i32,
+                ..Default::default()
+            }];
+            if let Some(path) = runtime.path_rewrite {
+                set_headers.push(HeaderValueOption {
                     header: Some(HeaderValue {
-                        key: header_name,
-                        value: header_value,
+                        key: ":path".into(),
+                        value: path,
                         raw_value: Vec::new(),
                     }),
                     append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
                         as i32,
                     ..Default::default()
-                }],
-                remove_headers: vec![AI_MODEL_HEADER.into()],
-            }),
-            ..Default::default()
-        }),
+                });
+            }
+            request_headers_response(CommonResponse {
+                status: common_response::ResponseStatus::Continue as i32,
+                header_mutation: Some(HeaderMutation {
+                    set_headers,
+                    remove_headers: vec![AI_MODEL_HEADER.into()],
+                }),
+                ..Default::default()
+            })
+        }
         Err(_) => immediate_response(500, "AI provider credential unavailable".into()),
     }
 }
 
-async fn selected_provider_auth(
+#[derive(Debug)]
+struct SelectedBackendRuntime {
+    auth_header: String,
+    auth_value: String,
+    path_rewrite: Option<String>,
+    model_override: Option<String>,
+}
+
+async fn selected_backend_runtime(
     pool: &sqlx::PgPool,
     team_id: TeamId,
     route_config_id: RouteConfigId,
     provider_id: AiProviderId,
-) -> Result<(String, String), Status> {
-    let provider = ai::get_provider_for_route_config(pool, team_id, route_config_id, provider_id)
-        .await
-        .map_err(status_from_domain)?
-        .ok_or_else(|| Status::not_found("AI provider not found for route"))?;
+    backend_position: Option<i32>,
+    request_path: Option<&str>,
+) -> Result<SelectedBackendRuntime, Status> {
+    let selected = ai::get_backend_for_route_config(
+        pool,
+        team_id,
+        route_config_id,
+        provider_id,
+        backend_position,
+    )
+    .await
+    .map_err(status_from_domain)?
+    .ok_or_else(|| Status::not_found("AI provider not found for route"))?;
+    let provider = selected.provider;
     let encrypted =
         secrets::get_encrypted_secret_by_id(pool, team_id, provider.spec.credential_secret_id)
             .await
@@ -793,7 +908,46 @@ async fn selected_provider_auth(
         .map_err(|_| Status::failed_precondition("AI provider credential is invalid"))?;
     let value = String::from_utf8(value)
         .map_err(|_| Status::failed_precondition("AI provider credential is not UTF-8"))?;
-    Ok((provider.spec.auth_header, value))
+    Ok(SelectedBackendRuntime {
+        auth_header: provider.spec.auth_header,
+        auth_value: value,
+        path_rewrite: provider_path_rewrite(
+            &provider.spec.base_url,
+            provider.spec.path_prefix.as_deref(),
+            request_path,
+        ),
+        model_override: selected.backend.model_override,
+    })
+}
+
+fn provider_path_rewrite(
+    base_url: &str,
+    path_prefix: Option<&str>,
+    request_path: Option<&str>,
+) -> Option<String> {
+    let prefix = path_prefix.map(str::to_string).or_else(|| {
+        base_url
+            .split_once("://")
+            .and_then(|(_, rest)| rest.find('/').map(|idx| &rest[idx..]))
+            .map(|path| path.trim_end_matches('/').to_string())
+            .filter(|path| !path.is_empty() && path != "/")
+    })?;
+    let request_path = request_path.unwrap_or("/v1/chat/completions");
+    Some(join_prefix_path(&prefix, request_path))
+}
+
+fn join_prefix_path(prefix: &str, path: &str) -> String {
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    let joined = format!(
+        "{}/{}",
+        prefix.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    if query.is_empty() {
+        joined
+    } else {
+        format!("{joined}?{query}")
+    }
 }
 
 fn ai_response_body_mutation(
@@ -1131,6 +1285,7 @@ mod tests {
             RouteConfigId::from(route_config_id)
         );
         assert_eq!(context.provider_id, None);
+        assert_eq!(context.backend_position, None);
     }
 
     #[test]
@@ -1152,6 +1307,7 @@ mod tests {
             "x-flowplane-ai-provider-id",
             provider_id.to_string().parse().expect("metadata value"),
         );
+        metadata.insert("x-flowplane-ai-backend-position", "0".parse().unwrap());
 
         let context = ai_context(request.metadata())
             .expect("context parse")
@@ -1164,6 +1320,7 @@ mod tests {
             RouteConfigId::from(route_config_id)
         );
         assert_eq!(context.provider_id, Some(AiProviderId::from(provider_id)));
+        assert_eq!(context.backend_position, Some(0));
     }
 
     #[tokio::test]
@@ -1224,8 +1381,8 @@ mod tests {
         .expect("secret");
         sqlx::query(
             "INSERT INTO ai_providers \
-             (id, team_id, org_id, name, kind, base_url, credential_secret_id, auth_header) \
-             VALUES ($1, $2, $3, 'openai', 'openai', 'https://api.openai.com/v1', $4, 'authorization')",
+             (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
+             VALUES ($1, $2, $3, 'openai', 'openai', 'https://api.openai.com', '/openai', $4, 'authorization')",
         )
         .bind(provider_id)
         .bind(team.id.as_uuid())
@@ -1244,14 +1401,26 @@ mod tests {
         .execute(&pool)
         .await
         .expect("route config");
+        let route_spec = serde_json::json!({
+            "listener_port": 19000,
+            "path": "/v1/chat/completions",
+            "backends": [{
+                "provider_id": provider_id,
+                "models": [],
+                "model_override": "upstream-model",
+                "weight": 1,
+                "priority": 0
+            }]
+        });
         sqlx::query(
             "INSERT INTO ai_routes \
              (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
-             VALUES ($1, $2, $3, 'ai-route', '{}'::jsonb, ARRAY['ai-route-b1'], 'ai-route-routes', 'ai-route-listener')",
+             VALUES ($1, $2, $3, 'ai-route', $4, ARRAY['ai-route-b1'], 'ai-route-routes', 'ai-route-listener')",
         )
         .bind(route_id)
         .bind(team.id.as_uuid())
         .bind(org.id.as_uuid())
+        .bind(route_spec)
         .execute(&pool)
         .await
         .expect("ai route");
@@ -1266,22 +1435,31 @@ mod tests {
         .await
         .expect("backend");
 
-        let (header, value) = selected_provider_auth(
+        let runtime = selected_backend_runtime(
             &pool,
             team.id,
             RouteConfigId::from(route_config_id),
             AiProviderId::from(provider_id),
+            Some(0),
+            Some("/v1/chat/completions?stream=true"),
         )
         .await
-        .expect("auth");
-        assert_eq!(header, "authorization");
-        assert_eq!(value, secret_value);
+        .expect("runtime");
+        assert_eq!(runtime.auth_header, "authorization");
+        assert_eq!(runtime.auth_value, secret_value);
+        assert_eq!(
+            runtime.path_rewrite.as_deref(),
+            Some("/openai/v1/chat/completions?stream=true")
+        );
+        assert_eq!(runtime.model_override.as_deref(), Some("upstream-model"));
         assert!(
-            selected_provider_auth(
+            selected_backend_runtime(
                 &pool,
                 other_team.id,
                 RouteConfigId::from(route_config_id),
                 AiProviderId::from(provider_id),
+                Some(0),
+                Some("/v1/chat/completions"),
             )
             .await
             .is_err(),
@@ -1442,6 +1620,42 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["stream_options"]["include_usage"], true);
         assert!(state.include_usage_injected);
+    }
+
+    #[test]
+    fn ai_upstream_request_body_rewrites_model_override() {
+        let state = AiExtProcState {
+            upstream_model_override: Some("upstream-model".into()),
+            ..Default::default()
+        };
+        let response = ai_upstream_request_body_response(
+            &state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::RequestBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: br#"{"model":"client-model","messages":[]}"#.to_vec(),
+                        end_of_stream: true,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::RequestBody(body) = response.response.expect("response")
+        else {
+            panic!("expected request body response");
+        };
+        let mutation = body
+            .response
+            .expect("common")
+            .body_mutation
+            .expect("body mutation");
+        let Some(body_mutation::Mutation::Body(body)) = mutation.mutation else {
+            panic!("expected replacement body");
+        };
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["model"], "upstream-model");
     }
 
     #[test]
