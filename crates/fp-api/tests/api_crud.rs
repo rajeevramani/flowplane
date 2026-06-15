@@ -106,12 +106,12 @@ fn openapi_document_covers_every_registered_operation() {
     // + 5 discovery-session operations.
     // + 2 expose shortcut operations.
     // + 2 route-generation plan operations.
-    // + 5 AI provider operations.
+    // + 5 AI provider operations + 5 AI route operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 76,
-        "expected 76 documented operations, got {operations}"
+        operations, 81,
+        "expected 81 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -143,6 +143,8 @@ fn openapi_document_covers_every_registered_operation() {
         "/api/v1/teams/{team}/learning-discovery-sessions/{session}",
         "/api/v1/teams/{team}/learning-discovery-sessions/{session}/stop",
         "/api/v1/teams/{team}/learning-discovery-sessions/{session}/spec-versions",
+        "/api/v1/teams/{team}/ai/providers",
+        "/api/v1/teams/{team}/ai/routes",
         "/api/v1/teams/{team}/xds/status",
         "/api/v1/teams/{team}/ops/trace",
     ] {
@@ -1350,6 +1352,7 @@ async fn secret_values_are_write_only_over_http() {
         .expect("create AI provider");
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = json_of(response).await;
+    let provider_id = body["id"].as_str().expect("provider id").to_string();
     assert_eq!(body["name"], provider_name);
     assert_eq!(body["spec"]["credential_secret_id"], secret_id);
     assert_eq!(body["revision"], 1);
@@ -1395,6 +1398,96 @@ async fn secret_values_are_write_only_over_http() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json_of(response).await["revision"], 2);
 
+    let routes = format!("/api/v1/teams/{}/ai/routes", team.name);
+    let route_name = unique("airoute");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &routes,
+            Some(serde_json::json!({
+                "name": route_name,
+                "spec": {
+                    "listener_port": 19081,
+                    "backends": [{
+                        "provider_id": provider_id,
+                        "models": ["gpt-5"],
+                        "weight": 1
+                    }]
+                }
+            })),
+        ))
+        .await
+        .expect("create AI route");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert_eq!(body["name"], route_name);
+    assert_eq!(body["status"], "active");
+    assert_eq!(
+        body["materialized"]["listener_name"],
+        format!("ai-{route_name}-listener")
+    );
+    assert_eq!(body["revision"], 1);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!(
+                "/api/v1/teams/{}/listeners/ai-{route_name}-listener",
+                team.name
+            ),
+            None,
+        ))
+        .await
+        .expect("get materialized listener");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(request_with_revision(
+            "PATCH",
+            &provider,
+            2,
+            Some(serde_json::json!({
+                "spec": {
+                    "kind": "openai",
+                    "base_url": "https://api2.openai.example/v1",
+                    "credential_secret_id": secret_id,
+                    "models": ["gpt-5"]
+                }
+            })),
+        ))
+        .await
+        .expect("update referenced AI provider");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_of(response).await["revision"], 3);
+
+    let route = format!("{routes}/{route_name}");
+    let response = app
+        .clone()
+        .oneshot(request("GET", &route, None))
+        .await
+        .expect("get stale AI route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["status"], "stale");
+    assert_eq!(body["revision"], 2);
+
+    let response = app
+        .clone()
+        .oneshot(request_with_revision("DELETE", &provider, 3, None))
+        .await
+        .expect("delete referenced AI provider");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let response = app
+        .clone()
+        .oneshot(request_with_revision("DELETE", &route, 2, None))
+        .await
+        .expect("delete AI route");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
     let response = app
         .clone()
         .oneshot(request("GET", &providers, None))
@@ -1409,7 +1502,7 @@ async fn secret_values_are_write_only_over_http() {
 
     let response = app
         .clone()
-        .oneshot(request_with_revision("DELETE", &provider, 2, None))
+        .oneshot(request_with_revision("DELETE", &provider, 3, None))
         .await
         .expect("delete AI provider");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
