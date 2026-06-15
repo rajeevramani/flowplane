@@ -24,9 +24,9 @@ use envoy_types::pb::envoy::service::ext_proc::v3::{
 use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
-    prepare_openai_chat_request, strip_synthetic_openai_usage_sse, ApiDefinitionId,
-    CaptureSessionId, DiscoverySessionId, DomainError, ListenerId, RouteConfigId, TeamId,
-    AI_MODEL_HEADER,
+    openai_usage_from_json, prepare_openai_chat_request, strip_synthetic_openai_usage_sse,
+    ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId,
+    OpenAiTokenUsage, RouteConfigId, TeamId, AI_MODEL_HEADER,
 };
 use fp_storage::repos::{api_lifecycle, discovery, identity};
 use serde_json::{Map, Value};
@@ -38,6 +38,7 @@ use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
 const MAX_CAPTURE_BODY_BYTES: usize = 64 * 1024;
+const MAX_AI_USAGE_JSON_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct LearningCaptureService {
@@ -84,6 +85,9 @@ struct ExtProcState {
 #[derive(Debug, Clone, Default)]
 struct AiExtProcState {
     include_usage_injected: bool,
+    response_sse_remainder: String,
+    response_json_body: Vec<u8>,
+    last_usage: Option<OpenAiTokenUsage>,
 }
 
 impl LearningCaptureService {
@@ -627,14 +631,12 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
             }
         }
         processing_request::Request::ResponseBody(body) => {
-            let body_text = String::from_utf8_lossy(&body.body);
-            let (stripped, _usage) =
-                strip_synthetic_openai_usage_sse(&body_text, state.include_usage_injected);
-            if state.include_usage_injected && stripped.as_bytes() != body.body.as_slice() {
+            let mutation = ai_response_body_mutation(state, body.body, body.end_of_stream);
+            if let Some(body) = mutation {
                 response_body_response(CommonResponse {
                     status: common_response::ResponseStatus::Continue as i32,
                     body_mutation: Some(BodyMutation {
-                        mutation: Some(body_mutation::Mutation::Body(stripped.into_bytes())),
+                        mutation: Some(body_mutation::Mutation::Body(body)),
                     }),
                     ..Default::default()
                 })
@@ -646,6 +648,59 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
             }
         }
         other => continue_for_request(other),
+    }
+}
+
+fn ai_response_body_mutation(
+    state: &mut AiExtProcState,
+    body: Vec<u8>,
+    end_of_stream: bool,
+) -> Option<Vec<u8>> {
+    collect_unary_usage_body(state, &body, end_of_stream);
+
+    let body_text = String::from_utf8_lossy(&body);
+    state.response_sse_remainder.push_str(&body_text);
+
+    let (complete, remainder) = complete_sse_prefix(&state.response_sse_remainder, end_of_stream);
+    let (stripped, usage) =
+        strip_synthetic_openai_usage_sse(&complete, state.include_usage_injected);
+    if let Some(usage) = usage {
+        state.last_usage = Some(usage);
+    }
+    state.response_sse_remainder = remainder;
+
+    if state.include_usage_injected && stripped.as_bytes() != body.as_slice() {
+        Some(stripped.into_bytes())
+    } else {
+        None
+    }
+}
+
+fn complete_sse_prefix(buffer: &str, end_of_stream: bool) -> (String, String) {
+    if end_of_stream {
+        return (buffer.to_string(), String::new());
+    }
+    let Some(index) = buffer.rfind("\n\n") else {
+        return (String::new(), buffer.to_string());
+    };
+    let split = index + 2;
+    (buffer[..split].to_string(), buffer[split..].to_string())
+}
+
+fn collect_unary_usage_body(state: &mut AiExtProcState, body: &[u8], end_of_stream: bool) {
+    if state.response_json_body.len() < MAX_AI_USAGE_JSON_BYTES {
+        let remaining = MAX_AI_USAGE_JSON_BYTES - state.response_json_body.len();
+        state
+            .response_json_body
+            .extend_from_slice(&body[..body.len().min(remaining)]);
+    }
+    if end_of_stream {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&state.response_json_body) {
+            if let Some(usage) = openai_usage_from_json(&value) {
+                state.last_usage = Some(usage);
+            }
+        }
+        state.response_json_body.clear();
     }
 }
 
@@ -1028,6 +1083,7 @@ mod tests {
     fn ai_ext_proc_strips_synthetic_usage_response_body() {
         let mut state = AiExtProcState {
             include_usage_injected: true,
+            ..Default::default()
         };
         let response = ai_response(
             &mut state,
@@ -1064,5 +1120,86 @@ mod tests {
         let body = String::from_utf8(body).expect("utf8");
         assert!(body.contains("\"content\":\"hi\""));
         assert!(!body.contains("\"usage\""));
+        assert_eq!(state.last_usage.expect("usage").total_tokens, 3);
+    }
+
+    #[test]
+    fn ai_ext_proc_strips_split_synthetic_usage_sse() {
+        let mut state = AiExtProcState {
+            include_usage_injected: true,
+            ..Default::default()
+        };
+
+        let first = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"choices\":[],\"usage\"".to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        let second = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n".to_vec(),
+                        end_of_stream: true,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let first = response_body_mutation(first).expect("first mutation");
+        let second = response_body_mutation(second).expect("second mutation");
+        assert!(String::from_utf8(first)
+            .expect("utf8")
+            .contains("\"content\":\"hi\""));
+        assert_eq!(String::from_utf8(second).expect("utf8"), "");
+        assert_eq!(state.last_usage.expect("usage").total_tokens, 3);
+    }
+
+    #[test]
+    fn ai_ext_proc_extracts_unary_json_usage() {
+        let mut state = AiExtProcState::default();
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: br#"{"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":5,"total_tokens":9}}"#.to_vec(),
+                        end_of_stream: true,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::ResponseBody(body) =
+            response.response.expect("response")
+        else {
+            panic!("expected response body response");
+        };
+        assert!(body.response.expect("common").body_mutation.is_none());
+        assert_eq!(state.last_usage.expect("usage").total_tokens, 9);
+    }
+
+    fn response_body_mutation(response: ProcessingResponse) -> Option<Vec<u8>> {
+        let processing_response::Response::ResponseBody(body) = response.response? else {
+            return None;
+        };
+        let mutation = body.response?.body_mutation?.mutation?;
+        match mutation {
+            body_mutation::Mutation::Body(body) => Some(body),
+            _ => None,
+        }
     }
 }
