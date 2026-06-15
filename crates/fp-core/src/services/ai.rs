@@ -565,11 +565,7 @@ async fn create_materialized(
     names: &AiRouteMaterializedResources,
     request_id: RequestId,
 ) -> DomainResult<()> {
-    for ((provider, backend), cluster_name) in providers
-        .iter()
-        .zip(spec.backends.iter())
-        .zip(names.cluster_names.iter())
-    {
+    for (provider, cluster_name) in providers.iter().zip(names.cluster_names.iter()) {
         let cluster_spec = match provider_cluster_spec(provider) {
             Ok(spec) => spec,
             Err(err) => {
@@ -582,13 +578,6 @@ async fn create_materialized(
         {
             cleanup_materialized(pool, ctx, team, names, request_id).await;
             return Err(err);
-        }
-        if let Some(model) = &backend.model_override {
-            tracing::debug!(
-                cluster = cluster_name,
-                model,
-                "AI model override is stored for S10d"
-            );
         }
     }
     let route_config_spec = ai_route_config_spec(spec, providers, names)?;

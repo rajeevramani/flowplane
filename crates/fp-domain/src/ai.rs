@@ -241,6 +241,11 @@ impl AiRouteSpec {
                     "AI route backend model_override must not be empty",
                 ));
             }
+            if backend.model_override.is_some() {
+                return Err(DomainError::validation(
+                    "AI route backend model_override is not supported until selected-backend request rewriting lands",
+                ));
+            }
         }
         Ok(())
     }
@@ -439,6 +444,25 @@ mod tests {
 
         assert_eq!(spec.eligible_backend_indexes("gpt-5"), vec![0, 1]);
         assert_eq!(spec.eligible_backend_indexes("other"), vec![1]);
+    }
+
+    #[test]
+    fn ai_route_rejects_model_override_until_rewrite_path_exists() {
+        let spec = AiRouteSpec {
+            listener_port: 19000,
+            path: default_chat_path(),
+            backends: vec![AiRouteBackend {
+                provider_id: AiProviderId::generate(),
+                models: Vec::new(),
+                model_override: Some("upstream-model".into()),
+                weight: 1,
+                priority: 0,
+            }],
+        };
+
+        let err = spec.validate().expect_err("model override unsupported");
+        assert_eq!(err.code, crate::ErrorCode::ValidationFailed);
+        assert!(err.message.contains("model_override is not supported"));
     }
 
     #[test]
