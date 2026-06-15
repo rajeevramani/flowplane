@@ -771,10 +771,20 @@ Rules:
 
 #### Discovery provenance
 
-Discovery observations need first-class provenance; `Host` alone is not enough. Store these fields
-either directly on `raw_observations` when `discovery_session_id` is set or in a one-to-one
-discovery observation extension table:
+Discovery observations need first-class provenance; `Host` alone is not enough. Store discovery
+provenance in a one-to-one `discovery_raw_observations` extension table keyed by
+`raw_observation_id`.
 
+Do not put discovery intake directly on `raw_observations`: that table requires
+`capture_session_id NOT NULL` with a hard FK to `capture_sessions`, and its uniqueness, indexes, and
+TTL behavior hang from that config-first capture model. S9 discovery intake creates a
+`discovery_session`, then writes ordinary bounded raw observation payloads plus the extension row
+below. The bridge from discovery to S8 aggregation is an explicit query over
+`discovery_raw_observations`, not a fake capture session.
+
+Minimum extension fields:
+
+- `raw_observation_id`
 - `discovery_session_id`
 - `discovery_listener_id`
 - `observed_host` from `Host` / `:authority`
@@ -798,9 +808,15 @@ discovery provenance for its candidate API. It produces a persisted plan; apply 
 
 Mapping rules for the explicit-upstream mode:
 
-- One generated cluster targets the discovery session's validated upstream IP/port/TLS, not the raw
-  hostname. The original upstream host is retained as metadata and, when needed, as upstream
-  authority/SNI configuration.
+- The ephemeral discovery forwarder connects to the `validated_upstream_ip`/port selected by the
+  SSRF-safe resolve-and-validate flow from #47. It does not connect by hostname.
+- The long-lived generated cluster targets the approved upstream hostname/port/TLS from the
+  discovery session, using normal gateway DNS behavior like `expose`. SSRF is already handled by
+  explicit operator review/approval at route-generation time; pinning the approved cluster to the
+  transient discovery IP would reduce DNS failover/resilience and diverge from manual/expose
+  behavior.
+- The validated discovery IP, resolved address, and observed forwarding details remain plan
+  metadata/audit provenance, not the default long-lived cluster address.
 - One route config is generated for the candidate API.
 - One virtual host is generated per observed host. If no host was observed, use a deterministic
   wildcard virtual host and record that lower confidence in plan metadata.
