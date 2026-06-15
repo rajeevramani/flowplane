@@ -1,5 +1,6 @@
 //! Shared application state for the API router.
 
+use fp_core::services::discovery::DiscoveryForwardingPolicy;
 use fp_core::OidcValidator;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
@@ -18,6 +19,8 @@ pub struct AppState {
     pub write_throttle: Arc<crate::throttle::WriteThrottle>,
     /// Optional xDS outbox consumer readiness. API-only tests and deployments can leave this off.
     pub xds_readiness: Option<XdsReadiness>,
+    /// Runtime deny policy for S9 discovery forwarding.
+    pub discovery_forwarding_policy: DiscoveryForwardingPolicy,
 }
 
 #[derive(Clone)]

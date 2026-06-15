@@ -14,6 +14,16 @@ const COLUMNS: &str = "id, team_id, name, status, listener_port, upstream_host, 
     max_distinct_paths, sample_count, byte_count, path_count, drop_count, started_at, \
     completed_at, cancelled_at, updated_at, created_at";
 
+pub struct DiscoverySessionInsert<'a> {
+    pub id: DiscoverySessionId,
+    pub name: &'a str,
+    pub spec: &'a DiscoverySessionSpec,
+    pub validated_upstream_ip: &'a str,
+    pub cluster_name: &'a str,
+    pub route_config_name: &'a str,
+    pub listener_name: &'a str,
+}
+
 fn from_row(row: &PgRow) -> DomainResult<DiscoverySession> {
     let status: String = row.get("status");
     Ok(DiscoverySession {
@@ -49,13 +59,7 @@ fn from_row(row: &PgRow) -> DomainResult<DiscoverySession> {
 pub async fn create(
     tx: &mut Transaction<'_, Postgres>,
     team: TeamRef,
-    id: DiscoverySessionId,
-    name: &str,
-    spec: &DiscoverySessionSpec,
-    validated_upstream_ip: &str,
-    cluster_name: &str,
-    route_config_name: &str,
-    listener_name: &str,
+    insert: DiscoverySessionInsert<'_>,
 ) -> DomainResult<DiscoverySession> {
     let row = sqlx::query(&format!(
         "INSERT INTO discovery_sessions \
@@ -66,29 +70,30 @@ pub async fn create(
          VALUES ($1, $2, $3, $4, 'capturing', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) \
          RETURNING {COLUMNS}"
     ))
-    .bind(id.as_uuid())
+    .bind(insert.id.as_uuid())
     .bind(team.id.as_uuid())
     .bind(team.org_id.as_uuid())
-    .bind(name)
-    .bind(spec.listener_port)
-    .bind(&spec.upstream_host)
-    .bind(spec.upstream_port)
-    .bind(spec.upstream_tls)
-    .bind(validated_upstream_ip)
-    .bind(spec.upstream_port)
-    .bind(cluster_name)
-    .bind(route_config_name)
-    .bind(listener_name)
-    .bind(spec.target_sample_count)
-    .bind(spec.max_duration_seconds)
-    .bind(spec.max_bytes)
-    .bind(spec.max_distinct_paths)
+    .bind(insert.name)
+    .bind(insert.spec.listener_port)
+    .bind(&insert.spec.upstream_host)
+    .bind(insert.spec.upstream_port)
+    .bind(insert.spec.upstream_tls)
+    .bind(insert.validated_upstream_ip)
+    .bind(insert.spec.upstream_port)
+    .bind(insert.cluster_name)
+    .bind(insert.route_config_name)
+    .bind(insert.listener_name)
+    .bind(insert.spec.target_sample_count)
+    .bind(insert.spec.max_duration_seconds)
+    .bind(insert.spec.max_bytes)
+    .bind(insert.spec.max_distinct_paths)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => {
             DomainError::conflict(format!(
-                "discovery session \"{name}\" already exists in this team"
+                "discovery session \"{}\" already exists in this team",
+                insert.name
             ))
         }
         _ => DomainError::internal(format!("create discovery session: {e}")),

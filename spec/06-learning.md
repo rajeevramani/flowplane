@@ -802,6 +802,10 @@ Denied by default, but allowlistable:
 - other operator-owned internal CIDRs explicitly added to the org/team-scoped discovery upstream
   allowlist.
 
+S9c lifecycle implementation is public-destination-only until that org/team-scoped admin allowlist
+exists. It must continue to fail closed for private/internal destinations rather than silently
+allowing them.
+
 The discovery forwarder is a pass-through proxy for the single validated upstream. It must not
 follow upstream 3xx redirects or open a second outbound connection based on response headers.
 

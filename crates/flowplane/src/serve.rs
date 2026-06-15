@@ -154,6 +154,8 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
+    let discovery_forwarding_policy =
+        fp_core::services::discovery::DiscoveryForwardingPolicy::from_server_config(&config).await;
     let state = fp_api::AppState {
         pool,
         prometheus,
@@ -167,6 +169,7 @@ pub async fn run() -> anyhow::Result<()> {
             max_lag: 0,
             failed: xds_consumer_failed,
         }),
+        discovery_forwarding_policy,
     };
     let router = fp_api::build_router(state);
 
