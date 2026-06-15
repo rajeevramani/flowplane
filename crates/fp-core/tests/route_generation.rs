@@ -147,6 +147,53 @@ async fn route_plan_apply_fails_on_intervening_conflict() {
 }
 
 #[tokio::test]
+async fn route_plan_create_rejects_unreviewed_spec() {
+    let Some(w) = world().await else { return };
+    let spec_id = learned_spec(&w, &unique("learned-api"), None).await;
+
+    let err = route_generation::create_plan(
+        &w.pool,
+        &w.admin,
+        w.team,
+        route_generation::CreateRoutePlanInput {
+            spec_version_id: spec_id,
+            listener_port: 19193,
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("unreviewed spec cannot create a route plan");
+
+    assert_eq!(err.code, ErrorCode::Conflict);
+}
+
+#[tokio::test]
+async fn route_plan_create_rejects_rejected_spec() {
+    let Some(w) = world().await else { return };
+    let spec_id = learned_spec(
+        &w,
+        &unique("learned-api"),
+        Some(SpecReviewDecision::Rejected),
+    )
+    .await;
+
+    let err = route_generation::create_plan(
+        &w.pool,
+        &w.admin,
+        w.team,
+        route_generation::CreateRoutePlanInput {
+            spec_version_id: spec_id,
+            listener_port: 19194,
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("rejected spec cannot create a route plan");
+
+    assert_eq!(err.code, ErrorCode::Conflict);
+}
+
+#[tokio::test]
 async fn route_plan_apply_rechecks_review_state() {
     let Some(w) = world().await else { return };
     let api_name = unique("learned-api");
@@ -157,7 +204,7 @@ async fn route_plan_apply_rechecks_review_state() {
         w.team,
         route_generation::CreateRoutePlanInput {
             spec_version_id: spec_id,
-            listener_port: 19193,
+            listener_port: 19195,
         },
         RequestId::generate(),
     )
@@ -188,6 +235,14 @@ async fn route_plan_apply_rechecks_review_state() {
 }
 
 async fn reviewed_spec(w: &World, api_name: &str) -> fp_domain::SpecVersionId {
+    learned_spec(w, api_name, Some(SpecReviewDecision::Reviewed)).await
+}
+
+async fn learned_spec(
+    w: &World,
+    api_name: &str,
+    decision: Option<SpecReviewDecision>,
+) -> fp_domain::SpecVersionId {
     let mut tx = w.pool.begin().await.expect("tx");
     let api = api_lifecycle::create_api_definition(
         &mut tx,
@@ -226,21 +281,23 @@ async fn reviewed_spec(w: &World, api_name: &str) -> fp_domain::SpecVersionId {
     )
     .await
     .expect("spec");
-    api_lifecycle::append_spec_review_event(
-        &mut tx,
-        w.team,
-        api_lifecycle::SpecReviewEventInsert {
-            api_id: api.id,
-            spec_version_id: spec.id,
-            decision: SpecReviewDecision::Reviewed,
-            actor_type: "user",
-            actor_id: None,
-            reason: "test",
-            metadata: serde_json::json!({}),
-        },
-    )
-    .await
-    .expect("review");
+    if let Some(decision) = decision {
+        api_lifecycle::append_spec_review_event(
+            &mut tx,
+            w.team,
+            api_lifecycle::SpecReviewEventInsert {
+                api_id: api.id,
+                spec_version_id: spec.id,
+                decision,
+                actor_type: "user",
+                actor_id: None,
+                reason: "test",
+                metadata: serde_json::json!({}),
+            },
+        )
+        .await
+        .expect("review");
+    }
     tx.commit().await.expect("commit");
     spec.id
 }
