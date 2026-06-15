@@ -61,12 +61,12 @@ mechanism is what makes token-aware rate limiting possible without the rate limi
 anything about LLMs. (Maps to Envoy's `apply_on_stream_done` / `hits_addend` rate-limit
 features, Envoy ≥ 1.33.)
 
-**Verdicts:**
+**Verdicts (updated by D-018):**
 
-- *Generic metadata-driven rate-limit cost* — **borrow**. Flowplane already ships
-  `flowplane-rls`; extending its descriptor model with `cost.response.from = metadata(ns,
-  key)` reuses everything we have and keeps the RLS LLM-agnostic. This is the single most
-  important mechanism in this survey.
+- *Generic metadata-driven rate-limit cost* — **adapt later**. The mechanism is still the right
+  long-term Envoy/RLS shape, but Flowplane v2 does not currently ship a `flowplane-rls`
+  cost-settlement service. S10 v1.0 settles through the AI processor and an atomic Postgres
+  counter; external RLS remains future substrate work.
 - *First-class `Backend` resource (FQDN/IP endpoints, app protocol, fallback flag)* —
   **adapt**. Flowplane's `Cluster` entity already plays this role; add the `fallback`/priority
   notion to cluster endpoints rather than introducing a new entity.
@@ -296,12 +296,13 @@ arrive. Gzip-encoded streams are handled by buffering compressed bytes and re-de
 from the start each chunk (`processor_impl.go: decodeStreamingContent`) — a known cost of
 doing this in ExtProc.
 
-**Verdicts:**
+**Verdicts (updated by D-018):**
 
 - *Unified OpenAI-compatible (+ native Anthropic) ingress with a (in,out) translator
-  matrix* — **borrow** the model. For Flowplane in Rust: a `Translator` trait with exactly
-  this four-method shape, `ResponseBody` returning `TokenUsage`. Start with OpenAI ingress;
-  add Anthropic ingress early (it's what MCP-centric agent clients increasingly speak).
+  matrix* — **adapt narrowly**. Flowplane borrows the `Translator` trait shape and the
+  `ResponseBody` → `TokenUsage` contract, but S10 v1.0 names OpenAI chat-completions as the
+  canonical IR and does not build the native Anthropic/Bedrock/Vertex matrix preemptively.
+  Anthropic ingress is translator #1 only when a real client need pulls it into scope.
 - *`prefix` field to absorb the OpenAI-compatible long tail* — **borrow** verbatim; it
   converts "supporting 12 more providers" into one config field.
 - *Doing translation in ExtProc as a separate process* — **adapt**. AIGW is forced into
@@ -313,6 +314,14 @@ doing this in ExtProc.
 - *Forcing body buffering for translation on every AI request* — accept as inherent;
   mitigations (pass-through when ingress==egress schema and no mutation needed) are visible
   in AIGW's passthrough processor **[src]** — **borrow** that fast path.
+
+**D-018 ratification:** OpenAI chat-completions is the S10 v1.0 hub schema. Translators form a
+star around that IR and are demand-pulled, not pre-built. OpenAI-dialect-in plus
+OpenAI-dialect-out needs no translator code: passthrough, credential swap, optional prefix
+rewrite, and OpenAI-shaped usage parsing cover OpenAI, Azure-style OpenAI endpoints, Groq,
+Grok, Together, Fireworks, and OpenAI-mode self-hosted runtimes. AIGW's Go `extproc` is not a
+Flowplane data-path dependency; it remains useful as a golden-fixture generator for future
+translator parity tests.
 
 ### 2.3 Credential management
 
@@ -348,11 +357,10 @@ doing this in ExtProc.
   (backends incl. Vault, encrypted at rest, audited). Add `expires_at` + `rotate_after` to
   the secret model.
 - *Secrets embedded literally in pushed filter config* — **reject**. Flowplane has SDS and
-  an authenticated mTLS channel to its own data-plane services; AI credentials should be
-  delivered out-of-band of the config snapshot (SDS-style or fetched by the AI ExtProc over
-  its authenticated channel with in-memory caching), never serialized into config artifacts.
-  This is a place to be *better* than prior art, and it matters for the team-tenancy story
-  (credential values never appear in anything a team-scoped reader can dump).
+  an authenticated mTLS channel to its own data-plane services; for S10 v1.0 the AI processor
+  fetches referenced provider credentials over that authenticated channel and keeps a bounded
+  in-memory cache so failover can re-sign per selected backend. Credential values are never
+  serialized into config artifacts, snapshots, logs, usage rows, or route-generation plans.
 
 ### 2.4 Token-aware rate limiting, cost, and budgets
 
@@ -402,12 +410,13 @@ backends, never rejects, and writes `quotaModeViolations` into dynamic metadata;
 ExtProc then picks the highest-priority backend with remaining quota (PT-vs-on-demand
 spillover) — quota-exhaustion failover decided *upfront*, not by retry.
 
-**Verdicts:**
+**Verdicts (updated by D-018):**
 
-- *Response-body-derived usage → dynamic metadata → generic rate-limit cost* — **borrow**
-  wholesale. Flowplane implementation: AI ExtProc emits usage; `flowplane-rls` grows
-  `cost.response.from_metadata` descriptors. The decomposition (LLM knowledge in the filter,
-  budget math in the RLS) is exactly right.
+- *Response-body-derived usage → dynamic metadata → generic rate-limit cost* — **adapt the
+  metering idea, not the substrate**. Flowplane v2 does not yet ship `flowplane-rls`, Redis
+  descriptors, or response-metadata cost settlement. S10 v1.0 keeps LLM knowledge in the AI
+  processor, but settles budgets through an atomic Postgres-backed counter/read model until an
+  external RLS path is explicitly sized.
 - *Forcing `include_usage` on streams* — **borrow**; without it streaming traffic silently
   escapes metering.
 - *Token-type vocabulary incl. cached/cache-creation/reasoning + CEL cost expressions* —
@@ -415,15 +424,15 @@ spillover) — quota-exhaustion failover decided *upfront*, not by retry.
   weighted-sum form (`Σ wᵢ·tokenᵢ`, weights per model/backend) which covers every CEL example
   AIGW ships, and add expressions later. Price-per-model tables (see LiteLLM §3.1) fill the
   same role with less machinery.
-- *Sliding-window quotas with `shadowMode`* — **borrow** shadow mode (perfect fit for
-  Flowplane's approval/dry-run culture); window mechanics live in flowplane-rls.
+- *Sliding-window quotas with `shadowMode`* — **adapt**. S10 v1.0 uses fixed windows and
+  `shadow` mode first; sliding windows can follow with a future counter substrate.
 - *Check-then-settle budget semantics (request charges 0, response settles actuals)* —
-  **borrow**, and document the overdraft property honestly. Optionally add an estimated
-  pre-charge (request-size heuristic) reconciled at settle time — none of the surveyed
-  gateways do this; cheap differentiator for hard budget caps.
+  **borrow**, and document the overdraft property honestly. S10 pins bounded overdraft to the
+  request-start fixed window and requires concurrent settlement tests against the same team's
+  budget from multiple processor instances.
 - *Tenancy by caller-set header* — **reject**. Flowplane derives the descriptor from
   authenticated identity (team/token), not a spoofable header; budgets become first-class
-  team/principal-scoped records in Postgres with the RLS enforcing them.
+  team/principal-scoped records in Postgres with the AI processor settling them.
 - *Quota-aware upfront routing (QuotaMode)* — **adapt later**: v2 ships priority+retry
   failover first; the "ask RLS about all candidates, route to first with budget" pattern is
   the right design for provisioned-throughput spillover when needed.
@@ -617,7 +626,7 @@ than to AIGW, but with real authn and an audited Postgres ledger underneath.
 
 | Idea | Source | Verdict | Rationale |
 |---|---|---|---|
-| Metadata-driven rate-limit cost (`cost.response.from: Metadata`) | EG `ratelimit_types.go` [src] | **Borrow** | Token budgets without teaching the RLS about LLMs; extends flowplane-rls cleanly |
+| Metadata-driven rate-limit cost (`cost.response.from: Metadata`) | EG `ratelimit_types.go` [src] | **Adapt later** | Right long-term RLS shape; S10 v1.0 uses AI-processor settlement + atomic Postgres counters |
 | Explicit IR between domain model and Envoy protobuf | EG `internal/ir` [src] | **Borrow** | Testable seam; lets AI subsystem inject config without special-casing core builders |
 | Reactive watchable-map pipeline | EG `internal/message` [src] | **Adapt** | Keep staged pure functions + dirty-set rebuild; skip pub/sub machinery |
 | Status conditions: Accepted / Programmed / ResolvedRefs | EG status pkg [src] | **Adapt** | Three-condition core as Postgres-backed resource status; skip ancestor matrix |
@@ -627,7 +636,7 @@ than to AIGW, but with real authn and an audited Postgres ledger underneath.
 | Route / backend / security-policy resource split | AIGW API [src] | **Borrow** | Credentials as separate attachable, rotatable objects |
 | Model-from-body → routing header (`x-ai-eg-model`) | AIGW [src] | **Borrow** | Model routing via ordinary route matching |
 | `modelNameOverride` + weight + priority per backendRef | AIGW [src] | **Borrow** | Minimal complete canary/AB/failover/model-fallback vocabulary |
-| (ingress,egress) translator matrix + `prefix` for OpenAI-compatibles | AIGW translator [src/docs] | **Borrow** | Few real translators + one field absorbs the provider long tail |
+| OpenAI canonical IR + `prefix` for OpenAI-compatibles | AIGW translator [src/docs] + D-018 | **Adapt** | Passthrough covers the v1.0 provider path; non-OpenAI translators are demand-pulled |
 | Translator returns TokenUsage from ResponseBody (incl. SSE) | AIGW [src] | **Borrow** | Metering as a byproduct of translation, one body pass |
 | Force `stream_options.include_usage` on streams | AIGW [src] | **Borrow** | Streaming must not escape metering |
 | Token-type vocabulary incl. cached/cache-creation/reasoning | AIGW [src] | **Borrow** | Matches real provider billing models |
@@ -637,7 +646,7 @@ than to AIGW, but with real authn and an audited Postgres ledger underneath.
 | Tenancy via `x-tenant-id` header | AIGW examples [src] | **Reject** | Derive descriptors from authenticated team/principal identity |
 | Secrets literal in pushed filter config | AIGW filterapi [src] | **Reject** | Deliver via SDS-style authenticated channel; never in config artifacts |
 | Credential rotation w/ pre-expiry window + expiry metadata | AIGW rotators [src] | **Borrow** | Maps onto Flowplane secrets subsystem |
-| Retry re-translation/re-signing per newly selected backend | AIGW extproc [src] | **Borrow** | Cross-provider fallback is broken without it |
+| Retry re-signing per newly selected backend | AIGW extproc [src] | **Borrow** | Required for failover; cross-dialect re-translation is demand-pulled with the first non-OpenAI translator |
 | `numAttemptsPerPriority` + retriable-status-codes failover | EG BTP / AIGW example [src] | **Borrow** | Clean tiered-failover semantics on existing Envoy priorities |
 | GenAI OTel semconv metrics (`gen_ai.*`, TTFT, per-output-token) | AIGW metrics [src] | **Borrow** | Standard names = free dashboards |
 | Version-gated filter config (keep last good on skew) | AIGW filterapi [src] | **Borrow** | Rolling-upgrade safety for the AI filter |

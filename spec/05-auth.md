@@ -430,11 +430,23 @@ Valid resource/action pairs are a **code constant** (`scope_registry.rs::VALID_G
 ```
 clusters/routes/listeners/filters/secrets/dataplanes/custom-wasm-filters/agents:
     read create update delete
+ai-providers/ai-routes/ai-budgets:
+    read create update delete
+ai-usage:
+    read
 learning-sessions: read create execute delete
 aggregated-schemas: read execute
 proxy-certificates: read create delete
 reports/audit/stats: read
 ```
+
+S10 AI gateway resources are tenant resources. `AiProvider`, `AiRoute`, and `AiBudget` CRUD
+uses the `ai-providers`, `ai-routes`, and `ai-budgets` grants above. `AiUsage` is read-only:
+usage rows are append-only system events, not caller-created resources, and `ai-usage:read`
+must filter by the caller's authorized team before aggregating token counts, model names,
+provider names, or budget status. Creating/updating an `AiProvider` validates that the
+referenced `Secret` belongs to the same team and that the caller can read/reference that secret;
+deleting an AI resource follows the same dependency-blocking pattern as gateway resources.
 
 Scope-string grammar (for DCR scope parsing and validation):
 `{resource}:{action}` · `team:{name}:{resource}:{action}` · `team:{name}:*:*` ·

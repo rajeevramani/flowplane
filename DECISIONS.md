@@ -338,3 +338,45 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   gateway APIs all produce or update `ApiDefinition`/`SpecVersion` records. MCP tools are a
   generated projection of the published spec version, not manually managed schema copies.
 - **Status:** decided for S8 (founder direction, 2026-06-13).
+
+## D-018: S10 AI gateway uses OpenAI chat-completions as the v1.0 IR
+
+- **Context:** Earlier S10 notes borrowed AI Gateway's translator matrix too directly:
+  OpenAI, Anthropic, Bedrock, Vertex, and OpenAI-compatible providers appeared to be parallel
+  day-one translator work, and token budgets were described as using an existing
+  `flowplane-rls`-style cost path. In v2, no RLS/cost-settlement service exists yet, and most
+  target providers already expose an OpenAI-compatible chat-completions surface.
+- **Decision:** S10 v1.0 standardizes on OpenAI chat-completions as the canonical request,
+  response, streaming, and usage shape. `openai` and `openai-compatible` providers are the
+  critical path and use passthrough plus credential/header/prefix handling. Native Anthropic,
+  Bedrock, Vertex, and other dialect translators are demand-pulled behind a `Translator`
+  trait when a user need appears; they are not required for the v1.0 exit. The Go AI Gateway
+  ExtProc is prior art and a golden-fixture generator, not a Flowplane runtime dependency.
+- **Credential delivery:** AI provider records reference S6 `Secret`s; secret values are never
+  serialized into xDS snapshots, route config, logs, usage rows, or plan artifacts. The AI
+  processor fetches the credential over Flowplane's authenticated control-plane/data-plane
+  channel and keeps a bounded in-memory cache so failover can re-sign with the selected
+  backend's credential. SDS for AI credentials is deferred until there is a concrete need.
+- **Gateway processor:** The AI path uses the same Flowplane-owned ExtProc infrastructure as
+  learning/discovery, with an explicit upstream-position AI processing stage. If capture is
+  also active, the filter chain must define ordering and buffering so request bodies are read
+  once and neither processor inherits the other's size limits by accident.
+- **Budget enforcement:** S10 does not assume an existing RLS/Redis cost path. The first
+  implementation uses check-then-settle in the AI processor/control-plane path with the
+  authoritative counter in Postgres, updated atomically so multiple Envoy/processor instances
+  cannot double-spend a team's bucket. External Envoy RLS with metadata costs remains a future
+  substrate only if explicitly sized.
+- **Budget semantics:** Budgets use fixed windows and fixed weighted token units
+  (`sum(weight[token_type] * tokens[token_type])`) before CEL or price tables. A request is
+  admitted when the relevant enforcing budget has at least one unit remaining, then settled
+  after provider usage is known; bounded overdraft on the last in-flight request is accepted
+  and charged to the request-start window. Shadow budgets meter without rejection. Enforcing
+  routes require usage-capable backends; missing or unparseable terminal usage records a
+  settlement failure and fails closed for subsequent budgeted requests until resolved.
+- **Streaming and failover:** The processor may force `stream_options.include_usage=true` for
+  OpenAI streams. If it injected that option, it must strip the synthetic terminal usage chunk
+  from the client-facing stream while still using it for settlement. Failover is allowed only
+  before the first response byte; once streaming starts, backend failure is terminal for that
+  request and partial usage is attributed to the backend actually used.
+- **Status:** decided for S10a (2026-06-15). This overrides the broader translator-matrix and
+  "existing RLS cost path" wording in older spec/09 and spec/11 text.
