@@ -7,6 +7,7 @@
 pub mod api_lifecycle_api;
 pub mod auth;
 pub mod dataplanes_api;
+pub mod discovery_api;
 pub mod error;
 pub mod expose_api;
 pub mod identity_api;

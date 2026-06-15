@@ -34,17 +34,40 @@ pub async fn create(
     name: &str,
     spec: &ClusterSpec,
 ) -> DomainResult<Cluster> {
+    create_with_owner(tx, team, name, spec, "user", None).await
+}
+
+pub async fn create_discovery_owned(
+    tx: &mut Transaction<'_, Postgres>,
+    team: fp_domain::authz::TeamRef,
+    owner_id: Uuid,
+    name: &str,
+    spec: &ClusterSpec,
+) -> DomainResult<Cluster> {
+    create_with_owner(tx, team, name, spec, "discovery", Some(owner_id)).await
+}
+
+async fn create_with_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    team: fp_domain::authz::TeamRef,
+    name: &str,
+    spec: &ClusterSpec,
+    owner_kind: &str,
+    owner_id: Option<Uuid>,
+) -> DomainResult<Cluster> {
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize cluster spec: {e}")))?;
     let row = sqlx::query(&format!(
-        "INSERT INTO clusters (id, team_id, org_id, name, spec) \
-         VALUES ($1, $2, $3, $4, $5) RETURNING {COLUMNS}"
+        "INSERT INTO clusters (id, team_id, org_id, name, spec, owner_kind, owner_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {COLUMNS}"
     ))
     .bind(ClusterId::generate().as_uuid())
     .bind(team.id.as_uuid())
     .bind(team.org_id.as_uuid())
     .bind(name)
     .bind(spec_json)
+    .bind(owner_kind)
+    .bind(owner_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| match &e {
@@ -64,7 +87,7 @@ pub async fn get(pool: &PgPool, scope: TeamScope, name: &str) -> DomainResult<Op
         ));
     };
     let row = sqlx::query(&format!(
-        "SELECT {COLUMNS} FROM clusters WHERE team_id = $1 AND name = $2"
+        "SELECT {COLUMNS} FROM clusters WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'"
     ))
     .bind(team_id.as_uuid())
     .bind(name)
@@ -86,7 +109,7 @@ pub async fn list(
         ));
     };
     let rows = sqlx::query(&format!(
-        "SELECT {COLUMNS} FROM clusters WHERE team_id = $1 ORDER BY name LIMIT $2 OFFSET $3"
+        "SELECT {COLUMNS} FROM clusters WHERE team_id = $1 AND owner_kind = 'user' ORDER BY name LIMIT $2 OFFSET $3"
     ))
     .bind(team_id.as_uuid())
     .bind(limit.clamp(1, 500))
@@ -94,11 +117,13 @@ pub async fn list(
     .fetch_all(pool)
     .await
     .map_err(|e| DomainError::internal(format!("list clusters: {e}")))?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM clusters WHERE team_id = $1")
-        .bind(team_id.as_uuid())
-        .fetch_one(pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("count clusters: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM clusters WHERE team_id = $1 AND owner_kind = 'user'",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count clusters: {e}")))?;
     rows.iter()
         .map(from_row)
         .collect::<DomainResult<Vec<_>>>()
@@ -117,7 +142,7 @@ pub async fn update(
         .map_err(|e| DomainError::internal(format!("serialize cluster spec: {e}")))?;
     let row = sqlx::query(&format!(
         "UPDATE clusters SET spec = $1, version = version + 1, updated_at = now() \
-         WHERE team_id = $2 AND name = $3 AND version = $4 RETURNING {COLUMNS}"
+         WHERE team_id = $2 AND name = $3 AND version = $4 AND owner_kind = 'user' RETURNING {COLUMNS}"
     ))
     .bind(spec_json)
     .bind(team_id.as_uuid())
@@ -132,7 +157,7 @@ pub async fn update(
         None => {
             // Disambiguate: gone vs revision raced.
             let current: Option<i64> =
-                sqlx::query_scalar("SELECT version FROM clusters WHERE team_id = $1 AND name = $2")
+                sqlx::query_scalar("SELECT version FROM clusters WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'")
                     .bind(team_id.as_uuid())
                     .bind(name)
                     .fetch_optional(&mut **tx)
@@ -159,8 +184,14 @@ pub async fn delete(
     name: &str,
     expected_version: i64,
 ) -> DomainResult<ClusterId> {
+    if is_discovery_owned(tx, team_id, name).await? {
+        return Err(DomainError::conflict(format!(
+            "cluster \"{name}\" is owned by a discovery session"
+        ))
+        .with_hint("stop the discovery session to remove it"));
+    }
     let row = sqlx::query(
-        "DELETE FROM clusters WHERE team_id = $1 AND name = $2 AND version = $3 RETURNING id",
+        "DELETE FROM clusters WHERE team_id = $1 AND name = $2 AND version = $3 AND owner_kind = 'user' RETURNING id",
     )
     .bind(team_id.as_uuid())
     .bind(name)
@@ -172,7 +203,7 @@ pub async fn delete(
         Some(row) => Ok(ClusterId::from(row.get::<Uuid, _>("id"))),
         None => {
             let current: Option<i64> =
-                sqlx::query_scalar("SELECT version FROM clusters WHERE team_id = $1 AND name = $2")
+                sqlx::query_scalar("SELECT version FROM clusters WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'")
                     .bind(team_id.as_uuid())
                     .bind(name)
                     .fetch_optional(&mut **tx)
@@ -190,9 +221,44 @@ pub async fn delete(
     }
 }
 
+async fn is_discovery_owned(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<bool> {
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT owner_kind FROM clusters WHERE team_id = $1 AND name = $2")
+            .bind(team_id.as_uuid())
+            .bind(name)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("read cluster owner: {e}")))?;
+    Ok(owner.as_deref() == Some("discovery"))
+}
+
+pub async fn delete_discovery_owned(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    owner_id: Uuid,
+    name: &str,
+) -> DomainResult<Option<ClusterId>> {
+    let row = sqlx::query(
+        "DELETE FROM clusters \
+         WHERE team_id = $1 AND owner_kind = 'discovery' AND owner_id = $2 AND name = $3 \
+         RETURNING id",
+    )
+    .bind(team_id.as_uuid())
+    .bind(owner_id)
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete discovery cluster: {e}")))?;
+    Ok(row.map(|row| ClusterId::from(row.get::<Uuid, _>("id"))))
+}
+
 /// Per-team resource count for quota enforcement (S3.4).
 pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
-    sqlx::query_scalar("SELECT count(*) FROM clusters WHERE team_id = $1")
+    sqlx::query_scalar("SELECT count(*) FROM clusters WHERE team_id = $1 AND owner_kind = 'user'")
         .bind(team_id.as_uuid())
         .fetch_one(pool)
         .await

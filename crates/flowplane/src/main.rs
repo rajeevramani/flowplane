@@ -244,6 +244,18 @@ mod tests {
         Cli::try_parse_from([
             "flowplane",
             "learn",
+            "discover",
+            "start",
+            "public-discovery",
+            "--upstream",
+            "93.184.216.34:80",
+            "--listener-port",
+            "19080",
+        ])
+        .expect("learn discover start form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "learn",
             "start",
             "catalog-capture",
             "--api",

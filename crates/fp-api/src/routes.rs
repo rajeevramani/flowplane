@@ -46,6 +46,7 @@ impl utoipa::Modify for SecurityAddon {
 fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
     use crate::api_lifecycle_api;
     use crate::dataplanes_api;
+    use crate::discovery_api;
     use crate::identity_api;
     use crate::learning_api;
     use crate::resources::{clusters, listeners, route_configs};
@@ -112,6 +113,14 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         ))
         .routes(routes!(learning_api::stop_learning_session))
         .routes(routes!(learning_api::create_learned_spec_version))
+        .routes(routes!(
+            discovery_api::list_discovery_sessions,
+            discovery_api::start_discovery_session
+        ))
+        .routes(routes!(
+            discovery_api::get_discovery_session,
+            discovery_api::stop_discovery_session
+        ))
         .routes(routes!(
             crate::expose_api::expose,
             crate::expose_api::unexpose

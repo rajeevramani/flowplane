@@ -139,6 +139,10 @@ domain_id!(
     CaptureSessionId
 );
 domain_id!(
+    /// Identifies one traffic-first discovery session.
+    DiscoverySessionId
+);
+domain_id!(
     /// Identifies one accepted raw observation for a learning capture session.
     RawObservationId
 );
