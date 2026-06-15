@@ -570,8 +570,19 @@ async fn create_materialized(
         .zip(spec.backends.iter())
         .zip(names.cluster_names.iter())
     {
-        let cluster_spec = provider_cluster_spec(provider)?;
-        clusters::create_cluster(pool, ctx, team, cluster_name, cluster_spec, request_id).await?;
+        let cluster_spec = match provider_cluster_spec(provider) {
+            Ok(spec) => spec,
+            Err(err) => {
+                cleanup_materialized(pool, ctx, team, names, request_id).await;
+                return Err(err);
+            }
+        };
+        if let Err(err) =
+            clusters::create_cluster(pool, ctx, team, cluster_name, cluster_spec, request_id).await
+        {
+            cleanup_materialized(pool, ctx, team, names, request_id).await;
+            return Err(err);
+        }
         if let Some(model) = &backend.model_override {
             tracing::debug!(
                 cluster = cluster_name,
