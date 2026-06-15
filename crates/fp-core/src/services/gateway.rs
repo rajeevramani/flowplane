@@ -7,7 +7,7 @@ use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::gateway::listener::{Listener, ListenerSpec};
 use fp_domain::gateway::route_config::{RouteConfig, RouteConfigSpec};
-use fp_domain::{validate_name, DomainResult, RequestId};
+use fp_domain::{validate_name, DomainError, DomainResult, RequestId};
 use fp_storage::repos::{audit, gateway};
 use sqlx::PgPool;
 
@@ -275,7 +275,7 @@ pub async fn create_listener(
         request_id,
     )
     .await?;
-    validate_name(name)?;
+    validate_user_listener_name(name)?;
     spec.validate()?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Listeners).await?;
     let mut tx = pool
@@ -457,5 +457,15 @@ pub async fn delete_listener(
     tx.commit()
         .await
         .map_err(crate::services::db_err("delete listener: commit"))?;
+    Ok(())
+}
+
+fn validate_user_listener_name(name: &str) -> DomainResult<()> {
+    validate_name(name)?;
+    if name.starts_with("ai-") {
+        return Err(DomainError::validation(
+            "listener names starting with \"ai-\" are reserved for AI routes",
+        ));
+    }
     Ok(())
 }

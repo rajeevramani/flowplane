@@ -1234,6 +1234,7 @@ async fn secret_values_are_write_only_over_http() {
         .await
         .expect("member");
 
+    let query_pool = pool.clone();
     let app = fp_api::build_router(fp_api::AppState {
         pool,
         prometheus: PrometheusBuilder::new().build_recorder().handle(),
@@ -1441,7 +1442,7 @@ async fn secret_values_are_write_only_over_http() {
         ))
         .await
         .expect("get materialized listener");
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let response = app
         .clone()
@@ -1455,9 +1456,16 @@ async fn secret_values_are_write_only_over_http() {
         ))
         .await
         .expect("get materialized AI route config");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json_of(response).await;
-    let ai_route_rules = body["spec"]["virtual_hosts"][0]["routes"]
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let materialized_route_config: serde_json::Value = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT spec FROM route_configs WHERE team_id = $1 AND name = $2 AND owner_kind = 'ai'",
+    )
+    .bind(team.id.as_uuid())
+    .bind(format!("ai-{route_name}-routes"))
+    .fetch_one(&query_pool)
+    .await
+    .expect("managed AI route config");
+    let ai_route_rules = materialized_route_config["virtual_hosts"][0]["routes"]
         .as_array()
         .expect("AI routes");
     let fallback = ai_route_rules

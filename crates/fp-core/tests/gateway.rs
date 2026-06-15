@@ -451,6 +451,57 @@ mod referential {
     }
 
     #[tokio::test]
+    async fn manual_listener_names_cannot_use_ai_prefix() {
+        let Some(w) = world().await else { return };
+        let rid = RequestId::generate;
+
+        let cluster_name = unique("upstream");
+        svc::create_cluster(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &cluster_name,
+            spec("10.0.0.9"),
+            rid(),
+        )
+        .await
+        .expect("cluster");
+        let rc_name = unique("routes");
+        gw::create_route_config(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &rc_name,
+            rc_spec(&cluster_name),
+            rid(),
+        )
+        .await
+        .expect("route config");
+
+        let err = gw::create_listener(
+            &w.pool,
+            &w.admin,
+            w.team,
+            "ai-manual-listener",
+            ListenerSpec {
+                address: "0.0.0.0".into(),
+                port: 18444,
+                protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
+                route_config: Some(rc_name),
+                http_filters: Vec::new(),
+                access_logs: Vec::new(),
+                tls_context: None,
+            },
+            rid(),
+        )
+        .await
+        .expect_err("ai prefix is reserved");
+
+        assert_eq!(err.code, ErrorCode::ValidationFailed);
+        assert!(err.message.contains("reserved for AI routes"));
+    }
+
+    #[tokio::test]
     async fn port_collisions_within_a_team_conflict() {
         let Some(w) = world().await else { return };
         let rid = RequestId::generate;
