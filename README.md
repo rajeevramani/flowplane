@@ -35,6 +35,13 @@ Run tests for the main binary:
 cargo test -p flowplane
 ```
 
+Run the full suite with PostgreSQL-backed tests enabled:
+
+```bash
+FLOWPLANE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/flowplane_dev \
+  cargo test --workspace --all-features
+```
+
 Run the live Envoy smoke test:
 
 ```bash
