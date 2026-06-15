@@ -784,6 +784,18 @@ fn route_action_proto(
     rule: &fp_domain::gateway::route_config::RouteRule,
 ) -> DomainResult<rt::route::Action> {
     use fp_domain::gateway::route_config::RedirectResponseCode;
+    if let Some(direct) = &rule.action.direct_response {
+        return Ok(rt::route::Action::DirectResponse(
+            rt::DirectResponseAction {
+                status: u32::from(direct.status),
+                body: direct.body.as_ref().map(|body| core::DataSource {
+                    specifier: Some(core::data_source::Specifier::InlineString(body.clone())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ));
+    }
     if let Some(redirect) = &rule.action.redirect {
         let response_code = redirect
             .response_code
@@ -2145,9 +2157,9 @@ mod tests {
         HttpHealthCheckMethod, MaglevPolicy, OutlierDetection, UpstreamProtocol, UpstreamTlsConfig,
     };
     use fp_domain::gateway::route_config::{
-        HeaderMatch, HeaderValueMatch, QueryParameterMatch, QueryValueMatch, RateLimitAction,
-        RateLimitDefinition, RedirectAction, RedirectResponseCode, RetryPolicy, RouteAction,
-        RouteRule, VirtualHost, WeightedClusterTarget,
+        DirectResponseAction, HeaderMatch, HeaderValueMatch, QueryParameterMatch, QueryValueMatch,
+        RateLimitAction, RateLimitDefinition, RedirectAction, RedirectResponseCode, RetryPolicy,
+        RouteAction, RouteRule, VirtualHost, WeightedClusterTarget,
     };
 
     fn route_action(cluster: &str) -> RouteAction {
@@ -2155,6 +2167,7 @@ mod tests {
             cluster: Some(cluster.into()),
             weighted_clusters: None,
             redirect: None,
+            direct_response: None,
             prefix_rewrite: None,
             template_rewrite: None,
             timeout_secs: 15,
@@ -2354,6 +2367,7 @@ mod tests {
                             cluster: Some("c2".into()),
                             weighted_clusters: None,
                             redirect: None,
+                            direct_response: None,
                             prefix_rewrite: Some("/v2".into()),
                             template_rewrite: None,
                             timeout_secs: 30,
@@ -2373,6 +2387,7 @@ mod tests {
                             cluster: Some("c3".into()),
                             weighted_clusters: None,
                             redirect: None,
+                            direct_response: None,
                             prefix_rewrite: None,
                             template_rewrite: Some("/{id}".into()),
                             timeout_secs: 15,
@@ -2411,6 +2426,58 @@ mod tests {
     }
 
     #[test]
+    fn route_config_translates_direct_response_action() {
+        let spec = RouteConfigSpec {
+            virtual_hosts: vec![VirtualHost {
+                name: "default".into(),
+                domains: vec!["*".into()],
+                routes: vec![RouteRule {
+                    name: "no-backend".into(),
+                    matcher: PathMatch::Exact {
+                        path: "/chat".into(),
+                    },
+                    headers: Vec::new(),
+                    query_parameters: Vec::new(),
+                    action: RouteAction {
+                        cluster: None,
+                        weighted_clusters: None,
+                        redirect: None,
+                        direct_response: Some(DirectResponseAction {
+                            status: 400,
+                            body: Some("no backend".into()),
+                        }),
+                        prefix_rewrite: None,
+                        template_rewrite: None,
+                        timeout_secs: 15,
+                        retry_policy: None,
+                        rate_limits: Vec::new(),
+                    },
+                    filter_overrides: Vec::new(),
+                }],
+                rate_limits: Vec::new(),
+                filter_overrides: Vec::new(),
+            }],
+        };
+
+        let proto = route_config_to_proto("ai", &spec).expect("translate");
+        let action = proto.virtual_hosts[0].routes[0]
+            .action
+            .as_ref()
+            .expect("action");
+        let rt::route::Action::DirectResponse(direct) = action else {
+            panic!("expected direct response");
+        };
+        assert_eq!(direct.status, 400);
+        let body = direct.body.as_ref().expect("body");
+        assert_eq!(
+            body.specifier,
+            Some(core::data_source::Specifier::InlineString(
+                "no backend".into()
+            ))
+        );
+    }
+
+    #[test]
     fn route_config_translates_advanced_route_fields() {
         let spec = RouteConfigSpec {
             virtual_hosts: vec![VirtualHost {
@@ -2444,6 +2511,7 @@ mod tests {
                                 },
                             ]),
                             redirect: None,
+                            direct_response: None,
                             prefix_rewrite: None,
                             template_rewrite: None,
                             timeout_secs: 10,
@@ -2490,6 +2558,7 @@ mod tests {
                                 response_code: Some(RedirectResponseCode::PermanentRedirect),
                                 strip_query: true,
                             }),
+                            direct_response: None,
                             prefix_rewrite: None,
                             template_rewrite: None,
                             timeout_secs: 15,
@@ -3399,6 +3468,7 @@ mod type_url_tests {
             cluster: Some(cluster.into()),
             weighted_clusters: None,
             redirect: None,
+            direct_response: None,
             prefix_rewrite: None,
             template_rewrite: None,
             timeout_secs: 15,

@@ -334,6 +334,7 @@ mod referential {
                         cluster: Some(cluster.into()),
                         weighted_clusters: None,
                         redirect: None,
+                        direct_response: None,
                         prefix_rewrite: None,
                         template_rewrite: None,
                         timeout_secs: 15,

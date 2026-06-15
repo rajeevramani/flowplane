@@ -430,6 +430,7 @@ fn openapi_routes(spec: &serde_json::Value, cluster_name: &str) -> DomainResult<
                 cluster: Some(cluster_name.into()),
                 weighted_clusters: None,
                 redirect: None,
+                direct_response: None,
                 prefix_rewrite: None,
                 template_rewrite: None,
                 timeout_secs: 15,

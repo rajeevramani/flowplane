@@ -359,6 +359,7 @@ fn route_config_spec(cluster_name: &str) -> RouteConfigSpec {
                     cluster: Some(cluster_name.into()),
                     weighted_clusters: None,
                     redirect: None,
+                    direct_response: None,
                     prefix_rewrite: None,
                     template_rewrite: None,
                     timeout_secs: 15,

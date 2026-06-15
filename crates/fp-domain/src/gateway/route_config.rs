@@ -92,6 +92,8 @@ pub struct RouteAction {
     pub weighted_clusters: Option<Vec<WeightedClusterTarget>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect: Option<RedirectAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_response: Option<DirectResponseAction>,
     /// Replace the matched prefix. Never with a Template match (v1 rule).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix_rewrite: Option<String>,
@@ -117,6 +119,14 @@ fn default_route_timeout() -> u32 {
 pub struct WeightedClusterTarget {
     pub cluster: String,
     pub weight: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DirectResponseAction {
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -424,10 +434,11 @@ fn validate_action(
 ) -> DomainResult<()> {
     let terminal_actions = usize::from(action.cluster.is_some())
         + usize::from(action.weighted_clusters.is_some())
-        + usize::from(action.redirect.is_some());
+        + usize::from(action.redirect.is_some())
+        + usize::from(action.direct_response.is_some());
     if terminal_actions != 1 {
         return Err(DomainError::validation(format!(
-            "route \"{route_name}\": exactly one of cluster, weighted_clusters, or redirect is required"
+            "route \"{route_name}\": exactly one of cluster, weighted_clusters, redirect, or direct_response is required"
         )));
     }
     if let Some(cluster) = &action.cluster {
@@ -445,6 +456,18 @@ fn validate_action(
         {
             return Err(DomainError::validation(format!(
                 "route \"{route_name}\": redirect cannot combine with route rewrites, retry_policy, or rate_limits"
+            )));
+        }
+    }
+    if let Some(direct) = &action.direct_response {
+        validate_direct_response(direct)?;
+        if action.prefix_rewrite.is_some()
+            || action.template_rewrite.is_some()
+            || action.retry_policy.is_some()
+            || !action.rate_limits.is_empty()
+        {
+            return Err(DomainError::validation(format!(
+                "route \"{route_name}\": direct_response cannot combine with route rewrites, retry_policy, or rate_limits"
             )));
         }
     }
@@ -510,6 +533,20 @@ fn validate_rate_limits(rate_limits: &[RateLimitDefinition]) -> DomainResult<()>
         for action in &limit.actions {
             validate_rate_limit_action(action)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_direct_response(action: &DirectResponseAction) -> DomainResult<()> {
+    if action.status < 100 || action.status > 599 {
+        return Err(DomainError::validation(
+            "direct_response.status must be an HTTP status code",
+        ));
+    }
+    if action.body.as_ref().is_some_and(|body| body.len() > 4096) {
+        return Err(DomainError::validation(
+            "direct_response.body must be <= 4096 bytes",
+        ));
     }
     Ok(())
 }
@@ -676,6 +713,7 @@ mod tests {
                         cluster: Some(cluster.into()),
                         weighted_clusters: None,
                         redirect: None,
+                        direct_response: None,
                         prefix_rewrite: None,
                         template_rewrite: None,
                         timeout_secs: 15,
@@ -885,6 +923,7 @@ mod tests {
                 response_code: None,
                 strip_query: false,
             }),
+            direct_response: None,
             prefix_rewrite: None,
             template_rewrite: None,
             timeout_secs: 15,
@@ -906,6 +945,7 @@ mod tests {
                 response_code: Some(RedirectResponseCode::Found),
                 strip_query: true,
             }),
+            direct_response: None,
             prefix_rewrite: None,
             template_rewrite: None,
             timeout_secs: 15,

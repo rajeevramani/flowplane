@@ -1445,6 +1445,29 @@ async fn secret_values_are_write_only_over_http() {
 
     let response = app
         .clone()
+        .oneshot(request(
+            "GET",
+            &format!(
+                "/api/v1/teams/{}/route-configs/ai-{route_name}-routes",
+                team.name
+            ),
+            None,
+        ))
+        .await
+        .expect("get materialized AI route config");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    let ai_route_rules = body["spec"]["virtual_hosts"][0]["routes"]
+        .as_array()
+        .expect("AI routes");
+    let fallback = ai_route_rules
+        .iter()
+        .find(|route| route["name"] == "no-eligible-backend")
+        .expect("fallback route");
+    assert_eq!(fallback["action"]["direct_response"]["status"], 400);
+
+    let response = app
+        .clone()
         .oneshot(request_with_revision(
             "PATCH",
             &provider,

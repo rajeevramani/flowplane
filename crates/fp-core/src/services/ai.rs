@@ -6,8 +6,8 @@ use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, UpstreamTlsConfig};
 use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec};
 use fp_domain::gateway::route_config::{
-    HeaderMatch, HeaderValueMatch, PathMatch, RouteAction, RouteConfigSpec, RouteRule, VirtualHost,
-    WeightedClusterTarget,
+    DirectResponseAction, HeaderMatch, HeaderValueMatch, PathMatch, RouteAction, RouteConfigSpec,
+    RouteRule, VirtualHost, WeightedClusterTarget,
 };
 use fp_domain::{
     validate_ai_provider_name, validate_ai_route_name, AiProvider, AiProviderSpec, AiRoute,
@@ -758,6 +758,8 @@ fn ai_route_config_spec(
             names,
             prefix_rewrite,
         )?);
+    } else {
+        routes.push(no_eligible_backend_route(&spec.path));
     }
     if routes.is_empty() {
         return Err(DomainError::validation(
@@ -773,6 +775,33 @@ fn ai_route_config_spec(
             filter_overrides: Vec::new(),
         }],
     })
+}
+
+fn no_eligible_backend_route(path: &str) -> RouteRule {
+    RouteRule {
+        name: "no-eligible-backend".into(),
+        matcher: PathMatch::Exact { path: path.into() },
+        headers: Vec::new(),
+        query_parameters: Vec::new(),
+        action: RouteAction {
+            cluster: None,
+            weighted_clusters: None,
+            redirect: None,
+            direct_response: Some(DirectResponseAction {
+                status: 400,
+                body: Some(
+                    r#"{"code":"no_eligible_ai_backend","message":"no eligible AI backend for requested model"}"#
+                        .into(),
+                ),
+            }),
+            prefix_rewrite: None,
+            template_rewrite: None,
+            timeout_secs: DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+            retry_policy: None,
+            rate_limits: Vec::new(),
+        },
+        filter_overrides: Vec::new(),
+    }
 }
 
 fn route_rule(
@@ -804,6 +833,7 @@ fn route_rule(
             cluster,
             weighted_clusters,
             redirect: None,
+            direct_response: None,
             prefix_rewrite,
             template_rewrite: None,
             timeout_secs: DEFAULT_AI_ROUTE_TIMEOUT_SECS,

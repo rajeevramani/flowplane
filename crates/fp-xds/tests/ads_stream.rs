@@ -503,6 +503,7 @@ async fn subscription_change_echoing_last_nonce_is_answered() {
                         cluster: Some(upstream.clone()),
                         weighted_clusters: None,
                         redirect: None,
+                        direct_response: None,
                         prefix_rewrite: None,
                         template_rewrite: None,
                         timeout_secs: 15,
