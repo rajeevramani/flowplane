@@ -214,13 +214,16 @@ musl static binary, image signing + SBOM at release (S12); no telemetry/phone-ho
     stop). Filter chain: capture (team-scoped ALS+ExtProc) + a catch-all **forwarding stage** —
     forwarding is mandatory because response observation (schemas, status codes, auth-scheme
     detection) requires proxying traffic onward, not black-holing it (v1's gap, spec/06 §9).
-  - Two forwarding modes: `--upstream host:port` (recording reverse proxy in front of one
-    service) or host-routed via Envoy dynamic forward proxy (Host/SNI-keyed, runtime DNS) —
-    observations cluster by observed Host into separate candidate ApiDefinitions.
-  - **Open-proxy/SSRF hardening (binding):** discovery refuses to start without `--upstream`
-    or an explicit destination allowlist (`--to-host`/`--to-cidr`); the CP address,
-    loopback, link-local, and cloud-metadata ranges (169.254.0.0/16 incl. 169.254.169.254)
-    are always denied; sessions carry TTL (`--max-duration`) and capture quotas.
+  - S9 starts with `--upstream host:port` (recording reverse proxy in front of one service).
+    Host-routed Envoy dynamic forward proxy mode is deferred until it has an explicit destination
+    allowlist; when it exists, observations cluster by observed Host into separate candidate
+    ApiDefinitions.
+  - **Open-proxy/SSRF hardening (binding):** S9 starts with explicit `--upstream host:port`
+    only. The CP resolves and validates concrete A/AAAA answers, rejects mixed
+    allowed/denied resolution sets, persists a validated dial IP, and the discovery forwarder
+    connects to that IP rather than the hostname. The CP/API, xDS, admin/metrics/diagnostics,
+    RLS, Envoy-admin, Postgres, loopback, link-local, cloud-metadata, and other denied internal
+    destinations are blocked; sessions carry TTL (`--max-duration`) and capture quotas.
   - Operators direct traffic at the discovery port themselves (DNS/LB cutover or client
     config) — Flowplane observes only traffic addressed to it.
   - Learned specs store **upstream provenance** (observed Host, SNI, resolved address, TLS)
