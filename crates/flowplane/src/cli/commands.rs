@@ -185,6 +185,50 @@ pub enum ResourceCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum RouteCommand {
+    List {
+        #[arg(long)]
+        team: Option<String>,
+    },
+    Get {
+        #[arg(long)]
+        team: Option<String>,
+        name: String,
+    },
+    Create {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(short, long)]
+        file: PathBuf,
+    },
+    Update {
+        #[arg(long)]
+        team: Option<String>,
+        name: String,
+        #[arg(short, long)]
+        file: PathBuf,
+    },
+    Delete {
+        #[arg(long)]
+        team: Option<String>,
+        name: String,
+    },
+    Generate {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        from_spec: String,
+        #[arg(long)]
+        listener_port: u16,
+    },
+    Apply {
+        #[arg(long)]
+        team: Option<String>,
+        plan_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum ApiCommand {
     List {
         #[arg(long)]

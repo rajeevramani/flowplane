@@ -17,8 +17,8 @@ use client::RestClient;
 pub use commands::{
     ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneBootstrapMode,
     DataplaneCommand, ExposeCommand, GrantCommand, LearnCommand, LearnDiscoverCommand, OpsCommand,
-    OrgCommand, OrgMemberCommand, ResourceCommand, SecretCommand, StatsCommand, TeamCommand,
-    TeamMemberCommand, UnexposeCommand, XdsCommand,
+    OrgCommand, OrgMemberCommand, ResourceCommand, RouteCommand, SecretCommand, StatsCommand,
+    TeamCommand, TeamMemberCommand, UnexposeCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{
@@ -916,6 +916,75 @@ pub async fn run_expose(global: GlobalOptions, command: ExposeCommand) -> Result
         )
         .await?;
     Ok(())
+}
+
+pub async fn run_route(global: GlobalOptions, command: RouteCommand) -> Result<()> {
+    match command {
+        RouteCommand::List { team } => {
+            run_resource(global, "route-configs", ResourceCommand::List { team }).await
+        }
+        RouteCommand::Get { team, name } => {
+            run_resource(global, "route-configs", ResourceCommand::Get { team, name }).await
+        }
+        RouteCommand::Create { team, file } => {
+            run_resource(
+                global,
+                "route-configs",
+                ResourceCommand::Create { team, file },
+            )
+            .await
+        }
+        RouteCommand::Update { team, name, file } => {
+            run_resource(
+                global,
+                "route-configs",
+                ResourceCommand::Update { team, name, file },
+            )
+            .await
+        }
+        RouteCommand::Delete { team, name } => {
+            run_resource(
+                global,
+                "route-configs",
+                ResourceCommand::Delete { team, name },
+            )
+            .await
+        }
+        RouteCommand::Generate {
+            team,
+            from_spec,
+            listener_port,
+        } => {
+            let client = RestClient::new(global)?;
+            let team = client.team(team)?;
+            client
+                .request_and_render(
+                    reqwest::Method::POST,
+                    &format!("/api/v1/teams/{team}/route-generation-plans"),
+                    Some(json!({
+                        "spec_version_id": from_spec,
+                        "listener_port": listener_port,
+                    })),
+                )
+                .await?;
+            Ok(())
+        }
+        RouteCommand::Apply { team, plan_id } => {
+            let client = RestClient::new(global)?;
+            let team = client.team(team)?;
+            client
+                .request_and_render(
+                    reqwest::Method::POST,
+                    &format!(
+                        "/api/v1/teams/{team}/route-generation-plans/{}/apply",
+                        query_component(&plan_id)
+                    ),
+                    None,
+                )
+                .await?;
+            Ok(())
+        }
+    }
 }
 
 pub async fn run_unexpose(global: GlobalOptions, command: UnexposeCommand) -> Result<()> {
@@ -2071,6 +2140,8 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/listeners/{name}",
         "/api/v1/teams/{team}/route-configs",
         "/api/v1/teams/{team}/route-configs/{name}",
+        "/api/v1/teams/{team}/route-generation-plans",
+        "/api/v1/teams/{team}/route-generation-plans/{plan_id}/apply",
         "/api/v1/teams/{team}/expose",
         "/api/v1/teams/{team}/expose/{name}",
         "/api/v1/teams/{team}/api-definitions",

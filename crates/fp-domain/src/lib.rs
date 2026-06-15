@@ -14,6 +14,7 @@ pub mod gateway;
 pub mod id;
 pub mod identity;
 pub mod learning;
+pub mod route_generation;
 pub mod secret;
 
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
@@ -26,10 +27,13 @@ pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
     AgentId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId, CaptureSessionId,
     ClusterId, DataplaneId, DiscoverySessionId, GrantId, ListenerId, MembershipId, OrgId,
-    ProxyCertificateId, RawObservationId, RequestId, RetentionPolicyId, RouteConfigId, SecretId,
-    SpecVersionId, SpecVersionReviewEventId, TeamId, UserId,
+    ProxyCertificateId, RawObservationId, RequestId, RetentionPolicyId, RouteConfigId,
+    RouteGenerationPlanId, SecretId, SpecVersionId, SpecVersionReviewEventId, TeamId, UserId,
 };
 pub use identity::{
     validate_name, Agent, AgentKind, EntityStatus, OrgRole, Organization, Team, User,
+};
+pub use route_generation::{
+    RouteGenerationPlan, RouteGenerationPlanSpec, RouteGenerationPlanStatus,
 };
 pub use secret::{Secret, SecretSpec, SecretType};

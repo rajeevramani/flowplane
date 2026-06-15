@@ -50,6 +50,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
     use crate::identity_api;
     use crate::learning_api;
     use crate::resources::{clusters, listeners, route_configs};
+    use crate::route_generation_api;
     use crate::secrets_api;
     use utoipa_axum::router::OpenApiRouter;
     use utoipa_axum::routes;
@@ -125,6 +126,8 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             crate::expose_api::expose,
             crate::expose_api::unexpose
         ))
+        .routes(routes!(route_generation_api::create_route_plan))
+        .routes(routes!(route_generation_api::apply_route_plan))
         .routes(routes!(
             dataplanes_api::list_dataplanes,
             dataplanes_api::create_dataplane

@@ -743,6 +743,25 @@ pub async fn get_spec_version_for_api_by_version(
         .ok_or_else(|| DomainError::not_found("spec version", &version.to_string()))
 }
 
+pub async fn get_spec_version_by_id(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    spec_version_id: SpecVersionId,
+) -> DomainResult<SpecVersion> {
+    let row = sqlx::query(&format!(
+        "SELECT {SPEC_COLUMNS} FROM spec_versions WHERE team_id = $1 AND id = $2"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(spec_version_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("get spec version by id: {e}")))?;
+    row.as_ref()
+        .map(spec_from_row)
+        .transpose()?
+        .ok_or_else(|| DomainError::not_found("spec version", &spec_version_id.to_string()))
+}
+
 pub async fn append_spec_review_event(
     tx: &mut Transaction<'_, Postgres>,
     team: TeamRef,

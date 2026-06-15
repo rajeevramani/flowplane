@@ -105,11 +105,12 @@ fn openapi_document_covers_every_registered_operation() {
     // + 7 API lifecycle operations + 6 learning-session operations.
     // + 4 discovery-session operations.
     // + 2 expose shortcut operations.
+    // + 2 route-generation plan operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 68,
-        "expected 68 documented operations, got {operations}"
+        operations, 70,
+        "expected 70 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
