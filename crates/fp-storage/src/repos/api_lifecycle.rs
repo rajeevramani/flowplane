@@ -234,10 +234,13 @@ fn capture_session_from_row(row: &PgRow) -> DomainResult<CaptureSession> {
 }
 
 fn raw_observation_from_row(row: &PgRow) -> RawObservation {
+    let capture_session_id = row
+        .get::<Option<Uuid>, _>("capture_session_id")
+        .map(CaptureSessionId::from);
     RawObservation {
         id: RawObservationId::from(row.get::<Uuid, _>("id")),
         team_id: TeamId::from(row.get::<Uuid, _>("team_id")),
-        capture_session_id: CaptureSessionId::from(row.get::<Uuid, _>("capture_session_id")),
+        capture_session_id,
         request_id: row.get("request_id"),
         method: row.get("method"),
         path: row.get("path"),
@@ -1310,7 +1313,7 @@ pub async fn ingest_raw_observation(
         None => RawObservation {
             id: RawObservationId::generate(),
             team_id: team.id,
-            capture_session_id: session.id,
+            capture_session_id: Some(session.id),
             request_id: input.request_id.clone(),
             method: input.method.clone(),
             path: input.path.clone(),
@@ -1359,7 +1362,7 @@ pub async fn ingest_raw_observation(
           response_body_bytes, metadata_seen, body_seen, observed_at, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, \
                  $16, $17, $18, $19, now() + make_interval(days => $20)) \
-         ON CONFLICT (team_id, capture_session_id, request_id) DO UPDATE SET \
+         ON CONFLICT (team_id, capture_session_id, request_id) WHERE capture_session_id IS NOT NULL DO UPDATE SET \
             response_status = EXCLUDED.response_status, \
             request_headers = EXCLUDED.request_headers, \
             response_headers = EXCLUDED.response_headers, \

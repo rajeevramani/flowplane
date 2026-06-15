@@ -1609,7 +1609,7 @@ mod tests {
         RawObservation {
             id: RawObservationId::generate(),
             team_id,
-            capture_session_id,
+            capture_session_id: Some(capture_session_id),
             request_id: format!("{method}-{path}-{host}"),
             method: method.into(),
             path: path.into(),

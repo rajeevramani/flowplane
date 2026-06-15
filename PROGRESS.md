@@ -445,6 +445,18 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         → zero S8 orphans); existing poisoning tests cover header flood/path explosion, and
         retention tests cover raw observations.
 - [ ] S9 Learning traffic-first
+  - [x] S9a/S9b contract and SSRF design: `spec/06-learning.md` defines explicit-upstream
+        discovery, user-hidden discovery-owned resources, discovery provenance storage,
+        per-host/SNI/upstream clustering, deterministic learned-spec-to-gateway mapping, and
+        resolve/validate/pin/dial SSRF hardening with public-only S9c lifecycle until admin
+        private-CIDR allowlists land.
+  - [x] S9c discovery lifecycle: discovery sessions create xDS-served/user-hidden
+        cluster/route/listener rows, stop tears them down, and REST/CLI user paths cannot
+        list/get/delete those temporary resources.
+  - [x] S9d provenance and candidate clustering: discovery payloads persist in
+        `raw_observations` with `discovery_raw_observations` provenance, then completed
+        discovery sessions split observations by host/SNI/upstream before producing one
+        learned candidate API/spec per cluster.
 - [ ] S10 AI gateway
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag

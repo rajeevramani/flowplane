@@ -17,7 +17,11 @@ pub mod learning;
 pub mod secret;
 
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
-pub use discovery::{DiscoverySession, DiscoverySessionSpec, DiscoverySessionStatus};
+pub use discovery::{
+    cluster_discovery_observations, DiscoveryCandidateCluster, DiscoveryObservation,
+    DiscoveryObservationKey, DiscoveryObservationProvenance, DiscoverySession,
+    DiscoverySessionSpec, DiscoverySessionStatus,
+};
 pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
     AgentId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId, CaptureSessionId,

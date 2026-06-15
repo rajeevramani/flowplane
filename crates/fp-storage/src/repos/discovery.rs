@@ -1,11 +1,14 @@
 //! Discovery session repository.
 
+use fp_domain::api_lifecycle::{ObservationIngest, RawObservation};
 use fp_domain::authz::TeamRef;
 use fp_domain::{
-    DiscoverySession, DiscoverySessionId, DiscoverySessionSpec, DiscoverySessionStatus,
-    DomainError, DomainResult, TeamId,
+    DiscoveryObservation, DiscoveryObservationProvenance, DiscoverySession, DiscoverySessionId,
+    DiscoverySessionSpec, DiscoverySessionStatus, DomainError, DomainResult, RawObservationId,
+    TeamId,
 };
 use sqlx::postgres::PgRow;
+use sqlx::types::Uuid;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 const COLUMNS: &str = "id, team_id, name, status, listener_port, upstream_host, upstream_port, \
@@ -13,6 +16,13 @@ const COLUMNS: &str = "id, team_id, name, status, listener_port, upstream_host, 
     route_config_name, listener_name, target_sample_count, max_duration_seconds, max_bytes, \
     max_distinct_paths, sample_count, byte_count, path_count, drop_count, started_at, \
     completed_at, cancelled_at, updated_at, created_at";
+const RAW_COLUMNS: &str = "ro.id, ro.team_id, ro.capture_session_id, ro.request_id, ro.method, ro.path, \
+    ro.response_status, ro.request_headers, ro.response_headers, ro.request_body, ro.response_body, \
+    ro.request_body_truncated, ro.response_body_truncated, ro.request_body_bytes, \
+    ro.response_body_bytes, ro.metadata_seen, ro.body_seen, ro.observed_at, ro.updated_at, ro.created_at";
+const DISCOVERY_RAW_COLUMNS: &str = "dro.discovery_session_id, dro.discovery_listener_id, \
+    dro.observed_host, dro.observed_sni, dro.route_matched, dro.forwarded_upstream_host, \
+    dro.forwarded_upstream_port, dro.forwarded_upstream_ip, dro.forwarded_upstream_tls";
 
 pub struct DiscoverySessionInsert<'a> {
     pub id: DiscoverySessionId,
@@ -54,6 +64,54 @@ fn from_row(row: &PgRow) -> DomainResult<DiscoverySession> {
         updated_at: row.get("updated_at"),
         created_at: row.get("created_at"),
     })
+}
+
+fn raw_from_row(row: &PgRow) -> RawObservation {
+    RawObservation {
+        id: RawObservationId::from(row.get::<Uuid, _>("id")),
+        team_id: TeamId::from(row.get::<Uuid, _>("team_id")),
+        capture_session_id: row
+            .get::<Option<Uuid>, _>("capture_session_id")
+            .map(fp_domain::CaptureSessionId::from),
+        request_id: row.get("request_id"),
+        method: row.get("method"),
+        path: row.get("path"),
+        response_status: row.get("response_status"),
+        request_headers: row.get("request_headers"),
+        response_headers: row.get("response_headers"),
+        request_body: row.get("request_body"),
+        response_body: row.get("response_body"),
+        request_body_truncated: row.get("request_body_truncated"),
+        response_body_truncated: row.get("response_body_truncated"),
+        request_body_bytes: row.get("request_body_bytes"),
+        response_body_bytes: row.get("response_body_bytes"),
+        metadata_seen: row.get("metadata_seen"),
+        body_seen: row.get("body_seen"),
+        observed_at: row.get("observed_at"),
+        updated_at: row.get("updated_at"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn observation_from_row(row: &PgRow) -> DiscoveryObservation {
+    DiscoveryObservation {
+        raw: raw_from_row(row),
+        provenance: DiscoveryObservationProvenance {
+            discovery_session_id: DiscoverySessionId::from(
+                row.get::<Uuid, _>("discovery_session_id"),
+            ),
+            discovery_listener_id: fp_domain::ListenerId::from(
+                row.get::<Uuid, _>("discovery_listener_id"),
+            ),
+            observed_host: row.get("observed_host"),
+            observed_sni: row.get("observed_sni"),
+            route_matched: row.get("route_matched"),
+            forwarded_upstream_host: row.get("forwarded_upstream_host"),
+            forwarded_upstream_port: row.get("forwarded_upstream_port"),
+            forwarded_upstream_ip: row.get("forwarded_upstream_ip"),
+            forwarded_upstream_tls: row.get("forwarded_upstream_tls"),
+        },
+    }
 }
 
 pub async fn create(
@@ -177,4 +235,187 @@ pub async fn complete(
         Some(row) => from_row(&row),
         None => Err(DomainError::not_found("discovery session", session)),
     }
+}
+
+pub async fn ingest_raw_observation(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    input: &ObservationIngest,
+    provenance: &DiscoveryObservationProvenance,
+) -> DomainResult<DiscoveryObservation> {
+    input.validate()?;
+    let session: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM discovery_sessions WHERE team_id = $1 AND id = $2 AND status = 'capturing' FOR UPDATE",
+    )
+    .bind(team.id.as_uuid())
+    .bind(provenance.discovery_session_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("lock discovery session: {e}")))?;
+    if session.is_none() {
+        return Err(DomainError::not_found(
+            "discovery session",
+            &provenance.discovery_session_id.to_string(),
+        ));
+    }
+
+    let existing = sqlx::query(&format!(
+        "SELECT {RAW_COLUMNS}, {DISCOVERY_RAW_COLUMNS} \
+         FROM discovery_raw_observations dro \
+         JOIN raw_observations ro ON ro.id = dro.raw_observation_id AND ro.team_id = dro.team_id \
+         WHERE dro.team_id = $1 AND dro.discovery_session_id = $2 AND dro.request_id = $3 \
+         FOR UPDATE"
+    ))
+    .bind(team.id.as_uuid())
+    .bind(provenance.discovery_session_id.as_uuid())
+    .bind(&input.request_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("lock discovery raw observation: {e}")))?;
+    if let Some(row) = &existing {
+        let raw = raw_from_row(row);
+        if raw.method != input.method || raw.path != input.path {
+            return Err(DomainError::conflict(
+                "discovery observation request_id was already captured with different request metadata",
+            ));
+        }
+    }
+
+    let id = existing
+        .as_ref()
+        .map(|row| RawObservationId::from(row.get::<Uuid, _>("id")))
+        .unwrap_or_else(RawObservationId::generate);
+    let ttl_days: i32 = 30;
+    sqlx::query(
+        "INSERT INTO raw_observations \
+         (id, team_id, org_id, capture_session_id, request_id, method, path, response_status, \
+          request_headers, response_headers, request_body, response_body, request_body_truncated, \
+          response_body_truncated, request_body_bytes, response_body_bytes, metadata_seen, body_seen, \
+          observed_at, expires_at) \
+         VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
+                 COALESCE($14, 0), COALESCE($15, 0), $16, $17, $18, now() + make_interval(days => $19)) \
+         ON CONFLICT (id) DO UPDATE SET \
+            response_status = EXCLUDED.response_status, request_headers = EXCLUDED.request_headers, \
+            response_headers = EXCLUDED.response_headers, request_body = EXCLUDED.request_body, \
+            response_body = EXCLUDED.response_body, request_body_truncated = EXCLUDED.request_body_truncated, \
+            response_body_truncated = EXCLUDED.response_body_truncated, \
+            request_body_bytes = EXCLUDED.request_body_bytes, response_body_bytes = EXCLUDED.response_body_bytes, \
+            metadata_seen = EXCLUDED.metadata_seen, body_seen = EXCLUDED.body_seen, \
+            observed_at = LEAST(raw_observations.observed_at, EXCLUDED.observed_at), updated_at = now()",
+    )
+    .bind(id.as_uuid())
+    .bind(team.id.as_uuid())
+    .bind(team.org_id.as_uuid())
+    .bind(&input.request_id)
+    .bind(&input.method)
+    .bind(&input.path)
+    .bind(input.response_status)
+    .bind(serde_json::Value::Object(input.request_headers.clone()))
+    .bind(serde_json::Value::Object(input.response_headers.clone()))
+    .bind(&input.request_body)
+    .bind(&input.response_body)
+    .bind(input.request_body_truncated)
+    .bind(input.response_body_truncated)
+    .bind(input.request_body_bytes)
+    .bind(input.response_body_bytes)
+    .bind(input.metadata_seen)
+    .bind(input.body_seen)
+    .bind(input.observed_at)
+    .bind(ttl_days)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("ingest discovery raw observation: {e}")))?;
+    sqlx::query(
+        "INSERT INTO discovery_raw_observations \
+         (raw_observation_id, team_id, request_id, discovery_session_id, discovery_listener_id, \
+          observed_host, observed_sni, route_matched, forwarded_upstream_host, \
+          forwarded_upstream_port, forwarded_upstream_ip, forwarded_upstream_tls) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         ON CONFLICT (team_id, discovery_session_id, request_id) DO UPDATE SET \
+            observed_host = EXCLUDED.observed_host, observed_sni = EXCLUDED.observed_sni, \
+            route_matched = EXCLUDED.route_matched, forwarded_upstream_host = EXCLUDED.forwarded_upstream_host, \
+            forwarded_upstream_port = EXCLUDED.forwarded_upstream_port, \
+            forwarded_upstream_ip = EXCLUDED.forwarded_upstream_ip, \
+            forwarded_upstream_tls = EXCLUDED.forwarded_upstream_tls",
+    )
+    .bind(id.as_uuid())
+    .bind(team.id.as_uuid())
+    .bind(&input.request_id)
+    .bind(provenance.discovery_session_id.as_uuid())
+    .bind(provenance.discovery_listener_id.as_uuid())
+    .bind(&provenance.observed_host)
+    .bind(&provenance.observed_sni)
+    .bind(provenance.route_matched)
+    .bind(&provenance.forwarded_upstream_host)
+    .bind(provenance.forwarded_upstream_port)
+    .bind(&provenance.forwarded_upstream_ip)
+    .bind(provenance.forwarded_upstream_tls)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("upsert discovery provenance: {e}")))?;
+
+    observations_for_session(tx, team.id, provenance.discovery_session_id)
+        .await?
+        .into_iter()
+        .find(|row| row.raw.id == id)
+        .ok_or_else(|| DomainError::internal("read ingested discovery observation"))
+}
+
+pub async fn completed_observations_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    session: &str,
+) -> DomainResult<(DiscoverySession, Vec<DiscoveryObservation>)> {
+    let session_row = get_session_for_update(tx, team_id, session).await?;
+    if session_row.status != DiscoverySessionStatus::Completed {
+        return Err(DomainError::conflict(format!(
+            "discovery session \"{}\" is {}",
+            session_row.name,
+            session_row.status.as_str()
+        )));
+    }
+    let observations = observations_for_session(tx, team_id, session_row.id).await?;
+    Ok((session_row, observations))
+}
+
+async fn get_session_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    handle: &str,
+) -> DomainResult<DiscoverySession> {
+    let id = Uuid::parse_str(handle).ok();
+    let row = sqlx::query(&format!(
+        "SELECT {COLUMNS} FROM discovery_sessions \
+         WHERE team_id = $1 AND (name = $2 OR id = $3) FOR UPDATE"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(handle)
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("lock discovery session: {e}")))?;
+    row.as_ref()
+        .map(from_row)
+        .transpose()?
+        .ok_or_else(|| DomainError::not_found("discovery session", handle))
+}
+
+async fn observations_for_session(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    session_id: DiscoverySessionId,
+) -> DomainResult<Vec<DiscoveryObservation>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {RAW_COLUMNS}, {DISCOVERY_RAW_COLUMNS} \
+         FROM discovery_raw_observations dro \
+         JOIN raw_observations ro ON ro.id = dro.raw_observation_id AND ro.team_id = dro.team_id \
+         WHERE dro.team_id = $1 AND dro.discovery_session_id = $2 \
+         ORDER BY dro.observed_host, dro.observed_sni, ro.observed_at, ro.id"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(session_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("list discovery observations: {e}")))?;
+    Ok(rows.iter().map(observation_from_row).collect())
 }

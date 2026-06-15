@@ -1,9 +1,11 @@
 //! S9 traffic-first discovery sessions.
 
+use crate::api_lifecycle::RawObservation;
 use crate::error::{DomainError, DomainResult};
-use crate::id::{DiscoverySessionId, TeamId};
+use crate::id::{DiscoverySessionId, ListenerId, TeamId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiscoverySession {
@@ -79,6 +81,92 @@ pub struct DiscoverySessionSpec {
     pub max_distinct_paths: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct DiscoveryObservationKey {
+    pub observed_host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_sni: Option<String>,
+    pub forwarded_upstream_host: String,
+    pub forwarded_upstream_port: i32,
+    pub forwarded_upstream_tls: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveryObservationProvenance {
+    pub discovery_session_id: DiscoverySessionId,
+    pub discovery_listener_id: ListenerId,
+    pub observed_host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_sni: Option<String>,
+    pub route_matched: bool,
+    pub forwarded_upstream_host: String,
+    pub forwarded_upstream_port: i32,
+    pub forwarded_upstream_ip: String,
+    pub forwarded_upstream_tls: bool,
+}
+
+impl DiscoveryObservationProvenance {
+    pub fn key(&self) -> DiscoveryObservationKey {
+        DiscoveryObservationKey {
+            observed_host: self.observed_host.clone(),
+            observed_sni: self.observed_sni.clone(),
+            forwarded_upstream_host: self.forwarded_upstream_host.clone(),
+            forwarded_upstream_port: self.forwarded_upstream_port,
+            forwarded_upstream_tls: self.forwarded_upstream_tls,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveryObservation {
+    pub raw: RawObservation,
+    pub provenance: DiscoveryObservationProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveryCandidateCluster {
+    pub key: DiscoveryObservationKey,
+    pub discovery_session_id: DiscoverySessionId,
+    pub observations: Vec<RawObservation>,
+}
+
+pub fn cluster_discovery_observations(
+    observations: Vec<DiscoveryObservation>,
+) -> DomainResult<Vec<DiscoveryCandidateCluster>> {
+    let Some(first) = observations.first() else {
+        return Ok(Vec::new());
+    };
+    let team_id = first.raw.team_id;
+    let discovery_session_id = first.provenance.discovery_session_id;
+    let mut grouped: BTreeMap<DiscoveryObservationKey, Vec<RawObservation>> = BTreeMap::new();
+    for observation in observations {
+        if observation.raw.team_id != team_id
+            || observation.provenance.discovery_session_id != discovery_session_id
+        {
+            return Err(DomainError::validation(
+                "discovery clustering requires one team and discovery session",
+            ));
+        }
+        if observation.raw.capture_session_id.is_some() {
+            return Err(DomainError::validation(
+                "discovery observations must not reference capture sessions",
+            ));
+        }
+        grouped
+            .entry(observation.provenance.key())
+            .or_default()
+            .push(observation.raw);
+    }
+    Ok(grouped
+        .into_iter()
+        .map(|(key, observations)| DiscoveryCandidateCluster {
+            key,
+            discovery_session_id,
+            observations,
+        })
+        .collect())
+}
+
 impl DiscoverySessionSpec {
     pub fn validate(&self) -> DomainResult<()> {
         if !(1024..=65535).contains(&self.listener_port) {
@@ -124,5 +212,101 @@ impl DiscoverySessionSpec {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::api_lifecycle::RawObservation;
+    use crate::{DiscoverySessionId, ListenerId, RawObservationId, TeamId};
+    use chrono::Utc;
+
+    #[test]
+    fn discovery_clustering_splits_same_path_by_host() {
+        let team_id = TeamId::generate();
+        let session_id = DiscoverySessionId::generate();
+        let listener_id = ListenerId::generate();
+        let rows = vec![
+            observation(team_id, session_id, listener_id, "api-a.example.test"),
+            observation(team_id, session_id, listener_id, "api-b.example.test"),
+        ];
+
+        let clusters = cluster_discovery_observations(rows).expect("clusters");
+
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].key.observed_host, "api-a.example.test");
+        assert_eq!(clusters[1].key.observed_host, "api-b.example.test");
+        assert!(clusters
+            .iter()
+            .all(|cluster| cluster.observations.len() == 1));
+    }
+
+    #[test]
+    fn discovery_clustering_rejects_cross_team_rows() {
+        let session_id = DiscoverySessionId::generate();
+        let listener_id = ListenerId::generate();
+        let rows = vec![
+            observation(
+                TeamId::generate(),
+                session_id,
+                listener_id,
+                "api-a.example.test",
+            ),
+            observation(
+                TeamId::generate(),
+                session_id,
+                listener_id,
+                "api-b.example.test",
+            ),
+        ];
+
+        let err = cluster_discovery_observations(rows).expect_err("cross-team rejected");
+
+        assert!(err.message.contains("one team"));
+    }
+
+    fn observation(
+        team_id: TeamId,
+        session_id: DiscoverySessionId,
+        listener_id: ListenerId,
+        host: &str,
+    ) -> DiscoveryObservation {
+        DiscoveryObservation {
+            raw: RawObservation {
+                id: RawObservationId::generate(),
+                team_id,
+                capture_session_id: None,
+                request_id: host.into(),
+                method: "GET".into(),
+                path: "/v1/items".into(),
+                response_status: Some(200),
+                request_headers: serde_json::json!({"host": host}),
+                response_headers: serde_json::json!({}),
+                request_body: None,
+                response_body: None,
+                request_body_truncated: false,
+                response_body_truncated: false,
+                request_body_bytes: 0,
+                response_body_bytes: 0,
+                metadata_seen: true,
+                body_seen: false,
+                observed_at: Utc::now(),
+                updated_at: Utc::now(),
+                created_at: Utc::now(),
+            },
+            provenance: DiscoveryObservationProvenance {
+                discovery_session_id: session_id,
+                discovery_listener_id: listener_id,
+                observed_host: host.into(),
+                observed_sni: None,
+                route_matched: false,
+                forwarded_upstream_host: "upstream.example.test".into(),
+                forwarded_upstream_port: 443,
+                forwarded_upstream_ip: "93.184.216.34".into(),
+                forwarded_upstream_tls: true,
+            },
+        }
     }
 }
