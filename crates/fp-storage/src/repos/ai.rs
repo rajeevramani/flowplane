@@ -13,6 +13,9 @@ use uuid::Uuid;
 
 const COLUMNS: &str = "id, team_id, name, kind, base_url, path_prefix, credential_secret_id, \
                        models, auth_header, version, created_at, updated_at";
+const PROVIDER_COLUMNS: &str = "p.id, p.team_id, p.name, p.kind, p.base_url, p.path_prefix, \
+                                p.credential_secret_id, p.models, p.auth_header, p.version, \
+                                p.created_at, p.updated_at";
 const ROUTE_COLUMNS: &str = "id, team_id, name, spec, status, cluster_names, route_config_name, \
                              listener_name, version, created_at, updated_at";
 
@@ -236,7 +239,7 @@ pub async fn get_provider_for_route_config(
     provider_id: AiProviderId,
 ) -> DomainResult<Option<AiProvider>> {
     let row = sqlx::query(&format!(
-        "SELECT p.{COLUMNS} FROM ai_providers p \
+        "SELECT {PROVIDER_COLUMNS} FROM ai_providers p \
          JOIN ai_route_backends b ON b.team_id = p.team_id AND b.provider_id = p.id \
          JOIN ai_routes r ON r.team_id = b.team_id AND r.id = b.ai_route_id \
          JOIN route_configs rc ON rc.team_id = r.team_id AND rc.name = r.route_config_name \
