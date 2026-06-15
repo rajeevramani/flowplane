@@ -35,6 +35,7 @@ pub async fn check_team_resource_quota(
             fp_storage::repos::api_lifecycle::count_capture_sessions_for_team(pool, team_id).await?
         }
         Resource::Secrets => fp_storage::repos::secrets::count_for_team(pool, team_id).await?,
+        Resource::AiProviders => fp_storage::repos::ai::count_for_team(pool, team_id).await?,
         Resource::Dataplanes => {
             fp_storage::repos::dataplanes::count_for_team(pool, team_id).await?
         }

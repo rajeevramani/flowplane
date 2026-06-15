@@ -106,11 +106,12 @@ fn openapi_document_covers_every_registered_operation() {
     // + 5 discovery-session operations.
     // + 2 expose shortcut operations.
     // + 2 route-generation plan operations.
+    // + 5 AI provider operations.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 71,
-        "expected 71 documented operations, got {operations}"
+        operations, 76,
+        "expected 76 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -1280,6 +1281,7 @@ async fn secret_values_are_write_only_over_http() {
         .expect("create secret");
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = json_of(response).await;
+    let secret_id = body["id"].as_str().expect("secret id").to_string();
     assert_eq!(body["value_redacted"], true);
     assert!(body.get("spec").is_none());
     assert_eq!(body["revision"], 1);
@@ -1322,6 +1324,72 @@ async fn secret_values_are_write_only_over_http() {
         .expect("stale rotate secret");
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(json_of(response).await["code"], "revision_mismatch");
+
+    let providers = format!("/api/v1/teams/{}/ai/providers", team.name);
+    let provider_name = unique("openai");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &providers,
+            Some(serde_json::json!({
+                "name": provider_name,
+                "spec": {
+                    "kind": "openai-compatible",
+                    "base_url": "https://llm.example/v1",
+                    "path_prefix": "/v1",
+                    "credential_secret_id": secret_id,
+                    "models": ["gpt-5-mini"]
+                }
+            })),
+        ))
+        .await
+        .expect("create AI provider");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert_eq!(body["name"], provider_name);
+    assert_eq!(body["spec"]["credential_secret_id"], secret_id);
+    assert_eq!(body["revision"], 1);
+
+    let provider = format!("{providers}/{provider_name}");
+    let response = app
+        .clone()
+        .oneshot(request_with_revision(
+            "PATCH",
+            &provider,
+            1,
+            Some(serde_json::json!({
+                "spec": {
+                    "kind": "openai",
+                    "base_url": "https://api.openai.com/v1",
+                    "credential_secret_id": secret_id,
+                    "models": ["gpt-5"]
+                }
+            })),
+        ))
+        .await
+        .expect("update AI provider");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_of(response).await["revision"], 2);
+
+    let response = app
+        .clone()
+        .oneshot(request("GET", &providers, None))
+        .await
+        .expect("list AI providers");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(json_of(response).await["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .any(|provider| provider["name"] == provider_name));
+
+    let response = app
+        .clone()
+        .oneshot(request_with_revision("DELETE", &provider, 2, None))
+        .await
+        .expect("delete AI provider");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let response = app
         .oneshot(request_with_revision(

@@ -474,6 +474,8 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         demand-pulled non-OpenAI translators, authenticated processor credential fetch,
         Postgres-authoritative budget settlement, streaming/failover semantics, AI resource
         authz scopes, and route materialization constraints.
+  - [x] S10b provider resources: team-scoped `AiProvider` storage/API/CLI using S6 secret
+        references.
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
 

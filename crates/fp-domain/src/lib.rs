@@ -4,6 +4,7 @@
 //! crates — errors, identifiers, lifecycle states, event types — originates here so all
 //! surfaces speak one language.
 
+pub mod ai;
 pub mod api_lifecycle;
 pub mod authz;
 pub mod dataplane;
@@ -17,6 +18,7 @@ pub mod learning;
 pub mod route_generation;
 pub mod secret;
 
+pub use ai::{validate_ai_provider_name, AiProvider, AiProviderKind, AiProviderSpec};
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
 pub use discovery::{
     cluster_discovery_observations, DiscoveryCandidateCluster, DiscoveryObservation,
@@ -25,10 +27,11 @@ pub use discovery::{
 };
 pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
-    AgentId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId, CaptureSessionId,
-    ClusterId, DataplaneId, DiscoverySessionId, GrantId, ListenerId, MembershipId, OrgId,
-    ProxyCertificateId, RawObservationId, RequestId, RetentionPolicyId, RouteConfigId,
-    RouteGenerationPlanId, SecretId, SpecVersionId, SpecVersionReviewEventId, TeamId, UserId,
+    AgentId, AiProviderId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId,
+    CaptureSessionId, ClusterId, DataplaneId, DiscoverySessionId, GrantId, ListenerId,
+    MembershipId, OrgId, ProxyCertificateId, RawObservationId, RequestId, RetentionPolicyId,
+    RouteConfigId, RouteGenerationPlanId, SecretId, SpecVersionId, SpecVersionReviewEventId,
+    TeamId, UserId,
 };
 pub use identity::{
     validate_name, Agent, AgentKind, EntityStatus, OrgRole, Organization, Team, User,

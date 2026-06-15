@@ -229,6 +229,14 @@ pub enum RouteCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum AiCommand {
+    Providers {
+        #[command(subcommand)]
+        command: ResourceCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum ApiCommand {
     List {
         #[arg(long)]

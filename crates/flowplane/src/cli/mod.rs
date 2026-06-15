@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 
 use client::RestClient;
 pub use commands::{
-    ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand, DataplaneBootstrapMode,
-    DataplaneCommand, ExposeCommand, GrantCommand, LearnCommand, LearnDiscoverCommand, OpsCommand,
-    OrgCommand, OrgMemberCommand, ResourceCommand, RouteCommand, SecretCommand, StatsCommand,
-    TeamCommand, TeamMemberCommand, UnexposeCommand, XdsCommand,
+    AiCommand, ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand,
+    DataplaneBootstrapMode, DataplaneCommand, ExposeCommand, GrantCommand, LearnCommand,
+    LearnDiscoverCommand, OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand, RouteCommand,
+    SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{
@@ -984,6 +984,12 @@ pub async fn run_route(global: GlobalOptions, command: RouteCommand) -> Result<(
                 .await?;
             Ok(())
         }
+    }
+}
+
+pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
+    match command {
+        AiCommand::Providers { command } => run_resource(global, "ai/providers", command).await,
     }
 }
 
@@ -2162,6 +2168,8 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions/{name}/status",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
+        "/api/v1/teams/{team}/ai/providers",
+        "/api/v1/teams/{team}/ai/providers/{name}",
         "/api/v1/teams/{team}/learning-sessions",
         "/api/v1/teams/{team}/learning-sessions/{session}",
         "/api/v1/teams/{team}/learning-sessions/{session}/stop",
