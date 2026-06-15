@@ -1990,7 +1990,7 @@ fn ai_ext_proc_filter() -> hcm::HttpFilter {
                 failure_mode_allow: false,
                 processing_mode: Some(ext_proc::ProcessingMode {
                     request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
-                    response_header_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                    response_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
                     request_body_mode: ext_proc::processing_mode::BodySendMode::Buffered as i32,
                     response_body_mode: ext_proc::processing_mode::BodySendMode::BufferedPartial
                         as i32,
@@ -3141,9 +3141,14 @@ mod tests {
         };
         let ext = ext_proc::ExternalProcessor::decode(ext_any.value.as_slice()).expect("ext proc");
         assert!(!ext.failure_mode_allow);
+        let mode = ext.processing_mode.expect("mode");
         assert_eq!(
-            ext.processing_mode.expect("mode").request_body_mode,
+            mode.request_body_mode,
             ext_proc::processing_mode::BodySendMode::Buffered as i32
+        );
+        assert_eq!(
+            mode.response_header_mode,
+            ext_proc::processing_mode::HeaderSendMode::Send as i32
         );
         let metadata = ext
             .grpc_service
