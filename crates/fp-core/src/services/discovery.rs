@@ -24,12 +24,24 @@ pub struct StartDiscoveryInput {
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveryForwardingPolicy {
     denied_destinations: Vec<SocketAddr>,
+    allowed_destinations: Vec<SocketAddr>,
 }
 
 impl DiscoveryForwardingPolicy {
     pub fn new(denied_destinations: Vec<SocketAddr>) -> Self {
+        Self::with_allowed(denied_destinations, Vec::new())
+    }
+
+    pub fn with_allowed(
+        denied_destinations: Vec<SocketAddr>,
+        allowed_destinations: Vec<SocketAddr>,
+    ) -> Self {
         Self {
             denied_destinations: denied_destinations
+                .into_iter()
+                .map(|addr| SocketAddr::new(canonical_ip(addr.ip()), addr.port()))
+                .collect(),
+            allowed_destinations: allowed_destinations
                 .into_iter()
                 .map(|addr| SocketAddr::new(canonical_ip(addr.ip()), addr.port()))
                 .collect(),
@@ -43,7 +55,15 @@ impl DiscoveryForwardingPolicy {
                 denied.extend(addrs);
             }
         }
-        Self::new(denied)
+        let allowed = std::env::var("FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .filter_map(|entry| entry.trim().parse::<SocketAddr>().ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Self::with_allowed(denied, allowed)
     }
 }
 
@@ -419,6 +439,13 @@ fn deny_reason(ip: &IpAddr, port: u16, policy: &DiscoveryForwardingPolicy) -> Op
     {
         return Some("denied_flowplane_destination");
     }
+    if policy
+        .allowed_destinations
+        .iter()
+        .any(|addr| addr.ip() == *ip && addr.port() == port)
+    {
+        return None;
+    }
     match ip {
         IpAddr::V4(ip) => {
             if ip.is_loopback()
@@ -616,6 +643,23 @@ mod tests {
             Some("denied_flowplane_destination")
         );
         assert_eq!(deny_reason(&ip, 5433, &policy), None);
+    }
+
+    #[test]
+    fn explicit_allowlist_admits_private_destination_after_denylist() {
+        let ip = "127.0.0.1".parse::<IpAddr>().unwrap();
+        let allowed =
+            DiscoveryForwardingPolicy::with_allowed(Vec::new(), vec![SocketAddr::new(ip, 3001)]);
+        assert_eq!(deny_reason(&ip, 3001, &allowed), None);
+
+        let denied = DiscoveryForwardingPolicy::with_allowed(
+            vec![SocketAddr::new(ip, 3001)],
+            vec![SocketAddr::new(ip, 3001)],
+        );
+        assert_eq!(
+            deny_reason(&ip, 3001, &denied),
+            Some("denied_flowplane_destination")
+        );
     }
 
     #[test]

@@ -695,6 +695,10 @@ async fn learning_capture_plan(
         .iter()
         .map(|rc| (rc.id, rc.name.as_str()))
         .collect::<BTreeMap<_, _>>();
+    let route_config_names = route_configs
+        .iter()
+        .map(|rc| (rc.name.as_str(), rc.id))
+        .collect::<BTreeMap<_, _>>();
     let sessions =
         fp_storage::repos::api_lifecycle::list_capturing_capture_sessions(pool, team_id).await?;
     let mut captures = Vec::new();
@@ -709,6 +713,7 @@ async fn learning_capture_plan(
                     listener_id: session.listener_id.map(|id| id.as_uuid()),
                     virtual_host: session.virtual_host.clone(),
                     route: session.route.clone(),
+                    discovery: None,
                 });
             }
             continue;
@@ -729,9 +734,48 @@ async fn learning_capture_plan(
                     listener_id: binding.listener_id.map(|id| id.as_uuid()),
                     virtual_host: binding.virtual_host.clone(),
                     route: binding.route.clone(),
+                    discovery: None,
                 });
             }
         }
+    }
+    let (discovery_sessions, _) = fp_storage::repos::discovery::list(
+        pool,
+        team_id,
+        Some(fp_domain::discovery::DiscoverySessionStatus::Capturing),
+        500,
+        0,
+    )
+    .await?;
+    for session in discovery_sessions {
+        let Some(route_config_id) = route_config_names.get(session.route_config_name.as_str())
+        else {
+            continue;
+        };
+        let listener_id: Option<ListenerId> = sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT id FROM listeners WHERE team_id = $1 AND name = $2 AND owner_kind = 'discovery'",
+        )
+        .bind(team_id.as_uuid())
+        .bind(&session.listener_name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| DomainError::internal(format!("get discovery listener id: {err}")))?
+        .map(ListenerId::from);
+        captures.push(translate::LearningCaptureInjection {
+            session_id: session.id.as_uuid(),
+            team_id: team_id.as_uuid(),
+            api_definition_id: None,
+            route_config_id: route_config_id.as_uuid(),
+            listener_id: listener_id.map(|id| id.as_uuid()),
+            virtual_host: None,
+            route: None,
+            discovery: Some(translate::DiscoveryCaptureMetadata {
+                forwarded_upstream_host: session.upstream_host,
+                forwarded_upstream_port: session.upstream_port,
+                forwarded_upstream_ip: session.validated_upstream_ip,
+                forwarded_upstream_tls: session.upstream_tls,
+            }),
+        });
     }
     captures.sort_by(|a, b| {
         (

@@ -1,11 +1,12 @@
 //! Discovery-session REST endpoints (S9).
 
 use crate::error::ApiError;
+use crate::learning_api::LearnedSpecVersionView;
 use crate::resources::{resolve_team, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
 use axum::Json;
-use fp_core::services::discovery as svc;
+use fp_core::services::{discovery as svc, learning as learning_svc};
 use fp_core::PrincipalCtx;
 use fp_domain::{DiscoverySession, DiscoverySessionSpec, DiscoverySessionStatus, RequestId};
 use serde::{Deserialize, Serialize};
@@ -253,4 +254,36 @@ pub async fn stop_discovery_session(
     run.await
         .map(|v| Json(DiscoverySessionView::from(v)))
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(post, path = "/api/v1/teams/{team}/learning-discovery-sessions/{session}/spec-versions",
+    tag = "DiscoverySessions",
+    responses((status = 201, body = Vec<LearnedSpecVersionView>)))]
+pub async fn create_discovery_spec_versions(
+    State(state): State<AppState>,
+    Path((team, session)): Path<(String, String)>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<(axum::http::StatusCode, Json<Vec<LearnedSpecVersionView>>), ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        learning_svc::create_spec_versions_from_discovery_session(
+            &state.pool,
+            &ctx,
+            team,
+            &session,
+            rid,
+        )
+        .await
+    };
+    let specs = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(
+            specs
+                .into_iter()
+                .map(LearnedSpecVersionView::from)
+                .collect(),
+        ),
+    ))
 }

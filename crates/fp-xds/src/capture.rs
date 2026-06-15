@@ -18,10 +18,12 @@ use envoy_types::pb::envoy::service::ext_proc::v3::{
     ProcessingRequest, ProcessingResponse, TrailersResponse,
 };
 use fp_domain::api_lifecycle::ObservationIngest;
+use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
-    ApiDefinitionId, CaptureSessionId, DomainError, ListenerId, RouteConfigId, TeamId,
+    ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId, RouteConfigId,
+    TeamId,
 };
-use fp_storage::repos::{api_lifecycle, identity};
+use fp_storage::repos::{api_lifecycle, discovery, identity};
 use serde_json::{Map, Value};
 use sqlx::types::chrono::Utc;
 use std::sync::Arc;
@@ -39,12 +41,29 @@ pub struct LearningCaptureService {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CaptureContext {
+struct ConfigCaptureContext {
     team_id: TeamId,
     session_id: CaptureSessionId,
     api_definition_id: Option<ApiDefinitionId>,
     route_config_id: RouteConfigId,
     listener_id: Option<ListenerId>,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveryCaptureContext {
+    team_id: TeamId,
+    session_id: DiscoverySessionId,
+    listener_id: ListenerId,
+    forwarded_upstream_host: String,
+    forwarded_upstream_port: i32,
+    forwarded_upstream_ip: String,
+    forwarded_upstream_tls: bool,
+}
+
+#[derive(Debug, Clone)]
+enum CaptureContext {
+    Config(ConfigCaptureContext),
+    Discovery(DiscoveryCaptureContext),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,7 +90,11 @@ impl LearningCaptureService {
     }
 
     async fn ingest(&self, ctx: CaptureContext, input: ObservationIngest) -> Result<(), Status> {
-        let team = identity::resolve_team_ref(&self.pool, ctx.team_id)
+        let team_id = match &ctx {
+            CaptureContext::Config(ctx) => ctx.team_id,
+            CaptureContext::Discovery(ctx) => ctx.team_id,
+        };
+        let team = identity::resolve_team_ref(&self.pool, team_id)
             .await
             .map_err(status_from_domain)?
             .ok_or_else(|| Status::not_found("capture team not found"))?;
@@ -80,17 +103,37 @@ impl LearningCaptureService {
             .begin()
             .await
             .map_err(|e| Status::unavailable(format!("begin capture ingest: {e}")))?;
-        match api_lifecycle::ingest_raw_observation(
-            &mut tx,
-            team,
-            ctx.session_id,
-            ctx.api_definition_id,
-            ctx.route_config_id,
-            ctx.listener_id,
-            &input,
-        )
-        .await
-        {
+        let result = match &ctx {
+            CaptureContext::Config(ctx) => api_lifecycle::ingest_raw_observation(
+                &mut tx,
+                team,
+                ctx.session_id,
+                ctx.api_definition_id,
+                ctx.route_config_id,
+                ctx.listener_id,
+                &input,
+            )
+            .await
+            .map(|_| ()),
+            CaptureContext::Discovery(ctx) => {
+                let provenance = DiscoveryObservationProvenance {
+                    discovery_session_id: ctx.session_id,
+                    discovery_listener_id: ctx.listener_id,
+                    observed_host: observed_host(&input)
+                        .unwrap_or_else(|| ctx.forwarded_upstream_host.clone()),
+                    observed_sni: None,
+                    route_matched: false,
+                    forwarded_upstream_host: ctx.forwarded_upstream_host.clone(),
+                    forwarded_upstream_port: ctx.forwarded_upstream_port,
+                    forwarded_upstream_ip: ctx.forwarded_upstream_ip.clone(),
+                    forwarded_upstream_tls: ctx.forwarded_upstream_tls,
+                };
+                discovery::ingest_raw_observation(&mut tx, team, &input, &provenance)
+                    .await
+                    .map(|_| ())
+            }
+        };
+        match result {
             Ok(_) => tx
                 .commit()
                 .await
@@ -120,7 +163,7 @@ impl AccessLogService for LearningCaptureService {
                 for entry in entries.log_entry {
                     match observation_from_access_log(&entry) {
                         Some(input) => {
-                            if let Err(status) = self.ingest(ctx, input).await {
+                            if let Err(status) = self.ingest(ctx.clone(), input).await {
                                 tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ALS learning observation");
                             }
                         }
@@ -156,7 +199,7 @@ impl ExternalProcessor for LearningCaptureService {
                             break;
                         }
                         if let Some(input) = observation_from_ext_proc(&mut state, message) {
-                            if let Err(status) = service.ingest(ctx, input).await {
+                            if let Err(status) = service.ingest(ctx.clone(), input).await {
                                 tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ExtProc learning observation");
                             }
                         }
@@ -200,7 +243,25 @@ async fn capture_context<T>(
             "capture team_id does not match the client certificate",
         ));
     }
-    Ok(CaptureContext {
+    if let Some(session_id) = optional_metadata_uuid(metadata, "x-flowplane-discovery-session-id")?
+    {
+        return Ok(CaptureContext::Discovery(DiscoveryCaptureContext {
+            team_id: identity.team_id,
+            session_id: DiscoverySessionId::from(session_id),
+            listener_id: ListenerId::from(metadata_uuid(
+                metadata,
+                "x-flowplane-discovery-listener-id",
+            )?),
+            forwarded_upstream_host: metadata_string(
+                metadata,
+                "x-flowplane-forwarded-upstream-host",
+            )?,
+            forwarded_upstream_port: metadata_i32(metadata, "x-flowplane-forwarded-upstream-port")?,
+            forwarded_upstream_ip: metadata_string(metadata, "x-flowplane-forwarded-upstream-ip")?,
+            forwarded_upstream_tls: metadata_bool(metadata, "x-flowplane-forwarded-upstream-tls")?,
+        }));
+    }
+    Ok(CaptureContext::Config(ConfigCaptureContext {
         team_id: identity.team_id,
         session_id: CaptureSessionId::from(metadata_uuid(
             metadata,
@@ -214,7 +275,7 @@ async fn capture_context<T>(
         )?),
         listener_id: optional_metadata_uuid(metadata, "x-flowplane-listener-id")?
             .map(ListenerId::from),
-    })
+    }))
 }
 
 fn metadata_uuid(metadata: &MetadataMap, key: &'static str) -> Result<Uuid, Status> {
@@ -239,6 +300,38 @@ fn optional_metadata_uuid(
                 })
         })
         .transpose()
+}
+
+fn metadata_string(metadata: &MetadataMap, key: &'static str) -> Result<String, Status> {
+    metadata
+        .get(key)
+        .ok_or_else(|| Status::invalid_argument(format!("missing capture metadata {key}")))?
+        .to_str()
+        .map(str::to_string)
+        .map_err(|_| Status::invalid_argument(format!("invalid capture metadata {key}")))
+}
+
+fn metadata_i32(metadata: &MetadataMap, key: &'static str) -> Result<i32, Status> {
+    metadata_string(metadata, key)?
+        .parse()
+        .map_err(|_| Status::invalid_argument(format!("invalid capture metadata {key}")))
+}
+
+fn metadata_bool(metadata: &MetadataMap, key: &'static str) -> Result<bool, Status> {
+    metadata_string(metadata, key)?
+        .parse()
+        .map_err(|_| Status::invalid_argument(format!("invalid capture metadata {key}")))
+}
+
+fn observed_host(input: &ObservationIngest) -> Option<String> {
+    header_value(&input.request_headers, "host")
+        .or_else(|| header_value(&input.request_headers, ":authority"))
+        .map(|host| {
+            host.split_once(':')
+                .map(|(h, _)| h)
+                .unwrap_or(&host)
+                .to_string()
+        })
 }
 
 fn observation_from_access_log(entry: &HttpAccessLogEntry) -> Option<ObservationIngest> {
@@ -517,7 +610,10 @@ mod tests {
 
         let ctx = capture_context(&request, &resolver).await.expect("context");
 
-        assert_eq!(ctx.team_id, team_id);
+        match ctx {
+            CaptureContext::Config(ctx) => assert_eq!(ctx.team_id, team_id),
+            CaptureContext::Discovery(_) => panic!("expected config capture context"),
+        }
     }
 
     #[tokio::test]

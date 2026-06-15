@@ -398,6 +398,11 @@ pub enum LearnDiscoverCommand {
         team: Option<String>,
         session: String,
     },
+    GenerateSpec {
+        #[arg(long)]
+        team: Option<String>,
+        session: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

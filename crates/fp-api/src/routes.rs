@@ -122,6 +122,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             discovery_api::get_discovery_session,
             discovery_api::stop_discovery_session
         ))
+        .routes(routes!(discovery_api::create_discovery_spec_versions))
         .routes(routes!(
             crate::expose_api::expose,
             crate::expose_api::unexpose
