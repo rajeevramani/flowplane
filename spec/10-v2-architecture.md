@@ -219,11 +219,13 @@ musl static binary, image signing + SBOM at release (S12); no telemetry/phone-ho
     allowlist; when it exists, observations cluster by observed Host into separate candidate
     ApiDefinitions.
   - **Open-proxy/SSRF hardening (binding):** S9 starts with explicit `--upstream host:port`
-    only. The CP resolves and validates concrete A/AAAA answers, rejects mixed
-    allowed/denied resolution sets, persists a validated dial IP, and the discovery forwarder
-    connects to that IP rather than the hostname. The CP/API, xDS, admin/metrics/diagnostics,
-    RLS, Envoy-admin, Postgres, loopback, link-local, cloud-metadata, and other denied internal
-    destinations are blocked; sessions carry TTL (`--max-duration`) and capture quotas.
+    only. The CP canonicalizes resolved addresses (including IPv4-mapped IPv6), validates concrete
+    A/AAAA answers, rejects mixed allowed/denied resolution sets, persists a validated dial IP, and
+    the discovery forwarder connects to that IP rather than the hostname. Private upstreams require
+    an org/team-scoped admin allowlist; CP/API, xDS, admin/metrics/diagnostics, RLS, Envoy-admin,
+    Postgres, loopback, link-local, cloud-metadata, and other global-deny destinations remain
+    blocked. The forwarder does not follow upstream redirects. Sessions carry TTL
+    (`--max-duration`) and capture quotas.
   - Operators direct traffic at the discovery port themselves (DNS/LB cutover or client
     config) — Flowplane observes only traffic addressed to it.
   - Learned specs store **upstream provenance** (observed Host, SNI, resolved address, TLS)
