@@ -554,7 +554,7 @@ impl CaptureSessionSpec {
 pub struct RawObservation {
     pub id: RawObservationId,
     pub team_id: TeamId,
-    pub capture_session_id: CaptureSessionId,
+    pub capture_session_id: Option<CaptureSessionId>,
     pub request_id: String,
     pub method: String,
     pub path: String,

@@ -3,15 +3,17 @@
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::api_lifecycle::{
-    CaptureSession, CaptureSessionSpec, CaptureSessionStatus, SpecReviewDecision, SpecVersion,
+    ApiDefinitionSpec, CaptureSession, CaptureSessionSpec, CaptureSessionStatus,
+    SpecReviewDecision, SpecVersion,
 };
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::learning::{
     group_observations_by_endpoint, EndpointGroupingConfig, LearnedSpecCandidate,
 };
+use fp_domain::{cluster_discovery_observations, DiscoveryCandidateCluster, DiscoverySession};
 use fp_domain::{ApiDefinitionId, DomainError, DomainResult, RequestId};
-use fp_storage::repos::{api_lifecycle, audit};
+use fp_storage::repos::{api_lifecycle, audit, discovery};
 use sqlx::PgPool;
 
 #[derive(Debug, Clone)]
@@ -264,6 +266,74 @@ pub async fn create_spec_version_from_session(
     Ok(spec_version)
 }
 
+pub async fn create_spec_versions_from_discovery_session(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    session: &str,
+    request_id: RequestId,
+) -> DomainResult<Vec<SpecVersion>> {
+    authorize(pool, ctx, Action::Execute, team, request_id).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("learn discovery specs: begin"))?;
+    let (session_row, observations) =
+        discovery::completed_observations_for_update(&mut tx, team.id, session).await?;
+    if observations.is_empty() {
+        return Err(DomainError::validation(
+            "discovery session has no raw observations to aggregate",
+        ));
+    }
+
+    let clusters = cluster_discovery_observations(observations)?;
+    let mut specs = Vec::with_capacity(clusters.len());
+    for (index, cluster) in clusters.iter().enumerate() {
+        let endpoints = group_observations_by_endpoint(
+            &cluster.observations,
+            EndpointGroupingConfig::default(),
+        )?;
+        let candidate = LearnedSpecCandidate {
+            title: format!("Discovered {}", cluster.key.observed_host),
+            version: format!("discovered-{}-{}", session_row.id, index + 1),
+            endpoints,
+        };
+        let mut input = candidate.spec_version_input()?;
+        add_discovery_source_metadata(&mut input.spec, &session_row, cluster);
+        input.validate()?;
+
+        let api = api_lifecycle::create_api_definition(
+            &mut tx,
+            team,
+            &discovery_api_name(&session_row, index),
+            &ApiDefinitionSpec {
+                display_name: format!("Discovered {}", cluster.key.observed_host),
+                description: "Learned from traffic-first discovery".into(),
+            },
+        )
+        .await?;
+        let spec_version =
+            api_lifecycle::create_spec_version(&mut tx, team, api.id, &input).await?;
+        submit_spec_if_needed(&mut tx, ctx, team, api.id, spec_version.id).await?;
+        specs.push(spec_version);
+    }
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "learn.discovery.spec_versions",
+            format!("learning-discovery-sessions/{}", session_row.name),
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("learn discovery specs: commit"))?;
+    Ok(specs)
+}
+
 async fn submit_spec_if_needed(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ctx: &PrincipalCtx,
@@ -318,6 +388,33 @@ fn add_source_metadata(
             }),
         );
     }
+}
+
+fn add_discovery_source_metadata(
+    spec: &mut serde_json::Value,
+    session: &DiscoverySession,
+    cluster: &DiscoveryCandidateCluster,
+) {
+    if let Some(object) = spec.as_object_mut() {
+        object.insert(
+            "x-flowplane-learning-source".into(),
+            serde_json::json!({
+                "discovery_session_id": session.id,
+                "discovery_session_name": session.name,
+                "observed_host": cluster.key.observed_host,
+                "observed_sni": cluster.key.observed_sni,
+                "forwarded_upstream_host": cluster.key.forwarded_upstream_host,
+                "forwarded_upstream_port": cluster.key.forwarded_upstream_port,
+                "forwarded_upstream_tls": cluster.key.forwarded_upstream_tls,
+            }),
+        );
+    }
+}
+
+fn discovery_api_name(session: &DiscoverySession, index: usize) -> String {
+    let mut compact = session.id.as_uuid().simple().to_string();
+    compact.truncate(20);
+    format!("discovery-{compact}-{}", index + 1)
 }
 
 #[derive(Debug, Clone, Copy)]
