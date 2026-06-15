@@ -229,6 +229,72 @@ async fn discovery_learning_creates_one_spec_per_host_cluster() {
     assert_eq!(hosts, vec!["api-a.example.test", "api-b.example.test"]);
 }
 
+#[tokio::test]
+async fn discovery_observations_do_not_create_user_gateway_resources() {
+    let Some(w) = world().await else { return };
+    let session = discovery_svc::start_session(
+        &w.pool,
+        &w.admin,
+        w.team,
+        discovery_input(unique("discover"), 19082),
+        RequestId::generate(),
+    )
+    .await
+    .expect("start discovery");
+
+    let listener_uuid: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM listeners WHERE team_id = $1 AND name = $2 AND owner_kind = 'discovery'",
+    )
+    .bind(w.team.id.as_uuid())
+    .bind(&session.listener_name)
+    .fetch_one(&w.pool)
+    .await
+    .expect("listener id");
+    let listener_id = ListenerId::from(listener_uuid);
+    let mut tx = w.pool.begin().await.expect("tx");
+    discovery::ingest_raw_observation(
+        &mut tx,
+        w.team,
+        &observation("req-observed-only"),
+        &provenance(session.id, listener_id, "api.example.test"),
+    )
+    .await
+    .expect("ingest");
+    tx.commit().await.expect("commit observation");
+
+    for table in ["clusters", "route_configs", "listeners"] {
+        let count: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM {table} WHERE team_id = $1 AND owner_kind <> 'discovery'"
+        ))
+        .bind(w.team.id.as_uuid())
+        .fetch_one(&w.pool)
+        .await
+        .expect("gateway count");
+        assert_eq!(count, 0, "{table} has no user-owned resources");
+    }
+}
+
+#[tokio::test]
+async fn discovery_rejects_loopback_upstream_before_creating_session() {
+    let Some(w) = world().await else { return };
+    let name = unique("discover");
+    let mut input = discovery_input(name.clone(), 19083);
+    input.spec.upstream_host = "127.0.0.1".into();
+
+    let err = discovery_svc::start_session(&w.pool, &w.admin, w.team, input, RequestId::generate())
+        .await
+        .expect_err("loopback upstream denied");
+
+    assert_eq!(err.code, ErrorCode::ValidationFailed);
+    assert_eq!(
+        discovery_svc::get_session(&w.pool, &w.admin, w.team, &name, RequestId::generate())
+            .await
+            .expect_err("session not created")
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
 fn observation(request_id: &str) -> ObservationIngest {
     ObservationIngest {
         request_id: request_id.into(),
