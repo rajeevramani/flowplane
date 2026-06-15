@@ -239,25 +239,60 @@ musl static binary, image signing + SBOM at release (S12); no telemetry/phone-ho
   sample counting, sharded workers (no single-Mutex pool), ExtProc honoring method filters,
   template-aware (not byte-exact) route↔spec matching.
 
-## 7. AI gateway (requirements from spec/09; same domain model)
+## 7. AI gateway (S10a contract; D-018)
 
-- **`AiProvider`** (team-scoped): provider kind (anthropic | openai | bedrock | self-hosted |
-  openai-compatible(prefix)), endpoints, credential = reference to a `Secret` (never inline),
-  model catalog. Compiled to a flavored Cluster in the IR.
-- **`AiRoute`**: unified inbound API (OpenAI-compatible chat-completions shape for v1.0),
-  model-based routing rules, backend list with `weight` + `priority` + optional
-  `model_override` (failover vocabulary borrowed from AIGW; retries re-translate/re-sign per
-  selected backend).
-- **Translation + metering**: ExtProc service in `fp-xds` hosting `fp-ai` translators
-  (ingress↔provider); token usage parsed from provider `usage` accounting — streaming included
-  by force-injecting `include_usage` — emitted as dynamic metadata costs and ingested as usage
-  events (per team, provider, model, token type).
-- **`AiBudget`**: per-team/per-provider token & request budgets with windows; enforced via
-  rate-limit costs charged post-response (overdraft-on-last-request semantics, documented);
-  `shadow_mode` for meter-without-enforce (fits the dry-run culture); breaches emit events →
-  audit + CLI visibility.
-- Observed AI traffic is still traffic: usage records feed the same stats/insights surface, and
-  AI endpoints are learnable ApiDefinitions like any other.
+S10 v1.0 exposes and routes **OpenAI chat-completions**. That shape is the canonical IR for
+request bodies, streaming chunks, response `usage`, model extraction, usage events, and metrics.
+The day-one providers are `openai` and `openai-compatible` because they require no real
+translation: passthrough, credential/header injection, optional path prefix rewrite, and usage
+parsing are enough. Native Anthropic, Bedrock, Vertex, and other dialect translators remain
+behind a `Translator` trait and ship only when pulled by a real user need.
+
+- **`AiProvider`** (team-scoped): name, kind (`openai` | `openai-compatible` for v1.0;
+  non-OpenAI kinds reserved behind the trait seam), base endpoint, optional path prefix,
+  credential secret reference, model catalog, usage-capable flag, and provider-specific auth
+  header strategy. Secrets are references only; values are fetched by the AI processor over the
+  authenticated control/data-plane channel and held in a bounded memory cache, never serialized
+  into xDS/config/logs/usage rows.
+- **`AiRoute`** (team-scoped): listener/route materialization intent, OpenAI
+  chat-completions ingress, model-based routing rules, and backend list with deterministic
+  order, `weight`, `priority`, optional `model_override`, and budget bindings. Body-extracted
+  model is copied to an internal routing header for existing route primitives; callers cannot
+  set that header directly. "No eligible backend for model X" is a deterministic 4xx gateway
+  response, distinct from provider failure and not retried as failover.
+- **Route materialization:** AI routes compose the existing cluster/route-config/listener/xDS
+  primitives and their conflict, dependency, and cleanup behavior. Generated cluster,
+  virtual-host, route, and listener names are deterministic from team + route + backend
+  identity. AI routes set long, streaming-appropriate request and idle timeouts by default so
+  completions are not mistaken for backend failure by normal HTTP timeouts.
+- **Processor and buffering:** the Flowplane-owned AI ExtProc runs at the upstream processing
+  point. If learning/discovery capture is also active, ordering is explicit and request bodies
+  are buffered once. The AI path has its own body-buffer bound, larger than capture's 64 KiB,
+  because chat prompts/tool schemas routinely exceed capture needs; oversized bodies fail with
+  a defined 4xx instead of silently routing without a model.
+- **Translation + metering:** token usage is parsed from OpenAI-shaped `usage`. For streams,
+  the processor may inject `stream_options.include_usage=true`; if the client did not request
+  it, the synthetic terminal usage chunk is stripped from the client-facing stream and used only
+  for settlement. Usage events are append-only and keyed by team, route, provider, backend,
+  model, token type, request id, and budget decision.
+- **`AiBudget`** (team-scoped): fixed-window, fixed weighted-token budgets with `shadow` and
+  `enforcing` modes. Admission checks require at least one remaining unit; settlement happens
+  after provider usage with bounded overdraft charged to the request-start window. The
+  authoritative counter lives in Postgres and is updated atomically, so concurrent processors
+  cannot double-spend one team's budget. External Envoy RLS/Redis is not assumed in S10.
+- **`AiUsage`**: no CRUD resource. It is an append-only event stream plus query/read model and
+  metrics surface. Reads are team-scoped and must never expose another team's prompt volume,
+  model choices, provider usage, or spend pattern.
+- **Failover:** priority failover is allowed only before the first response byte. Once a stream
+  has begun, backend failure is terminal for that request and partial usage is attributed to the
+  backend actually used. Re-signing happens per selected backend; cross-dialect re-translation
+  is a no-op until a non-OpenAI translator exists.
+- **Deletion and integrity:** deleting an `AiProvider` referenced by an `AiRoute`, or deleting
+  an `AiBudget` referenced by an enforcing route, is blocked with the dependent resource named.
+  Delete flows mirror the existing gateway referential guards and cleanup ordering.
+- Observed AI traffic is still traffic: usage records feed stats/insights and GenAI semantic
+  convention metrics where practical, and AI endpoints remain learnable ApiDefinitions like any
+  other route.
 
 ## 8. Error handling strategy
 

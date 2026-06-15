@@ -470,6 +470,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         generated tools → persisted route dry-run/apply equivalence → traffic through the
         generated listener).
 - [ ] S10 AI gateway
+  - [x] S10a design contract: D-018 records OpenAI chat-completions as the v1.0 IR,
+        demand-pulled non-OpenAI translators, authenticated processor credential fetch,
+        Postgres-authoritative budget settlement, streaming/failover semantics, AI resource
+        authz scopes, and route materialization constraints.
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
 

@@ -98,13 +98,17 @@ applied result guarantee; approval gating (nothing < `reviewed` touches config).
 (unmatched traffic → spec → dry-run preview matches creation → traffic flows → tools
 published); approval-bypass adversarial test fails closed.
 
-**S10 — AI gateway.** AiProvider/AiRoute/AiBudget; ExtProc translator host + anthropic/openai/
-openai-compatible(prefix)/bedrock translators; token metering incl. streaming
-(force-`include_usage`); usage events + `ai usage`; budgets (shadow + enforcing) via rate-limit
-cost path; priority failover with re-translation; provider credentials via S6 secrets. CLI:
-`ai *`. **Exit:** AI E2E per definition-of-done (mock provider: credential → routed traffic →
-per-team tokens tracked → budget trips → failover engages); budget isolation test (team A's
-burn never throttles B); usage metrics exported.
+**S10 — AI gateway.** AiProvider/AiRoute/AiBudget/AiUsage; OpenAI chat-completions as the
+canonical v1.0 IR; OpenAI/OpenAI-compatible passthrough providers first, with native
+Anthropic/Bedrock/Vertex translators demand-pulled behind the trait seam; Flowplane-owned AI
+ExtProc using S6 secret references fetched over the authenticated control channel; token
+metering incl. streaming (force-`include_usage` when needed and strip synthetic usage chunks);
+append-only usage events + `ai usage` query surface; shadow + enforcing budgets settled through
+atomic Postgres counters; AI route materialization through existing gateway primitives; priority
+failover before first response byte. CLI: `ai *`. **Exit:** AI E2E per definition-of-done
+(mock OpenAI-compatible provider: credential → routed traffic → per-team tokens tracked →
+budget trips → pre-byte failover engages); budget isolation tests for team A vs team B and
+same-team concurrent settlement; usage metrics exported.
 
 **S11 — MCP server + tools.** Streamable HTTP per spec/02 (sessions bound to token+team,
 origin allowlist enforced, list==executable); cp/ops tool registry generated from the shared
@@ -116,9 +120,9 @@ republish regenerates).
 
 **Depth knobs (pre-agreed, recorded here so schedule pressure cuts depth, never capability or
 security):** S5 filter catalog may ship as the ~8 demonstrably-used filters with the rest
-following behind the same IR seam; S10 Bedrock translator may trail the other providers; RLS
-global rate limiting may ship CP-side-enforced first. The loop, tenancy, and the adversarial
-exits are never the knob.
+following behind the same IR seam; S10 non-OpenAI translators trail until a user pulls them;
+external Envoy RLS/Redis budget enforcement trails the Postgres-backed S10 counter unless
+explicitly re-sized. The loop, tenancy, and the adversarial exits are never the knob.
 
 **S12 — Hardening & v1.0.** Observability completion per 10 §8a (alert pack over the metric
 families fixed in S1–S11, dashboards-as-docs, GenAI semconv verification); failure-mode suite (kill Postgres mid-write, restart Envoy, restart CP under
