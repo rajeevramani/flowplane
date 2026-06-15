@@ -122,18 +122,41 @@ pub async fn create_route_config(
     name: &str,
     spec: &RouteConfigSpec,
 ) -> DomainResult<RouteConfig> {
+    create_route_config_with_owner(tx, team, name, spec, "user", None).await
+}
+
+pub async fn create_discovery_route_config(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    owner_id: Uuid,
+    name: &str,
+    spec: &RouteConfigSpec,
+) -> DomainResult<RouteConfig> {
+    create_route_config_with_owner(tx, team, name, spec, "discovery", Some(owner_id)).await
+}
+
+async fn create_route_config_with_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    name: &str,
+    spec: &RouteConfigSpec,
+    owner_kind: &str,
+    owner_id: Option<Uuid>,
+) -> DomainResult<RouteConfig> {
     let cluster_ids = resolve_cluster_refs(tx, team.id, spec).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize route-config spec: {e}")))?;
     let row = sqlx::query(&format!(
-        "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
-         VALUES ($1, $2, $3, $4, $5) RETURNING {COLUMNS}"
+        "INSERT INTO route_configs (id, team_id, org_id, name, spec, owner_kind, owner_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {COLUMNS}"
     ))
     .bind(RouteConfigId::generate().as_uuid())
     .bind(team.id.as_uuid())
     .bind(team.org_id.as_uuid())
     .bind(name)
     .bind(spec_json)
+    .bind(owner_kind)
+    .bind(owner_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| map_unique(e, "route config", name))?;
@@ -148,7 +171,7 @@ pub async fn get_route_config(
     name: &str,
 ) -> DomainResult<Option<RouteConfig>> {
     let row = sqlx::query(&format!(
-        "SELECT {COLUMNS} FROM route_configs WHERE team_id = $1 AND name = $2"
+        "SELECT {COLUMNS} FROM route_configs WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'"
     ))
     .bind(team_id.as_uuid())
     .bind(name)
@@ -165,7 +188,7 @@ pub async fn list_route_configs(
     offset: i64,
 ) -> DomainResult<(Vec<RouteConfig>, i64)> {
     let rows = sqlx::query(&format!(
-        "SELECT {COLUMNS} FROM route_configs WHERE team_id = $1 ORDER BY name LIMIT $2 OFFSET $3"
+        "SELECT {COLUMNS} FROM route_configs WHERE team_id = $1 AND owner_kind = 'user' ORDER BY name LIMIT $2 OFFSET $3"
     ))
     .bind(team_id.as_uuid())
     .bind(limit.clamp(1, 500))
@@ -173,11 +196,13 @@ pub async fn list_route_configs(
     .fetch_all(pool)
     .await
     .map_err(|e| DomainError::internal(format!("list route configs: {e}")))?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM route_configs WHERE team_id = $1")
-        .bind(team_id.as_uuid())
-        .fetch_one(pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("count route configs: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM route_configs WHERE team_id = $1 AND owner_kind = 'user'",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count route configs: {e}")))?;
     rows.iter()
         .map(rc_from_row)
         .collect::<DomainResult<Vec<_>>>()
@@ -196,7 +221,7 @@ pub async fn update_route_config(
         .map_err(|e| DomainError::internal(format!("serialize route-config spec: {e}")))?;
     let row = sqlx::query(&format!(
         "UPDATE route_configs SET spec = $1, version = version + 1, updated_at = now() \
-         WHERE team_id = $2 AND name = $3 AND version = $4 RETURNING {COLUMNS}"
+         WHERE team_id = $2 AND name = $3 AND version = $4 AND owner_kind = 'user' RETURNING {COLUMNS}"
     ))
     .bind(spec_json)
     .bind(team.id.as_uuid())
@@ -213,7 +238,7 @@ pub async fn update_route_config(
         }
         None => {
             let current: Option<i64> = sqlx::query_scalar(
-                "SELECT version FROM route_configs WHERE team_id = $1 AND name = $2",
+                "SELECT version FROM route_configs WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'",
             )
             .bind(team.id.as_uuid())
             .bind(name)
@@ -236,6 +261,12 @@ pub async fn delete_route_config(
     name: &str,
     expected_version: i64,
 ) -> DomainResult<RouteConfigId> {
+    if route_config_discovery_owned(tx, team_id, name).await? {
+        return Err(DomainError::conflict(format!(
+            "route config \"{name}\" is owned by a discovery session"
+        ))
+        .with_hint("stop the discovery session to remove it"));
+    }
     // Dependents first: listeners bound to this route config block deletion with names.
     let dependents: Vec<String> = sqlx::query_scalar(
         "SELECT l.name FROM listeners l \
@@ -256,7 +287,7 @@ pub async fn delete_route_config(
         .with_hint("detach or delete those listeners first"));
     }
     let row = sqlx::query(
-        "DELETE FROM route_configs WHERE team_id = $1 AND name = $2 AND version = $3 RETURNING id",
+        "DELETE FROM route_configs WHERE team_id = $1 AND name = $2 AND version = $3 AND owner_kind = 'user' RETURNING id",
     )
     .bind(team_id.as_uuid())
     .bind(name)
@@ -268,7 +299,7 @@ pub async fn delete_route_config(
         Some(row) => Ok(RouteConfigId::from(row.get::<Uuid, _>("id"))),
         None => {
             let current: Option<i64> = sqlx::query_scalar(
-                "SELECT version FROM route_configs WHERE team_id = $1 AND name = $2",
+                "SELECT version FROM route_configs WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'",
             )
             .bind(team_id.as_uuid())
             .bind(name)
@@ -283,6 +314,41 @@ pub async fn delete_route_config(
             ))
         }
     }
+}
+
+async fn route_config_discovery_owned(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<bool> {
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT owner_kind FROM route_configs WHERE team_id = $1 AND name = $2")
+            .bind(team_id.as_uuid())
+            .bind(name)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("read route-config owner: {e}")))?;
+    Ok(owner.as_deref() == Some("discovery"))
+}
+
+pub async fn delete_discovery_route_config(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    owner_id: Uuid,
+    name: &str,
+) -> DomainResult<Option<RouteConfigId>> {
+    let row = sqlx::query(
+        "DELETE FROM route_configs \
+         WHERE team_id = $1 AND owner_kind = 'discovery' AND owner_id = $2 AND name = $3 \
+         RETURNING id",
+    )
+    .bind(team_id.as_uuid())
+    .bind(owner_id)
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete discovery route-config: {e}")))?;
+    Ok(row.map(|row| RouteConfigId::from(row.get::<Uuid, _>("id"))))
 }
 
 /// Route configs whose actions reference the given cluster (cluster-delete guard).
@@ -375,18 +441,41 @@ pub async fn create_listener(
     name: &str,
     spec: &ListenerSpec,
 ) -> DomainResult<Listener> {
+    create_listener_with_owner(tx, team, name, spec, "user", None).await
+}
+
+pub async fn create_discovery_listener(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    owner_id: Uuid,
+    name: &str,
+    spec: &ListenerSpec,
+) -> DomainResult<Listener> {
+    create_listener_with_owner(tx, team, name, spec, "discovery", Some(owner_id)).await
+}
+
+async fn create_listener_with_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    name: &str,
+    spec: &ListenerSpec,
+    owner_kind: &str,
+    owner_id: Option<Uuid>,
+) -> DomainResult<Listener> {
     let rc_id = resolve_listener_rc_ref(tx, team.id, spec).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize listener spec: {e}")))?;
     let row = sqlx::query(&format!(
-        "INSERT INTO listeners (id, team_id, org_id, name, spec) \
-         VALUES ($1, $2, $3, $4, $5) RETURNING {COLUMNS}"
+        "INSERT INTO listeners (id, team_id, org_id, name, spec, owner_kind, owner_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {COLUMNS}"
     ))
     .bind(ListenerId::generate().as_uuid())
     .bind(team.id.as_uuid())
     .bind(team.org_id.as_uuid())
     .bind(name)
     .bind(spec_json)
+    .bind(owner_kind)
+    .bind(owner_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| map_unique(e, "listener", name))?;
@@ -401,7 +490,7 @@ pub async fn get_listener(
     name: &str,
 ) -> DomainResult<Option<Listener>> {
     let row = sqlx::query(&format!(
-        "SELECT {COLUMNS} FROM listeners WHERE team_id = $1 AND name = $2"
+        "SELECT {COLUMNS} FROM listeners WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'"
     ))
     .bind(team_id.as_uuid())
     .bind(name)
@@ -418,7 +507,7 @@ pub async fn list_listeners(
     offset: i64,
 ) -> DomainResult<(Vec<Listener>, i64)> {
     let rows = sqlx::query(&format!(
-        "SELECT {COLUMNS} FROM listeners WHERE team_id = $1 ORDER BY name LIMIT $2 OFFSET $3"
+        "SELECT {COLUMNS} FROM listeners WHERE team_id = $1 AND owner_kind = 'user' ORDER BY name LIMIT $2 OFFSET $3"
     ))
     .bind(team_id.as_uuid())
     .bind(limit.clamp(1, 500))
@@ -426,11 +515,13 @@ pub async fn list_listeners(
     .fetch_all(pool)
     .await
     .map_err(|e| DomainError::internal(format!("list listeners: {e}")))?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM listeners WHERE team_id = $1")
-        .bind(team_id.as_uuid())
-        .fetch_one(pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("count listeners: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM listeners WHERE team_id = $1 AND owner_kind = 'user'",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count listeners: {e}")))?;
     rows.iter()
         .map(listener_from_row)
         .collect::<DomainResult<Vec<_>>>()
@@ -449,7 +540,7 @@ pub async fn update_listener(
         .map_err(|e| DomainError::internal(format!("serialize listener spec: {e}")))?;
     let row = sqlx::query(&format!(
         "UPDATE listeners SET spec = $1, version = version + 1, updated_at = now() \
-         WHERE team_id = $2 AND name = $3 AND version = $4 RETURNING {COLUMNS}"
+         WHERE team_id = $2 AND name = $3 AND version = $4 AND owner_kind = 'user' RETURNING {COLUMNS}"
     ))
     .bind(spec_json)
     .bind(team.id.as_uuid())
@@ -466,7 +557,7 @@ pub async fn update_listener(
         }
         None => {
             let current: Option<i64> = sqlx::query_scalar(
-                "SELECT version FROM listeners WHERE team_id = $1 AND name = $2",
+                "SELECT version FROM listeners WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'",
             )
             .bind(team.id.as_uuid())
             .bind(name)
@@ -489,8 +580,14 @@ pub async fn delete_listener(
     name: &str,
     expected_version: i64,
 ) -> DomainResult<ListenerId> {
+    if listener_discovery_owned(tx, team_id, name).await? {
+        return Err(DomainError::conflict(format!(
+            "listener \"{name}\" is owned by a discovery session"
+        ))
+        .with_hint("stop the discovery session to remove it"));
+    }
     let row = sqlx::query(
-        "DELETE FROM listeners WHERE team_id = $1 AND name = $2 AND version = $3 RETURNING id",
+        "DELETE FROM listeners WHERE team_id = $1 AND name = $2 AND version = $3 AND owner_kind = 'user' RETURNING id",
     )
     .bind(team_id.as_uuid())
     .bind(name)
@@ -502,7 +599,7 @@ pub async fn delete_listener(
         Some(row) => Ok(ListenerId::from(row.get::<Uuid, _>("id"))),
         None => {
             let current: Option<i64> = sqlx::query_scalar(
-                "SELECT version FROM listeners WHERE team_id = $1 AND name = $2",
+                "SELECT version FROM listeners WHERE team_id = $1 AND name = $2 AND owner_kind = 'user'",
             )
             .bind(team_id.as_uuid())
             .bind(name)
@@ -519,16 +616,53 @@ pub async fn delete_listener(
     }
 }
 
+async fn listener_discovery_owned(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<bool> {
+    let owner: Option<String> =
+        sqlx::query_scalar("SELECT owner_kind FROM listeners WHERE team_id = $1 AND name = $2")
+            .bind(team_id.as_uuid())
+            .bind(name)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("read listener owner: {e}")))?;
+    Ok(owner.as_deref() == Some("discovery"))
+}
+
+pub async fn delete_discovery_listener(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    owner_id: Uuid,
+    name: &str,
+) -> DomainResult<Option<ListenerId>> {
+    let row = sqlx::query(
+        "DELETE FROM listeners \
+         WHERE team_id = $1 AND owner_kind = 'discovery' AND owner_id = $2 AND name = $3 \
+         RETURNING id",
+    )
+    .bind(team_id.as_uuid())
+    .bind(owner_id)
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete discovery listener: {e}")))?;
+    Ok(row.map(|row| ListenerId::from(row.get::<Uuid, _>("id"))))
+}
+
 pub async fn count_route_configs(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
-    sqlx::query_scalar("SELECT count(*) FROM route_configs WHERE team_id = $1")
-        .bind(team_id.as_uuid())
-        .fetch_one(pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("count route configs: {e}")))
+    sqlx::query_scalar(
+        "SELECT count(*) FROM route_configs WHERE team_id = $1 AND owner_kind = 'user'",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count route configs: {e}")))
 }
 
 pub async fn count_listeners(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
-    sqlx::query_scalar("SELECT count(*) FROM listeners WHERE team_id = $1")
+    sqlx::query_scalar("SELECT count(*) FROM listeners WHERE team_id = $1 AND owner_kind = 'user'")
         .bind(team_id.as_uuid())
         .fetch_one(pool)
         .await
