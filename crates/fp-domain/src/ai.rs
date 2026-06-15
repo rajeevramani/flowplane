@@ -19,6 +19,7 @@ pub struct AiProvider {
 
 pub const AI_MODEL_HEADER: &str = "x-flowplane-ai-model";
 pub const DEFAULT_AI_ROUTE_TIMEOUT_SECS: u32 = 120;
+pub const MAX_AI_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiRoute {
@@ -93,6 +94,20 @@ pub struct AiRouteMaterializedResources {
     pub cluster_names: Vec<String>,
     pub route_config_name: String,
     pub listener_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiChatRequest {
+    pub model: String,
+    pub body: Vec<u8>,
+    pub include_usage_injected: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct OpenAiTokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -229,6 +244,131 @@ impl AiRouteSpec {
         }
         Ok(())
     }
+
+    pub fn eligible_backend_indexes(&self, model: &str) -> Vec<usize> {
+        self.backends
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, backend)| {
+                (backend.models.is_empty() || backend.models.iter().any(|m| m == model))
+                    .then_some(idx)
+            })
+            .collect()
+    }
+}
+
+pub fn prepare_openai_chat_request(body: &[u8]) -> DomainResult<OpenAiChatRequest> {
+    if body.len() > MAX_AI_REQUEST_BODY_BYTES {
+        return Err(DomainError::validation(format!(
+            "AI request body exceeds {} bytes",
+            MAX_AI_REQUEST_BODY_BYTES
+        )));
+    }
+    let mut value: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|_| DomainError::validation("AI request body must be JSON"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| DomainError::validation("AI request body must be a JSON object"))?;
+    let model = object
+        .get("model")
+        .and_then(|value| value.as_str())
+        .filter(|model| !model.trim().is_empty())
+        .ok_or_else(|| DomainError::validation("AI request body must include model"))?
+        .to_string();
+
+    let include_usage_injected = if object.get("stream").and_then(|v| v.as_bool()) == Some(true) {
+        force_stream_usage(object)?
+    } else {
+        false
+    };
+    let body = if include_usage_injected {
+        serde_json::to_vec(&value)
+            .map_err(|err| DomainError::internal(format!("serialize AI request body: {err}")))?
+    } else {
+        body.to_vec()
+    };
+    Ok(OpenAiChatRequest {
+        model,
+        body,
+        include_usage_injected,
+    })
+}
+
+fn force_stream_usage(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> DomainResult<bool> {
+    match object.get_mut("stream_options") {
+        Some(serde_json::Value::Object(options)) => {
+            if options.get("include_usage").and_then(|v| v.as_bool()) == Some(true) {
+                Ok(false)
+            } else {
+                options.insert("include_usage".into(), serde_json::Value::Bool(true));
+                Ok(true)
+            }
+        }
+        Some(_) => Err(DomainError::validation(
+            "AI request stream_options must be an object",
+        )),
+        None => {
+            object.insert(
+                "stream_options".into(),
+                serde_json::json!({"include_usage": true}),
+            );
+            Ok(true)
+        }
+    }
+}
+
+pub fn openai_usage_from_json(value: &serde_json::Value) -> Option<OpenAiTokenUsage> {
+    let usage = value.get("usage")?;
+    Some(OpenAiTokenUsage {
+        prompt_tokens: usage.get("prompt_tokens")?.as_u64()?,
+        completion_tokens: usage.get("completion_tokens")?.as_u64()?,
+        total_tokens: usage.get("total_tokens")?.as_u64()?,
+    })
+}
+
+pub fn strip_synthetic_openai_usage_sse(
+    body: &str,
+    include_usage_injected: bool,
+) -> (String, Option<OpenAiTokenUsage>) {
+    let mut usage = None;
+    if !include_usage_injected {
+        for event in body.split("\n\n") {
+            if let Some(parsed) = usage_from_sse_event(event) {
+                usage = Some(parsed);
+            }
+        }
+        return (body.to_string(), usage);
+    }
+
+    let mut kept = Vec::new();
+    for event in body.split("\n\n") {
+        if event.is_empty() {
+            continue;
+        }
+        if let Some(parsed) = usage_from_sse_event(event) {
+            usage = Some(parsed);
+        } else {
+            kept.push(event);
+        }
+    }
+    let stripped = if kept.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n\n", kept.join("\n\n"))
+    };
+    (stripped, usage)
+}
+
+fn usage_from_sse_event(event: &str) -> Option<OpenAiTokenUsage> {
+    let data = event
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim)
+        .find(|line| !line.is_empty() && *line != "[DONE]")?;
+    let value = serde_json::from_str::<serde_json::Value>(data).ok()?;
+    openai_usage_from_json(&value)
 }
 
 #[cfg(test)]
@@ -248,5 +388,78 @@ mod tests {
             auth_header: "authorization".into(),
         };
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn openai_request_extracts_model_and_forces_stream_usage() {
+        let request = prepare_openai_chat_request(
+            br#"{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        )
+        .expect("request");
+
+        assert_eq!(request.model, "gpt-5");
+        assert!(request.include_usage_injected);
+        let body: serde_json::Value = serde_json::from_slice(&request.body).expect("json");
+        assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn openai_request_rejects_oversized_or_missing_model() {
+        let err = prepare_openai_chat_request(&vec![b' '; MAX_AI_REQUEST_BODY_BYTES + 1])
+            .expect_err("oversized");
+        assert_eq!(err.code, crate::ErrorCode::ValidationFailed);
+
+        let err = prepare_openai_chat_request(br#"{"messages":[]}"#).expect_err("missing model");
+        assert_eq!(err.code, crate::ErrorCode::ValidationFailed);
+    }
+
+    #[test]
+    fn ai_route_selects_model_specific_and_catch_all_backends() {
+        let provider_id = AiProviderId::generate();
+        let spec = AiRouteSpec {
+            listener_port: 19000,
+            path: default_chat_path(),
+            backends: vec![
+                AiRouteBackend {
+                    provider_id,
+                    models: vec!["gpt-5".into()],
+                    model_override: None,
+                    weight: 1,
+                    priority: 0,
+                },
+                AiRouteBackend {
+                    provider_id,
+                    models: Vec::new(),
+                    model_override: None,
+                    weight: 1,
+                    priority: 0,
+                },
+            ],
+        };
+
+        assert_eq!(spec.eligible_backend_indexes("gpt-5"), vec![0, 1]);
+        assert_eq!(spec.eligible_backend_indexes("other"), vec![1]);
+    }
+
+    #[test]
+    fn strips_synthetic_stream_usage_chunk_but_keeps_usage_for_accounting() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let (stripped, usage) = strip_synthetic_openai_usage_sse(body, true);
+
+        assert!(stripped.contains("\"content\":\"hi\""));
+        assert!(!stripped.contains("\"usage\""));
+        assert_eq!(
+            usage,
+            Some(OpenAiTokenUsage {
+                prompt_tokens: 2,
+                completion_tokens: 3,
+                total_tokens: 5,
+            })
+        );
     }
 }

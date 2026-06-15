@@ -5,23 +5,28 @@
 //! tenancy, quota, merge, TTL, and counter rules to storage.
 
 use crate::ads::TeamResolver;
-use envoy_types::pb::envoy::config::core::v3::{HeaderMap, RequestMethod};
+use envoy_types::pb::envoy::config::core::v3::{
+    header_value_option, HeaderMap, HeaderValue, HeaderValueOption, RequestMethod,
+};
 use envoy_types::pb::envoy::data::accesslog::v3::HttpAccessLogEntry;
+use envoy_types::pb::envoy::r#type::v3::{HttpStatus, StatusCode};
 use envoy_types::pb::envoy::service::accesslog::v3::{
     access_log_service_server::{AccessLogService, AccessLogServiceServer},
     stream_access_logs_message, StreamAccessLogsMessage, StreamAccessLogsResponse,
 };
 use envoy_types::pb::envoy::service::ext_proc::v3::{
-    common_response,
+    body_mutation, common_response,
     external_processor_server::{ExternalProcessor, ExternalProcessorServer},
-    processing_request, processing_response, BodyResponse, CommonResponse, HeadersResponse,
-    ProcessingRequest, ProcessingResponse, TrailersResponse,
+    processing_request, processing_response, BodyMutation, BodyResponse, CommonResponse,
+    HeaderMutation, HeadersResponse, ImmediateResponse, ProcessingRequest, ProcessingResponse,
+    TrailersResponse,
 };
 use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
-    ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId, RouteConfigId,
-    TeamId,
+    prepare_openai_chat_request, strip_synthetic_openai_usage_sse, ApiDefinitionId,
+    CaptureSessionId, DiscoverySessionId, DomainError, ListenerId, RouteConfigId, TeamId,
+    AI_MODEL_HEADER,
 };
 use fp_storage::repos::{api_lifecycle, discovery, identity};
 use serde_json::{Map, Value};
@@ -74,6 +79,11 @@ struct ExtProcState {
     request_headers: Map<String, Value>,
     response_headers: Map<String, Value>,
     response_status: Option<i32>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AiExtProcState {
+    include_usage_injected: bool,
 }
 
 impl LearningCaptureService {
@@ -186,6 +196,11 @@ impl ExternalProcessor for LearningCaptureService {
         &self,
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
+        if is_ai_processor(request.metadata()) {
+            return Ok(Response::new(ReceiverStream::new(ai_process_stream(
+                request.into_inner(),
+            ))));
+        }
         let ctx = capture_context(&request, &self.resolver).await?;
         let mut stream = request.into_inner();
         let service = self.clone();
@@ -214,6 +229,37 @@ impl ExternalProcessor for LearningCaptureService {
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
+}
+
+fn ai_process_stream(
+    mut stream: Streaming<ProcessingRequest>,
+) -> tokio::sync::mpsc::Receiver<Result<ProcessingResponse, Status>> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProcessingResponse, Status>>(16);
+    tokio::spawn(async move {
+        let mut state = AiExtProcState::default();
+        loop {
+            match stream.message().await {
+                Ok(Some(message)) => {
+                    if tx.send(Ok(ai_response(&mut state, message))).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(status) => {
+                    tracing::debug!(code = ?status.code(), message = %status.message(), "AI ExtProc stream ended with error");
+                    break;
+                }
+            }
+        }
+    });
+    rx
+}
+
+fn is_ai_processor(metadata: &MetadataMap) -> bool {
+    metadata
+        .get("x-flowplane-ai-processor")
+        .and_then(|value| value.to_str().ok())
+        == Some("true")
 }
 
 async fn capture_context<T>(
@@ -539,6 +585,165 @@ fn continue_response(request: &ProcessingRequest) -> ProcessingResponse {
     }
 }
 
+fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> ProcessingResponse {
+    let Some(request) = request.request else {
+        return request_headers_response(CommonResponse {
+            status: common_response::ResponseStatus::Continue as i32,
+            ..Default::default()
+        });
+    };
+    match request {
+        processing_request::Request::RequestHeaders(_) => {
+            request_headers_response(remove_internal_model_header())
+        }
+        processing_request::Request::RequestBody(body) => {
+            match prepare_openai_chat_request(&body.body) {
+                Ok(prepared) => {
+                    state.include_usage_injected = prepared.include_usage_injected;
+                    request_body_response(CommonResponse {
+                        status: common_response::ResponseStatus::Continue as i32,
+                        header_mutation: Some(HeaderMutation {
+                            set_headers: vec![HeaderValueOption {
+                                header: Some(HeaderValue {
+                                    key: AI_MODEL_HEADER.into(),
+                                    value: prepared.model,
+                                    raw_value: Vec::new(),
+                                }),
+                                append_action:
+                                    header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
+                                        as i32,
+                                ..Default::default()
+                            }],
+                            remove_headers: Vec::new(),
+                        }),
+                        body_mutation: prepared.include_usage_injected.then_some(BodyMutation {
+                            mutation: Some(body_mutation::Mutation::Body(prepared.body)),
+                        }),
+                        clear_route_cache: true,
+                        ..Default::default()
+                    })
+                }
+                Err(err) => immediate_response(400, err.message),
+            }
+        }
+        processing_request::Request::ResponseBody(body) => {
+            let body_text = String::from_utf8_lossy(&body.body);
+            let (stripped, _usage) =
+                strip_synthetic_openai_usage_sse(&body_text, state.include_usage_injected);
+            if state.include_usage_injected && stripped.as_bytes() != body.body.as_slice() {
+                response_body_response(CommonResponse {
+                    status: common_response::ResponseStatus::Continue as i32,
+                    body_mutation: Some(BodyMutation {
+                        mutation: Some(body_mutation::Mutation::Body(stripped.into_bytes())),
+                    }),
+                    ..Default::default()
+                })
+            } else {
+                response_body_response(CommonResponse {
+                    status: common_response::ResponseStatus::Continue as i32,
+                    ..Default::default()
+                })
+            }
+        }
+        other => continue_for_request(other),
+    }
+}
+
+fn continue_for_request(request: processing_request::Request) -> ProcessingResponse {
+    let common = Some(CommonResponse {
+        status: common_response::ResponseStatus::Continue as i32,
+        ..Default::default()
+    });
+    let response = match request {
+        processing_request::Request::RequestHeaders(_) => {
+            processing_response::Response::RequestHeaders(HeadersResponse { response: common })
+        }
+        processing_request::Request::ResponseHeaders(_) => {
+            processing_response::Response::ResponseHeaders(HeadersResponse { response: common })
+        }
+        processing_request::Request::RequestBody(_) => {
+            processing_response::Response::RequestBody(BodyResponse { response: common })
+        }
+        processing_request::Request::ResponseBody(_) => {
+            processing_response::Response::ResponseBody(BodyResponse { response: common })
+        }
+        processing_request::Request::RequestTrailers(_) => {
+            processing_response::Response::RequestTrailers(TrailersResponse {
+                header_mutation: None,
+            })
+        }
+        processing_request::Request::ResponseTrailers(_) => {
+            processing_response::Response::ResponseTrailers(TrailersResponse {
+                header_mutation: None,
+            })
+        }
+    };
+    ProcessingResponse {
+        response: Some(response),
+        ..Default::default()
+    }
+}
+
+fn remove_internal_model_header() -> CommonResponse {
+    CommonResponse {
+        status: common_response::ResponseStatus::Continue as i32,
+        header_mutation: Some(HeaderMutation {
+            set_headers: Vec::new(),
+            remove_headers: vec![AI_MODEL_HEADER.into()],
+        }),
+        ..Default::default()
+    }
+}
+
+fn request_headers_response(common: CommonResponse) -> ProcessingResponse {
+    ProcessingResponse {
+        response: Some(processing_response::Response::RequestHeaders(
+            HeadersResponse {
+                response: Some(common),
+            },
+        )),
+        ..Default::default()
+    }
+}
+
+fn request_body_response(common: CommonResponse) -> ProcessingResponse {
+    ProcessingResponse {
+        response: Some(processing_response::Response::RequestBody(BodyResponse {
+            response: Some(common),
+        })),
+        ..Default::default()
+    }
+}
+
+fn response_body_response(common: CommonResponse) -> ProcessingResponse {
+    ProcessingResponse {
+        response: Some(processing_response::Response::ResponseBody(BodyResponse {
+            response: Some(common),
+        })),
+        ..Default::default()
+    }
+}
+
+fn immediate_response(status: u32, message: String) -> ProcessingResponse {
+    ProcessingResponse {
+        response: Some(processing_response::Response::ImmediateResponse(
+            ImmediateResponse {
+                status: Some(HttpStatus {
+                    code: if status == 400 {
+                        StatusCode::BadRequest as i32
+                    } else {
+                        status as i32
+                    },
+                }),
+                body: message.into_bytes(),
+                details: "flowplane_ai_request_invalid".into(),
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+}
+
 fn status_from_domain(err: DomainError) -> Status {
     use fp_domain::ErrorCode;
     match err.code {
@@ -744,5 +949,120 @@ mod tests {
         let (body, truncated) = capture_body(vec![b'a'; MAX_CAPTURE_BODY_BYTES + 1], false);
         assert_eq!(body.len(), MAX_CAPTURE_BODY_BYTES);
         assert!(truncated);
+    }
+
+    #[test]
+    fn ai_ext_proc_sets_model_header_and_replaces_forced_usage_body() {
+        let mut state = AiExtProcState::default();
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::RequestBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: br#"{"model":"gpt-5","stream":true,"messages":[]}"#.to_vec(),
+                        end_of_stream: true,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::RequestBody(body) = response.response.expect("response")
+        else {
+            panic!("expected request body response");
+        };
+        let common = body.response.expect("common");
+        assert!(common.clear_route_cache);
+        let mutation = common.header_mutation.expect("headers");
+        assert_eq!(
+            mutation.set_headers[0].header.as_ref().expect("header").key,
+            AI_MODEL_HEADER
+        );
+        assert_eq!(
+            mutation.set_headers[0]
+                .header
+                .as_ref()
+                .expect("header")
+                .value,
+            "gpt-5"
+        );
+        let body_mutation = common.body_mutation.expect("body mutation");
+        let Some(body_mutation::Mutation::Body(body)) = body_mutation.mutation else {
+            panic!("expected replacement body");
+        };
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["stream_options"]["include_usage"], true);
+        assert!(state.include_usage_injected);
+    }
+
+    #[test]
+    fn ai_ext_proc_rejects_malformed_request_body() {
+        let mut state = AiExtProcState::default();
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::RequestBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: br#"{"messages":[]}"#.to_vec(),
+                        end_of_stream: true,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::ImmediateResponse(response) =
+            response.response.expect("response")
+        else {
+            panic!("expected immediate response");
+        };
+        assert_eq!(
+            response.status.expect("status").code,
+            StatusCode::BadRequest as i32
+        );
+    }
+
+    #[test]
+    fn ai_ext_proc_strips_synthetic_usage_response_body() {
+        let mut state = AiExtProcState {
+            include_usage_injected: true,
+        };
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: concat!(
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n"
+                        )
+                        .as_bytes()
+                        .to_vec(),
+                        end_of_stream: true,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::ResponseBody(body) =
+            response.response.expect("response")
+        else {
+            panic!("expected response body response");
+        };
+        let body_mutation = body
+            .response
+            .expect("common")
+            .body_mutation
+            .expect("body mutation");
+        let Some(body_mutation::Mutation::Body(body)) = body_mutation.mutation else {
+            panic!("expected replacement body");
+        };
+        let body = String::from_utf8(body).expect("utf8");
+        assert!(body.contains("\"content\":\"hi\""));
+        assert!(!body.contains("\"usage\""));
     }
 }

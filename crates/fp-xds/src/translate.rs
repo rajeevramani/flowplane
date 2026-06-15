@@ -32,9 +32,11 @@ use std::collections::BTreeMap;
 
 pub const LEARNING_ALS_CLUSTER: &str = "xds_cluster";
 pub const LEARNING_EXT_PROC_CLUSTER: &str = "xds_cluster";
+pub const AI_EXT_PROC_CLUSTER: &str = "xds_cluster";
 const LEARNING_ALS_NAME: &str = "envoy.access_loggers.http_grpc";
 pub(crate) const LEARNING_EXT_PROC_FILTER_PREFIX: &str =
     "envoy.filters.http.ext_proc.flowplane_learning.";
+const AI_EXT_PROC_FILTER_NAME: &str = "envoy.filters.http.ext_proc.flowplane_ai";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LearningCaptureInjection {
@@ -1786,6 +1788,9 @@ pub fn listener_to_proto_with_learning(
     for entry in &spec.http_filters {
         http_filters.push(http_filter_to_proto(entry)?);
     }
+    if name.starts_with("ai-") {
+        http_filters.push(ai_ext_proc_filter());
+    }
     for capture in captures {
         http_filters.push(ext_proc_filter(capture));
     }
@@ -1908,6 +1913,20 @@ fn grpc_service(cluster: &'static str, capture: &LearningCaptureInjection) -> co
     }
 }
 
+fn ai_grpc_service() -> core::GrpcService {
+    core::GrpcService {
+        timeout: Some(millis_duration(5_000)),
+        initial_metadata: vec![header("x-flowplane-ai-processor", "true".into())],
+        target_specifier: Some(core::grpc_service::TargetSpecifier::EnvoyGrpc(
+            core::grpc_service::EnvoyGrpc {
+                cluster_name: AI_EXT_PROC_CLUSTER.to_string(),
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+}
+
 fn header(key: &'static str, value: String) -> core::HeaderValue {
     core::HeaderValue {
         key: key.to_string(),
@@ -1946,6 +1965,36 @@ fn learning_access_log(capture: &LearningCaptureInjection) -> accesslog::AccessL
                 additional_response_trailers_to_log: Vec::new(),
             },
         ))),
+    }
+}
+
+fn ai_ext_proc_filter() -> hcm::HttpFilter {
+    hcm::HttpFilter {
+        name: AI_EXT_PROC_FILTER_NAME.to_string(),
+        config_type: Some(hcm::http_filter::ConfigType::TypedConfig(any(
+            "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
+            &ext_proc::ExternalProcessor {
+                grpc_service: Some(ai_grpc_service()),
+                failure_mode_allow: false,
+                processing_mode: Some(ext_proc::ProcessingMode {
+                    request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
+                    response_header_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                    request_body_mode: ext_proc::processing_mode::BodySendMode::Buffered as i32,
+                    response_body_mode: ext_proc::processing_mode::BodySendMode::BufferedPartial
+                        as i32,
+                    request_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                    response_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                }),
+                message_timeout: Some(millis_duration(5_000)),
+                stat_prefix: "flowplane_ai".into(),
+                observability_mode: false,
+                disable_immediate_response: false,
+                route_cache_action: ext_proc::external_processor::RouteCacheAction::Default as i32,
+                ..Default::default()
+            },
+        ))),
+        is_optional: false,
+        ..Default::default()
     }
 }
 
@@ -2982,6 +3031,59 @@ mod tests {
             }
             _ => panic!("expected typed HCM"),
         }
+    }
+
+    fn hcm_of_named(name: &str, spec: &ListenerSpec) -> hcm::HttpConnectionManager {
+        let proto = listener_to_proto(name, spec).expect("translate");
+        match &proto.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(a)) => {
+                hcm::HttpConnectionManager::decode(a.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        }
+    }
+
+    #[test]
+    fn ai_listener_injects_ai_ext_proc_before_router() {
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10000,
+            protocol: ListenerProtocol::Http,
+            route_config: Some("ai-chat-routes".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+
+        let manager = hcm_of_named("ai-chat-listener", &spec);
+        let names = manager
+            .http_filters
+            .iter()
+            .map(|filter| filter.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![AI_EXT_PROC_FILTER_NAME, "envoy.filters.http.router"]
+        );
+        let ext_any = match &manager.http_filters[0].config_type {
+            Some(hcm::http_filter::ConfigType::TypedConfig(any)) => any,
+            _ => panic!("expected ext proc typed config"),
+        };
+        let ext = ext_proc::ExternalProcessor::decode(ext_any.value.as_slice()).expect("ext proc");
+        assert!(!ext.failure_mode_allow);
+        assert_eq!(
+            ext.processing_mode.expect("mode").request_body_mode,
+            ext_proc::processing_mode::BodySendMode::Buffered as i32
+        );
+        let metadata = ext
+            .grpc_service
+            .expect("grpc")
+            .initial_metadata
+            .into_iter()
+            .map(|header| (header.key, header.value))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(metadata["x-flowplane-ai-processor"], "true");
     }
 
     #[test]
