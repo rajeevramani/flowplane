@@ -85,12 +85,20 @@ struct ExtProcState {
 
 #[derive(Debug, Clone, Default)]
 struct AiExtProcState {
+    context: Option<AiExtProcContext>,
     include_usage_injected: bool,
     response_status: Option<i32>,
     response_content_type: Option<String>,
     response_sse_remainder: String,
     response_json_body: Vec<u8>,
     last_usage: Option<OpenAiTokenUsage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AiExtProcContext {
+    team_id: TeamId,
+    listener_id: ListenerId,
+    route_config_id: RouteConfigId,
 }
 
 impl LearningCaptureService {
@@ -204,8 +212,10 @@ impl ExternalProcessor for LearningCaptureService {
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
         if is_ai_processor(request.metadata()) {
+            let context = ai_context(request.metadata())?;
             return Ok(Response::new(ReceiverStream::new(ai_process_stream(
                 request.into_inner(),
+                context,
             ))));
         }
         let ctx = capture_context(&request, &self.resolver).await?;
@@ -240,10 +250,14 @@ impl ExternalProcessor for LearningCaptureService {
 
 fn ai_process_stream(
     mut stream: Streaming<ProcessingRequest>,
+    context: Option<AiExtProcContext>,
 ) -> tokio::sync::mpsc::Receiver<Result<ProcessingResponse, Status>> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProcessingResponse, Status>>(16);
     tokio::spawn(async move {
-        let mut state = AiExtProcState::default();
+        let mut state = AiExtProcState {
+            context,
+            ..Default::default()
+        };
         loop {
             match stream.message().await {
                 Ok(Some(message)) => {
@@ -267,6 +281,23 @@ fn is_ai_processor(metadata: &MetadataMap) -> bool {
         .get("x-flowplane-ai-processor")
         .and_then(|value| value.to_str().ok())
         == Some("true")
+}
+
+fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status> {
+    let team_id = optional_metadata_uuid(metadata, "x-flowplane-team-id")?;
+    let listener_id = optional_metadata_uuid(metadata, "x-flowplane-listener-id")?;
+    let route_config_id = optional_metadata_uuid(metadata, "x-flowplane-route-config-id")?;
+    match (team_id, listener_id, route_config_id) {
+        (Some(team_id), Some(listener_id), Some(route_config_id)) => Ok(Some(AiExtProcContext {
+            team_id: TeamId::from(team_id),
+            listener_id: ListenerId::from(listener_id),
+            route_config_id: RouteConfigId::from(route_config_id),
+        })),
+        (None, None, None) => Ok(None),
+        _ => Err(Status::invalid_argument(
+            "AI processor metadata must include team_id, listener_id, and route_config_id together",
+        )),
+    }
 }
 
 async fn capture_context<T>(
@@ -692,7 +723,7 @@ fn ai_response_body_mutation(
         let (stripped, usage) =
             strip_synthetic_openai_usage_sse(&complete, state.include_usage_injected);
         if let Some(usage) = usage {
-            state.last_usage = Some(usage);
+            remember_ai_usage(state, usage);
         }
         state.response_sse_remainder = remainder;
 
@@ -732,11 +763,24 @@ fn collect_unary_usage_body(state: &mut AiExtProcState, body: &[u8], end_of_stre
     if end_of_stream {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&state.response_json_body) {
             if let Some(usage) = openai_usage_from_json(&value) {
-                state.last_usage = Some(usage);
+                remember_ai_usage(state, usage);
             }
         }
         state.response_json_body.clear();
     }
+}
+
+fn remember_ai_usage(state: &mut AiExtProcState, usage: OpenAiTokenUsage) {
+    if let Some(context) = state.context {
+        tracing::debug!(
+            team = %context.team_id,
+            listener = %context.listener_id,
+            route_config = %context.route_config_id,
+            total_tokens = usage.total_tokens,
+            "captured AI usage for future persistence"
+        );
+    }
+    state.last_usage = Some(usage);
 }
 
 fn continue_for_request(request: processing_request::Request) -> ProcessingResponse {
@@ -939,6 +983,52 @@ mod tests {
         assert_eq!(
             err.message(),
             "capture team_id does not match the client certificate"
+        );
+    }
+
+    #[test]
+    fn ai_context_requires_complete_identity_metadata() {
+        let mut request = Request::new(());
+        request.metadata_mut().insert(
+            "x-flowplane-team-id",
+            Uuid::now_v7().to_string().parse().expect("metadata value"),
+        );
+
+        let err = ai_context(request.metadata()).expect_err("partial metadata");
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("team_id, listener_id"));
+    }
+
+    #[test]
+    fn ai_context_reads_complete_identity_metadata() {
+        let team_id = Uuid::now_v7();
+        let listener_id = Uuid::now_v7();
+        let route_config_id = Uuid::now_v7();
+        let mut request = Request::new(());
+        let metadata = request.metadata_mut();
+        metadata.insert(
+            "x-flowplane-team-id",
+            team_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-listener-id",
+            listener_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-route-config-id",
+            route_config_id.to_string().parse().expect("metadata value"),
+        );
+
+        let context = ai_context(request.metadata())
+            .expect("context parse")
+            .expect("context present");
+
+        assert_eq!(context.team_id, TeamId::from(team_id));
+        assert_eq!(context.listener_id, ListenerId::from(listener_id));
+        assert_eq!(
+            context.route_config_id,
+            RouteConfigId::from(route_config_id)
         );
     }
 

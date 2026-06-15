@@ -499,10 +499,18 @@ impl SnapshotCache {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            let proto = match translate::listener_to_proto_with_learning(
+            let ai_metadata = route_config_id
+                .filter(|_| listener.name.starts_with("ai-"))
+                .map(|route_config_id| translate::AiProcessorMetadata {
+                    team_id: team_id.as_uuid(),
+                    listener_id: listener.id.as_uuid(),
+                    route_config_id: route_config_id.as_uuid(),
+                });
+            let proto = match translate::listener_to_proto_with_learning_and_ai(
                 &listener.name,
                 &listener.spec,
                 &captures,
+                ai_metadata.as_ref(),
             ) {
                 Ok(proto) => proto,
                 Err(err) => {

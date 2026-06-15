@@ -58,6 +58,13 @@ pub struct DiscoveryCaptureMetadata {
     pub forwarded_upstream_tls: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiProcessorMetadata {
+    pub team_id: uuid::Uuid,
+    pub listener_id: uuid::Uuid,
+    pub route_config_id: uuid::Uuid,
+}
+
 fn any<M: Message>(type_url: &str, msg: &M) -> wkt::Any {
     wkt::Any {
         type_url: type_url.to_string(),
@@ -1789,6 +1796,15 @@ pub fn listener_to_proto_with_learning(
     spec: &ListenerSpec,
     captures: &[LearningCaptureInjection],
 ) -> DomainResult<lst::Listener> {
+    listener_to_proto_with_learning_and_ai(name, spec, captures, None)
+}
+
+pub fn listener_to_proto_with_learning_and_ai(
+    name: &str,
+    spec: &ListenerSpec,
+    captures: &[LearningCaptureInjection],
+    ai: Option<&AiProcessorMetadata>,
+) -> DomainResult<lst::Listener> {
     let route_config_name = spec.route_config.clone().ok_or_else(|| {
         DomainError::validation(format!(
             "listener \"{name}\" has no route_config bound; it cannot serve traffic yet"
@@ -1801,7 +1817,7 @@ pub fn listener_to_proto_with_learning(
         http_filters.push(http_filter_to_proto(entry)?);
     }
     if name.starts_with("ai-") {
-        http_filters.push(ai_ext_proc_filter());
+        http_filters.push(ai_ext_proc_filter(ai));
     }
     for capture in captures {
         http_filters.push(ext_proc_filter(capture));
@@ -1925,10 +1941,21 @@ fn grpc_service(cluster: &'static str, capture: &LearningCaptureInjection) -> co
     }
 }
 
-fn ai_grpc_service() -> core::GrpcService {
+fn ai_grpc_service(ai: Option<&AiProcessorMetadata>) -> core::GrpcService {
+    let mut initial_metadata = vec![header("x-flowplane-ai-processor", "true".into())];
+    if let Some(ai) = ai {
+        initial_metadata.extend([
+            header("x-flowplane-team-id", ai.team_id.to_string()),
+            header("x-flowplane-listener-id", ai.listener_id.to_string()),
+            header(
+                "x-flowplane-route-config-id",
+                ai.route_config_id.to_string(),
+            ),
+        ]);
+    }
     core::GrpcService {
         timeout: Some(millis_duration(5_000)),
-        initial_metadata: vec![header("x-flowplane-ai-processor", "true".into())],
+        initial_metadata,
         target_specifier: Some(core::grpc_service::TargetSpecifier::EnvoyGrpc(
             core::grpc_service::EnvoyGrpc {
                 cluster_name: AI_EXT_PROC_CLUSTER.to_string(),
@@ -1980,13 +2007,13 @@ fn learning_access_log(capture: &LearningCaptureInjection) -> accesslog::AccessL
     }
 }
 
-fn ai_ext_proc_filter() -> hcm::HttpFilter {
+fn ai_ext_proc_filter(ai: Option<&AiProcessorMetadata>) -> hcm::HttpFilter {
     hcm::HttpFilter {
         name: AI_EXT_PROC_FILTER_NAME.to_string(),
         config_type: Some(hcm::http_filter::ConfigType::TypedConfig(any(
             "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
             &ext_proc::ExternalProcessor {
-                grpc_service: Some(ai_grpc_service()),
+                grpc_service: Some(ai_grpc_service(ai)),
                 failure_mode_allow: false,
                 processing_mode: Some(ext_proc::ProcessingMode {
                     request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
@@ -3158,6 +3185,59 @@ mod tests {
             .map(|header| (header.key, header.value))
             .collect::<BTreeMap<_, _>>();
         assert_eq!(metadata["x-flowplane-ai-processor"], "true");
+    }
+
+    #[test]
+    fn ai_listener_can_include_processor_identity_metadata() {
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10000,
+            protocol: ListenerProtocol::Http,
+            route_config: Some("ai-chat-routes".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+        let ai = AiProcessorMetadata {
+            team_id: uuid::Uuid::now_v7(),
+            listener_id: uuid::Uuid::now_v7(),
+            route_config_id: uuid::Uuid::now_v7(),
+        };
+
+        let proto =
+            listener_to_proto_with_learning_and_ai("ai-chat-listener", &spec, &[], Some(&ai))
+                .expect("translate");
+        let manager = match proto.filter_chains[0].filters[0]
+            .config_type
+            .as_ref()
+            .expect("typed HCM")
+        {
+            lst::filter::ConfigType::TypedConfig(any) => {
+                hcm::HttpConnectionManager::decode(any.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        };
+        let ext_any = match &manager.http_filters[0].config_type {
+            Some(hcm::http_filter::ConfigType::TypedConfig(any)) => any,
+            _ => panic!("expected ext proc typed config"),
+        };
+        let ext = ext_proc::ExternalProcessor::decode(ext_any.value.as_slice()).expect("ext proc");
+        let metadata = ext
+            .grpc_service
+            .expect("grpc")
+            .initial_metadata
+            .into_iter()
+            .map(|header| (header.key, header.value))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(metadata["x-flowplane-team-id"], ai.team_id.to_string());
+        assert_eq!(
+            metadata["x-flowplane-listener-id"],
+            ai.listener_id.to_string()
+        );
+        assert_eq!(
+            metadata["x-flowplane-route-config-id"],
+            ai.route_config_id.to_string()
+        );
     }
 
     #[test]
