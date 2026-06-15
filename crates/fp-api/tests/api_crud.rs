@@ -1222,6 +1222,9 @@ async fn secret_values_are_write_only_over_http() {
     let team = identity::create_team(&pool, org.id, &unique("team"), "")
         .await
         .expect("team");
+    let other_team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("other team");
     let user = identity::upsert_user_by_subject(&pool, &subject, "secret-http@test", "Secret HTTP")
         .await
         .expect("user");
@@ -1350,6 +1353,26 @@ async fn secret_values_are_write_only_over_http() {
     assert_eq!(body["name"], provider_name);
     assert_eq!(body["spec"]["credential_secret_id"], secret_id);
     assert_eq!(body["revision"], 1);
+
+    let other_providers = format!("/api/v1/teams/{}/ai/providers", other_team.name);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &other_providers,
+            Some(serde_json::json!({
+                "name": unique("openai"),
+                "spec": {
+                    "kind": "openai-compatible",
+                    "base_url": "https://llm.example/v1",
+                    "credential_secret_id": secret_id,
+                    "models": ["gpt-5-mini"]
+                }
+            })),
+        ))
+        .await
+        .expect("cross-team AI provider secret");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let provider = format!("{providers}/{provider_name}");
     let response = app
