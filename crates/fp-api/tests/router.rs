@@ -36,6 +36,7 @@ async fn test_app_with_xds_readiness(
         validator: None,
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(120)),
         xds_readiness,
+        discovery_forwarding_policy: Default::default(),
     }))
 }
 

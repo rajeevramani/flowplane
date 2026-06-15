@@ -13,12 +13,51 @@ use fp_domain::gateway::route_config::{
 use fp_domain::{validate_name, DiscoverySessionId, DomainError, DomainResult, RequestId};
 use fp_storage::repos::{audit, clusters, discovery, gateway};
 use sqlx::PgPool;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 #[derive(Debug, Clone)]
 pub struct StartDiscoveryInput {
     pub name: String,
     pub spec: DiscoverySessionSpec,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiscoveryForwardingPolicy {
+    denied_destinations: Vec<SocketAddr>,
+}
+
+impl DiscoveryForwardingPolicy {
+    pub fn new(denied_destinations: Vec<SocketAddr>) -> Self {
+        Self {
+            denied_destinations: denied_destinations
+                .into_iter()
+                .map(|addr| SocketAddr::new(canonical_ip(addr.ip()), addr.port()))
+                .collect(),
+        }
+    }
+
+    pub async fn from_server_config(config: &crate::config::ServerConfig) -> Self {
+        let mut denied = vec![config.api_addr, config.xds_addr];
+        if let Some((host, port)) = postgres_host_port(&config.database_url) {
+            if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), port)).await {
+                denied.extend(addrs);
+            }
+        }
+        Self::new(denied)
+    }
+}
+
+fn postgres_host_port(database_url: &str) -> Option<(String, u16)> {
+    let authority = database_url.split_once("://")?.1.split('/').next()?;
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, hp)| hp)
+        .unwrap_or(authority);
+    let (host, port) = host_port.rsplit_once(':')?;
+    Some((
+        host.trim_matches(&['[', ']'][..]).to_string(),
+        port.parse().ok()?,
+    ))
 }
 
 async fn authorize(
@@ -53,11 +92,34 @@ pub async fn start_session(
     input: StartDiscoveryInput,
     request_id: RequestId,
 ) -> DomainResult<DiscoverySession> {
+    start_session_with_policy(
+        pool,
+        ctx,
+        team,
+        input,
+        request_id,
+        &DiscoveryForwardingPolicy::default(),
+    )
+    .await
+}
+
+pub async fn start_session_with_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    input: StartDiscoveryInput,
+    request_id: RequestId,
+    policy: &DiscoveryForwardingPolicy,
+) -> DomainResult<DiscoverySession> {
     authorize(pool, ctx, Action::Create, team, request_id).await?;
     validate_name(&input.name)?;
     input.spec.validate()?;
-    let validated_ip =
-        validate_upstream(&input.spec.upstream_host, input.spec.upstream_port as u16).await?;
+    let validated_ip = validate_upstream(
+        &input.spec.upstream_host,
+        input.spec.upstream_port as u16,
+        policy,
+    )
+    .await?;
 
     let session_id = DiscoverySessionId::generate();
     let short = session_id
@@ -103,24 +165,28 @@ pub async fn start_session(
     let session = discovery::create(
         &mut tx,
         team,
-        session_id,
-        &input.name,
-        &input.spec,
-        &validated_ip.to_string(),
-        &cluster_name,
-        &route_config_name,
-        &listener_name,
+        discovery::DiscoverySessionInsert {
+            id: session_id,
+            name: &input.name,
+            spec: &input.spec,
+            validated_upstream_ip: &validated_ip.to_string(),
+            cluster_name: &cluster_name,
+            route_config_name: &route_config_name,
+            listener_name: &listener_name,
+        },
     )
     .await?;
     append_gateway_upserts(
         &mut tx,
         team,
-        &cluster.name,
-        cluster.id.as_uuid(),
-        &route_config.name,
-        route_config.id.as_uuid(),
-        &listener.name,
-        listener.id.as_uuid(),
+        GatewayResourceEvents {
+            cluster_id: cluster.id.as_uuid(),
+            cluster_name: &cluster.name,
+            route_config_id: route_config.id.as_uuid(),
+            route_config_name: &route_config.name,
+            listener_id: listener.id.as_uuid(),
+            listener_name: &listener.name,
+        },
     )
     .await?;
     audit::record_in_tx(
@@ -206,12 +272,14 @@ pub async fn stop_session(
     append_gateway_deletes(
         &mut tx,
         team,
-        cluster_id.map(|id| id.as_uuid()),
-        &current.cluster_name,
-        route_config_id.map(|id| id.as_uuid()),
-        &current.route_config_name,
-        listener_id.map(|id| id.as_uuid()),
-        &current.listener_name,
+        OptionalGatewayResourceEvents {
+            cluster_id: cluster_id.map(|id| id.as_uuid()),
+            cluster_name: &current.cluster_name,
+            route_config_id: route_config_id.map(|id| id.as_uuid()),
+            route_config_name: &current.route_config_name,
+            listener_id: listener_id.map(|id| id.as_uuid()),
+            listener_name: &current.listener_name,
+        },
     )
     .await?;
     audit::record_in_tx(
@@ -297,7 +365,11 @@ fn listener_spec(port: u16, route_config_name: &str) -> ListenerSpec {
     }
 }
 
-async fn validate_upstream(host: &str, port: u16) -> DomainResult<IpAddr> {
+async fn validate_upstream(
+    host: &str,
+    port: u16,
+    policy: &DiscoveryForwardingPolicy,
+) -> DomainResult<IpAddr> {
     if host.contains('/') || host.contains('@') || host == "*" || port == 0 {
         return Err(DomainError::validation(
             "discovery upstream must be host:port without scheme, path, credentials, or wildcard",
@@ -317,7 +389,10 @@ async fn validate_upstream(host: &str, port: u16) -> DomainResult<IpAddr> {
             "discovery upstream did not resolve to an address",
         ));
     }
-    if resolved.iter().any(|ip| deny_reason(ip).is_some()) {
+    if resolved
+        .iter()
+        .any(|ip| deny_reason(ip, port, policy).is_some())
+    {
         return Err(DomainError::validation(
             "discovery upstream resolves to a denied internal destination",
         )
@@ -336,7 +411,14 @@ fn canonical_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
-fn deny_reason(ip: &IpAddr) -> Option<&'static str> {
+fn deny_reason(ip: &IpAddr, port: u16, policy: &DiscoveryForwardingPolicy) -> Option<&'static str> {
+    if policy
+        .denied_destinations
+        .iter()
+        .any(|addr| addr.ip() == *ip && addr.port() == port)
+    {
+        return Some("denied_flowplane_destination");
+    }
     match ip {
         IpAddr::V4(ip) => {
             if ip.is_loopback()
@@ -385,28 +467,32 @@ fn is_nat64_well_known(ip: &Ipv6Addr) -> bool {
     ip.segments()[0] == 0x0064 && ip.segments()[1] == 0xff9b
 }
 
+struct GatewayResourceEvents<'a> {
+    cluster_id: uuid::Uuid,
+    cluster_name: &'a str,
+    route_config_id: uuid::Uuid,
+    route_config_name: &'a str,
+    listener_id: uuid::Uuid,
+    listener_name: &'a str,
+}
+
 async fn append_gateway_upserts(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team: TeamRef,
-    cluster_name: &str,
-    cluster_id: uuid::Uuid,
-    route_config_name: &str,
-    route_config_id: uuid::Uuid,
-    listener_name: &str,
-    listener_id: uuid::Uuid,
+    events: GatewayResourceEvents<'_>,
 ) -> DomainResult<()> {
     for event in [
         DomainEvent::ClusterUpserted {
-            cluster_id,
-            name: cluster_name.into(),
+            cluster_id: events.cluster_id,
+            name: events.cluster_name.into(),
         },
         DomainEvent::RouteConfigUpserted {
-            route_config_id,
-            name: route_config_name.into(),
+            route_config_id: events.route_config_id,
+            name: events.route_config_name.into(),
         },
         DomainEvent::ListenerUpserted {
-            listener_id,
-            name: listener_name.into(),
+            listener_id: events.listener_id,
+            name: events.listener_name.into(),
         },
     ] {
         fp_storage::outbox::append(
@@ -423,36 +509,40 @@ async fn append_gateway_upserts(
     Ok(())
 }
 
+struct OptionalGatewayResourceEvents<'a> {
+    cluster_id: Option<uuid::Uuid>,
+    cluster_name: &'a str,
+    route_config_id: Option<uuid::Uuid>,
+    route_config_name: &'a str,
+    listener_id: Option<uuid::Uuid>,
+    listener_name: &'a str,
+}
+
 async fn append_gateway_deletes(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team: TeamRef,
-    cluster_id: Option<uuid::Uuid>,
-    cluster_name: &str,
-    route_config_id: Option<uuid::Uuid>,
-    route_config_name: &str,
-    listener_id: Option<uuid::Uuid>,
-    listener_name: &str,
+    events: OptionalGatewayResourceEvents<'_>,
 ) -> DomainResult<()> {
-    let mut events = Vec::new();
-    if let Some(listener_id) = listener_id {
-        events.push(DomainEvent::ListenerDeleted {
+    let mut outbox_events = Vec::new();
+    if let Some(listener_id) = events.listener_id {
+        outbox_events.push(DomainEvent::ListenerDeleted {
             listener_id,
-            name: listener_name.into(),
+            name: events.listener_name.into(),
         });
     }
-    if let Some(route_config_id) = route_config_id {
-        events.push(DomainEvent::RouteConfigDeleted {
+    if let Some(route_config_id) = events.route_config_id {
+        outbox_events.push(DomainEvent::RouteConfigDeleted {
             route_config_id,
-            name: route_config_name.into(),
+            name: events.route_config_name.into(),
         });
     }
-    if let Some(cluster_id) = cluster_id {
-        events.push(DomainEvent::ClusterDeleted {
+    if let Some(cluster_id) = events.cluster_id {
+        outbox_events.push(DomainEvent::ClusterDeleted {
             cluster_id,
-            name: cluster_name.into(),
+            name: events.cluster_name.into(),
         });
     }
-    for event in events {
+    for event in outbox_events {
         fp_storage::outbox::append(
             tx,
             &event,
@@ -500,12 +590,43 @@ mod tests {
         let mapped = "::ffff:169.254.169.254".parse::<IpAddr>().unwrap();
         let canonical = canonical_ip(mapped);
         assert_eq!(canonical, IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)));
-        assert!(deny_reason(&canonical).is_some());
+        assert!(deny_reason(&canonical, 80, &DiscoveryForwardingPolicy::default()).is_some());
     }
 
     #[test]
     fn denies_embedded_address_prefixes_until_extraction_exists() {
-        assert!(deny_reason(&"2002:0808:0808::1".parse::<IpAddr>().unwrap()).is_some());
-        assert!(deny_reason(&"64:ff9b::0808:0808".parse::<IpAddr>().unwrap()).is_some());
+        let policy = DiscoveryForwardingPolicy::default();
+        assert!(
+            deny_reason(&"2002:0808:0808::1".parse::<IpAddr>().unwrap(), 80, &policy).is_some()
+        );
+        assert!(deny_reason(
+            &"64:ff9b::0808:0808".parse::<IpAddr>().unwrap(),
+            80,
+            &policy
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn configured_flowplane_destinations_are_denied_by_ip_and_port() {
+        let ip = "203.0.113.10".parse::<IpAddr>().unwrap();
+        let policy = DiscoveryForwardingPolicy::new(vec![SocketAddr::new(ip, 5432)]);
+        assert_eq!(
+            deny_reason(&ip, 5432, &policy),
+            Some("denied_flowplane_destination")
+        );
+        assert_eq!(deny_reason(&ip, 5433, &policy), None);
+    }
+
+    #[test]
+    fn postgres_host_port_parses_basic_database_urls() {
+        assert_eq!(
+            postgres_host_port("postgres://user:pass@db.example.test:5432/flowplane"),
+            Some(("db.example.test".into(), 5432))
+        );
+        assert_eq!(
+            postgres_host_port("postgres://user:pass@[2001:db8::10]:5432/flowplane"),
+            Some(("2001:db8::10".into(), 5432))
+        );
     }
 }
