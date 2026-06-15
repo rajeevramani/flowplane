@@ -772,19 +772,21 @@ Rules:
 #### Discovery provenance
 
 Discovery observations need first-class provenance; `Host` alone is not enough. Store discovery
-provenance in a one-to-one `discovery_raw_observations` extension table keyed by
-`raw_observation_id`.
+payloads in `raw_observations` so S8 aggregation can reuse the existing method/path/header/body
+shape. Relax `raw_observations.capture_session_id` to nullable, and enforce exactly one owner:
+either `capture_session_id` for config-first capture or a one-to-one `discovery_raw_observations`
+extension row for discovery intake.
 
-Do not put discovery intake directly on `raw_observations`: that table requires
-`capture_session_id NOT NULL` with a hard FK to `capture_sessions`, and its uniqueness, indexes, and
-TTL behavior hang from that config-first capture model. S9 discovery intake creates a
-`discovery_session`, then writes ordinary bounded raw observation payloads plus the extension row
-below. The bridge from discovery to S8 aggregation is an explicit query over
-`discovery_raw_observations`, not a fake capture session.
+Discovery rows must not fake a `capture_session_id`. Config-first uniqueness remains scoped to
+`(team_id, capture_session_id, request_id)` for non-null capture sessions. Discovery uniqueness is
+scoped in the extension to `(team_id, discovery_session_id, request_id)`. TTL/reaper behavior
+includes discovery-owned raw rows through their extension row.
 
 Minimum extension fields:
 
 - `raw_observation_id`
+- `team_id`
+- `request_id`
 - `discovery_session_id`
 - `discovery_listener_id`
 - `observed_host` from `Host` / `:authority`
