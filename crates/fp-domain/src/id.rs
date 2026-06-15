@@ -146,6 +146,10 @@ domain_id!(
     /// Identifies one accepted raw observation for a learning capture session.
     RawObservationId
 );
+domain_id!(
+    /// Identifies one persisted route generation dry-run/apply plan.
+    RouteGenerationPlanId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]

@@ -457,6 +457,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         `raw_observations` with `discovery_raw_observations` provenance, then completed
         discovery sessions split observations by host/SNI/upstream before producing one
         learned candidate API/spec per cluster.
+  - [x] S9e route generation dry-run/apply plans: reviewed/published learned specs can
+        produce persisted gateway plans with concrete cluster/route-config/listener specs;
+        apply replays that preview through the existing gateway services and fails on
+        intervening conflicts instead of re-planning.
 - [ ] S10 AI gateway
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag

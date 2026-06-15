@@ -72,7 +72,7 @@ enum Command {
     /// Route configs.
     Route {
         #[command(subcommand)]
-        command: cli::ResourceCommand,
+        command: cli::RouteCommand,
     },
     /// API definitions, imported specs, and generated API tool rows.
     Api {
@@ -170,9 +170,7 @@ fn run() -> anyhow::Result<()> {
         Command::Listener { command } => {
             runtime.block_on(cli::run_resource(cli.client, "listeners", command))
         }
-        Command::Route { command } => {
-            runtime.block_on(cli::run_resource(cli.client, "route-configs", command))
-        }
+        Command::Route { command } => runtime.block_on(cli::run_route(cli.client, command)),
         Command::Api { command } => runtime.block_on(cli::run_api(cli.client, command)),
         Command::Learn { command } => runtime.block_on(cli::run_learn(cli.client, command)),
         Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
@@ -253,6 +251,23 @@ mod tests {
             "19080",
         ])
         .expect("learn discover start form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "route",
+            "generate",
+            "--from-spec",
+            "018ff2ef-bfc6-7000-8000-000000000001",
+            "--listener-port",
+            "19090",
+        ])
+        .expect("route generate form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "route",
+            "apply",
+            "018ff2ef-bfc6-7000-8000-000000000002",
+        ])
+        .expect("route apply form should parse");
         Cli::try_parse_from([
             "flowplane",
             "learn",
