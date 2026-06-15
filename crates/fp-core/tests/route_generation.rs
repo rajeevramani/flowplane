@@ -146,6 +146,47 @@ async fn route_plan_apply_fails_on_intervening_conflict() {
     );
 }
 
+#[tokio::test]
+async fn route_plan_apply_rechecks_review_state() {
+    let Some(w) = world().await else { return };
+    let api_name = unique("learned-api");
+    let spec_id = reviewed_spec(&w, &api_name).await;
+    let plan = route_generation::create_plan(
+        &w.pool,
+        &w.admin,
+        w.team,
+        route_generation::CreateRoutePlanInput {
+            spec_version_id: spec_id,
+            listener_port: 19193,
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("dry-run plan");
+
+    append_decision(&w, spec_id, SpecReviewDecision::Rejected).await;
+
+    let err =
+        route_generation::apply_plan(&w.pool, &w.admin, w.team, plan.id, RequestId::generate())
+            .await
+            .expect_err("rejected spec cannot apply");
+
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert_eq!(
+        fp_core::services::clusters::get_cluster(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &plan.plan.cluster_name,
+            RequestId::generate(),
+        )
+        .await
+        .expect_err("no gateway mutation")
+        .code,
+        ErrorCode::NotFound
+    );
+}
+
 async fn reviewed_spec(w: &World, api_name: &str) -> fp_domain::SpecVersionId {
     let mut tx = w.pool.begin().await.expect("tx");
     let api = api_lifecycle::create_api_definition(
@@ -202,4 +243,31 @@ async fn reviewed_spec(w: &World, api_name: &str) -> fp_domain::SpecVersionId {
     .expect("review");
     tx.commit().await.expect("commit");
     spec.id
+}
+
+async fn append_decision(
+    w: &World,
+    spec_id: fp_domain::SpecVersionId,
+    decision: SpecReviewDecision,
+) {
+    let mut tx = w.pool.begin().await.expect("tx");
+    let spec = api_lifecycle::get_spec_version_by_id(&mut tx, w.team.id, spec_id)
+        .await
+        .expect("spec");
+    api_lifecycle::append_spec_review_event(
+        &mut tx,
+        w.team,
+        api_lifecycle::SpecReviewEventInsert {
+            api_id: spec.api_definition_id,
+            spec_version_id: spec.id,
+            decision,
+            actor_type: "user",
+            actor_id: None,
+            reason: "test",
+            metadata: serde_json::json!({}),
+        },
+    )
+    .await
+    .expect("decision");
+    tx.commit().await.expect("commit");
 }

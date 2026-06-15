@@ -93,17 +93,8 @@ pub async fn create_plan(
             "route generation requires a learned spec version",
         ));
     }
-    let api = api_lifecycle::get_api_definition_by_id(pool, team.id, spec.api_definition_id)
-        .await?
-        .ok_or_else(|| DomainError::not_found("api", &spec.api_definition_id.to_string()))?;
-    let latest = api_lifecycle::latest_spec_review_decision(&mut tx, team.id, spec.id).await?;
-    if api.published_spec_version_id != Some(spec.id)
-        && latest != Some(SpecReviewDecision::Reviewed)
-    {
-        return Err(DomainError::conflict(
-            "route generation requires a reviewed or published learned spec version",
-        ));
-    }
+    let api =
+        ensure_spec_still_approved(pool, &mut tx, team, spec.api_definition_id, spec.id).await?;
     let mut plan = build_plan(
         &api.name,
         spec.api_definition_id,
@@ -138,6 +129,20 @@ pub async fn apply_plan(
             "route generation plan has blocking conflicts",
         ));
     }
+    let mut tx = pool.begin().await.map_err(crate::services::db_err(
+        "validate route generation plan approval: begin",
+    ))?;
+    ensure_spec_still_approved(
+        pool,
+        &mut tx,
+        team,
+        plan.plan.api_definition_id,
+        plan.spec_version_id,
+    )
+    .await?;
+    tx.commit().await.map_err(crate::services::db_err(
+        "validate route generation plan approval: commit",
+    ))?;
 
     let cluster = clusters::create_cluster(
         pool,
@@ -219,6 +224,27 @@ pub async fn apply_plan(
         route_config,
         listener,
     })
+}
+
+async fn ensure_spec_still_approved(
+    pool: &PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team: TeamRef,
+    api_definition_id: ApiDefinitionId,
+    spec_version_id: SpecVersionId,
+) -> DomainResult<fp_domain::api_lifecycle::ApiDefinition> {
+    let api = api_lifecycle::get_api_definition_by_id(pool, team.id, api_definition_id)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", &api_definition_id.to_string()))?;
+    let latest = api_lifecycle::latest_spec_review_decision(tx, team.id, spec_version_id).await?;
+    if api.published_spec_version_id == Some(spec_version_id)
+        || latest == Some(SpecReviewDecision::Reviewed)
+    {
+        return Ok(api);
+    }
+    Err(DomainError::conflict(
+        "route generation requires a currently reviewed or published learned spec version",
+    ))
 }
 
 fn build_plan(
