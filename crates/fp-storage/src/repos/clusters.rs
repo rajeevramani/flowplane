@@ -47,6 +47,16 @@ pub async fn create_discovery_owned(
     create_with_owner(tx, team, name, spec, "discovery", Some(owner_id)).await
 }
 
+pub async fn create_ai_owned(
+    tx: &mut Transaction<'_, Postgres>,
+    team: fp_domain::authz::TeamRef,
+    owner_id: Uuid,
+    name: &str,
+    spec: &ClusterSpec,
+) -> DomainResult<Cluster> {
+    create_with_owner(tx, team, name, spec, "ai", Some(owner_id)).await
+}
+
 async fn create_with_owner(
     tx: &mut Transaction<'_, Postgres>,
     team: fp_domain::authz::TeamRef,
@@ -253,6 +263,24 @@ pub async fn delete_discovery_owned(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("delete discovery cluster: {e}")))?;
+    Ok(row.map(|row| ClusterId::from(row.get::<Uuid, _>("id"))))
+}
+
+pub async fn delete_ai_owned(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<ClusterId>> {
+    let row = sqlx::query(
+        "DELETE FROM clusters \
+         WHERE team_id = $1 AND owner_kind = 'ai' AND name = $2 \
+         RETURNING id",
+    )
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete AI cluster: {e}")))?;
     Ok(row.map(|row| ClusterId::from(row.get::<Uuid, _>("id"))))
 }
 

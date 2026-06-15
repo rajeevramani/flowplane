@@ -1816,7 +1816,7 @@ pub fn listener_to_proto_with_learning_and_ai(
     for entry in &spec.http_filters {
         http_filters.push(http_filter_to_proto(entry)?);
     }
-    if name.starts_with("ai-") {
+    if ai.is_some() {
         http_filters.push(ai_ext_proc_filter(ai));
     }
     for capture in captures {
@@ -3150,8 +3150,25 @@ mod tests {
             access_logs: Vec::new(),
             tls_context: None,
         };
+        let ai = AiProcessorMetadata {
+            team_id: uuid::Uuid::now_v7(),
+            listener_id: uuid::Uuid::now_v7(),
+            route_config_id: uuid::Uuid::now_v7(),
+        };
 
-        let manager = hcm_of_named("ai-chat-listener", &spec);
+        let proto =
+            listener_to_proto_with_learning_and_ai("ai-chat-listener", &spec, &[], Some(&ai))
+                .expect("translate");
+        let manager = match proto.filter_chains[0].filters[0]
+            .config_type
+            .as_ref()
+            .expect("typed HCM")
+        {
+            lst::filter::ConfigType::TypedConfig(any) => {
+                hcm::HttpConnectionManager::decode(any.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        };
         let names = manager
             .http_filters
             .iter()
@@ -3185,6 +3202,28 @@ mod tests {
             .map(|header| (header.key, header.value))
             .collect::<BTreeMap<_, _>>();
         assert_eq!(metadata["x-flowplane-ai-processor"], "true");
+    }
+
+    #[test]
+    fn ai_prefixed_user_listener_does_not_inject_ai_ext_proc() {
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10000,
+            protocol: ListenerProtocol::Http,
+            route_config: Some("routes".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+
+        let manager = hcm_of_named("ai-user-listener", &spec);
+        let names = manager
+            .http_filters
+            .iter()
+            .map(|filter| filter.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["envoy.filters.http.router"]);
     }
 
     #[test]

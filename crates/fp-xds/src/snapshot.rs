@@ -460,7 +460,8 @@ impl SnapshotCache {
             });
         }
         let mut listener_named = Vec::with_capacity(listeners.len());
-        for listener in &listeners {
+        for xds_listener in &listeners {
+            let listener = &xds_listener.listener;
             // Listeners without a bound route config cannot serve; they stay out of the
             // snapshot rather than producing a NACK-able resource.
             if listener.spec.route_config.is_none() {
@@ -500,7 +501,7 @@ impl SnapshotCache {
                 })
                 .unwrap_or_default();
             let ai_metadata = route_config_id
-                .filter(|_| listener.name.starts_with("ai-"))
+                .filter(|_| xds_listener.owner_kind == "ai")
                 .map(|route_config_id| translate::AiProcessorMetadata {
                     team_id: team_id.as_uuid(),
                     listener_id: listener.id.as_uuid(),
@@ -564,10 +565,15 @@ impl SnapshotCache {
 struct XdsResources {
     clusters: Vec<Cluster>,
     route_configs: Vec<RouteConfig>,
-    listeners: Vec<Listener>,
+    listeners: Vec<XdsListener>,
     cluster_failures: HashMap<String, String>,
     route_failures: HashMap<String, String>,
     listener_failures: HashMap<String, String>,
+}
+
+struct XdsListener {
+    listener: Listener,
+    owner_kind: String,
 }
 
 async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsResources> {
@@ -588,7 +594,7 @@ async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsR
     .await
     .map_err(|err| DomainError::internal(format!("list xDS route configs: {err}")))?;
     let listener_rows = sqlx::query(
-        "SELECT id, team_id, name, spec, version, created_at, updated_at \
+        "SELECT id, team_id, name, spec, version, created_at, updated_at, owner_kind \
          FROM listeners WHERE team_id = $1 ORDER BY name LIMIT 500",
     )
     .bind(team_id.as_uuid())
@@ -627,7 +633,10 @@ async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsR
     for row in listener_rows {
         let name: String = row.get("name");
         match listener_from_xds_row(&row) {
-            Ok(listener) => listeners.push(listener),
+            Ok(listener) => listeners.push(XdsListener {
+                listener,
+                owner_kind: row.get("owner_kind"),
+            }),
             Err(error) => {
                 skip_xds_resource(team_id, "listener", &name, &error);
                 listener_failures.insert(name, error);

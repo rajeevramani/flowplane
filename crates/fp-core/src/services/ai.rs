@@ -1,8 +1,9 @@
 //! AI gateway services.
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
-use crate::services::{actor_of, clusters, deny_to_error, gateway, record_authz_denial};
+use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
+use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, UpstreamTlsConfig};
 use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec};
 use fp_domain::gateway::route_config::{
@@ -14,7 +15,7 @@ use fp_domain::{
     AiRouteMaterializedResources, AiRouteSpec, DomainError, DomainResult, RequestId,
     AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
-use fp_storage::repos::{ai, audit};
+use fp_storage::repos::{ai, audit, clusters as cluster_repo, gateway as gateway_repo};
 use reqwest::Url;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
@@ -265,16 +266,7 @@ pub async fn create_route(
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::AiRoutes).await?;
     let providers = load_route_providers(pool, team, &spec).await?;
     let materialized = materialized_names(name, spec.backends.len());
-    create_materialized(
-        pool,
-        ctx,
-        team,
-        &spec,
-        &providers,
-        &materialized,
-        request_id,
-    )
-    .await?;
+    create_materialized(pool, team, &spec, &providers, &materialized).await?;
     let mut tx = pool
         .begin()
         .await
@@ -283,7 +275,7 @@ pub async fn create_route(
         Ok(route) => route,
         Err(err) => {
             tx.rollback().await.ok();
-            cleanup_materialized(pool, ctx, team, &materialized, request_id).await;
+            cleanup_materialized(pool, team, &materialized).await;
             return Err(err);
         }
     };
@@ -397,17 +389,8 @@ pub async fn update_route(
     }
     let providers = load_route_providers(pool, team, &spec).await?;
     let materialized = materialized_names(name, spec.backends.len());
-    cleanup_materialized(pool, ctx, team, &current.materialized, request_id).await;
-    create_materialized(
-        pool,
-        ctx,
-        team,
-        &spec,
-        &providers,
-        &materialized,
-        request_id,
-    )
-    .await?;
+    cleanup_materialized(pool, team, &current.materialized).await;
+    create_materialized(pool, team, &spec, &providers, &materialized).await?;
 
     let mut tx = pool
         .begin()
@@ -426,7 +409,7 @@ pub async fn update_route(
         Ok(route) => route,
         Err(err) => {
             tx.rollback().await.ok();
-            cleanup_materialized(pool, ctx, team, &materialized, request_id).await;
+            cleanup_materialized(pool, team, &materialized).await;
             return Err(err);
         }
     };
@@ -469,7 +452,7 @@ pub async fn delete_route(
             ),
         ));
     }
-    cleanup_materialized(pool, ctx, team, &route.materialized, request_id).await;
+    cleanup_materialized(pool, team, &route.materialized).await;
     let mut tx = pool
         .begin()
         .await
@@ -558,42 +541,20 @@ fn generated_name(route_name: &str, suffix: &str) -> String {
 
 async fn create_materialized(
     pool: &PgPool,
-    ctx: &PrincipalCtx,
     team: TeamRef,
     spec: &AiRouteSpec,
     providers: &[AiProvider],
     names: &AiRouteMaterializedResources,
-    request_id: RequestId,
 ) -> DomainResult<()> {
+    let mut cluster_specs = Vec::with_capacity(providers.len());
     for (provider, cluster_name) in providers.iter().zip(names.cluster_names.iter()) {
         let cluster_spec = match provider_cluster_spec(provider) {
             Ok(spec) => spec,
-            Err(err) => {
-                cleanup_materialized(pool, ctx, team, names, request_id).await;
-                return Err(err);
-            }
+            Err(err) => return Err(err),
         };
-        if let Err(err) =
-            clusters::create_cluster(pool, ctx, team, cluster_name, cluster_spec, request_id).await
-        {
-            cleanup_materialized(pool, ctx, team, names, request_id).await;
-            return Err(err);
-        }
+        cluster_specs.push((cluster_name, cluster_spec));
     }
     let route_config_spec = ai_route_config_spec(spec, providers, names)?;
-    if let Err(err) = gateway::create_route_config(
-        pool,
-        ctx,
-        team,
-        &names.route_config_name,
-        route_config_spec,
-        request_id,
-    )
-    .await
-    {
-        cleanup_materialized(pool, ctx, team, names, request_id).await;
-        return Err(err);
-    }
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
         port: spec.listener_port,
@@ -603,69 +564,152 @@ async fn create_materialized(
         access_logs: Vec::new(),
         tls_context: None,
     };
-    if let Err(err) = gateway::create_listener(
-        pool,
-        ctx,
-        team,
-        &names.listener_name,
-        listener_spec,
-        request_id,
-    )
-    .await
-    {
-        cleanup_materialized(pool, ctx, team, names, request_id).await;
-        return Err(err);
+    let owner_id = uuid::Uuid::now_v7();
+    let mut tx = pool.begin().await.map_err(crate::services::db_err(
+        "create AI materialized resources: begin",
+    ))?;
+    let mut cluster_events = Vec::with_capacity(cluster_specs.len());
+    for (cluster_name, cluster_spec) in cluster_specs {
+        let cluster =
+            cluster_repo::create_ai_owned(&mut tx, team, owner_id, cluster_name, &cluster_spec)
+                .await?;
+        cluster_events.push((cluster.id.as_uuid(), cluster.name));
     }
+    let route_config = gateway_repo::create_ai_route_config(
+        &mut tx,
+        team,
+        owner_id,
+        &names.route_config_name,
+        &route_config_spec,
+    )
+    .await?;
+    let listener = gateway_repo::create_ai_listener(
+        &mut tx,
+        team,
+        owner_id,
+        &names.listener_name,
+        &listener_spec,
+    )
+    .await?;
+    append_materialized_upserts(
+        &mut tx,
+        team,
+        &cluster_events,
+        route_config.id.as_uuid(),
+        &route_config.name,
+        listener.id.as_uuid(),
+        &listener.name,
+    )
+    .await?;
+    tx.commit().await.map_err(crate::services::db_err(
+        "create AI materialized resources: commit",
+    ))?;
     Ok(())
 }
 
-async fn cleanup_materialized(
-    pool: &PgPool,
-    ctx: &PrincipalCtx,
+async fn append_materialized_upserts(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team: TeamRef,
-    names: &AiRouteMaterializedResources,
-    request_id: RequestId,
-) {
-    if let Ok(listener) =
-        gateway::get_listener(pool, ctx, team, &names.listener_name, request_id).await
-    {
-        let _ = gateway::delete_listener(
-            pool,
-            ctx,
+    clusters: &[(uuid::Uuid, String)],
+    route_config_id: uuid::Uuid,
+    route_config_name: &str,
+    listener_id: uuid::Uuid,
+    listener_name: &str,
+) -> DomainResult<()> {
+    for (cluster_id, cluster_name) in clusters {
+        append_gateway_event(
+            tx,
             team,
-            &names.listener_name,
-            listener.version,
-            request_id,
+            DomainEvent::ClusterUpserted {
+                cluster_id: *cluster_id,
+                name: cluster_name.clone(),
+            },
+        )
+        .await?;
+    }
+    append_gateway_event(
+        tx,
+        team,
+        DomainEvent::RouteConfigUpserted {
+            route_config_id,
+            name: route_config_name.into(),
+        },
+    )
+    .await?;
+    append_gateway_event(
+        tx,
+        team,
+        DomainEvent::ListenerUpserted {
+            listener_id,
+            name: listener_name.into(),
+        },
+    )
+    .await
+}
+
+async fn append_gateway_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team: TeamRef,
+    event: DomainEvent,
+) -> DomainResult<()> {
+    fp_storage::outbox::append(
+        tx,
+        &event,
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await
+}
+
+async fn cleanup_materialized(pool: &PgPool, team: TeamRef, names: &AiRouteMaterializedResources) {
+    let Ok(mut tx) = pool.begin().await else {
+        return;
+    };
+    if let Ok(Some(listener_id)) =
+        gateway_repo::delete_ai_listener(&mut tx, team.id, &names.listener_name).await
+    {
+        let _ = append_gateway_event(
+            &mut tx,
+            team,
+            DomainEvent::ListenerDeleted {
+                listener_id: listener_id.as_uuid(),
+                name: names.listener_name.clone(),
+            },
         )
         .await;
     }
-    if let Ok(route_config) =
-        gateway::get_route_config(pool, ctx, team, &names.route_config_name, request_id).await
+    if let Ok(Some(route_config_id)) =
+        gateway_repo::delete_ai_route_config(&mut tx, team.id, &names.route_config_name).await
     {
-        let _ = gateway::delete_route_config(
-            pool,
-            ctx,
+        let _ = append_gateway_event(
+            &mut tx,
             team,
-            &names.route_config_name,
-            route_config.version,
-            request_id,
+            DomainEvent::RouteConfigDeleted {
+                route_config_id: route_config_id.as_uuid(),
+                name: names.route_config_name.clone(),
+            },
         )
         .await;
     }
     for cluster_name in &names.cluster_names {
-        if let Ok(cluster) = clusters::get_cluster(pool, ctx, team, cluster_name, request_id).await
+        if let Ok(Some(cluster_id)) =
+            cluster_repo::delete_ai_owned(&mut tx, team.id, cluster_name).await
         {
-            let _ = clusters::delete_cluster(
-                pool,
-                ctx,
+            let _ = append_gateway_event(
+                &mut tx,
                 team,
-                cluster_name,
-                cluster.version,
-                request_id,
+                DomainEvent::ClusterDeleted {
+                    cluster_id: cluster_id.as_uuid(),
+                    name: cluster_name.clone(),
+                },
             )
             .await;
-        }
+        };
     }
+    let _ = tx.commit().await;
 }
 
 fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {

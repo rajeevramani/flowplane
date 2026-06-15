@@ -135,6 +135,16 @@ pub async fn create_discovery_route_config(
     create_route_config_with_owner(tx, team, name, spec, "discovery", Some(owner_id)).await
 }
 
+pub async fn create_ai_route_config(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    owner_id: Uuid,
+    name: &str,
+    spec: &RouteConfigSpec,
+) -> DomainResult<RouteConfig> {
+    create_route_config_with_owner(tx, team, name, spec, "ai", Some(owner_id)).await
+}
+
 async fn create_route_config_with_owner(
     tx: &mut Transaction<'_, Postgres>,
     team: TeamRef,
@@ -351,6 +361,24 @@ pub async fn delete_discovery_route_config(
     Ok(row.map(|row| RouteConfigId::from(row.get::<Uuid, _>("id"))))
 }
 
+pub async fn delete_ai_route_config(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<RouteConfigId>> {
+    let row = sqlx::query(
+        "DELETE FROM route_configs \
+         WHERE team_id = $1 AND owner_kind = 'ai' AND name = $2 \
+         RETURNING id",
+    )
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete AI route-config: {e}")))?;
+    Ok(row.map(|row| RouteConfigId::from(row.get::<Uuid, _>("id"))))
+}
+
 /// Route configs whose actions reference the given cluster (cluster-delete guard).
 pub async fn route_configs_referencing_cluster(
     tx: &mut Transaction<'_, Postgres>,
@@ -452,6 +480,16 @@ pub async fn create_discovery_listener(
     spec: &ListenerSpec,
 ) -> DomainResult<Listener> {
     create_listener_with_owner(tx, team, name, spec, "discovery", Some(owner_id)).await
+}
+
+pub async fn create_ai_listener(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    owner_id: Uuid,
+    name: &str,
+    spec: &ListenerSpec,
+) -> DomainResult<Listener> {
+    create_listener_with_owner(tx, team, name, spec, "ai", Some(owner_id)).await
 }
 
 async fn create_listener_with_owner(
@@ -648,6 +686,24 @@ pub async fn delete_discovery_listener(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("delete discovery listener: {e}")))?;
+    Ok(row.map(|row| ListenerId::from(row.get::<Uuid, _>("id"))))
+}
+
+pub async fn delete_ai_listener(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<ListenerId>> {
+    let row = sqlx::query(
+        "DELETE FROM listeners \
+         WHERE team_id = $1 AND owner_kind = 'ai' AND name = $2 \
+         RETURNING id",
+    )
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete AI listener: {e}")))?;
     Ok(row.map(|row| ListenerId::from(row.get::<Uuid, _>("id"))))
 }
 
