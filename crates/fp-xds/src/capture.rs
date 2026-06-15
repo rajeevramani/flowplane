@@ -86,6 +86,8 @@ struct ExtProcState {
 #[derive(Debug, Clone, Default)]
 struct AiExtProcState {
     include_usage_injected: bool,
+    response_status: Option<i32>,
+    response_content_type: Option<String>,
     response_sse_remainder: String,
     response_json_body: Vec<u8>,
     last_usage: Option<OpenAiTokenUsage>,
@@ -601,6 +603,17 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
         processing_request::Request::RequestHeaders(_) => {
             request_headers_response(remove_internal_model_header())
         }
+        processing_request::Request::ResponseHeaders(headers) => {
+            let map = headers_from_header_map(headers.headers.as_ref());
+            state.response_status = header_value(&map, ":status").and_then(|v| v.parse().ok());
+            state.response_content_type = header_value(&map, "content-type")
+                .or_else(|| header_value(&map, "Content-Type"))
+                .map(|value| value.to_ascii_lowercase());
+            response_headers_response(CommonResponse {
+                status: common_response::ResponseStatus::Continue as i32,
+                ..Default::default()
+            })
+        }
         processing_request::Request::RequestBody(body) => {
             match prepare_openai_chat_request(&body.body) {
                 Ok(prepared) => {
@@ -657,28 +670,45 @@ fn ai_response_body_mutation(
     body: Vec<u8>,
     end_of_stream: bool,
 ) -> Option<Vec<u8>> {
-    collect_unary_usage_body(state, &body, end_of_stream);
-
-    let body_text = String::from_utf8_lossy(&body);
-    state.response_sse_remainder.push_str(&body_text);
-    if state.response_sse_remainder.len() > MAX_AI_SSE_REMAINDER_BYTES {
-        state.response_sse_remainder.clear();
+    if state.response_status.is_some_and(|status| status >= 400) {
         return None;
     }
+    let parse_sse = response_content_type_matches(state, "text/event-stream");
+    let parse_json = response_content_type_matches(state, "application/json");
 
-    let (complete, remainder) = complete_sse_prefix(&state.response_sse_remainder, end_of_stream);
-    let (stripped, usage) =
-        strip_synthetic_openai_usage_sse(&complete, state.include_usage_injected);
-    if let Some(usage) = usage {
-        state.last_usage = Some(usage);
+    if parse_json {
+        collect_unary_usage_body(state, &body, end_of_stream);
     }
-    state.response_sse_remainder = remainder;
+    if parse_sse {
+        let body_text = String::from_utf8_lossy(&body);
+        state.response_sse_remainder.push_str(&body_text);
+        if state.response_sse_remainder.len() > MAX_AI_SSE_REMAINDER_BYTES {
+            state.response_sse_remainder.clear();
+            return None;
+        }
 
-    if state.include_usage_injected && stripped.as_bytes() != body.as_slice() {
-        Some(stripped.into_bytes())
-    } else {
-        None
+        let (complete, remainder) =
+            complete_sse_prefix(&state.response_sse_remainder, end_of_stream);
+        let (stripped, usage) =
+            strip_synthetic_openai_usage_sse(&complete, state.include_usage_injected);
+        if let Some(usage) = usage {
+            state.last_usage = Some(usage);
+        }
+        state.response_sse_remainder = remainder;
+
+        if state.include_usage_injected && stripped.as_bytes() != body.as_slice() {
+            return Some(stripped.into_bytes());
+        }
     }
+    None
+}
+
+fn response_content_type_matches(state: &AiExtProcState, expected: &str) -> bool {
+    state
+        .response_content_type
+        .as_deref()
+        .map(|content_type| content_type.split(';').any(|part| part.trim() == expected))
+        .unwrap_or(true)
 }
 
 fn complete_sse_prefix(buffer: &str, end_of_stream: bool) -> (String, String) {
@@ -771,6 +801,17 @@ fn request_body_response(common: CommonResponse) -> ProcessingResponse {
         response: Some(processing_response::Response::RequestBody(BodyResponse {
             response: Some(common),
         })),
+        ..Default::default()
+    }
+}
+
+fn response_headers_response(common: CommonResponse) -> ProcessingResponse {
+    ProcessingResponse {
+        response: Some(processing_response::Response::ResponseHeaders(
+            HeadersResponse {
+                response: Some(common),
+            },
+        )),
         ..Default::default()
     }
 }
@@ -1126,6 +1167,66 @@ mod tests {
         assert!(body.contains("\"content\":\"hi\""));
         assert!(!body.contains("\"usage\""));
         assert_eq!(state.last_usage.expect("usage").total_tokens, 3);
+    }
+
+    #[test]
+    fn ai_ext_proc_uses_response_headers_to_skip_error_body_mutation() {
+        let mut state = AiExtProcState {
+            include_usage_injected: true,
+            ..Default::default()
+        };
+        let headers = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseHeaders(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                        headers: Some(HeaderMap {
+                            headers: vec![
+                                HeaderValue {
+                                    key: ":status".into(),
+                                    value: "429".into(),
+                                    raw_value: Vec::new(),
+                                },
+                                HeaderValue {
+                                    key: "content-type".into(),
+                                    value: "text/event-stream".into(),
+                                    raw_value: Vec::new(),
+                                },
+                            ],
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        let processing_response::Response::ResponseHeaders(_) =
+            headers.response.expect("headers response")
+        else {
+            panic!("expected response headers response");
+        };
+
+        let body = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n".to_vec(),
+                        end_of_stream: true,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::ResponseBody(body) =
+            body.response.expect("body response")
+        else {
+            panic!("expected response body response");
+        };
+        assert!(body.response.expect("common").body_mutation.is_none());
+        assert!(state.last_usage.is_none());
     }
 
     #[test]
