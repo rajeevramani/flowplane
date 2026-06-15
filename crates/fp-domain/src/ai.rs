@@ -241,11 +241,6 @@ impl AiRouteSpec {
                     "AI route backend model_override must not be empty",
                 ));
             }
-            if backend.model_override.is_some() {
-                return Err(DomainError::validation(
-                    "AI route backend model_override is not supported until selected-backend request rewriting lands",
-                ));
-            }
         }
         Ok(())
     }
@@ -297,6 +292,23 @@ pub fn prepare_openai_chat_request(body: &[u8]) -> DomainResult<OpenAiChatReques
         body,
         include_usage_injected,
     })
+}
+
+pub fn rewrite_openai_chat_request_model(body: &[u8], model: &str) -> DomainResult<Vec<u8>> {
+    if body.len() > MAX_AI_REQUEST_BODY_BYTES {
+        return Err(DomainError::validation(format!(
+            "AI request body exceeds {} bytes",
+            MAX_AI_REQUEST_BODY_BYTES
+        )));
+    }
+    let mut value: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|_| DomainError::validation("AI request body must be JSON"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| DomainError::validation("AI request body must be a JSON object"))?;
+    object.insert("model".into(), serde_json::Value::String(model.to_string()));
+    serde_json::to_vec(&value)
+        .map_err(|err| DomainError::internal(format!("serialize AI request body: {err}")))
 }
 
 fn force_stream_usage(
@@ -447,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_route_rejects_model_override_until_rewrite_path_exists() {
+    fn ai_route_accepts_model_override_and_rewrites_body_model() {
         let spec = AiRouteSpec {
             listener_port: 19000,
             path: default_chat_path(),
@@ -460,9 +472,14 @@ mod tests {
             }],
         };
 
-        let err = spec.validate().expect_err("model override unsupported");
-        assert_eq!(err.code, crate::ErrorCode::ValidationFailed);
-        assert!(err.message.contains("model_override is not supported"));
+        spec.validate().expect("model override supported");
+        let body = rewrite_openai_chat_request_model(
+            br#"{"model":"client-model","messages":[]}"#,
+            "upstream-model",
+        )
+        .expect("rewrite");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(value["model"], "upstream-model");
     }
 
     #[test]

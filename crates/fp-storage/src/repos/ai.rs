@@ -2,7 +2,7 @@
 
 use fp_domain::authz::TeamRef;
 use fp_domain::{
-    AiProvider, AiProviderId, AiProviderKind, AiProviderSpec, AiRoute, AiRouteId,
+    AiProvider, AiProviderId, AiProviderKind, AiProviderSpec, AiRoute, AiRouteBackend, AiRouteId,
     AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus, DomainError, DomainResult, ErrorCode,
     RouteConfigId, SecretId, TeamId,
 };
@@ -18,6 +18,12 @@ const PROVIDER_COLUMNS: &str = "p.id, p.team_id, p.name, p.kind, p.base_url, p.p
                                 p.created_at, p.updated_at";
 const ROUTE_COLUMNS: &str = "id, team_id, name, spec, status, cluster_names, route_config_name, \
                              listener_name, version, created_at, updated_at";
+
+#[derive(Debug, Clone)]
+pub struct SelectedAiBackend {
+    pub provider: AiProvider,
+    pub backend: AiRouteBackend,
+}
 
 fn provider_from_row(row: &PgRow) -> DomainResult<AiProvider> {
     Ok(AiProvider {
@@ -238,21 +244,51 @@ pub async fn get_provider_for_route_config(
     route_config_id: RouteConfigId,
     provider_id: AiProviderId,
 ) -> DomainResult<Option<AiProvider>> {
+    Ok(
+        get_backend_for_route_config(pool, team_id, route_config_id, provider_id, None)
+            .await?
+            .map(|selected| selected.provider),
+    )
+}
+
+pub async fn get_backend_for_route_config(
+    pool: &PgPool,
+    team_id: TeamId,
+    route_config_id: RouteConfigId,
+    provider_id: AiProviderId,
+    position: Option<i32>,
+) -> DomainResult<Option<SelectedAiBackend>> {
     let row = sqlx::query(&format!(
-        "SELECT {PROVIDER_COLUMNS} FROM ai_providers p \
+        "SELECT {PROVIDER_COLUMNS}, r.spec AS route_spec, b.position AS backend_position \
+         FROM ai_providers p \
          JOIN ai_route_backends b ON b.team_id = p.team_id AND b.provider_id = p.id \
          JOIN ai_routes r ON r.team_id = b.team_id AND r.id = b.ai_route_id \
          JOIN route_configs rc ON rc.team_id = r.team_id AND rc.name = r.route_config_name \
-         WHERE p.team_id = $1 AND rc.id = $2 AND p.id = $3 \
+         WHERE p.team_id = $1 AND rc.id = $2 AND p.id = $3 AND ($4::INT IS NULL OR b.position = $4) \
          LIMIT 1"
     ))
     .bind(team_id.as_uuid())
     .bind(route_config_id.as_uuid())
     .bind(provider_id.as_uuid())
+    .bind(position)
     .fetch_optional(pool)
     .await
-    .map_err(|e| DomainError::internal(format!("get AI provider for route config: {e}")))?;
-    row.as_ref().map(provider_from_row).transpose()
+    .map_err(|e| DomainError::internal(format!("get AI backend for route config: {e}")))?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let spec: AiRouteSpec = serde_json::from_value(row.get("route_spec"))
+        .map_err(|e| DomainError::internal(format!("AI route spec in DB does not parse: {e}")))?;
+    let backend_position: i32 = row.get("backend_position");
+    let backend = spec
+        .backends
+        .get(usize::try_from(backend_position).unwrap_or(usize::MAX))
+        .cloned()
+        .ok_or_else(|| DomainError::internal("AI backend position is outside route spec"))?;
+    Ok(Some(SelectedAiBackend {
+        provider: provider_from_row(&row)?,
+        backend,
+    }))
 }
 
 pub async fn route_names_referencing_provider(
