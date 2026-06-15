@@ -2,7 +2,9 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
+use fp_core::services::ai as ai_svc;
 use fp_core::services::api_lifecycle::{self as api_svc, CreateApiInput};
+use fp_core::services::clusters as cluster_svc;
 use fp_core::services::dataplanes as dataplane_svc;
 use fp_core::services::learning::{self as learning_svc, StartLearningSessionInput};
 use fp_core::services::secrets::{self as secret_svc, SecretWrite};
@@ -12,7 +14,11 @@ use fp_domain::api_lifecycle::{
     SpecVersionInput,
 };
 use fp_domain::authz::TeamRef;
-use fp_domain::{ErrorCode, OrgRole, RequestId, SecretSpec};
+use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
+use fp_domain::{
+    AiProviderKind, AiProviderSpec, AiRouteBackend, AiRouteSpec, ErrorCode, OrgRole, RequestId,
+    SecretSpec,
+};
 use fp_storage::repos::{api_lifecycle as storage_api_lifecycle, identity};
 use serde_json::json;
 use sqlx::PgPool;
@@ -54,6 +60,28 @@ fn generic_secret(name: &str) -> SecretWrite<'_> {
     }
 }
 
+fn cluster_spec(host: &str) -> ClusterSpec {
+    ClusterSpec {
+        endpoints: vec![Endpoint {
+            host: host.into(),
+            port: 8080,
+            weight: None,
+        }],
+        lb_policy: LbPolicy::RoundRobin,
+        least_request: None,
+        ring_hash: None,
+        maglev: None,
+        dns_lookup_family: None,
+        connect_timeout_secs: 5,
+        use_tls: false,
+        upstream_tls: None,
+        protocol: None,
+        health_checks: None,
+        circuit_breakers: None,
+        outlier_detection: None,
+    }
+}
+
 async fn world() -> Option<World> {
     let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
@@ -87,6 +115,14 @@ async fn world() -> Option<World> {
             grants: GrantSet::default(),
         },
     })
+}
+
+async fn cluster_count(pool: &PgPool, team: TeamRef) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM clusters WHERE team_id = $1")
+        .bind(team.id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("cluster count")
 }
 
 #[tokio::test]
@@ -397,6 +433,102 @@ async fn learned_spec_generation_persists_deterministic_candidate() {
     .await
     .expect_err("rejected spec cannot publish");
     assert_eq!(err.code, ErrorCode::Conflict);
+}
+
+#[tokio::test]
+async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() {
+    let Some(w) = world().await else { return };
+
+    for i in 0..49 {
+        cluster_svc::create_cluster(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &unique(&format!("near-quota-{i}")),
+            cluster_spec(&format!("existing-{i}.example")),
+            RequestId::generate(),
+        )
+        .await
+        .expect("seed cluster");
+    }
+    assert_eq!(cluster_count(&w.pool, w.team).await, 49);
+
+    let secret = secret_svc::create_secret(
+        &w.pool,
+        &w.admin,
+        w.team,
+        generic_secret(&unique("ai-key")),
+        RequestId::generate(),
+    )
+    .await
+    .expect("secret");
+    let provider_a = ai_svc::create_provider(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &unique("provider-a"),
+        AiProviderSpec {
+            kind: AiProviderKind::OpenaiCompatible,
+            base_url: "https://a.example/v1".into(),
+            path_prefix: Some("/v1".into()),
+            credential_secret_id: secret.id,
+            models: vec!["gpt-5".into()],
+            auth_header: "authorization".into(),
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("provider a");
+    let provider_b = ai_svc::create_provider(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &unique("provider-b"),
+        AiProviderSpec {
+            kind: AiProviderKind::OpenaiCompatible,
+            base_url: "https://b.example/v1".into(),
+            path_prefix: Some("/v1".into()),
+            credential_secret_id: secret.id,
+            models: vec!["gpt-5".into()],
+            auth_header: "authorization".into(),
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("provider b");
+
+    let err = ai_svc::create_route(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &unique("ai-route"),
+        AiRouteSpec {
+            listener_port: 19111,
+            path: "/v1/chat/completions".into(),
+            backends: vec![
+                AiRouteBackend {
+                    provider_id: provider_a.id,
+                    models: vec!["gpt-5".into()],
+                    model_override: None,
+                    weight: 1,
+                    priority: 0,
+                },
+                AiRouteBackend {
+                    provider_id: provider_b.id,
+                    models: vec!["gpt-5".into()],
+                    model_override: None,
+                    weight: 1,
+                    priority: 0,
+                },
+            ],
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("second generated cluster should trip quota");
+
+    assert_eq!(err.code, ErrorCode::QuotaExceeded);
+    assert_eq!(cluster_count(&w.pool, w.team).await, 49);
 }
 
 async fn insert_raw_observation(
