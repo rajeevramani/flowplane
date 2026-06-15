@@ -148,6 +148,30 @@ pub async fn get_secret_by_id(
     row.as_ref().map(secret_from_row).transpose()
 }
 
+pub async fn get_encrypted_secret_by_id(
+    pool: &PgPool,
+    team_id: TeamId,
+    id: SecretId,
+) -> DomainResult<Option<EncryptedSecret>> {
+    let row = sqlx::query(&format!(
+        "SELECT {COLUMNS}, configuration_encrypted, nonce FROM secrets \
+         WHERE team_id = $1 AND id = $2 AND (expires_at IS NULL OR expires_at > now())"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get encrypted secret by id: {e}")))?;
+    row.map(|row| {
+        Ok(EncryptedSecret {
+            metadata: secret_from_row(&row)?,
+            ciphertext: row.get("configuration_encrypted"),
+            nonce: row.get("nonce"),
+        })
+    })
+    .transpose()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn rotate_secret(
     tx: &mut Transaction<'_, Postgres>,

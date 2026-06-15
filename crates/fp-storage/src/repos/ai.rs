@@ -4,7 +4,7 @@ use fp_domain::authz::TeamRef;
 use fp_domain::{
     AiProvider, AiProviderId, AiProviderKind, AiProviderSpec, AiRoute, AiRouteId,
     AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus, DomainError, DomainResult, ErrorCode,
-    SecretId, TeamId,
+    RouteConfigId, SecretId, TeamId,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -226,6 +226,29 @@ pub async fn get_provider_by_id(
     .fetch_optional(pool)
     .await
     .map_err(|e| DomainError::internal(format!("get AI provider by id: {e}")))?;
+    row.as_ref().map(provider_from_row).transpose()
+}
+
+pub async fn get_provider_for_route_config(
+    pool: &PgPool,
+    team_id: TeamId,
+    route_config_id: RouteConfigId,
+    provider_id: AiProviderId,
+) -> DomainResult<Option<AiProvider>> {
+    let row = sqlx::query(&format!(
+        "SELECT p.{COLUMNS} FROM ai_providers p \
+         JOIN ai_route_backends b ON b.team_id = p.team_id AND b.provider_id = p.id \
+         JOIN ai_routes r ON r.team_id = b.team_id AND r.id = b.ai_route_id \
+         JOIN route_configs rc ON rc.team_id = r.team_id AND rc.name = r.route_config_name \
+         WHERE p.team_id = $1 AND rc.id = $2 AND p.id = $3 \
+         LIMIT 1"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(route_config_id.as_uuid())
+    .bind(provider_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get AI provider for route config: {e}")))?;
     row.as_ref().map(provider_from_row).transpose()
 }
 

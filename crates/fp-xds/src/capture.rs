@@ -25,10 +25,10 @@ use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
     openai_usage_from_json, prepare_openai_chat_request, strip_synthetic_openai_usage_sse,
-    ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId,
-    OpenAiTokenUsage, RouteConfigId, TeamId, AI_MODEL_HEADER,
+    AiProviderId, ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId,
+    OpenAiTokenUsage, RouteConfigId, SecretSpec, TeamId, AI_MODEL_HEADER,
 };
-use fp_storage::repos::{api_lifecycle, discovery, identity};
+use fp_storage::repos::{ai, api_lifecycle, discovery, identity, secrets};
 use serde_json::{Map, Value};
 use sqlx::types::chrono::Utc;
 use std::sync::Arc;
@@ -97,8 +97,9 @@ struct AiExtProcState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AiExtProcContext {
     team_id: TeamId,
-    listener_id: ListenerId,
+    listener_id: Option<ListenerId>,
     route_config_id: RouteConfigId,
+    provider_id: Option<AiProviderId>,
 }
 
 impl LearningCaptureService {
@@ -214,6 +215,7 @@ impl ExternalProcessor for LearningCaptureService {
         if is_ai_processor(request.metadata()) {
             let context = ai_context(request.metadata())?;
             return Ok(Response::new(ReceiverStream::new(ai_process_stream(
+                self.pool.clone(),
                 request.into_inner(),
                 context,
             ))));
@@ -249,6 +251,7 @@ impl ExternalProcessor for LearningCaptureService {
 }
 
 fn ai_process_stream(
+    pool: sqlx::PgPool,
     mut stream: Streaming<ProcessingRequest>,
     context: Option<AiExtProcContext>,
 ) -> tokio::sync::mpsc::Receiver<Result<ProcessingResponse, Status>> {
@@ -261,7 +264,8 @@ fn ai_process_stream(
         loop {
             match stream.message().await {
                 Ok(Some(message)) => {
-                    if tx.send(Ok(ai_response(&mut state, message))).await.is_err() {
+                    let response = ai_response_with_pool(&pool, &mut state, message).await;
+                    if tx.send(Ok(response)).await.is_err() {
                         break;
                     }
                 }
@@ -287,15 +291,27 @@ fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status
     let team_id = optional_metadata_uuid(metadata, "x-flowplane-team-id")?;
     let listener_id = optional_metadata_uuid(metadata, "x-flowplane-listener-id")?;
     let route_config_id = optional_metadata_uuid(metadata, "x-flowplane-route-config-id")?;
-    match (team_id, listener_id, route_config_id) {
-        (Some(team_id), Some(listener_id), Some(route_config_id)) => Ok(Some(AiExtProcContext {
-            team_id: TeamId::from(team_id),
-            listener_id: ListenerId::from(listener_id),
-            route_config_id: RouteConfigId::from(route_config_id),
-        })),
-        (None, None, None) => Ok(None),
+    let provider_id = optional_metadata_uuid(metadata, "x-flowplane-ai-provider-id")?;
+    match (team_id, listener_id, route_config_id, provider_id) {
+        (Some(team_id), Some(listener_id), Some(route_config_id), None) => {
+            Ok(Some(AiExtProcContext {
+                team_id: TeamId::from(team_id),
+                listener_id: Some(ListenerId::from(listener_id)),
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: None,
+            }))
+        }
+        (Some(team_id), None, Some(route_config_id), Some(provider_id)) => {
+            Ok(Some(AiExtProcContext {
+                team_id: TeamId::from(team_id),
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: Some(AiProviderId::from(provider_id)),
+            }))
+        }
+        (None, None, None, None) => Ok(None),
         _ => Err(Status::invalid_argument(
-            "AI processor metadata must include team_id, listener_id, and route_config_id together",
+            "AI processor metadata must include either router or upstream context",
         )),
     }
 }
@@ -623,6 +639,24 @@ fn continue_response(request: &ProcessingRequest) -> ProcessingResponse {
     }
 }
 
+async fn ai_response_with_pool(
+    pool: &sqlx::PgPool,
+    state: &mut AiExtProcState,
+    request: ProcessingRequest,
+) -> ProcessingResponse {
+    if matches!(
+        request.request,
+        Some(processing_request::Request::RequestHeaders(_))
+    ) && state
+        .context
+        .and_then(|context| context.provider_id)
+        .is_some()
+    {
+        return ai_request_headers_response(pool, state).await;
+    }
+    ai_response(state, request)
+}
+
 fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> ProcessingResponse {
     let Some(request) = request.request else {
         return request_headers_response(CommonResponse {
@@ -694,6 +728,72 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
         }
         other => continue_for_request(other),
     }
+}
+
+async fn ai_request_headers_response(
+    pool: &sqlx::PgPool,
+    state: &AiExtProcState,
+) -> ProcessingResponse {
+    let Some(context) = state.context else {
+        return request_headers_response(remove_internal_model_header());
+    };
+    let Some(provider_id) = context.provider_id else {
+        return request_headers_response(remove_internal_model_header());
+    };
+    match selected_provider_auth(pool, context.team_id, context.route_config_id, provider_id).await
+    {
+        Ok((header_name, header_value)) => request_headers_response(CommonResponse {
+            status: common_response::ResponseStatus::Continue as i32,
+            header_mutation: Some(HeaderMutation {
+                set_headers: vec![HeaderValueOption {
+                    header: Some(HeaderValue {
+                        key: header_name,
+                        value: header_value,
+                        raw_value: Vec::new(),
+                    }),
+                    append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
+                        as i32,
+                    ..Default::default()
+                }],
+                remove_headers: vec![AI_MODEL_HEADER.into()],
+            }),
+            ..Default::default()
+        }),
+        Err(_) => immediate_response(500, "AI provider credential unavailable".into()),
+    }
+}
+
+async fn selected_provider_auth(
+    pool: &sqlx::PgPool,
+    team_id: TeamId,
+    route_config_id: RouteConfigId,
+    provider_id: AiProviderId,
+) -> Result<(String, String), Status> {
+    let provider = ai::get_provider_for_route_config(pool, team_id, route_config_id, provider_id)
+        .await
+        .map_err(status_from_domain)?
+        .ok_or_else(|| Status::not_found("AI provider not found for route"))?;
+    let encrypted =
+        secrets::get_encrypted_secret_by_id(pool, team_id, provider.spec.credential_secret_id)
+            .await
+            .map_err(status_from_domain)?
+            .ok_or_else(|| Status::not_found("AI provider credential not found"))?;
+    let spec = crate::snapshot::decrypt_secret_spec(
+        &encrypted.ciphertext,
+        &encrypted.nonce,
+        &encrypted.metadata.encryption_key_id,
+    )
+    .map_err(status_from_domain)?;
+    let SecretSpec::GenericSecret { secret } = spec else {
+        return Err(Status::failed_precondition(
+            "AI provider credential is not a generic secret",
+        ));
+    };
+    let value = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, secret)
+        .map_err(|_| Status::failed_precondition("AI provider credential is invalid"))?;
+    let value = String::from_utf8(value)
+        .map_err(|_| Status::failed_precondition("AI provider credential is not UTF-8"))?;
+    Ok((provider.spec.auth_header, value))
 }
 
 fn ai_response_body_mutation(
@@ -774,7 +874,7 @@ fn remember_ai_usage(state: &mut AiExtProcState, usage: OpenAiTokenUsage) {
     if let Some(context) = state.context {
         tracing::debug!(
             team = %context.team_id,
-            listener = %context.listener_id,
+            listener = ?context.listener_id,
             route_config = %context.route_config_id,
             total_tokens = usage.total_tokens,
             "captured AI usage for future persistence"
@@ -997,7 +1097,7 @@ mod tests {
         let err = ai_context(request.metadata()).expect_err("partial metadata");
 
         assert_eq!(err.code(), Code::InvalidArgument);
-        assert!(err.message().contains("team_id, listener_id"));
+        assert!(err.message().contains("router or upstream context"));
     }
 
     #[test]
@@ -1025,10 +1125,167 @@ mod tests {
             .expect("context present");
 
         assert_eq!(context.team_id, TeamId::from(team_id));
-        assert_eq!(context.listener_id, ListenerId::from(listener_id));
+        assert_eq!(context.listener_id, Some(ListenerId::from(listener_id)));
         assert_eq!(
             context.route_config_id,
             RouteConfigId::from(route_config_id)
+        );
+        assert_eq!(context.provider_id, None);
+    }
+
+    #[test]
+    fn ai_context_reads_upstream_provider_metadata() {
+        let team_id = Uuid::now_v7();
+        let route_config_id = Uuid::now_v7();
+        let provider_id = Uuid::now_v7();
+        let mut request = Request::new(());
+        let metadata = request.metadata_mut();
+        metadata.insert(
+            "x-flowplane-team-id",
+            team_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-route-config-id",
+            route_config_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-ai-provider-id",
+            provider_id.to_string().parse().expect("metadata value"),
+        );
+
+        let context = ai_context(request.metadata())
+            .expect("context parse")
+            .expect("context present");
+
+        assert_eq!(context.team_id, TeamId::from(team_id));
+        assert_eq!(context.listener_id, None);
+        assert_eq!(
+            context.route_config_id,
+            RouteConfigId::from(route_config_id)
+        );
+        assert_eq!(context.provider_id, Some(AiProviderId::from(provider_id)));
+    }
+
+    #[tokio::test]
+    async fn ai_upstream_auth_injection_is_team_and_route_scoped() {
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        use aes_gcm::aead::Aead;
+        use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+        use base64::Engine as _;
+
+        let key = *b"12345678901234567890123456789012";
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            String::from_utf8_lossy(&key).to_string(),
+        );
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+        let other_team =
+            identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+                .await
+                .expect("other team");
+
+        let secret_value = "Bearer selected";
+        let spec = SecretSpec::GenericSecret {
+            secret: base64::engine::general_purpose::STANDARD.encode(secret_value),
+        };
+        let plaintext = serde_json::to_vec(&spec).expect("secret json");
+        let nonce = [7_u8; 12];
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+            .expect("encrypt");
+
+        let secret_id = Uuid::now_v7();
+        let provider_id = Uuid::now_v7();
+        let route_id = Uuid::now_v7();
+        let route_config_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secrets \
+             (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+             VALUES ($1, $2, $3, 'ai-key', '', 'generic_secret', $4, $5, 'default')",
+        )
+        .bind(secret_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(ciphertext)
+        .bind(nonce.to_vec())
+        .execute(&pool)
+        .await
+        .expect("secret");
+        sqlx::query(
+            "INSERT INTO ai_providers \
+             (id, team_id, org_id, name, kind, base_url, credential_secret_id, auth_header) \
+             VALUES ($1, $2, $3, 'openai', 'openai', 'https://api.openai.com/v1', $4, 'authorization')",
+        )
+        .bind(provider_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .expect("provider");
+        sqlx::query(
+            "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+             VALUES ($1, $2, $3, 'ai-route-routes', '{}'::jsonb)",
+        )
+        .bind(route_config_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("route config");
+        sqlx::query(
+            "INSERT INTO ai_routes \
+             (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
+             VALUES ($1, $2, $3, 'ai-route', '{}'::jsonb, ARRAY['ai-route-b1'], 'ai-route-routes', 'ai-route-listener')",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("ai route");
+        sqlx::query(
+            "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
+             VALUES ($1, $2, $3, 0)",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(provider_id)
+        .execute(&pool)
+        .await
+        .expect("backend");
+
+        let (header, value) = selected_provider_auth(
+            &pool,
+            team.id,
+            RouteConfigId::from(route_config_id),
+            AiProviderId::from(provider_id),
+        )
+        .await
+        .expect("auth");
+        assert_eq!(header, "authorization");
+        assert_eq!(value, secret_value);
+        assert!(
+            selected_provider_auth(
+                &pool,
+                other_team.id,
+                RouteConfigId::from(route_config_id),
+                AiProviderId::from(provider_id),
+            )
+            .await
+            .is_err(),
+            "provider lookup is team scoped"
         );
     }
 

@@ -13,6 +13,7 @@ use envoy_types::pb::envoy::extensions::access_loggers::grpc::v3 as grpc_accessl
 use envoy_types::pb::envoy::extensions::filters::http::ext_proc::v3 as ext_proc;
 use envoy_types::pb::envoy::extensions::filters::http::ratelimit::v3 as rate_limit_filter;
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router;
+use envoy_types::pb::envoy::extensions::filters::http::upstream_codec::v3 as upstream_codec;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
 use envoy_types::pb::envoy::extensions::path::rewrite::uri_template::v3 as uri_template_rewrite;
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3 as tls;
@@ -63,6 +64,13 @@ pub struct AiProcessorMetadata {
     pub team_id: uuid::Uuid,
     pub listener_id: uuid::Uuid,
     pub route_config_id: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiUpstreamProcessorMetadata {
+    pub team_id: uuid::Uuid,
+    pub route_config_id: uuid::Uuid,
+    pub provider_id: uuid::Uuid,
 }
 
 fn any<M: Message>(type_url: &str, msg: &M) -> wkt::Any {
@@ -492,6 +500,14 @@ fn sorted_lb_endpoints(spec: &ClusterSpec) -> Vec<ep::LbEndpoint> {
 
 /// Translate a validated ClusterSpec. Endpoints are sorted (host, port) for determinism.
 pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Cluster> {
+    cluster_to_proto_with_ai(name, spec, None)
+}
+
+pub fn cluster_to_proto_with_ai(
+    name: &str,
+    spec: &ClusterSpec,
+    ai: Option<&AiUpstreamProcessorMetadata>,
+) -> DomainResult<exc::Cluster> {
     let lb_policy = match spec.lb_policy {
         LbPolicy::RoundRobin => exc::cluster::LbPolicy::RoundRobin,
         LbPolicy::LeastRequest => exc::cluster::LbPolicy::LeastRequest,
@@ -615,7 +631,7 @@ pub fn cluster_to_proto(name: &str, spec: &ClusterSpec) -> DomainResult<exc::Clu
         outlier_detection,
         lb_config,
         dns_lookup_family: dns_lookup_family(spec, cluster_uses_eds(spec)),
-        typed_extension_protocol_options: upstream_protocol_options(spec),
+        typed_extension_protocol_options: upstream_protocol_options(spec, ai),
         ..Default::default()
     })
 }
@@ -719,36 +735,127 @@ fn dns_lookup_family(spec: &ClusterSpec, uses_eds: bool) -> i32 {
     }) as i32
 }
 
-fn upstream_protocol_options(spec: &ClusterSpec) -> std::collections::HashMap<String, wkt::Any> {
+fn upstream_protocol_options(
+    spec: &ClusterSpec,
+    ai: Option<&AiUpstreamProcessorMetadata>,
+) -> std::collections::HashMap<String, wkt::Any> {
     let Some(protocol) = spec.protocol else {
+        if let Some(ai) = ai {
+            return upstream_http_options(None, ai);
+        }
         return std::collections::HashMap::new();
     };
     match protocol {
-        UpstreamProtocol::Http1 => std::collections::HashMap::new(),
+        UpstreamProtocol::Http1 => ai
+            .map(|ai| upstream_http_options(None, ai))
+            .unwrap_or_default(),
         UpstreamProtocol::Http2 | UpstreamProtocol::Grpc => {
-            let options = upstream_http::HttpProtocolOptions {
-                upstream_protocol_options: Some(
-                    upstream_http::http_protocol_options::UpstreamProtocolOptions::ExplicitHttpConfig(
-                        upstream_http::http_protocol_options::ExplicitHttpConfig {
-                            protocol_config: Some(
-                                upstream_http::http_protocol_options::explicit_http_config::ProtocolConfig::Http2ProtocolOptions(
-                                    core::Http2ProtocolOptions::default(),
-                                ),
-                            ),
-                        },
+            let protocol_options = upstream_http::http_protocol_options::UpstreamProtocolOptions::ExplicitHttpConfig(
+                upstream_http::http_protocol_options::ExplicitHttpConfig {
+                    protocol_config: Some(
+                        upstream_http::http_protocol_options::explicit_http_config::ProtocolConfig::Http2ProtocolOptions(
+                            core::Http2ProtocolOptions::default(),
+                        ),
                     ),
-                ),
-                ..Default::default()
-            };
-            std::iter::once((
-                "envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(),
-                any(
-                    "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
-                    &options,
-                ),
-            ))
-            .collect()
+                },
+            );
+            if let Some(ai) = ai {
+                upstream_http_options(Some(protocol_options), ai)
+            } else {
+                let options = upstream_http::HttpProtocolOptions {
+                    upstream_protocol_options: Some(protocol_options),
+                    ..Default::default()
+                };
+                std::iter::once((
+                    "envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(),
+                    any(
+                        "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+                        &options,
+                    ),
+                ))
+                .collect()
+            }
         }
+    }
+}
+
+fn upstream_http_options(
+    protocol_options: Option<upstream_http::http_protocol_options::UpstreamProtocolOptions>,
+    ai: &AiUpstreamProcessorMetadata,
+) -> std::collections::HashMap<String, wkt::Any> {
+    let options = upstream_http::HttpProtocolOptions {
+        upstream_protocol_options: protocol_options,
+        http_filters: vec![
+            ai_upstream_ext_proc_filter(ai),
+            hcm::HttpFilter {
+                name: "envoy.filters.http.upstream_codec".to_string(),
+                config_type: Some(hcm::http_filter::ConfigType::TypedConfig(any(
+                    "type.googleapis.com/envoy.extensions.filters.http.upstream_codec.v3.UpstreamCodec",
+                    &upstream_codec::UpstreamCodec {},
+                ))),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    std::iter::once((
+        "envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(),
+        any(
+            "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            &options,
+        ),
+    ))
+    .collect()
+}
+
+fn ai_upstream_ext_proc_filter(ai: &AiUpstreamProcessorMetadata) -> hcm::HttpFilter {
+    hcm::HttpFilter {
+        name: format!("{AI_EXT_PROC_FILTER_NAME}.upstream"),
+        config_type: Some(hcm::http_filter::ConfigType::TypedConfig(any(
+            "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
+            &ext_proc::ExternalProcessor {
+                grpc_service: Some(ai_upstream_grpc_service(ai)),
+                failure_mode_allow: false,
+                processing_mode: Some(ext_proc::ProcessingMode {
+                    request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
+                    response_header_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                    request_body_mode: ext_proc::processing_mode::BodySendMode::None as i32,
+                    response_body_mode: ext_proc::processing_mode::BodySendMode::None as i32,
+                    request_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                    response_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                }),
+                message_timeout: Some(millis_duration(5_000)),
+                stat_prefix: "flowplane_ai_upstream".into(),
+                observability_mode: false,
+                disable_immediate_response: false,
+                ..Default::default()
+            },
+        ))),
+        is_optional: false,
+        ..Default::default()
+    }
+}
+
+fn ai_upstream_grpc_service(ai: &AiUpstreamProcessorMetadata) -> core::GrpcService {
+    core::GrpcService {
+        timeout: Some(millis_duration(5_000)),
+        initial_metadata: vec![
+            header("x-flowplane-ai-processor", "true".into()),
+            header("x-flowplane-ai-upstream-processor", "true".into()),
+            header("x-flowplane-team-id", ai.team_id.to_string()),
+            header(
+                "x-flowplane-route-config-id",
+                ai.route_config_id.to_string(),
+            ),
+            header("x-flowplane-ai-provider-id", ai.provider_id.to_string()),
+        ],
+        target_specifier: Some(core::grpc_service::TargetSpecifier::EnvoyGrpc(
+            core::grpc_service::EnvoyGrpc {
+                cluster_name: AI_EXT_PROC_CLUSTER.to_string(),
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
     }
 }
 
@@ -2363,6 +2470,62 @@ mod tests {
                 .expect("min hosts")
                 .value,
             3
+        );
+    }
+
+    #[test]
+    fn ai_cluster_translation_adds_upstream_ext_proc_without_secret() {
+        let ai = AiUpstreamProcessorMetadata {
+            team_id: uuid::Uuid::now_v7(),
+            route_config_id: uuid::Uuid::now_v7(),
+            provider_id: uuid::Uuid::now_v7(),
+        };
+        let cluster =
+            cluster_to_proto_with_ai("ai-chat-b1", &cluster_spec(), Some(&ai)).expect("cluster");
+        let options_any = cluster
+            .typed_extension_protocol_options
+            .get("envoy.extensions.upstreams.http.v3.HttpProtocolOptions")
+            .expect("http protocol options");
+        let options = upstream_http::HttpProtocolOptions::decode(options_any.value.as_slice())
+            .expect("decode options");
+
+        assert_eq!(options.http_filters.len(), 2);
+        assert_eq!(
+            options.http_filters[0].name,
+            format!("{AI_EXT_PROC_FILTER_NAME}.upstream")
+        );
+        let ext_any = match options.http_filters[0]
+            .config_type
+            .as_ref()
+            .expect("typed ext proc")
+        {
+            hcm::http_filter::ConfigType::TypedConfig(any) => any,
+            _ => panic!("expected typed ext proc"),
+        };
+        let ext = ext_proc::ExternalProcessor::decode(ext_any.value.as_slice()).expect("ext proc");
+        let metadata = ext
+            .grpc_service
+            .expect("grpc")
+            .initial_metadata
+            .into_iter()
+            .map(|header| (header.key, header.value))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(metadata["x-flowplane-ai-upstream-processor"], "true");
+        assert_eq!(metadata["x-flowplane-team-id"], ai.team_id.to_string());
+        assert_eq!(
+            metadata["x-flowplane-route-config-id"],
+            ai.route_config_id.to_string()
+        );
+        assert_eq!(
+            metadata["x-flowplane-ai-provider-id"],
+            ai.provider_id.to_string()
+        );
+        assert!(
+            !options_any
+                .value
+                .windows(b"Bearer".len())
+                .any(|w| w == b"Bearer"),
+            "credential values must not be serialized into xDS"
         );
     }
 

@@ -13,7 +13,7 @@ use envoy_types::pb::google::protobuf::Any;
 use fp_domain::gateway::cluster::{Cluster, ClusterSpec};
 use fp_domain::gateway::listener::{Listener, ListenerSpec};
 use fp_domain::gateway::route_config::{RouteConfig, RouteConfigSpec};
-use fp_domain::{ClusterId, ListenerId, RouteConfigId};
+use fp_domain::{AiProviderId, ClusterId, ListenerId, RouteConfigId};
 use fp_domain::{DomainError, DomainResult, SecretSpec, TeamId};
 use prost::Message;
 use sqlx::{PgPool, Row};
@@ -363,8 +363,13 @@ impl SnapshotCache {
 
         let mut cluster_named = Vec::with_capacity(clusters.len());
         let mut endpoint_named = Vec::new();
-        for cluster in &clusters {
-            let proto = match translate::cluster_to_proto(&cluster.name, &cluster.spec) {
+        for xds_cluster in &clusters {
+            let cluster = &xds_cluster.cluster;
+            let proto = match translate::cluster_to_proto_with_ai(
+                &cluster.name,
+                &cluster.spec,
+                xds_cluster.ai.as_ref(),
+            ) {
                 Ok(proto) => proto,
                 Err(err) => {
                     let error = format!("cluster translation failed: {err}");
@@ -563,12 +568,17 @@ impl SnapshotCache {
 }
 
 struct XdsResources {
-    clusters: Vec<Cluster>,
+    clusters: Vec<XdsCluster>,
     route_configs: Vec<RouteConfig>,
     listeners: Vec<XdsListener>,
     cluster_failures: HashMap<String, String>,
     route_failures: HashMap<String, String>,
     listener_failures: HashMap<String, String>,
+}
+
+struct XdsCluster {
+    cluster: Cluster,
+    ai: Option<translate::AiUpstreamProcessorMetadata>,
 }
 
 struct XdsListener {
@@ -577,6 +587,7 @@ struct XdsListener {
 }
 
 async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsResources> {
+    let ai_clusters = ai_cluster_metadata(pool, team_id).await?;
     let cluster_rows = sqlx::query(
         "SELECT id, team_id, name, spec, version, created_at, updated_at \
          FROM clusters WHERE team_id = $1 ORDER BY name LIMIT 500",
@@ -607,7 +618,10 @@ async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsR
     for row in cluster_rows {
         let name: String = row.get("name");
         match cluster_from_xds_row(&row) {
-            Ok(cluster) => clusters.push(cluster),
+            Ok(cluster) => clusters.push(XdsCluster {
+                ai: ai_clusters.get(&cluster.name).cloned(),
+                cluster,
+            }),
             Err(error) => {
                 skip_xds_resource(team_id, "cluster", &name, &error);
                 cluster_failures.insert(name, error);
@@ -652,6 +666,37 @@ async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsR
         route_failures,
         listener_failures,
     })
+}
+
+async fn ai_cluster_metadata(
+    pool: &PgPool,
+    team_id: TeamId,
+) -> DomainResult<HashMap<String, translate::AiUpstreamProcessorMetadata>> {
+    let rows = sqlx::query(
+        "SELECT r.cluster_names[b.position + 1] AS cluster_name, rc.id AS route_config_id, \
+                b.provider_id \
+         FROM ai_routes r \
+         JOIN ai_route_backends b ON b.team_id = r.team_id AND b.ai_route_id = r.id \
+         JOIN route_configs rc ON rc.team_id = r.team_id AND rc.name = r.route_config_name \
+         WHERE r.team_id = $1",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|err| DomainError::internal(format!("list AI cluster metadata: {err}")))?;
+    let mut out = HashMap::with_capacity(rows.len());
+    for row in rows {
+        out.insert(
+            row.get("cluster_name"),
+            translate::AiUpstreamProcessorMetadata {
+                team_id: team_id.as_uuid(),
+                route_config_id: RouteConfigId::from(row.get::<uuid::Uuid, _>("route_config_id"))
+                    .as_uuid(),
+                provider_id: AiProviderId::from(row.get::<uuid::Uuid, _>("provider_id")).as_uuid(),
+            },
+        );
+    }
+    Ok(out)
 }
 
 fn cluster_from_xds_row(row: &sqlx::postgres::PgRow) -> Result<Cluster, String> {
@@ -814,7 +859,11 @@ async fn learning_capture_plan(
     Ok(captures)
 }
 
-fn decrypt_secret_spec(ciphertext: &[u8], nonce: &[u8], key_id: &str) -> DomainResult<SecretSpec> {
+pub(crate) fn decrypt_secret_spec(
+    ciphertext: &[u8],
+    nonce: &[u8],
+    key_id: &str,
+) -> DomainResult<SecretSpec> {
     let key = keyring_secret_key(key_id)?;
     let nonce = <[u8; 12]>::try_from(nonce)
         .map_err(|_| DomainError::internal("secret nonce must be 12 bytes"))?;
