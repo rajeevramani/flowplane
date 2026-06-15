@@ -97,6 +97,7 @@ pub async fn expose(
                     cluster: Some(names.cluster.clone()),
                     weighted_clusters: None,
                     redirect: None,
+                    direct_response: None,
                     prefix_rewrite: None,
                     template_rewrite: None,
                     timeout_secs: 15,
