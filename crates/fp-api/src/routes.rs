@@ -44,6 +44,7 @@ impl utoipa::Modify for SecurityAddon {
 
 /// Build the OpenAPI router + document for the secured /api/v1 surface.
 fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
+    use crate::ai_api;
     use crate::api_lifecycle_api;
     use crate::dataplanes_api;
     use crate::discovery_api;
@@ -129,6 +130,15 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         ))
         .routes(routes!(route_generation_api::create_route_plan))
         .routes(routes!(route_generation_api::apply_route_plan))
+        .routes(routes!(
+            ai_api::list_ai_providers,
+            ai_api::create_ai_provider
+        ))
+        .routes(routes!(
+            ai_api::get_ai_provider,
+            ai_api::update_ai_provider,
+            ai_api::delete_ai_provider
+        ))
         .routes(routes!(
             dataplanes_api::list_dataplanes,
             dataplanes_api::create_dataplane

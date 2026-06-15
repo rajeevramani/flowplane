@@ -111,6 +111,10 @@ domain_id!(
     SecretId
 );
 domain_id!(
+    /// Identifies an AI provider.
+    AiProviderId
+);
+domain_id!(
     /// Identifies an API definition, the config-first lifecycle root for learning/tools.
     ApiDefinitionId
 );

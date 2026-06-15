@@ -4,6 +4,7 @@
 //! every response is JSON, every failure is the spec/10 §8 envelope, every request carries a
 //! request id through error body, logs, and traces.
 
+pub mod ai_api;
 pub mod api_lifecycle_api;
 pub mod auth;
 pub mod dataplanes_api;

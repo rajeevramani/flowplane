@@ -132,6 +132,22 @@ pub async fn get_secret(
     row.as_ref().map(secret_from_row).transpose()
 }
 
+pub async fn get_secret_by_id(
+    pool: &PgPool,
+    team_id: TeamId,
+    id: SecretId,
+) -> DomainResult<Option<Secret>> {
+    let row = sqlx::query(&format!(
+        "SELECT {COLUMNS} FROM secrets WHERE team_id = $1 AND id = $2"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get secret by id: {e}")))?;
+    row.as_ref().map(secret_from_row).transpose()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn rotate_secret(
     tx: &mut Transaction<'_, Postgres>,
