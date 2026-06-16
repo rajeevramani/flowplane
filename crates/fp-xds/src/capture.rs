@@ -782,13 +782,7 @@ fn ai_upstream_request_body_response(
         });
     };
     match rewrite_openai_chat_request_model(&body.body, model) {
-        Ok(body) => request_body_response(CommonResponse {
-            status: common_response::ResponseStatus::Continue as i32,
-            body_mutation: Some(BodyMutation {
-                mutation: Some(body_mutation::Mutation::Body(body)),
-            }),
-            ..Default::default()
-        }),
+        Ok(body) => request_body_replacement_response(body),
         Err(err) => immediate_response(400, err.message),
     }
 }
@@ -819,7 +813,7 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
             match prepare_openai_chat_request(&body.body) {
                 Ok(prepared) => {
                     state.include_usage_injected = prepared.include_usage_injected;
-                    request_body_response(CommonResponse {
+                    let mut common = CommonResponse {
                         status: common_response::ResponseStatus::Continue as i32,
                         header_mutation: Some(HeaderMutation {
                             set_headers: vec![mutation_header_value(
@@ -828,12 +822,13 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
                             )],
                             remove_headers: Vec::new(),
                         }),
-                        body_mutation: prepared.include_usage_injected.then_some(BodyMutation {
-                            mutation: Some(body_mutation::Mutation::Body(prepared.body)),
-                        }),
                         clear_route_cache: true,
                         ..Default::default()
-                    })
+                    };
+                    if prepared.include_usage_injected {
+                        common = add_request_body_replacement(common, prepared.body);
+                    }
+                    request_body_response(common)
                 }
                 Err(err) => immediate_response(400, err.message),
             }
@@ -1190,7 +1185,7 @@ fn ai_response_body_mutation(
         }
         state.response_sse_remainder = remainder;
 
-        if state.include_usage_injected && stripped.as_bytes() != body.as_slice() {
+        if state.include_usage_injected && !complete.is_empty() {
             return Some(stripped.into_bytes());
         }
     }
@@ -1313,6 +1308,33 @@ fn remove_internal_model_header() -> CommonResponse {
         }),
         ..Default::default()
     }
+}
+
+fn request_body_replacement_response(body: Vec<u8>) -> ProcessingResponse {
+    request_body_response(add_request_body_replacement(
+        CommonResponse {
+            status: common_response::ResponseStatus::Continue as i32,
+            ..Default::default()
+        },
+        body,
+    ))
+}
+
+fn add_request_body_replacement(mut common: CommonResponse, body: Vec<u8>) -> CommonResponse {
+    common.body_mutation = Some(BodyMutation {
+        mutation: Some(body_mutation::Mutation::Body(body)),
+    });
+    let mutation = common
+        .header_mutation
+        .get_or_insert_with(HeaderMutation::default);
+    if !mutation
+        .remove_headers
+        .iter()
+        .any(|header| header.eq_ignore_ascii_case("content-length"))
+    {
+        mutation.remove_headers.push("content-length".into());
+    }
+    common
 }
 
 fn mutation_header_value(key: String, value: String) -> HeaderValueOption {
@@ -2058,6 +2080,7 @@ mod tests {
                 .raw_value,
             b"gpt-5"
         );
+        assert_eq!(mutation.remove_headers, vec!["content-length"]);
         let body_mutation = common.body_mutation.expect("body mutation");
         let Some(body_mutation::Mutation::Body(body)) = body_mutation.mutation else {
             panic!("expected replacement body");
@@ -2091,11 +2114,12 @@ mod tests {
         else {
             panic!("expected request body response");
         };
-        let mutation = body
-            .response
-            .expect("common")
-            .body_mutation
-            .expect("body mutation");
+        let common = body.response.expect("common");
+        assert_eq!(
+            common.header_mutation.expect("headers").remove_headers,
+            vec!["content-length"]
+        );
+        let mutation = common.body_mutation.expect("body mutation");
         let Some(body_mutation::Mutation::Body(body)) = mutation.mutation else {
             panic!("expected replacement body");
         };
@@ -2186,6 +2210,34 @@ mod tests {
         assert!(body.contains("\"content\":\"hi\""));
         assert!(!body.contains("\"usage\""));
         assert_eq!(state.last_usage.expect("usage").total_tokens, 3);
+    }
+
+    #[test]
+    fn ai_ext_proc_forwards_complete_sse_event_when_usage_injected() {
+        let mut state = AiExtProcState {
+            include_usage_injected: true,
+            response_content_type: Some("text/event-stream".into()),
+            ..Default::default()
+        };
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"data: {\"choices\":[{\"delta\":{\"content\":\"partial-stream\"}}]}\n\n".to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let body = response_body_mutation(response).expect("body mutation");
+        assert!(String::from_utf8(body)
+            .expect("utf8")
+            .contains("partial-stream"));
+        assert!(state.last_usage.is_none());
     }
 
     #[test]
