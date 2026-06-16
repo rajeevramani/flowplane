@@ -277,9 +277,11 @@ behind a `Translator` trait and ship only when pulled by a real user need.
   model, token type, request id, and budget decision.
 - **`AiBudget`** (team-scoped): fixed-window, fixed weighted-token budgets with `shadow` and
   `enforcing` modes. Admission checks require at least one remaining unit; settlement happens
-  after provider usage with bounded overdraft charged to the request-start window. The
-  authoritative counter lives in Postgres and is updated atomically, so concurrent processors
-  cannot double-spend one team's budget. External Envoy RLS/Redis is not assumed in S10.
+  after provider usage with bounded overdraft charged to the settlement-time fixed window.
+  Missing or unparseable terminal usage is best-effort/fail-open in v1.0: no usage event is
+  recorded, no counter moves, and later budgeted requests are not blocked. The authoritative
+  counter lives in Postgres and is updated atomically, so concurrent processors cannot
+  double-spend one team's budget. External Envoy RLS/Redis is not assumed in S10.
 - **`AiUsage`**: no CRUD resource. It is an append-only event stream plus query/read model and
   metrics surface. Reads are team-scoped and must never expose another team's prompt volume,
   model choices, provider usage, or spend pattern.
