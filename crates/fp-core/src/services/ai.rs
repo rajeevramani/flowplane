@@ -198,6 +198,14 @@ pub async fn delete_provider(
         ))
         .with_hint("update or delete those AI routes first"));
     }
+    let dependents = ai::budget_names_referencing_provider(&mut tx, team.id, provider.id).await?;
+    if !dependents.is_empty() {
+        return Err(DomainError::conflict(format!(
+            "AI provider \"{name}\" is referenced by AI budgets: {}",
+            dependents.join(", ")
+        ))
+        .with_hint("update or delete those AI budgets first"));
+    }
     ai::delete(&mut tx, team.id, name, expected_version).await?;
     audit::record_in_tx(
         &mut tx,

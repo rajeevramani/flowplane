@@ -296,6 +296,25 @@ pub async fn delete_route_config(
         ))
         .with_hint("detach or delete those listeners first"));
     }
+    let dependents: Vec<String> = sqlx::query_scalar(
+        "SELECT b.name FROM ai_budgets b \
+         JOIN route_configs rc ON rc.id = b.route_config_id AND rc.team_id = b.team_id \
+         WHERE rc.team_id = $1 AND rc.name = $2 ORDER BY b.name LIMIT 10",
+    )
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| {
+        DomainError::internal(format!("delete route config: AI budget dependents: {e}"))
+    })?;
+    if !dependents.is_empty() {
+        return Err(DomainError::conflict(format!(
+            "route config \"{name}\" is referenced by AI budgets: {}",
+            dependents.join(", ")
+        ))
+        .with_hint("update or delete those AI budgets first"));
+    }
     let row = sqlx::query(
         "DELETE FROM route_configs WHERE team_id = $1 AND name = $2 AND version = $3 AND owner_kind = 'user' RETURNING id",
     )

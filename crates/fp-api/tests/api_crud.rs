@@ -1627,6 +1627,30 @@ async fn secret_values_are_write_only_over_http() {
         .oneshot(request_with_revision("DELETE", &provider, 3, None))
         .await
         .expect("delete AI provider");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = json_of(response).await;
+    assert!(body["error"]["message"]
+        .as_str()
+        .expect("message")
+        .contains(&budget_name));
+
+    let response = app
+        .clone()
+        .oneshot(request_with_revision(
+            "DELETE",
+            &format!("{budgets}/{budget_name}"),
+            1,
+            None,
+        ))
+        .await
+        .expect("delete AI budget");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = app
+        .clone()
+        .oneshot(request_with_revision("DELETE", &provider, 3, None))
+        .await
+        .expect("delete AI provider");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let response = app

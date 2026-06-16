@@ -510,6 +510,23 @@ pub async fn route_names_referencing_provider(
     Ok(rows.into_iter().map(|row| row.get("name")).collect())
 }
 
+pub async fn budget_names_referencing_provider(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    provider_id: AiProviderId,
+) -> DomainResult<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT name FROM ai_budgets \
+         WHERE team_id = $1 AND provider_id = $2 ORDER BY name",
+    )
+    .bind(team_id.as_uuid())
+    .bind(provider_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("list AI budgets referencing provider: {e}")))?;
+    Ok(rows.into_iter().map(|row| row.get("name")).collect())
+}
+
 pub async fn mark_routes_stale_for_provider(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
