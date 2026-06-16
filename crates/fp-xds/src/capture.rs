@@ -749,17 +749,10 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
                     request_body_response(CommonResponse {
                         status: common_response::ResponseStatus::Continue as i32,
                         header_mutation: Some(HeaderMutation {
-                            set_headers: vec![HeaderValueOption {
-                                header: Some(HeaderValue {
-                                    key: AI_MODEL_HEADER.into(),
-                                    value: prepared.model,
-                                    raw_value: Vec::new(),
-                                }),
-                                append_action:
-                                    header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
-                                        as i32,
-                                ..Default::default()
-                            }],
+                            set_headers: vec![mutation_header_value(
+                                AI_MODEL_HEADER.into(),
+                                prepared.model,
+                            )],
                             remove_headers: Vec::new(),
                         }),
                         body_mutation: prepared.include_usage_injected.then_some(BodyMutation {
@@ -879,27 +872,12 @@ async fn ai_request_headers_response(
     {
         Ok(runtime) => {
             state.upstream_model_override = runtime.model_override;
-            let mut set_headers = vec![HeaderValueOption {
-                header: Some(HeaderValue {
-                    key: runtime.auth_header,
-                    value: runtime.auth_value,
-                    raw_value: Vec::new(),
-                }),
-                append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
-                    as i32,
-                ..Default::default()
-            }];
+            let mut set_headers = vec![mutation_header_value(
+                runtime.auth_header,
+                runtime.auth_value,
+            )];
             if let Some(path) = runtime.path_rewrite {
-                set_headers.push(HeaderValueOption {
-                    header: Some(HeaderValue {
-                        key: ":path".into(),
-                        value: path,
-                        raw_value: Vec::new(),
-                    }),
-                    append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
-                        as i32,
-                    ..Default::default()
-                });
+                set_headers.push(mutation_header_value(":path".into(), path));
             }
             request_headers_response(CommonResponse {
                 status: common_response::ResponseStatus::Continue as i32,
@@ -981,27 +959,12 @@ async fn ai_listener_request_headers_response(
     {
         Ok(runtime) => {
             state.upstream_model_override = runtime.model_override;
-            let mut set_headers = vec![HeaderValueOption {
-                header: Some(HeaderValue {
-                    key: runtime.auth_header,
-                    value: runtime.auth_value,
-                    raw_value: Vec::new(),
-                }),
-                append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
-                    as i32,
-                ..Default::default()
-            }];
+            let mut set_headers = vec![mutation_header_value(
+                runtime.auth_header,
+                runtime.auth_value,
+            )];
             if let Some(path) = runtime.path_rewrite {
-                set_headers.push(HeaderValueOption {
-                    header: Some(HeaderValue {
-                        key: ":path".into(),
-                        value: path,
-                        raw_value: Vec::new(),
-                    }),
-                    append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
-                        as i32,
-                    ..Default::default()
-                });
+                set_headers.push(mutation_header_value(":path".into(), path));
             }
             request_headers_response(CommonResponse {
                 status: common_response::ResponseStatus::Continue as i32,
@@ -1243,6 +1206,18 @@ fn remove_internal_model_header() -> CommonResponse {
             set_headers: Vec::new(),
             remove_headers: vec![AI_MODEL_HEADER.into()],
         }),
+        ..Default::default()
+    }
+}
+
+fn mutation_header_value(key: String, value: String) -> HeaderValueOption {
+    HeaderValueOption {
+        header: Some(HeaderValue {
+            key,
+            value: String::new(),
+            raw_value: value.into_bytes(),
+        }),
+        append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd as i32,
         ..Default::default()
     }
 }
@@ -1925,8 +1900,8 @@ mod tests {
                 .header
                 .as_ref()
                 .expect("header")
-                .value,
-            "gpt-5"
+                .raw_value,
+            b"gpt-5"
         );
         let body_mutation = common.body_mutation.expect("body mutation");
         let Some(body_mutation::Mutation::Body(body)) = body_mutation.mutation else {
