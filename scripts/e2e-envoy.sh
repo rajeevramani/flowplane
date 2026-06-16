@@ -712,10 +712,16 @@ done
 [ "$CODE" = "200" ] || fail "advanced parity listener did not serve matching request (got $CODE)"
 grep -Eq "hello-from-upstream|hello-from-upstream2" /tmp/fp-e2e-advanced-body \
   || fail "advanced parity request did not reach an expected weighted upstream"
+# Poll for a single, consistent config_dump that contains the e2e-advanced listener AND its
+# global rate-limit filter. Bounded curl (--max-time) avoids a hung/partial read of the large
+# dump being misread as "filter absent", and requiring both tokens in the same snapshot avoids a
+# mid-rebuild window where the listener is transiently out of the snapshot (#64 polled the filter
+# string only, single-shot curl, and still flaked ~1/3 runs).
 ADV_FILTER_READY=0
-for i in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump 2>/dev/null \
-    | grep -q "envoy.filters.http.ratelimit"; then
+for i in $(seq 1 60); do
+  ADV_DUMP=$(curl -fsS --max-time 5 http://127.0.0.1:$ADMIN_PORT/config_dump 2>/dev/null || true)
+  if grep -q "e2e-advanced" <<<"$ADV_DUMP" \
+    && grep -q "envoy.filters.http.ratelimit" <<<"$ADV_DUMP"; then
     ADV_FILTER_READY=1
     break
   fi
