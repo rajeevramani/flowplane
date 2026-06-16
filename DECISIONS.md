@@ -378,5 +378,6 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   from the client-facing stream while still using it for settlement. Failover is allowed only
   before the first response byte; once streaming starts, backend failure is terminal for that
   request and partial usage is attributed to the backend actually used.
-- **Status:** decided for S10a (2026-06-15). This overrides the broader translator-matrix and
-  "existing RLS cost path" wording in older spec/09 and spec/11 text.
+- **Status:** decided for S10a (2026-06-15), implemented through S10 exit (2026-06-16).
+  This overrides the broader translator-matrix and "existing RLS cost path" wording in older
+  spec notes.

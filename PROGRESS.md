@@ -469,7 +469,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         observations → stop/freeze session → learned candidate API/spec → review/publish →
         generated tools → persisted route dry-run/apply equivalence → traffic through the
         generated listener).
-- [ ] S10 AI gateway
+- [x] S10 AI gateway
   - [x] S10a design contract: D-018 records OpenAI chat-completions as the v1.0 IR,
         demand-pulled non-OpenAI translators, authenticated processor credential fetch,
         Postgres-authoritative budget settlement, streaming/failover semantics, AI resource
@@ -486,19 +486,16 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         rewrite, streaming-safe usage capture, and append-only usage handoff.
   - [x] S10e usage foundation: append-only AI usage events are captured from the selected
         backend, settled into fixed-window budget counters, exposed through team-scoped
-        `ai usage`, and wired through REST/CLI. Budget enforcement follow-ups remain below.
-  - [ ] S10f budgets:
-        #58 request-start enforcement is implemented on the default branch and marked
-        `ready-for-review`; matching exhausted enforcing budgets return a deterministic 429
-        before provider dispatch, while shadow budgets stay non-blocking. #59 remains open for
-        concurrent same-team settlement and cross-team isolation stress coverage.
-  - [ ] S10 exit:
-        #60 adds the live mock-provider E2E path covering AI route materialization, mock
-        provider traffic, gateway usage capture, enforcing budget trip, usage attribution,
-        credential non-leak checks, and AI route/provider cleanup; it remains open for review.
-  - [ ] S10 docs/progress:
-        #61 tracks keeping `DECISIONS.md`, `PROGRESS.md`, and the relevant S10 specs aligned as
-        budget semantics and exit coverage land.
+        `ai usage`, and wired through REST/CLI.
+  - [x] S10f budgets: #58 enforces exhausted budgets at request start with deterministic
+        429s before provider dispatch, shadow budgets stay non-blocking, and #59 covers
+        concurrent same-team settlement plus cross-team isolation.
+  - [x] S10 exit: #60 covers live OpenAI-compatible provider traffic, canonical
+        `Authorization: Bearer` credential injection, multi-backend upstream injection,
+        usage capture, enforcing budget trip, usage attribution, credential non-leak checks,
+        AI cleanup, and the full live Envoy E2E.
+  - [x] S10 docs/progress: #61 aligned `DECISIONS.md`, `PROGRESS.md`, and S10 spec notes
+        with the implemented fixed-window budget semantics and OpenAI-compatible v1.0 scope.
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
 
