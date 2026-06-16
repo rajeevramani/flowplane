@@ -198,7 +198,7 @@ $ flowplane ai usage show --by model
 MODEL              REQS   IN TOK     OUT TOK   BUDGET USED
 gpt-5              1 204  8 214 991  922 410   16 % (shadow)
 $ flowplane ai budget set --team payments --provider openai-prod --tokens 5_000_000/day
-✓ budget enforcing (429 + Retry-After on exhaustion; overdraft-on-last-request)
+✓ budget enforcing (429 on exhaustion; overdraft-on-last-request)
 ```
 
 ### 5.5 Tenancy administration

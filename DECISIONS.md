@@ -370,9 +370,10 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   (`sum(weight[token_type] * tokens[token_type])`) before CEL or price tables. A request is
   admitted when the relevant enforcing budget has at least one unit remaining, then settled
   after provider usage is known; bounded overdraft on the last in-flight request is accepted
-  and charged to the request-start window. Shadow budgets meter without rejection. Enforcing
-  routes require usage-capable backends; missing or unparseable terminal usage records a
-  settlement failure and fails closed for subsequent budgeted requests until resolved.
+  and charged to the settlement-time fixed window. Shadow budgets meter without rejection.
+  Missing or unparseable terminal usage is currently best-effort/fail-open: no usage event is
+  recorded, no counter moves, and subsequent budgeted requests are not blocked. Fail-closed
+  missing-usage handling is deferred hardening, not v1.0 behavior.
 - **Streaming and failover:** The processor may force `stream_options.include_usage=true` for
   OpenAI streams. If it injected that option, it must strip the synthetic terminal usage chunk
   from the client-facing stream while still using it for settlement. Failover is allowed only
