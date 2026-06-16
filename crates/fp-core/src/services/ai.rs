@@ -766,7 +766,17 @@ async fn create_materialized(
         "create AI materialized resources: begin",
     ))?;
     let mut cluster_events = Vec::with_capacity(cluster_specs.len());
+    let existing_clusters = fp_storage::repos::clusters::count_for_team(pool, team.id).await?;
+    let cluster_limit = crate::services::quota::default_limit(Resource::Clusters);
     for (cluster_name, cluster_spec) in cluster_specs {
+        let used = existing_clusters + cluster_events.len() as i64;
+        if used >= cluster_limit {
+            return Err(crate::services::quota::quota_exceeded(
+                Resource::Clusters,
+                used,
+                cluster_limit,
+            ));
+        }
         let cluster =
             cluster_repo::create_ai_owned(&mut tx, team, owner_id, cluster_name, &cluster_spec)
                 .await?;

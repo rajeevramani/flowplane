@@ -45,11 +45,15 @@ pub async fn check_team_resource_quota(
     };
     let limit = default_limit(resource);
     if used >= limit {
-        return Err(DomainError::new(
-            ErrorCode::QuotaExceeded,
-            format!("team quota reached: {used}/{limit} {}", resource.as_str()),
-        )
-        .with_hint("delete unused resources or ask a platform admin to raise the quota"));
+        return Err(quota_exceeded(resource, used, limit));
     }
     Ok(())
+}
+
+pub fn quota_exceeded(resource: Resource, used: i64, limit: i64) -> DomainError {
+    DomainError::new(
+        ErrorCode::QuotaExceeded,
+        format!("team quota reached: {used}/{limit} {}", resource.as_str()),
+    )
+    .with_hint("delete unused resources or ask a platform admin to raise the quota")
 }
