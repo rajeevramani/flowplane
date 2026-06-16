@@ -9,3 +9,7 @@
 
 # local
 .local/
+.pi/
+docs/dev-workflow-automation.md
+scripts/flowplane-dev
+scripts/flowplane-dev.py
