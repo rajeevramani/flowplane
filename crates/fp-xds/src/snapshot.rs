@@ -694,8 +694,49 @@ async fn ai_cluster_metadata(
                     .as_uuid(),
                 provider_id: AiProviderId::from(row.get::<uuid::Uuid, _>("provider_id")).as_uuid(),
                 backend_position: row.get("position"),
+                failover_chain: Vec::new(),
             },
         );
+    }
+    let aggregate_rows =
+        sqlx::query("SELECT name, spec FROM clusters WHERE team_id = $1 AND owner_kind = 'ai'")
+            .bind(team_id.as_uuid())
+            .fetch_all(pool)
+            .await
+            .map_err(|err| DomainError::internal(format!("list AI aggregate clusters: {err}")))?;
+    for row in aggregate_rows {
+        let name: String = row.get("name");
+        let spec: ClusterSpec = serde_json::from_value(row.get::<serde_json::Value, _>("spec"))
+            .map_err(|err| {
+                DomainError::internal(format!("AI aggregate cluster spec does not parse: {err}"))
+            })?;
+        if spec.aggregate_clusters.is_empty() {
+            continue;
+        }
+        let mut chain = Vec::with_capacity(spec.aggregate_clusters.len());
+        let mut route_config_id = None;
+        for member in &spec.aggregate_clusters {
+            let Some(metadata) = out.get(member) else {
+                chain.clear();
+                break;
+            };
+            route_config_id = Some(metadata.route_config_id);
+            chain.push((metadata.provider_id, metadata.backend_position));
+        }
+        if let (Some(route_config_id), Some((provider_id, backend_position))) =
+            (route_config_id, chain.first().copied())
+        {
+            out.insert(
+                name,
+                translate::AiUpstreamProcessorMetadata {
+                    team_id: team_id.as_uuid(),
+                    route_config_id,
+                    provider_id,
+                    backend_position,
+                    failover_chain: chain,
+                },
+            );
+        }
     }
     Ok(out)
 }
@@ -1006,6 +1047,7 @@ mod tests {
 
     fn cluster_spec(host: &str) -> ClusterSpec {
         ClusterSpec {
+            aggregate_clusters: Vec::new(),
             endpoints: vec![Endpoint {
                 host: host.into(),
                 port: 8080,

@@ -62,6 +62,7 @@ fn generic_secret(name: &str) -> SecretWrite<'_> {
 
 fn cluster_spec(host: &str) -> ClusterSpec {
     ClusterSpec {
+        aggregate_clusters: Vec::new(),
         endpoints: vec![Endpoint {
             host: host.into(),
             port: 8080,

@@ -321,6 +321,7 @@ pub async fn stop_session(
 
 fn cluster_spec(ip: &IpAddr, port: u16, spec: &DiscoverySessionSpec) -> ClusterSpec {
     ClusterSpec {
+        aggregate_clusters: Vec::new(),
         endpoints: vec![Endpoint {
             host: ip.to_string(),
             port,

@@ -13,6 +13,7 @@ pub const RESERVED_NAME_PREFIXES: &[&str] =
     &["envoy-", "xds-", "internal-", "system-", "flowplane-"];
 
 pub const MAX_ENDPOINTS: usize = 100;
+pub const MAX_AGGREGATE_CLUSTERS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cluster {
@@ -30,6 +31,8 @@ pub struct Cluster {
 #[serde(deny_unknown_fields)]
 pub struct ClusterSpec {
     pub endpoints: Vec<Endpoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aggregate_clusters: Vec<String>,
     #[serde(default)]
     pub lb_policy: LbPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -288,6 +291,24 @@ fn validate_host(host: &str) -> DomainResult<()> {
 
 impl ClusterSpec {
     pub fn validate(&self) -> DomainResult<()> {
+        if !self.aggregate_clusters.is_empty() {
+            if !self.endpoints.is_empty() {
+                return Err(DomainError::validation(
+                    "aggregate clusters must not define endpoints",
+                ));
+            }
+            if self.aggregate_clusters.len() > MAX_AGGREGATE_CLUSTERS {
+                return Err(DomainError::validation(format!(
+                    "at most {MAX_AGGREGATE_CLUSTERS} aggregate member clusters, got {}",
+                    self.aggregate_clusters.len()
+                )));
+            }
+            for cluster in &self.aggregate_clusters {
+                crate::identity::validate_name(cluster)?;
+            }
+            range("connect_timeout_secs", self.connect_timeout_secs, 1, 300)?;
+            return Ok(());
+        }
         if self.endpoints.is_empty() {
             return Err(
                 DomainError::validation("a cluster needs at least one endpoint")
@@ -487,6 +508,7 @@ mod tests {
                 port: 8080,
                 weight: None,
             }],
+            aggregate_clusters: Vec::new(),
             lb_policy: LbPolicy::RoundRobin,
             least_request: None,
             ring_hash: None,

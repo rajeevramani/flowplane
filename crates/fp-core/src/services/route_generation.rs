@@ -268,6 +268,7 @@ fn build_plan(
     let route_config_name = format!("{api_name}-routes");
     let listener_name = api_name.to_string();
     let cluster_spec = ClusterSpec {
+        aggregate_clusters: Vec::new(),
         endpoints: vec![Endpoint {
             host: upstream_host.to_string(),
             port: upstream_port,

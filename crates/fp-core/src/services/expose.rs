@@ -60,6 +60,7 @@ pub async fn expose(
     let names = ExposeNames::new(&request.name);
 
     let cluster_spec = ClusterSpec {
+        aggregate_clusters: Vec::new(),
         endpoints: vec![Endpoint {
             host: upstream.host,
             port: upstream.port,

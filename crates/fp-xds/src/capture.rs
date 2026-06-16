@@ -97,13 +97,14 @@ struct AiExtProcState {
     request_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AiExtProcContext {
     team_id: TeamId,
     listener_id: Option<ListenerId>,
     route_config_id: RouteConfigId,
     provider_id: Option<AiProviderId>,
     backend_position: Option<i32>,
+    failover_chain: Vec<(AiProviderId, i32)>,
 }
 
 impl LearningCaptureService {
@@ -298,36 +299,92 @@ fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status
     let route_config_id = optional_metadata_uuid(metadata, "x-flowplane-route-config-id")?;
     let provider_id = optional_metadata_uuid(metadata, "x-flowplane-ai-provider-id")?;
     let backend_position = optional_metadata_i32(metadata, "x-flowplane-ai-backend-position")?;
+    let provider_chain = optional_metadata_string(metadata, "x-flowplane-ai-provider-chain")?;
+    let backend_position_chain =
+        optional_metadata_string(metadata, "x-flowplane-ai-backend-position-chain")?;
     match (
         team_id,
         listener_id,
         route_config_id,
         provider_id,
         backend_position,
+        provider_chain,
+        backend_position_chain,
     ) {
-        (Some(team_id), Some(listener_id), Some(route_config_id), None, None) => {
+        (Some(team_id), Some(listener_id), Some(route_config_id), None, None, None, None) => {
             Ok(Some(AiExtProcContext {
                 team_id: TeamId::from(team_id),
                 listener_id: Some(ListenerId::from(listener_id)),
                 route_config_id: RouteConfigId::from(route_config_id),
                 provider_id: None,
                 backend_position: None,
+                failover_chain: Vec::new(),
             }))
         }
-        (Some(team_id), None, Some(route_config_id), Some(provider_id), Some(backend_position)) => {
-            Ok(Some(AiExtProcContext {
-                team_id: TeamId::from(team_id),
-                listener_id: None,
-                route_config_id: RouteConfigId::from(route_config_id),
-                provider_id: Some(AiProviderId::from(provider_id)),
-                backend_position: Some(backend_position),
-            }))
-        }
-        (None, None, None, None, None) => Ok(None),
+        (
+            Some(team_id),
+            None,
+            Some(route_config_id),
+            Some(provider_id),
+            Some(backend_position),
+            None,
+            None,
+        ) => Ok(Some(AiExtProcContext {
+            team_id: TeamId::from(team_id),
+            listener_id: None,
+            route_config_id: RouteConfigId::from(route_config_id),
+            provider_id: Some(AiProviderId::from(provider_id)),
+            backend_position: Some(backend_position),
+            failover_chain: Vec::new(),
+        })),
+        (
+            Some(team_id),
+            None,
+            Some(route_config_id),
+            None,
+            None,
+            Some(provider_chain),
+            Some(backend_position_chain),
+        ) => Ok(Some(AiExtProcContext {
+            team_id: TeamId::from(team_id),
+            listener_id: None,
+            route_config_id: RouteConfigId::from(route_config_id),
+            provider_id: None,
+            backend_position: None,
+            failover_chain: parse_ai_failover_chain(&provider_chain, &backend_position_chain)?,
+        })),
+        (None, None, None, None, None, None, None) => Ok(None),
         _ => Err(Status::invalid_argument(
             "AI processor metadata must include either router or upstream context",
         )),
     }
+}
+
+fn parse_ai_failover_chain(
+    provider_chain: &str,
+    backend_position_chain: &str,
+) -> Result<Vec<(AiProviderId, i32)>, Status> {
+    let providers = provider_chain
+        .split(',')
+        .map(|raw| {
+            Uuid::parse_str(raw)
+                .map(AiProviderId::from)
+                .map_err(|_| Status::invalid_argument("invalid AI provider chain metadata"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let positions = backend_position_chain
+        .split(',')
+        .map(|raw| {
+            raw.parse::<i32>()
+                .map_err(|_| Status::invalid_argument("invalid AI backend chain metadata"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if providers.is_empty() || providers.len() != positions.len() {
+        return Err(Status::invalid_argument(
+            "AI failover chain metadata must include matching providers and positions",
+        ));
+    }
+    Ok(providers.into_iter().zip(positions).collect())
 }
 
 async fn capture_context<T>(
@@ -428,6 +485,21 @@ fn optional_metadata_i32(metadata: &MetadataMap, key: &'static str) -> Result<Op
                         Status::invalid_argument(format!("invalid capture metadata {key}"))
                     })
                 })
+        })
+        .transpose()
+}
+
+fn optional_metadata_string(
+    metadata: &MetadataMap,
+    key: &'static str,
+) -> Result<Option<String>, Status> {
+    metadata
+        .get(key)
+        .map(|value| {
+            value
+                .to_str()
+                .map(str::to_string)
+                .map_err(|_| Status::invalid_argument(format!("invalid capture metadata {key}")))
         })
         .transpose()
 }
@@ -684,6 +756,7 @@ async fn ai_response_with_pool(
         Some(processing_request::Request::RequestBody(_))
     ) && state
         .context
+        .as_ref()
         .and_then(|context| context.provider_id)
         .is_some()
     {
@@ -826,10 +899,11 @@ async fn ai_request_headers_response(
     state: &mut AiExtProcState,
     request: ProcessingRequest,
 ) -> ProcessingResponse {
-    let Some(context) = state.context else {
+    let Some(context) = state.context.clone() else {
         return request_headers_response(remove_internal_model_header());
     };
-    let Some(provider_id) = context.provider_id else {
+    let Some((provider_id, backend_position)) = selected_upstream_backend(&context, &request)
+    else {
         return ai_listener_request_headers_response(pool, state, request, context).await;
     };
     match ai::exhausted_enforcing_budget(
@@ -865,12 +939,16 @@ async fn ai_request_headers_response(
         context.team_id,
         context.route_config_id,
         provider_id,
-        context.backend_position,
+        Some(backend_position),
         request_path.as_deref(),
     )
     .await
     {
         Ok(runtime) => {
+            if let Some(state_context) = state.context.as_mut() {
+                state_context.provider_id = Some(provider_id);
+                state_context.backend_position = Some(backend_position);
+            }
             state.upstream_model_override = runtime.model_override;
             let mut set_headers = vec![mutation_header_value(
                 runtime.auth_header,
@@ -890,6 +968,33 @@ async fn ai_request_headers_response(
         }
         Err(_) => immediate_response(500, "AI provider credential unavailable".into()),
     }
+}
+
+fn selected_upstream_backend(
+    context: &AiExtProcContext,
+    request: &ProcessingRequest,
+) -> Option<(AiProviderId, i32)> {
+    if let (Some(provider_id), Some(backend_position)) =
+        (context.provider_id, context.backend_position)
+    {
+        return Some((provider_id, backend_position));
+    }
+    if context.failover_chain.is_empty() {
+        return None;
+    }
+    let attempt = match &request.request {
+        Some(processing_request::Request::RequestHeaders(headers)) => {
+            let map = headers_from_header_map(headers.headers.as_ref());
+            header_value(&map, "x-envoy-attempt-count")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(1)
+        }
+        _ => 1,
+    };
+    let idx = attempt
+        .saturating_sub(1)
+        .min(context.failover_chain.len().saturating_sub(1));
+    context.failover_chain.get(idx).copied()
 }
 
 async fn ai_listener_request_headers_response(
@@ -1129,7 +1234,7 @@ fn collect_unary_usage_body(state: &mut AiExtProcState, body: &[u8], end_of_stre
 }
 
 fn remember_ai_usage(state: &mut AiExtProcState, usage: OpenAiTokenUsage) {
-    if let Some(context) = state.context {
+    if let Some(context) = &state.context {
         tracing::debug!(
             team = %context.team_id,
             listener = ?context.listener_id,
@@ -1142,7 +1247,7 @@ fn remember_ai_usage(state: &mut AiExtProcState, usage: OpenAiTokenUsage) {
 }
 
 async fn persist_ai_usage(pool: &sqlx::PgPool, state: &AiExtProcState) {
-    let (Some(context), Some(usage)) = (state.context, state.last_usage) else {
+    let (Some(context), Some(usage)) = (&state.context, state.last_usage) else {
         return;
     };
     let Some(provider_id) = context.provider_id else {
@@ -1468,6 +1573,53 @@ mod tests {
         );
         assert_eq!(context.provider_id, Some(AiProviderId::from(provider_id)));
         assert_eq!(context.backend_position, Some(0));
+        assert!(context.failover_chain.is_empty());
+    }
+
+    #[test]
+    fn ai_context_reads_upstream_failover_chain_metadata() {
+        let team_id = Uuid::now_v7();
+        let route_config_id = Uuid::now_v7();
+        let provider_a = Uuid::now_v7();
+        let provider_b = Uuid::now_v7();
+        let mut request = Request::new(());
+        let metadata = request.metadata_mut();
+        metadata.insert(
+            "x-flowplane-team-id",
+            team_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-route-config-id",
+            route_config_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-ai-provider-chain",
+            format!("{provider_a},{provider_b}")
+                .parse()
+                .expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-ai-backend-position-chain",
+            "0,1".parse().expect("metadata value"),
+        );
+
+        let context = ai_context(request.metadata())
+            .expect("context parse")
+            .expect("context present");
+
+        assert_eq!(context.team_id, TeamId::from(team_id));
+        assert_eq!(
+            context.route_config_id,
+            RouteConfigId::from(route_config_id)
+        );
+        assert_eq!(context.provider_id, None);
+        assert_eq!(
+            context.failover_chain,
+            vec![
+                (AiProviderId::from(provider_a), 0),
+                (AiProviderId::from(provider_b), 1)
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1621,6 +1773,7 @@ mod tests {
                 route_config_id: RouteConfigId::from(route_config_id),
                 provider_id: Some(AiProviderId::from(provider_id)),
                 backend_position: Some(0),
+                failover_chain: Vec::new(),
             }),
             last_usage: Some(OpenAiTokenUsage {
                 prompt_tokens: 2,
@@ -1709,6 +1862,7 @@ mod tests {
                 route_config_id: RouteConfigId::from(route_config_id),
                 provider_id: Some(AiProviderId::from(provider_id)),
                 backend_position: Some(0),
+                failover_chain: Vec::new(),
             }),
             ..Default::default()
         };
