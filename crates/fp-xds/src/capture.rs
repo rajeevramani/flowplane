@@ -912,29 +912,15 @@ async fn selected_backend_runtime(
     Ok(SelectedBackendRuntime {
         auth_header: provider.spec.auth_header,
         auth_value: value,
-        path_rewrite: provider_path_rewrite(
-            &provider.spec.base_url,
-            provider.spec.path_prefix.as_deref(),
-            request_path,
-        ),
+        path_rewrite: provider_path_rewrite(provider.spec.path_prefix.as_deref(), request_path),
         model_override: selected.backend.model_override,
     })
 }
 
-fn provider_path_rewrite(
-    base_url: &str,
-    path_prefix: Option<&str>,
-    request_path: Option<&str>,
-) -> Option<String> {
-    let prefix = path_prefix.map(str::to_string).or_else(|| {
-        base_url
-            .split_once("://")
-            .and_then(|(_, rest)| rest.find('/').map(|idx| &rest[idx..]))
-            .map(|path| path.trim_end_matches('/').to_string())
-            .filter(|path| !path.is_empty() && path != "/")
-    })?;
+fn provider_path_rewrite(path_prefix: Option<&str>, request_path: Option<&str>) -> Option<String> {
+    let prefix = path_prefix?;
     let request_path = request_path.unwrap_or("/v1/chat/completions");
-    Some(join_prefix_path(&prefix, request_path))
+    Some(join_prefix_path(prefix, request_path))
 }
 
 fn join_prefix_path(prefix: &str, path: &str) -> String {
@@ -1708,6 +1694,19 @@ mod tests {
         };
         let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["model"], "upstream-model");
+    }
+
+    #[test]
+    fn provider_path_rewrite_uses_only_path_prefix() {
+        assert_eq!(
+            provider_path_rewrite(Some("/openai"), Some("/v1/chat/completions?stream=true"))
+                .as_deref(),
+            Some("/openai/v1/chat/completions?stream=true")
+        );
+        assert_eq!(
+            provider_path_rewrite(None, Some("/v1/chat/completions")),
+            None
+        );
     }
 
     #[test]
