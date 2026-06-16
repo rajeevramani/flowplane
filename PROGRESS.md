@@ -482,6 +482,20 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S10d OpenAI-compatible gateway processor: model extraction/routing header, deterministic
         no-eligible-backend response, selected-backend credential injection, provider path/model
         rewrite, streaming-safe usage capture, and append-only usage handoff.
+  - [x] S10e usage foundation: append-only AI usage events are captured from the selected
+        backend, settled into fixed-window budget counters, exposed through team-scoped
+        `ai usage`, and wired through REST/CLI. Budget enforcement follow-ups remain below.
+  - [ ] S10f budgets:
+        #58 request-start enforcement is implemented on the default branch and marked
+        `ready-for-review`; matching exhausted enforcing budgets return a deterministic 429
+        before provider dispatch, while shadow budgets stay non-blocking. #59 remains open for
+        concurrent same-team settlement and cross-team isolation stress coverage.
+  - [ ] S10 exit:
+        #60 remains open for the mock-provider E2E covering credential -> route -> traffic ->
+        usage -> budget trip -> failover/cleanup.
+  - [ ] S10 docs/progress:
+        #61 tracks keeping `DECISIONS.md`, `PROGRESS.md`, and the relevant S10 specs aligned as
+        budget semantics and exit coverage land.
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
 
