@@ -19,6 +19,11 @@ AI_MULTI_GATEWAY_PORT=$((GW_PORT+10))
 AI_FAILOVER_GATEWAY_PORT=$((GW_PORT+11))
 AI_FALLBACK_PROVIDER_PORT=$((GW_PORT+12))
 AI_UNAVAILABLE_PROVIDER_PORT=$((GW_PORT+13))
+AI_STREAM_GATEWAY_PORT=$((GW_PORT+14))
+AI_STREAM_DIE_PORT=$((GW_PORT+15))
+AI_STREAM_FALLBACK_PORT=$((GW_PORT+16))
+AI_MALFORMED_PORT=$((GW_PORT+17))
+AI_MALFORMED_GATEWAY_PORT=$((GW_PORT+18))
 DB=flowplane_e2e
 PG_ADMIN_URL=${FLOWPLANE_E2E_PG_ADMIN_URL:-postgres://postgres:postgres@127.0.0.1:5432/postgres}
 PG_DB_URL=${FLOWPLANE_E2E_DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:5432/$DB}
@@ -29,6 +34,9 @@ cleanup() {
   [ -n "${UP_PID:-}" ] && kill "$UP_PID" >/dev/null 2>&1 || true
   [ -n "${AI_PID:-}" ] && kill "$AI_PID" >/dev/null 2>&1 || true
   [ -n "${AI_FALLBACK_PID:-}" ] && kill "$AI_FALLBACK_PID" >/dev/null 2>&1 || true
+  [ -n "${AI_STREAM_DIE_PID:-}" ] && kill "$AI_STREAM_DIE_PID" >/dev/null 2>&1 || true
+  [ -n "${AI_STREAM_FALLBACK_PID:-}" ] && kill "$AI_STREAM_FALLBACK_PID" >/dev/null 2>&1 || true
+  [ -n "${AI_MALFORMED_PID:-}" ] && kill "$AI_MALFORMED_PID" >/dev/null 2>&1 || true
   [ -n "${ENVOY_PID:-}" ] && kill "$ENVOY_PID" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -154,6 +162,56 @@ fail() {
   echo "--- envoy logs:"; (docker logs fp-e2e-envoy 2>/dev/null || cat /tmp/fp-e2e-envoy.log) | tail -25
   echo "--- cp logs:"; tail -15 "${CP_LOG:-/tmp/fp-e2e-cp.log}"
   exit 1
+}
+
+# Record a known, tracked failure (a filed product bug) without aborting the run, so the rest of
+# the certification suite still exercises and verifies every other phase. The run still ends
+# non-zero if any known failure was recorded.
+KNOWN_FAIL_COUNT=0
+known_fail() {
+  echo "KNOWN-FAIL: $1"
+  KNOWN_FAIL_COUNT=$((KNOWN_FAIL_COUNT + 1))
+}
+
+# Tier-0 certification gate: provider credential values must never appear in control-plane logs,
+# Envoy logs, config dumps, access logs, or persisted usage rows. Mock-provider auth logs
+# legitimately receive the injected credential (that is the point), and the dataplane bootstrap
+# carries one-time dev PKI by design -- both are excluded.
+redaction_sweep() {
+  local sentinels=(
+    fp-e2e-ai-secret
+    fp-e2e-ai-fallback-secret
+    fp-e2e-ai-stream-primary
+    fp-e2e-ai-stream-fallback
+  )
+  local artifacts=(
+    /tmp/fp-e2e-cp.log
+    /tmp/fp-e2e-envoy.log
+    /tmp/fp-e2e-dump.json
+    /tmp/fp-e2e-ai-dump.json
+    /tmp/fp-e2e-advanced-access.log
+  )
+  local leaked=0
+  for s in "${sentinels[@]}"; do
+    for a in "${artifacts[@]}"; do
+      if [ -f "$a" ] && grep -qF "$s" "$a"; then
+        echo "REDACTION LEAK: credential value '$s' found in $a"
+        leaked=1
+      fi
+    done
+    if psql "$PG_DB_URL" -Atc "SELECT row_to_json(t)::text FROM (SELECT * FROM ai_usage_events) t" 2>/dev/null \
+      | grep -qF "$s"; then
+      echo "REDACTION LEAK: credential value '$s' found in ai_usage_events rows"
+      leaked=1
+    fi
+  done
+  # The API bearer token must not be logged either.
+  if [ -n "${TOKEN:-}" ] && grep -qF "$TOKEN" /tmp/fp-e2e-cp.log 2>/dev/null; then
+    echo "REDACTION LEAK: API bearer token found in control-plane log"
+    leaked=1
+  fi
+  [ "$leaked" = "0" ] || fail "credential/secret/token values leaked (see REDACTION LEAK lines)"
+  echo "REDACTION SWEEP OK: no credential/secret/token values in logs, config dumps, access logs, or usage rows"
 }
 
 # Poll the gateway port until the body matches the given prefix.
@@ -333,6 +391,185 @@ AI_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_PROVIDER_REV" \
   http://$API/api/v1/teams/default/ai/providers/ai-e2e-provider >/dev/null
 echo "PHASE 1a OK: AI credential injection (single + multi-backend) -> priority failover credential/usage -> enforcing budget trip -> usage attribution -> cleanup"
+
+# ---- Phase 1d: AI streaming-failover boundary. Once the higher-priority backend has started
+# streaming a response (200 + first chunk sent downstream), a mid-stream backend failure must be
+# terminal: Envoy cannot fail over to the lower-priority backend after the response is committed,
+# and the client keeps the partial stream. We prove this with a primary mock that emits one SSE
+# chunk then RSTs the connection, and assert the lower-priority fallback is never contacted.
+cat >/tmp/fp-e2e-ai-stream-die.py <<'PY'
+import socket
+import struct
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+port = int(sys.argv[1])
+auth_log = sys.argv[2]
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length", "0") or 0)
+        if length:
+            self.rfile.read(length)
+        with open(auth_log, "a", encoding="utf-8") as f:
+            f.write(self.headers.get("authorization", "") + "\n")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b'data: {"choices":[{"delta":{"content":"partial-stream"}}]}\n\n')
+        self.wfile.flush()
+        # Abruptly reset mid-stream (SO_LINGER 0 -> RST) after the first chunk is on the wire.
+        self.close_connection = True
+        try:
+            self.connection.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            self.connection.close()
+        except OSError:
+            pass
+
+
+ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+: >/tmp/fp-e2e-ai-stream-die-auth.log
+: >/tmp/fp-e2e-ai-stream-fallback-auth.log
+python3 /tmp/fp-e2e-ai-stream-die.py "$AI_STREAM_DIE_PORT" /tmp/fp-e2e-ai-stream-die-auth.log \
+  >/tmp/fp-e2e-ai-stream-die.log 2>&1 &
+AI_STREAM_DIE_PID=$!
+python3 /tmp/fp-e2e-ai-provider.py "$AI_STREAM_FALLBACK_PORT" /tmp/fp-e2e-ai-stream-fallback-auth.log \
+  "Bearer fp-e2e-ai-stream-fallback" >/tmp/fp-e2e-ai-stream-fallback.log 2>&1 &
+AI_STREAM_FALLBACK_PID=$!
+
+AI_STREAM_PRIMARY_SECRET_B64=$(python3 -c 'import base64; print(base64.b64encode(b"Bearer fp-e2e-ai-stream-primary").decode())')
+AI_STREAM_PRIMARY_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  -d "{\"name\":\"ai-e2e-stream-primary-key\",\"description\":\"stream primary\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_STREAM_PRIMARY_SECRET_B64\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_STREAM_FALLBACK_SECRET_B64=$(python3 -c 'import base64; print(base64.b64encode(b"Bearer fp-e2e-ai-stream-fallback").decode())')
+AI_STREAM_FALLBACK_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  -d "{\"name\":\"ai-e2e-stream-fallback-key\",\"description\":\"stream fallback\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_STREAM_FALLBACK_SECRET_B64\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_STREAM_PRIMARY_PROVIDER_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-e2e-stream-primary\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_STREAM_DIE_PORT\",\"credential_secret_id\":\"$AI_STREAM_PRIMARY_SECRET_ID\",\"auth_header\":\"authorization\",\"models\":[\"gpt-5\"]}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_STREAM_FALLBACK_PROVIDER_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-e2e-stream-fallback\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_STREAM_FALLBACK_PORT\",\"credential_secret_id\":\"$AI_STREAM_FALLBACK_SECRET_ID\",\"auth_header\":\"authorization\",\"models\":[\"gpt-5\"]}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_STREAM_ROUTE_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
+  -d "{\"name\":\"ai-e2e-stream\",\"spec\":{\"listener_port\":$AI_STREAM_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_STREAM_PRIMARY_PROVIDER_ID\",\"models\":[],\"weight\":1,\"priority\":0},{\"provider_id\":\"$AI_STREAM_FALLBACK_PROVIDER_ID\",\"models\":[],\"weight\":1,\"priority\":1}]}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+for i in $(seq 1 60); do
+  curl -fsS --max-time 5 http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json 2>/dev/null || true
+  grep -q "ai-ai-e2e-stream-listener" /tmp/fp-e2e-ai-dump.json \
+    && grep -q "envoy.clusters.aggregate" /tmp/fp-e2e-ai-dump.json && break
+  sleep 1
+done
+grep -q "ai-ai-e2e-stream-listener" /tmp/fp-e2e-ai-dump.json \
+  && grep -q "envoy.clusters.aggregate" /tmp/fp-e2e-ai-dump.json \
+  || fail "AI streaming route listener/aggregate cluster did not converge"
+AI_STREAM_CODE=$(curl -sN --max-time 10 -o /tmp/fp-e2e-ai-stream-body.txt -w '%{http_code}' \
+  -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" \
+  --data '{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
+  "http://127.0.0.1:$AI_STREAM_GATEWAY_PORT/v1/chat/completions" 2>/dev/null || true)
+if [ "$AI_STREAM_CODE" = "200" ]; then
+  grep -q "partial-stream" /tmp/fp-e2e-ai-stream-body.txt \
+    || fail "AI streaming client did not receive the partial stream chunk"
+  grep -q "Bearer fp-e2e-ai-stream-primary" /tmp/fp-e2e-ai-stream-die-auth.log \
+    || fail "AI streaming primary did not receive its injected credential"
+  [ ! -s /tmp/fp-e2e-ai-stream-fallback-auth.log ] \
+    || fail "AI failed over AFTER stream start: fallback was contacted ($(cat /tmp/fp-e2e-ai-stream-fallback-auth.log))"
+  AI_STREAM_RESULT="PHASE 1d OK: AI streaming-failover boundary -> partial stream delivered, no failover after first byte, fallback untouched"
+else
+  # D9 / #67: AI gateway 500s on stream:true requests before reaching a backend. The boundary
+  # logic itself is verified on the non-stream path; this asserts the boundary once #67 lands.
+  known_fail "PHASE 1d: streaming request returned $AI_STREAM_CODE (#67: AI gateway 500s on stream:true before backend dispatch)"
+  AI_STREAM_RESULT="PHASE 1d KNOWN-FAIL: streaming blocked by #67 (code $AI_STREAM_CODE)"
+fi
+AI_STREAM_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_STREAM_ROUTE_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_STREAM_ROUTE_REV" \
+  http://$API/api/v1/teams/default/ai/routes/ai-e2e-stream >/dev/null
+for prov in ai-e2e-stream-primary ai-e2e-stream-fallback; do
+  REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE team_id = '$TEAM_ID' AND name = '$prov'")
+  curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $REV" \
+    "http://$API/api/v1/teams/default/ai/providers/$prov" >/dev/null
+done
+kill "$AI_STREAM_DIE_PID" "$AI_STREAM_FALLBACK_PID" >/dev/null 2>&1 || true
+echo "$AI_STREAM_RESULT"
+
+# ---- Phase 1e: malformed provider response. A backend that returns a 200 with a non-OpenAI,
+# non-JSON body must be passed through to the client without the gateway 500ing, and must not
+# settle any usage (missing/unparseable usage is fail-open per D-018) -- proves robustness to
+# providers that don't speak clean OpenAI.
+cat >/tmp/fp-e2e-ai-malformed.py <<'PY'
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+port = int(sys.argv[1])
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length", "0") or 0)
+        if length:
+            self.rfile.read(length)
+        body = b"this is definitely not an openai json response"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+python3 /tmp/fp-e2e-ai-malformed.py "$AI_MALFORMED_PORT" >/tmp/fp-e2e-ai-malformed.log 2>&1 &
+AI_MALFORMED_PID=$!
+AI_MALFORMED_SECRET_B64=$(python3 -c 'import base64; print(base64.b64encode(b"Bearer fp-e2e-ai-malformed").decode())')
+AI_MALFORMED_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  -d "{\"name\":\"ai-e2e-malformed-key\",\"description\":\"malformed\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_MALFORMED_SECRET_B64\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_MALFORMED_PROVIDER_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-e2e-malformed\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_MALFORMED_PORT\",\"credential_secret_id\":\"$AI_MALFORMED_SECRET_ID\",\"auth_header\":\"authorization\",\"models\":[\"gpt-5\"]}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_MALFORMED_ROUTE_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
+  -d "{\"name\":\"ai-e2e-malformed\",\"spec\":{\"listener_port\":$AI_MALFORMED_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_MALFORMED_PROVIDER_ID\",\"models\":[],\"weight\":1}]}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_MALFORMED_ROUTE_CONFIG_ID=$(psql "$PG_DB_URL" -Atc "SELECT id FROM route_configs WHERE team_id = '$TEAM_ID' AND name = 'ai-ai-e2e-malformed-routes' AND owner_kind = 'ai'")
+for i in $(seq 1 60); do
+  curl -fsS --max-time 5 http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json 2>/dev/null || true
+  grep -q "ai-ai-e2e-malformed-listener" /tmp/fp-e2e-ai-dump.json && break
+  sleep 1
+done
+grep -q "ai-ai-e2e-malformed-listener" /tmp/fp-e2e-ai-dump.json || fail "AI malformed route listener did not converge"
+AI_MALFORMED_CODE=""
+for i in $(seq 1 30); do
+  AI_MALFORMED_CODE=$(curl -sS --max-time 10 -o /tmp/fp-e2e-ai-malformed-body.txt -w '%{http_code}' \
+    -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+    "http://127.0.0.1:$AI_MALFORMED_GATEWAY_PORT/v1/chat/completions" 2>/dev/null || true)
+  [ "$AI_MALFORMED_CODE" = "200" ] && break
+  sleep 1
+done
+[ "$AI_MALFORMED_CODE" = "200" ] \
+  || fail "AI malformed-provider response was not passed through (gateway returned $AI_MALFORMED_CODE)"
+grep -q "not an openai json response" /tmp/fp-e2e-ai-malformed-body.txt \
+  || fail "AI malformed-provider body was not delivered to the client"
+AI_MALFORMED_USAGE=$(psql "$PG_DB_URL" -Atc "SELECT count(*) FROM ai_usage_events WHERE team_id = '$TEAM_ID' AND route_config_id = '$AI_MALFORMED_ROUTE_CONFIG_ID'")
+[ "$AI_MALFORMED_USAGE" = "0" ] \
+  || fail "AI malformed-provider response settled usage ($AI_MALFORMED_USAGE rows); unparseable usage must be fail-open (no settlement)"
+AI_MALFORMED_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_MALFORMED_ROUTE_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_MALFORMED_ROUTE_REV" \
+  http://$API/api/v1/teams/default/ai/routes/ai-e2e-malformed >/dev/null
+AI_MALFORMED_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_MALFORMED_PROVIDER_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_MALFORMED_PROVIDER_REV" \
+  http://$API/api/v1/teams/default/ai/providers/ai-e2e-malformed >/dev/null
+kill "$AI_MALFORMED_PID" >/dev/null 2>&1 || true
+echo "PHASE 1e OK: AI malformed-provider response passed through, no 500, no usage settled (fail-open)"
 
 # ---- Phase 1b: learning capture through the real injected ALS/ExtProc path. Start a
 # route-scoped session on the resources created by expose, then send traffic with stable
@@ -712,10 +949,16 @@ done
 [ "$CODE" = "200" ] || fail "advanced parity listener did not serve matching request (got $CODE)"
 grep -Eq "hello-from-upstream|hello-from-upstream2" /tmp/fp-e2e-advanced-body \
   || fail "advanced parity request did not reach an expected weighted upstream"
+# Poll for a single, consistent config_dump that contains the e2e-advanced listener AND its
+# global rate-limit filter. Bounded curl (--max-time) avoids a hung/partial read of the large
+# dump being misread as "filter absent", and requiring both tokens in the same snapshot avoids a
+# mid-rebuild window where the listener is transiently out of the snapshot (#64 polled the filter
+# string only, single-shot curl, and still flaked ~1/3 runs).
 ADV_FILTER_READY=0
-for i in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump 2>/dev/null \
-    | grep -q "envoy.filters.http.ratelimit"; then
+for i in $(seq 1 60); do
+  ADV_DUMP=$(curl -fsS --max-time 5 http://127.0.0.1:$ADMIN_PORT/config_dump 2>/dev/null || true)
+  if grep -q "e2e-advanced" <<<"$ADV_DUMP" \
+    && grep -q "envoy.filters.http.ratelimit" <<<"$ADV_DUMP"; then
     ADV_FILTER_READY=1
     break
   fi
@@ -724,5 +967,11 @@ done
 [ "$ADV_FILTER_READY" = "1" ] || fail "advanced config dump missing global rate-limit filter"
 echo "PHASE 7 OK: advanced route/listener/filter parity ACKed and served traffic"
 
-echo "E2E PASSED: traffic, learning capture, traffic-first discovery, restart convergence, cross-team isolation, http filters, auth filters, SDS rotation, advanced parity"
+redaction_sweep
+
+if [ "$KNOWN_FAIL_COUNT" -gt 0 ]; then
+  echo "E2E INCOMPLETE: $KNOWN_FAIL_COUNT known failure(s) recorded (tracked product bugs); all other phases + redaction sweep passed"
+  exit 1
+fi
+echo "E2E PASSED: traffic, learning capture, traffic-first discovery, restart convergence, cross-team isolation, http filters, auth filters, SDS rotation, advanced parity, AI streaming boundary, redaction sweep"
 exit 0
