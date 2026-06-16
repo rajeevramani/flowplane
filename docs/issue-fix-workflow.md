@@ -2,6 +2,16 @@
 
 Use this process when working through GitHub issues on the active integration branch.
 
+## Roles
+
+- GitHub issues are the source of truth for planned work, review feedback, and status.
+- Codex owns implementation: read the issue, design the smallest viable change, code it, test it,
+  update progress notes when needed, commit, merge, push, and hand the issue back for review.
+- Claude reviews the design and code through GitHub issue comments. Review feedback becomes the
+  next tracked change, not an offline side thread.
+- Issues stay open while under review. A finished implementation is marked with
+  `ready-for-review`; rejected work is marked `do-over` and sent back through the same workflow.
+
 ## Branching Model
 
 - Integration branch: `claude/optimistic-lamport-j38tuy`
@@ -77,7 +87,10 @@ An issue is done when:
 
 - the issue has been validated
 - the fix is committed on an issue branch
-- tests relevant to the touched area pass
+- `cargo clippy --all-targets --all-features -- -D warnings` passes, or a narrower clippy
+  command is documented when the full workspace check is not practical locally
+- tests relevant to the touched area pass; run `cargo test --workspace --all-features` when
+  the touched surface is broad or shared
 - the issue branch is merged into `claude/optimistic-lamport-j38tuy`
 - the integration branch is pushed to `origin`
 - the GitHub issue is open, has a completion comment, and has the `ready-for-review` label
