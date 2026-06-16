@@ -161,6 +161,56 @@ fail() {
   exit 1
 }
 
+# Record a known, tracked failure (a filed product bug) without aborting the run, so the rest of
+# the certification suite still exercises and verifies every other phase. The run still ends
+# non-zero if any known failure was recorded.
+KNOWN_FAIL_COUNT=0
+known_fail() {
+  echo "KNOWN-FAIL: $1"
+  KNOWN_FAIL_COUNT=$((KNOWN_FAIL_COUNT + 1))
+}
+
+# Tier-0 certification gate: provider credential values must never appear in control-plane logs,
+# Envoy logs, config dumps, access logs, or persisted usage rows. Mock-provider auth logs
+# legitimately receive the injected credential (that is the point), and the dataplane bootstrap
+# carries one-time dev PKI by design -- both are excluded.
+redaction_sweep() {
+  local sentinels=(
+    fp-e2e-ai-secret
+    fp-e2e-ai-fallback-secret
+    fp-e2e-ai-stream-primary
+    fp-e2e-ai-stream-fallback
+  )
+  local artifacts=(
+    /tmp/fp-e2e-cp.log
+    /tmp/fp-e2e-envoy.log
+    /tmp/fp-e2e-dump.json
+    /tmp/fp-e2e-ai-dump.json
+    /tmp/fp-e2e-advanced-access.log
+  )
+  local leaked=0
+  for s in "${sentinels[@]}"; do
+    for a in "${artifacts[@]}"; do
+      if [ -f "$a" ] && grep -qF "$s" "$a"; then
+        echo "REDACTION LEAK: credential value '$s' found in $a"
+        leaked=1
+      fi
+    done
+    if psql "$PG_DB_URL" -Atc "SELECT row_to_json(t)::text FROM (SELECT * FROM ai_usage_events) t" 2>/dev/null \
+      | grep -qF "$s"; then
+      echo "REDACTION LEAK: credential value '$s' found in ai_usage_events rows"
+      leaked=1
+    fi
+  done
+  # The API bearer token must not be logged either.
+  if [ -n "${TOKEN:-}" ] && grep -qF "$TOKEN" /tmp/fp-e2e-cp.log 2>/dev/null; then
+    echo "REDACTION LEAK: API bearer token found in control-plane log"
+    leaked=1
+  fi
+  [ "$leaked" = "0" ] || fail "credential/secret/token values leaked (see REDACTION LEAK lines)"
+  echo "REDACTION SWEEP OK: no credential/secret/token values in logs, config dumps, access logs, or usage rows"
+}
+
 # Poll the gateway port until the body matches the given prefix.
 wait_port_body() {
   local port=$1 prefix=$2 tries=${3:-40}
@@ -421,13 +471,20 @@ AI_STREAM_CODE=$(curl -sN --max-time 10 -o /tmp/fp-e2e-ai-stream-body.txt -w '%{
   -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" \
   --data '{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
   "http://127.0.0.1:$AI_STREAM_GATEWAY_PORT/v1/chat/completions" 2>/dev/null || true)
-[ "$AI_STREAM_CODE" = "200" ] || fail "AI streaming primary did not start the stream (code $AI_STREAM_CODE)"
-grep -q "partial-stream" /tmp/fp-e2e-ai-stream-body.txt \
-  || fail "AI streaming client did not receive the partial stream chunk"
-grep -q "Bearer fp-e2e-ai-stream-primary" /tmp/fp-e2e-ai-stream-die-auth.log \
-  || fail "AI streaming primary did not receive its injected credential"
-[ ! -s /tmp/fp-e2e-ai-stream-fallback-auth.log ] \
-  || fail "AI failed over AFTER stream start: fallback was contacted ($(cat /tmp/fp-e2e-ai-stream-fallback-auth.log))"
+if [ "$AI_STREAM_CODE" = "200" ]; then
+  grep -q "partial-stream" /tmp/fp-e2e-ai-stream-body.txt \
+    || fail "AI streaming client did not receive the partial stream chunk"
+  grep -q "Bearer fp-e2e-ai-stream-primary" /tmp/fp-e2e-ai-stream-die-auth.log \
+    || fail "AI streaming primary did not receive its injected credential"
+  [ ! -s /tmp/fp-e2e-ai-stream-fallback-auth.log ] \
+    || fail "AI failed over AFTER stream start: fallback was contacted ($(cat /tmp/fp-e2e-ai-stream-fallback-auth.log))"
+  AI_STREAM_RESULT="PHASE 1d OK: AI streaming-failover boundary -> partial stream delivered, no failover after first byte, fallback untouched"
+else
+  # D9 / #67: AI gateway 500s on stream:true requests before reaching a backend. The boundary
+  # logic itself is verified on the non-stream path; this asserts the boundary once #67 lands.
+  known_fail "PHASE 1d: streaming request returned $AI_STREAM_CODE (#67: AI gateway 500s on stream:true before backend dispatch)"
+  AI_STREAM_RESULT="PHASE 1d KNOWN-FAIL: streaming blocked by #67 (code $AI_STREAM_CODE)"
+fi
 AI_STREAM_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_STREAM_ROUTE_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_STREAM_ROUTE_REV" \
   http://$API/api/v1/teams/default/ai/routes/ai-e2e-stream >/dev/null
@@ -437,7 +494,7 @@ for prov in ai-e2e-stream-primary ai-e2e-stream-fallback; do
     "http://$API/api/v1/teams/default/ai/providers/$prov" >/dev/null
 done
 kill "$AI_STREAM_DIE_PID" "$AI_STREAM_FALLBACK_PID" >/dev/null 2>&1 || true
-echo "PHASE 1d OK: AI streaming-failover boundary -> partial stream delivered, no failover after first byte, fallback untouched"
+echo "$AI_STREAM_RESULT"
 
 # ---- Phase 1b: learning capture through the real injected ALS/ExtProc path. Start a
 # route-scoped session on the resources created by expose, then send traffic with stable
@@ -835,5 +892,11 @@ done
 [ "$ADV_FILTER_READY" = "1" ] || fail "advanced config dump missing global rate-limit filter"
 echo "PHASE 7 OK: advanced route/listener/filter parity ACKed and served traffic"
 
-echo "E2E PASSED: traffic, learning capture, traffic-first discovery, restart convergence, cross-team isolation, http filters, auth filters, SDS rotation, advanced parity"
+redaction_sweep
+
+if [ "$KNOWN_FAIL_COUNT" -gt 0 ]; then
+  echo "E2E INCOMPLETE: $KNOWN_FAIL_COUNT known failure(s) recorded (tracked product bugs); all other phases + redaction sweep passed"
+  exit 1
+fi
+echo "E2E PASSED: traffic, learning capture, traffic-first discovery, restart convergence, cross-team isolation, http filters, auth filters, SDS rotation, advanced parity, AI streaming boundary, redaction sweep"
 exit 0
