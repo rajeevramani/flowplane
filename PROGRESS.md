@@ -478,7 +478,9 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         references.
   - [x] S10c route resources/materialization: team-scoped `AiRoute` storage/API/CLI,
         ordered provider backends, deterministic gateway resource materialization, provider
-        dependency guards, and stale marking on provider mutation.
+        dependency guards, and stale marking on provider mutation. #62 bounds AI-owned
+        materialized clusters against the team cluster quota and keeps the orphan-cleanup
+        regression covered.
   - [x] S10d OpenAI-compatible gateway processor: model extraction/routing header, deterministic
         no-eligible-backend response, selected-backend credential injection, provider path/model
         rewrite, streaming-safe usage capture, and append-only usage handoff.

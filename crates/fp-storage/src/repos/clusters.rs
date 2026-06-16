@@ -286,7 +286,7 @@ pub async fn delete_ai_owned(
 
 /// Per-team resource count for quota enforcement (S3.4).
 pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
-    sqlx::query_scalar("SELECT count(*) FROM clusters WHERE team_id = $1 AND owner_kind = 'user'")
+    sqlx::query_scalar("SELECT count(*) FROM clusters WHERE team_id = $1")
         .bind(team_id.as_uuid())
         .fetch_one(pool)
         .await
