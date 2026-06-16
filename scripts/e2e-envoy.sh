@@ -712,9 +712,16 @@ done
 [ "$CODE" = "200" ] || fail "advanced parity listener did not serve matching request (got $CODE)"
 grep -Eq "hello-from-upstream|hello-from-upstream2" /tmp/fp-e2e-advanced-body \
   || fail "advanced parity request did not reach an expected weighted upstream"
-curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump \
-  | grep -q "envoy.filters.http.ratelimit" \
-  || fail "advanced config dump missing global rate-limit filter"
+ADV_FILTER_READY=0
+for i in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump 2>/dev/null \
+    | grep -q "envoy.filters.http.ratelimit"; then
+    ADV_FILTER_READY=1
+    break
+  fi
+  sleep 1
+done
+[ "$ADV_FILTER_READY" = "1" ] || fail "advanced config dump missing global rate-limit filter"
 echo "PHASE 7 OK: advanced route/listener/filter parity ACKed and served traffic"
 
 echo "E2E PASSED: traffic, learning capture, traffic-first discovery, restart convergence, cross-team isolation, http filters, auth filters, SDS rotation, advanced parity"
