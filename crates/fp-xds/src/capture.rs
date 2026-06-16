@@ -279,6 +279,7 @@ fn ai_process_stream(
                 }
             }
         }
+        persist_ai_usage(&pool, &state).await;
     });
     rx
 }
@@ -1037,6 +1038,29 @@ fn remember_ai_usage(state: &mut AiExtProcState, usage: OpenAiTokenUsage) {
     state.last_usage = Some(usage);
 }
 
+async fn persist_ai_usage(pool: &sqlx::PgPool, state: &AiExtProcState) {
+    let (Some(context), Some(usage)) = (state.context, state.last_usage) else {
+        return;
+    };
+    let Some(provider_id) = context.provider_id else {
+        return;
+    };
+    if let Err(err) = ai::record_usage_event(
+        pool,
+        ai::AiUsageEventInsert {
+            team_id: context.team_id,
+            route_config_id: context.route_config_id,
+            provider_id,
+            backend_position: context.backend_position,
+            usage,
+        },
+    )
+    .await
+    {
+        tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to persist AI usage: {}", err.message);
+    }
+}
+
 fn continue_for_request(request: processing_request::Request) -> ProcessingResponse {
     let common = Some(CommonResponse {
         status: common_response::ResponseStatus::Continue as i32,
@@ -1465,6 +1489,34 @@ mod tests {
             .is_err(),
             "provider lookup is team scoped"
         );
+
+        let state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: Some(AiProviderId::from(provider_id)),
+                backend_position: Some(0),
+            }),
+            last_usage: Some(OpenAiTokenUsage {
+                prompt_tokens: 2,
+                completion_tokens: 3,
+                total_tokens: 5,
+            }),
+            ..Default::default()
+        };
+        persist_ai_usage(&pool, &state).await;
+        let total_tokens: i64 = sqlx::query_scalar(
+            "SELECT total_tokens FROM ai_usage_events \
+             WHERE team_id = $1 AND route_config_id = $2 AND provider_id = $3",
+        )
+        .bind(team.id.as_uuid())
+        .bind(route_config_id)
+        .bind(provider_id)
+        .fetch_one(&pool)
+        .await
+        .expect("usage event");
+        assert_eq!(total_tokens, 5);
     }
 
     #[test]

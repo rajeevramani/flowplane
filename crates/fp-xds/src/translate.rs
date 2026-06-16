@@ -819,9 +819,10 @@ fn ai_upstream_ext_proc_filter(ai: &AiUpstreamProcessorMetadata) -> hcm::HttpFil
                 failure_mode_allow: false,
                 processing_mode: Some(ext_proc::ProcessingMode {
                     request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
-                    response_header_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                    response_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
                     request_body_mode: ext_proc::processing_mode::BodySendMode::Buffered as i32,
-                    response_body_mode: ext_proc::processing_mode::BodySendMode::None as i32,
+                    response_body_mode: ext_proc::processing_mode::BodySendMode::BufferedPartial
+                        as i32,
                     request_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
                     response_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
                 }),
@@ -2527,9 +2528,14 @@ mod tests {
             ai.provider_id.to_string()
         );
         assert_eq!(metadata["x-flowplane-ai-backend-position"], "7");
+        let mode = ext.processing_mode.expect("mode");
         assert_eq!(
-            ext.processing_mode.expect("mode").request_body_mode,
+            mode.request_body_mode,
             ext_proc::processing_mode::BodySendMode::Buffered as i32
+        );
+        assert_eq!(
+            mode.response_body_mode,
+            ext_proc::processing_mode::BodySendMode::BufferedPartial as i32
         );
         assert!(
             !options_any
