@@ -147,6 +147,34 @@ pub async fn record_usage_event_and_settle_budgets(
     Ok(())
 }
 
+pub async fn exhausted_enforcing_budget(
+    pool: &PgPool,
+    team_id: TeamId,
+    route_config_id: RouteConfigId,
+    provider_id: AiProviderId,
+) -> DomainResult<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT b.name \
+         FROM ai_budgets b \
+         LEFT JOIN ai_budget_counters c \
+           ON c.budget_id = b.id \
+          AND c.window_start = to_timestamp(floor(extract(epoch FROM now()) / b.window_seconds) * b.window_seconds) \
+         WHERE b.team_id = $1 \
+           AND b.mode = 'enforcing' \
+           AND (b.provider_id IS NULL OR b.provider_id = $2) \
+           AND (b.route_config_id IS NULL OR b.route_config_id = $3) \
+           AND COALESCE(c.used_units, 0) >= b.limit_units \
+         ORDER BY b.name \
+         LIMIT 1",
+    )
+    .bind(team_id.as_uuid())
+    .bind(provider_id.as_uuid())
+    .bind(route_config_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("check AI budget capacity: {e}")))
+}
+
 async fn insert_usage_event_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     event: &AiUsageEventInsert,

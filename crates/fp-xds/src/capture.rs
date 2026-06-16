@@ -808,6 +808,27 @@ async fn ai_request_headers_response(
     let Some(provider_id) = context.provider_id else {
         return request_headers_response(remove_internal_model_header());
     };
+    match ai::exhausted_enforcing_budget(
+        pool,
+        context.team_id,
+        context.route_config_id,
+        provider_id,
+    )
+    .await
+    {
+        Ok(Some(name)) => {
+            return immediate_response_with_details(
+                429,
+                format!("AI budget \"{name}\" exceeded"),
+                "flowplane_ai_budget_exceeded",
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to check AI budget: {}", err.message);
+            return immediate_response(500, "AI budget check unavailable".into());
+        }
+    }
     let request_path = match request.request {
         Some(processing_request::Request::RequestHeaders(headers)) => {
             let map = headers_from_header_map(headers.headers.as_ref());
@@ -1134,6 +1155,14 @@ fn response_body_response(common: CommonResponse) -> ProcessingResponse {
 }
 
 fn immediate_response(status: u32, message: String) -> ProcessingResponse {
+    immediate_response_with_details(status, message, "flowplane_ai_request_invalid")
+}
+
+fn immediate_response_with_details(
+    status: u32,
+    message: String,
+    details: &str,
+) -> ProcessingResponse {
     ProcessingResponse {
         response: Some(processing_response::Response::ImmediateResponse(
             ImmediateResponse {
@@ -1145,7 +1174,7 @@ fn immediate_response(status: u32, message: String) -> ProcessingResponse {
                     },
                 }),
                 body: message.into_bytes(),
-                details: "flowplane_ai_request_invalid".into(),
+                details: details.into(),
                 ..Default::default()
             },
         )),
@@ -1503,6 +1532,121 @@ mod tests {
         .await
         .expect("usage event");
         assert_eq!(total_tokens, 5);
+
+        let shadow_budget_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO ai_budgets \
+             (id, team_id, org_id, name, mode, limit_units, window_seconds, provider_id, route_config_id, prompt_token_weight, completion_token_weight) \
+             VALUES ($1, $2, $3, 'shadow-only', 'shadow', 1, 3600, $4, $5, 1, 1)",
+        )
+        .bind(shadow_budget_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(provider_id)
+        .bind(route_config_id)
+        .execute(&pool)
+        .await
+        .expect("shadow budget");
+        sqlx::query(
+            "INSERT INTO ai_budget_counters (budget_id, team_id, window_start, used_units) \
+             VALUES ($1, $2, to_timestamp(floor(extract(epoch FROM now()) / 3600) * 3600), 5)",
+        )
+        .bind(shadow_budget_id)
+        .bind(team.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("shadow counter");
+        assert_eq!(
+            ai::exhausted_enforcing_budget(
+                &pool,
+                team.id,
+                RouteConfigId::from(route_config_id),
+                AiProviderId::from(provider_id),
+            )
+            .await
+            .expect("shadow budget check"),
+            None,
+            "shadow budgets do not block requests"
+        );
+
+        let budget_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO ai_budgets \
+             (id, team_id, org_id, name, mode, limit_units, window_seconds, provider_id, route_config_id, prompt_token_weight, completion_token_weight) \
+             VALUES ($1, $2, $3, 'hard-stop', 'enforcing', 5, 3600, $4, $5, 1, 1)",
+        )
+        .bind(budget_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(provider_id)
+        .bind(route_config_id)
+        .execute(&pool)
+        .await
+        .expect("budget");
+        sqlx::query(
+            "INSERT INTO ai_budget_counters (budget_id, team_id, window_start, used_units) \
+             VALUES ($1, $2, to_timestamp(floor(extract(epoch FROM now()) / 3600) * 3600), 5)",
+        )
+        .bind(budget_id)
+        .bind(team.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("counter");
+
+        let mut blocked_state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: Some(AiProviderId::from(provider_id)),
+                backend_position: Some(0),
+            }),
+            ..Default::default()
+        };
+        let blocked = ai_request_headers_response(
+            &pool,
+            &mut blocked_state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::RequestHeaders(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                        headers: Some(HeaderMap {
+                            headers: vec![HeaderValue {
+                                key: ":path".into(),
+                                value: "/v1/chat/completions".into(),
+                                raw_value: Vec::new(),
+                            }],
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        )
+        .await;
+        let processing_response::Response::ImmediateResponse(response) =
+            blocked.response.expect("blocked response")
+        else {
+            panic!("expected budget immediate response");
+        };
+        assert_eq!(response.status.expect("status").code, 429);
+        assert_eq!(response.details, "flowplane_ai_budget_exceeded");
+        assert_eq!(
+            String::from_utf8(response.body).expect("body"),
+            "AI budget \"hard-stop\" exceeded"
+        );
+
+        assert_eq!(
+            ai::exhausted_enforcing_budget(
+                &pool,
+                other_team.id,
+                RouteConfigId::from(route_config_id),
+                AiProviderId::from(provider_id),
+            )
+            .await
+            .expect("other team budget check"),
+            None,
+            "budget checks are team scoped"
+        );
     }
 
     #[test]
