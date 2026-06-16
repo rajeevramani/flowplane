@@ -104,11 +104,11 @@ Anthropic/Bedrock/Vertex translators demand-pulled behind the trait seam; Flowpl
 ExtProc using S6 secret references fetched over the authenticated control channel; token
 metering incl. streaming (force-`include_usage` when needed and strip synthetic usage chunks);
 append-only usage events + `ai usage` query surface; shadow + enforcing budgets settled through
-atomic Postgres counters; AI route materialization through existing gateway primitives; priority
-failover before first response byte. CLI: `ai *`. **Exit:** AI E2E per definition-of-done
-(mock OpenAI-compatible provider: credential → routed traffic → per-team tokens tracked →
-budget trips → pre-byte failover engages); budget isolation tests for team A vs team B and
-same-team concurrent settlement; usage metrics exported.
+atomic Postgres counters; AI route materialization through existing gateway primitives and bounded
+by gateway quotas; priority failover before first response byte. CLI: `ai *`. **Exit:** AI E2E
+per definition-of-done (mock OpenAI-compatible provider: canonical credential injection →
+routed traffic → per-team tokens tracked → enforcing budget trips); budget isolation tests for
+team A vs team B and same-team concurrent settlement; usage metrics exported.
 
 **S11 — MCP server + tools.** Streamable HTTP per spec/02 (sessions bound to token+team,
 origin allowlist enforced, list==executable); cp/ops tool registry generated from the shared

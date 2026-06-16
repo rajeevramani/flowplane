@@ -183,21 +183,21 @@ billing-internal  served  v1  9/9 routes  9 tools  dp-main ✓
 ### 5.4 AI gateway: provider → route → budget → failover
 
 ```
-$ flowplane secret create anthropic-key --type api-key --from-stdin < key.txt
-✓ secret anthropic-key created (values are write-only)
-$ flowplane ai provider create anthropic-prod --kind anthropic --credential anthropic-key
-✓ provider anthropic-prod created (4 models discovered)
+$ flowplane secret create openai-key --type api-key --from-stdin < key.txt
+✓ secret openai-key created (values are write-only)
+$ flowplane ai provider create openai-prod --kind openai-compatible --credential openai-key
+✓ provider openai-prod created
 $ flowplane ai route create llm-main --port 10010 \
-    --backend anthropic-prod:claude-sonnet-4-6:priority=0 \
-    --backend openai-fallback:gpt-5.2:priority=1
+    --backend openai-prod:gpt-5:priority=0 \
+    --backend openai-fallback:gpt-5:priority=1
 ✓ ai route llm-main created — unified endpoint :10010/v1/chat/completions
-$ flowplane ai budget set --team payments --provider anthropic-prod \
+$ flowplane ai budget set --team payments --provider openai-prod \
     --tokens 5_000_000/day --shadow
 ✓ budget set (shadow mode: metering only, not enforcing)
 $ flowplane ai usage show --by model
 MODEL              REQS   IN TOK     OUT TOK   BUDGET USED
-claude-sonnet-4-6  1 204  8 214 991  922 410   16 % (shadow)
-$ flowplane ai budget set --team payments --provider anthropic-prod --tokens 5_000_000/day
+gpt-5              1 204  8 214 991  922 410   16 % (shadow)
+$ flowplane ai budget set --team payments --provider openai-prod --tokens 5_000_000/day
 ✓ budget enforcing (429 + Retry-After on exhaustion; overdraft-on-last-request)
 ```
 
