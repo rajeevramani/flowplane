@@ -40,9 +40,14 @@ git merge --no-ff issue/<issue-number>-<short-slug>
 git push origin claude/optimistic-lamport-j38tuy
 ```
 
-9. Set the GitHub issue to review by applying the `ready-for-review` label.
+9. Set the GitHub issue to review by applying the `ready-for-review` label. Do not close the
+   issue; review closes or redirects it.
 
-This repository currently uses `ready-for-review` as the fix handoff marker. Apply it only after the fix is merged into the integration branch, pushed, and validated. If the issue had a `do-over` label, remove `do-over` when the corrected fix is ready for review. If a GitHub Project status field is later configured, keep it in sync with the label rather than inventing a second workflow.
+This repository currently uses `ready-for-review` as the fix handoff marker. Apply it only after
+the fix is merged into the integration branch, pushed, and validated. If the issue had a `do-over`
+label, remove `do-over` when the corrected fix is ready for review. Leave the issue open until the
+reviewer accepts the fix. If a GitHub Project status field is later configured, keep it in sync
+with the label rather than inventing a second workflow.
 
 ## Conflict Policy
 
@@ -75,4 +80,4 @@ An issue is done when:
 - tests relevant to the touched area pass
 - the issue branch is merged into `claude/optimistic-lamport-j38tuy`
 - the integration branch is pushed to `origin`
-- the GitHub issue has a completion comment and the `ready-for-review` label
+- the GitHub issue is open, has a completion comment, and has the `ready-for-review` label
