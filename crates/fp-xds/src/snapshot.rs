@@ -882,6 +882,9 @@ const ACTIVE_KEY_ID_ENV: &str = "FLOWPLANE_SECRET_ENCRYPTION_KEY_ID";
 const ACTIVE_KEY_ENV: &str = "FLOWPLANE_SECRET_ENCRYPTION_KEY";
 const KEYRING_ENV: &str = "FLOWPLANE_SECRET_ENCRYPTION_KEYS";
 
+#[cfg(test)]
+pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct SecretKey {
     id: String,
     bytes: [u8; 32],
@@ -994,10 +997,6 @@ mod tests {
     use fp_domain::{OrgRole, RequestId, SecretSpec, SecretType};
     use fp_storage::repos::identity;
     use prost::Message;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     fn unique(prefix: &str) -> String {
         format!(
             "{prefix}-{}",
@@ -1027,9 +1026,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn decrypt_secret_spec_reads_retired_key_from_keyring() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+    #[tokio::test]
+    async fn decrypt_secret_spec_reads_retired_key_from_keyring() {
+        let _guard = ENV_LOCK.lock().await;
         let retired_key = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         std::env::set_var(
             "FLOWPLANE_SECRET_ENCRYPTION_KEY",
@@ -1433,6 +1432,7 @@ mod tests {
 
     #[tokio::test]
     async fn undecryptable_secret_degrades_only_that_secret_and_does_not_block_outbox() {
+        let _guard = ENV_LOCK.lock().await;
         let Some((pool, team_a, team_b, ctx_a, ctx_b)) = world().await else {
             return;
         };
