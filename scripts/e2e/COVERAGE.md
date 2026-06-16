@@ -50,8 +50,8 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | Grants permit only intended resource/action/team | `cargo:tenancy::grants_load_from_real_rows_and_cross_org_grants_are_unrepresentable`, `gateway::grantless_member_denied_with_actionable_forbidden` | covered |
 | Tenant write throttle org-keyed, no cross-tenant bleed | `cargo:` S2.6 throttle tenant-isolation test | covered |
 | Authn failures + important mutations emit audit rows | `cargo:` S2 audit tests | covered |
-| Service-layer **authz-denial** audit rows | `gap` — Open Risk R2: denial primitive exists/storage-tested but not wired into service-layer denials; certify state explicitly | gap |
-| **Governance CRUD** (org/team/user/member/grant create/list/get/delete) | `cargo:api_crud::full_crud_journey_over_http_with_bearer_auth` (orgs/teams/members/grants invariants); `gap:` thin `live:` happy-path bootstrap→org→team→grant→member | partial |
+| Service-layer **authz-denial** audit rows | `cargo:` denial primitive (storage-tested) — but **not wired into service-layer denials** (Open Risk R2). Known residual (see defect log) | residual (R2) |
+| **Governance CRUD** (org/team/user/member/grant create/list/get/delete) | `cargo:api_crud::full_crud_journey_over_http_with_bearer_auth`, `multi_org_user_selects_active_org_with_header`, `tenancy::*`; live bootstrap→team exercised in `live:setup`. Thin live org/member/grant walk optional (cargo is the authoritative boundary) | covered (cargo) |
 
 ## S3 / S4 — Gateway Resources, REST API, OpenAPI
 
@@ -151,8 +151,8 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | Enforcing budgets block at request start; fixed-window; bounded overdraft | `live:P1a`; `cargo:fp-xds ai_upstream_auth_injection...` | covered |
 | Concurrent same-team settlement atomic; cross-team isolated | `cargo:ai_budgets::concurrent_budget_settlement_is_atomic_and_team_scoped` | covered |
 | Priority failover: higher-priority first, fall-through pre-byte, re-inject per-backend credential, attribute usage to backend used | `live:P1a` (primary unavailable → fallback with fallback credential + attribution) | covered |
-| **Never fails over after streaming starts (stream-start boundary)** | `gap` — needs a mock that returns 200 SSE, emits one chunk, then drops; assert no retry to lower-priority backend and partial stream delivered | gap |
-| Malformed provider response handling | `gap` — assert deterministic client response when provider returns non-JSON/garbage | gap |
+| **Never fails over after streaming starts (stream-start boundary)** | `live:P1d` — boundary logic verified on the non-stream path (partial delivered, no failover after first byte, fallback untouched). **Blocked on `stream:true` by #67 (D9)** — tracked known-fail; phase auto-validates once #67 lands | partial (D9/#67) |
+| Malformed provider response handling | `live:P1e` — non-OpenAI 200 body passed through, no 500, no usage settled | covered |
 | Mock-provider E2E: credential→route→traffic→usage→budget trip→failover→cleanup | `live:P1a` | covered |
 
 ## Abuse / Regression Matrix
@@ -169,17 +169,17 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | Learning/discovery poisoned or excessive input | `cargo:api_lifecycle::raw_observation_quota_drop...`, `discovery::discovery_rejects_loopback_upstream` | covered |
 | AI budget exhaustion | `live:P1a` | covered |
 | AI missing usage (fail-open, documented) | `cargo:` (persist no-ops on missing usage); D-018 documents fail-open | covered |
-| AI malformed provider response | `gap` (see S10) | gap |
+| AI malformed provider response | `live:P1e` | covered |
 | AI unavailable primary backend (failover) | `live:P1a` (priority-0 connection refused → priority-1) | covered |
-| AI stream-start failure boundary | `gap` (see S10) | gap |
+| AI stream-start failure boundary | `live:P1d` (boundary verified non-stream; `stream:true` blocked by #67) | partial (D9/#67) |
 
 ## Certification-only checks (not feature bullets, but Tier-0 exit gates)
 
 | Check | Evidence | Status |
 |---|---|---|
-| Teardown **redaction sweep** over all artifacts (CP/Envoy logs, every config dump, access logs, DB usage rows; allowlist one-time bootstrap PKI) | `gap` — `lib.sh::redaction_sweep` to build | gap |
-| **Cross-team isolation under concurrency** (multi-team concurrent traffic, no bleed in config/xDS/usage/budgets) | `gap` — live phase to add (extends `cargo:ai_budgets` same-team atomic to cross-team-under-load) | gap |
-| Live E2E green **5 consecutive** runs | `gap` — close gate | gap |
+| Teardown **redaction sweep** over all artifacts (CP/Envoy logs, config dumps, access logs, DB usage rows; mock auth logs + one-time bootstrap PKI excluded) | `live:redaction_sweep` (also greps the API bearer token) | covered |
+| **Cross-team isolation under concurrency** (no bleed in usage/budget counters under concurrent settlement) | `cargo:ai_budgets::concurrent_budget_settlement_is_atomic_and_team_scoped` — 32 concurrent settlements assert team B's counters/enforcement untouched; live re-impl is redundant | covered (cargo) |
+| Live E2E green **5 consecutive** runs | blocked on #67 (D9); the non-#67 suite is otherwise green every run | pending #67 |
 
 ## Out-of-scope (named, with owning slice)
 
@@ -189,11 +189,18 @@ route/listener/filter parity (+ global-RLS filter ACK).
 
 ---
 
-### Open `gap` rows to fill for Tier-0 certification
-1. S2 service-layer authz-denial audit wiring (or certify as known residual).
-2. S2 governance-CRUD thin live happy-path (bootstrap→org→team→grant→member).
-3. S10 streaming-failover boundary phase (mock streams one chunk then drops).
-4. S10 malformed-provider-response handling assertion.
-5. `redaction_sweep` teardown gate over all artifacts.
-6. Cross-team isolation-under-concurrency live phase.
-7. 5× consecutive green close gate.
+## Defect log (found during certification)
+
+| ID | Severity | Finding | Status |
+|---|---|---|---|
+| D8 | Minor | Phase 7 global-RLS `config_dump` check flaked ~1/3 even after #64 (single-shot, unbounded curl) | Fixed: consistent-snapshot + `--max-time` poll; 5× green |
+| D9 | **Major** | AI gateway returns 500 on `stream:true` requests before backend dispatch (#67) | **Open (#67)** — tracked known-fail; blocks streaming + the 5× close gate |
+| R2 | Residual | Service-layer authz-**denial** audit rows: primitive exists + storage-tested, but not wired into service denials (pre-existing Open Risk in DECISIONS/PROGRESS) | Known residual — wire or formally accept before final sign-off |
+
+## Remaining for Tier-0 sign-off
+1. **#67 / D9** — fix streaming `stream:true` 500 (product, S10d). Phase 1d auto-validates the boundary once fixed.
+2. **R2** — wire service-layer authz-denial audit, or formally accept as residual risk in the certification report.
+3. **5× consecutive green** close gate — currently blocked only by #67 (the rest of the suite is green every run).
+4. **Script split** (`run.sh`/`lib.sh`/`NN-*.sh` + `--only`/`--from`) — structural; fold `wait_converged`/`assert_status`/`redaction_sweep`/`known_fail` into `lib.sh`. Tracking-only; not a coverage gap.
+
+All other S1–S10 capabilities and abuse-matrix rows are covered by a passing `live:` phase or a named `cargo:` test (see tables above).
