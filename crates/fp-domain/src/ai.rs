@@ -1,7 +1,7 @@
 //! AI gateway provider resources (S10).
 
 use crate::error::{DomainError, DomainResult};
-use crate::id::{AiProviderId, AiRouteId, SecretId, TeamId};
+use crate::id::{AiBudgetId, AiProviderId, AiRouteId, RouteConfigId, SecretId, TeamId};
 use crate::validate_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,66 @@ pub struct AiRoute {
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiBudget {
+    pub id: AiBudgetId,
+    pub team_id: TeamId,
+    pub name: String,
+    pub spec: AiBudgetSpec,
+    pub version: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AiBudgetSpec {
+    pub mode: AiBudgetMode,
+    pub limit_units: u64,
+    #[serde(default = "default_budget_window_seconds")]
+    pub window_seconds: u32,
+    #[schema(value_type = Option<uuid::Uuid>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<AiProviderId>,
+    #[schema(value_type = Option<uuid::Uuid>)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_config_id: Option<RouteConfigId>,
+    #[serde(default)]
+    pub prompt_token_weight: u32,
+    #[serde(default = "default_completion_weight")]
+    pub completion_token_weight: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AiBudgetMode {
+    Shadow,
+    Enforcing,
+}
+
+impl AiBudgetMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shadow => "shadow",
+            Self::Enforcing => "enforcing",
+        }
+    }
+}
+
+impl std::str::FromStr for AiBudgetMode {
+    type Err = DomainError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "shadow" => Ok(Self::Shadow),
+            "enforcing" => Ok(Self::Enforcing),
+            _ => Err(DomainError::validation(format!(
+                "\"{raw}\" is not a supported AI budget mode"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -110,6 +170,18 @@ pub struct OpenAiTokenUsage {
     pub total_tokens: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AiUsageSummary {
+    #[schema(value_type = Option<uuid::Uuid>)]
+    pub route_config_id: Option<RouteConfigId>,
+    #[schema(value_type = Option<uuid::Uuid>)]
+    pub provider_id: Option<AiProviderId>,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    pub event_count: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AiProviderSpec {
@@ -168,6 +240,14 @@ fn default_backend_weight() -> u32 {
     1
 }
 
+fn default_budget_window_seconds() -> u32 {
+    30 * 24 * 60 * 60
+}
+
+fn default_completion_weight() -> u32 {
+    1
+}
+
 impl AiProviderSpec {
     pub fn validate(&self) -> DomainResult<()> {
         if !matches!(self.base_url.as_str(), url if url.starts_with("https://") || url.starts_with("http://"))
@@ -223,6 +303,45 @@ pub fn validate_ai_provider_name(name: &str) -> DomainResult<()> {
 
 pub fn validate_ai_route_name(name: &str) -> DomainResult<()> {
     validate_name(name)
+}
+
+pub fn validate_ai_budget_name(name: &str) -> DomainResult<()> {
+    validate_name(name)
+}
+
+impl AiBudgetSpec {
+    pub fn validate(&self) -> DomainResult<()> {
+        if self.limit_units == 0 {
+            return Err(DomainError::validation(
+                "AI budget limit_units must be greater than zero",
+            ));
+        }
+        if self.window_seconds == 0 {
+            return Err(DomainError::validation(
+                "AI budget window_seconds must be greater than zero",
+            ));
+        }
+        if self.prompt_token_weight == 0 && self.completion_token_weight == 0 {
+            return Err(DomainError::validation(
+                "AI budget token weights must not both be zero",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn units_for_usage(&self, usage: OpenAiTokenUsage) -> DomainResult<u64> {
+        let prompt = usage
+            .prompt_tokens
+            .checked_mul(u64::from(self.prompt_token_weight))
+            .ok_or_else(|| DomainError::validation("AI budget prompt units overflow"))?;
+        let completion = usage
+            .completion_tokens
+            .checked_mul(u64::from(self.completion_token_weight))
+            .ok_or_else(|| DomainError::validation("AI budget completion units overflow"))?;
+        prompt
+            .checked_add(completion)
+            .ok_or_else(|| DomainError::validation("AI budget units overflow"))
+    }
 }
 
 impl AiRouteSpec {

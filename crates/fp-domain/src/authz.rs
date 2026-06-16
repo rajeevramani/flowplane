@@ -46,6 +46,7 @@ pub enum Resource {
     AiProviders,
     AiRoutes,
     AiBudgets,
+    AiUsage,
     Stats,
 }
 
@@ -83,6 +84,7 @@ impl Resource {
             Self::AiProviders => "ai-providers",
             Self::AiRoutes => "ai-routes",
             Self::AiBudgets => "ai-budgets",
+            Self::AiUsage => "ai-usage",
             Self::Stats => "stats",
         }
     }
@@ -119,6 +121,7 @@ pub const ALL_RESOURCES: &[Resource] = &[
     Resource::AiProviders,
     Resource::AiRoutes,
     Resource::AiBudgets,
+    Resource::AiUsage,
     Resource::Stats,
 ];
 

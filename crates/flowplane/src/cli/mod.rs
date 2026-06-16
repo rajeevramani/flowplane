@@ -991,6 +991,35 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
     match command {
         AiCommand::Providers { command } => run_resource(global, "ai/providers", command).await,
         AiCommand::Routes { command } => run_resource(global, "ai/routes", command).await,
+        AiCommand::Budgets { command } => run_resource(global, "ai/budgets", command).await,
+        AiCommand::Usage {
+            team,
+            provider_id,
+            route_config_id,
+            limit,
+            offset,
+        } => {
+            let client = RestClient::new(global)?;
+            let team = client.team(team)?;
+            let mut query = vec![format!("limit={limit}"), format!("offset={offset}")];
+            if let Some(provider_id) = provider_id {
+                query.push(format!("provider_id={}", query_component(&provider_id)));
+            }
+            if let Some(route_config_id) = route_config_id {
+                query.push(format!(
+                    "route_config_id={}",
+                    query_component(&route_config_id)
+                ));
+            }
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/ai/usage?{}", query.join("&")),
+                    None,
+                )
+                .await?;
+            Ok(())
+        }
     }
 }
 
@@ -2173,6 +2202,9 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/ai/providers/{name}",
         "/api/v1/teams/{team}/ai/routes",
         "/api/v1/teams/{team}/ai/routes/{name}",
+        "/api/v1/teams/{team}/ai/budgets",
+        "/api/v1/teams/{team}/ai/budgets/{name}",
+        "/api/v1/teams/{team}/ai/usage",
         "/api/v1/teams/{team}/learning-sessions",
         "/api/v1/teams/{team}/learning-sessions/{session}",
         "/api/v1/teams/{team}/learning-sessions/{session}/stop",

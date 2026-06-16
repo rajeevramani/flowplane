@@ -119,6 +119,10 @@ domain_id!(
     AiRouteId
 );
 domain_id!(
+    /// Identifies an AI budget.
+    AiBudgetId
+);
+domain_id!(
     /// Identifies an API definition, the config-first lifecycle root for learning/tools.
     ApiDefinitionId
 );

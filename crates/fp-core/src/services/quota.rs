@@ -37,6 +37,7 @@ pub async fn check_team_resource_quota(
         Resource::Secrets => fp_storage::repos::secrets::count_for_team(pool, team_id).await?,
         Resource::AiProviders => fp_storage::repos::ai::count_for_team(pool, team_id).await?,
         Resource::AiRoutes => fp_storage::repos::ai::count_routes_for_team(pool, team_id).await?,
+        Resource::AiBudgets => fp_storage::repos::ai::count_budgets_for_team(pool, team_id).await?,
         Resource::Dataplanes => {
             fp_storage::repos::dataplanes::count_for_team(pool, team_id).await?
         }

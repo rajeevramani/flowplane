@@ -20,10 +20,11 @@ pub mod secret;
 
 pub use ai::{
     openai_usage_from_json, prepare_openai_chat_request, rewrite_openai_chat_request_model,
-    strip_synthetic_openai_usage_sse, validate_ai_provider_name, validate_ai_route_name,
-    AiProvider, AiProviderKind, AiProviderSpec, AiRoute, AiRouteBackend,
-    AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus, OpenAiChatRequest, OpenAiTokenUsage,
-    AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS, MAX_AI_REQUEST_BODY_BYTES,
+    strip_synthetic_openai_usage_sse, validate_ai_budget_name, validate_ai_provider_name,
+    validate_ai_route_name, AiBudget, AiBudgetMode, AiBudgetSpec, AiProvider, AiProviderKind,
+    AiProviderSpec, AiRoute, AiRouteBackend, AiRouteMaterializedResources, AiRouteSpec,
+    AiRouteStatus, AiUsageSummary, OpenAiChatRequest, OpenAiTokenUsage, AI_MODEL_HEADER,
+    DEFAULT_AI_ROUTE_TIMEOUT_SECS, MAX_AI_REQUEST_BODY_BYTES,
 };
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
 pub use discovery::{
@@ -33,11 +34,11 @@ pub use discovery::{
 };
 pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
-    AgentId, AiProviderId, AiRouteId, ApiDefinitionId, ApiRouteBindingId, ApiToolId, AuditEntryId,
-    CaptureSessionId, ClusterId, DataplaneId, DiscoverySessionId, GrantId, ListenerId,
-    MembershipId, OrgId, ProxyCertificateId, RawObservationId, RequestId, RetentionPolicyId,
-    RouteConfigId, RouteGenerationPlanId, SecretId, SpecVersionId, SpecVersionReviewEventId,
-    TeamId, UserId,
+    AgentId, AiBudgetId, AiProviderId, AiRouteId, ApiDefinitionId, ApiRouteBindingId, ApiToolId,
+    AuditEntryId, CaptureSessionId, ClusterId, DataplaneId, DiscoverySessionId, GrantId,
+    ListenerId, MembershipId, OrgId, ProxyCertificateId, RawObservationId, RequestId,
+    RetentionPolicyId, RouteConfigId, RouteGenerationPlanId, SecretId, SpecVersionId,
+    SpecVersionReviewEventId, TeamId, UserId,
 };
 pub use identity::{
     validate_name, Agent, AgentKind, EntityStatus, OrgRole, Organization, Team, User,

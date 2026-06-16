@@ -1031,7 +1031,7 @@ async fn persist_ai_usage(pool: &sqlx::PgPool, state: &AiExtProcState) {
     let Some(provider_id) = context.provider_id else {
         return;
     };
-    if let Err(err) = ai::record_usage_event(
+    if let Err(err) = ai::record_usage_event_and_settle_budgets(
         pool,
         ai::AiUsageEventInsert {
             team_id: context.team_id,

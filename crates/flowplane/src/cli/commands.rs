@@ -238,6 +238,22 @@ pub enum AiCommand {
         #[command(subcommand)]
         command: ResourceCommand,
     },
+    Budgets {
+        #[command(subcommand)]
+        command: ResourceCommand,
+    },
+    Usage {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        provider_id: Option<String>,
+        #[arg(long)]
+        route_config_id: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]

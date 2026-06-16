@@ -8,9 +8,12 @@ use axum::http::HeaderMap;
 use axum::Json;
 use fp_core::services::ai as ai_svc;
 use fp_core::PrincipalCtx;
-use fp_domain::{AiProvider, AiProviderSpec, AiRoute, AiRouteSpec, RequestId};
+use fp_domain::{
+    AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteSpec, AiUsageSummary,
+    RequestId,
+};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AiProviderView {
@@ -29,6 +32,16 @@ pub struct AiRouteView {
     pub spec: AiRouteSpec,
     pub status: fp_domain::AiRouteStatus,
     pub materialized: fp_domain::AiRouteMaterializedResources,
+    pub revision: i64,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiBudgetView {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub spec: AiBudgetSpec,
     pub revision: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -62,6 +75,19 @@ impl From<AiRoute> for AiRouteView {
     }
 }
 
+impl From<AiBudget> for AiBudgetView {
+    fn from(value: AiBudget) -> Self {
+        Self {
+            id: value.id.as_uuid(),
+            name: value.name,
+            spec: value.spec,
+            revision: value.version,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAiProviderBody {
@@ -86,6 +112,36 @@ pub struct CreateAiRouteBody {
 #[serde(deny_unknown_fields)]
 pub struct UpdateAiRouteBody {
     pub spec: AiRouteSpec,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateAiBudgetBody {
+    pub name: String,
+    pub spec: AiBudgetSpec,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateAiBudgetBody {
+    pub spec: AiBudgetSpec,
+}
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AiUsageQuery {
+    #[serde(default)]
+    pub route_config_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub provider_id: Option<uuid::Uuid>,
+    #[serde(default = "default_usage_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_usage_limit() -> i64 {
+    50
 }
 
 #[utoipa::path(get, path = "/api/v1/teams/{team}/ai/providers",
@@ -328,4 +384,155 @@ pub async fn delete_ai_route(
     run.await
         .map(|_| axum::http::StatusCode::NO_CONTENT)
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/ai/budgets",
+    tag = "AI",
+    params(("team" = String, Path, description = "Team name or UUID"), ListQuery),
+    responses((status = 200, body = Page<AiBudgetView>)))]
+pub async fn list_ai_budgets(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<AiBudgetView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::list_budgets(&state.pool, &ctx, team, query.limit, query.offset, rid).await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items.into_iter().map(AiBudgetView::from).collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
+}
+
+#[utoipa::path(post, path = "/api/v1/teams/{team}/ai/budgets",
+    tag = "AI",
+    params(("team" = String, Path, description = "Team name or UUID")),
+    request_body = CreateAiBudgetBody,
+    responses((status = 201, body = AiBudgetView)))]
+pub async fn create_ai_budget(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    Json(body): Json<CreateAiBudgetBody>,
+) -> Result<(axum::http::StatusCode, Json<AiBudgetView>), ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::create_budget(&state.pool, &ctx, team, &body.name, body.spec, rid).await
+    };
+    let created = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(AiBudgetView::from(created)),
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/ai/budgets/{name}",
+    tag = "AI",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "AI budget name"),
+    ),
+    responses((status = 200, body = AiBudgetView)))]
+pub async fn get_ai_budget(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<AiBudgetView>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::get_budget(&state.pool, &ctx, team, &name, rid).await
+    };
+    run.await
+        .map(|v| Json(AiBudgetView::from(v)))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(patch, path = "/api/v1/teams/{team}/ai/budgets/{name}",
+    tag = "AI",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "AI budget name"),
+        ("If-Match" = i64, Header, description = "Current resource revision"),
+    ),
+    request_body = UpdateAiBudgetBody,
+    responses((status = 200, body = AiBudgetView)))]
+pub async fn update_ai_budget(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    Json(body): Json<UpdateAiBudgetBody>,
+) -> Result<Json<AiBudgetView>, ApiError> {
+    let run = async {
+        let revision = revision_from(&headers)?;
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::update_budget(&state.pool, &ctx, team, &name, body.spec, revision, rid).await
+    };
+    run.await
+        .map(|v| Json(AiBudgetView::from(v)))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(delete, path = "/api/v1/teams/{team}/ai/budgets/{name}",
+    tag = "AI",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "AI budget name"),
+        ("If-Match" = i64, Header, description = "Current resource revision"),
+    ),
+    responses((status = 204)))]
+pub async fn delete_ai_budget(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let run = async {
+        let revision = revision_from(&headers)?;
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::delete_budget(&state.pool, &ctx, team, &name, revision, rid).await
+    };
+    run.await
+        .map(|_| axum::http::StatusCode::NO_CONTENT)
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/ai/usage",
+    tag = "AI",
+    params(("team" = String, Path, description = "Team name or UUID"), AiUsageQuery),
+    responses((status = 200, body = Vec<AiUsageSummary>)))]
+pub async fn get_ai_usage(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Query(query): Query<AiUsageQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Vec<AiUsageSummary>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::usage_summary(
+            &state.pool,
+            &ctx,
+            team,
+            fp_storage::repos::ai::AiUsageQuery {
+                route_config_id: query.route_config_id.map(fp_domain::RouteConfigId::from),
+                provider_id: query.provider_id.map(fp_domain::AiProviderId::from),
+                limit: query.limit,
+                offset: query.offset,
+            },
+            rid,
+        )
+        .await
+    };
+    run.await.map(Json).map_err(|e| ApiError::new(e, rid))
 }

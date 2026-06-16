@@ -107,11 +107,12 @@ fn openapi_document_covers_every_registered_operation() {
     // + 2 expose shortcut operations.
     // + 2 route-generation plan operations.
     // + 5 AI provider operations + 5 AI route operations.
+    // + 5 AI budget operations + 1 AI usage operation.
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 81,
-        "expected 81 documented operations, got {operations}"
+        operations, 87,
+        "expected 87 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -1458,8 +1459,11 @@ async fn secret_values_are_write_only_over_http() {
         .await
         .expect("get materialized AI route config");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    let materialized_route_config: serde_json::Value = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT spec FROM route_configs WHERE team_id = $1 AND name = $2 AND owner_kind = 'ai'",
+    let (materialized_route_config_id, materialized_route_config): (
+        uuid::Uuid,
+        serde_json::Value,
+    ) = sqlx::query_as(
+        "SELECT id, spec FROM route_configs WHERE team_id = $1 AND name = $2 AND owner_kind = 'ai'",
     )
     .bind(team.id.as_uuid())
     .bind(format!("ai-{route_name}-routes"))
@@ -1474,6 +1478,91 @@ async fn secret_values_are_write_only_over_http() {
         .find(|route| route["name"] == "no-eligible-backend")
         .expect("fallback route");
     assert_eq!(fallback["action"]["direct_response"]["status"], 400);
+
+    let budgets = format!("/api/v1/teams/{}/ai/budgets", team.name);
+    let budget_name = unique("aibudget");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &budgets,
+            Some(serde_json::json!({
+                "name": budget_name,
+                "spec": {
+                    "mode": "shadow",
+                    "limit_units": 100,
+                    "window_seconds": 3600,
+                    "provider_id": provider_id,
+                    "route_config_id": materialized_route_config_id,
+                    "prompt_token_weight": 1,
+                    "completion_token_weight": 2
+                }
+            })),
+        ))
+        .await
+        .expect("create AI budget");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert_eq!(body["name"], budget_name);
+    assert_eq!(body["revision"], 1);
+
+    fp_storage::repos::ai::record_usage_event_and_settle_budgets(
+        &query_pool,
+        fp_storage::repos::ai::AiUsageEventInsert {
+            team_id: team.id,
+            route_config_id: fp_domain::RouteConfigId::from(materialized_route_config_id),
+            provider_id: fp_domain::AiProviderId::from(
+                uuid::Uuid::parse_str(&provider_id).expect("provider uuid"),
+            ),
+            backend_position: Some(0),
+            usage: fp_domain::OpenAiTokenUsage {
+                prompt_tokens: 3,
+                completion_tokens: 4,
+                total_tokens: 7,
+            },
+        },
+    )
+    .await
+    .expect("record AI usage");
+
+    let used_units: i64 =
+        sqlx::query_scalar("SELECT used_units FROM ai_budget_counters WHERE team_id = $1")
+            .bind(team.id.as_uuid())
+            .fetch_one(&query_pool)
+            .await
+            .expect("budget counter");
+    assert_eq!(used_units, 11);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/api/v1/teams/{}/ai/usage", team.name),
+            None,
+        ))
+        .await
+        .expect("get AI usage");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body[0]["prompt_tokens"], 3);
+    assert_eq!(body[0]["completion_tokens"], 4);
+    assert_eq!(body[0]["total_tokens"], 7);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/api/v1/teams/{}/ai/usage", other_team.name),
+            None,
+        ))
+        .await
+        .expect("get other-team AI usage");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(json_of(response)
+        .await
+        .as_array()
+        .expect("usage")
+        .is_empty());
 
     let response = app
         .clone()

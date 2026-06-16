@@ -11,9 +11,10 @@ use fp_domain::gateway::route_config::{
     RouteRule, VirtualHost, WeightedClusterTarget,
 };
 use fp_domain::{
-    validate_ai_provider_name, validate_ai_route_name, AiProvider, AiProviderSpec, AiRoute,
-    AiRouteMaterializedResources, AiRouteSpec, DomainError, DomainResult, RequestId,
-    AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+    validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name, AiBudget,
+    AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteMaterializedResources, AiRouteSpec,
+    AiUsageSummary, DomainError, DomainResult, RequestId, AI_MODEL_HEADER,
+    DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
 use fp_storage::repos::{ai, audit, clusters as cluster_repo, gateway as gateway_repo};
 use reqwest::Url;
@@ -329,6 +330,183 @@ pub async fn get_route(
     ai::get_route(pool, team.id, name)
         .await?
         .ok_or_else(|| DomainError::not_found("AI route", name))
+}
+
+pub async fn create_budget(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: AiBudgetSpec,
+    request_id: RequestId,
+) -> DomainResult<AiBudget> {
+    authorize(
+        pool,
+        ctx,
+        Resource::AiBudgets,
+        Action::Create,
+        team,
+        request_id,
+    )
+    .await?;
+    validate_ai_budget_name(name)?;
+    validate_budget_spec(pool, team, &spec).await?;
+    crate::services::quota::check_team_resource_quota(pool, team.id, Resource::AiBudgets).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("create AI budget: begin"))?;
+    let budget = ai::create_budget(&mut tx, team, name, &spec).await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "ai_budget.create",
+            "ai-budgets",
+            name,
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("create AI budget: commit"))?;
+    Ok(budget)
+}
+
+pub async fn list_budgets(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<AiBudget>, i64)> {
+    authorize(
+        pool,
+        ctx,
+        Resource::AiBudgets,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
+    ai::list_budgets(pool, team.id, limit, offset).await
+}
+
+pub async fn get_budget(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    request_id: RequestId,
+) -> DomainResult<AiBudget> {
+    authorize(
+        pool,
+        ctx,
+        Resource::AiBudgets,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
+    ai::get_budget(pool, team.id, name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("AI budget", name))
+}
+
+pub async fn update_budget(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: AiBudgetSpec,
+    expected_version: i64,
+    request_id: RequestId,
+) -> DomainResult<AiBudget> {
+    authorize(
+        pool,
+        ctx,
+        Resource::AiBudgets,
+        Action::Update,
+        team,
+        request_id,
+    )
+    .await?;
+    validate_budget_spec(pool, team, &spec).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("update AI budget: begin"))?;
+    let budget = ai::update_budget(&mut tx, team.id, name, &spec, expected_version).await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "ai_budget.update",
+            "ai-budgets",
+            name,
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("update AI budget: commit"))?;
+    Ok(budget)
+}
+
+pub async fn delete_budget(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    expected_version: i64,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    authorize(
+        pool,
+        ctx,
+        Resource::AiBudgets,
+        Action::Delete,
+        team,
+        request_id,
+    )
+    .await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("delete AI budget: begin"))?;
+    ai::delete_budget(&mut tx, team.id, name, expected_version).await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "ai_budget.delete",
+            "ai-budgets",
+            name,
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("delete AI budget: commit"))?;
+    Ok(())
+}
+
+pub async fn usage_summary(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    query: ai::AiUsageQuery,
+    request_id: RequestId,
+) -> DomainResult<Vec<AiUsageSummary>> {
+    authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
+    ai::usage_summary(pool, team.id, query).await
 }
 
 pub async fn update_route(
@@ -912,6 +1090,37 @@ async fn validate_provider_spec(
         return Err(DomainError::validation(
             "AI provider credential_secret_id must reference a generic_secret",
         ));
+    }
+    Ok(())
+}
+
+async fn validate_budget_spec(
+    pool: &PgPool,
+    team: TeamRef,
+    spec: &AiBudgetSpec,
+) -> DomainResult<()> {
+    spec.validate()?;
+    if let Some(provider_id) = spec.provider_id {
+        ai::get_provider_by_id(pool, team.id, provider_id)
+            .await?
+            .ok_or_else(|| DomainError::not_found("AI provider", &provider_id.to_string()))?;
+    }
+    if let Some(route_config_id) = spec.route_config_id {
+        let exists: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM route_configs WHERE team_id = $1 AND id = $2")
+                .bind(team.id.as_uuid())
+                .bind(route_config_id.as_uuid())
+                .fetch_optional(pool)
+                .await
+                .map_err(crate::services::db_err(
+                    "validate AI budget route_config_id",
+                ))?;
+        if exists.is_none() {
+            return Err(DomainError::not_found(
+                "route config",
+                &route_config_id.to_string(),
+            ));
+        }
     }
     Ok(())
 }

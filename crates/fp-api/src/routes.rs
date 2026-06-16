@@ -145,6 +145,13 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             ai_api::update_ai_route,
             ai_api::delete_ai_route
         ))
+        .routes(routes!(ai_api::list_ai_budgets, ai_api::create_ai_budget))
+        .routes(routes!(
+            ai_api::get_ai_budget,
+            ai_api::update_ai_budget,
+            ai_api::delete_ai_budget
+        ))
+        .routes(routes!(ai_api::get_ai_usage))
         .routes(routes!(
             dataplanes_api::list_dataplanes,
             dataplanes_api::create_dataplane
