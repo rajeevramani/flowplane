@@ -16,6 +16,9 @@ GENERATED_ROUTE_PORT=$((GW_PORT+7))
 AI_PROVIDER_PORT=$((GW_PORT+8))
 AI_GATEWAY_PORT=$((GW_PORT+9))
 AI_MULTI_GATEWAY_PORT=$((GW_PORT+10))
+AI_FAILOVER_GATEWAY_PORT=$((GW_PORT+11))
+AI_FALLBACK_PROVIDER_PORT=$((GW_PORT+12))
+AI_UNAVAILABLE_PROVIDER_PORT=$((GW_PORT+13))
 DB=flowplane_e2e
 PG_ADMIN_URL=${FLOWPLANE_E2E_PG_ADMIN_URL:-postgres://postgres:postgres@127.0.0.1:5432/postgres}
 PG_DB_URL=${FLOWPLANE_E2E_DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:5432/$DB}
@@ -25,6 +28,7 @@ cleanup() {
   [ -n "${CP_PID:-}" ] && kill "$CP_PID" >/dev/null 2>&1 || true
   [ -n "${UP_PID:-}" ] && kill "$UP_PID" >/dev/null 2>&1 || true
   [ -n "${AI_PID:-}" ] && kill "$AI_PID" >/dev/null 2>&1 || true
+  [ -n "${AI_FALLBACK_PID:-}" ] && kill "$AI_FALLBACK_PID" >/dev/null 2>&1 || true
   [ -n "${ENVOY_PID:-}" ] && kill "$ENVOY_PID" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -91,6 +95,9 @@ PY
 : >/tmp/fp-e2e-ai-auth.log
 python3 /tmp/fp-e2e-ai-provider.py "$AI_PROVIDER_PORT" /tmp/fp-e2e-ai-auth.log "Bearer fp-e2e-ai-secret" >/tmp/fp-e2e-ai-provider.log 2>&1 &
 AI_PID=$!
+: >/tmp/fp-e2e-ai-fallback-auth.log
+python3 /tmp/fp-e2e-ai-provider.py "$AI_FALLBACK_PROVIDER_PORT" /tmp/fp-e2e-ai-fallback-auth.log "Bearer fp-e2e-ai-fallback-secret" >/tmp/fp-e2e-ai-fallback-provider.log 2>&1 &
+AI_FALLBACK_PID=$!
 
 cargo build --bin flowplane -q
 FLOWPLANE_DATABASE_URL=$PG_DB_URL \
@@ -234,6 +241,52 @@ AI_MULTI_ORPHANS=$(psql "$PG_DB_URL" -Atc "SELECT \
   (SELECT count(*) FROM route_configs WHERE owner_kind = 'ai' AND owner_id = '$AI_MULTI_ROUTE_ID') + \
   (SELECT count(*) FROM listeners WHERE owner_kind = 'ai' AND owner_id = '$AI_MULTI_ROUTE_ID')")
 [ "$AI_MULTI_ORPHANS" = "0" ] || fail "AI multi-backend route cleanup left $AI_MULTI_ORPHANS owned gateway rows"
+AI_FALLBACK_SECRET_B64=$(python3 -c 'import base64; print(base64.b64encode(b"Bearer fp-e2e-ai-fallback-secret").decode())')
+AI_FALLBACK_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  -d "{\"name\":\"ai-e2e-fallback-key\",\"description\":\"AI e2e fallback credential\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_FALLBACK_SECRET_B64\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_UNAVAILABLE_PROVIDER_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-e2e-unavailable-provider\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_UNAVAILABLE_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_SECRET_ID\",\"auth_header\":\"authorization\",\"models\":[\"gpt-5\"]}}")
+AI_UNAVAILABLE_PROVIDER_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_UNAVAILABLE_PROVIDER_BODY")
+AI_FALLBACK_PROVIDER_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-e2e-fallback-provider\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_FALLBACK_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_FALLBACK_SECRET_ID\",\"auth_header\":\"authorization\",\"models\":[\"gpt-5\"]}}")
+AI_FALLBACK_PROVIDER_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_FALLBACK_PROVIDER_BODY")
+AI_FAILOVER_ROUTE_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
+  -d "{\"name\":\"ai-e2e-failover\",\"spec\":{\"listener_port\":$AI_FAILOVER_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_UNAVAILABLE_PROVIDER_ID\",\"models\":[],\"weight\":1,\"priority\":0},{\"provider_id\":\"$AI_FALLBACK_PROVIDER_ID\",\"models\":[],\"weight\":1,\"priority\":1}]}}")
+AI_FAILOVER_ROUTE_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_FAILOVER_ROUTE_BODY")
+AI_FAILOVER_ROUTE_CONFIG_ID=$(psql "$PG_DB_URL" -Atc "SELECT id FROM route_configs WHERE team_id = '$TEAM_ID' AND name = 'ai-ai-e2e-failover-routes' AND owner_kind = 'ai'")
+[ -n "$AI_FAILOVER_ROUTE_CONFIG_ID" ] || fail "AI failover route materialized route config not found"
+for i in $(seq 1 50); do
+  curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json || true
+  grep -q "envoy.clusters.aggregate" /tmp/fp-e2e-ai-dump.json && grep -q "ai-ai-e2e-failover-listener" /tmp/fp-e2e-ai-dump.json && break
+  sleep 1
+done
+grep -q "envoy.clusters.aggregate" /tmp/fp-e2e-ai-dump.json || fail "AI failover aggregate cluster did not converge"
+: >/tmp/fp-e2e-ai-fallback-auth.log
+AI_CODE=$(curl -sS -o /tmp/fp-e2e-ai-failover.json -w '%{http_code}' \
+  -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+  http://127.0.0.1:$AI_FAILOVER_GATEWAY_PORT/v1/chat/completions)
+[ "$AI_CODE" = "200" ] || fail "AI priority failover did not reach fallback provider (code $AI_CODE, body $(cat /tmp/fp-e2e-ai-failover.json))"
+grep -q "mock-ai-ok" /tmp/fp-e2e-ai-failover.json || fail "AI failover mock response did not reach client"
+grep -q "Bearer fp-e2e-ai-fallback-secret" /tmp/fp-e2e-ai-fallback-auth.log || fail "AI failover fallback provider did not receive fallback credential"
+if grep -q "$AI_SECRET_VALUE" /tmp/fp-e2e-ai-fallback-auth.log; then
+  fail "AI failover fallback provider received primary credential"
+fi
+for i in $(seq 1 20); do
+  AI_FAILOVER_USAGE_ATTR=$(psql "$PG_DB_URL" -Atc "SELECT provider_id || ',' || COALESCE(backend_position::text, '') || ',' || total_tokens FROM ai_usage_events WHERE team_id = '$TEAM_ID' AND route_config_id = '$AI_FAILOVER_ROUTE_CONFIG_ID' ORDER BY created_at DESC LIMIT 1" 2>/dev/null || true)
+  [ "$AI_FAILOVER_USAGE_ATTR" = "$AI_FALLBACK_PROVIDER_ID,1,5" ] && break
+  sleep 1
+done
+[ "$AI_FAILOVER_USAGE_ATTR" = "$AI_FALLBACK_PROVIDER_ID,1,5" ] || fail "AI failover usage attribution unexpected: $AI_FAILOVER_USAGE_ATTR"
+AI_FAILOVER_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_FAILOVER_ROUTE_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_FAILOVER_ROUTE_REV" \
+  http://$API/api/v1/teams/default/ai/routes/ai-e2e-failover >/dev/null
+AI_FALLBACK_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_FALLBACK_PROVIDER_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_FALLBACK_PROVIDER_REV" \
+  http://$API/api/v1/teams/default/ai/providers/ai-e2e-fallback-provider >/dev/null
+AI_UNAVAILABLE_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_UNAVAILABLE_PROVIDER_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_UNAVAILABLE_PROVIDER_REV" \
+  http://$API/api/v1/teams/default/ai/providers/ai-e2e-unavailable-provider >/dev/null
 AI_BUDGET_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/budgets \
   -d "{\"name\":\"ai-e2e-budget\",\"spec\":{\"mode\":\"enforcing\",\"limit_units\":5,\"window_seconds\":3600,\"provider_id\":\"$AI_PROVIDER_ID\",\"route_config_id\":\"$AI_ROUTE_CONFIG_ID\",\"prompt_token_weight\":1,\"completion_token_weight\":1}}")
 AI_BUDGET_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_BUDGET_BODY")
@@ -279,7 +332,7 @@ AI_ORPHANS=$(psql "$PG_DB_URL" -Atc "SELECT \
 AI_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_PROVIDER_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_PROVIDER_REV" \
   http://$API/api/v1/teams/default/ai/providers/ai-e2e-provider >/dev/null
-echo "PHASE 1a OK: AI credential injection (single + multi-backend) -> usage -> enforcing budget trip -> usage attribution -> cleanup"
+echo "PHASE 1a OK: AI credential injection (single + multi-backend) -> priority failover credential/usage -> enforcing budget trip -> usage attribution -> cleanup"
 
 # ---- Phase 1b: learning capture through the real injected ALS/ExtProc path. Start a
 # route-scoped session on the resources created by expose, then send traffic with stable

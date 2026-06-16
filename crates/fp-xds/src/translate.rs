@@ -11,12 +11,14 @@ use envoy_types::pb::envoy::config::ratelimit::v3 as ratelimit_cfg;
 use envoy_types::pb::envoy::config::route::v3 as rt;
 use envoy_types::pb::envoy::extensions::access_loggers::file::v3 as file_accesslog;
 use envoy_types::pb::envoy::extensions::access_loggers::grpc::v3 as grpc_accesslog;
+use envoy_types::pb::envoy::extensions::clusters::aggregate::v3 as aggregate_cluster;
 use envoy_types::pb::envoy::extensions::filters::http::ext_proc::v3 as ext_proc;
 use envoy_types::pb::envoy::extensions::filters::http::ratelimit::v3 as rate_limit_filter;
 use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router;
 use envoy_types::pb::envoy::extensions::filters::http::upstream_codec::v3 as upstream_codec;
 use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
 use envoy_types::pb::envoy::extensions::path::rewrite::uri_template::v3 as uri_template_rewrite;
+use envoy_types::pb::envoy::extensions::retry::priority::previous_priorities::v3 as previous_priorities;
 use envoy_types::pb::envoy::extensions::transport_sockets::tls::v3 as tls;
 use envoy_types::pb::envoy::extensions::upstreams::http::v3 as upstream_http;
 use envoy_types::pb::envoy::r#type::matcher::v3 as matcher_type;
@@ -73,6 +75,7 @@ pub struct AiUpstreamProcessorMetadata {
     pub route_config_id: uuid::Uuid,
     pub provider_id: uuid::Uuid,
     pub backend_position: i32,
+    pub failover_chain: Vec<(uuid::Uuid, i32)>,
 }
 
 fn any<M: Message>(type_url: &str, msg: &M) -> wkt::Any {
@@ -467,6 +470,9 @@ pub fn secret_to_proto(name: &str, spec: &SecretSpec) -> DomainResult<tls::Secre
 /// whose endpoints are all IP literals go over EDS (endpoint churn never touches cluster
 /// bytes, spec/10 §5); hostname endpoints stay STRICT_DNS with inline assignment.
 pub fn cluster_uses_eds(spec: &ClusterSpec) -> bool {
+    if !spec.aggregate_clusters.is_empty() {
+        return false;
+    }
     spec.endpoints
         .iter()
         .all(|e| e.host.parse::<std::net::IpAddr>().is_ok())
@@ -510,6 +516,27 @@ pub fn cluster_to_proto_with_ai(
     spec: &ClusterSpec,
     ai: Option<&AiUpstreamProcessorMetadata>,
 ) -> DomainResult<exc::Cluster> {
+    if !spec.aggregate_clusters.is_empty() {
+        return Ok(exc::Cluster {
+            name: name.to_string(),
+            connect_timeout: Some(duration(spec.connect_timeout_secs)),
+            cluster_discovery_type: Some(exc::cluster::ClusterDiscoveryType::ClusterType(
+                exc::cluster::CustomClusterType {
+                    name: "envoy.clusters.aggregate".to_string(),
+                    typed_config: Some(any(
+                        "type.googleapis.com/envoy.extensions.clusters.aggregate.v3.ClusterConfig",
+                        &aggregate_cluster::ClusterConfig {
+                            clusters: spec.aggregate_clusters.clone(),
+                        },
+                    )),
+                },
+            )),
+            lb_policy: exc::cluster::LbPolicy::ClusterProvided as i32,
+            typed_extension_protocol_options: upstream_protocol_options(spec, ai),
+            ..Default::default()
+        });
+    }
+
     let lb_policy = match spec.lb_policy {
         LbPolicy::RoundRobin => exc::cluster::LbPolicy::RoundRobin,
         LbPolicy::LeastRequest => exc::cluster::LbPolicy::LeastRequest,
@@ -833,22 +860,46 @@ fn ai_upstream_ext_proc_filter(ai: &AiUpstreamProcessorMetadata) -> hcm::HttpFil
 }
 
 fn ai_upstream_grpc_service(ai: &AiUpstreamProcessorMetadata) -> core::GrpcService {
-    core::GrpcService {
-        timeout: Some(millis_duration(5_000)),
-        initial_metadata: vec![
-            header("x-flowplane-ai-processor", "true".into()),
-            header("x-flowplane-ai-upstream-processor", "true".into()),
-            header("x-flowplane-team-id", ai.team_id.to_string()),
-            header(
-                "x-flowplane-route-config-id",
-                ai.route_config_id.to_string(),
-            ),
+    let mut initial_metadata = vec![
+        header("x-flowplane-ai-processor", "true".into()),
+        header("x-flowplane-ai-upstream-processor", "true".into()),
+        header("x-flowplane-team-id", ai.team_id.to_string()),
+        header(
+            "x-flowplane-route-config-id",
+            ai.route_config_id.to_string(),
+        ),
+    ];
+    if ai.failover_chain.is_empty() {
+        initial_metadata.extend([
             header("x-flowplane-ai-provider-id", ai.provider_id.to_string()),
             header(
                 "x-flowplane-ai-backend-position",
                 ai.backend_position.to_string(),
             ),
-        ],
+        ]);
+    } else {
+        initial_metadata.extend([
+            header(
+                "x-flowplane-ai-provider-chain",
+                ai.failover_chain
+                    .iter()
+                    .map(|(provider_id, _)| provider_id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            header(
+                "x-flowplane-ai-backend-position-chain",
+                ai.failover_chain
+                    .iter()
+                    .map(|(_, position)| position.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ]);
+    }
+    core::GrpcService {
+        timeout: Some(millis_duration(5_000)),
+        initial_metadata,
         target_specifier: Some(core::grpc_service::TargetSpecifier::EnvoyGrpc(
             core::grpc_service::EnvoyGrpc {
                 cluster_name: AI_EXT_PROC_CLUSTER.to_string(),
@@ -883,6 +934,12 @@ pub fn route_config_to_proto(
             routes,
             rate_limits: rate_limits_to_proto(&vhost.rate_limits),
             typed_per_filter_config: overrides_to_typed_config(&vhost.filter_overrides)?,
+            include_request_attempt_count: vhost.routes.iter().any(|rule| {
+                rule.action
+                    .retry_policy
+                    .as_ref()
+                    .is_some_and(|retry| retry.previous_priorities_retry)
+            }),
             ..Default::default()
         });
     }
@@ -1083,6 +1140,19 @@ fn retry_policy_to_proto(retry: &fp_domain::gateway::route_config::RetryPolicy) 
         retry_on: retry.retry_on.clone(),
         num_retries: retry.num_retries.map(u32_value),
         per_try_timeout: retry.per_try_timeout_secs.map(duration),
+        retry_priority: retry.previous_priorities_retry.then_some(
+            rt::retry_policy::RetryPriority {
+                name: "envoy.retry_priorities.previous_priorities".into(),
+                config_type: Some(rt::retry_policy::retry_priority::ConfigType::TypedConfig(
+                    any(
+                        "type.googleapis.com/envoy.extensions.retry.priority.previous_priorities.v3.PreviousPrioritiesConfig",
+                        &previous_priorities::PreviousPrioritiesConfig {
+                            update_frequency: 1,
+                        },
+                    ),
+                )),
+            },
+        ),
         retriable_status_codes: retry
             .retriable_status_codes
             .iter()
@@ -2347,6 +2417,7 @@ mod tests {
 
     fn cluster_spec() -> ClusterSpec {
         ClusterSpec {
+            aggregate_clusters: Vec::new(),
             endpoints: vec![
                 Endpoint {
                     host: "b.example".into(),
@@ -2414,8 +2485,54 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_cluster_translates_to_custom_cluster_type() {
+        let spec = ClusterSpec {
+            aggregate_clusters: vec!["ai-route-b1".into(), "ai-route-b2".into()],
+            endpoints: Vec::new(),
+            lb_policy: LbPolicy::RoundRobin,
+            least_request: None,
+            ring_hash: None,
+            maglev: None,
+            dns_lookup_family: None,
+            connect_timeout_secs: 10,
+            use_tls: false,
+            upstream_tls: None,
+            protocol: None,
+            health_checks: None,
+            circuit_breakers: None,
+            outlier_detection: None,
+        };
+
+        let cluster = cluster_to_proto("ai-route-agg-default-1", &spec).expect("translate");
+        assert_eq!(
+            cluster.lb_policy,
+            exc::cluster::LbPolicy::ClusterProvided as i32
+        );
+        let custom = match cluster
+            .cluster_discovery_type
+            .expect("cluster discovery type")
+        {
+            exc::cluster::ClusterDiscoveryType::ClusterType(custom) => custom,
+            other => panic!("expected aggregate custom cluster, got {other:?}"),
+        };
+        assert_eq!(custom.name, "envoy.clusters.aggregate");
+        let typed_config = custom.typed_config.expect("typed config");
+        assert_eq!(
+            typed_config.type_url,
+            "type.googleapis.com/envoy.extensions.clusters.aggregate.v3.ClusterConfig"
+        );
+        let aggregate =
+            aggregate_cluster::ClusterConfig::decode(typed_config.value.as_slice()).unwrap();
+        assert_eq!(
+            aggregate.clusters,
+            vec!["ai-route-b1".to_string(), "ai-route-b2".to_string()]
+        );
+    }
+
+    #[test]
     fn cluster_translation_carries_expanded_cluster_fields() {
         let spec = ClusterSpec {
+            aggregate_clusters: Vec::new(),
             endpoints: vec![Endpoint {
                 host: "api.example.com".into(),
                 port: 443,
@@ -2515,6 +2632,7 @@ mod tests {
             route_config_id: uuid::Uuid::now_v7(),
             provider_id: uuid::Uuid::now_v7(),
             backend_position: 7,
+            failover_chain: Vec::new(),
         };
         let cluster =
             cluster_to_proto_with_ai("ai-chat-b1", &cluster_spec(), Some(&ai)).expect("cluster");
@@ -2763,6 +2881,7 @@ mod tests {
                                 num_retries: Some(2),
                                 per_try_timeout_secs: Some(3),
                                 retriable_status_codes: vec![502, 503],
+                                previous_priorities_retry: false,
                             }),
                             rate_limits: vec![RateLimitDefinition {
                                 stage: Some(1),

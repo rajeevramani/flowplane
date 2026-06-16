@@ -140,6 +140,8 @@ pub struct RetryPolicy {
     pub per_try_timeout_secs: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retriable_status_codes: Vec<u16>,
+    #[serde(default)]
+    pub previous_priorities_retry: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -849,6 +851,7 @@ mod tests {
             num_retries: Some(2),
             per_try_timeout_secs: Some(3),
             retriable_status_codes: vec![502, 503],
+            previous_priorities_retry: false,
         });
 
         assert!(spec.validate().is_ok());

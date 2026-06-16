@@ -7,8 +7,8 @@ use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, UpstreamTlsConfig};
 use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec};
 use fp_domain::gateway::route_config::{
-    DirectResponseAction, HeaderMatch, HeaderValueMatch, PathMatch, RouteAction, RouteConfigSpec,
-    RouteRule, VirtualHost, WeightedClusterTarget,
+    DirectResponseAction, HeaderMatch, HeaderValueMatch, PathMatch, RetryPolicy, RouteAction,
+    RouteConfigSpec, RouteRule, VirtualHost, WeightedClusterTarget,
 };
 use fp_domain::{
     validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name, AiBudget,
@@ -274,9 +274,9 @@ pub async fn create_route(
     spec.validate()?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::AiRoutes).await?;
     let providers = load_route_providers(pool, team, &spec).await?;
-    let materialized = materialized_names(name, spec.backends.len());
+    let materialized = materialized_names(name, &spec)?;
     let materialized_events =
-        create_materialized(pool, team, &spec, &providers, &materialized).await?;
+        create_materialized(pool, team, name, &spec, &providers, &materialized).await?;
     let mut tx = pool
         .begin()
         .await
@@ -585,9 +585,9 @@ pub async fn update_route(
         ));
     }
     let providers = load_route_providers(pool, team, &spec).await?;
-    let materialized = materialized_names(name, spec.backends.len());
+    let materialized = materialized_names(name, &spec)?;
     cleanup_materialized(pool, team, &current.materialized).await;
-    create_materialized(pool, team, &spec, &providers, &materialized).await?;
+    create_materialized(pool, team, name, &spec, &providers, &materialized).await?;
 
     let mut tx = pool
         .begin()
@@ -708,14 +708,155 @@ async fn load_route_providers(
     Ok(providers)
 }
 
-fn materialized_names(name: &str, backend_count: usize) -> AiRouteMaterializedResources {
-    AiRouteMaterializedResources {
-        cluster_names: (0..backend_count)
-            .map(|idx| generated_name(name, &format!("-b{}", idx + 1)))
-            .collect(),
+fn materialized_names(
+    name: &str,
+    spec: &AiRouteSpec,
+) -> DomainResult<AiRouteMaterializedResources> {
+    let targets = ai_route_targets(name, spec)?;
+    let mut cluster_names = (0..spec.backends.len())
+        .map(|idx| generated_name(name, &format!("-b{}", idx + 1)))
+        .collect::<Vec<_>>();
+    for target in targets {
+        for chain in target.aggregate_chains {
+            cluster_names.push(chain.name);
+        }
+    }
+    Ok(AiRouteMaterializedResources {
+        cluster_names,
         route_config_name: generated_name(name, "-routes"),
         listener_name: generated_name(name, "-listener"),
+    })
+}
+
+fn backend_cluster_names(names: &AiRouteMaterializedResources, backend_count: usize) -> &[String] {
+    &names.cluster_names[..backend_count]
+}
+
+#[derive(Debug, Clone)]
+struct AiRouteTarget {
+    name: String,
+    headers: Vec<HeaderMatch>,
+    indexes: Vec<usize>,
+    aggregate_chains: Vec<AiAggregateChain>,
+}
+
+#[derive(Debug, Clone)]
+struct AiAggregateChain {
+    name: String,
+    members: Vec<usize>,
+    weight: u32,
+}
+
+fn ai_route_targets(route_name: &str, spec: &AiRouteSpec) -> DomainResult<Vec<AiRouteTarget>> {
+    let mut by_model: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut catch_all = Vec::new();
+    for (idx, backend) in spec.backends.iter().enumerate() {
+        if backend.models.is_empty() {
+            catch_all.push(idx);
+        } else {
+            for model in &backend.models {
+                by_model.entry(model.clone()).or_default().push(idx);
+            }
+        }
     }
+    let mut targets = Vec::new();
+    for (model, indexes) in by_model {
+        let name = format!("model-{}", route_token(&model));
+        targets.push(AiRouteTarget {
+            aggregate_chains: aggregate_chains(route_name, spec, &name, &indexes)?,
+            name,
+            headers: vec![HeaderMatch {
+                name: AI_MODEL_HEADER.into(),
+                invert_match: false,
+                matcher: HeaderValueMatch::Exact { value: model },
+            }],
+            indexes,
+        });
+    }
+    if !catch_all.is_empty() {
+        targets.push(AiRouteTarget {
+            aggregate_chains: aggregate_chains(route_name, spec, "default", &catch_all)?,
+            name: "default".into(),
+            headers: Vec::new(),
+            indexes: catch_all,
+        });
+    }
+    Ok(targets)
+}
+
+fn aggregate_chains(
+    route_name: &str,
+    spec: &AiRouteSpec,
+    target_name: &str,
+    indexes: &[usize],
+) -> DomainResult<Vec<AiAggregateChain>> {
+    let mut tiers: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for idx in indexes {
+        tiers
+            .entry(spec.backends[*idx].priority)
+            .or_default()
+            .push(*idx);
+    }
+    if tiers.len() <= 1 {
+        return Ok(Vec::new());
+    }
+
+    let mut chains = vec![(Vec::<usize>::new(), 1_u64)];
+    for tier_indexes in tiers.values() {
+        let mut next = Vec::new();
+        for (members, weight) in &chains {
+            for idx in tier_indexes {
+                let mut tier_members = members.clone();
+                tier_members.push(*idx);
+                next.push((
+                    tier_members,
+                    weight.saturating_mul(u64::from(spec.backends[*idx].weight)),
+                ));
+            }
+        }
+        chains = next;
+        if chains.len() > 32 {
+            return Err(DomainError::validation(
+                "AI priority failover materializes at most 32 weighted failover chains",
+            ));
+        }
+    }
+
+    let weights = normalize_chain_weights(chains.iter().map(|(_, weight)| *weight).collect());
+    Ok(chains
+        .into_iter()
+        .zip(weights)
+        .enumerate()
+        .map(|(idx, ((members, _), weight))| AiAggregateChain {
+            name: generated_name(
+                route_name,
+                &format!("-agg-{}-{}", route_token(target_name), idx + 1),
+            ),
+            members,
+            weight,
+        })
+        .collect())
+}
+
+fn normalize_chain_weights(raw: Vec<u64>) -> Vec<u32> {
+    let total = raw.iter().copied().sum::<u64>().max(1);
+    let mut weights = raw
+        .iter()
+        .map(|weight| ((*weight).saturating_mul(10_000) / total).clamp(1, 10_000) as u32)
+        .collect::<Vec<_>>();
+    let mut sum = weights.iter().sum::<u32>();
+    while sum > 10_000 {
+        if let Some(weight) = weights.iter_mut().max() {
+            if *weight == 1 {
+                break;
+            }
+            *weight -= 1;
+            sum -= 1;
+        } else {
+            break;
+        }
+    }
+    weights
 }
 
 fn generated_name(route_name: &str, suffix: &str) -> String {
@@ -739,19 +880,36 @@ fn generated_name(route_name: &str, suffix: &str) -> String {
 async fn create_materialized(
     pool: &PgPool,
     team: TeamRef,
+    route_name: &str,
     spec: &AiRouteSpec,
     providers: &[AiProvider],
     names: &AiRouteMaterializedResources,
 ) -> DomainResult<MaterializedResourceEvents> {
-    let mut cluster_specs = Vec::with_capacity(providers.len());
-    for (provider, cluster_name) in providers.iter().zip(names.cluster_names.iter()) {
+    let targets = ai_route_targets(route_name, spec)?;
+    let backend_names = backend_cluster_names(names, spec.backends.len());
+    let mut cluster_specs = Vec::with_capacity(names.cluster_names.len());
+    for (provider, cluster_name) in providers.iter().zip(backend_names.iter()) {
         let cluster_spec = match provider_cluster_spec(provider) {
             Ok(spec) => spec,
             Err(err) => return Err(err),
         };
-        cluster_specs.push((cluster_name, cluster_spec));
+        cluster_specs.push((cluster_name.clone(), cluster_spec));
     }
-    let route_config_spec = ai_route_config_spec(spec, providers, names)?;
+    for target in &targets {
+        for chain in &target.aggregate_chains {
+            cluster_specs.push((
+                chain.name.clone(),
+                aggregate_cluster_spec(
+                    chain
+                        .members
+                        .iter()
+                        .map(|idx| backend_names[*idx].clone())
+                        .collect(),
+                ),
+            ));
+        }
+    }
+    let route_config_spec = ai_route_config_spec(spec, &targets, names)?;
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
         port: spec.listener_port,
@@ -778,7 +936,7 @@ async fn create_materialized(
             ));
         }
         let cluster =
-            cluster_repo::create_ai_owned(&mut tx, team, owner_id, cluster_name, &cluster_spec)
+            cluster_repo::create_ai_owned(&mut tx, team, owner_id, &cluster_name, &cluster_spec)
                 .await?;
         cluster_events.push((cluster.id.as_uuid(), cluster.name));
     }
@@ -950,6 +1108,7 @@ fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
             port,
             weight: None,
         }],
+        aggregate_clusters: Vec::new(),
         lb_policy: Default::default(),
         least_request: None,
         ring_hash: None,
@@ -969,47 +1128,42 @@ fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
     })
 }
 
+fn aggregate_cluster_spec(cluster_names: Vec<String>) -> ClusterSpec {
+    ClusterSpec {
+        endpoints: Vec::new(),
+        aggregate_clusters: cluster_names,
+        lb_policy: Default::default(),
+        least_request: None,
+        ring_hash: None,
+        maglev: None,
+        dns_lookup_family: None,
+        connect_timeout_secs: 10,
+        use_tls: false,
+        upstream_tls: None,
+        protocol: None,
+        health_checks: None,
+        circuit_breakers: None,
+        outlier_detection: None,
+    }
+}
+
 fn ai_route_config_spec(
     spec: &AiRouteSpec,
-    _providers: &[AiProvider],
+    targets: &[AiRouteTarget],
     names: &AiRouteMaterializedResources,
 ) -> DomainResult<RouteConfigSpec> {
-    let mut by_model: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    let mut catch_all = Vec::new();
-    for (idx, backend) in spec.backends.iter().enumerate() {
-        if backend.models.is_empty() {
-            catch_all.push(idx);
-        } else {
-            for model in &backend.models {
-                by_model.entry(model.clone()).or_default().push(idx);
-            }
-        }
-    }
     let mut routes = Vec::new();
-    for (model, indexes) in by_model {
+    for target in targets {
         routes.push(route_rule(
-            &format!("model-{}", route_token(&model)),
+            &target.name,
             &spec.path,
-            vec![HeaderMatch {
-                name: AI_MODEL_HEADER.into(),
-                invert_match: false,
-                matcher: HeaderValueMatch::Exact { value: model },
-            }],
-            &indexes,
+            target.headers.clone(),
+            target,
             spec,
             names,
         )?);
     }
-    if !catch_all.is_empty() {
-        routes.push(route_rule(
-            "default",
-            &spec.path,
-            Vec::new(),
-            &catch_all,
-            spec,
-            names,
-        )?);
-    } else {
+    if !targets.iter().any(|target| target.headers.is_empty()) {
         routes.push(no_eligible_backend_route(&spec.path));
     }
     if routes.is_empty() {
@@ -1059,21 +1213,49 @@ fn route_rule(
     name: &str,
     path: &str,
     headers: Vec<HeaderMatch>,
-    indexes: &[usize],
+    target: &AiRouteTarget,
     spec: &AiRouteSpec,
     names: &AiRouteMaterializedResources,
 ) -> DomainResult<RouteRule> {
-    let targets = indexes
-        .iter()
-        .map(|idx| WeightedClusterTarget {
-            cluster: names.cluster_names[*idx].clone(),
-            weight: spec.backends[*idx].weight,
-        })
-        .collect::<Vec<_>>();
+    let backend_names = backend_cluster_names(names, spec.backends.len());
+    let targets = if target.aggregate_chains.is_empty() {
+        target
+            .indexes
+            .iter()
+            .map(|idx| WeightedClusterTarget {
+                cluster: backend_names[*idx].clone(),
+                weight: spec.backends[*idx].weight,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        target
+            .aggregate_chains
+            .iter()
+            .map(|chain| WeightedClusterTarget {
+                cluster: chain.name.clone(),
+                weight: chain.weight,
+            })
+            .collect::<Vec<_>>()
+    };
     let (cluster, weighted_clusters) = match targets.as_slice() {
         [single] => (Some(single.cluster.clone()), None),
         _ => (None, Some(targets)),
     };
+    let retry_policy = (!target.aggregate_chains.is_empty()).then_some(RetryPolicy {
+        retry_on: "connect-failure,refused-stream,reset".into(),
+        num_retries: Some(
+            target
+                .aggregate_chains
+                .iter()
+                .map(|chain| chain.members.len().saturating_sub(1) as u32)
+                .max()
+                .unwrap_or(1)
+                .clamp(1, 10),
+        ),
+        per_try_timeout_secs: Some(10),
+        retriable_status_codes: Vec::new(),
+        previous_priorities_retry: true,
+    });
     Ok(RouteRule {
         name: name.into(),
         matcher: PathMatch::Exact { path: path.into() },
@@ -1087,7 +1269,7 @@ fn route_rule(
             prefix_rewrite: None,
             template_rewrite: None,
             timeout_secs: DEFAULT_AI_ROUTE_TIMEOUT_SECS,
-            retry_policy: None,
+            retry_policy,
             rate_limits: Vec::new(),
         },
         filter_overrides: Vec::new(),
@@ -1189,5 +1371,89 @@ fn mutation_audit(
         team_id: Some(team.id),
         outcome: audit::Outcome::Success,
         detail: serde_json::json!({}),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use fp_domain::AiRouteBackend;
+
+    fn backend(priority: u32, weight: u32) -> AiRouteBackend {
+        AiRouteBackend {
+            provider_id: fp_domain::id::AiProviderId::generate(),
+            models: Vec::new(),
+            model_override: None,
+            weight,
+            priority,
+        }
+    }
+
+    fn route_spec(backends: Vec<AiRouteBackend>) -> AiRouteSpec {
+        AiRouteSpec {
+            listener_port: 18_080,
+            path: "/v1/chat/completions".into(),
+            backends,
+        }
+    }
+
+    #[test]
+    fn priority_failover_materializes_weighted_aggregate_chains() {
+        let spec = route_spec(vec![backend(0, 80), backend(0, 20), backend(1, 1)]);
+        let names = materialized_names("llm", &spec).expect("names");
+        let targets = ai_route_targets("llm", &spec).expect("targets");
+        let route_config = ai_route_config_spec(&spec, &targets, &names).expect("route config");
+
+        assert_eq!(names.cluster_names.len(), 5);
+        let default_route = route_config.virtual_hosts[0]
+            .routes
+            .iter()
+            .find(|route| route.name == "default")
+            .expect("default route");
+        let weighted = default_route
+            .action
+            .weighted_clusters
+            .as_ref()
+            .expect("weighted aggregate chains");
+        assert_eq!(weighted.len(), 2);
+        assert_eq!(weighted[0].cluster, names.cluster_names[3]);
+        assert_eq!(weighted[0].weight, 8_000);
+        assert_eq!(weighted[1].cluster, names.cluster_names[4]);
+        assert_eq!(weighted[1].weight, 2_000);
+
+        let retry = default_route.action.retry_policy.as_ref().expect("retry");
+        assert_eq!(retry.retry_on, "connect-failure,refused-stream,reset");
+        assert_eq!(retry.retriable_status_codes, Vec::<u16>::new());
+        assert!(retry.previous_priorities_retry);
+
+        let chains = &targets[0].aggregate_chains;
+        assert_eq!(chains[0].members, vec![0, 2]);
+        assert_eq!(chains[1].members, vec![1, 2]);
+    }
+
+    #[test]
+    fn same_priority_backends_remain_weighted_without_retry() {
+        let spec = route_spec(vec![backend(0, 3), backend(0, 7)]);
+        let names = materialized_names("llm", &spec).expect("names");
+        let targets = ai_route_targets("llm", &spec).expect("targets");
+        let route_config = ai_route_config_spec(&spec, &targets, &names).expect("route config");
+
+        assert_eq!(names.cluster_names.len(), 2);
+        let default_route = route_config.virtual_hosts[0]
+            .routes
+            .iter()
+            .find(|route| route.name == "default")
+            .expect("default route");
+        let weighted = default_route
+            .action
+            .weighted_clusters
+            .as_ref()
+            .expect("weighted backend clusters");
+        assert_eq!(weighted[0].cluster, names.cluster_names[0]);
+        assert_eq!(weighted[0].weight, 3);
+        assert_eq!(weighted[1].cluster, names.cluster_names[1]);
+        assert_eq!(weighted[1].weight, 7);
+        assert!(default_route.action.retry_policy.is_none());
     }
 }

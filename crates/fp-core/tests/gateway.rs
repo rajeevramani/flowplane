@@ -21,6 +21,7 @@ fn unique(prefix: &str) -> String {
 
 fn spec(host: &str) -> ClusterSpec {
     ClusterSpec {
+        aggregate_clusters: Vec::new(),
         endpoints: vec![Endpoint {
             host: host.into(),
             port: 8080,

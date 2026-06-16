@@ -490,10 +490,16 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S10f budgets: #58 enforces exhausted budgets at request start with deterministic
         429s before provider dispatch, shadow budgets stay non-blocking, and #59 covers
         concurrent same-team settlement plus cross-team isolation.
+  - [x] S10g priority failover: #63 materializes AI backend priority tiers through Envoy
+        aggregate clusters plus previous-priorities retry, preserves weighted selection
+        within a priority tier through weighted failover chains, carries the selected
+        backend credential through aggregate retries, and attributes usage to the backend
+        that served the request.
   - [x] S10 exit: #60 covers live OpenAI-compatible provider traffic, canonical
         `Authorization: Bearer` credential injection, multi-backend upstream injection,
         usage capture, enforcing budget trip, usage attribution, credential non-leak checks,
-        AI cleanup, and the full live Envoy E2E.
+        AI cleanup, and the full live Envoy E2E; #63 adds live priority-0 unavailable →
+        priority-1 fallback credential and usage attribution coverage.
   - [x] S10 docs/progress: #61 aligned `DECISIONS.md`, `PROGRESS.md`, and S10 spec notes
         with the implemented fixed-window budget semantics and OpenAI-compatible v1.0 scope.
 - [ ] S11 MCP server + tools
