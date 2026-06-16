@@ -176,6 +176,22 @@ impl AiProviderSpec {
                 "AI provider base_url must start with http:// or https://",
             ));
         }
+        let Some(authority) = self.base_url.split_once("://").map(|(_, rest)| rest) else {
+            return Err(DomainError::validation(
+                "AI provider base_url must start with http:// or https://",
+            ));
+        };
+        if authority.is_empty()
+            || authority.contains('?')
+            || authority.contains('#')
+            || authority
+                .find('/')
+                .is_some_and(|idx| !authority[idx..].trim_matches('/').is_empty())
+        {
+            return Err(DomainError::validation(
+                "AI provider base_url must not include a path, query, or fragment; use path_prefix for upstream paths",
+            ));
+        }
         if self.auth_header.trim().is_empty()
             || self.auth_header.bytes().any(|b| b <= b' ' || b == b':')
         {
@@ -396,7 +412,7 @@ mod tests {
     #[test]
     fn provider_spec_rejects_unsupported_kind_and_bad_url() {
         assert!("anthropic".parse::<AiProviderKind>().is_err());
-        let spec = AiProviderSpec {
+        let mut spec = AiProviderSpec {
             kind: AiProviderKind::OpenaiCompatible,
             base_url: "file:///tmp/key".into(),
             path_prefix: None,
@@ -405,6 +421,12 @@ mod tests {
             auth_header: "authorization".into(),
         };
         assert!(spec.validate().is_err());
+
+        spec.base_url = "https://api.openai.com/v1".into();
+        assert!(spec.validate().is_err());
+
+        spec.base_url = "https://api.openai.com".into();
+        spec.validate().expect("origin-only base_url");
     }
 
     #[test]

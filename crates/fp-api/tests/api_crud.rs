@@ -1342,7 +1342,7 @@ async fn secret_values_are_write_only_over_http() {
                 "name": provider_name,
                 "spec": {
                     "kind": "openai-compatible",
-                    "base_url": "https://llm.example/v1",
+                    "base_url": "https://llm.example",
                     "path_prefix": "/v1",
                     "credential_secret_id": secret_id,
                     "models": ["gpt-5-mini"]
@@ -1368,7 +1368,7 @@ async fn secret_values_are_write_only_over_http() {
                 "name": unique("openai"),
                 "spec": {
                     "kind": "openai-compatible",
-                    "base_url": "https://llm.example/v1",
+                    "base_url": "https://llm.example",
                     "credential_secret_id": secret_id,
                     "models": ["gpt-5-mini"]
                 }
@@ -1388,7 +1388,8 @@ async fn secret_values_are_write_only_over_http() {
             Some(serde_json::json!({
                 "spec": {
                     "kind": "openai",
-                    "base_url": "https://api.openai.com/v1",
+                    "base_url": "https://api.openai.com",
+                    "path_prefix": "/v1",
                     "credential_secret_id": secret_id,
                     "models": ["gpt-5"]
                 }
@@ -1483,7 +1484,8 @@ async fn secret_values_are_write_only_over_http() {
             Some(serde_json::json!({
                 "spec": {
                     "kind": "openai",
-                    "base_url": "https://api2.openai.example/v1",
+                    "base_url": "https://api2.openai.example",
+                    "path_prefix": "/v1",
                     "credential_secret_id": secret_id,
                     "models": ["gpt-5"]
                 }

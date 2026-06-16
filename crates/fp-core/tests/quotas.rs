@@ -469,7 +469,7 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
         &unique("provider-a"),
         AiProviderSpec {
             kind: AiProviderKind::OpenaiCompatible,
-            base_url: "https://a.example/v1".into(),
+            base_url: "https://a.example".into(),
             path_prefix: Some("/v1".into()),
             credential_secret_id: secret.id,
             models: vec!["gpt-5".into()],
@@ -486,7 +486,7 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
         &unique("provider-b"),
         AiProviderSpec {
             kind: AiProviderKind::OpenaiCompatible,
-            base_url: "https://b.example/v1".into(),
+            base_url: "https://b.example".into(),
             path_prefix: Some("/v1".into()),
             credential_secret_id: secret.id,
             models: vec!["gpt-5".into()],
