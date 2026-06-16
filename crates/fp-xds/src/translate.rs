@@ -2108,7 +2108,9 @@ fn header(key: &'static str, value: String) -> core::HeaderValue {
 fn ai_header_mutation_rules() -> mutation_rules::HeaderMutationRules {
     mutation_rules::HeaderMutationRules {
         allow_all_routing: Some(wkt::BoolValue { value: true }),
-        allow_expression: Some(safe_regex("^(authorization|x-flowplane-ai-model|:path)$")),
+        allow_expression: Some(safe_regex(
+            "^(authorization|x-api-key|x-flowplane-ai-model|:path)$",
+        )),
         ..Default::default()
     }
 }
@@ -3407,6 +3409,15 @@ mod tests {
         assert_eq!(
             mode.response_header_mode,
             ext_proc::processing_mode::HeaderSendMode::Send as i32
+        );
+        let rules = ext.mutation_rules.expect("mutation rules");
+        assert!(rules.allow_all_routing.expect("routing mutations").value);
+        assert_eq!(
+            rules
+                .allow_expression
+                .expect("allowed header expression")
+                .regex,
+            "^(authorization|x-api-key|x-flowplane-ai-model|:path)$"
         );
         let metadata = ext
             .grpc_service

@@ -15,6 +15,7 @@ DISCOVERY_PORT=$((GW_PORT+6))
 GENERATED_ROUTE_PORT=$((GW_PORT+7))
 AI_PROVIDER_PORT=$((GW_PORT+8))
 AI_GATEWAY_PORT=$((GW_PORT+9))
+AI_MULTI_GATEWAY_PORT=$((GW_PORT+10))
 DB=flowplane_e2e
 PG_ADMIN_URL=${FLOWPLANE_E2E_PG_ADMIN_URL:-postgres://postgres:postgres@127.0.0.1:5432/postgres}
 PG_DB_URL=${FLOWPLANE_E2E_DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:5432/$DB}
@@ -52,6 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 port = int(sys.argv[1])
 auth_log = sys.argv[2]
+expected_auth = sys.argv[3]
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -60,8 +62,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("content-length", "0"))
         self.rfile.read(length)
+        auth = self.headers.get("authorization", "")
         with open(auth_log, "a", encoding="utf-8") as f:
-            f.write(self.headers.get("x-api-key", "") + "\n")
+            f.write(auth + "\n")
+        if auth != expected_auth:
+            body = b"missing AI credential"
+            self.send_response(401)
+            self.send_header("content-type", "text/plain")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = {
             "id": "chatcmpl-fp-e2e",
             "object": "chat.completion",
@@ -78,7 +89,7 @@ class Handler(BaseHTTPRequestHandler):
 ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 PY
 : >/tmp/fp-e2e-ai-auth.log
-python3 /tmp/fp-e2e-ai-provider.py "$AI_PROVIDER_PORT" /tmp/fp-e2e-ai-auth.log >/tmp/fp-e2e-ai-provider.log 2>&1 &
+python3 /tmp/fp-e2e-ai-provider.py "$AI_PROVIDER_PORT" /tmp/fp-e2e-ai-auth.log "Bearer fp-e2e-ai-secret" >/tmp/fp-e2e-ai-provider.log 2>&1 &
 AI_PID=$!
 
 cargo build --bin flowplane -q
@@ -169,7 +180,7 @@ AI_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/s
   -d "{\"name\":\"ai-e2e-key\",\"description\":\"AI e2e credential\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_SECRET_B64\"}}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
 AI_PROVIDER_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
-  -d "{\"name\":\"ai-e2e-provider\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_SECRET_ID\",\"auth_header\":\"x-api-key\",\"models\":[\"gpt-5\"]}}")
+  -d "{\"name\":\"ai-e2e-provider\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_SECRET_ID\",\"auth_header\":\"authorization\",\"models\":[\"gpt-5\"]}}")
 AI_PROVIDER_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_PROVIDER_BODY")
 AI_ROUTE_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
   -d "{\"name\":\"ai-e2e\",\"spec\":{\"listener_port\":$AI_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_PROVIDER_ID\",\"models\":[],\"weight\":1}]}}")
@@ -192,6 +203,7 @@ for i in $(seq 1 50); do
 done
 [ "$AI_CODE" = "200" ] || fail "AI route never served mock provider (last code $AI_CODE)"
 grep -q "mock-ai-ok" /tmp/fp-e2e-ai-warm.json || fail "AI mock response did not reach client"
+grep -q "$AI_SECRET_VALUE" /tmp/fp-e2e-ai-auth.log || fail "AI provider did not receive injected credential"
 curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json
 if grep -q "$AI_SECRET_VALUE" /tmp/fp-e2e-ai-dump.json; then
   fail "AI provider credential leaked into Envoy config dump"
@@ -199,6 +211,29 @@ fi
 if psql "$PG_DB_URL" -Atc "SELECT spec::text FROM route_configs WHERE id = '$AI_ROUTE_CONFIG_ID'" | grep -q "$AI_SECRET_VALUE"; then
   fail "AI provider credential leaked into materialized route config"
 fi
+AI_MULTI_ROUTE_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
+  -d "{\"name\":\"ai-e2e-multi\",\"spec\":{\"listener_port\":$AI_MULTI_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_PROVIDER_ID\",\"models\":[],\"weight\":1},{\"provider_id\":\"$AI_PROVIDER_ID\",\"models\":[],\"weight\":1}]}}")
+AI_MULTI_ROUTE_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_MULTI_ROUTE_BODY")
+for i in $(seq 1 50); do
+  curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json || true
+  grep -q "ai-ai-e2e-multi-listener" /tmp/fp-e2e-ai-dump.json && break
+  sleep 1
+done
+grep -q "ai-ai-e2e-multi-listener" /tmp/fp-e2e-ai-dump.json || fail "AI multi-backend listener did not converge"
+: >/tmp/fp-e2e-ai-auth.log
+AI_CODE=$(curl -sS -o /tmp/fp-e2e-ai-multi.json -w '%{http_code}' \
+  -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+  http://127.0.0.1:$AI_MULTI_GATEWAY_PORT/v1/chat/completions)
+[ "$AI_CODE" = "200" ] || fail "AI multi-backend route did not inject credential via upstream processor (code $AI_CODE, body $(cat /tmp/fp-e2e-ai-multi.json))"
+grep -q "$AI_SECRET_VALUE" /tmp/fp-e2e-ai-auth.log || fail "AI multi-backend provider did not receive injected credential"
+AI_MULTI_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_MULTI_ROUTE_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_MULTI_ROUTE_REV" \
+  http://$API/api/v1/teams/default/ai/routes/ai-e2e-multi >/dev/null
+AI_MULTI_ORPHANS=$(psql "$PG_DB_URL" -Atc "SELECT \
+  (SELECT count(*) FROM clusters WHERE owner_kind = 'ai' AND owner_id = '$AI_MULTI_ROUTE_ID') + \
+  (SELECT count(*) FROM route_configs WHERE owner_kind = 'ai' AND owner_id = '$AI_MULTI_ROUTE_ID') + \
+  (SELECT count(*) FROM listeners WHERE owner_kind = 'ai' AND owner_id = '$AI_MULTI_ROUTE_ID')")
+[ "$AI_MULTI_ORPHANS" = "0" ] || fail "AI multi-backend route cleanup left $AI_MULTI_ORPHANS owned gateway rows"
 AI_BUDGET_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/budgets \
   -d "{\"name\":\"ai-e2e-budget\",\"spec\":{\"mode\":\"enforcing\",\"limit_units\":5,\"window_seconds\":3600,\"provider_id\":\"$AI_PROVIDER_ID\",\"route_config_id\":\"$AI_ROUTE_CONFIG_ID\",\"prompt_token_weight\":1,\"completion_token_weight\":1}}")
 AI_BUDGET_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_BUDGET_BODY")
@@ -244,7 +279,7 @@ AI_ORPHANS=$(psql "$PG_DB_URL" -Atc "SELECT \
 AI_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_PROVIDER_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_PROVIDER_REV" \
   http://$API/api/v1/teams/default/ai/providers/ai-e2e-provider >/dev/null
-echo "PHASE 1a OK: AI route -> usage -> enforcing budget trip -> usage attribution -> cleanup"
+echo "PHASE 1a OK: AI credential injection (single + multi-backend) -> usage -> enforcing budget trip -> usage attribution -> cleanup"
 
 # ---- Phase 1b: learning capture through the real injected ALS/ExtProc path. Start a
 # route-scoped session on the resources created by expose, then send traffic with stable
