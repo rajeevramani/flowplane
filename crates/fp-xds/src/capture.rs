@@ -1472,6 +1472,7 @@ mod tests {
 
     #[tokio::test]
     async fn ai_upstream_auth_injection_is_team_and_route_scoped() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
         let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
             eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
             return;
