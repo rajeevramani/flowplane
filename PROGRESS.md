@@ -479,6 +479,9 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S10c route resources/materialization: team-scoped `AiRoute` storage/API/CLI,
         ordered provider backends, deterministic gateway resource materialization, provider
         dependency guards, and stale marking on provider mutation.
+  - [x] S10d OpenAI-compatible gateway processor: model extraction/routing header, deterministic
+        no-eligible-backend response, selected-backend credential injection, provider path/model
+        rewrite, streaming-safe usage capture, and append-only usage handoff.
 - [ ] S11 MCP server + tools
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
 
