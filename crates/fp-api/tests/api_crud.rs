@@ -1629,7 +1629,7 @@ async fn secret_values_are_write_only_over_http() {
         .expect("delete AI provider");
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = json_of(response).await;
-    assert!(body["error"]["message"]
+    assert!(body["message"]
         .as_str()
         .expect("message")
         .contains(&budget_name));
