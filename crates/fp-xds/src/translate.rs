@@ -3,6 +3,7 @@
 use base64::Engine as _;
 use envoy_types::pb::envoy::config::accesslog::v3 as accesslog;
 use envoy_types::pb::envoy::config::cluster::v3 as exc;
+use envoy_types::pb::envoy::config::common::mutation_rules::v3 as mutation_rules;
 use envoy_types::pb::envoy::config::core::v3 as core;
 use envoy_types::pb::envoy::config::endpoint::v3 as ep;
 use envoy_types::pb::envoy::config::listener::v3 as lst;
@@ -751,15 +752,7 @@ fn upstream_protocol_options(
             .map(|ai| upstream_http_options(None, ai))
             .unwrap_or_default(),
         UpstreamProtocol::Http2 | UpstreamProtocol::Grpc => {
-            let protocol_options = upstream_http::http_protocol_options::UpstreamProtocolOptions::ExplicitHttpConfig(
-                upstream_http::http_protocol_options::ExplicitHttpConfig {
-                    protocol_config: Some(
-                        upstream_http::http_protocol_options::explicit_http_config::ProtocolConfig::Http2ProtocolOptions(
-                            core::Http2ProtocolOptions::default(),
-                        ),
-                    ),
-                },
-            );
+            let protocol_options = explicit_http2_config();
             if let Some(ai) = ai {
                 upstream_http_options(Some(protocol_options), ai)
             } else {
@@ -785,7 +778,7 @@ fn upstream_http_options(
     ai: &AiUpstreamProcessorMetadata,
 ) -> std::collections::HashMap<String, wkt::Any> {
     let options = upstream_http::HttpProtocolOptions {
-        upstream_protocol_options: protocol_options,
+        upstream_protocol_options: Some(protocol_options.unwrap_or_else(explicit_http1_config)),
         http_filters: vec![
             ai_upstream_ext_proc_filter(ai),
             hcm::HttpFilter {
@@ -828,6 +821,7 @@ fn ai_upstream_ext_proc_filter(ai: &AiUpstreamProcessorMetadata) -> hcm::HttpFil
                 }),
                 message_timeout: Some(millis_duration(5_000)),
                 stat_prefix: "flowplane_ai_upstream".into(),
+                mutation_rules: Some(ai_header_mutation_rules()),
                 observability_mode: false,
                 disable_immediate_response: false,
                 ..Default::default()
@@ -1026,6 +1020,30 @@ fn rate_limits_to_proto(
             ..Default::default()
         })
         .collect()
+}
+
+fn explicit_http1_config() -> upstream_http::http_protocol_options::UpstreamProtocolOptions {
+    upstream_http::http_protocol_options::UpstreamProtocolOptions::ExplicitHttpConfig(
+        upstream_http::http_protocol_options::ExplicitHttpConfig {
+            protocol_config: Some(
+                upstream_http::http_protocol_options::explicit_http_config::ProtocolConfig::HttpProtocolOptions(
+                    core::Http1ProtocolOptions::default(),
+                ),
+            ),
+        },
+    )
+}
+
+fn explicit_http2_config() -> upstream_http::http_protocol_options::UpstreamProtocolOptions {
+    upstream_http::http_protocol_options::UpstreamProtocolOptions::ExplicitHttpConfig(
+        upstream_http::http_protocol_options::ExplicitHttpConfig {
+            protocol_config: Some(
+                upstream_http::http_protocol_options::explicit_http_config::ProtocolConfig::Http2ProtocolOptions(
+                    core::Http2ProtocolOptions::default(),
+                ),
+            ),
+        },
+    )
 }
 
 fn rate_limit_action_to_proto(
@@ -2087,6 +2105,14 @@ fn header(key: &'static str, value: String) -> core::HeaderValue {
     }
 }
 
+fn ai_header_mutation_rules() -> mutation_rules::HeaderMutationRules {
+    mutation_rules::HeaderMutationRules {
+        allow_all_routing: Some(wkt::BoolValue { value: true }),
+        allow_expression: Some(safe_regex("^(authorization|x-flowplane-ai-model|:path)$")),
+        ..Default::default()
+    }
+}
+
 fn learning_access_log(capture: &LearningCaptureInjection) -> accesslog::AccessLog {
     accesslog::AccessLog {
         name: LEARNING_ALS_NAME.to_string(),
@@ -2139,6 +2165,7 @@ fn ai_ext_proc_filter(ai: Option<&AiProcessorMetadata>) -> hcm::HttpFilter {
                 }),
                 message_timeout: Some(millis_duration(5_000)),
                 stat_prefix: "flowplane_ai".into(),
+                mutation_rules: Some(ai_header_mutation_rules()),
                 observability_mode: false,
                 disable_immediate_response: false,
                 route_cache_action: ext_proc::external_processor::RouteCacheAction::Default as i32,
@@ -2496,6 +2523,13 @@ mod tests {
         let options = upstream_http::HttpProtocolOptions::decode(options_any.value.as_slice())
             .expect("decode options");
 
+        assert!(
+            matches!(
+                options.upstream_protocol_options,
+                Some(upstream_http::http_protocol_options::UpstreamProtocolOptions::ExplicitHttpConfig(_))
+            ),
+            "AI upstream filters require explicit upstream protocol options"
+        );
         assert_eq!(options.http_filters.len(), 2);
         assert_eq!(
             options.http_filters[0].name,

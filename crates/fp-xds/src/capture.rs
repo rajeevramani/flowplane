@@ -25,7 +25,7 @@ use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
     openai_usage_from_json, prepare_openai_chat_request, rewrite_openai_chat_request_model,
-    strip_synthetic_openai_usage_sse, AiProviderId, ApiDefinitionId, CaptureSessionId,
+    strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec, ApiDefinitionId, CaptureSessionId,
     DiscoverySessionId, DomainError, ListenerId, OpenAiTokenUsage, RouteConfigId, SecretSpec,
     TeamId, AI_MODEL_HEADER,
 };
@@ -94,6 +94,7 @@ struct AiExtProcState {
     response_json_body: Vec<u8>,
     last_usage: Option<OpenAiTokenUsage>,
     upstream_model_override: Option<String>,
+    request_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -673,14 +674,9 @@ async fn ai_response_with_pool(
     state: &mut AiExtProcState,
     request: ProcessingRequest,
 ) -> ProcessingResponse {
-    if matches!(
-        request.request,
-        Some(processing_request::Request::RequestHeaders(_))
-    ) && state
-        .context
-        .and_then(|context| context.provider_id)
-        .is_some()
-    {
+    if let Some(processing_request::Request::RequestHeaders(headers)) = request.request.as_ref() {
+        let map = headers_from_header_map(headers.headers.as_ref());
+        state.request_path = header_value(&map, ":path");
         return ai_request_headers_response(pool, state, request).await;
     }
     if matches!(
@@ -797,6 +793,41 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
     }
 }
 
+async fn single_eligible_backend(
+    pool: &sqlx::PgPool,
+    team_id: TeamId,
+    route_config_id: RouteConfigId,
+    model: &str,
+) -> Result<Option<(AiProviderId, i32)>, DomainError> {
+    let row = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT r.spec \
+         FROM ai_routes r \
+         JOIN route_configs rc ON rc.team_id = r.team_id AND rc.name = r.route_config_name \
+         WHERE rc.team_id = $1 AND rc.id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(route_config_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| DomainError::internal(format!("load AI route for backend selection: {err}")))?;
+    let Some(spec) = row else {
+        return Ok(None);
+    };
+    let spec: AiRouteSpec = serde_json::from_value(spec).map_err(|err| {
+        DomainError::internal(format!("AI route spec in DB does not parse: {err}"))
+    })?;
+    let mut eligible = spec.backends.iter().enumerate().filter(|(_, backend)| {
+        backend.models.is_empty() || backend.models.iter().any(|m| m == model)
+    });
+    let Some((idx, backend)) = eligible.next() else {
+        return Ok(None);
+    };
+    if eligible.next().is_some() {
+        return Ok(None);
+    }
+    Ok(Some((backend.provider_id, idx as i32)))
+}
+
 async fn ai_request_headers_response(
     pool: &sqlx::PgPool,
     state: &mut AiExtProcState,
@@ -806,7 +837,7 @@ async fn ai_request_headers_response(
         return request_headers_response(remove_internal_model_header());
     };
     let Some(provider_id) = context.provider_id else {
-        return request_headers_response(remove_internal_model_header());
+        return ai_listener_request_headers_response(pool, state, request, context).await;
     };
     match ai::exhausted_enforcing_budget(
         pool,
@@ -843,6 +874,108 @@ async fn ai_request_headers_response(
         provider_id,
         context.backend_position,
         request_path.as_deref(),
+    )
+    .await
+    {
+        Ok(runtime) => {
+            state.upstream_model_override = runtime.model_override;
+            let mut set_headers = vec![HeaderValueOption {
+                header: Some(HeaderValue {
+                    key: runtime.auth_header,
+                    value: runtime.auth_value,
+                    raw_value: Vec::new(),
+                }),
+                append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
+                    as i32,
+                ..Default::default()
+            }];
+            if let Some(path) = runtime.path_rewrite {
+                set_headers.push(HeaderValueOption {
+                    header: Some(HeaderValue {
+                        key: ":path".into(),
+                        value: path,
+                        raw_value: Vec::new(),
+                    }),
+                    append_action: header_value_option::HeaderAppendAction::OverwriteIfExistsOrAdd
+                        as i32,
+                    ..Default::default()
+                });
+            }
+            request_headers_response(CommonResponse {
+                status: common_response::ResponseStatus::Continue as i32,
+                header_mutation: Some(HeaderMutation {
+                    set_headers,
+                    remove_headers: vec![AI_MODEL_HEADER.into()],
+                }),
+                ..Default::default()
+            })
+        }
+        Err(_) => immediate_response(500, "AI provider credential unavailable".into()),
+    }
+}
+
+async fn ai_listener_request_headers_response(
+    pool: &sqlx::PgPool,
+    state: &mut AiExtProcState,
+    request: ProcessingRequest,
+    context: AiExtProcContext,
+) -> ProcessingResponse {
+    let request_model = match request.request {
+        Some(processing_request::Request::RequestHeaders(headers)) => {
+            let map = headers_from_header_map(headers.headers.as_ref());
+            header_value(&map, AI_MODEL_HEADER)
+        }
+        _ => None,
+    };
+    let Some(model) = request_model else {
+        return request_headers_response(remove_internal_model_header());
+    };
+    let selected = match single_eligible_backend(
+        pool,
+        context.team_id,
+        context.route_config_id,
+        &model,
+    )
+    .await
+    {
+        Ok(Some(selected)) => selected,
+        Ok(None) => {
+            return request_headers_response(remove_internal_model_header());
+        }
+        Err(err) => {
+            tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to select AI backend: {}", err.message);
+            return request_headers_response(remove_internal_model_header());
+        }
+    };
+    let (provider_id, backend_position) = selected;
+    match ai::exhausted_enforcing_budget(
+        pool,
+        context.team_id,
+        context.route_config_id,
+        provider_id,
+    )
+    .await
+    {
+        Ok(Some(name)) => {
+            return immediate_response_with_details(
+                429,
+                format!("AI budget \"{name}\" exceeded"),
+                "flowplane_ai_budget_exceeded",
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to check AI budget: {}", err.message);
+            return immediate_response(500, "AI budget check unavailable".into());
+        }
+    }
+    match selected_backend_runtime(
+        pool,
+        context.team_id,
+        context.route_config_id,
+        provider_id,
+        Some(backend_position),
+        state.request_path.as_deref(),
     )
     .await
     {

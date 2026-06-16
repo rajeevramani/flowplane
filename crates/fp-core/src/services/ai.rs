@@ -275,7 +275,8 @@ pub async fn create_route(
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::AiRoutes).await?;
     let providers = load_route_providers(pool, team, &spec).await?;
     let materialized = materialized_names(name, spec.backends.len());
-    create_materialized(pool, team, &spec, &providers, &materialized).await?;
+    let materialized_events =
+        create_materialized(pool, team, &spec, &providers, &materialized).await?;
     let mut tx = pool
         .begin()
         .await
@@ -288,6 +289,16 @@ pub async fn create_route(
             return Err(err);
         }
     };
+    append_materialized_upserts(
+        &mut tx,
+        team,
+        &materialized_events.clusters,
+        materialized_events.route_config_id,
+        &materialized_events.route_config_name,
+        materialized_events.listener_id,
+        &materialized_events.listener_name,
+    )
+    .await?;
     audit::record_in_tx(
         &mut tx,
         &mutation_audit(ctx, request_id, team, "ai_route.create", "ai-routes", name),
@@ -731,7 +742,7 @@ async fn create_materialized(
     spec: &AiRouteSpec,
     providers: &[AiProvider],
     names: &AiRouteMaterializedResources,
-) -> DomainResult<()> {
+) -> DomainResult<MaterializedResourceEvents> {
     let mut cluster_specs = Vec::with_capacity(providers.len());
     for (provider, cluster_name) in providers.iter().zip(names.cluster_names.iter()) {
         let cluster_spec = match provider_cluster_spec(provider) {
@@ -790,7 +801,21 @@ async fn create_materialized(
     tx.commit().await.map_err(crate::services::db_err(
         "create AI materialized resources: commit",
     ))?;
-    Ok(())
+    Ok(MaterializedResourceEvents {
+        clusters: cluster_events,
+        route_config_id: route_config.id.as_uuid(),
+        route_config_name: route_config.name,
+        listener_id: listener.id.as_uuid(),
+        listener_name: listener.name,
+    })
+}
+
+struct MaterializedResourceEvents {
+    clusters: Vec<(uuid::Uuid, String)>,
+    route_config_id: uuid::Uuid,
+    route_config_name: String,
+    listener_id: uuid::Uuid,
+    listener_name: String,
 }
 
 async fn append_materialized_upserts(

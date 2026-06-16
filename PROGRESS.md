@@ -491,8 +491,9 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         before provider dispatch, while shadow budgets stay non-blocking. #59 remains open for
         concurrent same-team settlement and cross-team isolation stress coverage.
   - [ ] S10 exit:
-        #60 remains open for the mock-provider E2E covering credential -> route -> traffic ->
-        usage -> budget trip -> failover/cleanup.
+        #60 adds the live mock-provider E2E path covering AI route materialization, mock
+        provider traffic, gateway usage capture, enforcing budget trip, usage attribution,
+        credential non-leak checks, and AI route/provider cleanup; it remains open for review.
   - [ ] S10 docs/progress:
         #61 tracks keeping `DECISIONS.md`, `PROGRESS.md`, and the relevant S10 specs aligned as
         budget semantics and exit coverage land.

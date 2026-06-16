@@ -13,6 +13,8 @@ UPSTREAM_PORT=${FLOWPLANE_E2E_UPSTREAM_PORT:-3001}
 ADMIN_PORT=${FLOWPLANE_E2E_ADMIN_PORT:-9901}
 DISCOVERY_PORT=$((GW_PORT+6))
 GENERATED_ROUTE_PORT=$((GW_PORT+7))
+AI_PROVIDER_PORT=$((GW_PORT+8))
+AI_GATEWAY_PORT=$((GW_PORT+9))
 DB=flowplane_e2e
 PG_ADMIN_URL=${FLOWPLANE_E2E_PG_ADMIN_URL:-postgres://postgres:postgres@127.0.0.1:5432/postgres}
 PG_DB_URL=${FLOWPLANE_E2E_DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:5432/$DB}
@@ -21,6 +23,7 @@ cleanup() {
   docker rm -f fp-e2e-envoy >/dev/null 2>&1 || true
   [ -n "${CP_PID:-}" ] && kill "$CP_PID" >/dev/null 2>&1 || true
   [ -n "${UP_PID:-}" ] && kill "$UP_PID" >/dev/null 2>&1 || true
+  [ -n "${AI_PID:-}" ] && kill "$AI_PID" >/dev/null 2>&1 || true
   [ -n "${ENVOY_PID:-}" ] && kill "$ENVOY_PID" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -42,6 +45,41 @@ cp /tmp/fp-e2e-www/index.html /tmp/fp-e2e-www/v1/discovered/1
 cp /tmp/fp-e2e-www/index.html /tmp/fp-e2e-www/v1/discovered/2
 (cd /tmp/fp-e2e-www && python3 -m http.server $UPSTREAM_PORT >/dev/null 2>&1) &
 UP_PID=$!
+cat >/tmp/fp-e2e-ai-provider.py <<'PY'
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+port = int(sys.argv[1])
+auth_log = sys.argv[2]
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length", "0"))
+        self.rfile.read(length)
+        with open(auth_log, "a", encoding="utf-8") as f:
+            f.write(self.headers.get("x-api-key", "") + "\n")
+        body = {
+            "id": "chatcmpl-fp-e2e",
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "mock-ai-ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        }
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+: >/tmp/fp-e2e-ai-auth.log
+python3 /tmp/fp-e2e-ai-provider.py "$AI_PROVIDER_PORT" /tmp/fp-e2e-ai-auth.log >/tmp/fp-e2e-ai-provider.log 2>&1 &
+AI_PID=$!
 
 cargo build --bin flowplane -q
 FLOWPLANE_DATABASE_URL=$PG_DB_URL \
@@ -123,6 +161,90 @@ grep -q "TOTAL DATAPLANES" /tmp/fp-e2e-xds-status.txt || fail "xds status did no
 ./target/debug/flowplane ops xds nacks >/tmp/fp-e2e-xds-nacks.txt
 grep -q "no rows" /tmp/fp-e2e-xds-nacks.txt || fail "unexpected xDS NACKs after happy-path expose"
 echo "PHASE 1 OK: '$BODY' served through Envoy via ADS-delivered config"
+
+# ---- Phase 1a: OpenAI-compatible AI gateway path with usage settlement and enforcing budget trip.
+AI_SECRET_VALUE="Bearer fp-e2e-ai-secret"
+AI_SECRET_B64=$(python3 -c 'import base64; print(base64.b64encode(b"Bearer fp-e2e-ai-secret").decode())')
+AI_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  -d "{\"name\":\"ai-e2e-key\",\"description\":\"AI e2e credential\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_SECRET_B64\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_PROVIDER_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-e2e-provider\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_SECRET_ID\",\"auth_header\":\"x-api-key\",\"models\":[\"gpt-5\"]}}")
+AI_PROVIDER_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_PROVIDER_BODY")
+AI_ROUTE_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
+  -d "{\"name\":\"ai-e2e\",\"spec\":{\"listener_port\":$AI_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_PROVIDER_ID\",\"models\":[],\"weight\":1}]}}")
+AI_ROUTE_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_ROUTE_BODY")
+AI_ROUTE_CONFIG_ID=$(psql "$PG_DB_URL" -Atc "SELECT id FROM route_configs WHERE team_id = '$TEAM_ID' AND name = 'ai-ai-e2e-routes' AND owner_kind = 'ai'")
+[ -n "$AI_ROUTE_CONFIG_ID" ] || fail "AI route materialized route config not found"
+for i in $(seq 1 50); do
+  curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json || true
+  grep -q "flowplane_ai" /tmp/fp-e2e-ai-dump.json && break
+  sleep 1
+done
+grep -q "flowplane_ai" /tmp/fp-e2e-ai-dump.json || fail "AI listener did not receive ExtProc filter"
+AI_REQUEST='{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}'
+for i in $(seq 1 50); do
+  AI_CODE=$(curl -sS -o /tmp/fp-e2e-ai-warm.json -w '%{http_code}' \
+    -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+    http://127.0.0.1:$AI_GATEWAY_PORT/v1/chat/completions 2>/dev/null || true)
+  [ "$AI_CODE" = "200" ] && break
+  sleep 1
+done
+[ "$AI_CODE" = "200" ] || fail "AI route never served mock provider (last code $AI_CODE)"
+grep -q "mock-ai-ok" /tmp/fp-e2e-ai-warm.json || fail "AI mock response did not reach client"
+curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json
+if grep -q "$AI_SECRET_VALUE" /tmp/fp-e2e-ai-dump.json; then
+  fail "AI provider credential leaked into Envoy config dump"
+fi
+if psql "$PG_DB_URL" -Atc "SELECT spec::text FROM route_configs WHERE id = '$AI_ROUTE_CONFIG_ID'" | grep -q "$AI_SECRET_VALUE"; then
+  fail "AI provider credential leaked into materialized route config"
+fi
+AI_BUDGET_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/budgets \
+  -d "{\"name\":\"ai-e2e-budget\",\"spec\":{\"mode\":\"enforcing\",\"limit_units\":5,\"window_seconds\":3600,\"provider_id\":\"$AI_PROVIDER_ID\",\"route_config_id\":\"$AI_ROUTE_CONFIG_ID\",\"prompt_token_weight\":1,\"completion_token_weight\":1}}")
+AI_BUDGET_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_BUDGET_BODY")
+AI_CODE=$(curl -sS -o /tmp/fp-e2e-ai-metered.json -w '%{http_code}' \
+  -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+  http://127.0.0.1:$AI_GATEWAY_PORT/v1/chat/completions)
+[ "$AI_CODE" = "200" ] || fail "AI metered request failed before budget trip (code $AI_CODE)"
+for i in $(seq 1 20); do
+  AI_USED_UNITS=$(psql "$PG_DB_URL" -Atc "SELECT COALESCE(sum(used_units), 0) FROM ai_budget_counters WHERE budget_id = '$AI_BUDGET_ID'" 2>/dev/null || echo 0)
+  [ "$AI_USED_UNITS" = "5" ] && break
+  sleep 1
+done
+[ "$AI_USED_UNITS" = "5" ] || fail "AI budget counter did not settle to 5 units, got $AI_USED_UNITS"
+AI_CODE=$(curl -sS -o /tmp/fp-e2e-ai-blocked.txt -w '%{http_code}' \
+  -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+  http://127.0.0.1:$AI_GATEWAY_PORT/v1/chat/completions)
+[ "$AI_CODE" = "429" ] || fail "AI budget did not trip on second metered request (code $AI_CODE, body $(cat /tmp/fp-e2e-ai-blocked.txt))"
+grep -q "AI budget" /tmp/fp-e2e-ai-blocked.txt || fail "AI budget 429 body did not name budget failure"
+AI_USAGE_ATTR=$(psql "$PG_DB_URL" -Atc "SELECT provider_id || ',' || COALESCE(backend_position::text, '') || ',' || total_tokens FROM ai_usage_events WHERE team_id = '$TEAM_ID' AND route_config_id = '$AI_ROUTE_CONFIG_ID' ORDER BY created_at DESC LIMIT 1")
+[ "$AI_USAGE_ATTR" = "$AI_PROVIDER_ID,0,5" ] || fail "AI usage attribution unexpected: $AI_USAGE_ATTR"
+AI_USAGE_ROW=$(psql "$PG_DB_URL" -Atc "SELECT row_to_json(t)::text FROM (SELECT * FROM ai_usage_events WHERE route_config_id = '$AI_ROUTE_CONFIG_ID') t")
+if grep -q "$AI_SECRET_VALUE" <<<"$AI_USAGE_ROW"; then
+  fail "AI provider credential leaked into usage rows"
+fi
+./target/debug/flowplane --json ai usage --route-config-id "$AI_ROUTE_CONFIG_ID" >/tmp/fp-e2e-ai-usage.json
+python3 - "$AI_PROVIDER_ID" /tmp/fp-e2e-ai-usage.json <<'PY' || fail "flowplane ai usage did not show attributed token usage"
+import json, sys
+rows = json.load(open(sys.argv[2], encoding="utf-8"))
+provider_id = sys.argv[1]
+assert any(row["provider_id"] == provider_id and row["total_tokens"] >= 5 for row in rows)
+PY
+AI_BUDGET_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_budgets WHERE id = '$AI_BUDGET_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_BUDGET_REV" \
+  http://$API/api/v1/teams/default/ai/budgets/ai-e2e-budget >/dev/null
+AI_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_ROUTE_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_ROUTE_REV" \
+  http://$API/api/v1/teams/default/ai/routes/ai-e2e >/dev/null
+AI_ORPHANS=$(psql "$PG_DB_URL" -Atc "SELECT \
+  (SELECT count(*) FROM clusters WHERE owner_kind = 'ai' AND owner_id = '$AI_ROUTE_ID') + \
+  (SELECT count(*) FROM route_configs WHERE owner_kind = 'ai' AND owner_id = '$AI_ROUTE_ID') + \
+  (SELECT count(*) FROM listeners WHERE owner_kind = 'ai' AND owner_id = '$AI_ROUTE_ID')")
+[ "$AI_ORPHANS" = "0" ] || fail "AI route cleanup left $AI_ORPHANS owned gateway rows"
+AI_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_PROVIDER_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_PROVIDER_REV" \
+  http://$API/api/v1/teams/default/ai/providers/ai-e2e-provider >/dev/null
+echo "PHASE 1a OK: AI route -> usage -> enforcing budget trip -> usage attribution -> cleanup"
 
 # ---- Phase 1b: learning capture through the real injected ALS/ExtProc path. Start a
 # route-scoped session on the resources created by expose, then send traffic with stable
