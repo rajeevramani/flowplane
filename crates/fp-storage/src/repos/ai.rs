@@ -4,7 +4,7 @@ use fp_domain::authz::TeamRef;
 use fp_domain::{
     AiProvider, AiProviderId, AiProviderKind, AiProviderSpec, AiRoute, AiRouteBackend, AiRouteId,
     AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus, DomainError, DomainResult, ErrorCode,
-    RouteConfigId, SecretId, TeamId,
+    OpenAiTokenUsage, RouteConfigId, SecretId, TeamId,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -25,6 +25,14 @@ pub struct SelectedAiBackend {
     pub backend: AiRouteBackend,
 }
 
+pub struct AiUsageEventInsert {
+    pub team_id: TeamId,
+    pub route_config_id: RouteConfigId,
+    pub provider_id: AiProviderId,
+    pub backend_position: Option<i32>,
+    pub usage: OpenAiTokenUsage,
+}
+
 fn provider_from_row(row: &PgRow) -> DomainResult<AiProvider> {
     Ok(AiProvider {
         id: AiProviderId::from(row.get::<Uuid, _>("id")),
@@ -42,6 +50,33 @@ fn provider_from_row(row: &PgRow) -> DomainResult<AiProvider> {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
+}
+
+pub async fn record_usage_event(pool: &PgPool, event: AiUsageEventInsert) -> DomainResult<()> {
+    let prompt_tokens = i64::try_from(event.usage.prompt_tokens)
+        .map_err(|_| DomainError::validation("AI prompt token count exceeds storage range"))?;
+    let completion_tokens = i64::try_from(event.usage.completion_tokens)
+        .map_err(|_| DomainError::validation("AI completion token count exceeds storage range"))?;
+    let total_tokens = i64::try_from(event.usage.total_tokens)
+        .map_err(|_| DomainError::validation("AI total token count exceeds storage range"))?;
+    sqlx::query(
+        "INSERT INTO ai_usage_events \
+         (id, team_id, route_config_id, provider_id, backend_position, \
+          prompt_tokens, completion_tokens, total_tokens) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(event.team_id.as_uuid())
+    .bind(event.route_config_id.as_uuid())
+    .bind(event.provider_id.as_uuid())
+    .bind(event.backend_position)
+    .bind(prompt_tokens)
+    .bind(completion_tokens)
+    .bind(total_tokens)
+    .execute(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("record AI usage event: {e}")))?;
+    Ok(())
 }
 
 fn route_from_row(row: &PgRow) -> DomainResult<AiRoute> {
