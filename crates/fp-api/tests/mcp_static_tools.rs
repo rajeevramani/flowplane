@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use fp_core::dev::DevIssuer;
 use fp_domain::api_lifecycle::{SpecFormat, SpecSourceKind, SpecVersionInput};
 use fp_domain::authz::TeamRef;
-use fp_domain::{ApiDefinitionId, OrgRole};
+use fp_domain::{ApiDefinitionId, ListenerId, OrgRole, RouteConfigId};
 use fp_storage::repos::{api_lifecycle as storage_api_lifecycle, identity};
 use http_body_util::BodyExt;
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -27,6 +27,55 @@ async fn json_of(response: axum::response::Response) -> serde_json::Value {
         .expect("body")
         .to_bytes();
     serde_json::from_slice(&bytes).expect("json body")
+}
+
+async fn insert_route_config(pool: &PgPool, team: TeamRef, name: &str) -> RouteConfigId {
+    let id = RouteConfigId::generate();
+    sqlx::query(
+        "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+         VALUES ($1, $2, $3, $4, '{\"virtual_hosts\":[]}'::jsonb)",
+    )
+    .bind(id.as_uuid())
+    .bind(team.id.as_uuid())
+    .bind(team.org_id.as_uuid())
+    .bind(name)
+    .execute(pool)
+    .await
+    .expect("route config");
+    id
+}
+
+async fn insert_listener(
+    pool: &PgPool,
+    team: TeamRef,
+    name: &str,
+    public_base_url: Option<&str>,
+) -> ListenerId {
+    let id = ListenerId::generate();
+    let spec = match public_base_url {
+        Some(public_base_url) => serde_json::json!({
+            "address": "0.0.0.0",
+            "port": 18080,
+            "public_base_url": public_base_url
+        }),
+        None => serde_json::json!({
+            "address": "0.0.0.0",
+            "port": 18080
+        }),
+    };
+    sqlx::query(
+        "INSERT INTO listeners (id, team_id, org_id, name, spec) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id.as_uuid())
+    .bind(team.id.as_uuid())
+    .bind(team.org_id.as_uuid())
+    .bind(name)
+    .bind(spec)
+    .execute(pool)
+    .await
+    .expect("listener");
+    id
 }
 
 struct Fixture {
@@ -502,6 +551,75 @@ async fn dynamic_api_tools_are_live_enabled_and_team_scoped() {
     .expect("dynamic audit row");
     assert_eq!(audit.get::<String, _>("action"), "api_tool.execute");
     assert_eq!(audit.get::<String, _>("outcome"), "failure");
+
+    let route_config_id = insert_route_config(&fx.pool, fx.team, &unique("catalog-routes")).await;
+    let listener_id = insert_listener(
+        &fx.pool,
+        fx.team,
+        &unique("catalog-listener"),
+        Some("https://gateway.example"),
+    )
+    .await;
+    let mut tx = fx.pool.begin().await.expect("route binding tx");
+    storage_api_lifecycle::create_route_binding(
+        &mut tx,
+        fx.team,
+        ApiDefinitionId::from(api_id),
+        &unique("catalog-binding"),
+        &fp_domain::api_lifecycle::ApiRouteBindingSpec {
+            route_config_id,
+            listener_id: Some(listener_id),
+            virtual_host: Some("api.example".into()),
+            route: None,
+        },
+    )
+    .await
+    .expect("route binding");
+    tx.commit().await.expect("route binding commit");
+
+    let descriptor = tools_call(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &mcp_name,
+        serde_json::json!({
+            "team": fx.team_name,
+            "pathParams": { "id": "123" },
+            "query": { "debug": true },
+            "headers": { "x-client": "mcp" },
+            "body": { "sample": true }
+        }),
+    )
+    .await;
+    assert_eq!(descriptor["result"]["isError"], false);
+    let content = &descriptor["result"]["structuredContent"];
+    assert_eq!(content["type"], "gateway_invocation");
+    assert_eq!(content["tool"].as_str(), Some(mcp_name.as_str()));
+    assert_eq!(
+        content["url"].as_str(),
+        Some("https://gateway.example/items/123?debug=true")
+    );
+    assert_eq!(content["headers"]["host"], "api.example");
+    assert_eq!(content["headers"]["x-client"], "mcp");
+    assert_eq!(content["auth"]["mode"], "caller_gateway_credentials");
+    assert_eq!(content["body"], serde_json::json!({ "sample": true }));
+
+    let host_override = tools_call(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &mcp_name,
+        serde_json::json!({
+            "team": fx.team_name,
+            "headers": { "Host": "other.example" }
+        }),
+    )
+    .await;
+    assert_eq!(host_override["result"]["isError"], true);
+    assert!(host_override["result"]["error"]["message"]
+        .as_str()
+        .expect("host override message")
+        .contains("controlled by the api route binding"));
 
     let member_session = initialize(fx.app.clone(), &fx.member_token).await;
     let denied = tools_call(

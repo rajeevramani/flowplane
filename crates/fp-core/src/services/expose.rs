@@ -161,6 +161,7 @@ async fn create_resources_for_port(
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
         port,
+        public_base_url: None,
         protocol: ListenerProtocol::Http,
         route_config: Some(template.names.route_config.clone()),
         http_filters: Vec::new(),

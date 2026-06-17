@@ -26,6 +26,10 @@ pub struct ListenerSpec {
     pub address: String,
     /// 1024–65535 (privileged ports forbidden — dataplanes run unprivileged).
     pub port: u16,
+    /// Public base URL clients use to reach this listener, e.g. `https://api.example.com`.
+    /// This is product metadata for invocation descriptors, not an Envoy bind address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_base_url: Option<String>,
     /// Downstream HTTP protocol mode. `https` is HTTP over downstream TLS; TCP listener support
     /// remains intentionally deferred until V2 has a first-class TCP route action.
     #[serde(default, skip_serializing_if = "is_default_listener_protocol")]
@@ -139,6 +143,9 @@ impl ListenerSpec {
                 self.port
             )));
         }
+        if let Some(base_url) = &self.public_base_url {
+            validate_public_base_url(base_url)?;
+        }
         if let Some(rc) = &self.route_config {
             crate::identity::validate_name(rc)?;
         }
@@ -161,6 +168,43 @@ impl ListenerSpec {
         crate::gateway::filters::validate_filter_chain(&self.http_filters)?;
         Ok(())
     }
+}
+
+fn validate_public_base_url(value: &str) -> DomainResult<()> {
+    if value.len() > 2048 {
+        return Err(DomainError::validation(
+            "listener public_base_url must be at most 2048 characters",
+        ));
+    }
+    if value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(DomainError::validation(
+            "listener public_base_url must not contain whitespace or control characters",
+        ));
+    }
+    let (scheme, rest) = value.split_once("://").ok_or_else(|| {
+        DomainError::validation("listener public_base_url must start with http:// or https://")
+    })?;
+    if scheme != "http" && scheme != "https" {
+        return Err(DomainError::validation(
+            "listener public_base_url must start with http:// or https://",
+        ));
+    }
+    if rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#') {
+        return Err(DomainError::validation(
+            "listener public_base_url must include a host",
+        ));
+    }
+    if rest.contains('?') || rest.contains('#') {
+        return Err(DomainError::validation(
+            "listener public_base_url must not include query or fragment",
+        ));
+    }
+    if rest.trim_end_matches('/').contains('/') {
+        return Err(DomainError::validation(
+            "listener public_base_url must not include a path",
+        ));
+    }
+    Ok(())
 }
 
 impl AccessLogConfig {
@@ -251,6 +295,7 @@ mod tests {
         ListenerSpec {
             address: address.into(),
             port,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: None,
             http_filters: Vec::new(),
@@ -300,6 +345,26 @@ mod tests {
             );
         }
         assert!(spec("0.0.0.0", 1024).validate().is_ok());
+    }
+
+    #[test]
+    fn public_base_url_is_explicit_http_base_url() {
+        let mut valid = spec("0.0.0.0", 8080);
+        valid.public_base_url = Some("https://gateway.example".into());
+        assert!(valid.validate().is_ok());
+
+        for value in [
+            "gateway.example",
+            "ftp://gateway.example",
+            "https://gateway.example/path",
+            "https://gateway.example?q=1",
+            "https://gateway.example#frag",
+            "https://gateway.example bad",
+        ] {
+            let mut invalid = spec("0.0.0.0", 8080);
+            invalid.public_base_url = Some(value.into());
+            assert!(invalid.validate().is_err(), "{value} should be invalid");
+        }
     }
 
     #[test]

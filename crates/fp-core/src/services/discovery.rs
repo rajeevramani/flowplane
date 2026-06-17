@@ -379,6 +379,7 @@ fn listener_spec(port: u16, route_config_name: &str) -> ListenerSpec {
     ListenerSpec {
         address: "0.0.0.0".into(),
         port,
+        public_base_url: None,
         protocol: ListenerProtocol::Http,
         route_config: Some(route_config_name.into()),
         http_filters: Vec::new(),

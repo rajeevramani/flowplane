@@ -307,6 +307,7 @@ fn build_plan(
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
         port: listener_port,
+        public_base_url: None,
         protocol: ListenerProtocol::Http,
         route_config: Some(route_config_name.clone()),
         http_filters: Vec::new(),

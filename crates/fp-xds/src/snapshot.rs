@@ -1207,6 +1207,7 @@ mod tests {
             ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 19200,
+                public_base_url: None,
                 protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
                 route_config: Some(rc.clone()),
                 tls_context: None,
@@ -1375,6 +1376,7 @@ mod tests {
             ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 19300,
+                public_base_url: None,
                 protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
                 route_config: Some(route_name.clone()),
                 tls_context: None,
@@ -1393,6 +1395,7 @@ mod tests {
             ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 19301,
+                public_base_url: None,
                 protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
                 route_config: Some(route_name),
                 tls_context: None,
@@ -1610,6 +1613,7 @@ mod tests {
             ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 19210,
+                public_base_url: None,
                 protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
                 route_config: Some(good_route.name.clone()),
                 tls_context: None,

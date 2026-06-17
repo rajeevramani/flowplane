@@ -21,38 +21,44 @@ mutation path before editing code.
    The CP configures Envoy out-of-band through xDS/SDS. Request traffic does not pass through the
    CP.
 
-4. **No orchestrator dependency.**
+4. **CP and dataplane are separate deployment units.**
+   Designs must work when the control plane and Envoy dataplanes run on different hosts, networks,
+   or schedulers. Localhost/loopback assumptions are dev-only conveniences, never product routing
+   contracts. Any CP-initiated call that must reach a dataplane has to resolve an explicit
+   dataplane address/connection contract and fail closed when that resolution is missing.
+
+5. **No orchestrator dependency.**
    Bare metal, VMs, plain containers, ECS-class managed platforms, Nomad, Cloud Run-style
    environments, and Kubernetes must all be viable. K8s manifests can be packaging, never the
    architecture.
 
-5. **Tenant isolation is by construction.**
+6. **Tenant isolation is by construction.**
    Org/team context is explicit or unambiguous; storage/service paths carry validated scope; xDS
    identity comes from certificate registry binding, not claims in `node.id` or metadata.
 
-6. **All product mutations go through `fp-core::services`.**
+7. **All product mutations go through `fp-core::services`.**
    Surfaces and workers must not invent alternate write paths. Named read-side exceptions are
    allowed only when recorded in D-016 or a later decision.
 
-7. **Subsystems meet through events and contracts, not private calls.**
+8. **Subsystems meet through events and contracts, not private calls.**
    xDS, learning, AI, MCP, and operators should communicate through domain events, published
    service APIs, and generated contracts.
 
-8. **Fail closed at security boundaries.**
+9. **Fail closed at security boundaries.**
    Production xDS is mTLS-or-off; partial TLS config fails boot; dev plaintext is explicit and
    gated; secret values are write-only over HTTP.
 
-9. **Envoy admin is not an operator/product API.**
+10. **Envoy admin is not an operator/product API.**
    Envoy admin endpoints stay loopback-local to the dataplane unit. Product diagnostics and
    operator workflows must use CP surfaces backed by persisted diagnostics, audit, outbox, and
    xDS state. Only `fp-agent` may scrape Envoy admin, and only to relay curated telemetry to the
    CP over the outbound diagnostics channel.
 
-10. **Contracts must not drift.**
+11. **Contracts must not drift.**
    REST, OpenAPI, CLI, and MCP declarations should come from the same source where possible, with
    parity tests pinning the surface.
 
-11. **The V2 UX must improve V1.**
+12. **The V2 UX must improve V1.**
     V1 defines the user outcome; V2 defines the architecture and experience.
 
 ## 2. Domain Ownership
@@ -216,6 +222,7 @@ These patterns usually mean the architecture is drifting:
 - `node.id`, Host headers, path strings, or email addresses are treated as isolation boundaries
 - generated Envoy config depends on default ports that were not resolved into the artifact
 - a local Docker/Compose assumption becomes the only supported deployment path
+- CP-to-dataplane behavior assumes Envoy is reachable on CP loopback or on the same container host
 - learning, AI, or MCP tools become live config before review/publish gates
 - diagnostics require CP inbound access to a dataplane
 - operator docs or CLI commands depend on `curl :9901/config_dump` as the normal validation path
@@ -288,7 +295,8 @@ For S11 MCP:
   `external/internal` column.
 - Dynamic `api_*` execution resolves through v2 bindings, not v1 route metadata: generated tool row
   to API definition/spec binding, then to listener/dataplane route information. Missing binding or
-  dataplane resolution fails closed with a structured configuration error.
+  dataplane resolution fails closed with a structured configuration error. The resolution must not
+  assume the dataplane is on CP localhost; separate CP/DP deployment is the baseline design.
 - Dynamic `api_*` listing should read live enabled/current rows unless S11 records a measured reason
   to cache; live reads make republish staleness the database's job.
 - Agents are part of the S11 authz surface. The deferred Agents API must land before static/dynamic

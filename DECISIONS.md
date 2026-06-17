@@ -478,3 +478,39 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
 - **Status:** decided for S11a / #75 (2026-06-17). This overrides any older spec text that implies
   v1 scope strings, v1 tool counts, cached MCP authz sessions, separate v1 route exposure columns,
   or already-existing shared declaration generation.
+
+## D-020: S11 `api_*` MCP tools return gateway invocation descriptors
+
+- **Context:** #78 initially made dynamic `api_*` MCP calls proxy request/response traffic through
+  the CP. That made the CP part of the datapath, required CP network reach to dataplanes, and could
+  change the gateway policy context. S11 still needs CP-owned discovery, grants, and generated tool
+  schemas, but API invocation itself belongs at the gateway.
+- **Decision:** S11 splits MCP tool operation into two modes. `cp_*`/`ops_*` tools execute in the CP
+  through `fp-core::services`. Production `api_*` tools are discovered, listed, and authorized by
+  the CP, but `tools/call api_*` returns a `gateway_invocation` descriptor instead of proxying the
+  upstream API call. The MCP client/agent follows that descriptor and calls the gateway directly.
+- **Authorization boundary:** `Resource::McpTools`/`Action::Execute` gates descriptor issuance only.
+  The actual API call is enforced by the gateway using the caller's normal gateway/API-consumer
+  credentials. S11 does not double-enforce API request authorization in the CP after descriptor
+  issuance because the CP is not in the data path.
+- **Credential model:** `api_*` descriptors use `auth.mode = "caller_gateway_credentials"`. S11 does
+  not mint a short-lived CP gateway token and does not add a new gateway token-validation filter.
+  A later decision may add delegated invocation tokens, but that is out of scope for S11.
+- **Public endpoint source:** descriptor URLs are derived from `ListenerSpec.public_base_url`, a
+  team-scoped persisted listener field carrying the externally reachable base URL for that listener.
+  The listener bind address and port remain Envoy config; `public_base_url` is product metadata for
+  generated descriptors and operator output. Missing `public_base_url` fails closed for `api_*`
+  invocation descriptor generation.
+- **Descriptor shape:** the descriptor payload has `type: "gateway_invocation"`, `version`, tool/API
+  identifiers, `operationId`, HTTP `method`, concrete `url`, binding-controlled `headers`, optional
+  `body`, `auth.mode`, `expiresAt`, and `correlationId`. `expiresAt` is descriptor freshness and
+  spec-staleness metadata, not credential expiry.
+- **Route selection:** caller-provided `Host`/`:authority` headers are rejected. Route-selection
+  headers in the descriptor come from the API route binding, not from tool arguments.
+- **Client scope:** production `api_*` invocation requires a Flowplane descriptor-aware MCP client or
+  harness. Generic MCP clients can receive descriptors, but they will not complete API workflows
+  unless they know how to follow the descriptor and call the gateway.
+- **CP proxy path:** #78's CP-proxy behavior is superseded for production. If a dev-only proxy mode
+  is reintroduced later, it must be explicitly configured, disabled by default in production, and
+  covered by policy-parity tests.
+- **Status:** decided for S11 design correction / #80 (2026-06-17).
