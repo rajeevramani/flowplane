@@ -640,13 +640,26 @@ async fn execute_dynamic_tool(
     ctx: &PrincipalCtx,
     api_tool_name: &str,
     arguments: Value,
-    _rid: RequestId,
+    rid: RequestId,
 ) -> DomainResult<Value> {
     let team = resolve_tool_team(state, ctx, &arguments).await?;
-    if !dynamic_tool_allowed(ctx, team, Action::Execute) {
-        return Err(DomainError::new(
-            ErrorCode::Forbidden,
-            "missing permission: mcp-tools:execute",
+    if let Decision::Deny(reason) =
+        check_resource_access(ctx, Resource::McpTools, Action::Execute, Some(team))
+    {
+        fp_core::services::record_authz_denial(
+            &state.pool,
+            ctx,
+            rid,
+            Resource::McpTools,
+            Action::Execute,
+            Some(team),
+            reason,
+        )
+        .await;
+        return Err(fp_core::services::deny_to_error(
+            Resource::McpTools,
+            Action::Execute,
+            reason,
         ));
     }
     let tool = fp_storage::repos::api_lifecycle::get_enabled_published_api_tool(
@@ -662,16 +675,30 @@ async fn execute_dynamic_tool(
         tool.api_definition_id,
     )
     .await?;
-    let binding = bindings
+    // ponytail: first listener binding wins; add explicit binding selection if callers need it.
+    let binding = match bindings
         .into_iter()
         .find(|binding| binding.listener_id.is_some())
-        .ok_or_else(|| {
-            DomainError::new(
+    {
+        Some(binding) => binding,
+        None => {
+            record_dynamic_tool_audit(
+                state,
+                ctx,
+                rid,
+                team,
+                &tool,
+                fp_storage::repos::audit::Outcome::Failure,
+                json!({ "error": "unbound_route" }),
+            )
+            .await;
+            return Err(DomainError::new(
                 ErrorCode::Conflict,
                 format!("api tool \"{}\" has no listener/dataplane route", tool.name),
             )
-            .with_hint("bind the API definition to a listener before calling this tool")
-        })?;
+            .with_hint("bind the API definition to a listener before calling this tool"));
+        }
+    };
     let listener_id = binding.listener_id.ok_or_else(|| {
         DomainError::internal("listener binding disappeared while resolving api tool")
     })?;
@@ -701,20 +728,87 @@ async fn execute_dynamic_tool(
     if let Some(body) = arguments.get("body") {
         request = request.json(body);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| DomainError::internal(format!("call api tool through Envoy: {e}")))?;
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(e) => {
+            record_dynamic_tool_audit(
+                state,
+                ctx,
+                rid,
+                team,
+                &tool,
+                fp_storage::repos::audit::Outcome::Failure,
+                json!({ "error": "envoy_call_failed" }),
+            )
+            .await;
+            return Err(DomainError::internal(format!(
+                "call api tool through Envoy: {e}"
+            )));
+        }
+    };
     let status = response.status().as_u16();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| DomainError::internal(format!("read api tool response: {e}")))?;
+    let text = match response.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            record_dynamic_tool_audit(
+                state,
+                ctx,
+                rid,
+                team,
+                &tool,
+                fp_storage::repos::audit::Outcome::Failure,
+                json!({ "error": "response_read_failed", "status": status }),
+            )
+            .await;
+            return Err(DomainError::internal(format!(
+                "read api tool response: {e}"
+            )));
+        }
+    };
+    record_dynamic_tool_audit(
+        state,
+        ctx,
+        rid,
+        team,
+        &tool,
+        fp_storage::repos::audit::Outcome::Success,
+        json!({ "status": status }),
+    )
+    .await;
     let body = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
     Ok(json!({
         "status": status,
         "body": body,
     }))
+}
+
+async fn record_dynamic_tool_audit(
+    state: &AppState,
+    ctx: &PrincipalCtx,
+    rid: RequestId,
+    team: TeamRef,
+    tool: &ApiTool,
+    outcome: fp_storage::repos::audit::Outcome,
+    detail: Value,
+) {
+    let (actor_type, actor_id) = fp_core::services::actor_of(ctx);
+    fp_storage::repos::audit::record_best_effort(
+        &state.pool,
+        &fp_storage::repos::audit::AuditEntry {
+            request_id: Some(rid),
+            actor_type,
+            actor_id,
+            actor_label: String::new(),
+            surface: fp_storage::repos::audit::Surface::Mcp,
+            action: "api_tool.execute".into(),
+            resource: format!("api-tools/{}", tool.name),
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+            outcome,
+            detail,
+        },
+    )
+    .await;
 }
 
 async fn execute_static_tool(
@@ -1369,7 +1463,14 @@ fn dynamic_input_schema(schema: &Value) -> Value {
         .or_insert_with(|| json!({ "type": "object" }));
     properties.entry("body").or_insert_with(|| json!({}));
     schema.insert("properties".into(), Value::Object(properties));
-    schema.insert("required".into(), json!(["team"]));
+    let mut required = schema
+        .remove("required")
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    if !required.iter().any(|v| v.as_str() == Some("team")) {
+        required.push(json!("team"));
+    }
+    schema.insert("required".into(), Value::Array(required));
     Value::Object(schema)
 }
 
@@ -1392,7 +1493,7 @@ fn dynamic_tool_url(
                     "pathParams.{key} must be a string"
                 )));
             };
-            path = path.replace(&format!("{{{key}}}"), value);
+            path = path.replace(&format!("{{{key}}}"), &encode_path_segment(value));
         }
     }
     let mut url = reqwest::Url::parse(&format!("{scheme}://127.0.0.1:{port}{path}"))
@@ -1419,6 +1520,19 @@ fn dynamic_tool_url(
         }
     }
     Ok(url)
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn reqwest_method(method: HttpMethod) -> reqwest::Method {
@@ -1777,6 +1891,57 @@ mod tests {
         assert!(origin_matches("http://[::1]", "http://[::1]:3000"));
         assert!(!origin_matches("https://localhost", "http://localhost"));
         assert!(!origin_matches("http://localhost", "http://example.com"));
+    }
+
+    #[test]
+    fn dynamic_tool_url_encodes_path_params_as_segments() {
+        let now = chrono::Utc::now();
+        let tool = ApiTool {
+            id: fp_domain::ApiToolId::generate(),
+            team_id: fp_domain::TeamId::generate(),
+            api_definition_id: fp_domain::ApiDefinitionId::generate(),
+            spec_version_id: fp_domain::SpecVersionId::generate(),
+            name: "catalog-get".into(),
+            operation_id: "getItem".into(),
+            method: HttpMethod::Get,
+            path: "/items/{id}".into(),
+            input_schema: json!({}),
+            output_schema: json!({}),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let url = dynamic_tool_url(
+            &tool,
+            &json!({ "pathParams": { "id": "a/b ?#%" }, "query": { "q": "../admin" } }),
+            8080,
+            ListenerProtocol::Http,
+        )
+        .expect("url");
+        assert_eq!(
+            url.as_str(),
+            "http://127.0.0.1:8080/items/a%2Fb%20%3F%23%25?q=..%2Fadmin"
+        );
+
+        let url = dynamic_tool_url(
+            &tool,
+            &json!({ "pathParams": { "id": "../admin" } }),
+            8080,
+            ListenerProtocol::Http,
+        )
+        .expect("url");
+        assert_eq!(url.path(), "/items/..%2Fadmin");
+    }
+
+    #[test]
+    fn dynamic_input_schema_keeps_spec_required_fields() {
+        let schema = dynamic_input_schema(&json!({
+            "properties": { "pathParams": { "type": "object" } },
+            "required": ["pathParams"]
+        }));
+
+        assert_eq!(schema["required"], json!(["pathParams", "team"]));
     }
 
     fn user(user_id: UserId, org_id: OrgId) -> PrincipalCtx {
