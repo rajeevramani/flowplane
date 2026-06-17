@@ -1656,6 +1656,7 @@ mod tests {
         use base64::Engine as _;
 
         let key = *b"12345678901234567890123456789012";
+        std::env::set_var("FLOWPLANE_SECRET_ENCRYPTION_KEY_ID", "default");
         std::env::set_var(
             "FLOWPLANE_SECRET_ENCRYPTION_KEY",
             String::from_utf8_lossy(&key).to_string(),

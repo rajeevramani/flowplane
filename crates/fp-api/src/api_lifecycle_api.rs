@@ -8,7 +8,7 @@ use axum::http::HeaderMap;
 use axum::Json;
 use fp_core::services::api_lifecycle as svc;
 use fp_core::PrincipalCtx;
-use fp_domain::api_lifecycle::{ApiDefinition, ApiDefinitionSpec, ApiRouteBindingSpec};
+use fp_domain::api_lifecycle::{ApiDefinition, ApiDefinitionSpec, ApiRouteBindingSpec, ApiTool};
 use fp_domain::{ListenerId, RequestId, RouteConfigId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -64,6 +64,47 @@ pub struct SpecVersionSummary {
 pub struct PublishSpecView {
     pub spec: SpecVersionSummary,
     pub tool_count: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApiToolView {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub api_definition_id: uuid::Uuid,
+    pub spec_version_id: uuid::Uuid,
+    pub operation_id: String,
+    pub method: String,
+    pub path: String,
+    pub input_schema: serde_json::Value,
+    pub output_schema: serde_json::Value,
+    pub enabled: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<ApiTool> for ApiToolView {
+    fn from(value: ApiTool) -> Self {
+        Self {
+            id: value.id.as_uuid(),
+            name: value.name,
+            api_definition_id: value.api_definition_id.as_uuid(),
+            spec_version_id: value.spec_version_id.as_uuid(),
+            operation_id: value.operation_id,
+            method: value.method.as_str().into(),
+            path: value.path,
+            input_schema: value.input_schema,
+            output_schema: value.output_schema,
+            enabled: value.enabled,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateApiToolBody {
+    pub enabled: bool,
 }
 
 impl From<svc::PublishSpecResult> for PublishSpecView {
@@ -260,6 +301,35 @@ pub async fn api_status(
     };
     run.await
         .map(|v| Json(ApiStatusView::from(v)))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(patch, path = "/api/v1/teams/{team}/mcp/tools/{name}",
+    tag = "McpTools",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "Generated api_tools.name"),
+    ),
+    request_body = UpdateApiToolBody,
+    responses(
+        (status = 200, body = ApiToolView),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn update_mcp_tool(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    Json(body): Json<UpdateApiToolBody>,
+) -> Result<Json<ApiToolView>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::update_api_tool_enabled(&state.pool, &ctx, team, &name, body.enabled, rid).await
+    };
+    run.await
+        .map(|tool| Json(ApiToolView::from(tool)))
         .map_err(|e| ApiError::new(e, rid))
 }
 

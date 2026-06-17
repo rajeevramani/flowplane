@@ -409,10 +409,12 @@ mod tests {
     async fn failed_handler_redelivers_the_same_batch() {
         let Some(pool) = pool().await else { return };
         let consumer = unique_consumer();
-        register_consumer(&pool, &consumer).await.expect("register");
-        let _ = process_batch(&pool, &consumer, 10_000, |_| async { Ok(()) }).await;
+        register_consumer_at_head(&pool, &consumer)
+            .await
+            .expect("register");
 
-        append_one(&pool, "must-not-be-lost").await;
+        let marker = format!("must-not-be-lost-{}", unique_consumer());
+        append_one(&pool, &marker).await;
 
         // First attempt: handler crashes (simulates the process dying mid-handle —
         // the cursor-advance transaction never commits).
@@ -450,7 +452,7 @@ mod tests {
                 for e in &events {
                     if matches!(&e.event,
                         fp_domain::event::DomainEvent::ClusterUpserted { name, .. }
-                            if name == "must-not-be-lost")
+                            if name == &marker)
                     {
                         seen.fetch_add(1, Ordering::SeqCst);
                     }

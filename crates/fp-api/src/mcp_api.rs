@@ -4,8 +4,10 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::{body::Body, Json};
 use fp_core::{check_resource_access, Decision, PrincipalCtx};
+use fp_domain::api_lifecycle::{ApiTool, HttpMethod};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::gateway::cluster::ClusterSpec;
+use fp_domain::gateway::listener::ListenerProtocol;
 use fp_domain::gateway::listener::ListenerSpec;
 use fp_domain::gateway::route_config::RouteConfigSpec;
 use fp_domain::{AgentKind, DomainError, DomainResult, ErrorCode, RequestId};
@@ -560,6 +562,18 @@ async fn tools_list(
             })
         })
         .collect::<Vec<_>>();
+    let mut tools = tools;
+    if dynamic_tool_allowed(ctx, team, Action::Execute) {
+        match fp_storage::repos::api_lifecycle::list_enabled_published_api_tools(
+            &state.pool,
+            team.id,
+        )
+        .await
+        {
+            Ok(api_tools) => tools.extend(api_tools.into_iter().map(dynamic_tool_view)),
+            Err(e) => return tool_result_error(id, e).into_response(),
+        }
+    }
     rpc_result(id, json!({ "tools": tools })).into_response()
 }
 
@@ -583,13 +597,19 @@ async fn tools_call(
             .into_response();
         }
     };
-    let Some(tool) = static_tool(name) else {
-        return rpc_error(id, -32602, format!("unknown tool: {name}"), rid, "tool").into_response();
-    };
     let arguments = params
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    if let Some(api_tool_name) = name.strip_prefix("api_") {
+        return match execute_dynamic_tool(state, ctx, api_tool_name, arguments, rid).await {
+            Ok(value) => tool_result_ok(id, value).into_response(),
+            Err(e) => tool_result_error(id, e).into_response(),
+        };
+    }
+    let Some(tool) = static_tool(name) else {
+        return rpc_error(id, -32602, format!("unknown tool: {name}"), rid, "tool").into_response();
+    };
     let team = match resolve_tool_team(state, ctx, &arguments).await {
         Ok(team) => team,
         Err(e) => return tool_result_error(id, e).into_response(),
@@ -613,6 +633,88 @@ async fn tools_call(
         Ok(value) => tool_result_ok(id, value).into_response(),
         Err(e) => tool_result_error(id, e).into_response(),
     }
+}
+
+async fn execute_dynamic_tool(
+    state: &AppState,
+    ctx: &PrincipalCtx,
+    api_tool_name: &str,
+    arguments: Value,
+    _rid: RequestId,
+) -> DomainResult<Value> {
+    let team = resolve_tool_team(state, ctx, &arguments).await?;
+    if !dynamic_tool_allowed(ctx, team, Action::Execute) {
+        return Err(DomainError::new(
+            ErrorCode::Forbidden,
+            "missing permission: mcp-tools:execute",
+        ));
+    }
+    let tool = fp_storage::repos::api_lifecycle::get_enabled_published_api_tool(
+        &state.pool,
+        team.id,
+        api_tool_name,
+    )
+    .await?
+    .ok_or_else(|| DomainError::not_found("api tool", api_tool_name))?;
+    let bindings = fp_storage::repos::api_lifecycle::list_route_bindings_for_api(
+        &state.pool,
+        team.id,
+        tool.api_definition_id,
+    )
+    .await?;
+    let binding = bindings
+        .into_iter()
+        .find(|binding| binding.listener_id.is_some())
+        .ok_or_else(|| {
+            DomainError::new(
+                ErrorCode::Conflict,
+                format!("api tool \"{}\" has no listener/dataplane route", tool.name),
+            )
+            .with_hint("bind the API definition to a listener before calling this tool")
+        })?;
+    let listener_id = binding.listener_id.ok_or_else(|| {
+        DomainError::internal("listener binding disappeared while resolving api tool")
+    })?;
+    let listener =
+        fp_storage::repos::gateway::get_listener_by_id(&state.pool, team.id, listener_id)
+            .await?
+            .ok_or_else(|| {
+                DomainError::not_found("listener", &listener_id.as_uuid().to_string())
+            })?;
+    let url = dynamic_tool_url(
+        &tool,
+        &arguments,
+        listener.spec.port,
+        listener.spec.protocol,
+    )?;
+    let mut request = reqwest::Client::new().request(reqwest_method(tool.method), url);
+    if let Some(host) = binding.virtual_host.as_deref().filter(|host| *host != "*") {
+        request = request.header("host", host);
+    }
+    if let Some(headers) = arguments.get("headers").and_then(Value::as_object) {
+        for (key, value) in headers {
+            if let Some(value) = value.as_str() {
+                request = request.header(key, value);
+            }
+        }
+    }
+    if let Some(body) = arguments.get("body") {
+        request = request.json(body);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| DomainError::internal(format!("call api tool through Envoy: {e}")))?;
+    let status = response.status().as_u16();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| DomainError::internal(format!("read api tool response: {e}")))?;
+    let body = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
+    Ok(json!({
+        "status": status,
+        "body": body,
+    }))
 }
 
 async fn execute_static_tool(
@@ -1217,6 +1319,118 @@ fn tool_allowed(ctx: &PrincipalCtx, tool: &StaticTool, team: TeamRef) -> bool {
         check_resource_access(ctx, tool.resource, tool.action, Some(team)),
         Decision::Allow(_)
     )
+}
+
+fn dynamic_tool_allowed(ctx: &PrincipalCtx, team: TeamRef, action: Action) -> bool {
+    matches!(
+        check_resource_access(ctx, Resource::McpTools, action, Some(team)),
+        Decision::Allow(_)
+    )
+}
+
+fn dynamic_tool_view(tool: ApiTool) -> Value {
+    json!({
+        "name": format!("api_{}", tool.name),
+        "description": format!("{} {}", tool.method.as_str(), tool.path),
+        "inputSchema": dynamic_input_schema(&tool.input_schema),
+        "annotations": {
+            "resource": Resource::McpTools.as_str(),
+            "action": Action::Execute.as_str(),
+            "risk": "mutate",
+            "apiToolId": tool.id.as_uuid(),
+            "apiDefinitionId": tool.api_definition_id.as_uuid(),
+            "specVersionId": tool.spec_version_id.as_uuid(),
+            "operationId": tool.operation_id,
+            "method": tool.method.as_str(),
+            "path": tool.path,
+        }
+    })
+}
+
+fn dynamic_input_schema(schema: &Value) -> Value {
+    let mut schema = schema.as_object().cloned().unwrap_or_default();
+    schema.insert("type".into(), json!("object"));
+    let mut properties = schema
+        .remove("properties")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    properties.insert(
+        "team".into(),
+        json!({ "type": "string", "description": "Team name or UUID" }),
+    );
+    properties
+        .entry("pathParams")
+        .or_insert_with(|| json!({ "type": "object" }));
+    properties
+        .entry("query")
+        .or_insert_with(|| json!({ "type": "object" }));
+    properties
+        .entry("headers")
+        .or_insert_with(|| json!({ "type": "object" }));
+    properties.entry("body").or_insert_with(|| json!({}));
+    schema.insert("properties".into(), Value::Object(properties));
+    schema.insert("required".into(), json!(["team"]));
+    Value::Object(schema)
+}
+
+fn dynamic_tool_url(
+    tool: &ApiTool,
+    arguments: &Value,
+    port: u16,
+    protocol: ListenerProtocol,
+) -> DomainResult<reqwest::Url> {
+    let scheme = if protocol == ListenerProtocol::Https {
+        "https"
+    } else {
+        "http"
+    };
+    let mut path = tool.path.clone();
+    if let Some(params) = arguments.get("pathParams").and_then(Value::as_object) {
+        for (key, value) in params {
+            let Some(value) = value.as_str() else {
+                return Err(DomainError::validation(format!(
+                    "pathParams.{key} must be a string"
+                )));
+            };
+            path = path.replace(&format!("{{{key}}}"), value);
+        }
+    }
+    let mut url = reqwest::Url::parse(&format!("{scheme}://127.0.0.1:{port}{path}"))
+        .map_err(|e| DomainError::validation(format!("invalid api tool path: {e}")))?;
+    if let Some(query) = arguments.get("query").and_then(Value::as_object) {
+        let mut pairs = url.query_pairs_mut();
+        for (key, value) in query {
+            match value {
+                Value::String(value) => {
+                    pairs.append_pair(key, value);
+                }
+                Value::Number(value) => {
+                    pairs.append_pair(key, &value.to_string());
+                }
+                Value::Bool(value) => {
+                    pairs.append_pair(key, &value.to_string());
+                }
+                _ => {
+                    return Err(DomainError::validation(format!(
+                        "query.{key} must be scalar"
+                    )))
+                }
+            }
+        }
+    }
+    Ok(url)
+}
+
+fn reqwest_method(method: HttpMethod) -> reqwest::Method {
+    match method {
+        HttpMethod::Get => reqwest::Method::GET,
+        HttpMethod::Post => reqwest::Method::POST,
+        HttpMethod::Put => reqwest::Method::PUT,
+        HttpMethod::Patch => reqwest::Method::PATCH,
+        HttpMethod::Delete => reqwest::Method::DELETE,
+        HttpMethod::Options => reqwest::Method::OPTIONS,
+        HttpMethod::Head => reqwest::Method::HEAD,
+    }
 }
 
 fn static_tool(name: &str) -> Option<&'static StaticTool> {
