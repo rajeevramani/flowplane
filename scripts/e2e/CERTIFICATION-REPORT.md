@@ -59,10 +59,10 @@ fixed and regression-tested during S10 review and are green here.)
 
 ## Residual risk (accepted for Tier 0, routed to S12)
 
-- **R2 — service-layer authz-denial audit not wired.** Denial *enforcement* works and is tested;
-  authn-failure audit is wired; but a service-layer authz *denial* does not emit an audit row (the
-  primitive exists + is storage-tested). Impact: missing audit trail for denied access attempts —
-  an observability gap, not an enforcement gap. Tracked for S12 (observability completion).
+- **R2 — service-layer authz-denial audit — fixed after certification (#69).** Denial
+  enforcement already worked; #69 pins that service-layer authz denials emit `authz.denied`
+  audit rows with request id, target org/team, resource, and reason. This is no longer a
+  residual risk.
 - **Global rate-limit (RLS) enforcement** — filter ACKs live (P7); live enforcement needs an
   external RLS+Redis service. `out-of-scope`; owner S12 / when an RLS server ships.
 - **OTLP wire export** — OTel layer init + `traceparent` covered; span export on the wire needs a
@@ -80,7 +80,6 @@ accepted, routed to S12. Recommended to proceed to S11 (MCP) with the residuals 
 
 ## Follow-ups (do not block Tier 0)
 
-- Wire R2 authz-denial audit (or formally accept long-term).
 - Split `scripts/e2e-envoy.sh` into `scripts/e2e/run.sh` + `lib.sh` + `NN-*.sh` (move
   `wait_converged`/`assert_status`/`redaction_sweep`/`known_fail` into `lib.sh`); maintainability,
   not a coverage gap.
