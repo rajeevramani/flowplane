@@ -3,8 +3,10 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fp_core::dev::DevIssuer;
-use fp_domain::OrgRole;
-use fp_storage::repos::identity;
+use fp_domain::api_lifecycle::{SpecFormat, SpecSourceKind, SpecVersionInput};
+use fp_domain::authz::TeamRef;
+use fp_domain::{ApiDefinitionId, OrgRole};
+use fp_storage::repos::{api_lifecycle as storage_api_lifecycle, identity};
 use http_body_util::BodyExt;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use sqlx::{PgPool, Row};
@@ -34,6 +36,7 @@ struct Fixture {
     member_token: String,
     team_name: String,
     team_id: uuid::Uuid,
+    team: TeamRef,
     other_team_name: String,
 }
 
@@ -100,6 +103,10 @@ async fn fixture() -> Option<Fixture> {
         member_token,
         team_name: team.name,
         team_id: team.id.as_uuid(),
+        team: TeamRef {
+            id: team.id,
+            org_id: org.id,
+        },
         other_team_name: other_team.name,
     })
 }
@@ -229,6 +236,32 @@ async fn create_agent(
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = json_of(response).await;
     body["token"].as_str().expect("token").to_string()
+}
+
+async fn publish_spec(
+    app: axum::Router,
+    admin_token: &str,
+    team_name: &str,
+    api_name: &str,
+    version: i64,
+) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/teams/{team_name}/api-definitions/{api_name}/specs/{version}/publish"
+                ))
+                .header("authorization", format!("Bearer {admin_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "reason": "test" }).to_string(),
+                ))
+                .expect("publish request"),
+        )
+        .await
+        .expect("publish response");
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -457,6 +490,40 @@ async fn dynamic_api_tools_are_live_enabled_and_team_scoped() {
         .as_str()
         .expect("message")
         .contains("has no listener/dataplane route"));
+    let audit = sqlx::query(
+        "SELECT action, resource, outcome FROM audit_log \
+         WHERE team_id = $1 AND action = 'api_tool.execute' AND resource = $2 \
+         ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(fx.team_id)
+    .bind(format!("api-tools/{tool_name}"))
+    .fetch_one(&fx.pool)
+    .await
+    .expect("dynamic audit row");
+    assert_eq!(audit.get::<String, _>("action"), "api_tool.execute");
+    assert_eq!(audit.get::<String, _>("outcome"), "failure");
+
+    let member_session = initialize(fx.app.clone(), &fx.member_token).await;
+    let denied = tools_call(
+        fx.app.clone(),
+        &fx.member_token,
+        &member_session,
+        &mcp_name,
+        serde_json::json!({ "team": fx.team_name }),
+    )
+    .await;
+    assert_eq!(denied["result"]["isError"], true);
+    let denial_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+         WHERE team_id = $1 AND action = 'authz.denied' \
+           AND detail->>'resource' = 'mcp-tools' \
+           AND detail->>'action' = 'execute'",
+    )
+    .bind(fx.team_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("denial audit count");
+    assert!(denial_count > 0);
 
     let response = fx
         .app
@@ -487,4 +554,115 @@ async fn dynamic_api_tools_are_live_enabled_and_team_scoped() {
     )
     .await;
     assert!(!tools.contains(&mcp_name));
+}
+
+#[tokio::test]
+async fn dynamic_api_tools_reflect_republished_specs() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    let api_name = unique("catalog");
+    let response = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/teams/{}/api-definitions", fx.team_name))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "name": api_name }).to_string(),
+                ))
+                .expect("create api"),
+        )
+        .await
+        .expect("api response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    let api_id = ApiDefinitionId::from(
+        uuid::Uuid::parse_str(body["api"]["id"].as_str().expect("api id")).expect("uuid"),
+    );
+
+    let mut tx = fx.pool.begin().await.expect("spec tx");
+    let first = storage_api_lifecycle::create_spec_version(
+        &mut tx,
+        fx.team,
+        api_id,
+        &SpecVersionInput {
+            source_kind: SpecSourceKind::Learned,
+            format: SpecFormat::OpenApi3,
+            spec: serde_json::json!({
+                "openapi": "3.0.3",
+                "info": { "title": "Catalog", "version": "1" },
+                "paths": { "/items": { "get": { "operationId": "listItems" } } }
+            }),
+        },
+    )
+    .await
+    .expect("first spec");
+    let second = storage_api_lifecycle::create_spec_version(
+        &mut tx,
+        fx.team,
+        api_id,
+        &SpecVersionInput {
+            source_kind: SpecSourceKind::Learned,
+            format: SpecFormat::OpenApi3,
+            spec: serde_json::json!({
+                "openapi": "3.0.3",
+                "info": { "title": "Catalog", "version": "2" },
+                "paths": { "/orders": { "post": { "operationId": "createOrder" } } }
+            }),
+        },
+    )
+    .await
+    .expect("second spec");
+    tx.commit().await.expect("spec commit");
+
+    let gateway_token = create_agent(
+        fx.app.clone(),
+        &fx.admin_token,
+        "gateway-tool",
+        fx.team_id,
+        vec![("mcp-tools", "execute")],
+    )
+    .await;
+    let gateway_session = initialize(fx.app.clone(), &gateway_token).await;
+    let first_tool = format!("api_{api_name}-listitems");
+    let second_tool = format!("api_{api_name}-createorder");
+
+    publish_spec(
+        fx.app.clone(),
+        &fx.admin_token,
+        &fx.team_name,
+        &api_name,
+        first.version,
+    )
+    .await;
+    let tools = tools_list(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &fx.team_name,
+    )
+    .await;
+    assert!(tools.contains(&first_tool));
+
+    publish_spec(
+        fx.app.clone(),
+        &fx.admin_token,
+        &fx.team_name,
+        &api_name,
+        second.version,
+    )
+    .await;
+    let tools = tools_list(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &fx.team_name,
+    )
+    .await;
+    assert!(!tools.contains(&first_tool));
+    assert!(tools.contains(&second_tool));
 }
