@@ -139,23 +139,51 @@ async fn create_emits_event_and_cross_org_caller_sees_not_found() {
     assert_eq!(audit_count, 1);
 
     // Cross-org caller: not_found, never forbidden (anti-enumeration).
-    let err = svc::get_cluster(&w.pool, &w.outsider, w.team, &name, RequestId::generate())
+    let outsider_get_rid = RequestId::generate();
+    let err = svc::get_cluster(&w.pool, &w.outsider, w.team, &name, outsider_get_rid)
         .await
         .expect_err("outsider must not see it");
     assert_eq!(err.code, ErrorCode::NotFound);
 
     // Outsider cannot mutate either — and the failure discloses nothing.
-    let err = svc::delete_cluster(
-        &w.pool,
-        &w.outsider,
-        w.team,
-        &name,
-        1,
-        RequestId::generate(),
-    )
-    .await
-    .expect_err("outsider must not delete");
+    let outsider_delete_rid = RequestId::generate();
+    let err = svc::delete_cluster(&w.pool, &w.outsider, w.team, &name, 1, outsider_delete_rid)
+        .await
+        .expect_err("outsider must not delete");
     assert_eq!(err.code, ErrorCode::NotFound);
+
+    let denial_rows: Vec<(String, String, String, uuid::Uuid, uuid::Uuid, String, String)> =
+        sqlx::query_as(
+            "SELECT action, resource, outcome, org_id, team_id, detail->>'resource', detail->>'reason' \
+             FROM audit_log WHERE request_id = ANY($1) ORDER BY occurred_at",
+        )
+        .bind(vec![outsider_get_rid.as_uuid(), outsider_delete_rid.as_uuid()])
+        .fetch_all(&w.pool)
+        .await
+        .expect("denial audit rows");
+    assert_eq!(
+        denial_rows,
+        vec![
+            (
+                "authz.denied".into(),
+                "clusters".into(),
+                "denied".into(),
+                w.team.org_id.as_uuid(),
+                w.team.id.as_uuid(),
+                "clusters".into(),
+                "cross_org".into(),
+            ),
+            (
+                "authz.denied".into(),
+                "clusters".into(),
+                "denied".into(),
+                w.team.org_id.as_uuid(),
+                w.team.id.as_uuid(),
+                "clusters".into(),
+                "cross_org".into(),
+            ),
+        ]
+    );
 }
 
 #[tokio::test]
