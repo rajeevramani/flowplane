@@ -309,8 +309,9 @@ provisioning/reconciliation, DCR. Worst-case staleness for a change without evic
 ### 2.8 MCP client auth
 
 MCP is served over streamable HTTP at `/api/v1/mcp` behind the **same** `authenticate`
-middleware — bearer JWT (human via CLI token, or machine via Zitadel `client_credentials`).
-There is no separate MCP credential type. Additional MCP-layer protections
+middleware. D-019 updates this for v2 S11: humans use bearer JWTs, and agents use Flowplane
+agent bearer tokens that resolve to `PrincipalCtx::Agent`; there is no MCP-only credential type
+separate from the normal API authentication middleware. Additional MCP-layer protections
 (`src/mcp/security.rs`): Origin-header allowlist as CSRF defense-in-depth for browser clients
 (default allowlist `http://localhost`, `http://127.0.0.1`, `http://[::1]` — any port; override
 via comma-separated `FLOWPLANE_MCP_ALLOWED_ORIGINS`; matching ignores port, requires exact
