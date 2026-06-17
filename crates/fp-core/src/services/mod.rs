@@ -1,6 +1,7 @@
 //! Services: the only mutation path. Shared helpers for authorization-to-error mapping,
 //! audit actor extraction, trace-context capture, and quotas.
 
+pub mod agents;
 pub mod ai;
 pub mod api_lifecycle;
 pub mod clusters;

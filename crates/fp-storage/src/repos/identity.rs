@@ -3,8 +3,10 @@
 
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::{
-    DomainError, DomainResult, EntityStatus, OrgId, OrgRole, Organization, Team, TeamId, UserId,
+    Agent, AgentId, AgentKind, DomainError, DomainResult, EntityStatus, OrgId, OrgRole,
+    Organization, Team, TeamId, UserId,
 };
+use sha2::{Digest, Sha256};
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
@@ -24,6 +26,20 @@ pub struct LoadedPrincipal {
     /// context resolution. `None` on an uninitialized instance.
     pub platform_org_id: Option<OrgId>,
     pub grants: Vec<(Resource, Action, TeamId)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedAgentPrincipal {
+    pub agent_id: AgentId,
+    pub org_id: OrgId,
+    pub kind: AgentKind,
+    pub grants: Vec<(Resource, Action, TeamId)>,
+}
+
+pub fn hash_agent_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// JIT user provisioning (Q-004): first authenticated request creates the user row;
@@ -133,6 +149,60 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
     }))
 }
 
+pub async fn load_agent_principal_by_token(
+    pool: &PgPool,
+    token: &str,
+) -> DomainResult<Option<LoadedAgentPrincipal>> {
+    load_agent_principal_by_token_hash(pool, &hash_agent_token(token)).await
+}
+
+pub async fn load_agent_principal_by_token_hash(
+    pool: &PgPool,
+    token_hash: &str,
+) -> DomainResult<Option<LoadedAgentPrincipal>> {
+    let Some(agent_row) =
+        sqlx::query("SELECT id, org_id, kind, status FROM agents WHERE token_hash = $1")
+            .bind(token_hash)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("load agent principal: agent: {e}")))?
+    else {
+        return Ok(None);
+    };
+    if agent_row.get::<String, _>("status") != "active" {
+        return Ok(None);
+    }
+    let agent_id = AgentId::from(agent_row.get::<Uuid, _>("id"));
+    let org_id = OrgId::from(agent_row.get::<Uuid, _>("org_id"));
+    let kind = AgentKind::parse(&agent_row.get::<String, _>("kind"))?;
+
+    let grant_rows = sqlx::query(
+        "SELECT resource, action, team_id FROM grants \
+         WHERE principal_type = 'agent' AND principal_id = $1",
+    )
+    .bind(agent_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("load agent principal: grants: {e}")))?;
+
+    let mut grants = Vec::with_capacity(grant_rows.len());
+    for row in grant_rows {
+        let resource = Resource::parse(&row.get::<String, _>("resource"));
+        let action = Action::parse(&row.get::<String, _>("action"));
+        match (resource, action) {
+            (Ok(r), Ok(a)) => grants.push((r, a, TeamId::from(row.get::<Uuid, _>("team_id")))),
+            _ => tracing::warn!(agent = %agent_id, "skipping grant with unknown resource/action"),
+        }
+    }
+
+    Ok(Some(LoadedAgentPrincipal {
+        agent_id,
+        org_id,
+        kind,
+        grants,
+    }))
+}
+
 fn org_from_row(row: &PgRow) -> DomainResult<Organization> {
     Ok(Organization {
         id: OrgId::from(row.get::<Uuid, _>("id")),
@@ -150,6 +220,18 @@ fn team_from_row(row: &PgRow) -> DomainResult<Team> {
         org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
         name: row.get("name"),
         display_name: row.get("display_name"),
+        status: parse_status(&row.get::<String, _>("status"))?,
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+fn agent_from_row(row: &PgRow) -> DomainResult<Agent> {
+    Ok(Agent {
+        id: AgentId::from(row.get::<Uuid, _>("id")),
+        org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+        name: row.get("name"),
+        kind: AgentKind::parse(&row.get::<String, _>("kind"))?,
         status: parse_status(&row.get::<String, _>("status"))?,
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
@@ -226,6 +308,105 @@ pub async fn create_team(
         .await
         .map_err(|e| DomainError::internal(format!("create team: commit: {e}")))?;
     Ok(team)
+}
+
+pub async fn create_agent_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    name: &str,
+    kind: AgentKind,
+    token_hash: &str,
+    created_by: Option<UserId>,
+) -> DomainResult<Agent> {
+    fp_domain::validate_name(name)?;
+    let row = sqlx::query(
+        "INSERT INTO agents (id, org_id, name, kind, token_hash, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING id, org_id, name, kind, status, created_at, updated_at",
+    )
+    .bind(AgentId::generate().as_uuid())
+    .bind(org_id.as_uuid())
+    .bind(name)
+    .bind(kind.as_str())
+    .bind(token_hash)
+    .bind(created_by.map(|u| u.as_uuid()))
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| map_unique_violation(e, "agent", name))?;
+    agent_from_row(&row)
+}
+
+pub async fn list_agents_for_org(pool: &PgPool, org_id: OrgId) -> DomainResult<Vec<Agent>> {
+    let rows = sqlx::query(
+        "SELECT id, org_id, name, kind, status, created_at, updated_at \
+         FROM agents WHERE org_id = $1 ORDER BY name",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list agents: {e}")))?;
+    rows.iter().map(agent_from_row).collect()
+}
+
+pub async fn get_agent(
+    pool: &PgPool,
+    org_id: OrgId,
+    agent_id: AgentId,
+) -> DomainResult<Option<Agent>> {
+    let row = sqlx::query(
+        "SELECT id, org_id, name, kind, status, created_at, updated_at \
+         FROM agents WHERE org_id = $1 AND id = $2",
+    )
+    .bind(org_id.as_uuid())
+    .bind(agent_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get agent: {e}")))?;
+    row.as_ref().map(agent_from_row).transpose()
+}
+
+pub async fn rotate_agent_token_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    agent_id: AgentId,
+    token_hash: &str,
+) -> DomainResult<Agent> {
+    let row = sqlx::query(
+        "UPDATE agents SET token_hash = $3, status = 'active', updated_at = now() \
+         WHERE org_id = $1 AND id = $2 \
+         RETURNING id, org_id, name, kind, status, created_at, updated_at",
+    )
+    .bind(org_id.as_uuid())
+    .bind(agent_id.as_uuid())
+    .bind(token_hash)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("rotate agent token: {e}")))?;
+    row.as_ref()
+        .map(agent_from_row)
+        .transpose()?
+        .ok_or_else(|| DomainError::not_found("agent", &agent_id.to_string()))
+}
+
+pub async fn disable_agent_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    agent_id: AgentId,
+) -> DomainResult<Agent> {
+    let row = sqlx::query(
+        "UPDATE agents SET status = 'suspended', updated_at = now() \
+         WHERE org_id = $1 AND id = $2 \
+         RETURNING id, org_id, name, kind, status, created_at, updated_at",
+    )
+    .bind(org_id.as_uuid())
+    .bind(agent_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("disable agent: {e}")))?;
+    row.as_ref()
+        .map(agent_from_row)
+        .transpose()?
+        .ok_or_else(|| DomainError::not_found("agent", &agent_id.to_string()))
 }
 
 /// Resolve a team id to its org-carrying reference for the authorization engine.
@@ -357,6 +538,38 @@ pub async fn add_grant_in_tx(
             DomainError::validation("grant references a team outside the given organization")
         } else {
             DomainError::internal(format!("add grant: {e}"))
+        }
+    })?;
+    Ok(())
+}
+
+pub async fn add_agent_grant_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    principal_agent: AgentId,
+    org_id: OrgId,
+    team_id: TeamId,
+    resource: Resource,
+    action: Action,
+    created_by: Option<UserId>,
+) -> DomainResult<()> {
+    sqlx::query(
+        "INSERT INTO grants (id, principal_type, principal_id, org_id, team_id, resource, action, created_by) \
+         VALUES (gen_random_uuid(), 'agent', $1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (principal_type, principal_id, team_id, resource, action) DO NOTHING",
+    )
+    .bind(principal_agent.as_uuid())
+    .bind(org_id.as_uuid())
+    .bind(team_id.as_uuid())
+    .bind(resource.as_str())
+    .bind(action.as_str())
+    .bind(created_by.map(|u| u.as_uuid()))
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| {
+        if is_fk_violation(&e) {
+            DomainError::validation("grant references a team outside the given organization")
+        } else {
+            DomainError::internal(format!("add agent grant: {e}"))
         }
     })?;
     Ok(())

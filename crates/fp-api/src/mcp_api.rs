@@ -3,7 +3,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::{body::Body, Json};
 use fp_core::PrincipalCtx;
-use fp_domain::RequestId;
+use fp_domain::{AgentKind, RequestId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -73,6 +73,24 @@ pub async fn post(
     let principal = principal_key(&ctx);
     cleanup_sessions();
     let mut response: Response = match req.method.as_str() {
+        "initialize"
+            if matches!(
+                ctx,
+                PrincipalCtx::Agent {
+                    kind: AgentKind::ApiConsumer,
+                    ..
+                }
+            ) =>
+        {
+            rpc_error(
+                req.id,
+                -32600,
+                "api-consumer agents do not use the MCP endpoint",
+                rid,
+                "authz",
+            )
+            .into_response()
+        }
         "initialize" => initialize(req.id, &principal, version.clone()),
         "notifications/initialized" | "initialized" => notification(req.id),
         "ping" => with_session(&headers, &principal, req.id, rid, || json!({})),
