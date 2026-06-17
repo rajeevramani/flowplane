@@ -275,6 +275,10 @@ For S11 MCP:
 - MCP authorization is restated in v2 terms: `PrincipalCtx`, typed `Resource`/`Action`, explicit
   `TeamRef` where needed, org-admin implicit grants, platform-admin governance-only bypass, and the
   grants-only agent path.
+- MCP sessions are not an authz cache. Each request re-authenticates the bearer token and
+  re-evaluates grants so agent disable/rotate and grant revocation fail closed on the next call.
+- MCP Origin checks are a browser defense: absent `Origin` is allowed for headless agents, while a
+  present `Origin` must match the configured allowlist.
 - MCP session team scope must be explicit or unambiguous. Multi-team callers and org admins must
   not fall back to "first team" for team-scoped writes.
 - `cp_*` tools are internal control-plane tools. They use the same org/team authz model as REST and
@@ -289,6 +293,8 @@ For S11 MCP:
   to cache; live reads make republish staleness the database's job.
 - Agents are part of the S11 authz surface. The deferred Agents API must land before static/dynamic
   MCP tests can rely on real `CpTool`, `GatewayTool`, and `ApiConsumer` principals.
+- Agent authz is not enough by itself: S11 must add the agent-token authN path that resolves a
+  hashed active bearer token to `PrincipalCtx::Agent` before MCP can test real agent principals.
 - `tools/list` is an executable-tool view, not a catalog. A listed tool without executable authz, or
   authz metadata without an exposed tool, is architectural drift.
 - Static MCP registry metadata must not drift from the service-layer authz actually enforced at

@@ -361,6 +361,10 @@ Route definitions (REST), tool definitions (MCP), and CLI command metadata each 
 build time, with CI parity gates (router↔OpenAPI 100%, registry↔tools 100%, docs↔flags 100%).
 The v1↔v2 OpenAPI diff (required by the plan) runs against `spec/01-api-contract.v1-openapi.json`.
 
+D-019 scopes this as an S11 decision, not existing infrastructure: if S11 does not build the
+shared declaration layer first, the MCP registry is hand-authored and protected by a drift gate
+against the service-layer `(Resource, Action)` actually enforced at execution.
+
 ## 10. Operations (D-004; full review in docs/production-readiness.md at hardening)
 
 ### 10.1 Deployment topology: CP and DP are independently deployable (v1 property, kept and strengthened)

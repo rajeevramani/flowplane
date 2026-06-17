@@ -503,6 +503,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S10 docs/progress: #61 aligned `DECISIONS.md`, `PROGRESS.md`, and S10 spec notes
         with the implemented fixed-window budget semantics and OpenAI-compatible v1.0 scope.
 - [ ] S11 MCP server + tools
+  - [x] S11a design contract: D-019 records the v2 MCP authn/authz/session/tool contract,
+        resource/action mapping, static-registry fork, dynamic `api_*` routing/exposure model,
+        agent-token prerequisite, no-authz-cache session rule, Origin policy, AI-tool decision
+        point, and CLI/status/connections dependencies.
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
 
 ## Known Corrections / Open Risks

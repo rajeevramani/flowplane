@@ -7,6 +7,11 @@ resources/prompts surfaces, sufficient to reimplement without reading v1 source.
 
 v1 source anchors are cited per-section as `[v1: path]`.
 
+**v2 note:** D-019 is the S11 implementation contract. This v1 extraction is reference material
+for workflows and known gaps only; v2 does not inherit the v1 scope-string authz model, the
+"82 tools" count, phantom authz entries, cached session/team authz, or the v1 route
+external/internal exposure column.
+
 ---
 
 ## 1. MCP Server Overview
