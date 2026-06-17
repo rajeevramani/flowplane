@@ -22,6 +22,8 @@ pub struct ExposeBody {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_base_url: Option<String>,
 }
 
 fn default_path() -> String {
@@ -34,7 +36,9 @@ pub struct ExposeView {
     pub upstream: String,
     pub path: String,
     pub port: u16,
-    pub curl_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub curl_url: Option<String>,
+    pub endpoint_source: String,
     pub cluster: ClusterView,
     pub route_config: RouteConfigView,
     pub listener: ListenerView,
@@ -56,6 +60,7 @@ impl From<svc::ExposedService> for ExposeView {
             path: value.path,
             port: value.port,
             curl_url: value.curl_url,
+            endpoint_source: value.endpoint_source.as_str().into(),
             cluster: ClusterView::from(value.cluster),
             route_config: RouteConfigView::from(value.route_config),
             listener: ListenerView::from(value.listener),
@@ -105,6 +110,7 @@ pub async fn expose(
                 upstream: body.upstream,
                 path: body.path,
                 port: body.port,
+                public_base_url: body.public_base_url,
             },
             rid,
         )

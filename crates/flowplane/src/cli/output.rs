@@ -251,15 +251,21 @@ fn ordered_columns(columns: BTreeSet<String>) -> Vec<String> {
 
 fn flatten_expose(value: &Value) -> Option<Value> {
     let obj = value.as_object()?;
-    if !(obj.contains_key("curl_url")
-        && obj.contains_key("cluster")
+    if !(obj.contains_key("cluster")
         && obj.contains_key("route_config")
         && obj.contains_key("listener"))
     {
         return None;
     }
     let mut row = serde_json::Map::new();
-    for key in ["name", "upstream", "path", "port", "curl_url"] {
+    for key in [
+        "name",
+        "upstream",
+        "path",
+        "port",
+        "curl_url",
+        "endpoint_source",
+    ] {
         if let Some(value) = obj.get(key) {
             row.insert(key.to_string(), value.clone());
         }

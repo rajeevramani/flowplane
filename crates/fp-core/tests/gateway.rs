@@ -596,6 +596,7 @@ mod expose_shortcut {
                         upstream: "http://127.0.0.1:3001".into(),
                         path: "/".into(),
                         port: None,
+                        public_base_url: None,
                     },
                     RequestId::generate(),
                 )
@@ -610,6 +611,11 @@ mod expose_shortcut {
                 ports.insert(exposed.port),
                 "auto-allocated duplicate port {}",
                 exposed.port
+            );
+            assert_eq!(exposed.curl_url, None);
+            assert_eq!(
+                exposed.endpoint_source,
+                exp::ExposeEndpointSource::Unconfigured
             );
         }
 

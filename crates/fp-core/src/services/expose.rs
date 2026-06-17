@@ -25,6 +25,7 @@ pub struct ExposeRequest {
     pub upstream: String,
     pub path: String,
     pub port: Option<u16>,
+    pub public_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,7 +37,8 @@ pub struct ExposedService {
     pub cluster: Cluster,
     pub route_config: RouteConfig,
     pub listener: Listener,
-    pub curl_url: String,
+    pub curl_url: Option<String>,
+    pub endpoint_source: ExposeEndpointSource,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +47,21 @@ pub struct UnexposedService {
     pub cluster_name: String,
     pub route_config_name: String,
     pub listener_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExposeEndpointSource {
+    ListenerPublicBaseUrl,
+    Unconfigured,
+}
+
+impl ExposeEndpointSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ListenerPublicBaseUrl => "listener.public_base_url",
+            Self::Unconfigured => "unconfigured",
+        }
+    }
 }
 
 pub async fn expose(
@@ -58,6 +75,7 @@ pub async fn expose(
     let upstream = parse_upstream(&request.upstream)?;
     let path = normalize_path(&request.path)?;
     let names = ExposeNames::new(&request.name);
+    let public_base_url = request.public_base_url;
 
     let cluster_spec = ClusterSpec {
         aggregate_clusters: Vec::new(),
@@ -115,6 +133,7 @@ pub async fn expose(
         names,
         cluster_spec,
         route_config_spec,
+        public_base_url,
     };
 
     for attempt in 0..DEFAULT_PORT_ATTEMPTS {
@@ -124,6 +143,17 @@ pub async fn expose(
         };
         match create_resources_for_port(pool, ctx, team, &template, port, request_id).await {
             Ok((cluster, route_config, listener)) => {
+                let curl_url = listener
+                    .spec
+                    .public_base_url
+                    .as_deref()
+                    .map(|base_url| expose_curl_url(base_url, &path))
+                    .transpose()?;
+                let endpoint_source = if curl_url.is_some() {
+                    ExposeEndpointSource::ListenerPublicBaseUrl
+                } else {
+                    ExposeEndpointSource::Unconfigured
+                };
                 return Ok(ExposedService {
                     name: request.name,
                     upstream: request.upstream,
@@ -132,7 +162,8 @@ pub async fn expose(
                     cluster,
                     route_config,
                     listener,
-                    curl_url: format!("http://127.0.0.1:{port}{path}"),
+                    curl_url,
+                    endpoint_source,
                 });
             }
             Err(err) if request.port.is_none() && is_listener_port_conflict(&err) => {
@@ -161,7 +192,7 @@ async fn create_resources_for_port(
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
         port,
-        public_base_url: None,
+        public_base_url: template.public_base_url.clone(),
         protocol: ListenerProtocol::Http,
         route_config: Some(template.names.route_config.clone()),
         http_filters: Vec::new(),
@@ -351,6 +382,7 @@ struct ExposeTemplate {
     names: ExposeNames,
     cluster_spec: ClusterSpec,
     route_config_spec: RouteConfigSpec,
+    public_base_url: Option<String>,
 }
 
 impl ExposeNames {
@@ -415,4 +447,11 @@ fn normalize_path(path: &str) -> DomainResult<String> {
         ));
     }
     Ok(path.into())
+}
+
+fn expose_curl_url(public_base_url: &str, path: &str) -> DomainResult<String> {
+    let mut url = Url::parse(public_base_url.trim_end_matches('/'))
+        .map_err(|e| DomainError::validation(format!("invalid listener public_base_url: {e}")))?;
+    url.set_path(path);
+    Ok(url.to_string())
 }
