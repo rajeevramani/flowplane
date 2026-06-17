@@ -6,7 +6,7 @@ use crate::state::AppState;
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use fp_domain::{DomainError, RequestId};
 use serde::Serialize;
@@ -186,6 +186,7 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 pub fn build_router(state: AppState) -> Router {
     let (api_router, openapi) = secured_api();
     let secured = api_router
+        .route("/api/v1/mcp", post(crate::mcp_api::post))
         // Throttle inside auth so the PrincipalCtx is available for tenant keying.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
