@@ -17,8 +17,9 @@ use client::RestClient;
 pub use commands::{
     AiCommand, ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand,
     DataplaneBootstrapMode, DataplaneCommand, ExposeCommand, GrantCommand, LearnCommand,
-    LearnDiscoverCommand, OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand, RouteCommand,
-    SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand, XdsCommand,
+    LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand,
+    RouteCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand,
+    XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{
@@ -1173,6 +1174,56 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
     Ok(())
 }
 
+pub async fn run_mcp(global: GlobalOptions, command: McpCommand) -> Result<()> {
+    let client = RestClient::new(global)?;
+    match command {
+        McpCommand::Status { team } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/mcp/status"),
+                    None,
+                )
+                .await?;
+        }
+        McpCommand::Connections { team } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/mcp/connections"),
+                    None,
+                )
+                .await?;
+        }
+        McpCommand::Enable { api, team } => update_mcp_tool(client, team, api, true).await?,
+        McpCommand::Disable { api, team } => update_mcp_tool(client, team, api, false).await?,
+    };
+    Ok(())
+}
+
+async fn update_mcp_tool(
+    client: RestClient,
+    team: Option<String>,
+    api_tool: String,
+    enabled: bool,
+) -> Result<()> {
+    let team = client.team(team)?;
+    let api_tool = api_tool.strip_prefix("api_").unwrap_or(&api_tool);
+    client
+        .request(
+            reqwest::Method::PATCH,
+            &format!(
+                "/api/v1/teams/{team}/mcp/tools/{}",
+                query_component(api_tool)
+            ),
+            Some(json!({ "enabled": enabled })),
+        )
+        .await?;
+    Ok(())
+}
+
 pub async fn run_learn(global: GlobalOptions, command: LearnCommand) -> Result<()> {
     let client = RestClient::new(global)?;
     match command {
@@ -2203,6 +2254,8 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions/{name}/status",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
+        "/api/v1/teams/{team}/mcp/status",
+        "/api/v1/teams/{team}/mcp/connections",
         "/api/v1/teams/{team}/mcp/tools/{name}",
         "/api/v1/teams/{team}/ai/providers",
         "/api/v1/teams/{team}/ai/providers/{name}",
@@ -2365,6 +2418,40 @@ mod tests {
         assert!(rendered.contains("listener.public_base_url"));
         assert!(rendered.contains("demo-upstream"));
         assert!(!rendered.contains("{...}"));
+    }
+
+    #[test]
+    fn table_renders_mcp_status_and_connections() {
+        let status = table(&json!({
+            "transport": "streamable_http_post",
+            "preferred_protocol_version": "2025-11-25",
+            "supported_protocol_versions": ["2025-11-25", "2025-03-26"],
+            "session_ttl_seconds": 3600,
+            "active_sessions": 1,
+            "static_tool_count": 32,
+            "dynamic_enabled_tool_count": 4,
+            "tools_list_changed": false,
+            "sse_enabled": false,
+            "resources_enabled": false,
+            "prompts_enabled": false,
+            "api_invocation_mode": "gateway_invocation_descriptor"
+        }));
+        assert!(status.contains("TRANSPORT"));
+        assert!(status.contains("streamable_http_post"));
+        assert!(status.contains("API INVOCATION MODE"));
+        assert!(status.contains("gateway_invocation_descriptor"));
+
+        let connections = table(&json!([{
+            "connection_id": "018f0000-0000-7000-8000-000000000001",
+            "principal_kind": "user",
+            "transport": "streamable_http_post",
+            "sse": false,
+            "age_seconds": 2,
+            "idle_seconds": 1
+        }]));
+        assert!(connections.contains("CONNECTION ID"));
+        assert!(connections.contains("PRINCIPAL KIND"));
+        assert!(connections.contains("streamable_http_post"));
     }
 
     #[test]

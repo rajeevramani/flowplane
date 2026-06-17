@@ -26,7 +26,7 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("body must be JSON")
 }
 
-async fn app_with_tokens() -> Option<(axum::Router, String, String)> {
+async fn app_with_tokens() -> Option<(axum::Router, String, String, String)> {
     let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
         return None;
@@ -44,6 +44,9 @@ async fn app_with_tokens() -> Option<(axum::Router, String, String)> {
     let org = identity::create_org(&pool, &unique("org"), "")
         .await
         .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
     let subject_a = unique("sub-a");
     let subject_b = unique("sub-b");
     let user_a = identity::upsert_user_by_subject(&pool, &subject_a, "a@test", "A")
@@ -71,7 +74,7 @@ async fn app_with_tokens() -> Option<(axum::Router, String, String)> {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
     });
-    Some((app, token_a, token_b))
+    Some((app, token_a, token_b, team.name))
 }
 
 fn request(token: &str, body: serde_json::Value) -> Request<Body> {
@@ -82,6 +85,15 @@ fn request(token: &str, body: serde_json::Value) -> Request<Body> {
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .expect("request")
+}
+
+fn management_request(token: &str, uri: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("management request")
 }
 
 fn initialize(id: i64) -> serde_json::Value {
@@ -112,7 +124,7 @@ fn ping(id: i64) -> serde_json::Value {
 
 #[tokio::test]
 async fn mcp_initialized_notification_returns_accepted_empty_body() {
-    let Some((app, token, _)) = app_with_tokens().await else {
+    let Some((app, token, _, _)) = app_with_tokens().await else {
         return;
     };
 
@@ -132,7 +144,7 @@ async fn mcp_initialized_notification_returns_accepted_empty_body() {
 
 #[tokio::test]
 async fn mcp_initialize_and_ping_allow_headless_clients() {
-    let Some((app, token, _)) = app_with_tokens().await else {
+    let Some((app, token, _, _)) = app_with_tokens().await else {
         return;
     };
 
@@ -181,8 +193,57 @@ async fn mcp_initialize_and_ping_allow_headless_clients() {
 }
 
 #[tokio::test]
+async fn mcp_status_and_connections_report_post_only_sessions() {
+    let Some((app, token, _, team)) = app_with_tokens().await else {
+        return;
+    };
+
+    let response = app
+        .clone()
+        .oneshot(request(&token, initialize(1)))
+        .await
+        .expect("initialize response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(management_request(
+            &token,
+            &format!("/api/v1/teams/{team}/mcp/status"),
+        ))
+        .await
+        .expect("status response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["transport"], "streamable_http_post");
+    assert_eq!(body["preferred_protocol_version"], "2025-11-25");
+    assert_eq!(body["sse_enabled"], false);
+    assert_eq!(body["resources_enabled"], false);
+    assert_eq!(body["prompts_enabled"], false);
+    assert_eq!(body["api_invocation_mode"], "gateway_invocation_descriptor");
+    assert_eq!(body["active_sessions"], 1);
+
+    let response = app
+        .oneshot(management_request(
+            &token,
+            &format!("/api/v1/teams/{team}/mcp/connections"),
+        ))
+        .await
+        .expect("connections response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let connections = body.as_array().expect("connections array");
+    assert_eq!(connections.len(), 1);
+    assert!(connections[0]["connection_id"].as_str().is_some());
+    assert_eq!(connections[0]["principal_kind"], "user");
+    assert_eq!(connections[0]["transport"], "streamable_http_post");
+    assert_eq!(connections[0]["sse"], false);
+    assert!(connections[0].get("session_id").is_none());
+}
+
+#[tokio::test]
 async fn mcp_session_is_bound_to_reauthenticated_principal() {
-    let Some((app, token_a, token_b)) = app_with_tokens().await else {
+    let Some((app, token_a, token_b, _)) = app_with_tokens().await else {
         return;
     };
     let response = app
@@ -218,7 +279,7 @@ async fn mcp_session_is_bound_to_reauthenticated_principal() {
 #[tokio::test]
 async fn mcp_origin_policy_allows_absent_and_allowed_origin_but_rejects_denied_origin() {
     std::env::set_var("FLOWPLANE_MCP_ALLOWED_ORIGINS", "https://allowed.example");
-    let Some((app, token, _)) = app_with_tokens().await else {
+    let Some((app, token, _, _)) = app_with_tokens().await else {
         return;
     };
 
@@ -265,7 +326,7 @@ async fn mcp_origin_policy_allows_absent_and_allowed_origin_but_rejects_denied_o
 
 #[tokio::test]
 async fn mcp_rejects_unsupported_protocol_versions() {
-    let Some((app, token, _)) = app_with_tokens().await else {
+    let Some((app, token, _, _)) = app_with_tokens().await else {
         return;
     };
     let response = app

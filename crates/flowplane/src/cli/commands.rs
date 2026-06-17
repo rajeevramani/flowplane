@@ -323,6 +323,30 @@ pub enum ApiSpecCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum McpCommand {
+    Status {
+        #[arg(long)]
+        team: Option<String>,
+    },
+    Connections {
+        #[arg(long)]
+        team: Option<String>,
+    },
+    Enable {
+        #[arg(long = "api", alias = "tool")]
+        api: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+    Disable {
+        #[arg(long = "api", alias = "tool")]
+        api: String,
+        #[arg(long)]
+        team: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum LearnCommand {
     Discover {
         #[command(subcommand)]
