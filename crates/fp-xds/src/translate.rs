@@ -2999,6 +2999,7 @@ mod tests {
         let unbound = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10001,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: None,
             http_filters: Vec::new(),
@@ -3010,6 +3011,7 @@ mod tests {
         let bound = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10001,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: Some("orders".into()),
             http_filters: Vec::new(),
@@ -3076,6 +3078,7 @@ mod tests {
         let spec = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10443,
+            public_base_url: None,
             protocol: ListenerProtocol::Https,
             route_config: Some("orders".into()),
             http_filters: Vec::new(),
@@ -3183,6 +3186,7 @@ mod tests {
             let spec = ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 10001,
+                public_base_url: None,
                 protocol: ListenerProtocol::Http,
                 route_config: Some("orders".into()),
                 http_filters: chain,
@@ -3250,6 +3254,7 @@ mod tests {
             let cors_spec = ListenerSpec {
                 address: "0.0.0.0".into(),
                 port: 10002,
+                public_base_url: None,
                 protocol: ListenerProtocol::Http,
                 route_config: Some("orders".into()),
                 http_filters: vec![HttpFilterEntry {
@@ -3479,6 +3484,7 @@ mod tests {
         let spec = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10000,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: Some("ai-chat-routes".into()),
             http_filters: Vec::new(),
@@ -3553,6 +3559,7 @@ mod tests {
         let spec = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10000,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: Some("routes".into()),
             http_filters: Vec::new(),
@@ -3575,6 +3582,7 @@ mod tests {
         let spec = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10000,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: Some("ai-chat-routes".into()),
             http_filters: Vec::new(),
@@ -3633,6 +3641,7 @@ mod tests {
         let spec = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10000,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: Some("orders".into()),
             http_filters: Vec::new(),
@@ -3793,6 +3802,7 @@ mod tests {
         let spec = ListenerSpec {
             address: "0.0.0.0".into(),
             port: 10001,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: Some("orders".into()),
             http_filters: vec![

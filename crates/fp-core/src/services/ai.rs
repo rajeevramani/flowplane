@@ -913,6 +913,7 @@ async fn create_materialized(
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
         port: spec.listener_port,
+        public_base_url: None,
         protocol: ListenerProtocol::Http,
         route_config: Some(names.route_config_name.clone()),
         http_filters: Vec::new(),

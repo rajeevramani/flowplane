@@ -4,10 +4,9 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::{body::Body, Json};
 use fp_core::{check_resource_access, Decision, PrincipalCtx};
-use fp_domain::api_lifecycle::{ApiTool, HttpMethod};
+use fp_domain::api_lifecycle::{ApiRouteBinding, ApiTool};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::gateway::cluster::ClusterSpec;
-use fp_domain::gateway::listener::ListenerProtocol;
 use fp_domain::gateway::listener::ListenerSpec;
 use fp_domain::gateway::route_config::RouteConfigSpec;
 use fp_domain::{AgentKind, DomainError, DomainResult, ErrorCode, RequestId};
@@ -708,28 +707,9 @@ async fn execute_dynamic_tool(
             .ok_or_else(|| {
                 DomainError::not_found("listener", &listener_id.as_uuid().to_string())
             })?;
-    let url = dynamic_tool_url(
-        &tool,
-        &arguments,
-        listener.spec.port,
-        listener.spec.protocol,
-    )?;
-    let mut request = reqwest::Client::new().request(reqwest_method(tool.method), url);
-    if let Some(host) = binding.virtual_host.as_deref().filter(|host| *host != "*") {
-        request = request.header("host", host);
-    }
-    if let Some(headers) = arguments.get("headers").and_then(Value::as_object) {
-        for (key, value) in headers {
-            if let Some(value) = value.as_str() {
-                request = request.header(key, value);
-            }
-        }
-    }
-    if let Some(body) = arguments.get("body") {
-        request = request.json(body);
-    }
-    let response = match request.send().await {
-        Ok(response) => response,
+    let descriptor = match dynamic_tool_descriptor(&tool, &arguments, &listener.spec, &binding, rid)
+    {
+        Ok(descriptor) => descriptor,
         Err(e) => {
             record_dynamic_tool_audit(
                 state,
@@ -738,31 +718,10 @@ async fn execute_dynamic_tool(
                 team,
                 &tool,
                 fp_storage::repos::audit::Outcome::Failure,
-                json!({ "error": "envoy_call_failed" }),
+                json!({ "error": "descriptor_unavailable" }),
             )
             .await;
-            return Err(DomainError::internal(format!(
-                "call api tool through Envoy: {e}"
-            )));
-        }
-    };
-    let status = response.status().as_u16();
-    let text = match response.text().await {
-        Ok(text) => text,
-        Err(e) => {
-            record_dynamic_tool_audit(
-                state,
-                ctx,
-                rid,
-                team,
-                &tool,
-                fp_storage::repos::audit::Outcome::Failure,
-                json!({ "error": "response_read_failed", "status": status }),
-            )
-            .await;
-            return Err(DomainError::internal(format!(
-                "read api tool response: {e}"
-            )));
+            return Err(e);
         }
     };
     record_dynamic_tool_audit(
@@ -772,14 +731,10 @@ async fn execute_dynamic_tool(
         team,
         &tool,
         fp_storage::repos::audit::Outcome::Success,
-        json!({ "status": status }),
+        json!({ "descriptor": true }),
     )
     .await;
-    let body = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
-    Ok(json!({
-        "status": status,
-        "body": body,
-    }))
+    Ok(descriptor)
 }
 
 async fn record_dynamic_tool_audit(
@@ -1474,17 +1429,48 @@ fn dynamic_input_schema(schema: &Value) -> Value {
     Value::Object(schema)
 }
 
+fn dynamic_tool_descriptor(
+    tool: &ApiTool,
+    arguments: &Value,
+    listener: &ListenerSpec,
+    binding: &ApiRouteBinding,
+    rid: RequestId,
+) -> DomainResult<Value> {
+    let base_url = listener.public_base_url.as_deref().ok_or_else(|| {
+        DomainError::new(
+            ErrorCode::Conflict,
+            format!(
+                "listener for api tool \"{}\" has no public_base_url",
+                tool.name
+            ),
+        )
+        .with_hint("set listener.spec.public_base_url before invoking api tools")
+    })?;
+    let url = dynamic_tool_url(tool, arguments, base_url)?;
+    let headers = dynamic_descriptor_headers(arguments, binding)?;
+    Ok(json!({
+        "type": "gateway_invocation",
+        "version": 1,
+        "tool": format!("api_{}", tool.name),
+        "apiToolId": tool.id.as_uuid(),
+        "apiDefinitionId": tool.api_definition_id.as_uuid(),
+        "specVersionId": tool.spec_version_id.as_uuid(),
+        "operationId": tool.operation_id,
+        "method": tool.method.as_str(),
+        "url": url.as_str(),
+        "headers": headers,
+        "body": arguments.get("body").cloned().unwrap_or(Value::Null),
+        "auth": { "mode": "caller_gateway_credentials" },
+        "expiresAt": (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
+        "correlationId": rid.to_string(),
+    }))
+}
+
 fn dynamic_tool_url(
     tool: &ApiTool,
     arguments: &Value,
-    port: u16,
-    protocol: ListenerProtocol,
+    base_url: &str,
 ) -> DomainResult<reqwest::Url> {
-    let scheme = if protocol == ListenerProtocol::Https {
-        "https"
-    } else {
-        "http"
-    };
     let mut path = tool.path.clone();
     if let Some(params) = arguments.get("pathParams").and_then(Value::as_object) {
         for (key, value) in params {
@@ -1501,8 +1487,9 @@ fn dynamic_tool_url(
             path = path.replace(&format!("{{{key}}}"), &encode_path_segment(value));
         }
     }
-    let mut url = reqwest::Url::parse(&format!("{scheme}://127.0.0.1:{port}{path}"))
-        .map_err(|e| DomainError::validation(format!("invalid api tool path: {e}")))?;
+    let mut url = reqwest::Url::parse(base_url.trim_end_matches('/'))
+        .map_err(|e| DomainError::validation(format!("invalid listener public_base_url: {e}")))?;
+    url.set_path(&path);
     if let Some(query) = arguments.get("query").and_then(Value::as_object) {
         let mut pairs = url.query_pairs_mut();
         for (key, value) in query {
@@ -1527,6 +1514,29 @@ fn dynamic_tool_url(
     Ok(url)
 }
 
+fn dynamic_descriptor_headers(arguments: &Value, binding: &ApiRouteBinding) -> DomainResult<Value> {
+    let mut headers = serde_json::Map::new();
+    if let Some(input) = arguments.get("headers").and_then(Value::as_object) {
+        for (key, value) in input {
+            if key.eq_ignore_ascii_case("host") || key.eq_ignore_ascii_case(":authority") {
+                return Err(DomainError::validation(format!(
+                    "headers.{key} is controlled by the api route binding"
+                )));
+            }
+            let Some(value) = value.as_str() else {
+                return Err(DomainError::validation(format!(
+                    "headers.{key} must be a string"
+                )));
+            };
+            headers.insert(key.clone(), Value::String(value.to_string()));
+        }
+    }
+    if let Some(host) = binding.virtual_host.as_deref().filter(|host| *host != "*") {
+        headers.insert("host".into(), Value::String(host.to_string()));
+    }
+    Ok(Value::Object(headers))
+}
+
 fn is_dot_path_segment(value: &str) -> bool {
     matches!(
         value.to_ascii_lowercase().as_str(),
@@ -1545,18 +1555,6 @@ fn encode_path_segment(value: &str) -> String {
         }
     }
     out
-}
-
-fn reqwest_method(method: HttpMethod) -> reqwest::Method {
-    match method {
-        HttpMethod::Get => reqwest::Method::GET,
-        HttpMethod::Post => reqwest::Method::POST,
-        HttpMethod::Put => reqwest::Method::PUT,
-        HttpMethod::Patch => reqwest::Method::PATCH,
-        HttpMethod::Delete => reqwest::Method::DELETE,
-        HttpMethod::Options => reqwest::Method::OPTIONS,
-        HttpMethod::Head => reqwest::Method::HEAD,
-    }
 }
 
 fn static_tool(name: &str) -> Option<&'static StaticTool> {
@@ -1891,6 +1889,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use fp_core::GrantSet;
+    use fp_domain::api_lifecycle::HttpMethod;
     use fp_domain::{OrgId, OrgRole, UserId};
     use http_body_util::BodyExt;
     use metrics_exporter_prometheus::PrometheusBuilder;
@@ -1927,20 +1926,18 @@ mod tests {
         let url = dynamic_tool_url(
             &tool,
             &json!({ "pathParams": { "id": "a/b ?#%" }, "query": { "q": "../admin" } }),
-            8080,
-            ListenerProtocol::Http,
+            "https://gateway.example",
         )
         .expect("url");
         assert_eq!(
             url.as_str(),
-            "http://127.0.0.1:8080/items/a%2Fb%20%3F%23%25?q=..%2Fadmin"
+            "https://gateway.example/items/a%2Fb%20%3F%23%25?q=..%2Fadmin"
         );
 
         let url = dynamic_tool_url(
             &tool,
             &json!({ "pathParams": { "id": "../admin" } }),
-            8080,
-            ListenerProtocol::Http,
+            "https://gateway.example",
         )
         .expect("url");
         assert_eq!(url.path(), "/items/..%2Fadmin");
@@ -1949,8 +1946,7 @@ mod tests {
             let err = dynamic_tool_url(
                 &tool,
                 &json!({ "pathParams": { "id": id } }),
-                8080,
-                ListenerProtocol::Http,
+                "https://gateway.example",
             )
             .expect_err("dot segment must be rejected");
             assert!(
@@ -1958,6 +1954,150 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn dynamic_descriptor_uses_public_base_url_and_binding_host() {
+        let now = chrono::Utc::now();
+        let tool = ApiTool {
+            id: fp_domain::ApiToolId::generate(),
+            team_id: fp_domain::TeamId::generate(),
+            api_definition_id: fp_domain::ApiDefinitionId::generate(),
+            spec_version_id: fp_domain::SpecVersionId::generate(),
+            name: "catalog-get".into(),
+            operation_id: "getItem".into(),
+            method: HttpMethod::Get,
+            path: "/items/{id}".into(),
+            input_schema: json!({}),
+            output_schema: json!({}),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+        let listener = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 18080,
+            public_base_url: Some("https://gateway.example".into()),
+            protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
+            route_config: Some("routes".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+        let binding = ApiRouteBinding {
+            id: fp_domain::ApiRouteBindingId::generate(),
+            team_id: fp_domain::TeamId::generate(),
+            api_definition_id: tool.api_definition_id,
+            route_config_id: fp_domain::RouteConfigId::generate(),
+            listener_id: Some(fp_domain::ListenerId::generate()),
+            name: "binding".into(),
+            virtual_host: Some("api.example".into()),
+            route: None,
+            created_at: now,
+        };
+
+        let descriptor = dynamic_tool_descriptor(
+            &tool,
+            &json!({
+                "pathParams": { "id": "123" },
+                "query": { "debug": true },
+                "headers": { "x-requested-by": "mcp" },
+                "body": { "ignoredForGet": true }
+            }),
+            &listener,
+            &binding,
+            RequestId::generate(),
+        )
+        .expect("descriptor");
+
+        assert_eq!(descriptor["type"], "gateway_invocation");
+        assert_eq!(descriptor["tool"], "api_catalog-get");
+        assert_eq!(descriptor["method"], "GET");
+        assert_eq!(
+            descriptor["url"],
+            "https://gateway.example/items/123?debug=true"
+        );
+        assert_eq!(descriptor["headers"]["host"], "api.example");
+        assert_eq!(descriptor["headers"]["x-requested-by"], "mcp");
+        assert_eq!(descriptor["auth"]["mode"], "caller_gateway_credentials");
+        assert!(descriptor["expiresAt"].as_str().is_some());
+        assert!(descriptor["correlationId"].as_str().is_some());
+    }
+
+    #[test]
+    fn dynamic_descriptor_rejects_missing_endpoint_and_host_override() {
+        let now = chrono::Utc::now();
+        let tool = ApiTool {
+            id: fp_domain::ApiToolId::generate(),
+            team_id: fp_domain::TeamId::generate(),
+            api_definition_id: fp_domain::ApiDefinitionId::generate(),
+            spec_version_id: fp_domain::SpecVersionId::generate(),
+            name: "catalog-get".into(),
+            operation_id: "getItem".into(),
+            method: HttpMethod::Get,
+            path: "/items/{id}".into(),
+            input_schema: json!({}),
+            output_schema: json!({}),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut listener = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 18080,
+            public_base_url: None,
+            protocol: fp_domain::gateway::listener::ListenerProtocol::Http,
+            route_config: Some("routes".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+        let binding = ApiRouteBinding {
+            id: fp_domain::ApiRouteBindingId::generate(),
+            team_id: fp_domain::TeamId::generate(),
+            api_definition_id: tool.api_definition_id,
+            route_config_id: fp_domain::RouteConfigId::generate(),
+            listener_id: Some(fp_domain::ListenerId::generate()),
+            name: "binding".into(),
+            virtual_host: Some("api.example".into()),
+            route: None,
+            created_at: now,
+        };
+
+        let err = dynamic_tool_descriptor(
+            &tool,
+            &json!({ "pathParams": { "id": "123" } }),
+            &listener,
+            &binding,
+            RequestId::generate(),
+        )
+        .expect_err("missing public endpoint");
+        assert_eq!(err.code, ErrorCode::Conflict);
+
+        listener.public_base_url = Some("https://gateway.example".into());
+        let err = dynamic_tool_descriptor(
+            &tool,
+            &json!({ "headers": { "Host": "other.example" } }),
+            &listener,
+            &binding,
+            RequestId::generate(),
+        )
+        .expect_err("host override rejected");
+        assert!(err
+            .to_string()
+            .contains("controlled by the api route binding"));
+
+        let err = dynamic_tool_descriptor(
+            &tool,
+            &json!({ "headers": { ":authority": "other.example" } }),
+            &listener,
+            &binding,
+            RequestId::generate(),
+        )
+        .expect_err("authority override rejected");
+        assert!(err
+            .to_string()
+            .contains("controlled by the api route binding"));
     }
 
     #[test]

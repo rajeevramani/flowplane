@@ -114,6 +114,7 @@ async fn route_plan_apply_fails_on_intervening_conflict() {
         ListenerSpec {
             address: "0.0.0.0".into(),
             port: 19192,
+            public_base_url: None,
             protocol: ListenerProtocol::Http,
             route_config: None,
             http_filters: Vec::new(),
