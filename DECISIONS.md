@@ -394,20 +394,22 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
 - **Decision:** S11 implements MCP from the v2 contract below. v1 is reference material for
   workflows and failure modes, not a source of truth for authorization, tool counts, or storage
   shape.
+  **Protocol versions:** advertised/preferred MCP protocol version is `2025-11-25`; accepted
+  request versions are exactly `2025-11-25` and `2025-03-26`.
 - **Transport and sessions:** v1.0 supports Streamable HTTP `POST /api/v1/mcp` with
   `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`.
-  `GET` SSE streams, `DELETE` session termination, resumability, resources, prompts, logging,
-  and server-to-client notifications are explicit implement/defer choices in S11b and must not
-  be advertised if no-op. MCP sessions cache no principal, grants, team list, or authorization
-  result: every non-initialize request re-authenticates the bearer token and re-evaluates grants
-  so agent disable/rotate and grant revocation take effect on the next call, not at session TTL.
-  The Origin allowlist is a browser defense: absent `Origin` is allowed for headless agents;
-  present `Origin` must match `FLOWPLANE_MCP_ALLOWED_ORIGINS`.
+  `GET` SSE streams, client `DELETE` session termination, resumability, resources, prompts,
+  logging, and server-to-client notifications are deferred for v1.0 and must not be advertised.
+  Sessions expire by server TTL cleanup only. MCP sessions cache no principal, grants, team list,
+  or authorization result: every non-initialize request re-authenticates the bearer token and
+  re-evaluates grants so agent disable/rotate and grant revocation take effect on the next call,
+  not at session TTL. The Origin allowlist is a browser defense: absent `Origin` is allowed for
+  headless agents; present `Origin` must match `FLOWPLANE_MCP_ALLOWED_ORIGINS`.
 - **Authentication:** human callers keep using OIDC/JWT through the existing middleware. S11 also
-  adds agent bearer tokens: use a distinct prefix such as `fpat_`, return the clear token only
-  once, store only a hash on the agent row, check `status = active`, and resolve to
-  `PrincipalCtx::Agent` with kind and grants loaded. Middleware dispatch must pin JWT-vs-agent
-  order before #73/#79 implement it.
+  adds agent bearer tokens: use a distinct `fpat_` prefix, return the clear token only once, store
+  only a SHA-256 hash of the token on the agent row, check `status = active`, and resolve to
+  `PrincipalCtx::Agent` with kind and grants loaded. Middleware dispatch checks `fpat_` tokens
+  through the agent-token path first and all other bearer tokens through JWT validation.
 - **Authorization:** MCP uses the existing v2
   `check_resource_access(&PrincipalCtx, Resource, Action, Option<TeamRef>)` model. Platform-admin
   bypass is governance-only, org-admins get implicit same-org team access, `CpTool` agents are
@@ -428,13 +430,12 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
 - **`api_*` exposure and agent classes:** v2 has no v1 `external/internal` route column. For v1.0,
   MCP callers are internal principals/agents; "external" means dataplane exposure, not a
   cross-org MCP caller. `GatewayTool` agents may consume authorized `api_*` tools through MCP.
-  `ApiConsumer` agents are for direct dataplane consumption; at the MCP door S11 must choose
-  either reject-at-initialize or authenticate with empty `tools/list` and denied `tools/call`.
-- **Static registry:** S11 will not pretend the shared declaration registry exists. Either #75
-  explicitly chooses to build the shared REST/CLI/MCP declaration layer first, or #74 hand-authors
-  the MCP registry and adds a drift gate proving the registry `(Resource, Action)` matches the
-  service function's enforced `(Resource, Action)`. The weaker "every exposed tool has metadata"
-  parity test is necessary but not sufficient.
+  `ApiConsumer` agents are for direct dataplane consumption and are rejected at MCP
+  `initialize`.
+- **Static registry:** S11 does not build the shared REST/CLI/MCP declaration layer. #74
+  hand-authors the MCP registry and adds a drift gate proving the registry `(Resource, Action)`
+  matches the service function's enforced `(Resource, Action)`. The weaker "every exposed tool
+  has metadata" parity test is necessary but not sufficient.
 - **Resource mapping for S11:** v1 `routes:*` maps to `RouteConfigs`; generated gateway tools map
   to `McpTools:read/execute` for listing/execution and may use `ApiDefinitions:read` for backing
   spec metadata; ops/xDS/status diagnostics map to `Stats:read` or `Audit:read` when reading
@@ -448,15 +449,32 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   deliberately returns all tools without cursor pagination for bounded S11 counts; add cursor
   pagination only after measured size pressure. Tool params use camelCase. Authz failures use a
   stable JSON-RPC `error.data.kind = "authz"` discriminator even if the outer JSON-RPC code is
-  reused for compatibility.
-- **CLI/operator surface:** #75 defines status/connections semantics before #77 renders them.
-  If S11b is POST-only, "connections" reports active in-memory sessions, not SSE connections.
-  If SSE is enabled, it reports both sessions and stream connections.
-- **AI tools:** S10 AI resources are shipped. S11 must define read/status/usage/budget tools over
-  the existing service paths or explicitly defer them with rationale; they are not speculative.
+  reused for compatibility. JSON-RPC errors use `{code,message,data}` with stable
+  `data.kind`, optional `data.resource`, optional `data.action`, optional `data.requestId`, and
+  optional `data.fix` as a human-readable recovery hint. Tool-call business failures return
+  normal MCP tool results with `isError: true` and text content containing the same stable
+  message plus recovery hint.
+- **CLI/operator surface:** #77 `mcp status` reports the POST-only MCP server mode, advertised
+  protocol version, supported version list, and enabled tool counts. #77 `mcp connections`
+  reports active in-memory sessions only; SSE connection reporting waits until SSE exists.
+- **AI tools:** S11 includes read-only AI inspection tools over existing service paths:
+  list/get AI providers, list/get AI routes, list/get AI budgets, and AI usage/status summaries.
+  AI create/update/delete mutations remain REST/CLI-only in v1.0 because credential and budget
+  mutation through MCP is not needed for the S11 agent-usability exit.
 - **Audit:** MCP tools call service functions rather than storage directly, so mutation audit
   should match REST by construction. S11 still tests at least one MCP mutation produces the same
   actor/resource/action semantics as the REST-equivalent service path.
+- **Test matrix and exit flow:** #73 covers protocol negotiation, POST-only method handling,
+  no-Origin allowed, disallowed-Origin denied, session/token mismatch, and per-request re-auth.
+  #79 covers `fpat_` issuance, SHA-256 hash lookup, active/disabled/rotated token behavior, and
+  agent kind loading. #74 covers static registry parity, registry-vs-service authz drift,
+  `tools/list == executable`, and MCP mutation audit parity. #78 covers live `api_tools` reads,
+  per-tool enable/disable, routing-resolution failure, Envoy execution, and republish staleness.
+  #77 covers CLI status/connections/enable/disable against real endpoints. #76 owns the exit E2E:
+  an MCP client initializes, lists tools, completes one control-plane workflow through `cp_*`,
+  calls one dynamic `api_*` tool through Envoy, proves cross-team list/call denial, proves
+  mid-session agent/grant revocation fails on the next call, and proves spec republish updates
+  tool visibility.
 - **Status:** decided for S11a / #75 (2026-06-17). This overrides any older spec text that implies
   v1 scope strings, v1 tool counts, cached MCP authz sessions, separate v1 route exposure columns,
   or already-existing shared declaration generation.
