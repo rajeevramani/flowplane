@@ -129,6 +129,17 @@ impl AgentKind {
             Self::ApiConsumer => "api-consumer",
         }
     }
+
+    pub fn parse(raw: &str) -> DomainResult<Self> {
+        match raw {
+            "cp-tool" => Ok(Self::CpTool),
+            "gateway-tool" => Ok(Self::GatewayTool),
+            "api-consumer" => Ok(Self::ApiConsumer),
+            other => Err(DomainError::validation(format!(
+                "\"{other}\" is not an agent kind (cp-tool, gateway-tool, api-consumer)"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

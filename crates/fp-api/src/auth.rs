@@ -104,6 +104,19 @@ pub async fn authenticate(
         .copied()
         .unwrap_or_else(RequestId::generate);
 
+    let Some(token) = bearer(request.headers()).map(str::to_string) else {
+        return ApiError::new(
+            DomainError::new(ErrorCode::Unauthorized, "missing bearer token")
+                .with_hint("authenticate with `flowplane auth login` and retry"),
+            rid,
+        )
+        .into_response();
+    };
+
+    if token.starts_with("fpat_") {
+        return authenticate_agent(state, request, next, rid, &token).await;
+    }
+
     let Some(validator) = state.validator.clone() else {
         return ApiError::new(
             DomainError::unavailable("authentication is not configured on this server")
@@ -113,16 +126,7 @@ pub async fn authenticate(
         .into_response();
     };
 
-    let Some(token) = bearer(request.headers()) else {
-        return ApiError::new(
-            DomainError::new(ErrorCode::Unauthorized, "missing bearer token")
-                .with_hint("authenticate with `flowplane auth login` and retry"),
-            rid,
-        )
-        .into_response();
-    };
-
-    let claims = match validator.validate(token).await {
+    let claims = match validator.validate(&token).await {
         Ok(claims) => claims,
         Err(e) => {
             audit::record_best_effort(
@@ -188,6 +192,56 @@ pub async fn authenticate(
         .into_response(),
         Err(e) => ApiError::new(e, rid).into_response(),
     }
+}
+
+async fn authenticate_agent(
+    state: AppState,
+    mut request: Request,
+    next: Next,
+    rid: RequestId,
+    token: &str,
+) -> Response {
+    match identity::load_agent_principal_by_token(&state.pool, token).await {
+        Ok(Some(loaded)) => {
+            request.extensions_mut().insert(PrincipalCtx::Agent {
+                agent_id: loaded.agent_id,
+                org_id: loaded.org_id,
+                kind: loaded.kind,
+                grants: GrantSet::new(loaded.grants),
+            });
+            next.run(request).await
+        }
+        Ok(None) => {
+            audit_authn_failure(&state, rid, request.uri().path(), "unauthorized").await;
+            ApiError::new(
+                DomainError::new(ErrorCode::Unauthorized, "invalid or disabled agent token"),
+                rid,
+            )
+            .into_response()
+        }
+        Err(e) => ApiError::new(e, rid).into_response(),
+    }
+}
+
+async fn audit_authn_failure(state: &AppState, rid: RequestId, path: &str, code: &str) {
+    audit::record_best_effort(
+        &state.pool,
+        &audit::AuditEntry {
+            request_id: Some(rid),
+            actor_type: audit::ActorType::Anonymous,
+            actor_id: None,
+            actor_label: String::new(),
+            surface: audit::Surface::Rest,
+            action: "authn.failed".into(),
+            resource: path.to_string(),
+            org_id: None,
+            team_id: None,
+            outcome: audit::Outcome::Failure,
+            detail: serde_json::json!({ "code": code }),
+        },
+    )
+    .await;
+    metrics::counter!("fp_authn_failures_total").increment(1);
 }
 
 #[cfg(test)]
