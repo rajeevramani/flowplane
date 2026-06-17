@@ -149,7 +149,31 @@ pub fn check_resource_access(
             grants,
             ..
         } => match kind {
-            AgentKind::GatewayTool | AgentKind::ApiConsumer => {
+            AgentKind::GatewayTool => {
+                return if resource == Resource::McpTools {
+                    match team {
+                        Some(team_ref) => {
+                            if team_ref.org_id != *org_id {
+                                Decision::Deny(Reason::CrossOrg)
+                            } else if grants.has(resource, action, team_ref.id) {
+                                Decision::Allow(Reason::GrantMatch)
+                            } else {
+                                Decision::Deny(Reason::NoMatchingGrant)
+                            }
+                        }
+                        None => {
+                            if grants.has_any_team(resource, action) {
+                                Decision::Allow(Reason::AnyTeamGrant)
+                            } else {
+                                Decision::Deny(Reason::NoMatchingGrant)
+                            }
+                        }
+                    }
+                } else {
+                    Decision::Deny(Reason::AgentStructurallyDenied)
+                };
+            }
+            AgentKind::ApiConsumer => {
                 return Decision::Deny(Reason::AgentStructurallyDenied);
             }
             AgentKind::CpTool => {
@@ -362,26 +386,47 @@ mod tests {
     // ---- Invariant 3 (structural agents) ----
 
     #[test]
-    fn gateway_and_api_consumer_agents_denied_everything() {
+    fn gateway_agents_only_get_granted_mcp_tools_access() {
         let org = OrgId::generate();
         let team = TeamRef {
             id: TeamId::generate(),
             org_id: org,
         };
-        // Even with (illegitimate) grant rows present, the structural guard wins.
-        let grants = GrantSet::new(
-            ALL_RESOURCES
-                .iter()
-                .map(|r| (*r, Action::Read, team.id))
-                .collect::<Vec<_>>(),
+        let ctx = agent(
+            AgentKind::GatewayTool,
+            org,
+            GrantSet::new([(Resource::McpTools, Action::Execute, team.id)]),
         );
-        for kind in [AgentKind::GatewayTool, AgentKind::ApiConsumer] {
-            let ctx = agent(kind, org, grants.clone());
-            for resource in ALL_RESOURCES {
-                for action in ALL_ACTIONS {
-                    let decision = check_resource_access(&ctx, *resource, *action, Some(team));
-                    assert_eq!(decision, Decision::Deny(Reason::AgentStructurallyDenied));
-                }
+        assert_eq!(
+            check_resource_access(&ctx, Resource::McpTools, Action::Execute, Some(team)),
+            Decision::Allow(Reason::GrantMatch)
+        );
+        assert_eq!(
+            check_resource_access(&ctx, Resource::McpTools, Action::Read, Some(team)),
+            Decision::Deny(Reason::NoMatchingGrant)
+        );
+        assert_eq!(
+            check_resource_access(&ctx, Resource::Clusters, Action::Read, Some(team)),
+            Decision::Deny(Reason::AgentStructurallyDenied)
+        );
+    }
+
+    #[test]
+    fn api_consumer_agents_denied_everything() {
+        let org = OrgId::generate();
+        let team = TeamRef {
+            id: TeamId::generate(),
+            org_id: org,
+        };
+        let ctx = agent(
+            AgentKind::ApiConsumer,
+            org,
+            GrantSet::new([(Resource::McpTools, Action::Execute, team.id)]),
+        );
+        for resource in ALL_RESOURCES {
+            for action in ALL_ACTIONS {
+                let decision = check_resource_access(&ctx, *resource, *action, Some(team));
+                assert_eq!(decision, Decision::Deny(Reason::AgentStructurallyDenied));
             }
         }
     }

@@ -976,6 +976,67 @@ pub async fn list_api_tools(
     rows.iter().map(tool_from_row).collect()
 }
 
+pub async fn list_enabled_published_api_tools(
+    pool: &PgPool,
+    team_id: TeamId,
+) -> DomainResult<Vec<ApiTool>> {
+    let columns = TOOL_COLUMNS.replace(", ", ", t.");
+    let rows = sqlx::query(&format!(
+        "SELECT t.{columns} FROM api_tools t \
+         JOIN api_definitions a ON a.id = t.api_definition_id AND a.team_id = t.team_id \
+         WHERE t.team_id = $1 AND t.enabled = true \
+           AND a.published_spec_version_id = t.spec_version_id \
+         ORDER BY t.name"
+    ))
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list published api tools: {e}")))?;
+    rows.iter().map(tool_from_row).collect()
+}
+
+pub async fn get_enabled_published_api_tool(
+    pool: &PgPool,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<ApiTool>> {
+    let columns = TOOL_COLUMNS.replace(", ", ", t.");
+    let row = sqlx::query(&format!(
+        "SELECT t.{columns} FROM api_tools t \
+         JOIN api_definitions a ON a.id = t.api_definition_id AND a.team_id = t.team_id \
+         WHERE t.team_id = $1 AND t.name = $2 AND t.enabled = true \
+           AND a.published_spec_version_id = t.spec_version_id"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get published api tool: {e}")))?;
+    row.as_ref().map(tool_from_row).transpose()
+}
+
+pub async fn update_api_tool_enabled(
+    pool: &PgPool,
+    team_id: TeamId,
+    name: &str,
+    enabled: bool,
+) -> DomainResult<ApiTool> {
+    let row = sqlx::query(&format!(
+        "UPDATE api_tools SET enabled = $1, updated_at = now() \
+         WHERE team_id = $2 AND name = $3 RETURNING {TOOL_COLUMNS}"
+    ))
+    .bind(enabled)
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("update api tool enabled: {e}")))?;
+    row.as_ref()
+        .map(tool_from_row)
+        .transpose()?
+        .ok_or_else(|| DomainError::not_found("api tool", name))
+}
+
 pub async fn create_retention_policy(
     tx: &mut Transaction<'_, Postgres>,
     team: TeamRef,

@@ -557,6 +557,22 @@ pub async fn get_listener(
     row.as_ref().map(listener_from_row).transpose()
 }
 
+pub async fn get_listener_by_id(
+    pool: &PgPool,
+    team_id: TeamId,
+    id: ListenerId,
+) -> DomainResult<Option<Listener>> {
+    let row = sqlx::query(&format!(
+        "SELECT {COLUMNS} FROM listeners WHERE team_id = $1 AND id = $2"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get listener by id: {e}")))?;
+    row.as_ref().map(listener_from_row).transpose()
+}
+
 pub async fn list_listeners(
     pool: &PgPool,
     team_id: TeamId,

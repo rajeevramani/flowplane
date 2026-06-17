@@ -163,6 +163,33 @@ async fn tools_list(app: axum::Router, token: &str, session: &str, team: &str) -
         .collect()
 }
 
+async fn tools_call(
+    app: axum::Router,
+    token: &str,
+    session: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let response = app
+        .oneshot(mcp_request(
+            token,
+            Some(session),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": arguments
+                }
+            }),
+        ))
+        .await
+        .expect("tools/call");
+    assert_eq!(response.status(), StatusCode::OK);
+    json_of(response).await
+}
+
 async fn create_agent(
     app: axum::Router,
     admin_token: &str,
@@ -327,4 +354,137 @@ async fn tools_call_uses_service_path_and_emits_mutation_audit() {
         audit.get::<String, _>("resource"),
         format!("clusters/{cluster}")
     );
+}
+
+#[tokio::test]
+async fn dynamic_api_tools_are_live_enabled_and_team_scoped() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    let api_name = unique("catalog");
+    let response = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/teams/{}/api-definitions", fx.team_name))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": api_name,
+                        "openapi": {
+                            "openapi": "3.0.3",
+                            "info": { "title": "Catalog", "version": "1" },
+                            "paths": {
+                                "/items/{id}": {
+                                    "get": { "operationId": "getItem" }
+                                }
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("create api"),
+        )
+        .await
+        .expect("api response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    let api_id = uuid::Uuid::parse_str(body["api"]["id"].as_str().expect("api id")).expect("uuid");
+    let spec_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM spec_versions WHERE api_definition_id = $1 ORDER BY version DESC LIMIT 1",
+    )
+    .bind(api_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("spec id");
+    sqlx::query("UPDATE api_definitions SET published_spec_version_id = $1 WHERE id = $2")
+        .bind(spec_id)
+        .bind(api_id)
+        .execute(&fx.pool)
+        .await
+        .expect("publish api");
+    let tool_name: String =
+        sqlx::query_scalar("SELECT name FROM api_tools WHERE api_definition_id = $1")
+            .bind(api_id)
+            .fetch_one(&fx.pool)
+            .await
+            .expect("tool name");
+    let mcp_name = format!("api_{tool_name}");
+
+    let gateway_token = create_agent(
+        fx.app.clone(),
+        &fx.admin_token,
+        "gateway-tool",
+        fx.team_id,
+        vec![("mcp-tools", "execute")],
+    )
+    .await;
+    let gateway_session = initialize(fx.app.clone(), &gateway_token).await;
+    let tools = tools_list(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &fx.team_name,
+    )
+    .await;
+    assert!(tools.contains(&mcp_name));
+
+    let cross_team_tools = tools_list(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &fx.other_team_name,
+    )
+    .await;
+    assert!(!cross_team_tools.contains(&mcp_name));
+
+    let call = tools_call(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &mcp_name,
+        serde_json::json!({
+            "team": fx.team_name,
+            "pathParams": { "id": "123" }
+        }),
+    )
+    .await;
+    assert_eq!(call["result"]["isError"], true);
+    assert!(call["result"]["error"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("has no listener/dataplane route"));
+
+    let response = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/teams/{}/mcp/tools/{tool_name}",
+                    fx.team_name
+                ))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "enabled": false }).to_string(),
+                ))
+                .expect("disable tool"),
+        )
+        .await
+        .expect("disable response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let tools = tools_list(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &fx.team_name,
+    )
+    .await;
+    assert!(!tools.contains(&mcp_name));
 }

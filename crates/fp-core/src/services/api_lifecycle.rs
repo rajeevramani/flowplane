@@ -3,8 +3,8 @@
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::api_lifecycle::{
-    ApiDefinition, ApiDefinitionSpec, ApiRouteBindingSpec, ApiToolSpec, HttpMethod, SpecFormat,
-    SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput,
+    ApiDefinition, ApiDefinitionSpec, ApiRouteBindingSpec, ApiTool, ApiToolSpec, HttpMethod,
+    SpecFormat, SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput,
 };
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -261,6 +261,33 @@ pub async fn api_status(
         .await?
         .ok_or_else(|| DomainError::not_found("api", name))?;
     status_for_api(pool, team, api).await
+}
+
+pub async fn update_api_tool_enabled(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    enabled: bool,
+    request_id: RequestId,
+) -> DomainResult<ApiTool> {
+    match check_resource_access(ctx, Resource::McpTools, Action::Update, Some(team)) {
+        Decision::Allow(_) => {}
+        Decision::Deny(reason) => {
+            record_authz_denial(
+                pool,
+                ctx,
+                request_id,
+                Resource::McpTools,
+                Action::Update,
+                Some(team),
+                reason,
+            )
+            .await;
+            return Err(deny_to_error(Resource::McpTools, Action::Update, reason));
+        }
+    }
+    api_lifecycle::update_api_tool_enabled(pool, team.id, name, enabled).await
 }
 
 pub async fn delete_api(
