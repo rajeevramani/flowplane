@@ -1493,6 +1493,11 @@ fn dynamic_tool_url(
                     "pathParams.{key} must be a string"
                 )));
             };
+            if is_dot_path_segment(value) {
+                return Err(DomainError::validation(format!(
+                    "pathParams.{key} must not be a dot segment"
+                )));
+            }
             path = path.replace(&format!("{{{key}}}"), &encode_path_segment(value));
         }
     }
@@ -1520,6 +1525,13 @@ fn dynamic_tool_url(
         }
     }
     Ok(url)
+}
+
+fn is_dot_path_segment(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "." | ".." | "%2e" | "%2e%2e" | ".%2e" | "%2e."
+    )
 }
 
 fn encode_path_segment(value: &str) -> String {
@@ -1932,6 +1944,20 @@ mod tests {
         )
         .expect("url");
         assert_eq!(url.path(), "/items/..%2Fadmin");
+
+        for id in [".", "..", "%2e", "%2E%2e", ".%2e", "%2e."] {
+            let err = dynamic_tool_url(
+                &tool,
+                &json!({ "pathParams": { "id": id } }),
+                8080,
+                ListenerProtocol::Http,
+            )
+            .expect_err("dot segment must be rejected");
+            assert!(
+                err.to_string().contains("must not be a dot segment"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
