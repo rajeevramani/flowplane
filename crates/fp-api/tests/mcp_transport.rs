@@ -93,6 +93,14 @@ fn initialize(id: i64) -> serde_json::Value {
     })
 }
 
+fn initialized_notification() -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    })
+}
+
 fn ping(id: i64) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -100,6 +108,26 @@ fn ping(id: i64) -> serde_json::Value {
         "method": "ping",
         "params": {}
     })
+}
+
+#[tokio::test]
+async fn mcp_initialized_notification_returns_accepted_empty_body() {
+    let Some((app, token, _)) = app_with_tokens().await else {
+        return;
+    };
+
+    let response = app
+        .oneshot(request(&token, initialized_notification()))
+        .await
+        .expect("initialized notification response");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    assert!(bytes.is_empty(), "notification response body must be empty");
 }
 
 #[tokio::test]

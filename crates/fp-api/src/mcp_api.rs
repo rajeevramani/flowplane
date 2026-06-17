@@ -1,7 +1,7 @@
 use axum::extract::Extension;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{body::Body, Json};
 use fp_core::PrincipalCtx;
 use fp_domain::RequestId;
 use serde::{Deserialize, Serialize};
@@ -117,13 +117,10 @@ fn initialize(id: Option<Value>, principal: &str, protocol_version: String) -> R
 fn notification(id: Option<Value>) -> Response {
     match id {
         Some(id) => rpc_result(Some(id), json!({})).into_response(),
-        None => Json(JsonRpcResponse {
-            jsonrpc: "2.0",
-            result: None,
-            error: None,
-            id: None,
-        })
-        .into_response(),
+        None => axum::http::Response::builder()
+            .status(axum::http::StatusCode::ACCEPTED)
+            .body(Body::empty())
+            .unwrap_or_else(|_| Body::empty().into_response()),
     }
 }
 
