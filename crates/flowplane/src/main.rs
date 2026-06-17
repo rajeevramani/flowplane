@@ -323,6 +323,8 @@ mod tests {
             "/",
             "--port",
             "10001",
+            "--public-base-url",
+            "https://gateway.example",
         ])
         .expect("expose shortcut form should parse");
         Cli::try_parse_from(["flowplane", "unexpose", "demo"])

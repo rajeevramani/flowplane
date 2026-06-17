@@ -912,6 +912,7 @@ pub async fn run_expose(global: GlobalOptions, command: ExposeCommand) -> Result
                 "upstream": command.upstream,
                 "path": command.path,
                 "port": command.port,
+                "public_base_url": command.public_base_url,
             })),
         )
         .await?;
@@ -2352,13 +2353,16 @@ mod tests {
             "upstream": "http://127.0.0.1:3001",
             "path": "/",
             "port": 10001,
-            "curl_url": "http://127.0.0.1:10001/",
+            "curl_url": "https://gateway.example/",
+            "endpoint_source": "listener.public_base_url",
             "cluster": {"name": "demo-upstream", "spec": {}},
             "route_config": {"name": "demo-routes", "spec": {}},
             "listener": {"name": "demo", "spec": {}}
         }));
         assert!(rendered.contains("CURL URL"));
-        assert!(rendered.contains("http://127.0.0.1:10001/"));
+        assert!(rendered.contains("https://gateway.example/"));
+        assert!(rendered.contains("ENDPOINT SOURCE"));
+        assert!(rendered.contains("listener.public_base_url"));
         assert!(rendered.contains("demo-upstream"));
         assert!(!rendered.contains("{...}"));
     }

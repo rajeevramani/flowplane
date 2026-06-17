@@ -126,14 +126,20 @@ This creates a normal cluster, route config, and listener through the V2 service
 ./target/debug/flowplane expose http://127.0.0.1:3001 \
   --name local \
   --path / \
-  --port 10001
+  --port 10001 \
+  --public-base-url http://127.0.0.1:10001
 ```
+
+The loopback `--public-base-url` is a local-dev hint for this runbook. Non-local deployments
+should set it to the dataplane listener address clients can actually reach, or omit it when no
+public endpoint is configured.
 
 Expected table fields include:
 
 | Field | Value |
 | --- | --- |
 | `curl_url` | `http://127.0.0.1:10001/` |
+| `endpoint_source` | `listener.public_base_url` |
 | `cluster_name` | `local-upstream` |
 | `route_config_name` | `local-routes` |
 | `listener_name` | `local` |

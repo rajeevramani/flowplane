@@ -540,6 +540,9 @@ pub struct ExposeCommand {
     pub path: String,
     #[arg(long)]
     pub port: Option<u16>,
+    /// Public gateway base URL clients can use to reach the listener.
+    #[arg(long)]
+    pub public_base_url: Option<String>,
 }
 
 #[derive(Debug, Args)]

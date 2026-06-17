@@ -591,7 +591,8 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
                 "name": expose_name,
                 "upstream": "http://127.0.0.1:3001",
                 "path": "/",
-                "port": 10001
+                "port": 10001,
+                "public_base_url": "https://gateway.example"
             })),
             None,
         ))
@@ -600,7 +601,8 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = json_of(response).await;
     assert_eq!(body["port"], 10001);
-    assert_eq!(body["curl_url"], "http://127.0.0.1:10001/");
+    assert_eq!(body["curl_url"], "https://gateway.example/");
+    assert_eq!(body["endpoint_source"], "listener.public_base_url");
     assert_eq!(body["cluster"]["name"], format!("{expose_name}-upstream"));
     assert_eq!(body["cluster"]["spec"]["endpoints"][0]["host"], "127.0.0.1");
     assert_eq!(
@@ -612,6 +614,31 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         body["listener"]["spec"]["route_config"],
         format!("{expose_name}-routes")
     );
+    assert_eq!(
+        body["listener"]["spec"]["public_base_url"],
+        "https://gateway.example"
+    );
+
+    let no_endpoint_name = unique("local");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &expose_base,
+            Some(serde_json::json!({
+                "name": no_endpoint_name,
+                "upstream": "http://127.0.0.1:3001",
+                "path": "/local",
+                "port": 10002
+            })),
+            None,
+        ))
+        .await
+        .expect("expose without endpoint");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    assert!(body.get("curl_url").is_none(), "curl_url must be omitted");
+    assert_eq!(body["endpoint_source"], "unconfigured");
 
     let response = app
         .clone()
