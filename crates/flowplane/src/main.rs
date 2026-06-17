@@ -79,6 +79,11 @@ enum Command {
         #[command(subcommand)]
         command: cli::ApiCommand,
     },
+    /// MCP server and generated API tool operations.
+    Mcp {
+        #[command(subcommand)]
+        command: cli::McpCommand,
+    },
     /// AI gateway resources.
     Ai {
         #[command(subcommand)]
@@ -177,6 +182,7 @@ fn run() -> anyhow::Result<()> {
         }
         Command::Route { command } => runtime.block_on(cli::run_route(cli.client, command)),
         Command::Api { command } => runtime.block_on(cli::run_api(cli.client, command)),
+        Command::Mcp { command } => runtime.block_on(cli::run_mcp(cli.client, command)),
         Command::Ai { command } => runtime.block_on(cli::run_ai(cli.client, command)),
         Command::Learn { command } => runtime.block_on(cli::run_learn(cli.client, command)),
         Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
@@ -313,6 +319,30 @@ mod tests {
             "/certs/ca.crt",
         ])
         .expect("legacy dataplane envoy-config alias should parse");
+        Cli::try_parse_from(["flowplane", "mcp", "status", "--team", "payments"])
+            .expect("mcp status form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "mcp",
+            "enable",
+            "--api",
+            "api_get-catalog",
+            "--team",
+            "payments",
+        ])
+        .expect("mcp enable form should parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "mcp",
+            "disable",
+            "--api",
+            "get-catalog",
+            "--team",
+            "payments",
+        ])
+        .expect("mcp disable form should parse");
+        Cli::try_parse_from(["flowplane", "mcp", "connections", "--team", "payments"])
+            .expect("mcp connections form should parse");
         Cli::try_parse_from([
             "flowplane",
             "expose",

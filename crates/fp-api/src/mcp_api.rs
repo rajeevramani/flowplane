@@ -1,8 +1,10 @@
 use crate::state::AppState;
-use axum::extract::{Extension, State};
+use crate::{error::ApiError, resources::resolve_team};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::{body::Body, Json};
+use fp_core::services::{deny_to_error, record_authz_denial};
 use fp_core::{check_resource_access, Decision, PrincipalCtx};
 use fp_domain::api_lifecycle::{ApiRouteBinding, ApiTool};
 use fp_domain::authz::{Action, Resource, TeamRef};
@@ -27,7 +29,37 @@ static SESSIONS: LazyLock<Mutex<HashMap<String, McpSession>>> =
 #[derive(Clone)]
 struct McpSession {
     principal: String,
+    principal_kind: &'static str,
+    org_id: Option<uuid::Uuid>,
+    connection_id: uuid::Uuid,
+    created_at: Instant,
     last_seen: Instant,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct McpStatusView {
+    pub transport: String,
+    pub preferred_protocol_version: String,
+    pub supported_protocol_versions: Vec<String>,
+    pub session_ttl_seconds: u64,
+    pub active_sessions: usize,
+    pub static_tool_count: usize,
+    pub dynamic_enabled_tool_count: usize,
+    pub tools_list_changed: bool,
+    pub sse_enabled: bool,
+    pub resources_enabled: bool,
+    pub prompts_enabled: bool,
+    pub api_invocation_mode: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct McpConnectionView {
+    pub connection_id: uuid::Uuid,
+    pub principal_kind: String,
+    pub transport: String,
+    pub sse: bool,
+    pub age_seconds: u64,
+    pub idle_seconds: u64,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +111,7 @@ pub async fn post(
         }
     };
     let principal = principal_key(&ctx);
+    let metadata = principal_metadata(&ctx);
     cleanup_sessions();
     let id = req.id.clone();
     let mut response: Response = match req.method.as_str() {
@@ -100,7 +133,7 @@ pub async fn post(
             )
             .into_response()
         }
-        "initialize" => initialize(req.id, &principal, version.clone()),
+        "initialize" => initialize(req.id, &principal, metadata, version.clone()),
         "notifications/initialized" | "initialized" => notification(req.id),
         "ping" => with_session(&headers, &principal, req.id, rid, || json!({})),
         "tools/list" => match validate_session(&headers, &principal, id, rid) {
@@ -117,6 +150,78 @@ pub async fn post(
         response.headers_mut().insert("mcp-protocol-version", value);
     }
     response
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/mcp/status",
+    tag = "McpTools",
+    params(("team" = String, Path, description = "Team name or UUID")),
+    responses(
+        (status = 200, body = McpStatusView),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn status(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<McpStatusView>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        authorize_mcp_read(&state, &ctx, team, rid).await?;
+        let dynamic_enabled_tool_count =
+            fp_storage::repos::api_lifecycle::list_enabled_published_api_tools(
+                &state.pool,
+                team.id,
+            )
+            .await?
+            .len();
+        cleanup_sessions();
+        let active_sessions = visible_sessions(&ctx).len();
+        Ok::<_, DomainError>(McpStatusView {
+            transport: "streamable_http_post".into(),
+            preferred_protocol_version: PREFERRED_VERSION.into(),
+            supported_protocol_versions: SUPPORTED_VERSIONS
+                .iter()
+                .map(|version| (*version).to_string())
+                .collect(),
+            session_ttl_seconds: SESSION_TTL.as_secs(),
+            active_sessions,
+            static_tool_count: STATIC_TOOLS.len(),
+            dynamic_enabled_tool_count,
+            tools_list_changed: false,
+            sse_enabled: false,
+            resources_enabled: false,
+            prompts_enabled: false,
+            api_invocation_mode: "gateway_invocation_descriptor".into(),
+        })
+    };
+    run.await.map(Json).map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/mcp/connections",
+    tag = "McpTools",
+    params(("team" = String, Path, description = "Team name or UUID")),
+    responses(
+        (status = 200, body = [McpConnectionView]),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn connections(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Vec<McpConnectionView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        authorize_mcp_read(&state, &ctx, team, rid).await?;
+        cleanup_sessions();
+        Ok::<_, DomainError>(visible_sessions(&ctx))
+    };
+    run.await.map(Json).map_err(|e| ApiError::new(e, rid))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -494,13 +599,23 @@ const STATIC_TOOLS: &[StaticTool] = &[
     },
 ];
 
-fn initialize(id: Option<Value>, principal: &str, protocol_version: String) -> Response {
+fn initialize(
+    id: Option<Value>,
+    principal: &str,
+    metadata: PrincipalMetadata,
+    protocol_version: String,
+) -> Response {
     let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
+    let now = Instant::now();
     sessions().insert(
         session_id.clone(),
         McpSession {
             principal: principal.to_string(),
-            last_seen: Instant::now(),
+            principal_kind: metadata.kind,
+            org_id: metadata.org_id,
+            connection_id: uuid::Uuid::new_v4(),
+            created_at: now,
+            last_seen: now,
         },
     );
     let mut response = rpc_result(
@@ -1377,6 +1492,47 @@ fn dynamic_tool_allowed(ctx: &PrincipalCtx, team: TeamRef, action: Action) -> bo
     )
 }
 
+async fn authorize_mcp_read(
+    state: &AppState,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    rid: RequestId,
+) -> DomainResult<()> {
+    match check_resource_access(ctx, Resource::McpTools, Action::Read, Some(team)) {
+        Decision::Allow(_) => Ok(()),
+        Decision::Deny(reason) => {
+            record_authz_denial(
+                &state.pool,
+                ctx,
+                rid,
+                Resource::McpTools,
+                Action::Read,
+                Some(team),
+                reason,
+            )
+            .await;
+            Err(deny_to_error(Resource::McpTools, Action::Read, reason))
+        }
+    }
+}
+
+fn visible_sessions(ctx: &PrincipalCtx) -> Vec<McpConnectionView> {
+    let meta = principal_metadata(ctx);
+    let now = Instant::now();
+    sessions()
+        .values()
+        .filter(|session| session.org_id.is_some() && session.org_id == meta.org_id)
+        .map(|session| McpConnectionView {
+            connection_id: session.connection_id,
+            principal_kind: session.principal_kind.into(),
+            transport: "streamable_http_post".into(),
+            sse: false,
+            age_seconds: now.duration_since(session.created_at).as_secs(),
+            idle_seconds: now.duration_since(session.last_seen).as_secs(),
+        })
+        .collect()
+}
+
 fn dynamic_tool_view(tool: ApiTool) -> Value {
     json!({
         "name": format!("api_{}", tool.name),
@@ -1830,6 +1986,25 @@ fn principal_key(ctx: &PrincipalCtx) -> String {
         PrincipalCtx::Agent {
             agent_id, org_id, ..
         } => format!("agent:{agent_id}:org:{org_id}"),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PrincipalMetadata {
+    kind: &'static str,
+    org_id: Option<uuid::Uuid>,
+}
+
+fn principal_metadata(ctx: &PrincipalCtx) -> PrincipalMetadata {
+    match ctx {
+        PrincipalCtx::User { org, .. } => PrincipalMetadata {
+            kind: "user",
+            org_id: org.map(|(org_id, _)| org_id.as_uuid()),
+        },
+        PrincipalCtx::Agent { org_id, .. } => PrincipalMetadata {
+            kind: "agent",
+            org_id: Some(org_id.as_uuid()),
+        },
     }
 }
 
