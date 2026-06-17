@@ -260,3 +260,42 @@ For S8 learning:
 - observations are data until reviewed/published.
 - capture injection enters xDS through typed IR and is scoped to team-owned routes/listeners.
 - MCP tools are generated projections from published specs; serving them waits for S11.
+
+For S10 AI gateway:
+- AI providers, routes, budgets, and usage are shipped v2 resources, not speculative tool families.
+  S11 must either define MCP coverage for them or explicitly defer that coverage with rationale.
+- AI request routing and budget enforcement stay behind existing gateway services, xDS/ExtProc
+  contracts, and usage repositories. MCP must not create an alternate AI execution path.
+- AI usage is product/audit data. Tooling may read it through service APIs, but provider request
+  metadata and secret values remain behind the established redaction and secret-reference rules.
+
+For S11 MCP:
+- `spec/02-mcp-tools.md` is v1 reference material. S11 inherits the outcomes and documented gaps,
+  not the v1 scope-string authz model, static tool count, or phantom authz entries.
+- MCP authorization is restated in v2 terms: `PrincipalCtx`, typed `Resource`/`Action`, explicit
+  `TeamRef` where needed, org-admin implicit grants, platform-admin governance-only bypass, and the
+  grants-only agent path.
+- MCP session team scope must be explicit or unambiguous. Multi-team callers and org admins must
+  not fall back to "first team" for team-scoped writes.
+- `cp_*` tools are internal control-plane tools. They use the same org/team authz model as REST and
+  must not become externally exposable through MCP.
+- `api_*` tools are dynamic gateway tools generated from published API specs. Their listability and
+  callability require an explicit v2 exposure decision because v2 does not carry v1's route
+  `external/internal` column.
+- Dynamic `api_*` execution resolves through v2 bindings, not v1 route metadata: generated tool row
+  to API definition/spec binding, then to listener/dataplane route information. Missing binding or
+  dataplane resolution fails closed with a structured configuration error.
+- Dynamic `api_*` listing should read live enabled/current rows unless S11 records a measured reason
+  to cache; live reads make republish staleness the database's job.
+- Agents are part of the S11 authz surface. The deferred Agents API must land before static/dynamic
+  MCP tests can rely on real `CpTool`, `GatewayTool`, and `ApiConsumer` principals.
+- `tools/list` is an executable-tool view, not a catalog. A listed tool without executable authz, or
+  authz metadata without an exposed tool, is architectural drift.
+- Static MCP registry metadata must not drift from the service-layer authz actually enforced at
+  execution. If there is no shared declaration table yet, S11 must hand-author the registry and test
+  the enforced `(Resource, Action)` pair rather than claim generated parity.
+- MCP mutations go through service functions, so audit should match REST by construction; S11 must
+  still test that the MCP ingress cannot bypass actor/resource/action audit semantics.
+- Streamable HTTP capabilities must be advertised only when implemented. GET/SSE, DELETE,
+  resumability, notifications, prompts, resources, and logging are explicit implement/defer
+  decisions, not no-op defaults.
