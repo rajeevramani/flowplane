@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION=${FLOWPLANE_RELEASE_VERSION:-$(cargo pkgid -p flowplane | sed 's/.*#//')}
+TARGET=${FLOWPLANE_RELEASE_TARGET:-}
 HOST=${FLOWPLANE_RELEASE_HOST:-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)}
 ROOT="target/release-artifacts/flowplane-v$VERSION"
 ARTIFACT="flowplane-$VERSION-$HOST"
@@ -14,11 +15,28 @@ PACKAGE_IMAGE=${FLOWPLANE_PACKAGE_IMAGE:-0}
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/dataplane" "$ROOT"
 
-cargo build --release --locked -p flowplane --bin flowplane --no-default-features
-cargo build --release --locked -p fp-agent --bin fp-agent
+BUILD_ARGS=(--release --locked)
+TARGET_DIR=target/release
+if [ -n "$TARGET" ]; then
+  BUILD_ARGS+=(--target "$TARGET")
+  TARGET_DIR="target/$TARGET/release"
+  HOST=${FLOWPLANE_RELEASE_HOST:-$TARGET}
+  ARTIFACT="flowplane-$VERSION-$HOST"
+  ARTIFACT_DIR="$ROOT/$ARTIFACT"
+  rm -rf "$ARTIFACT_DIR"
+  mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/dataplane"
+  if [ "$TARGET" = "x86_64-unknown-linux-musl" ] &&
+    [ -z "${CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER:-}" ] &&
+    command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc
+  fi
+fi
 
-cp target/release/flowplane "$ARTIFACT_DIR/bin/"
-cp target/release/fp-agent "$ARTIFACT_DIR/bin/"
+cargo build "${BUILD_ARGS[@]}" -p flowplane --bin flowplane --no-default-features
+cargo build "${BUILD_ARGS[@]}" -p fp-agent --bin fp-agent
+
+cp "$TARGET_DIR/flowplane" "$ARTIFACT_DIR/bin/"
+cp "$TARGET_DIR/fp-agent" "$ARTIFACT_DIR/bin/"
 cargo metadata --format-version 1 > "$ROOT/flowplane-$VERSION.cargo-metadata.sbom.json"
 
 cat > "$ARTIFACT_DIR/release-manifest.md" <<EOF
@@ -26,8 +44,10 @@ cat > "$ARTIFACT_DIR/release-manifest.md" <<EOF
 
 - CP binary: \`bin/flowplane\`
 - DP sidecar binary: \`bin/fp-agent\`
-- Binary target: current host \`$HOST\`
-- Static-link decision: not musl-static for v1.0; first-party crates directly depend on OpenSSL.
+- Binary target: \`$HOST\`
+- Static-link decision: vendored OpenSSL is enabled for v1.0 release builds. Use
+  \`FLOWPLANE_RELEASE_TARGET=x86_64-unknown-linux-musl\` and verify with \`ldd\` or \`file\`.
+- Distribution caveat: public distribution waits on Q-006 license posture.
 - OCI image tag: \`$IMAGE_TAG\`
 - SBOM source artifact: \`flowplane-$VERSION.cargo-metadata.sbom.json\`
 - Checksums: \`SHA256SUMS\`
@@ -47,7 +67,7 @@ EOF
 if [ "${FLOWPLANE_PACKAGE_DATAPLANE:-0}" = "1" ]; then
   : "${FLOWPLANE_PACKAGE_TEAM:?set FLOWPLANE_PACKAGE_TEAM}"
   : "${FLOWPLANE_PACKAGE_DATAPLANE_NAME:?set FLOWPLANE_PACKAGE_DATAPLANE_NAME}"
-  MODE=${FLOWPLANE_PACKAGE_DATAPLANE_MODE:-dev}
+  MODE=${FLOWPLANE_PACKAGE_DATAPLANE_MODE:-mtls}
   BOOTSTRAP_ARGS=(
     --team "$FLOWPLANE_PACKAGE_TEAM"
     dataplane bootstrap "$FLOWPLANE_PACKAGE_DATAPLANE_NAME"
