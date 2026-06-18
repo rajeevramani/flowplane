@@ -60,6 +60,12 @@ pub struct EventTraceRow {
     pub occurred_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConsumerLagStats {
+    pub pending_count: i64,
+    pub oldest_age_seconds: f64,
+}
+
 /// Register a consumer cursor (idempotent). Call once before `run_consumer`.
 pub async fn register_consumer(pool: &PgPool, consumer: &str) -> DomainResult<()> {
     sqlx::query("INSERT INTO event_cursors (consumer) VALUES ($1) ON CONFLICT DO NOTHING")
@@ -201,6 +207,32 @@ pub async fn consumer_lag(pool: &PgPool, consumer: &str) -> DomainResult<i64> {
     .await
     .map_err(|e| DomainError::internal(format!("outbox: lag: {e}")))?;
     Ok(lag.unwrap_or(0))
+}
+
+/// Current pending event count and oldest unprocessed age for one consumer. This is a read-only
+/// production-safety signal for alerting; cursor advancement remains owned by `process_batch`.
+pub async fn consumer_lag_stats(pool: &PgPool, consumer: &str) -> DomainResult<ConsumerLagStats> {
+    let row = sqlx::query(
+        "WITH cursor AS ( \
+             SELECT last_seq FROM event_cursors WHERE consumer = $1 \
+         ), pending AS ( \
+             SELECT e.occurred_at \
+             FROM events e, cursor c \
+             WHERE e.seq > c.last_seq \
+         ) \
+         SELECT count(*)::bigint AS pending_count, \
+                coalesce(extract(epoch FROM (now() - min(occurred_at))), 0)::float8 \
+                    AS oldest_age_seconds \
+         FROM pending",
+    )
+    .bind(consumer)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("outbox: lag stats: {e}")))?;
+    Ok(ConsumerLagStats {
+        pending_count: row.get("pending_count"),
+        oldest_age_seconds: row.get("oldest_age_seconds"),
+    })
 }
 
 pub async fn trace_rows(
@@ -502,6 +534,29 @@ mod tests {
         let names = seen.lock().unwrap_or_else(|p| p.into_inner()).clone();
         assert!(names.contains(&new), "new event is delivered");
         assert!(!names.contains(&old), "historical event is skipped");
+    }
+
+    #[tokio::test]
+    async fn consumer_lag_stats_reports_pending_count_and_age() {
+        let Some(pool) = pool().await else { return };
+        let consumer = unique_consumer();
+        register_consumer_at_head(&pool, &consumer)
+            .await
+            .expect("register at head");
+
+        let initial = consumer_lag_stats(&pool, &consumer)
+            .await
+            .expect("initial lag stats");
+        assert_eq!(initial.pending_count, 0);
+        assert_eq!(initial.oldest_age_seconds, 0.0);
+
+        append_one(&pool, "lag-stats").await;
+
+        let pending = consumer_lag_stats(&pool, &consumer)
+            .await
+            .expect("pending lag stats");
+        assert!(pending.pending_count >= 1);
+        assert!(pending.oldest_age_seconds >= 0.0);
     }
 
     #[tokio::test]

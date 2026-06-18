@@ -195,6 +195,12 @@ impl AccessLogService for LearningCaptureService {
                     match observation_from_access_log(&entry) {
                         Some(input) => {
                             if let Err(status) = self.ingest(ctx.clone(), input).await {
+                                metrics::counter!(
+                                    "fp_capture_dropped_total",
+                                    "source" => "als",
+                                    "reason" => status.code().to_string()
+                                )
+                                .increment(1);
                                 tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ALS learning observation");
                             }
                         }
@@ -239,6 +245,12 @@ impl ExternalProcessor for LearningCaptureService {
                         }
                         if let Some(input) = observation_from_ext_proc(&mut state, message) {
                             if let Err(status) = service.ingest(ctx.clone(), input).await {
+                                metrics::counter!(
+                                    "fp_capture_dropped_total",
+                                    "source" => "ext_proc",
+                                    "reason" => status.code().to_string()
+                                )
+                                .increment(1);
                                 tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ExtProc learning observation");
                             }
                         }
@@ -910,6 +922,12 @@ async fn ai_request_headers_response(
     .await
     {
         Ok(Some(name)) => {
+            metrics::counter!(
+                "fp_ai_budget_threshold_crossings_total",
+                "mode" => "enforcing",
+                "result" => "exhausted"
+            )
+            .increment(1);
             return immediate_response_with_details(
                 429,
                 format!("AI budget \"{name}\" exceeded"),
@@ -1035,6 +1053,12 @@ async fn ai_listener_request_headers_response(
     .await
     {
         Ok(Some(name)) => {
+            metrics::counter!(
+                "fp_ai_budget_threshold_crossings_total",
+                "mode" => "enforcing",
+                "result" => "exhausted"
+            )
+            .increment(1);
             return immediate_response_with_details(
                 429,
                 format!("AI budget \"{name}\" exceeded"),

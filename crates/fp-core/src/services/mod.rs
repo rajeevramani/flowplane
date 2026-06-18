@@ -62,6 +62,13 @@ pub async fn record_authz_denial(
     team: Option<TeamRef>,
     reason: Reason,
 ) {
+    metrics::counter!(
+        "fp_authz_denied_total",
+        "resource" => resource.as_str(),
+        "action" => action.as_str()
+    )
+    .increment(1);
+
     let (actor_type, actor_id) = actor_of(ctx);
     audit::record_best_effort(
         pool,

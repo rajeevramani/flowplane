@@ -159,6 +159,28 @@ pub struct AdsService {
     nack_pool: Option<sqlx::PgPool>,
 }
 
+#[derive(Default)]
+struct AdsStreamMetrics {
+    authenticated: bool,
+}
+
+impl AdsStreamMetrics {
+    fn opened(&mut self) {
+        if !self.authenticated {
+            metrics::counter!("fp_xds_ads_streams_opened_total").increment(1);
+            self.authenticated = true;
+        }
+    }
+}
+
+impl Drop for AdsStreamMetrics {
+    fn drop(&mut self) {
+        if self.authenticated {
+            metrics::counter!("fp_xds_ads_streams_closed_total").increment(1);
+        }
+    }
+}
+
 impl AdsService {
     pub fn new(
         cache: Arc<SnapshotCache>,
@@ -268,6 +290,7 @@ impl AggregatedDiscoveryService for AdsService {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<DiscoveryResponse, Status>>(32);
 
         tokio::spawn(async move {
+            let mut stream_metrics = AdsStreamMetrics::default();
             let mut team: Option<TeamId> = None;
             let mut node_label = String::new();
             let mut certificate_id: Option<Uuid> = None;
@@ -301,6 +324,7 @@ impl AggregatedDiscoveryService for AdsService {
                                     team = Some(identity.team_id);
                                     node_label = node_id.to_string();
                                     certificate_id = identity.certificate_id;
+                                    stream_metrics.opened();
                                 }
                                 Err(status) => {
                                     let _ = tx.send(Err(status)).await;
