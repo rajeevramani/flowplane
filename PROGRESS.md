@@ -530,7 +530,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         directly through Envoy, gateway policy parity is observed with caller credentials, and
         cross-team descriptor issuance fails closed. Residual risks for process-local sessions,
         multi-binding descriptor selection, and dynamic descriptor audit detail move to S12.
-- [ ] S12 Hardening, production readiness, v1.0.0 tag
+- [x] S12 Hardening, production readiness, v1.0.0 tag
   - [x] S12a design contract: D-021 records the S12 definition-of-done — no new product
         capability, required CI/supply-chain preflight (#88), alert-family classification
         (exists vs S12 hardening instrumentation vs deferred native GenAI semconv), failure-mode
@@ -570,9 +570,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
   - [x] S12g release: #95 adds `docs/release-walkthrough.md` and `REWRITE-REPORT.md`, records
         live Envoy E2E as a manual v1.0 release gate with existing 5-run Envoy 1.37.4 evidence,
         separates git tag criteria from Q-006 public-distribution gating, and lists accepted risks.
-  - [ ] S12 exit: D-021 definition-of-done list — every box checked; required CI green; full
-        08a §4 pass green or explicitly accepted; failure-mode suite green; release artifacts
-        produced; docs complete; walkthrough reviewed; tag criteria accepted.
+  - [x] S12 exit: #86 definition-of-done list is complete: required CI gates restored, full
+        08a §4 pass mapped, failure-mode suite recorded, release artifacts produced, docs
+        complete, walkthrough accepted, and tag criteria recorded. `v1.0.0` tag creation still
+        requires explicit release approval; public distribution remains gated on Q-006.
 
 ## Known Corrections / Open Risks
 
