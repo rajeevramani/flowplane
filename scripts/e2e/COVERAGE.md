@@ -20,7 +20,7 @@ A capability may list a secondary source in parentheses, but the first token is 
 
 Live phases (current `scripts/e2e-envoy.sh`): `P1` basic ADS traffic · `P1a` AI
 (injection/failover/budget/usage/cleanup) · `P1b` config-first learning · `P1c` traffic-first
-discovery+route-gen · `P2` CP-restart convergence · `P3` cross-team xDS isolation · `P4`
+discovery+route-gen · `P2` CP-restart convergence · `P2a` Envoy-restart convergence · `P3` cross-team xDS isolation · `P4`
 local-rate-limit/header-mutation · `P5` JWT/RBAC/ext_authz · `P6` SDS rotation · `P7` advanced
 route/listener/filter parity (+ global-RLS filter ACK).
 
@@ -165,6 +165,7 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | Missing/malformed/expired/wrong-team creds & certs | `cargo:ads_mtls::unregistered_and_expired_certificates_are_rejected`; `cargo:api_crud` cross-team secret reject | covered |
 | Envoy NACK + corrected-config recovery | `cargo:ads_stream::nack_quarantines_offender_and_pushes_corrected_set` | covered |
 | CP restart while dataplane connected | `live:P2` | covered |
+| Envoy restart while CP has live config | `live:P2a` | covered |
 | Secret rotation while traffic active | `live:P6` | covered |
 | Learning/discovery poisoned or excessive input | `cargo:api_lifecycle::raw_observation_quota_drop...`, `discovery::discovery_rejects_loopback_upstream` | covered |
 | AI budget exhaustion | `live:P1a` | covered |

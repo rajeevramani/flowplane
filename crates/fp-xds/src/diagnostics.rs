@@ -373,3 +373,51 @@ where
         self.inner.streaming(req, path, codec).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn diagnostics_report_decode_ignores_additive_unknown_fields() -> TestResult {
+        let report = DiagnosticsReport {
+            schema_version: 1,
+            report_id: "report-1".into(),
+            dataplane_id: DataplaneId::generate().to_string(),
+            observed_at: None,
+            payload: Some(diagnostics_report::Payload::Heartbeat(HeartbeatReport {
+                requests_delta: 7,
+                errors_delta: 1,
+                warming_failures_delta: 0,
+                config_verified: true,
+            })),
+        };
+        let mut bytes = report.encode_to_vec();
+        // Unknown length-delimited field 100. Prost should ignore it while preserving known
+        // fields, which is the additive agent-to-CP diagnostics compatibility boundary.
+        bytes.extend_from_slice(&[0xA2, 0x06, 0x03, b'n', b'e', b'w']);
+
+        let decoded = DiagnosticsReport::decode(bytes.as_slice())?;
+        assert_eq!(decoded.schema_version, 1);
+        assert_eq!(decoded.report_id, "report-1");
+        assert_eq!(decoded.dataplane_id, report.dataplane_id);
+        let Some(payload) = decoded.payload else {
+            return Err("payload missing after decoding unknown fields".into());
+        };
+        match payload {
+            diagnostics_report::Payload::Heartbeat(heartbeat) => {
+                assert_eq!(heartbeat.requests_delta, 7);
+                assert_eq!(heartbeat.errors_delta, 1);
+                assert_eq!(heartbeat.warming_failures_delta, 0);
+                assert!(heartbeat.config_verified);
+            }
+            diagnostics_report::Payload::ListenerState(_) => {
+                return Err("payload kind changed while decoding unknown fields".into());
+            }
+        }
+        Ok(())
+    }
+}

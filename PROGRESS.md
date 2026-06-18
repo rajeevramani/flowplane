@@ -545,10 +545,10 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         alert families (authz denials, dataplane disconnects, DB pool saturation, outbox lag,
         capture drops, budget threshold crossings), and records native `gen_ai.*` OTel semconv as
         deferred for v1.0.
-  - [ ] S12c failure-mode suite: kill Postgres mid-write, restart Envoy, restart CP under load,
-        plus agent version-skew (D-014/proto) — each asserts no loss / no orphans / no panics and
-        that outbox redelivery + xDS resync converge; reuse existing `scripts/e2e-envoy.sh` and
-        resolved R1/R3/R4 evidence before adding new coverage.
+  - [x] S12c failure-mode suite: #90 commits `docs/failure-mode-matrix.md`, reconciles the six
+        verification rows back to D-021's four rows, reuses existing transactional-outbox and
+        `scripts/e2e-envoy.sh` evidence, records Docker/manual-gate context for live Envoy rows,
+        and adds the agent-to-CP diagnostics proto additive-compatibility test.
   - [ ] S12d full adversarial pass (08a §4): tenant-isolation + abuse suite across every external
         surface (REST, MCP, CLI, learned specs, generated routes, xDS); every 08a §4 item maps to
         a passing test or an explicit accepted risk (08a §194). Pin whether live Envoy E2E runs as
