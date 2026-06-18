@@ -43,6 +43,7 @@ is covered by existing concurrency and live-runner evidence:
 | Event replay/cursor failure under retry | `cargo test -p fp-storage outbox::tests::failed_handler_redelivers_the_same_batch` | covered |
 | CP restart while dataplane has live config | `live:P2` through `bash scripts/e2e-envoy.sh` | release-gate covered |
 | Envoy restart/resubscribe convergence | `live:P2a` through `bash scripts/e2e-envoy.sh` | release-gate covered |
+| AI stream-start boundary under backend reset | `live:P1d` through `bash scripts/e2e-envoy.sh`; the mock waits briefly after flushing the first SSE chunk before RST so the check is not sensitive to TCP scheduling | release-gate covered |
 
 ## Accepted Boundaries
 
