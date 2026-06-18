@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use fp_core::dev::DevIssuer;
 use fp_domain::api_lifecycle::{SpecFormat, SpecSourceKind, SpecVersionInput};
 use fp_domain::authz::TeamRef;
-use fp_domain::{ApiDefinitionId, ListenerId, OrgRole, RouteConfigId};
+use fp_domain::{ApiDefinitionId, ListenerId, OrgRole, RouteConfigId, SpecVersionId};
 use fp_storage::repos::{api_lifecycle as storage_api_lifecycle, identity};
 use http_body_util::BodyExt;
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -244,6 +244,38 @@ async fn tools_call(
         .expect("tools/call");
     assert_eq!(response.status(), StatusCode::OK);
     json_of(response).await
+}
+
+fn assert_dynamic_descriptor_metadata(
+    content: &serde_json::Value,
+    api_id: ApiDefinitionId,
+    spec_id: SpecVersionId,
+) {
+    assert_eq!(content["type"], "gateway_invocation");
+    uuid::Uuid::parse_str(content["apiToolId"].as_str().expect("descriptor apiToolId"))
+        .expect("apiToolId uuid");
+    assert_eq!(
+        content["apiDefinitionId"],
+        serde_json::json!(api_id.as_uuid())
+    );
+    assert_eq!(
+        content["specVersionId"],
+        serde_json::json!(spec_id.as_uuid())
+    );
+    let expires_at = chrono::DateTime::parse_from_rfc3339(
+        content["expiresAt"].as_str().expect("descriptor expiresAt"),
+    )
+    .expect("expiresAt rfc3339");
+    assert!(
+        expires_at.timestamp() > chrono::Utc::now().timestamp(),
+        "descriptor expiresAt should be a future staleness window"
+    );
+    uuid::Uuid::parse_str(
+        content["correlationId"]
+            .as_str()
+            .expect("descriptor correlationId"),
+    )
+    .expect("correlationId uuid");
 }
 
 async fn create_agent(
@@ -748,6 +780,30 @@ async fn dynamic_api_tools_reflect_republished_specs() {
     let gateway_session = initialize(fx.app.clone(), &gateway_token).await;
     let first_tool = format!("api_{api_name}-listitems");
     let second_tool = format!("api_{api_name}-createorder");
+    let route_config_id = insert_route_config(&fx.pool, fx.team, &unique("catalog-routes")).await;
+    let listener_id = insert_listener(
+        &fx.pool,
+        fx.team,
+        &unique("catalog-listener"),
+        Some("https://gateway.example"),
+    )
+    .await;
+    let mut tx = fx.pool.begin().await.expect("route binding tx");
+    storage_api_lifecycle::create_route_binding(
+        &mut tx,
+        fx.team,
+        api_id,
+        &unique("catalog-binding"),
+        &fp_domain::api_lifecycle::ApiRouteBindingSpec {
+            route_config_id,
+            listener_id: Some(listener_id),
+            virtual_host: Some("api.example".into()),
+            route: None,
+        },
+    )
+    .await
+    .expect("route binding");
+    tx.commit().await.expect("route binding commit");
 
     publish_spec(
         fx.app.clone(),
@@ -765,6 +821,22 @@ async fn dynamic_api_tools_reflect_republished_specs() {
     )
     .await;
     assert!(tools.contains(&first_tool));
+    let first_descriptor = tools_call(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &first_tool,
+        serde_json::json!({ "team": fx.team_name }),
+    )
+    .await;
+    assert_eq!(first_descriptor["result"]["isError"], false);
+    let first_content = &first_descriptor["result"]["structuredContent"];
+    assert_eq!(first_content["tool"].as_str(), Some(first_tool.as_str()));
+    assert_eq!(
+        first_content["url"].as_str(),
+        Some("https://gateway.example/items")
+    );
+    assert_dynamic_descriptor_metadata(first_content, api_id, first.id);
 
     publish_spec(
         fx.app.clone(),
@@ -783,4 +855,24 @@ async fn dynamic_api_tools_reflect_republished_specs() {
     .await;
     assert!(!tools.contains(&first_tool));
     assert!(tools.contains(&second_tool));
+    let second_descriptor = tools_call(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &second_tool,
+        serde_json::json!({ "team": fx.team_name }),
+    )
+    .await;
+    assert_eq!(second_descriptor["result"]["isError"], false);
+    let second_content = &second_descriptor["result"]["structuredContent"];
+    assert_eq!(second_content["tool"].as_str(), Some(second_tool.as_str()));
+    assert_eq!(
+        second_content["url"].as_str(),
+        Some("https://gateway.example/orders")
+    );
+    assert_dynamic_descriptor_metadata(second_content, api_id, second.id);
+    assert_ne!(
+        first_content["specVersionId"],
+        second_content["specVersionId"]
+    );
 }
