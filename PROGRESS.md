@@ -502,11 +502,34 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         priority-1 fallback credential and usage attribution coverage.
   - [x] S10 docs/progress: #61 aligned `DECISIONS.md`, `PROGRESS.md`, and S10 spec notes
         with the implemented fixed-window budget semantics and OpenAI-compatible v1.0 scope.
-- [ ] S11 MCP server + tools
+- [x] S11 MCP server + tools
   - [x] S11a design contract: D-019 records the v2 MCP authn/authz/session/tool contract,
         resource/action mapping, static-registry fork, dynamic `api_*` routing/exposure model,
         agent-token prerequisite, no-authz-cache session rule, Origin policy, AI-tool decision
         point, and CLI/status/connections dependencies.
+  - [x] S11b MCP transport/session API: initialize/tools/list/tools/call/ping are served by
+        `fp-api`; sessions are process-local status handles, authn/authz is re-derived from the
+        request middleware, present Origin is allowlisted, absent Origin is allowed for headless
+        agents, and disabled agents fail closed on the next request.
+  - [x] S11c static CP/ops tool surface: MCP tools dispatch through `fp-core` service paths,
+        list filtering mirrors v2 `Resource`/`Action` decisions, mutation audit remains
+        REST-equivalent, and #82 covers a realistic CP workflow plus `ops_*` reads and recovery
+        hints.
+  - [x] S11d agent auth/grants: agent token issuance and middleware loading produce real
+        `PrincipalCtx::Agent` contexts; gateway-tool grants are scoped to `mcp-tools`, and #84
+        proves grant removal denies the next MCP request without waiting for session TTL.
+  - [x] S11e dynamic `api_*` descriptors: D-020 replaces CP proxy execution with
+        descriptor/client-direct invocation, descriptor URLs come from explicit listener
+        `public_base_url`, callers use their own gateway credentials, and #83 pins descriptor
+        identity/staleness fields across republish.
+  - [x] S11f MCP management CLI/API: `flowplane mcp status`, `connections`, and per-tool
+        enable/disable operate against real MCP/API-tool endpoints; #81 makes `flowplane expose`
+        report the configured public gateway endpoint instead of assuming local dataplane
+        reachability.
+  - [x] S11 exit: #85 extends the live Envoy E2E so an MCP `api_*` descriptor is followed
+        directly through Envoy, gateway policy parity is observed with caller credentials, and
+        cross-team descriptor issuance fails closed. Residual risks for process-local sessions,
+        multi-binding descriptor selection, and dynamic descriptor audit detail move to S12.
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
 
 ## Known Corrections / Open Risks
