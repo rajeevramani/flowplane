@@ -514,3 +514,64 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   is reintroduced later, it must be explicitly configured, disabled by default in production, and
   covered by policy-parity tests.
 - **Status:** decided for S11 design correction / #80 (2026-06-17).
+
+## D-021: S12 hardening definition-of-done (no new product capability)
+
+- **Context:** S12 is the final slice: hardening, production readiness, and the `v1.0.0` tag
+  (spec/11-slice-plan.md §S12). Cross-cutting product infrastructure was built in its owning
+  slice by design, not retrofitted during hardening (spec/10 §311). S12 still needs a pinned,
+  checkable definition-of-done so schedule pressure cannot silently drop a verification, doc,
+  release artifact, or accepted-risk record.
+- **Decision:** S12 does not add new product surface. It may add release infrastructure,
+  verification harnesses, and production-safety instrumentation over existing code paths when a
+  child issue proves the work is required for production readiness. Anything outside that
+  hardening carve-out is deferred or recorded as an accepted risk.
+- **CI/supply-chain preflight (#88):** S12 starts with green required gates. The current CI quality
+  job must set the secret-encryption key needed by DB-backed tests, and cargo-deny must reflect the
+  release posture for first-party crates. Q-006 is a release decision: either choose a real license
+  for first-party crates, or explicitly record that unpublished first-party crates remain private
+  and configure cargo-deny accordingly. S12 cannot close with that posture implicit.
+- **Alert pack (S12b):** alerting is classified by current backing evidence rather than assuming
+  every desired alert already has a metric:
+
+  | Alert family | S12 status | Metric source |
+  | --- | --- | --- |
+  | NACK/quarantine count | exists; alert now | `fp_xds_nacks_total`, `fp_xds_quarantined_resources_total` |
+  | Auth-denial spike | instrument now | add low-cardinality `fp_authz_denied_total{resource,action}` at the existing denial recording hook |
+  | Dataplane disconnects | instrument now | add ADS stream open/close counters at the existing stream lifecycle |
+  | DB pool saturation | instrument now | add one read-only sampler task over `PgPool::size()` / `num_idle()` |
+  | Outbox lag | instrument now | reuse the sampler for pending count and oldest unprocessed age |
+  | Capture drop rate | instrument now if the capture path already drops; otherwise defer | add `fp_capture_dropped_total{reason}` only at existing drop decisions |
+  | Budget near-exhaustion | instrument now as event counter | add threshold-crossing counter; avoid per-budget gauges/cardinality |
+  | GenAI semconv | defer native `gen_ai.*` OTel meter | pragmatic Flowplane counters may ship; native OTel semconv is post-1.0 accepted risk |
+
+  The sampler must be read-only and owned by `serve`; it must not introduce a mutation path or a
+  CP-to-DP coupling seam.
+- **Failure-mode matrix (S12c):** each fault records the invariant, command/harness, and pass
+  signal. Required rows: kill Postgres mid-write -> no partial commit and outbox redelivers on
+  recovery; restart Envoy -> xDS resync, no orphaned/quarantined resources; restart CP under load
+  -> no event loss and no panic; agent version-skew (D-014/proto) -> additive-only compatibility
+  holds. Existing evidence from `scripts/e2e-envoy.sh` and resolved risks R1/R3/R4 should be
+  referenced before adding new coverage.
+- **Adversarial surface map (S12d):** map every security-relevant spec/08a §4 row across REST, MCP,
+  CLI, learned specs, generated routes, and xDS to a passing test or explicit accepted risk. The
+  live Envoy E2E is not currently a CI gate, so S12d/S12g must decide whether it runs in GitHub
+  Actions with Docker or as a documented manual release gate with recorded evidence.
+- **Packaging artifacts (S12e):** release packaging is greenfield today: there is no release
+  workflow, Dockerfile, image signing, or SBOM pipeline. S12e owns building that release
+  infrastructure and producing the static CP binary, OCI image, image signature, SBOM, and
+  dataplane bundle via `flowplane dataplane bootstrap`.
+- **Docs (S12f):** `docs/production-readiness.md`; separate CP and DP-bundle install/upgrade
+  guides with bare-metal/VM/compose/ECS/K8s parity (D-004, spec/10 §10.1); config reference;
+  runbook; backup/restore drill; CLI workflow guide.
+- **Release (S12g):** scripted seeded demo walkthrough (first-contact -> full loop -> MCP
+  descriptor-aware client), `REWRITE-REPORT.md`, final green gates, accepted-risk list, and
+  `v1.0.0` tag.
+- **Exit:** all S12 child issues closed or explicitly accepted; required CI green; full spec/08a §4
+  map green or accepted; failure-mode matrix green; release artifacts produced; docs complete;
+  seeded demo walkthrough runs clean end to end; tag criteria satisfied.
+- **Why:** A pinned DoD makes the depth knobs explicit. The agreed knobs (spec/11 §121) cut depth
+  in earlier slices, never in S12's verification, tenancy, release, or adversarial exits.
+  Recording the DoD here keeps the release bar legible and prevents a green checkbox from papering
+  over an unrun verification.
+- **Status:** decided for S12a / #87.
