@@ -404,6 +404,7 @@ cat >/tmp/fp-e2e-ai-stream-die.py <<'PY'
 import socket
 import struct
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 port = int(sys.argv[1])
@@ -425,6 +426,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'data: {"choices":[{"delta":{"content":"partial-stream"}}]}\n\n')
         self.wfile.flush()
+        # Let Envoy drain the flushed chunk before the forced reset. Without this small delay,
+        # the RST can race ahead of the chunk and make the harness flaky even though the product
+        # behavior being tested is unchanged: no failover after a response has started.
+        time.sleep(0.25)
         # Abruptly reset mid-stream (SO_LINGER 0 -> RST) after the first chunk is on the wire.
         self.close_connection = True
         try:

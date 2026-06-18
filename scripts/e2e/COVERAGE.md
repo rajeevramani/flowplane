@@ -151,7 +151,7 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | Enforcing budgets block at request start; fixed-window; bounded overdraft | `live:P1a`; `cargo:fp-xds ai_upstream_auth_injection...` | covered |
 | Concurrent same-team settlement atomic; cross-team isolated | `cargo:ai_budgets::concurrent_budget_settlement_is_atomic_and_team_scoped` | covered |
 | Priority failover: higher-priority first, fall-through pre-byte, re-inject per-backend credential, attribute usage to backend used | `live:P1a` (primary unavailable → fallback with fallback credential + attribution) | covered |
-| **Never fails over after streaming starts (stream-start boundary)** | `live:P1d` — `stream:true` request reaches the primary backend, delivers the partial stream chunk, does not contact the fallback after first byte, and keeps the client on the partial stream. #67/D9 fixed the stale `content-length` + SSE forwarding gap. | covered |
+| **Never fails over after streaming starts (stream-start boundary)** | `live:P1d` — `stream:true` request reaches the primary backend, delivers the partial stream chunk, does not contact the fallback after first byte, and keeps the client on the partial stream. The stream-die mock waits briefly after flushing the chunk before RST so the harness asserts product behavior rather than a TCP timing race. #67/D9 fixed the stale `content-length` + SSE forwarding gap. | covered |
 | Malformed provider response handling | `live:P1e` — non-OpenAI 200 body passed through, no 500, no usage settled | covered |
 | Mock-provider E2E: credential→route→traffic→usage→budget trip→failover→cleanup | `live:P1a` | covered |
 
@@ -172,7 +172,7 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | AI missing usage (fail-open, documented) | `cargo:` (persist no-ops on missing usage); D-018 documents fail-open | covered |
 | AI malformed provider response | `live:P1e` | covered |
 | AI unavailable primary backend (failover) | `live:P1a` (priority-0 connection refused → priority-1) | covered |
-| AI stream-start failure boundary | `live:P1d` (`stream:true` partial stream delivered; fallback untouched after first byte) | covered |
+| AI stream-start failure boundary | `live:P1d` (`stream:true` partial stream delivered; fallback untouched after first byte; mock RST delayed after flush to avoid harness race) | covered |
 
 ## Certification-only checks (not feature bullets, but Tier-0 exit gates)
 
