@@ -14,15 +14,15 @@ Use this process when working through GitHub issues on the active integration br
 
 ## Branching Model
 
-- Integration branch: `claude/optimistic-lamport-j38tuy`
+- Integration branch: `main`
 - Work branches: `issue/<issue-number>-<short-slug>`
-- Merge path: issue branch -> `claude/optimistic-lamport-j38tuy`
+- Merge path: issue branch -> `main`
 - PRs are not required for this workflow.
 
 Start each issue from the latest integration branch:
 
 ```bash
-git checkout claude/optimistic-lamport-j38tuy
+git checkout main
 git pull --ff-only
 git checkout -b issue/<issue-number>-<short-slug>
 ```
@@ -44,10 +44,10 @@ git commit -m "Fix <short issue summary> (#<issue-number>)"
 8. Merge directly back to the integration branch:
 
 ```bash
-git checkout claude/optimistic-lamport-j38tuy
+git checkout main
 git pull --ff-only
 git merge --no-ff issue/<issue-number>-<short-slug>
-git push origin claude/optimistic-lamport-j38tuy
+git push origin main
 ```
 
 9. Set the GitHub issue to review by applying the `ready-for-review` label. Do not close the
@@ -91,6 +91,6 @@ An issue is done when:
   command is documented when the full workspace check is not practical locally
 - tests relevant to the touched area pass; run `cargo test --workspace --all-features` when
   the touched surface is broad or shared
-- the issue branch is merged into `claude/optimistic-lamport-j38tuy`
+- the issue branch is merged into `main`
 - the integration branch is pushed to `origin`
 - the GitHub issue is open, has a completion comment, and has the `ready-for-review` label
