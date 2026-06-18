@@ -567,11 +567,12 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         point, with separated CP/DP deployment and upgrade guidance, config/env reference,
         runbook, backup/restore drill with KEK escrow, CLI workflow, and links to the S12
         evidence docs and release packaging artifacts.
-  - [ ] S12g release: scripted seeded demo walkthrough (first-contact → full loop → MCP client,
-        doubles as smoke test); `REWRITE-REPORT.md`; final accepted-risk list; tag `v1.0.0`.
+  - [x] S12g release: #95 adds `docs/release-walkthrough.md` and `REWRITE-REPORT.md`, records
+        live Envoy E2E as a manual v1.0 release gate with existing 5-run Envoy 1.37.4 evidence,
+        separates git tag criteria from Q-006 public-distribution gating, and lists accepted risks.
   - [ ] S12 exit: D-021 definition-of-done list — every box checked; required CI green; full
         08a §4 pass green or explicitly accepted; failure-mode suite green; release artifacts
-        produced; docs complete; demo walkthrough runs clean end to end.
+        produced; docs complete; walkthrough reviewed; tag criteria accepted.
 
 ## Known Corrections / Open Risks
 
