@@ -4,16 +4,34 @@ S12e packages the current shipped system without changing product behavior.
 
 ## Artifact Decision
 
-The v1.0 packaging target is a glibc Linux/control-plane container artifact plus a host release
-tarball. The earlier "musl static binary" wording is not claimed for v1.0 because `fp-core` and
-`fp-api` directly use the `openssl` crate for certificate work. A musl-static artifact requires a
-separate decision to either vendor OpenSSL or replace that usage.
+The v1.0 packaging target keeps the static-binary path by enabling vendored OpenSSL. Production
+OpenSSL usage is limited to dataplane proxy-certificate issuance in `fp-core`; replacing that with
+a rustls/rcgen-style implementation is deferred until after v1.0 because it is security-sensitive
+certificate code, not release plumbing.
+
+Vendored OpenSSL makes the binary larger, requires the musl target plus a C toolchain for
+cross-builds, and means bundled OpenSSL CVEs must be tracked through the #88 advisory posture.
+Public distribution is still gated on Q-006: first-party crates are private and license-pending.
+Internal artifacts can be produced and verified before that decision.
 
 ## Command
 
 ```bash
 scripts/package-release.sh
 ```
+
+For the musl release artifact:
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+brew install filosottile/musl-cross/musl-cross # macOS cross-linker
+FLOWPLANE_RELEASE_TARGET=x86_64-unknown-linux-musl \
+  scripts/package-release.sh
+file target/x86_64-unknown-linux-musl/release/flowplane
+```
+
+Pass signal: `file` reports a statically linked binary, or Linux `ldd` prints
+`not a dynamic executable`.
 
 Outputs are written under `target/release-artifacts/flowplane-v<version>/`:
 
@@ -22,6 +40,9 @@ Outputs are written under `target/release-artifacts/flowplane-v<version>/`:
 - `SHA256SUMS` for generated files.
 - `release-manifest.md` recording artifact choices and pass/fail notes.
 - `flowplane-<version>.oci.tar` when image packaging is enabled.
+
+Signing is not wired for v1.0. The accepted fallback is `SHA256SUMS` plus the cargo-metadata SBOM
+source artifact until Q-006/#88 define the public signing and distribution posture.
 
 Build and save the OCI image with:
 
@@ -42,16 +63,17 @@ FLOWPLANE_TOKEN=... \
 FLOWPLANE_PACKAGE_DATAPLANE=1 \
 FLOWPLANE_PACKAGE_TEAM=default \
 FLOWPLANE_PACKAGE_DATAPLANE_NAME=edge-1 \
+FLOWPLANE_PACKAGE_DATAPLANE_MODE=mtls \
+FLOWPLANE_PACKAGE_CERT_PATH=/etc/flowplane/tls/tls.crt \
+FLOWPLANE_PACKAGE_KEY_PATH=/etc/flowplane/tls/tls.key \
+FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt \
 scripts/package-release.sh
 ```
 
-For mTLS bootstrap, also pass:
+`mtls` is the release default. For local/dev bootstrap only, pass:
 
 ```bash
-FLOWPLANE_PACKAGE_DATAPLANE_MODE=mtls
-FLOWPLANE_PACKAGE_CERT_PATH=/etc/flowplane/tls/tls.crt
-FLOWPLANE_PACKAGE_KEY_PATH=/etc/flowplane/tls/tls.key
-FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt
+FLOWPLANE_PACKAGE_DATAPLANE_MODE=dev
 ```
 
 The rendered `envoy.yaml` is written into the release tarball's `dataplane/` directory. Without
