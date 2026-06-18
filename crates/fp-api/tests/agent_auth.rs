@@ -7,6 +7,7 @@ use fp_domain::OrgRole;
 use fp_storage::repos::identity;
 use http_body_util::BodyExt;
 use metrics_exporter_prometheus::PrometheusBuilder;
+use sqlx::{PgPool, Row};
 use tower::ServiceExt;
 
 fn unique(prefix: &str) -> String {
@@ -26,7 +27,7 @@ async fn json_of(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("json body")
 }
 
-async fn app_with_admin() -> Option<(axum::Router, String, String, uuid::Uuid)> {
+async fn app_with_admin() -> Option<(axum::Router, String, String, uuid::Uuid, PgPool)> {
     let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
         return None;
@@ -59,7 +60,7 @@ async fn app_with_admin() -> Option<(axum::Router, String, String, uuid::Uuid)> 
         .mint(&subject, "admin@test", "Admin", 600)
         .expect("mint");
     let app = fp_api::build_router(fp_api::AppState {
-        pool,
+        pool: pool.clone(),
         prometheus: PrometheusBuilder::new().build_recorder().handle(),
         version: "test",
         validator: Some(std::sync::Arc::new(validator)),
@@ -67,7 +68,7 @@ async fn app_with_admin() -> Option<(axum::Router, String, String, uuid::Uuid)> 
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
     });
-    Some((app, token, team.name, team.id.as_uuid()))
+    Some((app, token, team.name, team.id.as_uuid(), pool))
 }
 
 fn request(method: &str, uri: &str, token: &str, body: Option<serde_json::Value>) -> Request<Body> {
@@ -83,6 +84,91 @@ fn request(method: &str, uri: &str, token: &str, body: Option<serde_json::Value>
         None => Body::empty(),
     };
     builder.body(body).expect("request")
+}
+
+fn mcp_request(token: &str, session: Option<&str>, body: serde_json::Value) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/mcp")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json");
+    if let Some(session) = session {
+        builder = builder.header("mcp-session-id", session);
+    }
+    builder.body(Body::from(body.to_string())).expect("request")
+}
+
+async fn initialize_mcp(app: axum::Router, token: &str) -> String {
+    let response = app
+        .oneshot(mcp_request(
+            token,
+            None,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-11-25" }
+            }),
+        ))
+        .await
+        .expect("initialize");
+    assert_eq!(response.status(), StatusCode::OK);
+    response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("session")
+        .to_string()
+}
+
+async fn mcp_tools_list(
+    app: axum::Router,
+    token: &str,
+    session: &str,
+    team: &str,
+) -> serde_json::Value {
+    let response = app
+        .oneshot(mcp_request(
+            token,
+            Some(session),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": { "team": team }
+            }),
+        ))
+        .await
+        .expect("tools/list");
+    assert_eq!(response.status(), StatusCode::OK);
+    json_of(response).await
+}
+
+async fn mcp_tools_call(
+    app: axum::Router,
+    token: &str,
+    session: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let response = app
+        .oneshot(mcp_request(
+            token,
+            Some(session),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": name,
+                    "arguments": arguments
+                }
+            }),
+        ))
+        .await
+        .expect("tools/call");
+    assert_eq!(response.status(), StatusCode::OK);
+    json_of(response).await
 }
 
 async fn create_agent(
@@ -115,7 +201,7 @@ async fn create_agent(
 
 #[tokio::test]
 async fn active_agent_tokens_authenticate_and_rotate_disable_fail_closed() {
-    let Some((app, admin_token, _, _)) = app_with_admin().await else {
+    let Some((app, admin_token, _, _, _)) = app_with_admin().await else {
         return;
     };
 
@@ -180,7 +266,7 @@ async fn active_agent_tokens_authenticate_and_rotate_disable_fail_closed() {
 
 #[tokio::test]
 async fn mcp_session_reauth_rejects_disabled_agent_on_next_request() {
-    let Some((app, admin_token, _, _)) = app_with_admin().await else {
+    let Some((app, admin_token, _, _, _)) = app_with_admin().await else {
         return;
     };
     let (agent_id, token) = create_agent(
@@ -252,8 +338,84 @@ async fn mcp_session_reauth_rejects_disabled_agent_on_next_request() {
 }
 
 #[tokio::test]
+async fn mcp_session_reauth_removes_grants_on_next_request() {
+    let Some((app, admin_token, team_name, team_id, pool)) = app_with_admin().await else {
+        return;
+    };
+    let (agent_id, token) = create_agent(
+        app.clone(),
+        &admin_token,
+        &unique("agent"),
+        "cp-tool",
+        vec![serde_json::json!({
+            "team_id": team_id,
+            "resource": "clusters",
+            "action": "read"
+        })],
+    )
+    .await;
+    let grant_id: uuid::Uuid = sqlx::query(
+        "SELECT id FROM grants \
+         WHERE principal_type = 'agent' AND principal_id = $1 AND team_id = $2 \
+           AND resource = 'clusters' AND action = 'read'",
+    )
+    .bind(agent_id)
+    .bind(team_id)
+    .fetch_one(&pool)
+    .await
+    .expect("agent grant")
+    .get("id");
+
+    let session = initialize_mcp(app.clone(), &token).await;
+    let before = mcp_tools_list(app.clone(), &token, &session, &team_name).await;
+    let before_tools = before["result"]["tools"].as_array().expect("tools before");
+    assert!(before_tools
+        .iter()
+        .any(|tool| tool["name"].as_str() == Some("cp_clusters_list")));
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/api/v1/teams/{team_name}/grants/{grant_id}"),
+            &admin_token,
+            None,
+        ))
+        .await
+        .expect("remove grant");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = app
+        .clone()
+        .oneshot(request("GET", "/api/v1/auth/whoami", &token, None))
+        .await
+        .expect("whoami after grant removal");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let after = mcp_tools_list(app.clone(), &token, &session, &team_name).await;
+    let after_tools = after["result"]["tools"].as_array().expect("tools after");
+    assert!(!after_tools
+        .iter()
+        .any(|tool| tool["name"].as_str() == Some("cp_clusters_list")));
+
+    let denied = mcp_tools_call(
+        app,
+        &token,
+        &session,
+        "cp_clusters_list",
+        serde_json::json!({ "team": team_name }),
+    )
+    .await;
+    assert_eq!(denied["error"]["data"]["kind"], "authz");
+    assert_eq!(
+        denied["error"]["message"],
+        "missing permission: clusters:read"
+    );
+}
+
+#[tokio::test]
 async fn gateway_and_api_consumer_agents_do_not_get_control_plane_access() {
-    let Some((app, admin_token, team_name, _)) = app_with_admin().await else {
+    let Some((app, admin_token, team_name, _, _)) = app_with_admin().await else {
         return;
     };
 
@@ -309,7 +471,7 @@ async fn gateway_and_api_consumer_agents_do_not_get_control_plane_access() {
 
 #[tokio::test]
 async fn gateway_agent_grants_are_limited_to_mcp_tools_scope() {
-    let Some((app, admin_token, _, team_id)) = app_with_admin().await else {
+    let Some((app, admin_token, _, team_id, _)) = app_with_admin().await else {
         return;
     };
 
