@@ -149,9 +149,11 @@ echo "dataplane bootstrap and gateway resources created via CLI"
 if docker run -d --name fp-e2e-envoy --network host \
   -v /tmp/fp-e2e-bootstrap.yaml:/etc/envoy/envoy.yaml:ro \
   envoyproxy/envoy:v1.37-latest -c /etc/envoy/envoy.yaml --log-level info >/dev/null 2>&1; then
+  ENVOY_MODE=docker
   echo "envoy started (docker); waiting for traffic to flow"
 else
   command -v envoy >/dev/null || { echo "neither docker envoy nor local envoy binary available"; exit 1; }
+  ENVOY_MODE=local
   envoy -c /tmp/fp-e2e-bootstrap.yaml --log-level info > /tmp/fp-e2e-envoy.log 2>&1 &
   ENVOY_PID=$!
   echo "envoy started (local binary $(envoy --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)); waiting for traffic to flow"
@@ -724,6 +726,20 @@ curl -fsS "${auth[@]}" -X PATCH -H "If-Match: $REV" http://$API/api/v1/teams/def
 wait_body hello-from-upstream2- || fail "post-restart mutation never reached Envoy"
 echo "PHASE 2 OK: CP restarted, Envoy survived and converged to '$BODY'"
 
+# ---- Phase 2a: Envoy restart convergence. Restart the dataplane while the CP keeps live config
+# state; the restarted Envoy must reconnect over ADS, receive persisted config, and serve traffic.
+if [ "$ENVOY_MODE" = "docker" ]; then
+  docker restart fp-e2e-envoy >/dev/null
+else
+  kill "$ENVOY_PID"; wait "$ENVOY_PID" 2>/dev/null || true
+  envoy -c /tmp/fp-e2e-bootstrap.yaml --log-level info >> /tmp/fp-e2e-envoy.log 2>&1 &
+  ENVOY_PID=$!
+fi
+wait_body hello-from-upstream2- || fail "traffic broke across Envoy restart"
+./target/debug/flowplane ops xds nacks >/tmp/fp-e2e-xds-nacks-after-envoy-restart.txt
+grep -q "no rows" /tmp/fp-e2e-xds-nacks-after-envoy-restart.txt || fail "unexpected xDS NACKs after Envoy restart"
+echo "PHASE 2a OK: Envoy restarted, reconnected, and served '$BODY'"
+
 # ---- Phase 3: cross-team isolation against the live Envoy. Resources for another team
 # must never reach this team's dataplane.
 curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams -d '{"name":"e2e-blue"}' >/dev/null
@@ -1110,5 +1126,5 @@ if [ "$KNOWN_FAIL_COUNT" -gt 0 ]; then
   echo "E2E INCOMPLETE: $KNOWN_FAIL_COUNT known failure(s) recorded (tracked product bugs); all other phases + redaction sweep passed"
   exit 1
 fi
-echo "E2E PASSED: traffic, learning capture, traffic-first discovery, restart convergence, cross-team isolation, http filters, auth filters, MCP descriptor gateway parity, SDS rotation, advanced parity, AI streaming boundary, redaction sweep"
+echo "E2E PASSED: traffic, learning capture, traffic-first discovery, CP restart convergence, Envoy restart convergence, cross-team isolation, http filters, auth filters, MCP descriptor gateway parity, SDS rotation, advanced parity, AI streaming boundary, redaction sweep"
 exit 0
