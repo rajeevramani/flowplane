@@ -549,11 +549,11 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         verification rows back to D-021's four rows, reuses existing transactional-outbox and
         `scripts/e2e-envoy.sh` evidence, records Docker/manual-gate context for live Envoy rows,
         and adds the agent-to-CP diagnostics proto additive-compatibility test.
-  - [ ] S12d full adversarial pass (08a §4): tenant-isolation + abuse suite across every external
-        surface (REST, MCP, CLI, learned specs, generated routes, xDS); every 08a §4 item maps to
-        a passing test or an explicit accepted risk (08a §194). Pin whether live Envoy E2E runs as
-        a GitHub Actions Docker gate or as a manual release gate with recorded evidence. Load
-        sanity included.
+  - [x] S12d full adversarial pass (08a §4): #91 commits `docs/adversarial-surface-map.md`,
+        mapping every 08a §4 abuse case across REST, MCP, CLI, learned specs, generated routes,
+        xDS, discovery/capture, and AI to a current passing test or accepted boundary. The pass
+        records bounded load sanity, keeps live Envoy E2E as a manual release gate unless S12g
+        promotes Docker CI, and reconciles stale #67/R2 coverage notes now fixed by #67/#69.
   - [ ] S12e packaging (greenfield release infrastructure): musl static CP binary, OCI image, image
         signing + SBOM at release (10 §10); separate DP bundle via `flowplane dataplane bootstrap`;
         ops `doctor`/topology/validate only if S12d/demo need them (13-mindmap defers otherwise).
