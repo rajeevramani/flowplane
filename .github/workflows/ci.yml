@@ -45,6 +45,7 @@ jobs:
       - name: Boot smoke (fresh DB, plaintext opt-in, health + request-id checks)
         env:
           FLOWPLANE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowplane_test
+          FLOWPLANE_SECRET_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
           FLOWPLANE_API_INSECURE: "true"
           FLOWPLANE_API_ADDR: 127.0.0.1:8080
         run: |
@@ -60,7 +61,7 @@ jobs:
           # request id present on responses, echoed when supplied, and in error envelope
           RID=$(curl -fsS -D - -o /dev/null http://127.0.0.1:8080/healthz | tr -d '\r' | awk -F': ' '/^x-request-id/ {print $2}')
           test -n "$RID"
-          BODY=$(curl -fsS http://127.0.0.1:8080/nope || true)
+          BODY=$(curl -sS http://127.0.0.1:8080/nope)
           echo "$BODY" | grep -q '"code":"not_found"'
           echo "$BODY" | grep -q '"request_id"'
           # W3C traceparent is honored: the caller's trace id appears in our logs
