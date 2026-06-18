@@ -531,6 +531,40 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         cross-team descriptor issuance fails closed. Residual risks for process-local sessions,
         multi-binding descriptor selection, and dynamic descriptor audit detail move to S12.
 - [ ] S12 Hardening, production readiness, v1.0.0 tag
+  - [x] S12a design contract: D-021 records the S12 definition-of-done — no new product
+        capability, required CI/supply-chain preflight (#88), alert-family classification
+        (exists vs S12 hardening instrumentation vs deferred native GenAI semconv), failure-mode
+        matrix requirements, 08a §4 adversarial mapping, greenfield release packaging scope,
+        docs deliverables, live Envoy E2E gate decision, accepted-risk handling, and tag criteria.
+  - [ ] S12 preflight CI gates: #88 restores required quality and supply-chain jobs. The quality
+        job must run DB-backed tests with `FLOWPLANE_SECRET_ENCRYPTION_KEY`; the supply-chain job
+        must resolve the Q-006 first-party license posture or explicitly configure private
+        unpublished crates in cargo-deny.
+  - [ ] S12b observability completion (10 §8a): wire dashboards/alerts over existing metrics where
+        they exist, add production-safety instrumentation for the D-021 `instrument now` alert
+        families (authz denials, dataplane disconnects, DB pool saturation, outbox lag, capture
+        drops, budget threshold crossings), and record native `gen_ai.*` OTel semconv as deferred
+        unless a later issue explicitly changes that accepted risk.
+  - [ ] S12c failure-mode suite: kill Postgres mid-write, restart Envoy, restart CP under load,
+        plus agent version-skew (D-014/proto) — each asserts no loss / no orphans / no panics and
+        that outbox redelivery + xDS resync converge; reuse existing `scripts/e2e-envoy.sh` and
+        resolved R1/R3/R4 evidence before adding new coverage.
+  - [ ] S12d full adversarial pass (08a §4): tenant-isolation + abuse suite across every external
+        surface (REST, MCP, CLI, learned specs, generated routes, xDS); every 08a §4 item maps to
+        a passing test or an explicit accepted risk (08a §194). Pin whether live Envoy E2E runs as
+        a GitHub Actions Docker gate or as a manual release gate with recorded evidence. Load
+        sanity included.
+  - [ ] S12e packaging (greenfield release infrastructure): musl static CP binary, OCI image, image
+        signing + SBOM at release (10 §10); separate DP bundle via `flowplane dataplane bootstrap`;
+        ops `doctor`/topology/validate only if S12d/demo need them (13-mindmap defers otherwise).
+  - [ ] S12f operator docs: `docs/production-readiness.md`; separate CP and DP-bundle install/
+        upgrade guides with bare-metal/VM/compose/ECS/K8s parity (D-004, 10 §10.1); config
+        reference; runbook; backup/restore drill; CLI workflow guide.
+  - [ ] S12g release: scripted seeded demo walkthrough (first-contact → full loop → MCP client,
+        doubles as smoke test); `REWRITE-REPORT.md`; final accepted-risk list; tag `v1.0.0`.
+  - [ ] S12 exit: D-021 definition-of-done list — every box checked; required CI green; full
+        08a §4 pass green or explicitly accepted; failure-mode suite green; release artifacts
+        produced; docs complete; demo walkthrough runs clean end to end.
 
 ## Known Corrections / Open Risks
 
