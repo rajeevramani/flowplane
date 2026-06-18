@@ -2,7 +2,7 @@
 
 Status: **GO (Tier 0)** for S1–S10, with the residual items below routed to S12 and explicitly accepted.
 Date: 2026-06-16. Charter: #66. Functional backbone: #65. Branch: `claude/e2e-exhaustive`
-(integration base `claude/optimistic-lamport-j38tuy`).
+(historical certification branch; current default branch is `main`).
 
 ## Scope
 

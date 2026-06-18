@@ -1,6 +1,6 @@
 # Issue Fix Workflow
 
-Use this process when working through GitHub issues on the active integration branch.
+Use this process when working through GitHub issues on the default branch.
 
 ## Roles
 
@@ -14,12 +14,12 @@ Use this process when working through GitHub issues on the active integration br
 
 ## Branching Model
 
-- Integration branch: `main`
+- Default branch: `main`
 - Work branches: `issue/<issue-number>-<short-slug>`
 - Merge path: issue branch -> `main`
 - PRs are not required for this workflow.
 
-Start each issue from the latest integration branch:
+Start each issue from the latest default branch:
 
 ```bash
 git checkout main
@@ -41,7 +41,7 @@ git checkout -b issue/<issue-number>-<short-slug>
 git commit -m "Fix <short issue summary> (#<issue-number>)"
 ```
 
-8. Merge directly back to the integration branch:
+8. Merge directly back to the default branch:
 
 ```bash
 git checkout main
@@ -54,7 +54,7 @@ git push origin main
    issue; review closes or redirects it.
 
 This repository currently uses `ready-for-review` as the fix handoff marker. Apply it only after
-the fix is merged into the integration branch, pushed, and validated. If the issue had a `do-over`
+the fix is merged into the default branch, pushed, and validated. If the issue had a `do-over`
 label, remove `do-over` when the corrected fix is ready for review. Leave the issue open until the
 reviewer accepts the fix. If a GitHub Project status field is later configured, keep it in sync
 with the label rather than inventing a second workflow.
@@ -92,5 +92,5 @@ An issue is done when:
 - tests relevant to the touched area pass; run `cargo test --workspace --all-features` when
   the touched surface is broad or shared
 - the issue branch is merged into `main`
-- the integration branch is pushed to `origin`
+- the default branch is pushed to `origin`
 - the GitHub issue is open, has a completion comment, and has the `ready-for-review` label
