@@ -471,6 +471,161 @@ async fn tools_call_uses_service_path_and_emits_mutation_audit() {
 }
 
 #[tokio::test]
+async fn static_cp_workflow_chains_resources_ops_read_and_recovery_hints() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    let session = initialize(fx.app.clone(), &fx.admin_token).await;
+    let tools = tools_list(fx.app.clone(), &fx.admin_token, &session, &fx.team_name).await;
+    for expected in [
+        "cp_clusters_create",
+        "cp_route_configs_create",
+        "cp_listeners_create",
+        "cp_listeners_get",
+        "ops_xds_status",
+    ] {
+        assert!(tools.contains(&expected.to_string()), "missing {expected}");
+    }
+
+    let missing_route_config = unique("missing-routes");
+    let bad_listener = tools_call(
+        fx.app.clone(),
+        &fx.admin_token,
+        &session,
+        "cp_listeners_create",
+        serde_json::json!({
+            "team": fx.team_name,
+            "name": unique("bad-listener"),
+            "spec": {
+                "address": "0.0.0.0",
+                "port": 19080,
+                "route_config": missing_route_config
+            }
+        }),
+    )
+    .await;
+    assert_eq!(bad_listener["result"]["isError"], true);
+    assert_eq!(
+        bad_listener["result"]["error"]["hint"],
+        "create the route config first, then the listener"
+    );
+    assert!(bad_listener["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text")
+        .contains("Hint: create the route config first, then the listener"));
+
+    let cluster = unique("cluster");
+    let created_cluster = tools_call(
+        fx.app.clone(),
+        &fx.admin_token,
+        &session,
+        "cp_clusters_create",
+        serde_json::json!({
+            "team": fx.team_name,
+            "name": cluster,
+            "spec": {
+                "endpoints": [{ "host": "10.0.0.10", "port": 8080 }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(created_cluster["result"]["isError"], false);
+    assert_eq!(
+        created_cluster["result"]["structuredContent"]["name"],
+        cluster
+    );
+
+    let route_config = unique("routes");
+    let route_config_spec = serde_json::json!({
+        "virtual_hosts": [{
+            "name": "default",
+            "domains": ["api.example.test"],
+            "routes": [{
+                "name": "items",
+                "match": { "prefix": { "prefix": "/" } },
+                "action": {
+                    "cluster": cluster,
+                    "timeout_secs": 15
+                }
+            }]
+        }]
+    });
+    let created_route_config = tools_call(
+        fx.app.clone(),
+        &fx.admin_token,
+        &session,
+        "cp_route_configs_create",
+        serde_json::json!({
+            "team": fx.team_name,
+            "name": route_config,
+            "spec": route_config_spec
+        }),
+    )
+    .await;
+    assert_eq!(created_route_config["result"]["isError"], false);
+    assert_eq!(
+        created_route_config["result"]["structuredContent"]["name"],
+        route_config
+    );
+
+    let listener = unique("listener");
+    let created_listener = tools_call(
+        fx.app.clone(),
+        &fx.admin_token,
+        &session,
+        "cp_listeners_create",
+        serde_json::json!({
+            "team": fx.team_name,
+            "name": listener,
+            "spec": {
+                "address": "0.0.0.0",
+                "port": 19081,
+                "route_config": route_config
+            }
+        }),
+    )
+    .await;
+    assert_eq!(created_listener["result"]["isError"], false);
+    assert_eq!(
+        created_listener["result"]["structuredContent"]["spec"]["route_config"],
+        route_config
+    );
+
+    let inspected_listener = tools_call(
+        fx.app.clone(),
+        &fx.admin_token,
+        &session,
+        "cp_listeners_get",
+        serde_json::json!({
+            "team": fx.team_name,
+            "name": listener
+        }),
+    )
+    .await;
+    assert_eq!(inspected_listener["result"]["isError"], false);
+    assert_eq!(
+        inspected_listener["result"]["structuredContent"]["name"],
+        listener
+    );
+    assert_eq!(
+        inspected_listener["result"]["structuredContent"]["spec"]["route_config"],
+        route_config
+    );
+
+    let xds_status = tools_call(
+        fx.app.clone(),
+        &fx.admin_token,
+        &session,
+        "ops_xds_status",
+        serde_json::json!({ "team": fx.team_name }),
+    )
+    .await;
+    assert_eq!(xds_status["result"]["isError"], false);
+    assert!(xds_status["result"]["structuredContent"]["total_dataplanes"].is_number());
+    assert!(xds_status["result"]["structuredContent"]["recent_nack_count"].is_number());
+}
+
+#[tokio::test]
 async fn dynamic_api_tools_are_live_enabled_and_team_scoped() {
     let Some(fx) = fixture().await else {
         return;
