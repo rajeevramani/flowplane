@@ -151,7 +151,7 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | Enforcing budgets block at request start; fixed-window; bounded overdraft | `live:P1a`; `cargo:fp-xds ai_upstream_auth_injection...` | covered |
 | Concurrent same-team settlement atomic; cross-team isolated | `cargo:ai_budgets::concurrent_budget_settlement_is_atomic_and_team_scoped` | covered |
 | Priority failover: higher-priority first, fall-through pre-byte, re-inject per-backend credential, attribute usage to backend used | `live:P1a` (primary unavailable → fallback with fallback credential + attribution) | covered |
-| **Never fails over after streaming starts (stream-start boundary)** | `live:P1d` — boundary logic verified on the non-stream path (partial delivered, no failover after first byte, fallback untouched). **Blocked on `stream:true` by #67 (D9)** — tracked known-fail; phase auto-validates once #67 lands | partial (D9/#67) |
+| **Never fails over after streaming starts (stream-start boundary)** | `live:P1d` — `stream:true` request reaches the primary backend, delivers the partial stream chunk, does not contact the fallback after first byte, and keeps the client on the partial stream. #67/D9 fixed the stale `content-length` + SSE forwarding gap. | covered |
 | Malformed provider response handling | `live:P1e` — non-OpenAI 200 body passed through, no 500, no usage settled | covered |
 | Mock-provider E2E: credential→route→traffic→usage→budget trip→failover→cleanup | `live:P1a` | covered |
 
@@ -172,7 +172,7 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | AI missing usage (fail-open, documented) | `cargo:` (persist no-ops on missing usage); D-018 documents fail-open | covered |
 | AI malformed provider response | `live:P1e` | covered |
 | AI unavailable primary backend (failover) | `live:P1a` (priority-0 connection refused → priority-1) | covered |
-| AI stream-start failure boundary | `live:P1d` (boundary verified non-stream; `stream:true` blocked by #67) | partial (D9/#67) |
+| AI stream-start failure boundary | `live:P1d` (`stream:true` partial stream delivered; fallback untouched after first byte) | covered |
 
 ## Certification-only checks (not feature bullets, but Tier-0 exit gates)
 
@@ -180,7 +180,7 @@ route/listener/filter parity (+ global-RLS filter ACK).
 |---|---|---|
 | Teardown **redaction sweep** over all artifacts (CP/Envoy logs, config dumps, access logs, DB usage rows; mock auth logs + one-time bootstrap PKI excluded) | `live:redaction_sweep` (also greps the API bearer token) | covered |
 | **Cross-team isolation under concurrency** (no bleed in usage/budget counters under concurrent settlement) | `cargo:ai_budgets::concurrent_budget_settlement_is_atomic_and_team_scoped` — 32 concurrent settlements assert team B's counters/enforcement untouched; live re-impl is redundant | covered (cargo) |
-| Live E2E green **5 consecutive** runs | blocked on #67 (D9); the non-#67 suite is otherwise green every run | pending #67 |
+| Live E2E green **5 consecutive** runs | `scripts/e2e/CERTIFICATION-REPORT.md` records `bash scripts/e2e-envoy.sh` passing 5 consecutive runs, 12 phases each, with streaming included and redaction sweep green | covered |
 
 ## Out-of-scope (named, with owning slice)
 
@@ -195,13 +195,10 @@ route/listener/filter parity (+ global-RLS filter ACK).
 | ID | Severity | Finding | Status |
 |---|---|---|---|
 | D8 | Minor | Phase 7 global-RLS `config_dump` check flaked ~1/3 even after #64 (single-shot, unbounded curl) | Fixed: consistent-snapshot + `--max-time` poll; 5× green |
-| D9 | **Major** | AI gateway returns 500 on `stream:true` requests before backend dispatch (#67) | **Open (#67)** — tracked known-fail; blocks streaming + the 5× close gate |
-| R2 | Residual | Service-layer authz-**denial** audit rows: primitive exists + storage-tested, but not wired into service denials (pre-existing Open Risk in DECISIONS/PROGRESS) | Known residual — wire or formally accept before final sign-off |
+| D9 | **Major** | AI gateway returns 500 on `stream:true` requests before backend dispatch (#67) | **Fixed (#67)** — verified by `live:P1d` and the 5× green certification report |
+| R2 | Residual | Service-layer authz-**denial** audit rows: primitive existed + storage-tested, but was not wired into service denials | **Fixed (#69)** — service `authorize()` helpers and MCP denials write best-effort `authz.denied` rows; covered by `fp-core` tenancy/gateway tests and `fp-api` MCP denial tests |
 
 ## Remaining for Tier-0 sign-off
-1. **#67 / D9** — fix streaming `stream:true` 500 (product, S10d). Phase 1d auto-validates the boundary once fixed.
-2. **R2** — wire service-layer authz-denial audit, or formally accept as residual risk in the certification report.
-3. **5× consecutive green** close gate — currently blocked only by #67 (the rest of the suite is green every run).
-4. **Script split** (`run.sh`/`lib.sh`/`NN-*.sh` + `--only`/`--from`) — structural; fold `wait_converged`/`assert_status`/`redaction_sweep`/`known_fail` into `lib.sh`. Tracking-only; not a coverage gap.
+1. **Script split** (`run.sh`/`lib.sh`/`NN-*.sh` + `--only`/`--from`) — structural; fold `wait_converged`/`assert_status`/`redaction_sweep`/`known_fail` into `lib.sh`. Tracking-only; not a coverage gap.
 
 All other S1–S10 capabilities and abuse-matrix rows are covered by a passing `live:` phase or a named `cargo:` test (see tables above).
