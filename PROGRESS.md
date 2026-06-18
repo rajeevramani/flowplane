@@ -536,15 +536,15 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         (exists vs S12 hardening instrumentation vs deferred native GenAI semconv), failure-mode
         matrix requirements, 08a §4 adversarial mapping, greenfield release packaging scope,
         docs deliverables, live Envoy E2E gate decision, accepted-risk handling, and tag criteria.
-  - [ ] S12 preflight CI gates: #88 restores required quality and supply-chain jobs. The quality
+  - [x] S12 preflight CI gates: #88 restores required quality and supply-chain jobs. The quality
         job must run DB-backed tests with `FLOWPLANE_SECRET_ENCRYPTION_KEY`; the supply-chain job
         must resolve the Q-006 first-party license posture or explicitly configure private
         unpublished crates in cargo-deny.
-  - [ ] S12b observability completion (10 §8a): wire dashboards/alerts over existing metrics where
-        they exist, add production-safety instrumentation for the D-021 `instrument now` alert
-        families (authz denials, dataplane disconnects, DB pool saturation, outbox lag, capture
-        drops, budget threshold crossings), and record native `gen_ai.*` OTel semconv as deferred
-        unless a later issue explicitly changes that accepted risk.
+  - [x] S12b observability completion (10 §8a): #89 wires `docs/observability-alerts.md` over
+        existing metrics, adds production-safety instrumentation for the D-021 `instrument now`
+        alert families (authz denials, dataplane disconnects, DB pool saturation, outbox lag,
+        capture drops, budget threshold crossings), and records native `gen_ai.*` OTel semconv as
+        deferred for v1.0.
   - [ ] S12c failure-mode suite: kill Postgres mid-write, restart Envoy, restart CP under load,
         plus agent version-skew (D-014/proto) — each asserts no loss / no orphans / no panics and
         that outbox redelivery + xDS resync converge; reuse existing `scripts/e2e-envoy.sh` and

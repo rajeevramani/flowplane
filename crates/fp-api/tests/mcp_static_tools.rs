@@ -418,6 +418,40 @@ async fn tools_list_filters_by_principal_kind_grant_and_team() {
 }
 
 #[tokio::test]
+async fn static_tool_denial_records_shared_authz_denial_signal() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+
+    let member_session = initialize(fx.app.clone(), &fx.member_token).await;
+    let denied = tools_call(
+        fx.app.clone(),
+        &fx.member_token,
+        &member_session,
+        "cp_clusters_list",
+        serde_json::json!({ "team": fx.team_name }),
+    )
+    .await;
+    assert_eq!(denied["error"]["data"]["kind"], "authz");
+    assert!(denied["error"]["message"]
+        .as_str()
+        .expect("message")
+        .contains("missing permission: clusters:read"));
+
+    let denial_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+         WHERE team_id = $1 AND action = 'authz.denied' \
+           AND detail->>'resource' = 'clusters' \
+           AND detail->>'action' = 'read'",
+    )
+    .bind(fx.team_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("denial audit count");
+    assert_eq!(denial_count, 1);
+}
+
+#[tokio::test]
 async fn tools_call_uses_service_path_and_emits_mutation_audit() {
     let Some(fx) = fixture().await else {
         return;

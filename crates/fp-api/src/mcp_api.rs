@@ -728,7 +728,19 @@ async fn tools_call(
         Ok(team) => team,
         Err(e) => return tool_result_error(id, e).into_response(),
     };
-    if !tool_allowed(ctx, tool, team) {
+    if let Decision::Deny(reason) =
+        check_resource_access(ctx, tool.resource, tool.action, Some(team))
+    {
+        record_authz_denial(
+            &state.pool,
+            ctx,
+            rid,
+            tool.resource,
+            tool.action,
+            Some(team),
+            reason,
+        )
+        .await;
         return rpc_error(
             id,
             -32600,
@@ -1478,13 +1490,6 @@ async fn resolve_tool_team(
     crate::resources::resolve_team(state, ctx, team).await
 }
 
-fn tool_allowed(ctx: &PrincipalCtx, tool: &StaticTool, team: TeamRef) -> bool {
-    matches!(
-        check_resource_access(ctx, tool.resource, tool.action, Some(team)),
-        Decision::Allow(_)
-    )
-}
-
 fn dynamic_tool_allowed(ctx: &PrincipalCtx, team: TeamRef, action: Action) -> bool {
     matches!(
         check_resource_access(ctx, Resource::McpTools, action, Some(team)),
@@ -1715,6 +1720,13 @@ fn encode_path_segment(value: &str) -> String {
 
 fn static_tool(name: &str) -> Option<&'static StaticTool> {
     STATIC_TOOLS.iter().find(|tool| tool.name == name)
+}
+
+fn tool_allowed(ctx: &PrincipalCtx, tool: &StaticTool, team: TeamRef) -> bool {
+    matches!(
+        check_resource_access(ctx, tool.resource, tool.action, Some(team)),
+        Decision::Allow(_)
+    )
 }
 
 #[cfg(test)]

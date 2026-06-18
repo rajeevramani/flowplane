@@ -70,9 +70,23 @@ pub async fn run() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to prime xDS snapshot cache: {e}"))?;
     tracing::info!(teams = primed, "xDS snapshot cache primed from database");
     let (revocation_tx, _) = tokio::sync::broadcast::channel::<uuid::Uuid>(64);
-    // Handles for every spawned xDS task; awaited (bounded) on shutdown so streams and the
-    // outbox consumer drain rather than being abandoned mid-flight.
+    // Handles for spawned background tasks; awaited (bounded) on shutdown so streams, the
+    // outbox consumer, and read-only samplers drain rather than being abandoned mid-flight.
     let mut xds_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    {
+        let sampler_pool = pool.clone();
+        let sampler_shutdown = xds_shutdown_tx.subscribe();
+        let db_max_connections = config.db_max_connections;
+        xds_tasks.push(tokio::spawn(async move {
+            run_observability_sampler(
+                sampler_pool,
+                fp_xds::snapshot::XDS_CONSUMER,
+                db_max_connections,
+                sampler_shutdown,
+            )
+            .await;
+        }));
+    }
     {
         let cache = snapshot_cache.clone();
         let consumer_pool = pool.clone();
@@ -238,6 +252,62 @@ fn xds_shutdown_signal(
         // Wakes on the first `true`; treats a dropped sender as shutdown too.
         let _ = rx.wait_for(|flag| *flag).await;
     }
+}
+
+async fn run_observability_sampler(
+    pool: sqlx::PgPool,
+    outbox_consumer: &'static str,
+    db_max_connections: u32,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                observe_pool_metrics(&pool, db_max_connections);
+                match fp_storage::outbox::consumer_lag_stats(&pool, outbox_consumer).await {
+                    Ok(stats) => {
+                        metrics::gauge!(
+                            "fp_outbox_pending_events",
+                            "consumer" => outbox_consumer
+                        )
+                        .set(stats.pending_count as f64);
+                        metrics::gauge!(
+                            "fp_outbox_oldest_pending_age_seconds",
+                            "consumer" => outbox_consumer
+                        )
+                        .set(stats.oldest_age_seconds);
+                    }
+                    Err(e) => {
+                        metrics::counter!(
+                            "fp_observability_sampler_failures_total",
+                            "source" => "outbox"
+                        )
+                        .increment(1);
+                        tracing::warn!("observability sampler failed to read outbox lag: {e}");
+                    }
+                }
+            }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn observe_pool_metrics(pool: &sqlx::PgPool, max_connections: u32) {
+    let size = pool.size();
+    let idle = pool.num_idle() as u32;
+    let in_use = size.saturating_sub(idle);
+
+    metrics::gauge!("fp_db_pool_size").set(size as f64);
+    metrics::gauge!("fp_db_pool_idle").set(idle as f64);
+    metrics::gauge!("fp_db_pool_in_use").set(in_use as f64);
+    metrics::gauge!("fp_db_pool_max").set(max_connections as f64);
 }
 
 pub async fn migrate_only() -> anyhow::Result<()> {
