@@ -1,0 +1,26 @@
+# Copy to local.auto.tfvars and fill with real values. local.auto.tfvars is ignored.
+
+aws_region = "us-east-1"
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+control_plane_image = "<account>.dkr.ecr.us-east-1.amazonaws.com/flowplane:<tag>"
+
+api_certificate_arn = "arn:aws:acm:us-east-1:<account>:certificate/<id>"
+
+oidc_issuer   = "https://<tenant>.us.auth0.com/"
+oidc_audience = "<auth0-native-app-client-id>"
+
+api_ingress_cidrs = ["0.0.0.0/0"]
+xds_ingress_cidrs = ["<your-public-ip>/32"]
+
+secret_encryption_key_secret_arn = "arn:aws:secretsmanager:us-east-1:<account>:secret:flowplane/secret-encryption-key-..."
+api_tls_cert_secret_arn          = "arn:aws:secretsmanager:us-east-1:<account>:secret:flowplane/api-tls-cert-..."
+api_tls_key_secret_arn           = "arn:aws:secretsmanager:us-east-1:<account>:secret:flowplane/api-tls-key-..."
+xds_tls_cert_secret_arn          = "arn:aws:secretsmanager:us-east-1:<account>:secret:flowplane/xds-tls-cert-..."
+xds_tls_key_secret_arn           = "arn:aws:secretsmanager:us-east-1:<account>:secret:flowplane/xds-tls-key-..."
+xds_tls_client_ca_secret_arn     = "arn:aws:secretsmanager:us-east-1:<account>:secret:flowplane/dp-client-ca-..."
+cert_issuer_ca_cert_secret_arn   = "arn:aws:secretsmanager:us-east-1:<account>:secret:flowplane/cert-issuer-ca-cert-..."
+cert_issuer_ca_key_secret_arn    = "arn:aws:secretsmanager:us-east-1:<account>:secret:flowplane/cert-issuer-ca-key-..."
+
+# Only needed when those secrets use a customer-managed KMS key.
+secret_kms_key_arns = []

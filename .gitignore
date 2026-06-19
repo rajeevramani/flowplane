@@ -21,3 +21,10 @@ scripts/flowplane-dev.py
 internal/dev-workflow-automation.md
 internal/do-over-prompt.md
 internal/review-issue-prompt.md
+
+# local OpenTofu/Terraform state and inputs
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/*.tfvars.json
