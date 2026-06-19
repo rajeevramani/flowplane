@@ -83,7 +83,7 @@ Do not create the `v1.0.0` tag until this checklist is reviewed and accepted.
 
 | Risk | Status |
 | --- | --- |
-| Q-006 license posture | Git tag may proceed after gates pass; public artifact/image distribution waits for license resolution. |
+| Q-006 license posture | Resolved: Apache-2.0 (`LICENSE`/`NOTICE`). Public distribution no longer license-gated; tag needs only release approval. |
 | Live Envoy E2E gate | Manual recorded gate for v1.0; CI-with-Docker promotion deferred post-1.0. |
 | P1d AI streaming timing | Certified on Envoy 1.37.4 after #92; keep Envoy version pinned for release evidence. |
 | Native `gen_ai.*` OTel semantic-convention metrics | Deferred post-1.0; Flowplane counters cover v1.0 operations. |

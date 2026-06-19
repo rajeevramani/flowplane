@@ -4,7 +4,7 @@ description = "Flowplane dataplane sidecar: Envoy admin telemetry relay."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [[bin]]

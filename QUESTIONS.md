@@ -68,13 +68,18 @@ Status legend: **OPEN** / **ANSWERED** / **PROCEEDED-PROVISIONAL**
   exists).
 - **Recommendation:** Option 1 unless you name an install that must migrate.
 
-## Q-006: v2 repository license — ANSWERED (founder approved Option 1, 2026-06-12)
+## Q-006: v2 repository license — RESOLVED (Apache-2.0, 2026-06-19)
 
-- **Decision needed:** v1 is MIT; v2 has no LICENSE file. Business decision.
-- **Options:** (1) **No license file = all rights reserved; decide before any public release
-  (recommended)**; (2) MIT like v1 — adoption-friendly, gives the rewrite away; (3) BSL/fair-
-  source — middle ground, needs legal review.
-- **Proceeding with (1)**; flagged in production-readiness as a pre-release checklist item.
+- **Decision needed:** v1 is MIT; v2 had no LICENSE file. Business decision.
+- **Options considered:** (1) no license file = all rights reserved (interim posture used during
+  development); (2) MIT like v1 — adoption-friendly, gives the rewrite away; (3) BSL/FSL fair-
+  source — non-compete moat; (4) Apache-2.0 — permissive with patent grant + NOTICE attribution.
+- **Resolution:** **Apache-2.0.** Intent is welcome-to-host-with-credit, not block competitors, so
+  a permissive license with an explicit patent grant and a `NOTICE` attribution requirement (Apache
+  §4(d)) fits better than MIT (no patent grant) or a fair-source non-compete (over-restricts for
+  the stated intent). `LICENSE` (Apache-2.0) and `NOTICE` replace `LICENSE-PENDING.md`; workspace
+  crates set `license = "Apache-2.0"` and stay `publish = false` until a crates.io decision.
+- This unblocks the `v1.0.0` tag gate (#96): public distribution is no longer license-gated.
 
 ## Q-007: Implementation review workflow — ANSWERED (founder approved Option 1, 2026-06-12)
 

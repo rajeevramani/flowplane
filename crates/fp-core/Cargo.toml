@@ -4,7 +4,7 @@ description = "Flowplane core services: configuration, and (from S2) the only mu
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [features]

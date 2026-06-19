@@ -17,8 +17,8 @@ ignore = [
 
 [licenses]
 version = 2
-# Dependencies must be permissively licensed. First-party crates are private,
-# unpublished, and license-pending until Q-006 is resolved.
+# Dependencies must be permissively licensed. First-party crates are
+# Apache-2.0 (Q-006 resolved) but remain unpublished (publish = false).
 private = { ignore = true }
 allow = [
   "Apache-2.0",
