@@ -528,9 +528,9 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   hardening carve-out is deferred or recorded as an accepted risk.
 - **CI/supply-chain preflight (#88):** S12 starts with green required gates. The current CI quality
   job must set the secret-encryption key needed by DB-backed tests, and cargo-deny must reflect the
-  release posture for first-party crates. Q-006 is a release decision: either choose a real license
-  for first-party crates, or explicitly record that unpublished first-party crates remain private
-  and configure cargo-deny accordingly. S12 cannot close with that posture implicit.
+  release posture for first-party crates. Q-006 is resolved (2026-06-19): first-party crates are
+  Apache-2.0 (`LICENSE`/`NOTICE`) and remain unpublished (`publish = false`), with cargo-deny
+  configured accordingly. Public distribution is no longer license-gated.
 - **Alert pack (S12b):** alerting is classified by current backing evidence rather than assuming
   every desired alert already has a metric:
 

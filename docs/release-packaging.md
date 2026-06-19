@@ -11,8 +11,8 @@ certificate code, not release plumbing.
 
 Vendored OpenSSL makes the binary larger, requires the musl target plus a C toolchain for
 cross-builds, and means bundled OpenSSL CVEs must be tracked through the #88 advisory posture.
-Public distribution is still gated on Q-006: first-party crates are private and license-pending.
-Internal artifacts can be produced and verified before that decision.
+Q-006 is resolved: first-party crates are Apache-2.0 (see `LICENSE`/`NOTICE`) but remain
+unpublished (`publish = false`). Public distribution is no longer license-gated.
 
 ## Command
 
@@ -42,7 +42,8 @@ Outputs are written under `target/release-artifacts/flowplane-v<version>/`:
 - `flowplane-<version>.oci.tar` when image packaging is enabled.
 
 Signing is not wired for v1.0. The accepted fallback is `SHA256SUMS` plus the cargo-metadata SBOM
-source artifact until Q-006/#88 define the public signing and distribution posture.
+source artifact until #88 defines the public signing posture. (Q-006 is resolved: Apache-2.0,
+distribution no longer license-gated.)
 
 Build and save the OCI image with:
 

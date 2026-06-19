@@ -1,7 +1,7 @@
 # Flowplane v2 Rewrite Report
 
-Status: release-gate draft for `v1.0.0`. The git tag is separate from public distribution; public
-artifact/image distribution remains gated on Q-006 license posture.
+Status: release-gate draft for `v1.0.0`. Q-006 is resolved (Apache-2.0; see `LICENSE`/`NOTICE`),
+so public distribution is no longer license-gated; cutting the tag now needs only release approval.
 
 ## What Changed
 
@@ -34,7 +34,7 @@ known failures. CI-with-Docker promotion is deferred post-1.0.
 
 | Risk | Reference |
 | --- | --- |
-| Public distribution waits on Q-006 license posture; git tag may proceed after gates pass. | #86, #88, #93 |
+| Q-006 resolved: Apache-2.0 (`LICENSE`/`NOTICE`); public distribution no longer license-gated. | #86, #88, #93, #96 |
 | Live Envoy E2E is manual recorded for v1.0, not a CI gate. | D-021, #91, #95 |
 | P1d AI streaming phase is timing-sensitive and certified on Envoy 1.37.4. | #92, `scripts/e2e/CERTIFICATION-REPORT.md` |
 | Native `gen_ai.*` OTel semantic-convention metrics are deferred post-1.0. | D-021, `docs/observability-alerts.md` |

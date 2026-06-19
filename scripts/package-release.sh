@@ -47,7 +47,7 @@ cat > "$ARTIFACT_DIR/release-manifest.md" <<EOF
 - Binary target: \`$HOST\`
 - Static-link decision: vendored OpenSSL is enabled for v1.0 release builds. Use
   \`FLOWPLANE_RELEASE_TARGET=x86_64-unknown-linux-musl\` and verify with \`ldd\` or \`file\`.
-- Distribution caveat: public distribution waits on Q-006 license posture.
+- License: Apache-2.0 (Q-006 resolved); see \`LICENSE\`/\`NOTICE\`. Public distribution is not license-gated.
 - OCI image tag: \`$IMAGE_TAG\`
 - SBOM source artifact: \`flowplane-$VERSION.cargo-metadata.sbom.json\`
 - Checksums: \`SHA256SUMS\`
