@@ -1,6 +1,10 @@
 /target
 **/*.rs.bk
 .env
+# filled local Auth0 env (secrets); the .example template stays tracked
+internal/.env.auth0
+internal/.env.prod-local
+internal/.env.auth0.example
 *.pem
 *.key
 
