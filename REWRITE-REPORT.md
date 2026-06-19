@@ -20,7 +20,7 @@ the CP does not use Envoy admin as a product API.
 - Adversarial surface map: `docs/adversarial-surface-map.md`.
 - Release packaging: `docs/release-packaging.md`.
 - Operator guide: `docs/production-readiness.md`.
-- Release walkthrough and tag checklist: `docs/release-walkthrough.md`.
+- Release walkthrough and tag checklist: `internal/release-walkthrough.md`.
 - Live Envoy certification: `scripts/e2e/CERTIFICATION-REPORT.md`.
 - Live coverage matrix: `scripts/e2e/COVERAGE.md`.
 
@@ -43,4 +43,4 @@ known failures. CI-with-Docker promotion is deferred post-1.0.
 
 `v1.0.0` may be created only after #95 is reviewed and accepted, #86 children are closed or
 accepted, required CI is green, release artifacts are reproducible, and the checklist in
-`docs/release-walkthrough.md` is signed off.
+`internal/release-walkthrough.md` is signed off.

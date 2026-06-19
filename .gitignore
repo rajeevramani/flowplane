@@ -10,8 +10,10 @@
 # local
 .local/
 .pi/
-docs/dev-workflow-automation.md
 scripts/flowplane-dev
 scripts/flowplane-dev.py
-do-over-prompt.md
-review-issue-prompt.md
+
+# internal build-journey scaffolding (agent prompts / automation notes)
+internal/dev-workflow-automation.md
+internal/do-over-prompt.md
+internal/review-issue-prompt.md

@@ -59,4 +59,3 @@ Print the generated REST contract:
 - [spec/10-v2-architecture.md](spec/10-v2-architecture.md) — target architecture
 - [spec/13-basics-before-learning-mindmap.md](spec/13-basics-before-learning-mindmap.md) — core gateway parity plan
 - [spec/14-architecture-integrity.md](spec/14-architecture-integrity.md) — domain ownership and seam rules
-- [PROGRESS.md](PROGRESS.md) — active implementation checklist

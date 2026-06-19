@@ -6,7 +6,7 @@ Rules recap: v1 at `/tmp/flowplane-v1` (cloud) is read-only reference (clone fro
 architectural decision goes in `DECISIONS.md`; founder questions in `QUESTIONS.md` (always with a
 recommendation). Architecture integrity rules live in `spec/14-architecture-integrity.md`.
 Commit+push at every green checkpoint. GitHub issue fixes follow
-`docs/issue-fix-workflow.md`.
+`internal/issue-fix-workflow.md`.
 
 **Checkpoint gates:** stop and notify the founder at end of Phase 0 (review of 08, 08a, 09) and end
 of Phase 1 (architecture + slice plan). Between gates, do not wait.
@@ -567,7 +567,7 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
         point, with separated CP/DP deployment and upgrade guidance, config/env reference,
         runbook, backup/restore drill with KEK escrow, CLI workflow, and links to the S12
         evidence docs and release packaging artifacts.
-  - [x] S12g release: #95 adds `docs/release-walkthrough.md` and `REWRITE-REPORT.md`, records
+  - [x] S12g release: #95 adds `internal/release-walkthrough.md` and `REWRITE-REPORT.md`, records
         live Envoy E2E as a manual v1.0 release gate with existing 5-run Envoy 1.37.4 evidence,
         separated git tag criteria from public distribution, and lists accepted risks. Q-006 has
         since resolved to Apache-2.0, so distribution is no longer license-gated.
