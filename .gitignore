@@ -28,3 +28,6 @@ internal/review-issue-prompt.md
 **/*.tfstate.*
 **/*.tfvars
 **/*.tfvars.json
+
+# Claude
+.claude/
