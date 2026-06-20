@@ -1,0 +1,300 @@
+> Audience: cli-users · Status: stable
+
+# Flowplane CLI Reference
+
+Exhaustive reference for the `flowplane` binary: global options, every top-level command, and its subcommands, arguments, and flags.
+
+## Global options
+
+These flags are accepted on every command (`global = true`). Place them before or after the subcommand.
+
+| Flag | Short | Env var | Default | Meaning |
+|------|-------|---------|---------|---------|
+| `--context <NAME>` | | | (current context) | Select a named context from the config file. Errors if the named context does not exist. |
+| `--server <URL>` | | `FLOWPLANE_SERVER` | `http://127.0.0.1:8080` | Control-plane base URL. |
+| `--team <NAME>` | | `FLOWPLANE_TEAM` | | Team scope. |
+| `--org <NAME>` | | `FLOWPLANE_ORG` | | Organization scope. |
+| `--output <FMT>` | `-o` | | `table` | Output format: `table`, `json`, `yaml`, `wide`. |
+| `--json` | | | `false` | Shorthand for `--output json` (overrides `--output`). |
+| `--no-color` | | | `false` | Disable colored output. |
+| `--quiet` | | | `false` | Suppress non-essential output. |
+| `--verbose` | | | `false` | Verbose output. |
+| `--dry-run` | | | `false` | Do not perform mutating actions. |
+| `--yes` | `-y` | | `false` | Assume "yes" for confirmation prompts. |
+| `--revision <N>` | | | | Resource revision (i64). |
+| `--timeout <SECS>` | | | `30` | HTTP timeout in seconds (u64). |
+| `--out <PATH>` | | | | Write command output to a file. |
+
+### Other environment variables
+
+These are read directly (not as flags) by config resolution:
+
+| Env var | Meaning |
+|---------|---------|
+| `FLOWPLANE_CONFIG` | Path to the config TOML file. Default: `$HOME/.flowplane/config.toml`. |
+| `FLOWPLANE_TOKEN` | Bearer token (highest-priority token source). |
+| `FLOWPLANE_ORG` | Organization fallback. |
+| `FLOWPLANE_TEAM` | Team fallback. |
+| `FLOWPLANE_OIDC_ISSUER` | OIDC issuer URL fallback. |
+| `FLOWPLANE_OIDC_CLIENT_ID` | OIDC client ID fallback. |
+| `FLOWPLANE_OIDC_SCOPE` | OIDC scope fallback. |
+| `FLOWPLANE_OIDC_CALLBACK_URL` | OIDC callback URL fallback. |
+
+Token resolution order: `FLOWPLANE_TOKEN` → selected context token → config-file token → `~/.flowplane/credentials` file. The config directory and credential files are written with `0700`/`0600` permissions on Unix.
+
+## Top-level commands
+
+`serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `learn`, `secret`, `dataplane`, `expose`, `unexpose`, `stats`, `ops`, `apply`, `completion`, `version`.
+
+---
+
+### `serve`
+Run the control-plane server (REST + MCP; xDS from S5). No subcommands or args.
+
+### `db`
+Database operations.
+
+| Subcommand | Purpose |
+|------------|---------|
+| `db migrate` | Apply pending migrations (forward-only) and exit. |
+
+### `openapi`
+Print the OpenAPI document this binary serves (the exact API contract). No subcommands or args.
+
+### `auth`
+Client auth helpers.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `auth whoami` | — |
+| `auth token` | — |
+| `auth logout` | — |
+| `auth login` | `--token <TOKEN>`, `--token-stdin`, `--device` (alias `--device-code`), `--pkce`, `--issuer <URL>`, `--client-id <ID>`, `--callback-url <URL>`, `--scope <SCOPE>` (default `openid email profile`) |
+
+### `config`
+Client configuration.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `config path` | — |
+| `config show` | — |
+| `config set-context <NAME>` | `--server <URL>` (required), `--org <ORG>`, `--team <TEAM>`, `--token <TOKEN>`, `--token-stdin` |
+| `config use-context <NAME>` | positional `name` |
+| `config get-contexts` | — |
+
+### `org`
+Organization management.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `org list` | — |
+| `org get <ORG>` | positional `org` |
+| `org create <NAME>` | positional `name`, `--display-name <NAME>` |
+| `org delete <ORG>` | positional `org` |
+| `org member list <ORG>` | positional `org` |
+| `org member add <ORG>` | positional `org`, `--email <EMAIL>`, `--subject <SUBJECT>`, `--user-id <ID>`, `--role <ROLE>` (required) |
+| `org member remove <ORG> <USER_ID>` | positionals `org`, `user_id` |
+
+### `team`
+Team management.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `team list` | — |
+| `team create <NAME>` | positional `name`, `--display-name <NAME>` |
+| `team delete` | `--team <TEAM>` |
+| `team member list` | `--team <TEAM>` |
+| `team member add <EMAIL>` | `--team <TEAM>`, positional `email` |
+| `team member remove <USER_ID>` | `--team <TEAM>`, positional `user_id` |
+| `team grant list` | `--team <TEAM>` |
+| `team grant add <EMAIL>` | `--team <TEAM>`, positional `email`, `--resource <RES>` (required), `--action <ACT>` (required) |
+| `team grant remove <GRANT_ID>` | `--team <TEAM>`, positional `grant_id` |
+
+### `cluster`
+Gateway clusters. Uses the shared resource subcommand set.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `cluster list` | `--team <TEAM>` |
+| `cluster get <NAME>` | `--team <TEAM>`, positional `name` |
+| `cluster create` | `--team <TEAM>`, `--file <PATH>` / `-f` (required) |
+| `cluster update <NAME>` | `--team <TEAM>`, positional `name`, `--file <PATH>` / `-f` (required) |
+| `cluster delete <NAME>` | `--team <TEAM>`, positional `name` |
+
+### `listener`
+Gateway listeners. Same shared resource subcommand set as `cluster` (`list`, `get`, `create`, `update`, `delete`) with identical flags.
+
+### `route`
+Route configs.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `route list` | `--team <TEAM>` |
+| `route get <NAME>` | `--team <TEAM>`, positional `name` |
+| `route create` | `--team <TEAM>`, `--file <PATH>` / `-f` (required) |
+| `route update <NAME>` | `--team <TEAM>`, positional `name`, `--file <PATH>` / `-f` (required) |
+| `route delete <NAME>` | `--team <TEAM>`, positional `name` |
+| `route generate` | `--team <TEAM>`, `--from-spec <ID>` (required), `--listener-port <PORT>` (u16, required) |
+| `route apply <PLAN_ID>` | `--team <TEAM>`, positional `plan_id` |
+
+### `api`
+API definitions, imported specs, and generated API tool rows.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `api list` | `--team <TEAM>` |
+| `api get <NAME>` | `--team <TEAM>`, positional `name` |
+| `api status <NAME>` | `--team <TEAM>`, positional `name` |
+| `api create <NAME>` | `--team <TEAM>`, positional `name`, `--display-name <NAME>`, `--description <TEXT>` (default empty), `--from-openapi <PATH>`, `--route-config-id <ID>`, `--listener-id <ID>`, `--virtual-host <HOST>`, `--route <ROUTE>` |
+| `api delete <NAME>` | `--team <TEAM>`, positional `name` |
+| `api spec reject <API> <VERSION>` | `--team <TEAM>`, positionals `api`, `version` (i64), `--reason <TEXT>` (default empty) |
+| `api spec publish <API> <VERSION>` | `--team <TEAM>`, positionals `api`, `version` (i64), `--reason <TEXT>` (default empty) |
+
+### `mcp`
+MCP server and generated API tool operations.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `mcp status` | `--team <TEAM>` |
+| `mcp connections` | `--team <TEAM>` |
+| `mcp enable` | `--api <API>` (alias `--tool`, required), `--team <TEAM>` |
+| `mcp disable` | `--api <API>` (alias `--tool`, required), `--team <TEAM>` |
+
+### `ai`
+AI gateway resources. `providers`, `routes`, and `budgets` each use the shared resource subcommand set (`list`, `get`, `create`, `update`, `delete`).
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `ai providers <RESOURCE_CMD>` | shared resource subcommands (see `cluster`) |
+| `ai routes <RESOURCE_CMD>` | shared resource subcommands (see `cluster`) |
+| `ai budgets <RESOURCE_CMD>` | shared resource subcommands (see `cluster`) |
+| `ai usage` | `--team <TEAM>`, `--provider-id <ID>`, `--route-config-id <ID>`, `--limit <N>` (i64, default 50), `--offset <N>` (i64, default 0) |
+
+### `learn`
+Learning capture sessions.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `learn start <NAME>` | `--team <TEAM>`, positional `name`, `--api <API>`, `--api-definition-id <ID>`, `--route-config-id <ID>`, `--listener-id <ID>`, `--virtual-host <HOST>`, `--route <ROUTE>`, `--target-sample-count <N>` (i32, default 1000), `--max-duration-seconds <N>` (i32), `--max-bytes <N>` (i64, default 10485760), `--max-distinct-paths <N>` (i32, default 500) |
+| `learn list` | `--team <TEAM>`, `--status <STATUS>`, `--limit <N>` (i64, default 50), `--offset <N>` (i64, default 0) |
+| `learn get <SESSION>` | `--team <TEAM>`, positional `session` |
+| `learn stop <SESSION>` | `--team <TEAM>`, positional `session` |
+| `learn generate-spec <SESSION>` | `--team <TEAM>`, positional `session` |
+| `learn cancel <SESSION>` | `--team <TEAM>`, positional `session` |
+| `learn discover <DISCOVER_CMD>` | nested discovery subcommands (below) |
+
+#### `learn discover`
+Passive upstream discovery sessions.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `learn discover start <NAME>` | `--team <TEAM>`, positional `name`, `--upstream <ADDR>` (required), `--listener-port <PORT>` (i32, required), `--upstream-tls`, `--target-sample-count <N>` (i32, default 1000), `--max-duration-seconds <N>` (i32), `--max-bytes <N>` (i64, default 10485760), `--max-distinct-paths <N>` (i32, default 500) |
+| `learn discover list` | `--team <TEAM>`, `--status <STATUS>`, `--limit <N>` (i64, default 50), `--offset <N>` (i64, default 0) |
+| `learn discover status <SESSION>` | `--team <TEAM>`, positional `session` |
+| `learn discover stop <SESSION>` | `--team <TEAM>`, positional `session` |
+| `learn discover generate-spec <SESSION>` | `--team <TEAM>`, positional `session` |
+
+### `secret`
+Write-only secrets.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `secret list` | `--team <TEAM>` |
+| `secret get <NAME>` | `--team <TEAM>`, positional `name` |
+| `secret create` | `--team <TEAM>`, `--file <PATH>` / `-f` (required) |
+| `secret rotate <NAME>` | `--team <TEAM>`, positional `name`, `--revision <N>` (i64, required), `--file <PATH>` / `-f` (required) |
+
+### `dataplane`
+Dataplane registration and certificates.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `dataplane list` | `--team <TEAM>` |
+| `dataplane get <NAME>` | `--team <TEAM>`, positional `name` |
+| `dataplane create <NAME>` | `--team <TEAM>`, positional `name`, `--description <TEXT>` (default empty) |
+| `dataplane telemetry <NAME>` | `--team <TEAM>`, positional `name`, `--file <PATH>` / `-f` (required) |
+| `dataplane bootstrap <NAME>` | (alias `dataplane envoy-config`) `--team <TEAM>`, positional `name`, `--mode <MODE>` (`dev`\|`mtls`, default `dev`), `--xds-host <HOST>` (default `127.0.0.1`), `--xds-port <PORT>` (u16, default 18000), `--admin-port <PORT>` (u16, default 9901), `--cert-path <PATH>`, `--key-path <PATH>`, `--ca-path <PATH>` |
+| `dataplane cert <CERT_CMD>` | nested certificate subcommands (below) |
+
+#### `dataplane cert`
+Dataplane certificate management.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `dataplane cert list` | `--team <TEAM>` |
+| `dataplane cert register` | `--team <TEAM>`, `--file <PATH>` / `-f` (required) |
+| `dataplane cert issue <DATAPLANE>` | `--team <TEAM>`, positional `dataplane`, `--ttl-hours <N>` (i64, default 24) |
+| `dataplane cert revoke <SERIAL>` | `--team <TEAM>`, positional `serial`, `--reason <TEXT>` (required) |
+
+### `expose`
+Expose an upstream through Envoy with cluster + route + listener resources. Flattened args (no subcommands):
+
+`flowplane expose <UPSTREAM> --name <NAME> [--team <TEAM>] [--path <PATH>] [--port <PORT>] [--public-base-url <URL>]`
+
+| Arg / Flag | Default | Meaning |
+|------------|---------|---------|
+| `<UPSTREAM>` (positional) | | Upstream address. |
+| `--name <NAME>` | (required) | Resource name. |
+| `--team <TEAM>` | | Team scope. |
+| `--path <PATH>` | `/` | Route match path. |
+| `--port <PORT>` | | Listener port (u16). |
+| `--public-base-url <URL>` | | Public gateway base URL clients use to reach the listener. |
+
+### `unexpose`
+Remove resources created by `expose`. Flattened args (no subcommands):
+
+`flowplane unexpose <NAME> [--team <TEAM>]`
+
+| Arg / Flag | Meaning |
+|------------|---------|
+| `<NAME>` (positional) | Name of the previously exposed resource set. |
+| `--team <TEAM>` | Team scope. |
+
+### `stats`
+Team stats.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `stats overview` | `--team <TEAM>` |
+
+### `ops`
+Operations diagnostics.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `ops xds status` | `--team <TEAM>` |
+| `ops xds nacks` | `--team <TEAM>` |
+| `ops trace` | `--team <TEAM>`, `--request-id <ID>`, `--trace-id <ID>`, `--path <PATH>`, `--limit <N>` (i64, default 50) |
+
+### `apply`
+Apply a declarative JSON resource manifest. Flattened args (no subcommands):
+
+`flowplane apply --file <PATH> [--diff] [--prune]`
+
+| Arg / Flag | Default | Meaning |
+|------------|---------|---------|
+| `--file <PATH>` / `-f` | (required) | Manifest file path. |
+| `--diff` | `false` | Show the diff. |
+| `--prune` | `false` | Apply is additive-only until server batch support; prune requests are not silently ignored. |
+
+### `completion`
+Generate a shell completion script.
+
+`flowplane completion <SHELL>`
+
+| Arg | Meaning |
+|-----|---------|
+| `<SHELL>` (positional) | Target shell, as supported by `clap_complete::Shell` (e.g. `bash`, `zsh`, `fish`, `powershell`, `elvish`). |
+
+### `version`
+Print the binary version (from `CARGO_PKG_VERSION`). No subcommands or args.
+
+---
+
+## Source of truth
+
+- Command/subcommand/flag definitions: `crates/flowplane/src/cli/commands.rs`
+- Top-level command dispatch and the `serve`, `db`, `openapi`, `completion`, `version` commands: `crates/flowplane/src/main.rs`
+- Global options and env-var fallbacks: `crates/flowplane/src/cli/config.rs`
+
+Shell completions are generated via the `completion` command (`flowplane completion <shell>`), which renders the script for the requested shell to stdout.
