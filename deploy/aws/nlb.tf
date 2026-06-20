@@ -12,6 +12,10 @@ resource "aws_lb_target_group" "xds" {
   target_type = "ip"
   vpc_id      = aws_vpc.this.id
 
+  # Preserve the real client source IP so the operator-CIDR allowlist on the task SG is
+  # meaningful (off by default for IP targets — without this the task sees the NLB node IP).
+  preserve_client_ip = true
+
   health_check {
     enabled             = true
     protocol            = "TCP"

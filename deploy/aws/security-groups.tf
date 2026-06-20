@@ -56,6 +56,18 @@ resource "aws_vpc_security_group_egress_rule" "ecs_all" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+# NLB health checks for the xDS target originate from the NLB nodes inside the VPC, not from
+# the operator CIDRs. Without this rule the TCP health check is dropped and the target is marked
+# unhealthy, so the NLB has no target to forward to (xDS connections time out).
+resource "aws_vpc_security_group_ingress_rule" "ecs_xds_healthcheck" {
+  security_group_id = aws_security_group.ecs_tasks.id
+  description       = "xDS NLB health checks from within the VPC"
+  from_port         = 18000
+  to_port           = 18000
+  ip_protocol       = "tcp"
+  cidr_ipv4         = var.vpc_cidr
+}
+
 resource "aws_security_group" "rds" {
   name        = "${local.name}-rds"
   description = "Flowplane RDS PostgreSQL"
