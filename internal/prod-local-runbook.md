@@ -108,9 +108,9 @@ auth0|6650f0...
 You now have:
 
 ```text
-Issuer:        https://dev-63kqv3bdirrh63bi.us.auth0.com/
-Client ID:     ehqZXjlVcosrCQcy0F3OySrXzfwlQwUQ
-Admin subject: auth0|6a34ba3d79da66ea439fc75d
+Issuer:        https://<tenant>.us.auth0.com/
+Client ID:     <auth0-native-app-client-id>
+Admin subject: auth0|<admin-user-id>
 ```
 
 Auth0-specific gotchas:

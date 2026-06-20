@@ -48,17 +48,26 @@ mutation path before editing code.
    Production xDS is mTLS-or-off; partial TLS config fails boot; dev plaintext is explicit and
    gated; secret values are write-only over HTTP.
 
-10. **Envoy admin is not an operator/product API.**
+10. **Deployment packaging preserves security boundaries.**
+    Provider-specific packaging must not weaken product security invariants. Public operator/API
+    traffic is TLS-protected to the CP service; production deployments do not use plaintext API
+    opt-in. Dataplane control traffic reaches the CP over mTLS terminated by Flowplane so client
+    certificates are validated by the CP. Control-plane workloads and databases are not directly
+    internet-addressable; DNS, load balancers, schedulers, and secret stores are deployment
+    mechanisms, not architecture. OIDC remains provider-agnostic, and runtime secrets/certs are
+    supplied through deployment secret mechanisms, never committed config.
+
+11. **Envoy admin is not an operator/product API.**
    Envoy admin endpoints stay loopback-local to the dataplane unit. Product diagnostics and
    operator workflows must use CP surfaces backed by persisted diagnostics, audit, outbox, and
    xDS state. Only `fp-agent` may scrape Envoy admin, and only to relay curated telemetry to the
    CP over the outbound diagnostics channel.
 
-11. **Contracts must not drift.**
+12. **Contracts must not drift.**
    REST, OpenAPI, CLI, and MCP declarations should come from the same source where possible, with
    parity tests pinning the surface.
 
-12. **The V2 UX must improve V1.**
+13. **The V2 UX must improve V1.**
     V1 defines the user outcome; V2 defines the architecture and experience.
 
 ## 2. Domain Ownership
