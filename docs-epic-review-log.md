@@ -54,3 +54,8 @@ Branch docs/flowplane-v2 created off docs/epic-100 (includes taxonomy policy REA
 ### #105 How-to: learning/discovery -> publish spec — COMMITTED 33c2b5c (2 passes)
 - pass1 CHANGES: publish SpecReviewBody body is required (only reason field optional); send {} or {reason}. Fixed.
 - pass2 APPROVED.
+
+### #107 Reference: configuration & env vars — COMMITTED 2b7feb2 (re-gated, UNBLOCKED)
+- Applied Bucket A: agent clamps (poll>=1, queue 1..=16384, cp plaintext loopback-only), secret-key formats (KEY 32 bytes, KEY_ID 1..=128 no-control, KEYS JSON obj->32-byte/base64). Restructured to tables (precedence table, constraints table, TOML code block) to satisfy "pure tables".
+- re-pass A CHANGES: "validated at startup" too broad — secret-key constraints are use-time, agent at agent startup. Fixed with per-row timing note.
+- re-pass B APPROVED. All 12/12 sub-issues now committed; epic #100 fully checked.
