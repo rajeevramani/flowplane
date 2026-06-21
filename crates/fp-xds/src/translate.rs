@@ -665,26 +665,60 @@ pub fn cluster_to_proto_with_ai(
     })
 }
 
+/// Default CA bundle path (in the Envoy/dataplane container) used to verify upstream TLS certs
+/// when a cluster's `UpstreamTlsConfig` names neither an SDS secret nor an explicit `ca_cert_file`.
+/// Override with `FLOWPLANE_UPSTREAM_CA_BUNDLE`. The path is resolved by Envoy, not the control
+/// plane, so it must exist on the dataplane host; the default matches Debian/Ubuntu containers.
+fn default_upstream_ca_bundle() -> String {
+    std::env::var("FLOWPLANE_UPSTREAM_CA_BUNDLE")
+        .unwrap_or_else(|_| "/etc/ssl/certs/ca-certificates.crt".to_string())
+}
+
 fn upstream_tls_context(spec: &ClusterSpec) -> tls::UpstreamTlsContext {
     let tls_spec = spec.upstream_tls.as_ref();
-    let validation_secret =
-        tls_spec.and_then(|tls| tls.validation_context_sds_secret_name.as_deref());
+    let insecure = tls_spec
+        .map(|tls| tls.insecure_skip_verify)
+        .unwrap_or(false);
+
+    // Verify-by-default (issue #125): TLS upstreams must authenticate the server cert. Pick a
+    // validation context source in priority order — explicit SDS secret, explicit CA file, then
+    // the default system CA bundle — unless the operator has explicitly opted out.
+    let validation_context_type = if insecure {
+        None
+    } else if let Some(secret) =
+        tls_spec.and_then(|tls| tls.validation_context_sds_secret_name.as_deref())
+    {
+        Some(
+            tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
+                sds_secret_config(secret),
+            ),
+        )
+    } else {
+        let ca_path = tls_spec
+            .and_then(|tls| tls.ca_cert_file.clone())
+            .unwrap_or_else(default_upstream_ca_bundle);
+        Some(
+            tls::common_tls_context::ValidationContextType::ValidationContext(
+                tls::CertificateValidationContext {
+                    trusted_ca: Some(filename(ca_path)),
+                    ..Default::default()
+                },
+            ),
+        )
+    };
+
+    let has_validation = validation_context_type.is_some();
     tls::UpstreamTlsContext {
         common_tls_context: Some(tls::CommonTlsContext {
-            validation_context_type: validation_secret.map(|secret| {
-                tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
-                    sds_secret_config(secret),
-                )
-            }),
+            validation_context_type,
             ..Default::default()
         }),
         sni: tls_spec.and_then(|tls| tls.sni.clone()).unwrap_or_default(),
         // Envoy rejects a cluster that sets `auto_sni_san_validation` without a validation
         // context ("'auto_sni_san_validation' was configured without a validation context"),
-        // which NACKs the whole CDS update. The AI/expose/route-generation materializers set
-        // the flag with `validation_context_sds_secret_name: None`, so only emit it when a
-        // validation context is actually present. See issue #123.
-        auto_sni_san_validation: validation_secret.is_some()
+        // which NACKs the whole CDS update (issue #123). With verify-by-default a context is
+        // normally present; only suppress the flag when verification is explicitly disabled.
+        auto_sni_san_validation: has_validation
             && tls_spec
                 .map(|tls| tls.auto_sni_san_validation)
                 .unwrap_or(false),
@@ -2464,18 +2498,57 @@ mod tests {
         tls::UpstreamTlsContext::decode(any.value.as_slice()).expect("upstream tls")
     }
 
-    // Issue #123: the AI/expose/route-generation materializers set `auto_sni_san_validation: true`
-    // with no validation context. Envoy NACKs that combination, rejecting the whole CDS update,
-    // so the translator must not emit `auto_sni_san_validation` unless a validation context exists.
+    // Issue #125: with no explicit trust source, a TLS upstream must still verify the server cert
+    // against the default system CA bundle (verify-by-default), and `auto_sni_san_validation` is
+    // then validly emitted (a validation context exists, so #123's NACK condition does not apply).
     #[test]
-    fn upstream_tls_without_validation_context_omits_auto_sni_san_validation() {
+    fn upstream_tls_without_explicit_trust_defaults_to_system_ca_bundle() {
         let mut spec = cluster_spec();
         spec.upstream_tls = Some(UpstreamTlsConfig {
             sni: Some("api.openai.com".into()),
             validation_context_sds_secret_name: None,
+            ca_cert_file: None,
             auto_sni_san_validation: true,
+            insecure_skip_verify: false,
         });
         let ctx = upstream_tls_context_of("ai-chat-route-b1", &spec);
+        assert!(
+            ctx.auto_sni_san_validation,
+            "verify-by-default emits a validation context, so the flag is preserved"
+        );
+        match ctx
+            .common_tls_context
+            .expect("common")
+            .validation_context_type
+            .expect("validation context (verify-by-default)")
+        {
+            tls::common_tls_context::ValidationContextType::ValidationContext(vc) => {
+                let path = match vc.trusted_ca.expect("trusted_ca").specifier.expect("spec") {
+                    core::data_source::Specifier::Filename(p) => p,
+                    other => panic!("expected filename data source: {other:?}"),
+                };
+                assert!(
+                    path.ends_with("ca-certificates.crt"),
+                    "default bundle path: {path}"
+                );
+            }
+            other => panic!("unexpected validation context: {other:?}"),
+        }
+    }
+
+    // Issue #125: explicit opt-out disables verification — no validation context, and the #123
+    // guard then suppresses `auto_sni_san_validation` so Envoy does not NACK the cluster.
+    #[test]
+    fn upstream_tls_insecure_skip_verify_omits_validation_context() {
+        let mut spec = cluster_spec();
+        spec.upstream_tls = Some(UpstreamTlsConfig {
+            sni: Some("api.openai.com".into()),
+            validation_context_sds_secret_name: None,
+            ca_cert_file: None,
+            auto_sni_san_validation: true,
+            insecure_skip_verify: true,
+        });
+        let ctx = upstream_tls_context_of("insecure", &spec);
         assert!(
             !ctx.auto_sni_san_validation,
             "no validation context => auto_sni_san_validation must be false (Envoy rejects it otherwise)"
@@ -2485,8 +2558,74 @@ mod tests {
                 .expect("common")
                 .validation_context_type
                 .is_none(),
-            "no validation context should be emitted"
+            "insecure_skip_verify should emit no validation context"
         );
+    }
+
+    // Issue #125: an explicit `ca_cert_file` is used verbatim (not the default bundle), and a
+    // validation context being present keeps `auto_sni_san_validation`.
+    #[test]
+    fn upstream_tls_explicit_ca_file_is_used_verbatim() {
+        let mut spec = cluster_spec();
+        spec.upstream_tls = Some(UpstreamTlsConfig {
+            sni: Some("api.example.com".into()),
+            validation_context_sds_secret_name: None,
+            ca_cert_file: Some("/etc/flowplane/upstream-ca.pem".into()),
+            auto_sni_san_validation: true,
+            insecure_skip_verify: false,
+        });
+        let ctx = upstream_tls_context_of("api", &spec);
+        assert!(ctx.auto_sni_san_validation);
+        match ctx
+            .common_tls_context
+            .expect("common")
+            .validation_context_type
+            .expect("validation context")
+        {
+            tls::common_tls_context::ValidationContextType::ValidationContext(vc) => {
+                match vc.trusted_ca.expect("trusted_ca").specifier.expect("spec") {
+                    core::data_source::Specifier::Filename(p) => {
+                        assert_eq!(p, "/etc/flowplane/upstream-ca.pem")
+                    }
+                    other => panic!("expected filename data source: {other:?}"),
+                }
+            }
+            other => panic!("unexpected validation context: {other:?}"),
+        }
+    }
+
+    // Issue #125: `insecure_skip_verify` overrides an explicit trust source — a configured SDS
+    // secret (or CA file) still yields no validation context.
+    #[test]
+    fn upstream_tls_insecure_overrides_explicit_trust_source() {
+        for tls in [
+            UpstreamTlsConfig {
+                sni: Some("api.example.com".into()),
+                validation_context_sds_secret_name: Some("upstream-ca".into()),
+                ca_cert_file: None,
+                auto_sni_san_validation: true,
+                insecure_skip_verify: true,
+            },
+            UpstreamTlsConfig {
+                sni: Some("api.example.com".into()),
+                validation_context_sds_secret_name: None,
+                ca_cert_file: Some("/etc/flowplane/upstream-ca.pem".into()),
+                auto_sni_san_validation: true,
+                insecure_skip_verify: true,
+            },
+        ] {
+            let mut spec = cluster_spec();
+            spec.upstream_tls = Some(tls);
+            let ctx = upstream_tls_context_of("api", &spec);
+            assert!(!ctx.auto_sni_san_validation);
+            assert!(
+                ctx.common_tls_context
+                    .expect("common")
+                    .validation_context_type
+                    .is_none(),
+                "insecure_skip_verify must override the explicit trust source"
+            );
+        }
     }
 
     #[test]
@@ -2495,7 +2634,9 @@ mod tests {
         spec.upstream_tls = Some(UpstreamTlsConfig {
             sni: Some("api.example.com".into()),
             validation_context_sds_secret_name: Some("upstream-ca".into()),
+            ca_cert_file: None,
             auto_sni_san_validation: true,
+            insecure_skip_verify: false,
         });
         let ctx = upstream_tls_context_of("api", &spec);
         assert!(
@@ -2620,7 +2761,9 @@ mod tests {
             upstream_tls: Some(UpstreamTlsConfig {
                 sni: Some("api.example.com".into()),
                 validation_context_sds_secret_name: Some("upstream-ca".into()),
+                ca_cert_file: None,
                 auto_sni_san_validation: true,
+                insecure_skip_verify: false,
             }),
             protocol: Some(UpstreamProtocol::Grpc),
             health_checks: Some(vec![HealthCheck::Http(HttpHealthCheck {

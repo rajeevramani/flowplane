@@ -284,7 +284,9 @@ fn build_plan(
         upstream_tls: upstream_tls.then_some(UpstreamTlsConfig {
             sni: Some(upstream_host.to_string()),
             validation_context_sds_secret_name: None,
+            ca_cert_file: None,
             auto_sni_san_validation: true,
+            insecure_skip_verify: false,
         }),
         protocol: None,
         health_checks: None,

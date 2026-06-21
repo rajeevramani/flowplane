@@ -337,7 +337,11 @@ fn cluster_spec(ip: &IpAddr, port: u16, spec: &DiscoverySessionSpec) -> ClusterS
         upstream_tls: spec.upstream_tls.then(|| UpstreamTlsConfig {
             sni: Some(spec.upstream_host.clone()),
             validation_context_sds_secret_name: None,
-            auto_sni_san_validation: false,
+            ca_cert_file: None,
+            // Validate the cert SAN against the SNI (upstream_host), not just the trust chain —
+            // otherwise any cert chaining to the CA bundle would be accepted (issue #125).
+            auto_sni_san_validation: true,
+            insecure_skip_verify: false,
         }),
         protocol: None,
         health_checks: None,
