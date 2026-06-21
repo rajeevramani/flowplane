@@ -180,7 +180,7 @@ route/listener/filter parity (+ global-RLS filter ACK).
 |---|---|---|
 | Teardown **redaction sweep** over all artifacts (CP/Envoy logs, config dumps, access logs, DB usage rows; mock auth logs + one-time bootstrap PKI excluded) | `live:redaction_sweep` (also greps the API bearer token) | covered |
 | **Cross-team isolation under concurrency** (no bleed in usage/budget counters under concurrent settlement) | `cargo:ai_budgets::concurrent_budget_settlement_is_atomic_and_team_scoped` — 32 concurrent settlements assert team B's counters/enforcement untouched; live re-impl is redundant | covered (cargo) |
-| Live E2E green **5 consecutive** runs | `scripts/e2e/CERTIFICATION-REPORT.md` records `bash scripts/e2e-envoy.sh` passing 5 consecutive runs, 12 phases each, with streaming included and redaction sweep green | covered |
+| Live E2E green **5 consecutive** runs | `CERTIFICATION-REPORT.md` records `bash scripts/e2e-envoy.sh` passing 5 consecutive runs, 12 phases each, with streaming included and redaction sweep green | covered |
 
 ## Out-of-scope (named, with owning slice)
 

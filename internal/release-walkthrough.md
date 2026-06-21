@@ -11,8 +11,8 @@ Actions job.
 Evidence:
 
 - Runner: `bash scripts/e2e-envoy.sh`
-- Report: `scripts/e2e/CERTIFICATION-REPORT.md`
-- Coverage: `scripts/e2e/COVERAGE.md`
+- Report: `internal/e2e/CERTIFICATION-REPORT.md`
+- Coverage: `internal/e2e/COVERAGE.md`
 - Recorded pass signal: 5 consecutive runs, 12 phases each, 0 known failures, Envoy 1.37.4.
 
 CI-with-Docker promotion is deferred post-1.0. The live runner is broad, Docker-dependent, and has

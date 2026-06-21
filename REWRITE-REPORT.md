@@ -21,8 +21,8 @@ the CP does not use Envoy admin as a product API.
 - Release packaging: `docs/release-packaging.md`.
 - Operator guide: `docs/production-readiness.md`.
 - Release walkthrough and tag checklist: `internal/release-walkthrough.md`.
-- Live Envoy certification: `scripts/e2e/CERTIFICATION-REPORT.md`.
-- Live coverage matrix: `scripts/e2e/COVERAGE.md`.
+- Live Envoy certification: `internal/e2e/CERTIFICATION-REPORT.md`.
+- Live coverage matrix: `internal/e2e/COVERAGE.md`.
 
 ## Release Gate Decision
 
@@ -36,7 +36,7 @@ known failures. CI-with-Docker promotion is deferred post-1.0.
 | --- | --- |
 | Q-006 resolved: Apache-2.0 (`LICENSE`/`NOTICE`); public distribution no longer license-gated. | #86, #88, #93, #96 |
 | Live Envoy E2E is manual recorded for v1.0, not a CI gate. | D-021, #91, #95 |
-| P1d AI streaming phase is timing-sensitive and certified on Envoy 1.37.4. | #92, `scripts/e2e/CERTIFICATION-REPORT.md` |
+| P1d AI streaming phase is timing-sensitive and certified on Envoy 1.37.4. | #92, `internal/e2e/CERTIFICATION-REPORT.md` |
 | Native `gen_ai.*` OTel semantic-convention metrics are deferred post-1.0. | D-021, `docs/observability-alerts.md` |
 
 ## Tag Criteria
