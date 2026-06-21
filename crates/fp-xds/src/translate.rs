@@ -667,21 +667,27 @@ pub fn cluster_to_proto_with_ai(
 
 fn upstream_tls_context(spec: &ClusterSpec) -> tls::UpstreamTlsContext {
     let tls_spec = spec.upstream_tls.as_ref();
+    let validation_secret =
+        tls_spec.and_then(|tls| tls.validation_context_sds_secret_name.as_deref());
     tls::UpstreamTlsContext {
         common_tls_context: Some(tls::CommonTlsContext {
-            validation_context_type: tls_spec
-                .and_then(|tls| tls.validation_context_sds_secret_name.as_deref())
-                .map(|secret| {
-                    tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
-                        sds_secret_config(secret),
-                    )
-                }),
+            validation_context_type: validation_secret.map(|secret| {
+                tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
+                    sds_secret_config(secret),
+                )
+            }),
             ..Default::default()
         }),
         sni: tls_spec.and_then(|tls| tls.sni.clone()).unwrap_or_default(),
-        auto_sni_san_validation: tls_spec
-            .map(|tls| tls.auto_sni_san_validation)
-            .unwrap_or(false),
+        // Envoy rejects a cluster that sets `auto_sni_san_validation` without a validation
+        // context ("'auto_sni_san_validation' was configured without a validation context"),
+        // which NACKs the whole CDS update. The AI/expose/route-generation materializers set
+        // the flag with `validation_context_sds_secret_name: None`, so only emit it when a
+        // validation context is actually present. See issue #123.
+        auto_sni_san_validation: validation_secret.is_some()
+            && tls_spec
+                .map(|tls| tls.auto_sni_san_validation)
+                .unwrap_or(false),
         ..Default::default()
     }
 }
@@ -2442,6 +2448,70 @@ mod tests {
             health_checks: None,
             circuit_breakers: None,
             outlier_detection: None,
+        }
+    }
+
+    fn upstream_tls_context_of(name: &str, spec: &ClusterSpec) -> tls::UpstreamTlsContext {
+        let proto = cluster_to_proto(name, spec).expect("translate");
+        let socket = proto.transport_socket.expect("transport socket");
+        let Some(core::transport_socket::ConfigType::TypedConfig(any)) = socket.config_type else {
+            panic!("expected typed upstream tls context");
+        };
+        assert_eq!(
+            any.type_url,
+            "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext"
+        );
+        tls::UpstreamTlsContext::decode(any.value.as_slice()).expect("upstream tls")
+    }
+
+    // Issue #123: the AI/expose/route-generation materializers set `auto_sni_san_validation: true`
+    // with no validation context. Envoy NACKs that combination, rejecting the whole CDS update,
+    // so the translator must not emit `auto_sni_san_validation` unless a validation context exists.
+    #[test]
+    fn upstream_tls_without_validation_context_omits_auto_sni_san_validation() {
+        let mut spec = cluster_spec();
+        spec.upstream_tls = Some(UpstreamTlsConfig {
+            sni: Some("api.openai.com".into()),
+            validation_context_sds_secret_name: None,
+            auto_sni_san_validation: true,
+        });
+        let ctx = upstream_tls_context_of("ai-chat-route-b1", &spec);
+        assert!(
+            !ctx.auto_sni_san_validation,
+            "no validation context => auto_sni_san_validation must be false (Envoy rejects it otherwise)"
+        );
+        assert!(
+            ctx.common_tls_context
+                .expect("common")
+                .validation_context_type
+                .is_none(),
+            "no validation context should be emitted"
+        );
+    }
+
+    #[test]
+    fn upstream_tls_with_validation_context_keeps_auto_sni_san_validation() {
+        let mut spec = cluster_spec();
+        spec.upstream_tls = Some(UpstreamTlsConfig {
+            sni: Some("api.example.com".into()),
+            validation_context_sds_secret_name: Some("upstream-ca".into()),
+            auto_sni_san_validation: true,
+        });
+        let ctx = upstream_tls_context_of("api", &spec);
+        assert!(
+            ctx.auto_sni_san_validation,
+            "with a validation context the flag must be preserved"
+        );
+        match ctx
+            .common_tls_context
+            .expect("common")
+            .validation_context_type
+            .expect("validation context")
+        {
+            tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
+                config,
+            ) => assert_eq!(config.name, "upstream-ca"),
+            other => panic!("unexpected validation context: {other:?}"),
         }
     }
 
