@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+# scripts/release/ -> repo root
+cd "$(dirname "$0")/../.."
 
 VERSION=${FLOWPLANE_RELEASE_VERSION:-$(cargo pkgid -p flowplane | sed 's/.*#//')}
 TARGET=${FLOWPLANE_RELEASE_TARGET:-}

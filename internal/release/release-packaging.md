@@ -17,7 +17,7 @@ unpublished (`publish = false`). Public distribution is no longer license-gated.
 ## Command
 
 ```bash
-scripts/package-release.sh
+scripts/release/package-release.sh
 ```
 
 For the musl release artifact:
@@ -26,7 +26,7 @@ For the musl release artifact:
 rustup target add x86_64-unknown-linux-musl
 brew install filosottile/musl-cross/musl-cross # macOS cross-linker
 FLOWPLANE_RELEASE_TARGET=x86_64-unknown-linux-musl \
-  scripts/package-release.sh
+  scripts/release/package-release.sh
 file target/x86_64-unknown-linux-musl/release/flowplane
 ```
 
@@ -48,7 +48,7 @@ distribution no longer license-gated.)
 Build and save the OCI image with:
 
 ```bash
-FLOWPLANE_PACKAGE_IMAGE=1 scripts/package-release.sh
+FLOWPLANE_PACKAGE_IMAGE=1 scripts/release/package-release.sh
 ```
 
 The image path requires Docker or Podman with enough free builder storage.
@@ -68,7 +68,7 @@ FLOWPLANE_PACKAGE_DATAPLANE_MODE=mtls \
 FLOWPLANE_PACKAGE_CERT_PATH=/etc/flowplane/tls/tls.crt \
 FLOWPLANE_PACKAGE_KEY_PATH=/etc/flowplane/tls/tls.key \
 FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt \
-scripts/package-release.sh
+scripts/release/package-release.sh
 ```
 
 `mtls` is the release default. For local/dev bootstrap only, pass:

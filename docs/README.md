@@ -97,5 +97,5 @@ existing operator docs have been reclassified (#116):
 | `docs/adversarial-surface-map.md` | `../internal/adversarial-surface-map.md` | internal (evidence) |
 | `docs/release-packaging.md` | `../internal/release/release-packaging.md` | internal |
 
-The boundary is enforced in CI by `scripts/check-docs-boundary.py` (see
+The boundary is enforced in CI by `scripts/ci/check-docs-boundary.py` (see
 [Enforcement (CI)](#enforcement-ci)).

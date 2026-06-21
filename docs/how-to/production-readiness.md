@@ -44,7 +44,7 @@ FLOWPLANE_PACKAGE_XDS_PORT=18000 \
 FLOWPLANE_PACKAGE_CERT_PATH=/etc/flowplane/tls/tls.crt \
 FLOWPLANE_PACKAGE_KEY_PATH=/etc/flowplane/tls/tls.key \
 FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt \
-scripts/package-release.sh
+scripts/release/package-release.sh
 ```
 
 Run Envoy and `fp-agent` beside each other in the dataplane network. The dataplane dials the
@@ -183,8 +183,8 @@ flowplane mcp status --team <team>
 flowplane mcp connections --team <team>
 flowplane mcp enable --api api_get-catalog --team <team>
 
-scripts/package-release.sh
-FLOWPLANE_PACKAGE_IMAGE=1 scripts/package-release.sh
+scripts/release/package-release.sh
+FLOWPLANE_PACKAGE_IMAGE=1 scripts/release/package-release.sh
 ```
 
 The failure-mode matrix and adversarial surface map (in the internal engineering docs) are
