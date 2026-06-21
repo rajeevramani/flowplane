@@ -23,6 +23,11 @@ a local Envoy dataplane, creating gateway resources, and checking stats/NACK dia
 
 ## Useful Commands
 
+> **Toolchain:** build through [rustup](https://rustup.rs) so the `rust-toolchain.toml`
+> pin (1.94.1) is applied automatically. A distro-packaged `cargo` (e.g. `apt-get install
+> cargo`) may be too old to read this repo's version-4 `Cargo.lock` and will fail before
+> building.
+
 Build:
 
 ```bash

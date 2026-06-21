@@ -32,8 +32,8 @@ bash scripts/e2e-envoy.sh
 Run release packaging:
 
 ```bash
-scripts/package-release.sh
-FLOWPLANE_PACKAGE_IMAGE=1 scripts/package-release.sh
+scripts/release/package-release.sh
+FLOWPLANE_PACKAGE_IMAGE=1 scripts/release/package-release.sh
 ```
 
 Verify release artifacts:
@@ -58,7 +58,7 @@ FLOWPLANE_PACKAGE_XDS_PORT=18000 \
 FLOWPLANE_PACKAGE_CERT_PATH=/etc/flowplane/tls/tls.crt \
 FLOWPLANE_PACKAGE_KEY_PATH=/etc/flowplane/tls/tls.key \
 FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt \
-scripts/package-release.sh
+scripts/release/package-release.sh
 ```
 
 CLI first-contact flow is documented in `docs/how-to/production-readiness.md`; the release gate references
@@ -71,8 +71,8 @@ that workflow rather than duplicating every operator command here.
       cargo-deny.
 - [ ] `internal/adversarial-surface-map.md` is green or accepted.
 - [ ] `internal/failure-mode-matrix.md` is green, with live phases covered by the manual gate evidence.
-- [ ] Release artifacts reproducible with `scripts/package-release.sh`.
-- [ ] OCI image reproducible with `FLOWPLANE_PACKAGE_IMAGE=1 scripts/package-release.sh`.
+- [ ] Release artifacts reproducible with `scripts/release/package-release.sh`.
+- [ ] OCI image reproducible with `FLOWPLANE_PACKAGE_IMAGE=1 scripts/release/package-release.sh`.
 - [ ] Operator docs complete: `docs/how-to/production-readiness.md`.
 - [ ] `REWRITE-REPORT.md` committed.
 - [ ] Accepted risks below are signed off.

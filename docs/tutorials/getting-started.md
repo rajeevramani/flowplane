@@ -27,7 +27,12 @@ You need:
   point `FLOWPLANE_DATABASE_URL` at your own superuser.
 - **Envoy installed** — a local `envoy` binary on your `PATH`. You use it in
   step 6 to actually route traffic. On macOS, prefer the local binary over Docker.
-- **The `flowplane` binary.** Build it from the repo:
+- **A Rust toolchain via [rustup](https://rustup.rs).** The repo pins its toolchain in
+  `rust-toolchain.toml`, which only takes effect when the build is driven through rustup —
+  it selects the pinned version automatically on first `cargo` invocation. Do **not** use a
+  distro-packaged `cargo` (e.g. `apt-get install cargo`): an older system cargo cannot read
+  this repo's version-4 `Cargo.lock` and fails before the build starts.
+- **The `flowplane` binary.** Build it from the repo (rustup picks the pinned toolchain):
 
   ```bash
   cargo build --bin flowplane

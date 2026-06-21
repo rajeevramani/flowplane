@@ -47,7 +47,7 @@ postgres://<your-mac-user>@127.0.0.1:5432/flowplane_prod_local
 Run:
 
 ```bash
-scripts/setup-prod-local.sh
+scripts/dev/setup-prod-local.sh
 ```
 
 The script prompts for:
@@ -65,9 +65,9 @@ prints the exact `serve`, bootstrap, and login commands.
 Useful flags:
 
 ```bash
-scripts/setup-prod-local.sh --force
-scripts/setup-prod-local.sh --skip-build
-scripts/setup-prod-local.sh --skip-migrate
+scripts/dev/setup-prod-local.sh --force
+scripts/dev/setup-prod-local.sh --skip-build
+scripts/dev/setup-prod-local.sh --skip-migrate
 ```
 
 You can also pre-seed inputs non-interactively:
@@ -77,7 +77,7 @@ AUTH0_DOMAIN="<tenant>.us.auth0.com" \
 AUTH0_CLIENT_ID="<auth0-native-app-client-id>" \
 AUTH0_ADMIN_SUBJECT="auth0|6650f0..." \
 AUTH0_ADMIN_EMAIL="you@example.com" \
-scripts/setup-prod-local.sh --force
+scripts/dev/setup-prod-local.sh --force
 ```
 
 ## Step A - Set up Auth0

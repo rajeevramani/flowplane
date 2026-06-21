@@ -111,6 +111,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Docs boundary self-test
-        run: python3 scripts/check-docs-boundary.py --self-test
+        run: python3 scripts/ci/check-docs-boundary.py --self-test
       - name: Docs boundary (user docs must stand alone, #116)
-        run: python3 scripts/check-docs-boundary.py
+        run: python3 scripts/ci/check-docs-boundary.py

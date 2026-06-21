@@ -2,7 +2,8 @@
 # Prepare a local production-mode Flowplane control plane backed by Auth0 OIDC.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+# scripts/dev/ -> repo root
+cd "$(dirname "$0")/../.."
 
 ENV_FILE=${FLOWPLANE_PROD_LOCAL_ENV_FILE:-internal/.env.prod-local}
 DB_NAME=${FLOWPLANE_PROD_LOCAL_DB_NAME:-flowplane_prod_local}
@@ -14,7 +15,7 @@ FORCE=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/setup-prod-local.sh [options]
+Usage: scripts/dev/setup-prod-local.sh [options]
 
 Creates internal/.env.prod-local for local production-mode Auth0 testing.
 

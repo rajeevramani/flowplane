@@ -13,8 +13,8 @@ that is NOT one of the allowed carve-outs (see docs/README.md "Enforcement (CI)"
 Everything else — any internal/ link from a task page, and required-reading spec/
 links in task steps — fails.
 
-Run:  scripts/check-docs-boundary.py            # check the tree
-      scripts/check-docs-boundary.py --self-test # run the parser self-checks
+Run:  scripts/ci/check-docs-boundary.py            # check the tree
+      scripts/ci/check-docs-boundary.py --self-test # run the parser self-checks
 """
 from __future__ import annotations
 
@@ -22,7 +22,8 @@ import os
 import re
 import sys
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# scripts/ci/check-docs-boundary.py -> repo root
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Inline links `[text](target)`.
 LINK_RE = re.compile(r"\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)")
 # Reference definition `[label]: target` -> (label, target).
