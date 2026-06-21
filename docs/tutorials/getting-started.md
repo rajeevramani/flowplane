@@ -19,9 +19,13 @@ API and xDS over plaintext. It is for local exploration only — never productio
 You need:
 
 - **PostgreSQL** reachable on your machine. This tutorial uses
-  `postgres://postgres:postgres@127.0.0.1:5432/flowplane_dev`. If you have the
-  repo helper, `scripts/ensure-postgres.sh` creates the `flowplane_dev` database
-  and sets the local `postgres` password to `postgres`.
+  `postgres://postgres:postgres@127.0.0.1:5432/flowplane_dev`. On Linux / containers
+  with a `postgres` superuser, `scripts/ensure-postgres.sh` creates the `flowplane_dev`
+  database and sets the `postgres` password to `postgres`. On **macOS / Homebrew** there
+  is no `postgres` role by default, so create it first (`createuser -s postgres` →
+  `ALTER USER postgres PASSWORD 'postgres'` → `createdb -O postgres flowplane_dev`), or
+  point `FLOWPLANE_DATABASE_URL` at your own superuser — see
+  [dev-dataplane.md](../dev-dataplane.md#1-start-postgresql).
 - **Envoy installed** — a local `envoy` binary on your `PATH`. You use it in
   step 6 to actually route traffic. On macOS, prefer the local binary over Docker.
 - **The `flowplane` binary.** Build it from the repo:

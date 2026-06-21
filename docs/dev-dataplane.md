@@ -37,6 +37,24 @@ scripts/ensure-postgres.sh
 It ensures the `flowplane_dev` database exists and sets the local `postgres` password to
 `postgres`.
 
+> **Prerequisite:** `scripts/ensure-postgres.sh` targets a Linux / container PostgreSQL
+> that has a `postgres` superuser role (it uses `service postgresql start` and `su postgres`).
+> It does **not** create that role. On a fresh **macOS / Homebrew** install there is no
+> `postgres` role (the superuser is your OS user), so the helper — and the documented
+> `postgres://postgres:postgres@…` URL — will fail with `role "postgres" does not exist`.
+> Create the role and database once:
+>
+> ```bash
+> # macOS / Homebrew (brew services start postgresql first)
+> createuser -s postgres                                   # superuser role named 'postgres'
+> psql -d postgres -c "ALTER USER postgres PASSWORD 'postgres'"
+> createdb -O postgres flowplane_dev
+> ```
+>
+> Alternatively, skip the `postgres` role entirely and point Flowplane at your own
+> superuser: `export FLOWPLANE_DATABASE_URL="postgres://$(whoami)@127.0.0.1:5432/flowplane_dev"`
+> after `createdb flowplane_dev`.
+
 ## 2. Build Flowplane
 
 ```bash
