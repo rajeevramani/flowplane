@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Feature branches are covered by their pull_request run; only push events to main
+  # trigger a second run. Avoids double-running every branch push on the single runner.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 env:
