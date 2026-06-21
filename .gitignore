@@ -31,3 +31,7 @@ internal/review-issue-prompt.md
 
 # Claude
 .claude/
+
+# Python bytecode
+__pycache__/
+*.pyc
