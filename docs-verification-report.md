@@ -1,78 +1,79 @@
 # Docs Verification Report
 
-Run date: 2026-06-21 (third pass — PostgreSQL **and** Envoy available)
+Run date: 2026-06-21 (fourth pass — latest `main` @ `5adaa90`, PostgreSQL **and** Envoy available)
 
 Config:
 
-- Epic issue: #100
+- Epic issue: #100 (`Document flowplane-v2 (user-facing docs epic)`)
 - Label: `docs-verification`
 - Marker: `[docs-verify]`
 - Method: execute the docs against the real binary/CLI/control plane/**Envoy** from a
   clean state; classify every mismatch as `doc-defect` / `code-defect` / `ambiguous`.
 - GitHub tooling: this environment exposes the GitHub MCP server (`mcp__github__*`),
   not the `gh` CLI. Issue reads/writes below were performed with those tools.
+- Branch: developed/verified on `claude/gifted-gates-2num35` (pulled latest `main`).
 
 ## What changed since the previous pass
 
-The previous pass (report v2, issues #121/#122) had PostgreSQL but was **blocked on
-Envoy** — every "start Envoy / curl through the gateway" step and the `dataplane cert
-issue` happy path were inspection-only. In **this** environment both dependencies are
-present:
+The previous pass (report v3) filed/repro'd #121, #122, #123 and carried #118/#119/#120.
+**Every one of those is now CLOSED**, and the docs/code were reorganised since:
 
-```text
-$ which envoy && envoy --version
-/usr/local/bin/envoy
-envoy  version: 3909deb175ef358202d6ab4f94d683ffc0fdb477/1.37.0/Clean/RELEASE/BoringSSL
+- `docs/dev-dataplane.md` was reclassified to **`internal/dev-dataplane.md`** (#116). The
+  README now points the dev path at `internal/dev-dataplane.md`. The task's
+  "`docs/dev-dataplane.md`" is read as that file.
+- `docs/how-to/bootstrap-platform.md` is **new** (operator-supplied bootstrap token,
+  #113/#133) and is now part of the executable how-to set.
+- `FLOWPLANE_UPSTREAM_CA_BUNDLE` was added to `configuration.md` (#132 fix, commit
+  `5adaa90`), and the AI-cluster TLS materialisation switched to **verify-by-default**
+  (#125), which is what closes the old #123 NACK.
 
-$ scripts/ensure-postgres.sh
-postgres ready                 # exit 0
-$ psql postgres://postgres:postgres@127.0.0.1:5432/postgres -c 'select 1'
- ?column?
-----------
-        1
-```
-
-Consequence: the previously-blocked steps were executed for the first time and
-**pass** — a live request traversed Envoy to the upstream, and a real mTLS client
-certificate was issued from a configured CA. No new defects surfaced. The two
-previously-filed defects (#121, #122) both reproduce verbatim.
+This pass **re-proves every prior defect is actually fixed** against a live data path,
+and surfaces **2 new, previously-unreported discrepancies** (both `minor`).
 
 ## Preconditions
 
-- Build/toolchain: pass. `cargo build --bin flowplane` finished in 3m 35s, exit 0
-  (`Finished \`dev\` profile ... in 3m 35s` / `BUILD_EXIT=0`); `flowplane version` → `0.1.0`.
-- PostgreSQL: pass (see above; the session hook also reports `postgres ready`).
-- Envoy data path: **pass** (Envoy 1.37.0 on `PATH`). This is the material difference
-  from prior passes.
+- Build/toolchain: pass. `cargo build --bin flowplane` finished exit 0;
+  `./target/debug/flowplane version` → `0.1.0`.
+- PostgreSQL: pass. `scripts/ensure-postgres.sh` → `postgres ready` (exit 0); the
+  session hook also reports `postgres ready`.
+- Envoy data path: **pass** — Envoy 1.37.0 on `PATH`
+  (`3909deb175ef358202d6ab4f94d683ffc0fdb477/1.37.0/Clean/RELEASE/BoringSSL`). A live
+  request traversed Envoy to the upstream, and a real mTLS leaf certificate was issued
+  from a configured CA.
 - Cert issuance: executed by satisfying the documented prereq — a throwaway CA was
   generated with `openssl` and supplied via `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH` /
   `_KEY_PATH`, exactly as `register-dataplane-mtls.md` requires.
-- Live AI provider traffic (OpenAI) and a real JWKS issuer remain **blocked /
-  inspection-only** (no external egress / no IdP) — the control-plane side of both
-  flows is fully executed; only the final upstream round-trip is not.
+- Still blocked **by the environment** (not by the docs): the live `fp-agent` run and
+  the live AI chat round-trip. This sandbox **SIGTERMs any long-lived Envoy/server
+  child after ~12s** (observed: `caught ENVOY_SIGTERM`), and there is no external egress
+  / no IdP / no OpenAI. The control-plane sides of both flows are fully executed; only
+  the final upstream round-trips are not.
 
 ## Documentation Set (confirmed against epic #100)
 
-The epic's actionable item→source table (items 1–11) maps to these executable docs.
 Actionable / executed:
 
 - `README.md`
-- `docs/dev-dataplane.md`
+- `internal/dev-dataplane.md` (was `docs/dev-dataplane.md`; relocated by #116)
 - `docs/tutorials/getting-started.md`
 - `docs/how-to/cli-auth-and-contexts.md`
 - `docs/how-to/jwt-auth-rate-limit-route.md`
 - `docs/how-to/register-dataplane-mtls.md`
 - `docs/how-to/ai-gateway-route-budget.md`
 - `docs/how-to/learn-and-publish-api-spec.md`
+- `docs/how-to/bootstrap-platform.md`
 - `docs/reference/cli.md`
 - `docs/reference/configuration.md`
 - `docs/reference/errors.md`
 - `docs/reference/filters.md`
 - `docs/reference/rest-api.md`
 
+Operator runbooks (epic #100 **non-goals**; "new docs link to these") — inspection /
+command-shape verification only: `docs/how-to/aws-secure-deployment.md`,
+`docs/how-to/production-readiness.md`, `docs/how-to/secret-kek-rotation.md`.
+
 Not execution-verified: `docs/concepts/tenancy-grants-xds.md` (#112, item 12) —
-explanation/concepts prose with no runnable commands; out of scope for an
-execution-based pass.
+explanation prose, no runnable commands.
 
 ---
 
@@ -80,27 +81,31 @@ execution-based pass.
 
 | Command | Result | Excerpt |
 |---|---|---|
-| `cargo build --bin flowplane` | pass (exit 0) | `Finished \`dev\` profile ... in 3m 35s` |
+| `cargo build --bin flowplane` | pass (exit 0) | binary at `target/debug/flowplane` |
 | `./target/debug/flowplane version` | pass (exit 0) | `0.1.0` |
-| `./target/debug/flowplane openapi` | pass (exit 0) | 288571 bytes; `"openapi":"3.1.0"`, `"title":"Flowplane"`, 62 paths |
-| `scripts/e2e-envoy.sh` (live Envoy smoke) | not run as a unit | the individual happy-path steps it wraps were executed manually below and pass end to end with real Envoy. |
+| `./target/debug/flowplane openapi` | pass (exit 0) | 289430 bytes; `"openapi":"3.1.0"`, `"title":"Flowplane"`, 62 paths |
+| `scripts/ensure-postgres.sh` | pass (exit 0) | `postgres ready` |
 
-## Proof: `docs/tutorials/getting-started.md` (full happy path, **now incl. Envoy**)
+The README's PostgreSQL caveat (the helper "does **not** create that role"; macOS guidance)
+is present and accurate — this is the **#119 fix**, and the helper works in this Linux
+environment. README now points the dev path at `internal/dev-dataplane.md` (relocated by #116).
 
-Started the CP with the tutorial's **exact** env set (notably **without**
+## Proof: `docs/tutorials/getting-started.md` (full happy path, **incl. live Envoy**)
+
+Started the CP with the tutorial's **exact** §2 env set (notably **without**
 `FLOWPLANE_SECRET_ENCRYPTION_KEY`).
 
 | Step / Command | Result | Excerpt |
 |---|---|---|
-| §2 `flowplane serve` (dev mode) | pass | all 6 documented log signals present (below) |
-| §3 `auth whoami` | pass (exit 0) | `MEMBERSHIPS 1 items`, `ORG ROLE owner`, `GRANT COUNT 0`, `USER ID 0000…0003` |
-| §4 `expose http://127.0.0.1:3001 --name local --port 10001 …` | pass (exit 0) | `CURL URL http://127.0.0.1:10001/`, `CLUSTER local-upstream`, `ROUTE CONFIG local-routes`, `LISTENER local`, `ENDPOINT SOURCE listener.public_base_url` |
+| §2 `flowplane serve` (dev mode) | pass | all documented startup signals present (below) |
+| §3 `auth whoami` | pass (exit 0) | `ORG ROLE owner`, `MEMBERSHIPS 1 items`, `GRANT COUNT 0`, `ORG SELECTOR REQUIRED false` |
+| §4 `expose http://127.0.0.1:3001 …` | pass (exit 0) | `CURL URL http://127.0.0.1:10001/`, `CLUSTER local-upstream`, `ROUTE CONFIG local-routes`, `LISTENER local`, `ENDPOINT SOURCE listener.public_base_url` |
 | §4 `cluster/listener/route list` | pass | resources present at revision 1 |
 | §5 `dataplane create dp-local` | pass (exit 0) | `created "dp-local" (revision 1)` |
 | §6 `--out … dataplane bootstrap dp-local --mode dev …` | pass (exit 0) | valid Envoy YAML; `node.id` stamped, ads → `xds_cluster`/127.0.0.1:18000 |
-| §6 `envoy -c /tmp/flowplane-envoy.yaml` | **pass** | Envoy connects to xDS and warms the listener within ~2s |
+| §6 `envoy -c /tmp/flowplane-envoy.yaml` | **pass** | `cds: added/updated 1 cluster(s)`, `lds: add/update listener 'local'` |
 | §7 `curl -i http://127.0.0.1:10001/` | **pass** | `HTTP/1.1 200 OK` / `server: envoy` / body `hello-flowplane` |
-| §7 `unexpose local` | pass (exit 0) | removes cluster/route/listener |
+| §7 `unexpose local` | pass (exit 0) | removes cluster/route/listener (confirmed absent afterwards) |
 
 Documented startup log signals — all observed verbatim:
 
@@ -113,28 +118,25 @@ xDS ADS server starting (plaintext dev mode)  addr=0.0.0.0:18000
 API listener starting           addr=127.0.0.1:8096 tls=false
 ```
 
-Live gateway proof (the step prior passes could not run):
+Live gateway proof:
 
 ```text
 $ curl -i http://127.0.0.1:10001/
 HTTP/1.1 200 OK
 server: envoy
 content-length: 16
-x-envoy-upstream-service-time: 1
+x-envoy-upstream-service-time: 0
 
 hello-flowplane
 ```
 
-Confirms the tutorial's claim that the server starts **without** an encryption key and
-without OIDC, and that the documented `expose → bootstrap → Envoy → curl` chain reaches
-the upstream through the gateway. No discrepancies.
+No discrepancies.
 
-## Proof: `docs/dev-dataplane.md`
+## Proof: `internal/dev-dataplane.md`
 
 Same loop with the runbook's env set (which **does** set `FLOWPLANE_SECRET_ENCRYPTION_KEY`).
-Steps 1–9 pass, including the live curl. Step 8's mTLS-bootstrap variant
-(`--mode mtls --cert-path … --key-path … --ca-path …`) emits valid TLS-bearing YAML
-(exit 0). Step 10 diagnostics:
+Steps 1–9 pass, including the live curl. Step 8's mTLS-bootstrap variant emits valid
+TLS-bearing YAML (exit 0). Step 10 diagnostics (Envoy attached, no `fp-agent`):
 
 | Command | Result | Excerpt |
 |---|---|---|
@@ -142,125 +144,78 @@ Steps 1–9 pass, including the live curl. Step 8's mTLS-bootstrap variant
 | `ops xds status` | pass | `HEALTH stale … RECENT NACK COUNT 0` |
 | `ops xds nacks` | pass | `no rows` |
 
-The `STALE` dataplane / zero request counters are exactly what the runbook predicts for
-the manual path (Envoy started directly, without `fp-agent`, so no heartbeats/telemetry).
+`STALE` / zero counters are exactly what the runbook predicts for the manual path (Envoy
+started directly, no heartbeats). No discrepancies.
 
 ## Proof: `docs/how-to/cli-auth-and-contexts.md`
 
-The CLI surface this how-to documents was confirmed against `--help`: global
-`--server`/`--org`/`--team`/`--context` resolution, `auth {login,whoami,token,logout}`
-(incl. `--token`, `--token-stdin`, `--pkce`, `--device`, `--issuer`, `--client-id`,
-`--callback-url`, `--scope`), and `config {set-context,use-context,get-contexts,show,path}`
-all exist with the documented flags. `auth whoami` succeeds end to end against the live CP
-(see getting-started §3). No discrepancies.
+Confirmed against `--help` and a live `whoami`: global `--server`/`--org`/`--team`/`--context`
+resolution; `auth {login,whoami,token,logout}` with `--token`/`--token-stdin`/`--pkce`/`--device`
+(alias `--device-code`)/`--issuer`/`--client-id`/`--callback-url`/`--scope`; and
+`config {set-context,use-context,get-contexts,show,path}` all exist with the documented flags.
+`auth whoami` succeeds end to end against the live CP. No discrepancies.
 
-## Proof: `docs/how-to/jwt-auth-rate-limit-route.md`  ⚠ discrepancy (already filed #121)
+## Proof: `docs/how-to/jwt-auth-rate-limit-route.md`  (#121 **fixed**)
 
-Built the listener and route-config from the doc's **exact** JSON against the live CP.
+Built the cluster, route-config and listener from the doc's **exact** JSON.
 
 | Command | Result | Excerpt |
 |---|---|---|
-| create `edge` listener with §1 `http_filters` (`jwt_auth` providers + `requirement_map`, `local_rate_limit` `stat_prefix`+`token_bucket`) | pass | `created "edge" (revision 1)` |
-| create `api-routes` route-config with §2 body **verbatim** (`"match": { "prefix": "/payments" }`) | **discrepancy (exit 4, 422)** | `match.prefix: invalid type: string "/payments", expected struct variant PathMatch::Prefix` |
-| create same route-config with corrected `{"prefix":{"prefix":"/payments"}}` | pass | `created "api-routes" (revision 1)` — confirms the `filter_overrides` JSON itself is valid |
+| create `payments-backend` cluster (prereq) | pass | `created "payments-backend" (revision 1)` |
+| create `api-routes` route-config with §2 body **verbatim** (`"match": { "prefix": { "prefix": "/payments" } }`) | **pass (exit 0)** | `created "api-routes" (revision 1)` |
+| create `edge` listener with §1 `http_filters` (jwt_auth providers+requirement_map, local_rate_limit) | pass | `created "edge" (revision 1)` |
 | §3 `listener update edge --revision 1 --file <spec-only>` | pass | `updated "edge" (revision 2)` |
-| §3 re-run with stale `--revision 1` | pass-as-documented | `error (revision_mismatch): listener "edge" is at revision 2, you supplied 1` (→ 409) |
+| §3 `route update api-routes --revision 1 --file <spec-only>` | pass | `updated "api-routes" (revision 2)` |
+| §3 re-run with stale `--revision 1` | pass-as-documented | `error (revision_mismatch): route config "api-routes" is at revision 2, you supplied 1` (→ 409) |
 
-**Defect (#121, reproduced):** §2 / line 118 prints `"match": { "prefix": "/payments" }`.
-`PathMatch` is an externally-tagged enum with struct variants
-(`crates/fp-domain/src/gateway/route_config.rs:67`); the live serialized form is nested —
-`route get local-routes --json` shows `"match": { "prefix": { "prefix": "/" } }`.
-Classification `doc-defect`, severity `major`. The rest of the how-to (JWT chain, rate
-limit, `filter_overrides`, the If-Match flow) is correct. No additional fix needed beyond
-#121.
+**#121 confirmed fixed:** the doc now prints the nested `PathMatch` form (line 83) and the
+control plane accepts it verbatim. §4 (live `401`/`429` through Envoy with a real JWKS issuer)
+is **blocked by environment** (no IdP); the filter chain itself is accepted and validated.
 
-> Note: the §3 PATCH/`update` body is `spec`-only (`{ "spec": { … } }`), exactly as the
-> doc states ("Creating fresh resources is a `POST` … with `{ "name": …, "spec": … }`").
-> A body carrying `name` is correctly rejected (`unknown field \`name\`, expected \`spec\``);
-> this matches the doc and is **not** a defect.
-
-## Gap-filling pass: how-to data-plane steps (mTLS + agent)
-
-A follow-up pass tried to close the remaining inspection-only/blocked steps in the
-how-to pages by standing up the full mTLS path. Findings:
-
-- **mTLS xDS works end to end.** Setting the `FLOWPLANE_XDS_TLS_*` triad makes the CP
-  use real mTLS xDS even in dev mode (`crates/flowplane/src/serve.rs:118` →
-  `serve_mtls` + cert-registry resolver; log: `xDS ADS server starting (mTLS,
-  certificate-registry binding)`). A real Envoy launched from a `--mode mtls`
-  bootstrap, presenting the issued client cert, connected over mTLS and pulled
-  resources — `cds: added/updated 2 cluster(s)`, `lds: add/update listener 'edge' /
-  'local'`. This confirms the headline claim of `register-dataplane-mtls.md` (the cert
-  the CP issues actually authenticates the dataplane's xDS stream).
-- **NEW defect (#123): the AI route's generated cluster is NACKed by Envoy.** With the
-  AI how-to's `chat-route` present, Envoy rejects its cluster:
-  `Error adding/updating cluster(s) ai-chat-route-b1: 'auto_sni_san_validation' was
-  configured without a validation context` (durably recorded by `ops xds nacks`;
-  `ops xds status` → `HEALTH degraded`). Root cause is in code, not docs
-  (`crates/fp-core/src/services/ai.rs:1120-1123` materializes
-  `auto_sni_san_validation: true` with `validation_context_sds_secret_name: None`;
-  `crates/fp-xds/src/translate.rs:668-688` emits exactly that). The same pattern exists
-  in `expose.rs:94-97` (TLS upstreams) and `route_generation.rs:284-287`. Classification
-  `code-defect`, severity `major`. A plaintext `expose http://…` upstream is unaffected
-  (no `upstream_tls`), which is why the getting-started data path serves `200`.
-- **Blocked by environment (not by the docs): the live `fp-agent` run.** This sandbox
-  SIGTERMs any shell call that keeps a server child (Envoy) alive more than a few
-  seconds, so `register-dataplane-mtls.md` §3–§4 (`fp-agent` → `/healthz` → heartbeat
-  advancing) could not be observed across a full poll cycle. The agent's flag/env
-  surface matches source, and the mTLS transport it would use is the same one verified
-  above; only the live `/healthz` + heartbeat assertion is unverified here. Stated as
-  blocked rather than assumed.
-
-## Proof: `docs/how-to/register-dataplane-mtls.md`  (§2 cert issue **now executed**)
+## Proof: `docs/how-to/register-dataplane-mtls.md`
 
 | Command | Result | Excerpt |
 |---|---|---|
 | §1 `dataplane create dp-local` | pass | exercised under getting-started |
-| §2 `dataplane cert issue dp-local --ttl-hours 24` — CP started **without** the issuer CA | pass-as-documented | `error (invalid_config): … set FLOWPLANE_CERT_ISSUER_CA_CERT_PATH and FLOWPLANE_CERT_ISSUER_CA_KEY_PATH` (the exact documented prereq) |
-| §2 `dataplane cert issue dp-local --ttl-hours 24` — CP started **with** the issuer CA | **pass (exit 0)** | response has `certificate_pem`, `private_key_pem`, `ca_certificate_pem`, `certificate.spiffe_uri` |
+| §2 `dataplane cert issue dp-local` — CP started **without** the issuer CA | pass-as-documented | `error (invalid_config): an internal error occurred …` + hint `-> set FLOWPLANE_CERT_ISSUER_CA_CERT_PATH and FLOWPLANE_CERT_ISSUER_CA_KEY_PATH …` |
+| §2 `dataplane cert issue dp-local --ttl-hours 24` — CP started **with** the issuer CA | **pass (exit 0)** | `certificate_pem`, `private_key_pem`, `ca_certificate_pem` all present |
 | §2 `dataplane cert list` | pass | issued cert listed with serial + SPIFFE URI; `expires_at` = `issued_at` + 24h |
-| §4 `dataplane get dp-local` | pass | `last_heartbeat_at: None` (no agent reporting — as documented) |
-| §4 `stats overview` / `ops xds status` | pass | as above |
+| §4 `dataplane get dp-local` | pass | `last_heartbeat_at: None` (no agent — as documented) |
 
-The issued SPIFFE URI is exactly the documented format
-`spiffe://<trust-domain>/org/<org-id>/team/<team-id>/proxy/<dataplane-id>` with the
-default trust domain:
+Issued SPIFFE URI matches the documented format with default trust domain `flowplane.local`:
 
 ```text
-spiffe://flowplane.local/org/00000000-0000-000f-1071-000000000001/team/00000000-0000-000f-1071-000000000002/proxy/019ee7a7-00df-7d91-8007-0e0978f7f265
+spiffe://flowplane.local/org/00000000-0000-000f-1071-000000000001/team/00000000-0000-000f-1071-000000000002/proxy/019eec60-5d36-7dd0-b19e-92aaba3104c1
 ```
 
-The agent connection (§3) and `GET /healthz` (§4) were not run (no live `fp-agent`
-process wired here), but the agent flag/env table matches `crates/fp-agent/src/main.rs`
-(`--cp-endpoint`/`FLOWPLANE_AGENT_CP_ENDPOINT`, `--tls-cert-path`/`_TLS_CERT_PATH`,
-`--tls-ca-path`/`_TLS_CA_PATH`, `--tls-server-name` default `localhost`, health bind
-`127.0.0.1:19902`). No discrepancies. (Note: this doc links into `../../spec/` — covered by
-the open governance issue #118, not re-filed.)
+§3 (live `fp-agent` → `/healthz` → heartbeat advancing) is **blocked by environment** (the
+sandbox reaps long-lived children). The agent flag/env surface matches source
+(`configuration.md` / `cli.md`). The spec links are now under "Design references (optional)"
+(#118 policy). No discrepancies.
 
-## Proof: `docs/how-to/ai-gateway-route-budget.md`  ⚠ prereq gap (already filed #122)
+## Proof: `docs/how-to/ai-gateway-route-budget.md`  (#122 **fixed**, #123 **fixed**; 1 new minor)
 
 | Command | Result | Excerpt |
 |---|---|---|
-| `secret create` while CP ran **without** the encryption key | discrepancy | `error (unavailable): secret encryption key is not configured` (exit 6) |
+| Prereq: `secret create` while CP ran **without** the encryption key | pass-as-documented | `error (unavailable): secret encryption key is not configured` (exit 6) — exactly what the doc's Prereqs now warn about (**#122 fixed**) |
 | `secret create` after restarting CP **with** `FLOWPLANE_SECRET_ENCRYPTION_KEY` | pass | `created "openai-key" (revision 1)` |
-| §1 `ai providers create` | pass | `created "openai-prod" (revision 1)` |
+| §1 `ai providers create` (TLS `base_url`) | pass | `created "openai-prod" (revision 1)` |
 | §2 `ai routes create` | pass | `status: active`; `materialized` → `cluster_names ["ai-chat-route-b1"]`, `listener_name ai-chat-route-listener`, `route_config_name ai-chat-route-routes` |
+| §2 generated cluster loadable by Envoy | **pass (#123 fixed)** | real Envoy CDS `added/updated 3 cluster(s)`; admin `/clusters` lists `ai-chat-route-b1::`; `ops xds nacks` → `no rows`, `RECENT NACK COUNT 0`, **no** `auto_sni_san_validation` rejection |
 | §3 `ai budgets create` (shadow) | pass | `created "chat-budget" (revision 1)` |
-| §3 `ai budgets update --revision 1` → enforcing | pass | `updated "chat-budget" (revision 2)` |
-| §4 `ai usage --provider-id …` | pass | `no rows` (no traffic) |
 | §4 chat request through `:19000` | **blocked** | needs live OpenAI provider + egress |
-| §2 generated cluster loadable by Envoy | **discrepancy (NACK)** | Envoy rejects `ai-chat-route-b1`: `'auto_sni_san_validation' was configured without a validation context` — see #123 / gap-filling pass |
 
-**Defect (#123, new):** the §2 AI cluster (TLS `base_url`) is materialized with
-`auto_sni_san_validation: true` and no validation context, which Envoy NACKs — the route
-shows `status: active` on the CP but never loads on the dataplane. Classification
-`code-defect`, severity `major`. Details in the gap-filling section above.
+**#123 confirmed fixed:** the TLS-upstream AI cluster now materialises with a default
+validation context (verify-by-default, `FLOWPLANE_UPSTREAM_CA_BUNDLE`), and
+`auto_sni_san_validation` is only set when a validation context is present
+(`crates/fp-xds/src/translate.rs:710-723`). A live Envoy loads `ai-chat-route-b1` cleanly.
 
-**Defect (#122, reproduced):** the `unavailable` error is correct, documented use-time
-behavior (`configuration.md` constraint ⁷), but neither the AI how-to's Prereqs nor the
-getting-started setup it builds on states the CP must run with
-`FLOWPLANE_SECRET_ENCRYPTION_KEY` for the required `secret create` to succeed.
-Classification `doc-defect`, severity `minor`. No additional fix needed beyond #122.
+**NEW (minor, `doc-defect`):** the how-to says "create a secret holding the provider API
+key — `flowplane secret create --file secret.json`" but **never shows the contents of
+`secret.json`**, and the shape (`{"name":…,"spec":{"type":"generic_secret","secret":"<base64>"}}`)
+is not documented anywhere in `docs/`. Completing the step required three trial-and-error
+attempts guided only by error hints (`missing field \`type\``; then `generic secret must be
+base64`). Filed below.
 
 ## Proof: `docs/how-to/learn-and-publish-api-spec.md`
 
@@ -268,16 +223,32 @@ Classification `doc-defect`, severity `minor`. No additional fix needed beyond #
 |---|---|---|
 | `api create orders-api` | pass | `created api/v1/teams/default/api-definitions` |
 | §1 `learn start … --api orders-api --target-sample-count 1000` | pass | `created "orders-learn-2026-06"` |
-| §2 `learn get` | pass | `status: capturing`, `sample_count/path_count/byte_count = 0` |
-| `learn list` | pass | row present (`STATUS capturing`, `TARGET SAMPLE COUNT 1000`) |
+| §2 `learn get` | pass | `STATUS capturing`, `SAMPLE/PATH/BYTE COUNT 0`, `TARGET SAMPLE COUNT 1000` |
+| `learn list` | pass | row present |
 | §3 `learn stop` | pass (exit 0) | session transitions |
-| §4 `learn generate-spec` (no traffic) | pass-as-documented | `error (validation_failed): learning session has no raw observations to aggregate` — the exact error §2/§4 say to expect |
-| §5 `api spec publish orders-api 3` | pass-as-documented | `error (not_found): spec version "3" not found` (no spec generated; command shape correct) |
-| §6 `api status` / `mcp status` | pass | `tool_count 0`, `published_spec_version_id None`; MCP status table renders (`STATIC TOOL COUNT 35`) |
+| §4 `learn generate-spec` (no traffic) | pass-as-documented | `error (validation_failed): learning session has no raw observations to aggregate` |
+| §5 `api spec publish orders-api 3` | pass-as-documented | `error (not_found): spec version "3" not found` |
+| §6 `api status` / `mcp status` | pass | `TOOL COUNT 0`; MCP status renders (`STATIC TOOL COUNT 35`) |
 
 The full publish path needs captured traffic (Envoy + learning ExtProc + real requests),
-which was not driven; both documented failure messages reproduced verbatim. (This doc
-links into `../../spec/06-learning.md` — covered by #118.)
+which was not driven; both documented failure messages reproduce verbatim. The doc's
+endpoints/CLI (singular `spec-version`; `learn discover` plural `spec-versions`) match
+`cli.md` and `rest-api.md`. No discrepancies.
+
+## Proof: `docs/how-to/bootstrap-platform.md`  (new — all pass)
+
+Ran a fresh **non-dev** instance against a clean database.
+
+| Step / Command | Result | Excerpt |
+|---|---|---|
+| §2 fail-closed: uninitialized, non-dev, **no** token | pass-as-documented | `Error: instance is uninitialized and no bootstrap token was supplied; set FLOWPLANE_BOOTSTRAP_TOKEN or FLOWPLANE_BOOTSTRAP_TOKEN_FILE …` (refuses to start) |
+| token too short (`<32` chars) | pass-as-documented | `Error: the supplied bootstrap token is too short; it must be at least 32 characters after trimming whitespace` |
+| token never logged | pass | `grep` for the token value in CP logs → `0` matches |
+| §3 `POST /api/v1/bootstrap/initialize` | pass | `{"org_id":"…","admin_user_id":"…"}` / `STATUS=200` |
+| §4 replay initialize | pass-as-documented | `{"code":"conflict","message":"this instance is already initialized"}` / `STATUS=409` |
+| `GET /api/v1/bootstrap/status` (public) | pass | `{"initialized":true}` / `STATUS=200` |
+
+No discrepancies.
 
 ## Proof: `docs/reference/cli.md`
 
@@ -285,11 +256,13 @@ links into `../../spec/06-learning.md` — covered by #118.)
 
 | Check | Result | Excerpt |
 |---|---|---|
-| top-level command set | pass | `serve db openapi auth config org team cluster listener route api mcp ai learn secret dataplane expose unexpose stats ops apply completion version` — matches doc exactly (plus clap's auto `help`) |
-| global options | pass | `--context`, `-o/--output {table,json,yaml,wide}`, `--dry-run`, `--revision`, `--timeout` (default 30), `--out` all present |
+| top-level command set | pass | `serve db openapi auth config org team cluster listener route api mcp ai learn secret dataplane expose unexpose stats ops apply completion version` — matches doc (plus clap `help`) |
+| global options | pass | `--context`, `--server`, `--team`, `--org`, `-o/--output {table,json,yaml,wide}`, `--json`, `--no-color`, `--quiet`, `--verbose`, `--dry-run`, `-y/--yes`, `--revision`, `--timeout` (default 30), `--out` all present |
+| `dataplane` subcommands | pass | `list get create telemetry bootstrap cert` |
 | `dataplane cert` | pass | `list register issue revoke` |
+| `learn` subcommands | pass | `discover start list get stop generate-spec cancel` |
+| `learn discover` | pass | `start list status stop generate-spec` |
 | `ai` | pass | `providers routes budgets usage` |
-| `completion bash` | pass | emits `_flowplane() { … }` (the `head`/SIGPIPE exit 101 is a broken-pipe artifact, not a command failure) |
 
 No discrepancies.
 
@@ -297,92 +270,101 @@ No discrepancies.
 
 | Check | Result | Excerpt |
 |---|---|---|
-| env-var catalogue vs source | pass | `grep -rhoE 'FLOWPLANE_[A-Z0-9_]+' crates/` → every runtime var is documented; only `FLOWPLANE_TEST_DATABASE_URL` (test-only) is excluded, as intended |
-| ② D-008: no TLS + no `FLOWPLANE_API_INSECURE` → refuse start | pass | `Error: invalid_config: the API listener has no TLS material and plaintext was not explicitly allowed` |
-| ⑦ secret key validated at **use time** as `unavailable` | pass | reproduced (AI how-to / #122) |
-| cert-issuer prereq surfaced on use | pass | issuance without `FLOWPLANE_CERT_ISSUER_CA_*` → `invalid_config` pointing at those exact vars |
+| "Every `FLOWPLANE_*` variable" claim | pass | `grep -rhoE 'FLOWPLANE_[A-Z0-9_]+' crates/` ∖ docs = only `FLOWPLANE_TEST_DATABASE_URL` (test-only, intentionally excluded). `FLOWPLANE_UPSTREAM_CA_BUNDLE` present (**#132 fixed**); bootstrap-token vars present (**#113**) |
+| ² D-008: no TLS + no `FLOWPLANE_API_INSECURE` | pass (source/behaviour) | startup refuses without the flag |
+| ⁷ secret key validated at **use time** as `unavailable` | pass | reproduced (AI prereq, exit 6 / 503) |
+| cert-issuer prereq surfaced on use | pass | issuance without `FLOWPLANE_CERT_ISSUER_CA_*` → `invalid_config` naming those exact vars |
+| ¹³ bootstrap fail-closed | pass | reproduced under bootstrap-platform above |
 
-## Proof: `docs/reference/errors.md`
+## Proof: `docs/reference/errors.md`  (1 new minor)
 
-Live responses confirm the envelope and status mapping:
+Status mapping verified against source (`crates/fp-api/src/error.rs:34-45`) — all 13 codes
+match the table exactly (e.g. `validation_failed`→400, `quota_exceeded`→422,
+`invalid_config`/`internal`→500, `unavailable`→503). Live responses confirm the envelope:
 
 | Code | Status | How observed |
 |---|---|---|
-| `unauthorized` | 401 | `{"code":"unauthorized","message":"missing bearer token","hint":"authenticate with \`flowplane auth login\` and retry","request_id":…}` |
-| `validation_failed` | 400/422 | malformed route body / generic-secret shape |
+| `unauthorized` | 401 | `{"code":"unauthorized","message":"missing bearer token","hint":"…","request_id":…}` |
+| `validation_failed` | 400 | empty `stat_prefix` → `{"code":"validation_failed",…}` / `STATUS=400`; missing `If-Match` → same |
 | `not_found` | 404 | `cluster "nonexistent" not found`; `spec version "3" not found` |
-| `revision_mismatch` | 409 | stale `If-Match` on `listener update` |
-| `invalid_config` | redacted | cert-issue without CA → `an internal error occurred; report the request_id…` + actionable hint |
-| `unavailable` | 503 | missing secret key |
+| `revision_mismatch` | 409 | stale `--revision` on `route update` |
+| `conflict` | 409 | bootstrap replay |
+| `invalid_config` | 500/redacted | cert-issue without CA → `an internal error occurred; report the request_id…` + actionable hint |
+| `unavailable` | 503 | missing secret key (CLI exit 6) |
 
-Envelope `{code, message, hint?, details?, request_id}` with `hint`/`details` omitted when
-absent — confirmed.
-
-## Proof: `docs/reference/rest-api.md`
-
-| Check | Result | Excerpt |
-|---|---|---|
-| operational endpoints public | pass | `/healthz`,`/readyz`,`/metrics`,`/api-docs/openapi.json`,`/api/v1/bootstrap/status` → all `200` without auth |
-| catalogue completeness | pass | all 62 generated OpenAPI paths appear in the catalogue (programmatic diff: `missing from rest-api.md: NONE`) |
-| If-Match convention | pass | revision flow verified via JWT how-to §3 |
+**NEW (minor, `code-defect`):** a request body that fails JSON **type** deserialization is
+returned as a **bare `422`** with body `Failed to deserialize the JSON body into the target
+type: …` and **no `code` field** — i.e. outside the documented envelope. This contradicts
+errors.md ("**Every** Flowplane API failure is returned as a single stable JSON envelope
+carrying a machine-readable `code`") and the table that maps `422` exclusively to
+`quota_exceeded`. Semantically-invalid-but-well-typed bodies and missing `If-Match` correctly
+return the envelope at `400`; only the deserialization path leaks the framework default. Root
+cause: handlers use the stock `axum::Json<T>` extractor with no rejection wrapping
+(`crates/fp-api/src/*_api.rs`). Filed below.
 
 ## Proof: `docs/reference/filters.md`
 
 | Check | Result | Excerpt |
 |---|---|---|
+| chain invariant: each `type` at most once | pass | duplicate `local_rate_limit` → `error (validation_failed): duplicate filter type "local_rate_limit" in the chain` (matches documented message) |
 | `jwt_auth` + `local_rate_limit` chain entries accepted | pass | `edge` listener created from the documented field shapes |
-| chain invariant: each `type` at most once | pass | duplicate `local_rate_limit` → `error (validation_failed): duplicate filter type "local_rate_limit" in the chain` (matches the documented message) |
-| `jwt_auth` reference-only per-route override | pass | route-level `{ "type":"jwt_auth", "requirement_name":"require-auth0" }` accepted |
-| `local_rate_limit` full override per-route | pass | route-level `LocalRateLimitConfig` accepted |
+| `jwt_auth` reference-only per-route override | pass | route-level `{ "type":"jwt_auth","requirement_name":"require-auth0" }` accepted (in `api-routes`) |
+| `local_rate_limit` full override per-route | pass | route-level `LocalRateLimitConfig` accepted (in `api-routes`) |
 
 No discrepancies.
 
-## Issues Raised Or Updated
+## Proof: `docs/reference/rest-api.md`
 
-New this pass:
+| Check | Result | Excerpt |
+|---|---|---|
+| operational endpoints public | pass | `/api/v1/bootstrap/status` → `200` without auth |
+| catalogue completeness | pass | programmatic diff of all 62 generated OpenAPI paths vs the catalogue: `missing-from-doc: 0` |
+| `If-Match` convention (`validation_failed`→400, `revision_mismatch`→409) | pass | verified live (errors.md table above) |
+| Bearer / `fpat_` and `X-Flowplane-Org` selector | pass (source/whoami) | `whoami` reports `ORG SELECTOR REQUIRED false` |
 
-- **#123** — `[docs-verify] docs/how-to/ai-gateway-route-budget.md — generated AI cluster
-  is NACKed by Envoy (auto_sni_san_validation without a validation context)`. Severity
-  `major` · Classification `code-defect`. Found while filling the how-to data-plane gaps;
-  also affects `expose` with a TLS upstream and route-generation.
+(Note: the 422 deserialization leak above also affects rest-api.md's "Errors always use the
+envelope" statement — same root cause, filed once.)
 
-Reproduced this pass (already open, not re-filed):
+## Proof: operator runbooks (inspection — epic non-goals)
 
-- **#121** — `jwt-auth-rate-limit-route.md` route `match` PathMatch shape. `major` ·
-  `doc-defect`. Reproduced verbatim (422 `expected struct variant PathMatch::Prefix`).
-- **#122** — `ai-gateway-route-budget.md` secret prereq omits
-  `FLOWPLANE_SECRET_ENCRYPTION_KEY`. `minor` · `doc-defect`. Reproduced verbatim
-  (`unavailable: secret encryption key is not configured`).
+| Doc | Check | Result |
+|---|---|---|
+| `aws-secure-deployment.md` | `flowplane … dataplane cert issue` (the old #120) | **#120 fixed** — line 121 uses `dataplane cert issue`, a real subcommand |
+| `production-readiness.md` | command shapes (`db migrate`, `route generate --from-spec --listener-port`, `route apply`, `api spec publish`, `mcp enable --api`, `learn discover …`) | all resolve to real CLI subcommands/flags via `--help` |
+| `secret-kek-rotation.md` | env-var procedure + `secret rotate` path | `secret rotate` exists (`--file`/`--revision`); KEK env vars match `configuration.md` |
 
-Carried over (not in this run's executable scope or environment-specific):
+## Prior defects — re-verification (all CLOSED upstream)
 
-- **#118** (user docs link into `spec/`/`internal/` despite the standalone policy) — still
-  accurate; the in-scope how-tos `register-dataplane-mtls.md` and
-  `learn-and-publish-api-spec.md` do link into `../../spec/`. Governance issue; open.
-- **#119** (PostgreSQL helper) — **does not reproduce here** (helper + documented URL both
-  work). Environment-specific; left open, not re-filed.
-- **#120** (`aws-secure-deployment.md` top-level `cert` subcommand) — `aws-secure-deployment.md`
-  is an operator runbook outside the epic #100 executable set; previously filed, still
-  accurate.
+| Issue | Was | This pass |
+|---|---|---|
+| #118 | user docs link into `spec/`/`internal/` despite standalone policy | **Resolved** — `docs/README.md` now permits optional spec links under "Further reading"/"Design references"; in-scope how-tos comply |
+| #119 | README/tutorial PostgreSQL helper fails on missing `postgres` role | **Resolved** — README, getting-started §1, and `internal/dev-dataplane.md` §1 document the role caveat + macOS steps; helper works here |
+| #120 | `aws-secure-deployment.md` used top-level `cert issue` | **Fixed** — now `dataplane cert issue` |
+| #121 | `jwt-auth-rate-limit-route.md` wrong `PathMatch` shape | **Fixed** — nested `prefix` accepted verbatim |
+| #122 | AI how-to omitted `FLOWPLANE_SECRET_ENCRYPTION_KEY` prereq | **Fixed** — prereq now stated; `unavailable` reproduces as the doc warns |
+| #123 | AI cluster NACKed (`auto_sni_san_validation` w/o validation context) | **Fixed** — verify-by-default; live Envoy loads `ai-chat-route-b1`, 0 NACKs |
+| #132 | `FLOWPLANE_UPSTREAM_CA_BUNDLE` missing from config catalogue | **Fixed** — row present |
+
+## Issues Raised This Pass
+
+New (both `minor`):
+
+- **#138** — `[docs-verify] errors.md / rest-api.md — malformed JSON body returns a bare 422
+  outside the documented error envelope` · `code-defect` · `minor`.
+- **#139** — `[docs-verify] ai-gateway-route-budget.md — secret.json contents are never shown
+  (step is not completable as written)` · `doc-defect` · `minor`.
 
 ## Counts
 
-- New issues raised this pass: **1** (#123, `code-defect` / `major`).
-- Defects reproduced this pass: 2 (#121, #122) — by severity `major` 1 · `minor` 1; by
-  classification `doc-defect` 2 · `code-defect` 0 · `ambiguous` 0.
-- All defects (new + reproduced) by classification: `doc-defect` 2 · `code-defect` 1 ·
-  `ambiguous` 0; by severity: `major` 2 · `minor` 1.
-- Previously-blocked steps now **executed and passing**: the live Envoy data path
-  (getting-started §6–§7, dev-dataplane §8–§9), `dataplane cert issue`
-  (register-dataplane §2), and **mTLS xDS** end to end (real Envoy attaches with the
-  issued client cert and pulls config).
-- Still blocked **by the environment** (not the docs): the live `fp-agent` run
-  (`register-dataplane-mtls` §3–§4) — this sandbox reaps long-lived Envoy children, so
-  the agent `/healthz` + heartbeat could not be observed; the AI chat round-trip (live
-  provider) — and, independently, the AI cluster cannot load on Envoy at all (#123).
-- Docs executed end-to-end (DB + Envoy backed): README, getting-started, dev-dataplane,
-  cli-auth-and-contexts, jwt-auth-rate-limit-route, register-dataplane-mtls,
-  ai-gateway-route-budget, learn-and-publish-api-spec, and all 5 reference docs.
-- Remaining blocked / inspection-only steps: the AI chat request through Envoy (live
-  OpenAI provider + egress) and the JWT `401/429` data-plane verification (live JWKS
-  issuer). No workarounds that diverge from the docs were applied.
+- New issues raised this pass: **2** — by classification `code-defect` 1 · `doc-defect` 1;
+  by severity `minor` 2.
+- Prior defects re-verified as fixed/resolved: **7** (#118, #119, #120, #121, #122, #123, #132).
+- Docs executed end-to-end (DB + Envoy backed): README, getting-started (incl. live curl +
+  unexpose), internal/dev-dataplane, cli-auth-and-contexts, jwt-auth-rate-limit-route (§1–§3),
+  register-dataplane-mtls (incl. live cert issue), ai-gateway-route-budget (incl. live Envoy
+  load of the AI cluster), learn-and-publish-api-spec, bootstrap-platform, and all 5 reference
+  docs.
+- Blocked **by the environment** (not the docs): live `fp-agent` `/healthz`+heartbeat
+  (register-dataplane-mtls §3–§4; sandbox reaps long-lived children); JWT `401/429`
+  data-plane verification (no IdP); AI chat round-trip (no OpenAI egress). No workarounds that
+  diverge from the docs were applied.
