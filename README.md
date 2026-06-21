@@ -48,6 +48,18 @@ Run the live Envoy smoke test:
 scripts/e2e-envoy.sh
 ```
 
+> These commands expect a PostgreSQL with a `postgres` superuser. The
+> `scripts/ensure-postgres.sh` helper assumes a Linux/container setup (`service postgresql
+> start`, `su postgres`) and does **not** create that role; on macOS/Homebrew there is no
+> `postgres` role by default — create it first
+> (see [docs/dev-dataplane.md](docs/dev-dataplane.md#1-start-postgresql)).
+>
+> - Workspace tests read the DB URL from `FLOWPLANE_TEST_DATABASE_URL` (shown above).
+> - `scripts/e2e-envoy.sh` reads `FLOWPLANE_E2E_PG_ADMIN_URL` and `FLOWPLANE_E2E_DATABASE_URL`
+>   (defaults `postgres://postgres:postgres@127.0.0.1:5432/...`), and also invokes
+>   `ensure-postgres.sh` + `su postgres`, so it is Linux/container-oriented; on macOS run a
+>   local Postgres yourself and set those two variables rather than relying on the helper.
+
 Print the generated REST contract:
 
 ```bash
