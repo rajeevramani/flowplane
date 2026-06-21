@@ -44,6 +44,7 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH` | server | — | for issuance | Issuing CA certificate PEM path. |
 | `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH` | server | — | for issuance | Issuing CA private key PEM path. |
 | `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` | server | `flowplane.local` | no | SPIFFE trust domain for issued dataplane identities. |
+| `FLOWPLANE_UPSTREAM_CA_BUNDLE` | server | `/etc/ssl/certs/ca-certificates.crt` | no | CA bundle path Envoy uses to verify materialized TLS upstreams that name neither an SDS validation secret nor an explicit `ca_cert_file`. The control plane reads this value at xDS-translation time, but the file itself is read by Envoy/dataplane (it must exist on the dataplane host), not by the control plane. Per-cluster `insecure_skip_verify` opts a cluster out of verification. |
 | `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` | server | — | no | Comma-separated `host:port` allowlist for traffic discovery. |
 | `FLOWPLANE_MCP_ALLOWED_ORIGINS` | server | `http://localhost,http://127.0.0.1,http://[::1]` | no | Comma-separated allowed `Origin` values for the MCP endpoint. |
 | `FLOWPLANE_AGENT_ENVOY_ADMIN_URL` | agent | `http://127.0.0.1:9901` | no | Envoy admin base URL (usually loopback). |
