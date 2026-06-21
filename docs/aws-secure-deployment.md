@@ -127,7 +127,7 @@ Create the dataplane and issue a one-time cert response:
 
 ```bash
 flowplane dataplane create edge-local --team <team>
-flowplane --out .local/aws-dp-cert.json cert issue edge-local --team <team>
+flowplane --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <team>
 ```
 
 Write the PEM values to files:
