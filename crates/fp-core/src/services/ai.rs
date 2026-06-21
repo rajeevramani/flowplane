@@ -1120,7 +1120,9 @@ fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
         upstream_tls: use_tls.then_some(UpstreamTlsConfig {
             sni: Some(host),
             validation_context_sds_secret_name: None,
+            ca_cert_file: None,
             auto_sni_san_validation: true,
+            insecure_skip_verify: false,
         }),
         protocol: None,
         health_checks: None,

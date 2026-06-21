@@ -74,6 +74,9 @@ Server process:
 | MCP | `FLOWPLANE_MCP_ALLOWED_ORIGINS` |
 | Throttling/discovery | `FLOWPLANE_TENANT_WRITE_LIMIT_PER_MIN`, `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` |
 | Dataplane cert issuer | `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH`, `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH`, `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` |
+| Upstream TLS trust | `FLOWPLANE_UPSTREAM_CA_BUNDLE` (CA bundle path **in the Envoy/dataplane container** used to verify materialized TLS upstreams; default `/etc/ssl/certs/ca-certificates.crt`) |
+
+> **Upstream certificate verification (verify-by-default).** TLS upstreams that Flowplane materializes (AI providers, `flowplane expose https://…`, route-generation) verify the upstream server certificate against `FLOWPLANE_UPSTREAM_CA_BUNDLE`. A cluster may instead name an SDS validation secret (`validation_context_sds_secret_name`) or a per-cluster CA file (`ca_cert_file`). Verification can only be disabled per cluster by explicitly setting `insecure_skip_verify: true` — never the silent default (issue #125). The bundle path is resolved by **Envoy**, so the dataplane image must ship a CA bundle at that path (the default exists on Debian/Ubuntu via the `ca-certificates` package); otherwise Envoy rejects the cluster. The control plane cannot check the dataplane filesystem, so verify this when building/operating the dataplane image.
 
 CLI client:
 

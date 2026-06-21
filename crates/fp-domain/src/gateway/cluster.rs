@@ -138,8 +138,19 @@ pub struct UpstreamTlsConfig {
     pub sni: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_context_sds_secret_name: Option<String>,
+    /// Filesystem path (in the Envoy/dataplane container) to a PEM CA bundle used to verify the
+    /// upstream certificate. Alternative to `validation_context_sds_secret_name`. When neither is
+    /// set, the translator falls back to the default system CA bundle (verify-by-default); see
+    /// `upstream_tls_context`. Ignored when `insecure_skip_verify` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_file: Option<String>,
     #[serde(default)]
     pub auto_sni_san_validation: bool,
+    /// Explicit opt-out of upstream certificate verification. Default false: TLS upstreams verify
+    /// the server cert against a CA bundle. Set true only when the upstream cannot be verified and
+    /// the risk is accepted — this disables peer/SAN validation (issue #125).
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -393,6 +404,23 @@ impl ClusterSpec {
             if let Some(secret) = &tls.validation_context_sds_secret_name {
                 crate::identity::validate_name(secret)?;
             }
+            if let Some(ca) = &tls.ca_cert_file {
+                if tls.validation_context_sds_secret_name.is_some() {
+                    return Err(DomainError::validation(
+                        "upstream_tls validation source must be either ca_cert_file or validation_context_sds_secret_name, not both",
+                    ));
+                }
+                if ca.trim().is_empty() {
+                    return Err(DomainError::validation(
+                        "upstream_tls ca_cert_file must not be empty",
+                    ));
+                }
+                if ca.chars().any(char::is_control) {
+                    return Err(DomainError::validation(
+                        "upstream_tls ca_cert_file must not contain control characters",
+                    ));
+                }
+            }
         }
         for hc in self.health_checks.iter().flatten() {
             validate_health_check(hc)?;
@@ -527,6 +555,37 @@ mod tests {
     #[test]
     fn minimal_spec_validates() {
         assert!(minimal().validate().is_ok());
+    }
+
+    #[test]
+    fn upstream_tls_ca_cert_file_validation() {
+        let with_ca = |ca: Option<&str>, secret: Option<&str>| ClusterSpec {
+            upstream_tls: Some(UpstreamTlsConfig {
+                sni: Some("api.example.com".into()),
+                validation_context_sds_secret_name: secret.map(Into::into),
+                ca_cert_file: ca.map(Into::into),
+                auto_sni_san_validation: true,
+                insecure_skip_verify: false,
+            }),
+            ..minimal()
+        };
+        assert!(with_ca(Some("/etc/ssl/upstream-ca.pem"), None)
+            .validate()
+            .is_ok());
+        assert!(
+            with_ca(Some(""), None).validate().is_err(),
+            "empty ca_cert_file"
+        );
+        assert!(
+            with_ca(Some("/etc/\nca.pem"), None).validate().is_err(),
+            "control char"
+        );
+        assert!(
+            with_ca(Some("/etc/ssl/ca.pem"), Some("upstream-ca"))
+                .validate()
+                .is_err(),
+            "ca_cert_file and SDS secret are mutually exclusive"
+        );
     }
 
     #[test]
@@ -726,7 +785,9 @@ mod tests {
             upstream_tls: Some(UpstreamTlsConfig {
                 sni: Some("api.example.com".into()),
                 validation_context_sds_secret_name: Some("upstream-ca".into()),
+                ca_cert_file: None,
                 auto_sni_san_validation: true,
+                insecure_skip_verify: false,
             }),
             protocol: Some(UpstreamProtocol::Grpc),
             health_checks: Some(vec![
