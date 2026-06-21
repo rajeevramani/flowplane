@@ -26,7 +26,7 @@ nothing silently skipped.
 
 ## Coverage
 
-Full traceability in `scripts/e2e/COVERAGE.md`: every S1–S10 capability and every abuse-matrix row
+Full traceability in `COVERAGE.md`: every S1–S10 capability and every abuse-matrix row
 maps to a passing `live:` phase, a named `cargo:` test, or a named `out-of-scope` boundary. Live
 phases (P1 basic ADS, P1a AI inject/failover/budget/usage, P1d streaming-failover boundary, P1e
 malformed-provider, P1b learning, P1c discovery, P2 CP-restart, P3 cross-team isolation, P4 local
