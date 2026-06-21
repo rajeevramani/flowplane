@@ -13,9 +13,17 @@ For the full command surface and flags, see [`../reference/cli.md`](../reference
 ## Prereqs
 
 The CLI is authenticated and scoped to your team (see
-[`cli-auth-and-contexts.md`](./cli-auth-and-contexts.md)), and you have created a secret
-holding the provider API key — `flowplane secret create --file secret.json` — and noted
-its UUID for `credential_secret_id` below.
+[`cli-auth-and-contexts.md`](./cli-auth-and-contexts.md)).
+
+The control plane must be running with `FLOWPLANE_SECRET_ENCRYPTION_KEY` set (a 32-byte
+raw or base64 key). Secrets are encrypted at rest, so `flowplane secret create` fails with
+`error (unavailable): secret encryption key is not configured` if the server was started
+without it — the dev getting-started setup omits this key, so set it before this step (see
+[`../reference/configuration.md`](../reference/configuration.md), constraint ⁷).
+
+With that key set, create a secret holding the provider API key —
+`flowplane secret create --file secret.json` — and note its UUID for `credential_secret_id`
+below.
 
 ## 1. Create a provider
 
