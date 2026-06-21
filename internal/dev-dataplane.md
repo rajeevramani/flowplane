@@ -1,10 +1,8 @@
 # Dev Control Plane and Dataplane Runbook
 
-This is the current manual V2 path for validating the core gateway loop before S8 learning work
-continues. It intentionally documents the rough edges as they exist today.
+This is the current manual V2 path for validating the core gateway loop before S8 learning work continues. It intentionally documents the rough edges as they exist today.
 
-Do not use this as a production deployment guide. Dev mode uses plaintext API/xDS and a boot-local
-development token. Non-dev xDS is mTLS-only.
+Do not use this as a production deployment guide. Dev mode uses plaintext API/xDS and a boot-local development token. Non-dev xDS is mTLS-only.
 
 ## Prerequisites
 
@@ -14,17 +12,13 @@ development token. Non-dev xDS is mTLS-only.
 - `python3`
 - Envoy, either as a local `envoy` binary or Docker running an Envoy image
 
-On macOS, prefer a local Envoy binary for this manual path. Docker host networking is not reliable
-across all Docker Desktop setups.
+On macOS, prefer a local Envoy binary for this manual path. Docker host networking is not reliable across all Docker Desktop setups.
 
 ## Dataplane Lifecycle Decision
 
-Before S8 learning resumes, the supported V2 dataplane lifecycle is manual local Envoy started from
-`flowplane dataplane bootstrap` output. V2 does not currently provide `dataplane up/down/status`.
+Before S8 learning resumes, the supported V2 dataplane lifecycle is manual local Envoy started from `flowplane dataplane bootstrap` output. V2 does not currently provide `dataplane up/down/status`.
 
-That is intentional for this phase: it keeps the product contract on registered dataplanes, xDS/SDS,
-and persisted diagnostics instead of porting V1's compose orchestration. A V2-native lifecycle
-wrapper can be added later in packaging/S12 if the validated smoke path needs it.
+That is intentional for this phase: it keeps the product contract on registered dataplanes, xDS/SDS, and persisted diagnostics instead of porting V1's compose orchestration. A V2-native lifecycle wrapper can be added later in packaging/S12 if the validated smoke path needs it.
 
 ## 1. Start PostgreSQL
 
@@ -34,8 +28,7 @@ The helper is idempotent:
 scripts/ensure-postgres.sh
 ```
 
-It ensures the `flowplane_dev` database exists and sets the local `postgres` password to
-`postgres`.
+It ensures the `flowplane_dev` database exists and sets the local `postgres` password to `postgres`.
 
 > **Prerequisite:** `scripts/ensure-postgres.sh` targets a Linux / container PostgreSQL
 > that has a `postgres` superuser role (it uses `service postgresql start` and `su postgres`).
@@ -94,8 +87,7 @@ Dev mode seeds:
 
 ## 4. Export CLI Context
 
-Copy the full `dev_token` value from the CP logs. The token is valid for this CP process only; if
-you restart the CP, export the new token.
+Copy the full `dev_token` value from the CP logs. The token is valid for this CP process only; if you restart the CP, export the new token.
 
 ```bash
 export FLOWPLANE_SERVER=http://127.0.0.1:8096
@@ -148,9 +140,7 @@ This creates a normal cluster, route config, and listener through the V2 service
   --public-base-url http://127.0.0.1:10001
 ```
 
-The loopback `--public-base-url` is a local-dev hint for this runbook. Non-local deployments
-should set it to the dataplane listener address clients can actually reach, or omit it when no
-public endpoint is configured.
+The loopback `--public-base-url` is a local-dev hint for this runbook. Non-local deployments should set it to the dataplane listener address clients can actually reach, or omit it when no public endpoint is configured.
 
 Expected table fields include:
 
@@ -242,22 +232,16 @@ Recent xDS NACKs:
 ./target/debug/flowplane ops xds nacks
 ```
 
-This manual dev path starts Envoy directly, without `fp-agent`. Request counters may not increase
-until the agent-backed diagnostics path is included in a later local lifecycle wrapper. The normal
-operator path is still Flowplane diagnostics (`stats`, `ops xds status`, `ops xds nacks`), not
-direct Envoy admin access.
+This manual dev path starts Envoy directly, without `fp-agent`. Request counters may not increase until the agent-backed diagnostics path is included in a later local lifecycle wrapper. The normal operator path is still Flowplane diagnostics (`stats`, `ops xds status`, `ops xds nacks`), not direct Envoy admin access.
 
-Envoy admin is loopback-only local debugging. Do not treat `curl :9901/config_dump` as a product or
-operator workflow; in the intended DP unit, `fp-agent` is the only component that scrapes Envoy
-admin and relays curated telemetry to the CP.
+Envoy admin is loopback-only local debugging. Do not treat `curl :9901/config_dump` as a product or operator workflow; in the intended DP unit, `fp-agent` is the only component that scrapes Envoy admin and relays curated telemetry to the CP.
 
 If traffic does not flow, check in this order:
 
 1. CP logs show Envoy connected to xDS.
 2. `ops xds nacks` is empty.
 3. `ops xds status` shows the expected dataplane and no recent NACKs.
-4. The upstream is reachable at `http://127.0.0.1:3001/` from the same host/network namespace as
-   Envoy.
+4. The upstream is reachable at `http://127.0.0.1:3001/` from the same host/network namespace as Envoy.
 5. Port `10001` is not already occupied.
 
 ## Current Gaps Captured by S7.7

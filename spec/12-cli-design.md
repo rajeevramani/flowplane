@@ -1,37 +1,18 @@
 # 12 — v2 CLI Design
 
-The CLI is the human's native surface (benchmark: `gh`/`kubectl` feel). This design fixes every
-item in spec/07 §3/§6 and follows D-005 precedence. Binary: `flowplane` (client subcommands of
-the same binary that runs the server).
+The CLI is the human's native surface (benchmark: `gh`/`kubectl` feel). This design fixes every item in spec/07 §3/§6 and follows D-005 precedence. Binary: `flowplane` (client subcommands of the same binary that runs the server).
 
 ## 1. Design rules (binding)
 
-1. **Noun-verb grammar**, ≤ 12 top-level nouns. Verbs are uniform: `list|get|create|update|
-   delete` plus noun-specific transitions. No bare top-level verbs except `version` and
-   `completion`.
-2. **Every command supports `-o/--output table|json|yaml|wide`** (default `table` on TTY,
-   `json` when piped). `-o` ALWAYS means output format; file output is ALWAYS `--file/-f` is
-   input and `--out <path>` is file output. `--json` is sugar for `-o json`. Mutations print a
-   one-line confirmation on TTY and the full resource as JSON with `-o json` — everything is
-   scriptable.
-3. **`--dry-run` on every mutating command** (server-side validation + would-be result, no
-   write). Destructive commands (`delete`, `--cascade`, `publish` of discovered specs) prompt
-   on TTY; `--yes/-y` for scripts.
-4. **One addressing scheme**: resources addressed by name (per-team unique); UUID accepted
-   anywhere a name is (`@id:` prefix not needed — server resolves both). Parent scoping via
-   flags (`--api`, `--route-config`), never positional ambiguity.
-5. **Revisions**: `update`/`delete` accept `--revision N` (maps to If-Match); without it, the
-   CLI does read-modify-write and fails with a clear 409 message on race.
-6. **Errors** (§4): server's `{code, message, hint, request_id}` rendered as
-   `error (CODE): message` + `→ hint` + `request id`; exit codes 0/1/2/3/4/5/6/7 per spec/10 §8.
-7. **Config precedence (D-005)**: flag > env (`FLOWPLANE_*`) > `~/.flowplane/config.toml` >
-   default — uniformly for every value. `flowplane config` manages the file; contexts
-   (`--context`, named server+org+team tuples) like kubeconfig. `--org` is the human-facing
-   active-org selector; the CLI sends it to REST/MCP as `X-Flowplane-Org`.
-8. **Completions**: `flowplane completion bash|zsh|fish` (clap_complete), including dynamic
-   resource-name completion via the API when authenticated.
-9. **Help**: every command has `--help` with one-line summary, examples, and related commands;
-   `flowplane help <topic>` for workflows (learning, ai, tenancy).
+1. **Noun-verb grammar**, ≤ 12 top-level nouns. Verbs are uniform: `list|get|create|update| delete` plus noun-specific transitions. No bare top-level verbs except `version` and `completion`.
+2. **Every command supports `-o/--output table|json|yaml|wide`** (default `table` on TTY, `json` when piped). `-o` ALWAYS means output format; file output is ALWAYS `--file/-f` is input and `--out <path>` is file output. `--json` is sugar for `-o json`. Mutations print a one-line confirmation on TTY and the full resource as JSON with `-o json` — everything is scriptable.
+3. **`--dry-run` on every mutating command** (server-side validation + would-be result, no write). Destructive commands (`delete`, `--cascade`, `publish` of discovered specs) prompt on TTY; `--yes/-y` for scripts.
+4. **One addressing scheme**: resources addressed by name (per-team unique); UUID accepted anywhere a name is (`@id:` prefix not needed — server resolves both). Parent scoping via flags (`--api`, `--route-config`), never positional ambiguity.
+5. **Revisions**: `update`/`delete` accept `--revision N` (maps to If-Match); without it, the CLI does read-modify-write and fails with a clear 409 message on race.
+6. **Errors** (§4): server's `{code, message, hint, request_id}` rendered as `error (CODE): message` + `→ hint` + `request id`; exit codes 0/1/2/3/4/5/6/7 per spec/10 §8.
+7. **Config precedence (D-005)**: flag > env (`FLOWPLANE_*`) > `~/.flowplane/config.toml` > default — uniformly for every value. `flowplane config` manages the file; contexts (`--context`, named server+org+team tuples) like kubeconfig. `--org` is the human-facing active-org selector; the CLI sends it to REST/MCP as `X-Flowplane-Org`.
+8. **Completions**: `flowplane completion bash|zsh|fish` (clap_complete), including dynamic resource-name completion via the API when authenticated.
+9. **Help**: every command has `--help` with one-line summary, examples, and related commands; `flowplane help <topic>` for workflows (learning, ai, tenancy).
 
 ## 2. Command tree
 
@@ -78,17 +59,11 @@ flowplane
 ├── completion <shell> | version
 ```
 
-Renames vs v1 recorded for DECISIONS: `import openapi` → `api create --from-openapi`;
-`schema *` → `api spec *`; `wasm *` → `filter create --wasm …`; `init/down/logs` → `stack *`;
-`learn export` → `api spec export --out`; `cert *` → `dataplane cert *`; route-views/reports
-fold into `route list -o wide` / `ops topology`.
+Renames vs v1 recorded for DECISIONS: `import openapi` → `api create --from-openapi`; `schema *` → `api spec *`; `wasm *` → `filter create --wasm …`; `init/down/logs` → `stack *`; `learn export` → `api spec export --out`; `cert *` → `dataplane cert *`; route-views/reports fold into `route list -o wide` / `ops topology`.
 
 ## 3. Global flags
 
-`--context`, `--server`, `--team`, `--org`, `-o/--output`, `--json`, `--no-color`, `--quiet`,
-`--verbose`, `--dry-run`, `--yes`, `--revision`, `--timeout`, `--out <path>` (where file output
-exists). Paging: `--limit/--page-token` (server-driven cursors; the CLI auto-paginates `list`
-unless `--limit` given).
+`--context`, `--server`, `--team`, `--org`, `-o/--output`, `--json`, `--no-color`, `--quiet`, `--verbose`, `--dry-run`, `--yes`, `--revision`, `--timeout`, `--out <path>` (where file output exists). Paging: `--limit/--page-token` (server-driven cursors; the CLI auto-paginates `list` unless `--limit` given).
 
 ## 4. Error-message style guide
 
@@ -100,10 +75,7 @@ error (resource_in_use): cluster "payments-db" is referenced by 2 route configs
   request id: 01JXYZ…   (exit code 5)
 ```
 
-Rules: lowercase `error (code):`; message states the fact; `→` line says the next action with
-a copy-pasteable command; never dump raw HTTP/JSON on TTY (full body available with
-`--verbose` or `-o json`); 401 always hints `flowplane auth login`; 403 names the missing
-`(resource, action)`; 404 never reveals cross-tenant existence; 409 prints both revisions.
+Rules: lowercase `error (code):`; message states the fact; `→` line says the next action with a copy-pasteable command; never dump raw HTTP/JSON on TTY (full body available with `--verbose` or `-o json`); 401 always hints `flowplane auth login`; 403 names the missing `(resource, action)`; 404 never reveals cross-tenant existence; 409 prints both revisions.
 
 ## 5. Worked transcripts
 
@@ -117,11 +89,7 @@ $ flowplane expose http://host.docker.internal:3000 --name demo
   try: curl http://localhost:10001/
 ```
 
-Local ports shown in transcripts are defaults, not fixed contracts. `stack up`, `dataplane up`,
-and `expose` resolve ports from flags/env/config (`--api-port`, `--xds-port`, `--postgres-port`,
-`--admin-port`, `--gateway-port-range`) and write the resolved values into generated bootstrap
-and compose/systemd/K8s artifacts. If a requested/default port is occupied, the CLI fails before
-mutating CP state and prints the exact override to use.
+Local ports shown in transcripts are defaults, not fixed contracts. `stack up`, `dataplane up`, and `expose` resolve ports from flags/env/config (`--api-port`, `--xds-port`, `--postgres-port`, `--admin-port`, `--gateway-port-range`) and write the resolved values into generated bootstrap and compose/systemd/K8s artifacts. If a requested/default port is occupied, the CLI fails before mutating CP state and prints the exact override to use.
 
 ### 5.2 Config-first loop: create → observe → review → publish → tools
 
@@ -228,22 +196,12 @@ TIME   TYPE  RESOURCE           ERROR
   → flowplane secret create edge-tls … ; resource is quarantined (last good config still serving)
 ```
 
-(Transcripts 5.7–5.9 — `apply --diff` GitOps flow, `mcp enable --api`, upstream deletion with
-cascade preview — follow the same conventions; elided for brevity, covered in slice tests.)
+(Transcripts 5.7–5.9 — `apply --diff` GitOps flow, `mcp enable --api`, upstream deletion with cascade preview — follow the same conventions; elided for brevity, covered in slice tests.)
 
 ## 6. Auth & config handling
 
-`flowplane auth login` (PKCE loopback; `--device-code` for headless) → tokens in
-`~/.flowplane/credentials` (0600, auto-refresh). `FLOWPLANE_TOKEN` env supported for CI.
-Contexts: `flowplane config set-context prod --server https://fp.acme.com --org acme --team payments`,
-`flowplane config use-context prod`. `--org` on a command overrides the active context and is sent
-as `X-Flowplane-Org`; when omitted, the server only infers an org for users with exactly one active
-non-platform membership. `stack *` and `db migrate` are the only commands that don't go through the
-REST API (local compose / direct DB) and are clearly labeled as such in help.
+`flowplane auth login` (PKCE loopback; `--device-code` for headless) → tokens in `~/.flowplane/credentials` (0600, auto-refresh). `FLOWPLANE_TOKEN` env supported for CI. Contexts: `flowplane config set-context prod --server https://fp.acme.com --org acme --team payments`, `flowplane config use-context prod`. `--org` on a command overrides the active context and is sent as `X-Flowplane-Org`; when omitted, the server only infers an org for users with exactly one active non-platform membership. `stack *` and `db migrate` are the only commands that don't go through the REST API (local compose / direct DB) and are clearly labeled as such in help.
 
 ## 7. Acceptance criteria (tested in the CLI slice and every feature slice after)
 
-Every API capability has a CLI path in the same slice; `-o json` round-trips through `apply`;
-`--dry-run` output equals the subsequent real mutation's effect; all errors carry code + hint;
-completions install on bash/zsh/fish; `--help` examples are doctest-style verified against a
-live server in E2E.
+Every API capability has a CLI path in the same slice; `-o json` round-trips through `apply`; `--dry-run` output equals the subsequent real mutation's effect; all errors carry code + hint; completions install on bash/zsh/fish; `--help` examples are doctest-style verified against a live server in E2E.

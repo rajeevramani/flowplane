@@ -1,22 +1,16 @@
 # Prod-Mode Local Runbook
 
-Run the Flowplane control plane on your machine in **production mode**: no dev issuer, no seeded
-dev org/team/user, real OIDC validation, one-shot bootstrap, and production authz behavior.
+Run the Flowplane control plane on your machine in **production mode**: no dev issuer, no seeded dev org/team/user, real OIDC validation, one-shot bootstrap, and production authz behavior.
 
-This runbook includes the Auth0 setup path because Auth0 is our current local prod-mode IdP test
-case. The Flowplane-side mechanics are provider-neutral OIDC.
+This runbook includes the Auth0 setup path because Auth0 is our current local prod-mode IdP test case. The Flowplane-side mechanics are provider-neutral OIDC.
 
 ## What "prod locally" means
 
 - `FLOWPLANE_DEV_MODE` is unset/false.
-- The control plane validates real OIDC JWTs from `FLOWPLANE_OIDC_ISSUER` +
-  `FLOWPLANE_OIDC_AUDIENCE`.
-- The first platform admin is created through `/api/v1/bootstrap/initialize` with the boot-logged
-  `fpboot_...` token.
-- API plaintext requires explicit local opt-in with `FLOWPLANE_API_INSECURE=true`, or real local
-  TLS certs via `FLOWPLANE_API_TLS_CERT` + `FLOWPLANE_API_TLS_KEY`.
-- xDS is production-only mTLS. If `FLOWPLANE_XDS_TLS_*` is absent, the API still runs, but the xDS
-  listener is disabled.
+- The control plane validates real OIDC JWTs from `FLOWPLANE_OIDC_ISSUER` + `FLOWPLANE_OIDC_AUDIENCE`.
+- The first platform admin is created through `/api/v1/bootstrap/initialize` with the boot-logged `fpboot_...` token.
+- API plaintext requires explicit local opt-in with `FLOWPLANE_API_INSECURE=true`, or real local TLS certs via `FLOWPLANE_API_TLS_CERT` + `FLOWPLANE_API_TLS_KEY`.
+- xDS is production-only mTLS. If `FLOWPLANE_XDS_TLS_*` is absent, the API still runs, but the xDS listener is disabled.
 
 ## Prerequisites
 
@@ -58,9 +52,7 @@ The script prompts for:
 - admin email
 - Postgres URL, defaulting to `postgres://$USER@127.0.0.1:5432/flowplane_prod_local`
 
-It creates `internal/.env.prod-local`, generates `FLOWPLANE_SECRET_ENCRYPTION_KEY`, creates the
-local database when using the default URL, builds `target/release/flowplane`, runs migrations, and
-prints the exact `serve`, bootstrap, and login commands.
+It creates `internal/.env.prod-local`, generates `FLOWPLANE_SECRET_ENCRYPTION_KEY`, creates the local database when using the default URL, builds `target/release/flowplane`, runs migrations, and prints the exact `serve`, bootstrap, and login commands.
 
 Useful flags:
 
@@ -116,14 +108,11 @@ Admin subject: auth0|<admin-user-id>
 Auth0-specific gotchas:
 
 - The issuer must include Auth0's trailing slash because Auth0 tokens use it in `iss`.
-- `FLOWPLANE_OIDC_AUDIENCE` should be the Auth0 application **Client ID**. The CLI stores/sends
-  the ID token, whose `aud` is the client ID.
-- Do not create/use an Auth0 API audience for this local CLI path. That produces access-token
-  shapes the CLI is not relying on here.
+- `FLOWPLANE_OIDC_AUDIENCE` should be the Auth0 application **Client ID**. The CLI stores/sends the ID token, whose `aud` is the client ID.
+- Do not create/use an Auth0 API audience for this local CLI path. That produces access-token shapes the CLI is not relying on here.
 - The login scope must include `openid`; `openid email profile` is fine.
 
-Important: Flowplane authorization does **not** come from IdP groups or role claims. The IdP only
-proves identity. Flowplane DB memberships and grants decide access.
+Important: Flowplane authorization does **not** come from IdP groups or role claims. The IdP only proves identity. Flowplane DB memberships and grants decide access.
 
 ## Step B - Create local prod env
 
@@ -165,8 +154,7 @@ Generate the local secret key with:
 openssl rand -base64 32
 ```
 
-For non-Auth0 OIDC providers, use the issuer exactly as the token's `iss` claim presents it, and
-set `FLOWPLANE_OIDC_AUDIENCE` to the `aud` value in the token the CLI sends.
+For non-Auth0 OIDC providers, use the issuer exactly as the token's `iss` claim presents it, and set `FLOWPLANE_OIDC_AUDIENCE` to the `aud` value in the token the CLI sends.
 
 ## Step C - Migrate and boot the control plane
 
@@ -216,8 +204,7 @@ curl -fsS -X POST http://127.0.0.1:8080/api/v1/bootstrap/initialize \
       }'
 ```
 
-`admin_subject` must match the Auth0 user's `user_id` / OIDC `sub` claim. If it does not, login can
-succeed but governance actions will be denied.
+`admin_subject` must match the Auth0 user's `user_id` / OIDC `sub` claim. If it does not, login can succeed but governance actions will be denied.
 
 ## Step E - Login and verify
 
@@ -266,8 +253,7 @@ export FLOWPLANE_API_TLS_KEY="$PWD/.local/prod/tls/api.key"
 export FLOWPLANE_SERVER="https://127.0.0.1:8080"
 ```
 
-For ad hoc `curl`, pass `--cacert .local/prod/tls/api.crt` or `-k`. For CLI testing against a
-self-signed local API cert, use plaintext unless the CLI HTTP stack is configured to trust the cert.
+For ad hoc `curl`, pass `--cacert .local/prod/tls/api.crt` or `-k`. For CLI testing against a self-signed local API cert, use plaintext unless the CLI HTTP stack is configured to trust the cert.
 
 ## Optional - Enable local xDS mTLS
 
@@ -279,12 +265,9 @@ export FLOWPLANE_XDS_TLS_KEY="$PWD/.local/prod/tls/xds.key"
 export FLOWPLANE_XDS_TLS_CLIENT_CA="$PWD/.local/prod/tls/dp-ca.crt"
 ```
 
-The xDS server cert/key identify the control plane. The client CA validates dataplane client certs.
-Dataplane certs must also be registered in Flowplane through the dataplane/proxy-certificate path;
-mTLS chain validity alone is not enough to authorize a dataplane.
+The xDS server cert/key identify the control plane. The client CA validates dataplane client certs. Dataplane certs must also be registered in Flowplane through the dataplane/proxy-certificate path; mTLS chain validity alone is not enough to authorize a dataplane.
 
-Use this only when you are testing Envoy or `fp-agent`. For API/auth/governance validation, keeping
-xDS disabled is expected and simpler.
+Use this only when you are testing Envoy or `fp-agent`. For API/auth/governance validation, keeping xDS disabled is expected and simpler.
 
 ## Troubleshooting
 
@@ -307,5 +290,4 @@ dropdb flowplane_prod_local
 createdb flowplane_prod_local
 ```
 
-Then repeat migration, `serve`, and bootstrap. The bootstrap token is single-use and only useful
-while the instance is uninitialized.
+Then repeat migration, `serve`, and bootstrap. The bootstrap token is single-use and only useful while the instance is uninitialized.

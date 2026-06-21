@@ -5,12 +5,9 @@ Use this process when working through GitHub issues on the default branch.
 ## Roles
 
 - GitHub issues are the source of truth for planned work, review feedback, and status.
-- Codex owns implementation: read the issue, design the smallest viable change, code it, test it,
-  update progress notes when needed, commit, merge, push, and hand the issue back for review.
-- Claude reviews the design and code through GitHub issue comments. Review feedback becomes the
-  next tracked change, not an offline side thread.
-- Issues stay open while under review. A finished implementation is marked with
-  `ready-for-review`; rejected work is marked `do-over` and sent back through the same workflow.
+- Codex owns implementation: read the issue, design the smallest viable change, code it, test it, update progress notes when needed, commit, merge, push, and hand the issue back for review.
+- Claude reviews the design and code through GitHub issue comments. Review feedback becomes the next tracked change, not an offline side thread.
+- Issues stay open while under review. A finished implementation is marked with `ready-for-review`; rejected work is marked `do-over` and sent back through the same workflow.
 
 ## Branching Model
 
@@ -50,14 +47,9 @@ git merge --no-ff issue/<issue-number>-<short-slug>
 git push origin main
 ```
 
-9. Set the GitHub issue to review by applying the `ready-for-review` label. Do not close the
-   issue; review closes or redirects it.
+9. Set the GitHub issue to review by applying the `ready-for-review` label. Do not close the issue; review closes or redirects it.
 
-This repository currently uses `ready-for-review` as the fix handoff marker. Apply it only after
-the fix is merged into the default branch, pushed, and validated. If the issue had a `do-over`
-label, remove `do-over` when the corrected fix is ready for review. Leave the issue open until the
-reviewer accepts the fix. If a GitHub Project status field is later configured, keep it in sync
-with the label rather than inventing a second workflow.
+This repository currently uses `ready-for-review` as the fix handoff marker. Apply it only after the fix is merged into the default branch, pushed, and validated. If the issue had a `do-over` label, remove `do-over` when the corrected fix is ready for review. Leave the issue open until the reviewer accepts the fix. If a GitHub Project status field is later configured, keep it in sync with the label rather than inventing a second workflow.
 
 ## Conflict Policy
 
@@ -87,10 +79,8 @@ An issue is done when:
 
 - the issue has been validated
 - the fix is committed on an issue branch
-- `cargo clippy --all-targets --all-features -- -D warnings` passes, or a narrower clippy
-  command is documented when the full workspace check is not practical locally
-- tests relevant to the touched area pass; run `cargo test --workspace --all-features` when
-  the touched surface is broad or shared
+- `cargo clippy --all-targets --all-features -- -D warnings` passes, or a narrower clippy command is documented when the full workspace check is not practical locally
+- tests relevant to the touched area pass; run `cargo test --workspace --all-features` when the touched surface is broad or shared
 - the issue branch is merged into `main`
 - the default branch is pushed to `origin`
 - the GitHub issue is open, has a completion comment, and has the `ready-for-review` label

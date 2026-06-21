@@ -1,23 +1,12 @@
 # 13 — Core Gateway Parity Before Learning
 
-Purpose: align the practical "can I run the CP, start a dataplane, expose traffic, and verify it"
-work with `PROGRESS.md` before S8 learning continues. V1 is inspiration for the operator journey
-only (`init`, `expose`, `dataplane up`, runbooks, smoke tests); V2 keeps the existing Rust
-workspace boundaries, PostgreSQL source of truth, REST/CLI surfaces, xDS snapshot cache, and
-agent telemetry design. Architecture integrity rules for the seams and domain boundaries are in
-`spec/14-architecture-integrity.md`. Core gateway API/DB/xDS field parity is tracked separately in
-`spec/15-core-gateway-field-parity.md` and is a pre-S8 gate.
+Purpose: align the practical "can I run the CP, start a dataplane, expose traffic, and verify it" work with `PROGRESS.md` before S8 learning continues. V1 is inspiration for the operator journey only (`init`, `expose`, `dataplane up`, runbooks, smoke tests); V2 keeps the existing Rust workspace boundaries, PostgreSQL source of truth, REST/CLI surfaces, xDS snapshot cache, and agent telemetry design. Architecture integrity rules for the seams and domain boundaries are in `spec/14-architecture-integrity.md`. Core gateway API/DB/xDS field parity is tracked separately in `spec/15-core-gateway-field-parity.md` and is a pre-S8 gate.
 
-Principle: **V1 defines the user outcome; V2 defines the architecture and experience.** The goal is
-not feature-for-feature porting. The goal is core gateway workflow parity with a simpler, safer,
-faster V2-native UX.
+Principle: **V1 defines the user outcome; V2 defines the architecture and experience.** The goal is not feature-for-feature porting. The goal is core gateway workflow parity with a simpler, safer, faster V2-native UX.
 
 ## V1 vs V2 Gap
 
-V1 is ahead in operability and first-user experience. V2 is ahead in the control-plane foundation:
-tenant isolation, mTLS registry binding, xDS/SDS internals, telemetry direction, and cleaner
-workspace boundaries. The pre-S8 work is to close the product workflow gap without porting V1's
-implementation.
+V1 is ahead in operability and first-user experience. V2 is ahead in the control-plane foundation: tenant isolation, mTLS registry binding, xDS/SDS internals, telemetry direction, and cleaner workspace boundaries. The pre-S8 work is to close the product workflow gap without porting V1's implementation.
 
 | Area | V1 has | V2 has | Gap before S8 |
 | --- | --- | --- | --- |
@@ -31,10 +20,7 @@ implementation.
 
 ## Core Gateway Capability Parity
 
-S7.7 is the immediate **deployment and route-to-traffic gate**. S7.8 is the **core gateway field
-parity gate**: V2 must be able to accept, store, validate, and emit the core Envoy-facing gateway
-fields that V1 made available before S8 learning resumes. The table below separates workflow
-blockers from field-parity blockers.
+S7.7 is the immediate **deployment and route-to-traffic gate**. S7.8 is the **core gateway field parity gate**: V2 must be able to accept, store, validate, and emit the core Envoy-facing gateway fields that V1 made available before S8 learning resumes. The table below separates workflow blockers from field-parity blockers.
 
 | Capability | V1 outcome | V2 status | Focus next | Progress anchor |
 | --- | --- | --- | --- | --- |
@@ -58,17 +44,14 @@ blockers from field-parity blockers.
 
 Pre-S8 blockers are now two gates:
 
-1. **S7.7 workflow parity:** CP runbook, bootstrap UX, dataplane lifecycle decision,
-   `expose`/`unexpose`, and workflow validation.
-2. **S7.8 field parity:** core gateway API/DB/xDS coverage for the Envoy fields V1 exposed, with
-   known V1 design smells fixed rather than ported.
+1. **S7.7 workflow parity:** CP runbook, bootstrap UX, dataplane lifecycle decision, `expose`/`unexpose`, and workflow validation.
+2. **S7.8 field parity:** core gateway API/DB/xDS coverage for the Envoy fields V1 exposed, with known V1 design smells fixed rather than ported.
 
 Only after both gates are closed should S8 learning resume.
 
 ## Execution Breakdown
 
-This table is the pre-S8 work queue. `PROGRESS.md` owns status; this spec explains why each item
-exists and what "done" means.
+This table is the pre-S8 work queue. `PROGRESS.md` owns status; this spec explains why each item exists and what "done" means.
 
 | Progress item | Focus | User outcome | Implementation shape | Done criteria |
 | --- | --- | --- | --- | --- |
@@ -79,8 +62,7 @@ exists and what "done" means.
 | S7.7e | Workflow validation | The CP + DP + expose loop cannot regress silently | Add transcript/parser test and one live e2e/smoke path around the happy path and key diagnostics | Test proves CP start, DP bootstrap/connect, expose, curl, stats/NACK checks |
 | S7.8 | Field parity | Core gateway resources represent the Envoy surface V1 exposed, without V1's architectural shortcuts | Follow `spec/15-core-gateway-field-parity.md`; add typed domain fields, service validation, storage/API/CLI round trips, xDS translation, and live Envoy checks | V1-equivalent cluster, route, listener, filter, and secret examples are accepted by V2, stored once, emitted to Envoy, and regression-tested |
 
-After S7.7e and S7.8, S8 may resume. S8 should depend on the core gateway loop and field model
-instead of carrying its own bring-up or gateway-shape logic.
+After S7.7e and S7.8, S8 may resume. S8 should depend on the core gateway loop and field model instead of carrying its own bring-up or gateway-shape logic.
 
 ## Mindmap
 
@@ -185,12 +167,7 @@ Flowplane v2 product loop
 
 ## Open Questions
 
-1. Should the immediate target be documented manual local Envoy, or a V2-native `dataplane up/down`
-   command?
+1. Should the immediate target be documented manual local Envoy, or a V2-native `dataplane up/down` command?
 2. Should `flowplane expose` land before learning starts? Recommendation: yes.
-3. Should the dev bootstrap endpoint generate plaintext xDS when `FLOWPLANE_DEV_MODE=true`, or
-   should plaintext remain a CLI-only local convenience? Recommendation: API supports an explicit
-   `mode=dev-plaintext` query only in dev mode, so the contract is testable and fail-closed.
-4. Which V1 gateway fields are intentionally out of scope for pre-S8? Recommendation: none by
-   default; every deferral should be explicit in `spec/15-core-gateway-field-parity.md` with the
-   reason and the later progress anchor.
+3. Should the dev bootstrap endpoint generate plaintext xDS when `FLOWPLANE_DEV_MODE=true`, or should plaintext remain a CLI-only local convenience? Recommendation: API supports an explicit `mode=dev-plaintext` query only in dev mode, so the contract is testable and fail-closed.
+4. Which V1 gateway fields are intentionally out of scope for pre-S8? Recommendation: none by default; every deferral should be explicit in `spec/15-core-gateway-field-parity.md` with the reason and the later progress anchor.

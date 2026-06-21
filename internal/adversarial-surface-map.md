@@ -1,16 +1,11 @@
 # S12 Adversarial Surface Map
 
-This is the S12d verification map for `spec/08a-security-and-tenancy.md` section 4. It records
-the current code-backed evidence for each adversarial case and names the remaining accepted
-boundaries. It is not a new product surface.
+This is the S12d verification map for `spec/08a-security-and-tenancy.md` section 4. It records the current code-backed evidence for each adversarial case and names the remaining accepted boundaries. It is not a new product surface.
 
 ## Run Context
 
-- `cargo:` means an automated Rust test. DB-backed tests require `FLOWPLANE_TEST_DATABASE_URL`
-  and `FLOWPLANE_SECRET_ENCRYPTION_KEY` when the test touches encrypted secrets.
-- `live:` means `bash scripts/e2e-envoy.sh` against a real Envoy dataplane. This is a release-gate
-  check. It is reproducible in CI only if S12g promotes the Docker live gate; until then it remains
-  a manual release gate with recorded evidence.
+- `cargo:` means an automated Rust test. DB-backed tests require `FLOWPLANE_TEST_DATABASE_URL` and `FLOWPLANE_SECRET_ENCRYPTION_KEY` when the test touches encrypted secrets.
+- `live:` means `bash scripts/e2e-envoy.sh` against a real Envoy dataplane. This is a release-gate check. It is reproducible in CI only if S12g promotes the Docker live gate; until then it remains a manual release gate with recorded evidence.
 - `doc:` means an explicit accepted boundary rather than executable product coverage.
 
 ## 08a Section 4 Matrix
@@ -33,8 +28,7 @@ boundaries. It is not a new product surface.
 
 ## Load Sanity
 
-S12d intentionally does not add a heavyweight soak/performance suite. The bounded load sanity pass
-is covered by existing concurrency and live-runner evidence:
+S12d intentionally does not add a heavyweight soak/performance suite. The bounded load sanity pass is covered by existing concurrency and live-runner evidence:
 
 | Check | Evidence | Status |
 | --- | --- | --- |
@@ -47,11 +41,7 @@ is covered by existing concurrency and live-runner evidence:
 
 ## Accepted Boundaries
 
-- Global RLS enforcement still needs an external RLS+Redis service. Current live coverage verifies
-  filter ACK/config parity only.
-- OTLP wire export still needs an external collector. Layer initialization and `traceparent`
-  propagation are covered; native GenAI semantic-convention spans are deferred for v1.0.
-- Live Envoy E2E remains a manual release gate unless S12g promotes the Docker-backed run into
-  required GitHub Actions.
-- No long-duration soak or benchmark target is part of S12d; the release criterion is bounded
-  concurrency/load sanity plus the failure-mode matrix.
+- Global RLS enforcement still needs an external RLS+Redis service. Current live coverage verifies filter ACK/config parity only.
+- OTLP wire export still needs an external collector. Layer initialization and `traceparent` propagation are covered; native GenAI semantic-convention spans are deferred for v1.0.
+- Live Envoy E2E remains a manual release gate unless S12g promotes the Docker-backed run into required GitHub Actions.
+- No long-duration soak or benchmark target is part of S12d; the release criterion is bounded concurrency/load sanity plus the failure-mode matrix.

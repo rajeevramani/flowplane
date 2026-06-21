@@ -1,11 +1,8 @@
 # 07 — CLI Surface and UI Workflow Inventory
 
-Behavioral specification extracted from Flowplane v1 (`/tmp/flowplane-v1`, docs verified against v0.2.10).
-Part A documents the v1 CLI faithfully. Part B inventories every v1 UI workflow and recommends a v2 fate
-(CLI / MCP / cut). **All fates in §5 are recommendations**, to be ratified into DECISIONS.md by the orchestrator.
+Behavioral specification extracted from Flowplane v1 (`/tmp/flowplane-v1`, docs verified against v0.2.10). Part A documents the v1 CLI faithfully. Part B inventories every v1 UI workflow and recommends a v2 fate (CLI / MCP / cut). **All fates in §5 are recommendations**, to be ratified into DECISIONS.md by the orchestrator.
 
-Sources: `docs/reference/cli.md` (auto-generated from clap definitions in `src/cli/mod.rs`), `src/cli/*.rs`
-(46 modules), `ui/src/routes/**` (62 pages), `ui/src/lib/api/client.ts` (~150 API methods).
+Sources: `docs/reference/cli.md` (auto-generated from clap definitions in `src/cli/mod.rs`), `src/cli/*.rs` (46 modules), `ui/src/routes/**` (62 pages), `ui/src/lib/api/client.ts` (~150 API methods).
 
 ---
 
@@ -14,8 +11,7 @@ Sources: `docs/reference/cli.md` (auto-generated from clap definitions in `src/c
 ### Binary and entry point
 
 - Single binary: `flowplane` (`src/main.rs` → `flowplane::cli::run_cli()`).
-- The same binary contains the control-plane server as a **hidden** subcommand `flowplane serve [--dev]`
-  (used by the Docker entrypoint; `#[command(hide = true)]`).
+- The same binary contains the control-plane server as a **hidden** subcommand `flowplane serve [--dev]` (used by the Docker entrypoint; `#[command(hide = true)]`).
 - Running `flowplane` with no subcommand prints help and exits 0.
 - `after_long_help` on the root command prints a "GETTING STARTED" block (init → expose → curl → list/status/down).
 
@@ -29,8 +25,7 @@ Sources: `docs/reference/cli.md` (auto-generated from clap definitions in `src/c
 | `--timeout <SECS>` | HTTP request timeout | `30` |
 | `--team <NAME>` | Team context for resource commands | — |
 
-Root-only (not global): `--database-url` (used only by `database` subcommands and `serve`),
-`-v/--verbose` (enables verbose logging; **not listed in the auto-generated docs' global options** — drift).
+Root-only (not global): `--database-url` (used only by `database` subcommands and `serve`), `-v/--verbose` (enables verbose logging; **not listed in the auto-generated docs' global options** — drift).
 
 ### Config and state directory: `~/.flowplane/`
 
@@ -44,61 +39,39 @@ Root-only (not global): `--database-url` (used only by `database` subcommands an
 
 ### Configuration precedence (resolved per-value in `src/cli/config.rs`)
 
-- **Token** (changed in fp-xsli.3.13 — env now beats flags): `FLOWPLANE_TOKEN` env → `--token-file` →
-  `~/.flowplane/credentials` → `config.toml` `token` (deprecated, warns) → `--token` flag (lowest!).
-  Empty/whitespace env values fall through. Error message lists all four sources.
+- **Token** (changed in fp-xsli.3.13 — env now beats flags): `FLOWPLANE_TOKEN` env → `--token-file` → `~/.flowplane/credentials` → `config.toml` `token` (deprecated, warns) → `--token` flag (lowest!). Empty/whitespace env values fall through. Error message lists all four sources.
 - **Base URL**: `FLOWPLANE_BASE_URL` env → `--base-url` flag → `config.toml` → default `http://localhost:8080`.
 - **Timeout**: `--timeout` flag → `config.toml` → 30s. (Note: no env var — inconsistent with token/base-url.)
-- **Team**: `--team` flag → `config.toml` → `FLOWPLANE_TEAM` env → error. (Flag beats env here — the
-  *opposite* order of token resolution.)
+- **Team**: `--team` flag → `config.toml` → `FLOWPLANE_TEAM` env → error. (Flag beats env here — the *opposite* order of token resolution.)
 - **Org**: `--org` flag → `config.toml` → `FLOWPLANE_ORG` env → error. (Same inverted order as team.)
 
-Other env vars: `FLOWPLANE_API_HOST_PORT`, `FLOWPLANE_POSTGRES_HOST_PORT`, `FLOWPLANE_GATEWAY_PORT_RANGE`,
-`FLOWPLANE_CP_IMAGE`, `FLOWPLANE_AGENT_IMAGE` (init fallbacks); `FLOWPLANE_BOOTSTRAP_TOKEN`
-(`bootstrap initialize` — deliberately bypasses the normal token path); `FLOWPLANE_OIDC_ISSUER`,
-`FLOWPLANE_OIDC_CLIENT_ID` (login fallbacks); `FLOWPLANE_XDS_ADVERTISE_ADDRESS` (server side, referenced
-by `dataplane config`); `RUST_LOG`-style filtering via tracing.
+Other env vars: `FLOWPLANE_API_HOST_PORT`, `FLOWPLANE_POSTGRES_HOST_PORT`, `FLOWPLANE_GATEWAY_PORT_RANGE`, `FLOWPLANE_CP_IMAGE`, `FLOWPLANE_AGENT_IMAGE` (init fallbacks); `FLOWPLANE_BOOTSTRAP_TOKEN` (`bootstrap initialize` — deliberately bypasses the normal token path); `FLOWPLANE_OIDC_ISSUER`, `FLOWPLANE_OIDC_CLIENT_ID` (login fallbacks); `FLOWPLANE_XDS_ADVERTISE_ADDRESS` (server side, referenced by `dataplane config`); `RUST_LOG`-style filtering via tracing.
 
 ### Auth / login flow (`src/cli/auth.rs`)
 
 1. `auth login` probes `GET {base_url}/api/v1/auth/mode` (unauthenticated).
-2. **Dev mode**: prints "no OIDC login needed — use the dev token from `flowplane init`", shows a
-   truncated current token if `~/.flowplane/credentials` exists. No login is performed.
-3. **Prod mode**: OIDC issuer/client-id resolved from `--issuer`/`--client-id` flags → `/auth/mode`
-   response → env vars. The cached `config.toml` values are deliberately NOT consulted (stale-issuer bug).
-   Then either:
+2. **Dev mode**: prints "no OIDC login needed — use the dev token from `flowplane init`", shows a truncated current token if `~/.flowplane/credentials` exists. No login is performed.
+3. **Prod mode**: OIDC issuer/client-id resolved from `--issuer`/`--client-id` flags → `/auth/mode` response → env vars. The cached `config.toml` values are deliberately NOT consulted (stale-issuer bug). Then either:
    - **PKCE browser flow** (default): spins up a loopback HTTP callback server, opens the browser
      (`prompt=login` forces re-auth), waits up to 5 minutes, exchanges the code.
    - **Device code flow** (`--device-code`, present in code but missing from generated docs): for headless
      environments.
 4. Credentials saved as OIDC JSON to `~/.flowplane/credentials`; issuer/client-id cached into `config.toml`.
-- `auth token` prints the current access token; `auth whoami` shows the authenticated user; `auth logout`
-  clears stored credentials.
+- `auth token` prints the current access token; `auth whoami` shows the authenticated user; `auth logout` clears stored credentials.
 
 ### HTTP client and error presentation (`src/cli/client.rs`)
 
-- `reqwest` with bearer auth on every request; optimistic concurrency via `If-Match: <version>` header on
-  rate-limit update/delete.
-- **Error presentation is raw**: any non-2xx becomes
-  `anyhow!("HTTP request failed with status {status}: {body}")` — the unparsed JSON error body is dumped
-  to the user. No mapping of 401→"run flowplane auth login", 403→scopes, 409→version conflict, etc.
+- `reqwest` with bearer auth on every request; optimistic concurrency via `If-Match: <version>` header on rate-limit update/delete.
+- **Error presentation is raw**: any non-2xx becomes `anyhow!("HTTP request failed with status {status}: {body}")` — the unparsed JSON error body is dumped to the user. No mapping of 401→"run flowplane auth login", 403→scopes, 409→version conflict, etc.
 - Deserialization failures echo the entire response body into the error.
-- Errors bubble up through `anyhow` → wrapped as `crate::Error::config(...)` in `run_cli` → printed by
-  Rust's default `main`-error path. **Exit code is effectively 0 (success) or 1 (any error)** — no
-  differentiated exit codes. Explicit `std::process::exit(1)` only in: `serve` task failure,
-  `database status` (pending migrations), `database validate` (schema invalid).
+- Errors bubble up through `anyhow` → wrapped as `crate::Error::config(...)` in `run_cli` → printed by Rust's default `main`-error path. **Exit code is effectively 0 (success) or 1 (any error)** — no differentiated exit codes. Explicit `std::process::exit(1)` only in: `serve` task failure, `database status` (pending migrations), `database validate` (schema invalid).
 
 ### Output conventions (`src/cli/output.rs`)
 
-- `-o/--output` accepts `json`, `yaml`, `table` (case-insensitive). Defaults: `list` commands → `table`,
-  `get/create/update` → `json`, `scaffold` → `yaml`, `config show` → `yaml`, `dataplane config` → `yaml`.
-- JSON/YAML are generic serde dumps; **table format is hand-rolled per command** (fixed-width columns,
-  `-`-rule separators, truncation with `...`). No shared table engine.
-- Several commands (`expose`, `unexpose`, `list`, `status`, `doctor`, `logs`, `init`, `down`,
-  `database *`, `mcp enable/disable`, `filter attach/detach`, all `delete` subcommands) print **plain
-  prose only** with no `-o` flag at all — they cannot emit JSON.
-- Human-facing progress goes to stderr in the compose machinery (`eprintln!`); resource output to stdout.
-  Database commands use emoji status markers (✅/⚠️/❌).
+- `-o/--output` accepts `json`, `yaml`, `table` (case-insensitive). Defaults: `list` commands → `table`, `get/create/update` → `json`, `scaffold` → `yaml`, `config show` → `yaml`, `dataplane config` → `yaml`.
+- JSON/YAML are generic serde dumps; **table format is hand-rolled per command** (fixed-width columns, `-`-rule separators, truncation with `...`). No shared table engine.
+- Several commands (`expose`, `unexpose`, `list`, `status`, `doctor`, `logs`, `init`, `down`, `database *`, `mcp enable/disable`, `filter attach/detach`, all `delete` subcommands) print **plain prose only** with no `-o` flag at all — they cannot emit JSON.
+- Human-facing progress goes to stderr in the compose machinery (`eprintln!`); resource output to stdout. Database commands use emoji status markers (✅/⚠️/❌).
 
 ### Shell completion
 
@@ -106,32 +79,18 @@ by `dataplane config`); `RUST_LOG`-style filtering via tracing.
 
 ### The init/down compose machinery (`src/cli/compose.rs`, `compose_runner.rs`, `dev_certs.rs`)
 
-- `flowplane init`: detects container runtime (DOCKER_HOST → /var/run/docker.sock → OrbStack → Rancher
-  Desktop → podman socket → PATH fallback), generates/refreshes the dev mTLS PKI under
-  `~/.flowplane/certs/` (CA + control-plane + agent + Envoy, SPIFFE SANs), generates/persists a dev
-  encryption key, writes the embedded `docker-compose-init.yml` (PostgreSQL + control plane + Envoy +
-  flowplane-agent), runs `docker compose up -d --force-recreate`, then polls the CP health endpoint with
-  a cold/warm SLA (image-cache-aware) and verifies the CP wrote `~/.flowplane/credentials` (the dev token
-  is minted server-side, not by the CLI). Port/image flags all have env fallbacks.
-- `flowplane down [--volumes] [--purge-state]`: compose down; `--volumes` deletes DB data; `--purge-state`
-  wipes credentials/bootstrap/compose file but intentionally keeps `encryption.key` and `certs/`.
-  (**Doc drift**: the auto-generated reference shows `flowplane down` with no options.)
+- `flowplane init`: detects container runtime (DOCKER_HOST → /var/run/docker.sock → OrbStack → Rancher Desktop → podman socket → PATH fallback), generates/refreshes the dev mTLS PKI under `~/.flowplane/certs/` (CA + control-plane + agent + Envoy, SPIFFE SANs), generates/persists a dev encryption key, writes the embedded `docker-compose-init.yml` (PostgreSQL + control plane + Envoy + flowplane-agent), runs `docker compose up -d --force-recreate`, then polls the CP health endpoint with a cold/warm SLA (image-cache-aware) and verifies the CP wrote `~/.flowplane/credentials` (the dev token is minted server-side, not by the CLI). Port/image flags all have env fallbacks.
+- `flowplane down [--volumes] [--purge-state]`: compose down; `--volumes` deletes DB data; `--purge-state` wipes credentials/bootstrap/compose file but intentionally keeps `encryption.key` and `certs/`. (**Doc drift**: the auto-generated reference shows `flowplane down` with no options.)
 - `flowplane init-certs`: standalone PKI mint for systemd/K8s pre-boot, with `--if-missing-or-expired`
-  + `--refresh-buffer` idempotency (humantime parsing with bespoke, operator-friendly error strings).
-  (**Doc drift**: `--if-missing-or-expired` itself is missing from the generated flag list.)
-- `flowplane logs [-f/--follow]`: thin wrapper over `docker compose logs`; refuses (politely, exit 0)
-  when `base_url` is not loopback. (**Doc drift**: `--follow` not in generated docs.)
-- `flowplane dataplane up/down <NAME>`: boots a local Envoy + flowplane-agent compose stack for an
-  already-registered dataplane, fetching the Envoy bootstrap from the CP (`/envoy-config`), pinning Envoy
-  minor version, managing per-DP state under `~/.flowplane/dp/<NAME>/` and mTLS client material.
+  + `--refresh-buffer` idempotency (humantime parsing with bespoke, operator-friendly error strings). (**Doc drift**: `--if-missing-or-expired` itself is missing from the generated flag list.)
+- `flowplane logs [-f/--follow]`: thin wrapper over `docker compose logs`; refuses (politely, exit 0) when `base_url` is not loopback. (**Doc drift**: `--follow` not in generated docs.)
+- `flowplane dataplane up/down <NAME>`: boots a local Envoy + flowplane-agent compose stack for an already-registered dataplane, fetching the Envoy bootstrap from the CP (`/envoy-config`), pinning Envoy minor version, managing per-DP state under `~/.flowplane/dp/<NAME>/` and mTLS client material.
 
 ---
 
 ## 2. Full Command Catalog
 
-36 top-level commands (35 documented + hidden `serve`), **~140 leaf subcommands**. All resource commands
-are team-scoped via `/api/v1/teams/{team}/...` unless noted. "std CRUD flags" = `-f/--file` (YAML/JSON
-spec) on create/update, `-o/--output` per conventions above.
+36 top-level commands (35 documented + hidden `serve`), **~140 leaf subcommands**. All resource commands are team-scoped via `/api/v1/teams/{team}/...` unless noted. "std CRUD flags" = `-f/--file` (YAML/JSON spec) on create/update, `-o/--output` per conventions above.
 
 ### Stack lifecycle (local, no API token needed)
 
@@ -227,49 +186,24 @@ spec) on create/update, `-o/--output` per conventions above.
 
 ## 3. CLI Consistency Critique (feeds spec/08)
 
-- **Noun-verb grammar is mostly followed but leaks**: `route-views`, `reports`, `stats`, `mcp`, `xds`
-  are pseudo-nouns wrapping one or two reads; `list`, `status`, `doctor`, `trace`, `topology`,
-  `validate`, `expose`, `unexpose` are bare top-level verbs. 36 top-level commands is far past the
-  gh/kubectl sweet spot; diagnostics alone account for 8 of them.
-- **`route` doesn't mean route**: `flowplane route` CRUDs route-*configs*; individual routes inside
-  vhosts are only editable in the UI. `vhost` is read-only. `mcp enable` takes a route **ID** while
-  every other command takes names. Three different addressing schemes (name, UUID, numeric schema ID).
-- **`-o` is overloaded**: output *format* everywhere except `learn export`, `schema export`, and
-  `wasm download`, where `-o` is an output *file path*.
-- **No uniform `--json`**: ~20 commands are plain-prose-only (`expose`, `list`, `status`, `doctor`,
-  all deletes, `mcp enable/disable`, `filter attach/detach`, `database *`) — they cannot be scripted
-  with structured output. Defaults flip between json/yaml/table by verb.
-- **Create input is inconsistent**: every resource uses `-f` spec files except `secret create`
-  (inline `--config '<JSON string>'`) and `expose`/`learn start` (flag-soup). `apply` exists but covers
-  only 6 kinds (no rate-limit, org, team, agent, cert).
-- **Precedence rules contradict each other**: token = env > file > flag (flag is *lowest*);
-  team/org = flag > config > env; base-url = env > flag > config; timeout has no env var at all.
-  Each value has a different mental model.
-- **Error presentation is raw HTTP**: `HTTP request failed with status 409 Conflict: {"error":...}` —
-  no exit-code taxonomy (everything is 1), no remediation hints (401 doesn't say "run flowplane auth
-  login"), JSON bodies dumped verbatim.
-- **Doc/code drift in the "auto-generated" reference**: `down --volumes/--purge-state`,
-  `logs --follow`, `auth login --device-code`, `config init --force`, `init-certs
-  --if-missing-or-expired`, and global `--verbose` are all in the code but absent from
-  `docs/reference/cli.md` despite the CI change-guard.
+- **Noun-verb grammar is mostly followed but leaks**: `route-views`, `reports`, `stats`, `mcp`, `xds` are pseudo-nouns wrapping one or two reads; `list`, `status`, `doctor`, `trace`, `topology`, `validate`, `expose`, `unexpose` are bare top-level verbs. 36 top-level commands is far past the gh/kubectl sweet spot; diagnostics alone account for 8 of them.
+- **`route` doesn't mean route**: `flowplane route` CRUDs route-*configs*; individual routes inside vhosts are only editable in the UI. `vhost` is read-only. `mcp enable` takes a route **ID** while every other command takes names. Three different addressing schemes (name, UUID, numeric schema ID).
+- **`-o` is overloaded**: output *format* everywhere except `learn export`, `schema export`, and `wasm download`, where `-o` is an output *file path*.
+- **No uniform `--json`**: ~20 commands are plain-prose-only (`expose`, `list`, `status`, `doctor`, all deletes, `mcp enable/disable`, `filter attach/detach`, `database *`) — they cannot be scripted with structured output. Defaults flip between json/yaml/table by verb.
+- **Create input is inconsistent**: every resource uses `-f` spec files except `secret create` (inline `--config '<JSON string>'`) and `expose`/`learn start` (flag-soup). `apply` exists but covers only 6 kinds (no rate-limit, org, team, agent, cert).
+- **Precedence rules contradict each other**: token = env > file > flag (flag is *lowest*); team/org = flag > config > env; base-url = env > flag > config; timeout has no env var at all. Each value has a different mental model.
+- **Error presentation is raw HTTP**: `HTTP request failed with status 409 Conflict: {"error":...}` — no exit-code taxonomy (everything is 1), no remediation hints (401 doesn't say "run flowplane auth login"), JSON bodies dumped verbatim.
+- **Doc/code drift in the "auto-generated" reference**: `down --volumes/--purge-state`, `logs --follow`, `auth login --device-code`, `config init --force`, `init-certs --if-missing-or-expired`, and global `--verbose` are all in the code but absent from `docs/reference/cli.md` despite the CI change-guard.
 - **No shell completion**, no `--help`-discoverable command grouping, no aliases.
-- **Mixed transport layers**: `database *` talks to PostgreSQL directly; everything else uses the REST
-  API; `init/down/logs/dataplane up` shell out to docker compose. A single binary doing CLI client +
-  server (`serve`) + migration runner.
-- **Pagination is manual** (`--limit`/`--offset`) with inconsistent caps (`list` hardcodes
-  `limit=1000`; `apply` reconciles with `limit=1000`), and some lists lack paging entirely
-  (`cert list`, `wasm list`, `org list`).
-- **Optimistic concurrency only for rate-limit** (`--version`/If-Match); all other updates are
-  last-writer-wins, while the UI uses version-aware updates for the same resources.
+- **Mixed transport layers**: `database *` talks to PostgreSQL directly; everything else uses the REST API; `init/down/logs/dataplane up` shell out to docker compose. A single binary doing CLI client + server (`serve`) + migration runner.
+- **Pagination is manual** (`--limit`/`--offset`) with inconsistent caps (`list` hardcodes `limit=1000`; `apply` reconciles with `limit=1000`), and some lists lack paging entirely (`cert list`, `wasm list`, `org list`).
+- **Optimistic concurrency only for rate-limit** (`--version`/If-Match); all other updates are last-writer-wins, while the UI uses version-aware updates for the same resources.
 
 ---
 
 ## 4. UI Page Inventory
 
-62 pages under `ui/src/routes/`. API calls are `apiClient.*` methods (`ui/src/lib/api/client.ts`) plus
-helpers in `lib/api/routes.ts` / `route-views.ts`; `getSessionInfo` (GET `/api/v1/auth/session`) is used
-by nearly every page for identity/team context and is omitted below unless it is the point of the page.
-CLI coverage: **yes** (v1 CLI does the task), **partial**, **no**.
+62 pages under `ui/src/routes/`. API calls are `apiClient.*` methods (`ui/src/lib/api/client.ts`) plus helpers in `lib/api/routes.ts` / `route-views.ts`; `getSessionInfo` (GET `/api/v1/auth/session`) is used by nearly every page for identity/team context and is omitted below unless it is the point of the page. CLI coverage: **yes** (v1 CLI does the task), **partial**, **no**.
 
 | Page route | User task | Key API calls | CLI coverage |
 |---|---|---|---|
@@ -315,10 +249,7 @@ CLI coverage: **yes** (v1 CLI does the task), **partial**, **no**.
 | `/admin/system` | Reload filter schemas | reloadFilterSchemas | yes (`admin reload-filter-schemas`) |
 | `/admin/tenants/[org]` | Per-org governance drill-in (resources, filters, activity) | getAdminResourceSummary, getFiltersByOrg, getOrgsActivity | **no** (only the resource summary exists as `admin resources`) |
 
-**Totals**: 62 pages → ~38 distinct workflows. CLI coverage: ~21 yes, ~10 partial, **7 with no CLI
-equivalent at all** (route/vhost-scoped filter configuration, single-route editing + bulk MCP, MCP tool
-update/apply-learned-schema, MCP connections observability, team/org membership + principal grants,
-admin apps toggles, per-org governance drill-in).
+**Totals**: 62 pages → ~38 distinct workflows. CLI coverage: ~21 yes, ~10 partial, **7 with no CLI equivalent at all** (route/vhost-scoped filter configuration, single-route editing + bulk MCP, MCP tool update/apply-learned-schema, MCP connections observability, team/org membership + principal grants, admin apps toggles, per-org governance drill-in).
 
 ---
 
@@ -355,30 +286,15 @@ admin apps toggles, per-org governance drill-in).
 
 ## 6. Gaps and Smells (feeds spec/08)
 
-1. **The UI is API-richer than the CLI.** ~150 ApiClient methods vs ~140 CLI leaf commands, but the
-   overlap is incomplete in both directions: 7 UI workflow families have zero CLI path (membership,
-   grants, scoped filter config, single-route edit, MCP tool mgmt, MCP connections, app toggles). In a
-   UI-less v2 every one of these is a hard blocker unless explicitly cut.
-2. **Version-aware updates exist in the API and UI but not the CLI** (except rate-limit). v2 needs a
-   uniform concurrency story (ETag/If-Match everywhere or nowhere).
-3. **Addressing chaos**: names (clusters/listeners/route-configs), UUIDs (filters via name→id lookup
-   inside the CLI, imports, secrets, certs, wasm), numeric ids (schemas), route IDs (mcp). v2 should
-   pick one user-facing handle per resource.
-4. **No structured output for mutations** (`delete`, `attach`, `expose`, `mcp enable` print prose) →
-   unscriptable; no `--quiet`/`-o json` on exactly the commands CI pipelines call.
-5. **Exit code monoculture** (0/1) and raw HTTP error dumps; no machine-readable error envelope
-   pass-through.
-6. **`apply` is half-declarative**: 6 kinds, no delete/prune, no dry-run, no diff, list-reconcile with
-   hardcoded `limit=1000`.
-7. **Doc generation drift** despite a CI change-guard — the generator misses flags (`--follow`,
-   `--device-code`, `--force`, `--if-missing-or-expired`, `down` flags, global `--verbose`), meaning
-   the guard checks staleness of the file, not completeness of the generator.
-8. **Local-stack coupling**: `init/down/logs/dataplane up` embed docker-compose and PKI generation in
-   the API client binary; v2 should decide whether dev-stack orchestration is in-binary or a separate
-   tool/plugin.
-9. **Auth precedence inversion** (env beats explicit `--token` flag) was a deliberate v1 fix but
-   violates least-surprise vs every mainstream CLI (flag > env > file); team/org resolve in the
-   opposite order — v2 must define one precedence rule globally.
+1. **The UI is API-richer than the CLI.** ~150 ApiClient methods vs ~140 CLI leaf commands, but the overlap is incomplete in both directions: 7 UI workflow families have zero CLI path (membership, grants, scoped filter config, single-route edit, MCP tool mgmt, MCP connections, app toggles). In a UI-less v2 every one of these is a hard blocker unless explicitly cut.
+2. **Version-aware updates exist in the API and UI but not the CLI** (except rate-limit). v2 needs a uniform concurrency story (ETag/If-Match everywhere or nowhere).
+3. **Addressing chaos**: names (clusters/listeners/route-configs), UUIDs (filters via name→id lookup inside the CLI, imports, secrets, certs, wasm), numeric ids (schemas), route IDs (mcp). v2 should pick one user-facing handle per resource.
+4. **No structured output for mutations** (`delete`, `attach`, `expose`, `mcp enable` print prose) → unscriptable; no `--quiet`/`-o json` on exactly the commands CI pipelines call.
+5. **Exit code monoculture** (0/1) and raw HTTP error dumps; no machine-readable error envelope pass-through.
+6. **`apply` is half-declarative**: 6 kinds, no delete/prune, no dry-run, no diff, list-reconcile with hardcoded `limit=1000`.
+7. **Doc generation drift** despite a CI change-guard — the generator misses flags (`--follow`, `--device-code`, `--force`, `--if-missing-or-expired`, `down` flags, global `--verbose`), meaning the guard checks staleness of the file, not completeness of the generator.
+8. **Local-stack coupling**: `init/down/logs/dataplane up` embed docker-compose and PKI generation in the API client binary; v2 should decide whether dev-stack orchestration is in-binary or a separate tool/plugin.
+9. **Auth precedence inversion** (env beats explicit `--token` flag) was a deliberate v1 fix but violates least-surprise vs every mainstream CLI (flag > env > file); team/org resolve in the opposite order — v2 must define one precedence rule globally.
 10. **Per-command hand-rolled tables** and three output defaults; no pager, no column selection, no
     `-o jsonpath/template`.
 11. **Session endpoints the CLI never uses** (`/api/v1/auth/session`, cookie login) exist purely for

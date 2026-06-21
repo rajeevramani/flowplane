@@ -1,52 +1,25 @@
 # 01 — REST API Contract
 
-Extracted from Flowplane v1 (v0.2.10). Sources: `src/api/routes.rs` (route table, middleware),
-`src/api/error.rs`, `src/api/handlers/pagination.rs`, `src/api/docs.rs` (utoipa OpenAPI), and the
-**generated OpenAPI document** committed alongside this file as
-[`01-api-contract.v1-openapi.json`](01-api-contract.v1-openapi.json) — that JSON is the exact
-machine contract for request/response schemas; this document is the human-level contract plus
-facts the OpenAPI doc does not carry (middleware, limits, drift).
+Extracted from Flowplane v1 (v0.2.10). Sources: `src/api/routes.rs` (route table, middleware), `src/api/error.rs`, `src/api/handlers/pagination.rs`, `src/api/docs.rs` (utoipa OpenAPI), and the **generated OpenAPI document** committed alongside this file as [`01-api-contract.v1-openapi.json`](01-api-contract.v1-openapi.json) — that JSON is the exact machine contract for request/response schemas; this document is the human-level contract plus facts the OpenAPI doc does not carry (middleware, limits, drift).
 
 ## 1. Conventions
 
 ### Base URL, versioning, serving
 
-- All API routes live under `/api/v1/`. The same Axum server (port 8080) serves the REST API, the
-  MCP endpoint, Swagger UI (`/swagger-ui`, OpenAPI at `/api-docs/openapi.json` — deliberately
-  unauthenticated; static build-time document, accepted risk H9), and the SvelteKit SPA as a
-  static fallback (`FLOWPLANE_UI_DIR`, default `./ui/build`). Unknown `/api/*` paths return JSON
-  404 `{"error":"not_found","message":"API endpoint not found"}` rather than the SPA.
+- All API routes live under `/api/v1/`. The same Axum server (port 8080) serves the REST API, the MCP endpoint, Swagger UI (`/swagger-ui`, OpenAPI at `/api-docs/openapi.json` — deliberately unauthenticated; static build-time document, accepted risk H9), and the SvelteKit SPA as a static fallback (`FLOWPLANE_UI_DIR`, default `./ui/build`). Unknown `/api/*` paths return JSON 404 `{"error":"not_found","message":"API endpoint not found"}` rather than the SPA.
 
 ### Authentication & middleware stack (secured router, outermost-first)
 
-1. **Auth layer**: Zitadel JWT bearer auth (`authenticate` middleware). Dev mode uses the same
-   code path against an in-process mock OIDC server. If Zitadel is not configured at all, the
-   server starts **degraded**: every secured endpoint returns
-   503 `{"error":"Auth not configured — run setup-zitadel"}`.
-2. **Per-tenant write throttle**: POST/PUT/PATCH/DELETE are rate-limited per tenant, keyed
-   `org:{org_id}` (fallback `token:{token_id}`; requests with no AuthContext fail closed under a
-   shared `unauthenticated` bucket). Over-limit → 429 with `Retry-After` header. Reads are not
-   throttled.
+1. **Auth layer**: Zitadel JWT bearer auth (`authenticate` middleware). Dev mode uses the same code path against an in-process mock OIDC server. If Zitadel is not configured at all, the server starts **degraded**: every secured endpoint returns 503 `{"error":"Auth not configured — run setup-zitadel"}`.
+2. **Per-tenant write throttle**: POST/PUT/PATCH/DELETE are rate-limited per tenant, keyed `org:{org_id}` (fallback `token:{token_id}`; requests with no AuthContext fail closed under a shared `unauthenticated` bucket). Over-limit → 429 with `Retry-After` header. Reads are not throttled.
 3. **Dynamic scope layer** (`ensure_dynamic_scopes`) then OTel HTTP tracing.
 
 Edge layers applied to *everything* (API + static fallback):
 
-- **Body limit**: default 1 MiB (`FLOWPLANE_API_MAX_BODY_SIZE`, min 1024). The custom-WASM-filter
-  upload route overrides with `MAX_WASM_BINARY_SIZE * 2` (base64 inflation headroom). Excess →
-  413 `payload_too_large`.
-- **Security headers** on every response: `X-Content-Type-Options: nosniff`,
-  `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, HSTS
-  `max-age=31536000; includeSubDomains`, and CSP — for HTML:
-  `frame-ancestors 'none'; object-src 'none'; base-uri 'self'` (script-src left to the SPA's
-  meta CSP); for non-HTML: `default-src 'none'; script-src 'self'; frame-ancestors 'none';
-  object-src 'none'; base-uri 'self'`.
-- **CORS**: origins from `FLOWPLANE_UI_ORIGIN` (comma-separated; default
-  `http://localhost:3000,http://localhost:6274`). `allow_credentials` is **only** enabled when
-  origins are explicitly configured (finding H10 — defaults fail closed). Allowed headers include
-  `x-csrf-token`, `mcp-protocol-version`, `mcp-session-id`, `last-event-id`; exposed:
-  `x-csrf-token`, `mcp-session-id`.
-- Startup safety check: `FLOWPLANE_COOKIE_SECURE=false` + an `https://` base URL panics at boot
-  (refuses dangerous misconfiguration).
+- **Body limit**: default 1 MiB (`FLOWPLANE_API_MAX_BODY_SIZE`, min 1024). The custom-WASM-filter upload route overrides with `MAX_WASM_BINARY_SIZE * 2` (base64 inflation headroom). Excess → 413 `payload_too_large`.
+- **Security headers** on every response: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, HSTS `max-age=31536000; includeSubDomains`, and CSP — for HTML: `frame-ancestors 'none'; object-src 'none'; base-uri 'self'` (script-src left to the SPA's meta CSP); for non-HTML: `default-src 'none'; script-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'`.
+- **CORS**: origins from `FLOWPLANE_UI_ORIGIN` (comma-separated; default `http://localhost:3000,http://localhost:6274`). `allow_credentials` is **only** enabled when origins are explicitly configured (finding H10 — defaults fail closed). Allowed headers include `x-csrf-token`, `mcp-protocol-version`, `mcp-session-id`, `last-event-id`; exposed: `x-csrf-token`, `mcp-session-id`.
+- Startup safety check: `FLOWPLANE_COOKIE_SECURE=false` + an `https://` base URL panics at boot (refuses dangerous misconfiguration).
 
 ### Path-parameter naming (v1's documented convention)
 
@@ -58,19 +31,16 @@ Edge layers applied to *everything* (API + static fallback):
 | `{<res>_name}` / `{<res>_id}` | parent resource in nested paths |
 | `{org_name}`, `{agent_name}` | organization / agent name |
 
-RPC-style action sub-paths (`/revoke`, `/export`, `/activate`, `/stop`, `/rotate`, `/invite`,
-`/download`, `/enable`, `/disable`, `/refresh`) are used intentionally for non-CRUD transitions.
+RPC-style action sub-paths (`/revoke`, `/export`, `/activate`, `/stop`, `/rotate`, `/invite`, `/download`, `/enable`, `/disable`, `/refresh`) are used intentionally for non-CRUD transitions.
 
-Path values containing NUL/control characters are rejected as 404 before DB lookup
-(`validate_path_name`).
+Path values containing NUL/control characters are rejected as 404 before DB lookup (`validate_path_name`).
 
 ### Scoping tiers
 
 - `/api/v1/teams/{team}/…` — team-scoped resource CRUD (most endpoints).
 - `/api/v1/orgs/{org_name}/…` — org-scoped user-facing endpoints (teams, agents, grants).
 - `/api/v1/admin/…` — platform-admin endpoints (org/team management, governance aggregates).
-- A handful of cross-cutting authenticated endpoints sit at top level (`/api/v1/route-views`,
-  `/api/v1/dataplanes`, `/api/v1/audit-logs`, `/api/v1/filter-types`, …).
+- A handful of cross-cutting authenticated endpoints sit at top level (`/api/v1/route-views`, `/api/v1/dataplanes`, `/api/v1/audit-logs`, `/api/v1/filter-types`, …).
 
 ### Error contract
 
@@ -92,14 +62,11 @@ All errors are JSON `{"error": "<kind>", "message": "<human text>"}`:
 
 Malformed JSON bodies produce JSON 400s (custom extractor), not Axum's text/plain default.
 
-**v2 note:** the v1 error object has no machine-actionable `code` per failure (kind is coarse), no
-`what-to-do` field, and no correlation/request id. The v2 contract upgrades this (see spec/10);
-behavior above is the v1 baseline.
+**v2 note:** the v1 error object has no machine-actionable `code` per failure (kind is coarse), no `what-to-do` field, and no correlation/request id. The v2 contract upgrades this (see spec/10); behavior above is the v1 baseline.
 
 ### Pagination
 
-List endpoints use `?limit=` (default 50, clamped to [1, max]) and `?offset=` (default 0,
-clamped ≥0), returning:
+List endpoints use `?limit=` (default 50, clamped to [1, max]) and `?offset=` (default 0, clamped ≥0), returning:
 
 ```json
 { "items": [...], "total": <i64>, "limit": <i64>, "offset": <i64> }
@@ -109,15 +76,11 @@ Field names are camelCase. **Not uniformly adopted** — see §4 drift notes.
 
 ### OpenAPI tags
 
-Clusters, Listeners, Routes, Filters, Custom WASM Filters, Secrets, API Discovery,
-Administration, System. Security scheme: HTTP bearer (`bearerAuth`), applied globally.
+Clusters, Listeners, Routes, Filters, Custom WASM Filters, Secrets, API Discovery, Administration, System. Security scheme: HTTP bearer (`bearerAuth`), applied globally.
 
 ## 2. Endpoint inventory
 
-Complete route table from `build_router_with_registry` (`src/api/routes.rs:526-975`). "Auth"
-column: `public` = no auth; everything else is behind the bearer-auth layer (authorization
-specifics per endpoint are in spec/05; admin endpoints additionally require platform-admin).
-Exact request/response schemas: see the committed OpenAPI JSON.
+Complete route table from `build_router_with_registry` (`src/api/routes.rs:526-975`). "Auth" column: `public` = no auth; everything else is behind the bearer-auth layer (authorization specifics per endpoint are in spec/05; admin endpoints additionally require platform-admin). Exact request/response schemas: see the committed OpenAPI JSON.
 
 ### Public (unauthenticated)
 
@@ -300,49 +263,26 @@ Exact request/response schemas: see the committed OpenAPI JSON.
 
 ## 3. Exact schemas — the OpenAPI artifact
 
-The committed [`01-api-contract.v1-openapi.json`](01-api-contract.v1-openapi.json) is generated
-directly from v1's `ApiDoc::openapi()` (utoipa) at v0.2.10. It is the byte-exact contract v1
-serves at `/api-docs/openapi.json` and the baseline for the v2 contract diff required at the end
-of the REST slices.
+The committed [`01-api-contract.v1-openapi.json`](01-api-contract.v1-openapi.json) is generated directly from v1's `ApiDoc::openapi()` (utoipa) at v0.2.10. It is the byte-exact contract v1 serves at `/api-docs/openapi.json` and the baseline for the v2 contract diff required at the end of the REST slices.
 
 ## 4. Drift between route table and OpenAPI doc (v1 bugs to not repeat)
 
-Measured by diffing the generated OpenAPI document against the operations actually registered in
-`build_router_with_registry` (test module excluded):
+Measured by diffing the generated OpenAPI document against the operations actually registered in `build_router_with_registry` (test module excluded):
 
-- **Code registers 187 operations; the OpenAPI document describes 85.** 106 operations are
-  completely undocumented — including the entire org/team/member/grant surface, dataplanes,
-  proxy certificates, rate-limit domains/policies, ops diagnostics, stats, MCP management
-  (tools/enable/disable/bulk/apply-learned), expose/unexpose, filter attachment at every scope,
-  filter-types, admin apps/rate-limit/RLS endpoints, auth/session endpoints, and the MCP
-  protocol endpoint itself.
-- **4 operations are documented with the wrong method**: the doc claims `PUT` for
-  `/admin/teams/{id}`, `/teams/{team}/filters/{id}`, `/teams/{team}/custom-filters/{id}`, and
-  `/teams/{team}/secrets/{secret_id}`, while the code routes `PATCH`. A client generated from
-  v1's OpenAPI doc gets 405s on these.
-- Net: **the v1 OpenAPI document is true for less than half the API surface** — it covers the
-  original core-resource CRUD and learning endpoints and was not maintained as the surface grew.
-  An agent cannot operate v1 from its contract alone, which is precisely the v2 requirement.
+- **Code registers 187 operations; the OpenAPI document describes 85.** 106 operations are completely undocumented — including the entire org/team/member/grant surface, dataplanes, proxy certificates, rate-limit domains/policies, ops diagnostics, stats, MCP management (tools/enable/disable/bulk/apply-learned), expose/unexpose, filter attachment at every scope, filter-types, admin apps/rate-limit/RLS endpoints, auth/session endpoints, and the MCP protocol endpoint itself.
+- **4 operations are documented with the wrong method**: the doc claims `PUT` for `/admin/teams/{id}`, `/teams/{team}/filters/{id}`, `/teams/{team}/custom-filters/{id}`, and `/teams/{team}/secrets/{secret_id}`, while the code routes `PATCH`. A client generated from v1's OpenAPI doc gets 405s on these.
+- Net: **the v1 OpenAPI document is true for less than half the API surface** — it covers the original core-resource CRUD and learning endpoints and was not maintained as the surface grew. An agent cannot operate v1 from its contract alone, which is precisely the v2 requirement.
 
-**v2 consequence (binding):** the OpenAPI document must be generated from the same source of
-truth as the router with a CI gate asserting route-table ↔ document parity (v1's `b1_admin_routes`
-drift-probe pattern, §`src/api/routes.rs` tests, shows the right idea applied to only 6 routes).
+**v2 consequence (binding):** the OpenAPI document must be generated from the same source of truth as the router with a CI gate asserting route-table ↔ document parity (v1's `b1_admin_routes` drift-probe pattern, §`src/api/routes.rs` tests, shows the right idea applied to only 6 routes).
 
 ## 5. Gaps and smells (feeds spec/08)
 
-- Error objects lack machine-actionable codes, remediation hints, and request ids — an agent
-  cannot reliably branch on `message` strings.
-- Pagination wrapper exists but adoption is inconsistent across list endpoints (verify per
-  endpoint in the OpenAPI artifact).
-- Mixed identifier style: some resources addressed by `{name}`, others `{id}`; `{team}` accepts
-  name **or** UUID (dual lookup) — convenient but ambiguous for caching/idempotency.
-- `/api/v1/openapi/imports/{id}` GET/DELETE escapes the `/teams/{team}` prefix while its
-  list/create live under it — inconsistent scoping shape.
-- PUT vs PATCH is inconsistent (clusters/route-configs/listeners use PUT; filters, dataplanes,
-  secrets, custom filters use PATCH; admin org-member role uses PUT).
+- Error objects lack machine-actionable codes, remediation hints, and request ids — an agent cannot reliably branch on `message` strings.
+- Pagination wrapper exists but adoption is inconsistent across list endpoints (verify per endpoint in the OpenAPI artifact).
+- Mixed identifier style: some resources addressed by `{name}`, others `{id}`; `{team}` accepts name **or** UUID (dual lookup) — convenient but ambiguous for caching/idempotency.
+- `/api/v1/openapi/imports/{id}` GET/DELETE escapes the `/teams/{team}` prefix while its list/create live under it — inconsistent scoping shape.
+- PUT vs PATCH is inconsistent (clusters/route-configs/listeners use PUT; filters, dataplanes, secrets, custom filters use PATCH; admin org-member role uses PUT).
 - No idempotency mechanism on mutating endpoints (no `Idempotency-Key`, no create-or-get).
 - RPC action paths are pragmatic but unevenly named (`/activate` vs `/enable` vs `/rotate`).
-- The `expose` convenience endpoint creates three resources non-atomically from the client's view
-  (single call, but partial-failure semantics undocumented).
-- One env-var-driven body limit + per-route WASM override is sane, but limits are not surfaced in
-  the OpenAPI doc.
+- The `expose` convenience endpoint creates three resources non-atomically from the client's view (single call, but partial-failure semantics undocumented).
+- One env-var-driven body limit + per-route WASM override is sane, but limits are not surfaced in the OpenAPI doc.

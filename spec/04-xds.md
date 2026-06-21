@@ -1,8 +1,6 @@
 # 04 — Envoy xDS Subsystem
 
-Behavioral specification extracted from Flowplane v1 (`/tmp/flowplane-v1`). This document is
-self-contained: a competent engineer should be able to reimplement the xDS subsystem from it
-without opening v1 source. v1 file paths are cited for provenance only.
+Behavioral specification extracted from Flowplane v1 (`/tmp/flowplane-v1`). This document is self-contained: a competent engineer should be able to reimplement the xDS subsystem from it without opening v1 source. v1 file paths are cited for provenance only.
 
 ---
 
@@ -37,11 +35,9 @@ A single tonic gRPC server (the "xDS server") hosts four services on one bind ad
 On every new ADS stream (SOTW and Delta) the handler:
 
 1. Requires peer certs (`request.peer_certs()`); otherwise `UNAUTHENTICATED "Client certificate required for xDS mTLS"`.
-2. Parses the first (leaf) cert; extracts the first SAN URI starting with `spiffe://`. No SPIFFE URI → `UNAUTHENTICATED`.
-   Supported URI shapes (`src/xds/services/mtls.rs`):
+2. Parses the first (leaf) cert; extracts the first SAN URI starting with `spiffe://`. No SPIFFE URI → `UNAUTHENTICATED`. Supported URI shapes (`src/xds/services/mtls.rs`):
    - org-scoped: `spiffe://{trust_domain}/org/{org}/team/{team}/proxy/{proxy_id}`
-   - legacy: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}`
-   Extracted: `org` (optional), `team`, `proxy_id`, full `spiffe_uri`, cert serial (hex, audit only).
+   - legacy: `spiffe://{trust_domain}/team/{team}/proxy/{proxy_id}` Extracted: `org` (optional), `team`, `proxy_id`, full `spiffe_uri`, cert serial (hex, audit only).
 3. **Certificate binding (the authoritative step)** — `validate_mtls_identity_against_db` (`src/xds/services/database.rs`):
    - Look up the **full SPIFFE URI** (globally unique by construction) in the `proxy_certificates` registry.
    - Reject (`UNAUTHENTICATED`) if: registry unavailable, DB error, row missing ("not registered"), row revoked, or row expired. Fail closed in every case.
@@ -368,9 +364,7 @@ Key config schemas (fields beyond Envoy defaults; full serde structs mirror Envo
 
 ### 4.3 Per-route scoped config (`HttpScopedConfig`)
 
-Internally-tagged enum (`filter_type` discriminator) stored in route JSON `typed_per_filter_config` maps:
-`Compressor | LocalRateLimit | Cors | HeaderMutation | RateLimit | RateLimitQuota | CustomResponse | Mcp | JwtAuthn | Rbac | ExtProc | Typed(TypedConfig) | Custom(Any)`.
-`TypedConfig = { type_url, value: base64 }` (the JSON-safe `Any`). `to_any()` produces the per-route proto; `from_any()` decodes by type URL. OAuth2 deliberately absent.
+Internally-tagged enum (`filter_type` discriminator) stored in route JSON `typed_per_filter_config` maps: `Compressor | LocalRateLimit | Cors | HeaderMutation | RateLimit | RateLimitQuota | CustomResponse | Mcp | JwtAuthn | Rbac | ExtProc | Typed(TypedConfig) | Custom(Any)`. `TypedConfig = { type_url, value: base64 }` (the JSON-safe `Any`). `to_any()` produces the per-route proto; `from_any()` decodes by type URL. OAuth2 deliberately absent.
 
 ### 4.4 Listener-level injection (protobuf surgery)
 
