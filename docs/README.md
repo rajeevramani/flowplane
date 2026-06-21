@@ -84,17 +84,18 @@ across every file.
 
 ## Migration status
 
-The Diátaxis directories are populated by epic #100 (sub-issues #101–#112).
-Existing operator docs migrate **lazily** after this policy is ratified — not in a
-big upfront move. Planned reclassification (tracked, not yet executed):
+The Diátaxis directories are populated by epic #100 (sub-issues #101–#112). The
+existing operator docs have been reclassified (#116):
 
-| Current file | Destination | Class |
-|--------------|-------------|-------|
-| `aws-secure-deployment.md` | `docs/how-to/` (deployment example) | user |
-| `production-readiness.md` | `docs/how-to/` (likely an index → smaller pages) | user |
-| `secret-kek-rotation.md` | `docs/how-to/` | user |
-| `observability-alerts.md` | `docs/reference/` | user |
-| `dev-dataplane.md` | `../internal/` | internal (dev workflow) |
-| `failure-mode-matrix.md` | `../internal/` | internal (evidence) |
-| `adversarial-surface-map.md` | `../internal/` | internal (evidence) |
-| `release-packaging.md` | `../internal/release/` | internal |
+| Old path | New location | Class |
+|----------|--------------|-------|
+| `docs/aws-secure-deployment.md` | `docs/how-to/aws-secure-deployment.md` | user |
+| `docs/production-readiness.md` | `docs/how-to/production-readiness.md` | user |
+| `docs/secret-kek-rotation.md` | `docs/how-to/secret-kek-rotation.md` | user |
+| `docs/dev-dataplane.md` | `../internal/dev-dataplane.md` | internal (dev workflow) |
+| `docs/failure-mode-matrix.md` | `../internal/failure-mode-matrix.md` | internal (evidence) |
+| `docs/adversarial-surface-map.md` | `../internal/adversarial-surface-map.md` | internal (evidence) |
+| `docs/release-packaging.md` | `../internal/release/release-packaging.md` | internal |
+
+The boundary is enforced in CI by `scripts/check-docs-boundary.py` (see
+[Enforcement (CI)](#enforcement-ci)).
