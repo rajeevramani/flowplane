@@ -1,13 +1,8 @@
 # Observability Alert Pack
 
-This pack is the S12b operator baseline for v1.0 production readiness. It uses the metrics that
-exist in the current control-plane and data-plane-adjacent services, plus the low-cardinality
-hardening metrics added for S12. Dashboards and alerts should keep labels bounded: do not add
-team, org, dataplane, route, budget, tool, or agent labels unless a later issue explicitly accepts
-the cardinality cost.
+This pack is the S12b operator baseline for v1.0 production readiness. It uses the metrics that exist in the current control-plane and data-plane-adjacent services, plus the low-cardinality hardening metrics added for S12. Dashboards and alerts should keep labels bounded: do not add team, org, dataplane, route, budget, tool, or agent labels unless a later issue explicitly accepts the cardinality cost.
 
-Native OpenTelemetry `gen_ai.*` semantic-convention meters are deferred for v1.0. Flowplane emits
-pragmatic counters for shipped AI budget behavior instead.
+Native OpenTelemetry `gen_ai.*` semantic-convention meters are deferred for v1.0. Flowplane emits pragmatic counters for shipped AI budget behavior instead.
 
 ## Metric Inventory
 
@@ -41,8 +36,7 @@ pragmatic counters for shipped AI budget behavior instead.
 
 ## Alert Baseline
 
-These expressions are a starting point. Tune the thresholds after production traffic establishes
-normal baselines.
+These expressions are a starting point. Tune the thresholds after production traffic establishes normal baselines.
 
 | Alert | Expression | Initial severity | Rationale |
 | --- | --- | --- | --- |
@@ -64,8 +58,7 @@ normal baselines.
 
 Use one production dashboard with these panels:
 
-1. API request rate, error rate, and p95 latency from `fp_api_requests_total` and
-   `fp_api_request_duration_ms`.
+1. API request rate, error rate, and p95 latency from `fp_api_requests_total` and `fp_api_request_duration_ms`.
 2. xDS health: NACKs, quarantines, translation failures, ADS stream opens/closes.
 3. Outbox health: pending events, oldest pending age, handled events, handler failures.
 4. DB pool health: in-use, idle, max, and in-use/max ratio.
@@ -74,11 +67,7 @@ Use one production dashboard with these panels:
 
 ## Operational Notes
 
-- The serve-owned sampler is read-only. It does not advance outbox cursors and does not contact
-  dataplanes.
-- `fp_outbox_pending_events` and `fp_outbox_oldest_pending_age_seconds` are currently emitted for
-  the `xds-snapshot` consumer.
-- `fp_xds_snapshot_rebuilds_total` still has a `team` label from earlier slice work. Do not copy
-  that pattern into new S12 metrics.
-- The ADS stream counters count authenticated ADS streams only. Failed authentication is covered by
-  xDS/API logs and the existing authn/authz surfaces, not these lifecycle counters.
+- The serve-owned sampler is read-only. It does not advance outbox cursors and does not contact dataplanes.
+- `fp_outbox_pending_events` and `fp_outbox_oldest_pending_age_seconds` are currently emitted for the `xds-snapshot` consumer.
+- `fp_xds_snapshot_rebuilds_total` still has a `team` label from earlier slice work. Do not copy that pattern into new S12 metrics.
+- The ADS stream counters count authenticated ADS streams only. Failed authentication is covered by xDS/API logs and the existing authn/authz surfaces, not these lifecycle counters.

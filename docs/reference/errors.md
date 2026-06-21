@@ -2,10 +2,7 @@
 
 > Audience: api-consumers, operators · Status: stable
 
-Every Flowplane API failure is returned as a single stable JSON envelope carrying a
-machine-readable `code`. Clients branch on `code`; the HTTP status is derived from it.
-The code set is a closed, append-only contract — codes may be added but never change
-meaning.
+Every Flowplane API failure is returned as a single stable JSON envelope carrying a machine-readable `code`. Clients branch on `code`; the HTTP status is derived from it. The code set is a closed, append-only contract — codes may be added but never change meaning.
 
 ## Error envelope
 
@@ -33,8 +30,7 @@ All error responses share this body:
 
 ## Codes
 
-One row per code. **Retryable** = the identical request may succeed if retried without
-modification.
+One row per code. **Retryable** = the identical request may succeed if retried without modification.
 
 | `code` | HTTP status | Retryable | Meaning |
 |--------|-------------|-----------|---------|
@@ -54,25 +50,19 @@ modification.
 
 ## Redaction of internal errors
 
-For `internal` and `invalid_config`, the server does **not** return the underlying
-message or `details`. The response body is:
+For `internal` and `invalid_config`, the server does **not** return the underlying message or `details`. The response body is:
 
 - `message`: `"an internal error occurred; report the request_id to your operator"`
 - `details`: omitted
 - `code` and `request_id`: present as normal
 
-The original message is written to the server log keyed by `request_id`, so an operator
-can correlate the redacted response with the real cause. The original `details` are not
-returned and not logged here.
+The original message is written to the server log keyed by `request_id`, so an operator can correlate the redacted response with the real cause. The original `details` are not returned and not logged here.
 
 ## Retry-After
 
-`rate_limited` (and any error carrying a retry-after value) sets the standard
-`Retry-After` response header to the number of seconds after which a retry may succeed.
+`rate_limited` (and any error carrying a retry-after value) sets the standard `Retry-After` response header to the number of seconds after which a retry may succeed.
 
 ## Source of truth
 
-- Code set, retryable predicate, and per-code meaning: `crates/fp-domain/src/error.rs`
-  (`ErrorCode`, `ErrorCode::is_retryable`).
-- HTTP status mapping, envelope, redaction, and `Retry-After`:
-  `crates/fp-api/src/error.rs` (`ApiError::status`, `ErrorBody`, `IntoResponse`).
+- Code set, retryable predicate, and per-code meaning: `crates/fp-domain/src/error.rs` (`ErrorCode`, `ErrorCode::is_retryable`).
+- HTTP status mapping, envelope, redaction, and `Retry-After`: `crates/fp-api/src/error.rs` (`ApiError::status`, `ErrorBody`, `IntoResponse`).
