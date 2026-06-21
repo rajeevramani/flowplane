@@ -45,6 +45,10 @@ pub struct ServerConfig {
     pub oidc: Option<OidcSettings>,
     /// Per-tenant mutating-request budget per minute (spec/10 §4a).
     pub tenant_write_limit_per_minute: u32,
+    /// Local-only opt-in (#113): when true, an uninitialized non-dev instance with no
+    /// operator-supplied bootstrap token falls back to generating one and logging it. Enabled
+    /// only by the exact value `yes-this-is-local-only`; otherwise the instance fails closed.
+    pub allow_logged_bootstrap_token: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -298,6 +302,10 @@ impl ServerConfig {
             .with_hint("dev mode brings its own in-process issuer"));
         }
 
+        // Only the exact opt-in value re-enables the legacy generate-and-log path (#113).
+        let allow_logged_bootstrap_token =
+            get("FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN") == Some("yes-this-is-local-only");
+
         Ok(Self {
             api_addr,
             xds_addr,
@@ -312,6 +320,7 @@ impl ServerConfig {
             dev_mode,
             oidc,
             tenant_write_limit_per_minute,
+            allow_logged_bootstrap_token,
         })
     }
 }

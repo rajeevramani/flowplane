@@ -33,6 +33,9 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_OTLP_ENDPOINT` | server | — | no | OTLP trace export endpoint; unset disables export. |
 | `FLOWPLANE_DEV_MODE` | server | `false` | no ⁴ | In-process OIDC issuer + seeded resources; needs the `dev-oidc` build feature. |
 | `FLOWPLANE_DEV_MODE_ACK` | server | — | no ⁴ | In release builds, dev mode requires this to equal `yes-this-is-not-production`. |
+| `FLOWPLANE_BOOTSTRAP_TOKEN` | server | — | first boot ¹³ | Operator-supplied one-shot bootstrap token (≥ 32 chars after trimming). Seeds first-admin setup; the value is never logged. |
+| `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` | server | — | first boot ¹³ | Path to read the bootstrap token from; **takes precedence** over `FLOWPLANE_BOOTSTRAP_TOKEN`. File delivery is safer than env. |
+| `FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN` | server | — | no | Local-only escape hatch: the exact value `yes-this-is-local-only` re-enables generating and **logging** a token. Never set in production. |
 | `FLOWPLANE_OIDC_AUDIENCE` | server | — | no ⁵ | Expected JWT `aud` claim. |
 | `FLOWPLANE_OIDC_JWKS_URI` | server | — | no | JWKS endpoint override (optional even with OIDC set). |
 | `FLOWPLANE_TENANT_WRITE_LIMIT_PER_MIN` | server | `120` | no | Per-tenant mutating-request budget per minute; must be ≥ 1. |
@@ -85,6 +88,7 @@ encrypt/decrypt/snapshot paths run (not at server startup). A violation yields a
 | ¹⁰ | `FLOWPLANE_AGENT_CP_ENDPOINT` | Plaintext (`http`/non-`https`) allowed only for loopback hosts; non-loopback requires agent TLS (⁶). |
 | ¹¹ | `FLOWPLANE_AGENT_POLL_INTERVAL_SECS` | Coerced to a minimum of 1 second. |
 | ¹² | `FLOWPLANE_AGENT_QUEUE_CAP` | Clamped to `1..=16384`. |
+| ¹³ | `FLOWPLANE_BOOTSTRAP_TOKEN`, `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` | Required on the **first** boot of an uninitialized, non-dev instance: with no token (and without the `yes-this-is-local-only` opt-in) the server **fails closed** and does not start. Already-initialized instances ignore these. Supply the **same** token to every replica. See [How-to: bootstrap the first admin](../how-to/bootstrap-platform.md). |
 
 ## TOML config file keys (server)
 

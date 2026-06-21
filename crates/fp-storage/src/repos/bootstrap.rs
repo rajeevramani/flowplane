@@ -1,10 +1,15 @@
 //! One-shot bootstrap (spec/08a §2.2.10): first-boot token → platform org + first admin.
 //!
-//! Flow: an uninitialized server generates a token at boot, stores only its SHA-256 hash
-//! (24 h expiry), and logs the plaintext once. The operator calls
-//! `POST /api/v1/bootstrap/initialize` with it; in ONE transaction the platform org is
-//! created and marked, the admin user is provisioned for their OIDC subject, the owner
-//! membership lands, the token is consumed, and the audit row commits. Replays fail closed.
+//! Flow: the operator supplies a bootstrap token to an uninitialized server (env / file); the
+//! server stores only its SHA-256 hash (24 h expiry) and **never logs the plaintext** (#113).
+//! The operator calls `POST /api/v1/bootstrap/initialize` with it; in ONE transaction the
+//! platform org is created and marked, the admin user is provisioned for their OIDC subject, the
+//! owner membership lands, the token is consumed, and the audit row commits. Replays fail closed.
+//!
+//! A legacy generate-and-log path (`issue_token_if_uninitialized`) remains available only behind
+//! an explicit local-only opt-in; `operator_seeded` on `bootstrap_tokens` records which path a
+//! token came from so an operator seed can invalidate prior unused legacy tokens while a
+//! divergent live operator token across replicas fails closed.
 
 use crate::repos::audit::{ActorType, AuditEntry, Outcome, Surface};
 use fp_domain::{DomainError, DomainResult, ErrorCode, OrgId, RequestId, UserId};
@@ -31,9 +36,11 @@ pub async fn is_initialized(pool: &PgPool) -> DomainResult<bool> {
     Ok(marker.is_some())
 }
 
-/// Generate a fresh bootstrap token if (and only if) the instance is uninitialized.
-/// Called at boot; the plaintext is returned exactly once for logging. Prior unused tokens
-/// from earlier boots remain valid until expiry (their plaintext is in the earlier logs).
+/// LEGACY, local-only: generate a fresh bootstrap token if (and only if) the instance is
+/// uninitialized, returning the plaintext once for logging. This path leaks the token to logs and
+/// is gated behind an explicit opt-in (`FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN`); production seeds
+/// the token with [`seed_token_hash_if_uninitialized`] instead. The generated row is marked
+/// `operator_seeded = false` so a later operator seed can invalidate it.
 pub async fn issue_token_if_uninitialized(pool: &PgPool) -> DomainResult<Option<String>> {
     if is_initialized(pool).await? {
         return Ok(None);
@@ -44,8 +51,8 @@ pub async fn issue_token_if_uninitialized(pool: &PgPool) -> DomainResult<Option<
         Uuid::new_v4().simple()
     );
     sqlx::query(
-        "INSERT INTO bootstrap_tokens (id, token_hash, expires_at) \
-         VALUES ($1, $2, now() + interval '24 hours')",
+        "INSERT INTO bootstrap_tokens (id, token_hash, expires_at, operator_seeded) \
+         VALUES ($1, $2, now() + interval '24 hours', false)",
     )
     .bind(Uuid::now_v7())
     .bind(hash_token(&token))
@@ -53,6 +60,120 @@ pub async fn issue_token_if_uninitialized(pool: &PgPool) -> DomainResult<Option<
     .await
     .map_err(|e| DomainError::internal(format!("issue bootstrap token: {e}")))?;
     Ok(Some(token))
+}
+
+/// Outcome of [`seed_token_hash_if_uninitialized`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedOutcome {
+    /// The operator token's hash was newly seeded.
+    Seeded,
+    /// This exact token is already the live seed (same token across replicas / re-run). No-op.
+    Idempotent,
+    /// The instance is already initialized; nothing to seed.
+    AlreadyInitialized,
+    /// A *different* live operator-seeded token already exists — divergent replica configuration.
+    /// Fail closed; the existing token is left untouched.
+    Conflict,
+}
+
+/// Seed the SHA-256 hash of an **operator-supplied** bootstrap token when the instance is
+/// uninitialized — the plaintext is never logged (#113). Serialized with [`initialize`] via the
+/// same advisory lock so seeds and the consuming initialize cannot interleave across replicas.
+///
+/// Semantics (locked in #113):
+/// - already initialized → [`SeedOutcome::AlreadyInitialized`] (no row written);
+/// - same token already live → [`SeedOutcome::Idempotent`];
+/// - a *different* live operator-seeded token exists → [`SeedOutcome::Conflict`] (fail closed,
+///   never clobber a peer replica's token);
+/// - otherwise invalidate prior unused **legacy** tokens (`operator_seeded = false`) and seed ours
+///   → [`SeedOutcome::Seeded`].
+pub async fn seed_token_hash_if_uninitialized(
+    pool: &PgPool,
+    token: &str,
+) -> DomainResult<SeedOutcome> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("bootstrap seed: begin: {e}")))?;
+
+    // Same advisory lock as `initialize`: seed and initialize mutate the same trust boundary, so
+    // they must serialize across all connections/replicas.
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(BOOTSTRAP_LOCK_KEY)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("bootstrap seed: lock: {e}")))?;
+
+    let initialized: Option<String> =
+        sqlx::query_scalar("SELECT value FROM instance_meta WHERE key = 'platform_org_id'")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("bootstrap seed: check init: {e}")))?;
+    if initialized.is_some() {
+        return Ok(SeedOutcome::AlreadyInitialized);
+    }
+
+    let h = hash_token(token);
+
+    // This exact token is already live AND operator-seeded → idempotent (same operator token across
+    // replicas / re-run). A same-hash *legacy* row is intentionally excluded so it falls through to
+    // the invalidate-and-promote path below and becomes operator-seeded.
+    let mine_live: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM bootstrap_tokens \
+         WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() AND operator_seeded = true",
+    )
+    .bind(&h)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("bootstrap seed: probe self: {e}")))?;
+    if mine_live.is_some() {
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::internal(format!("bootstrap seed: commit: {e}")))?;
+        return Ok(SeedOutcome::Idempotent);
+    }
+
+    // A different live *operator-seeded* token → divergent replica config. Fail closed; do not
+    // invalidate it. (Legacy `operator_seeded = false` tokens do not trigger this.)
+    let peer: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM bootstrap_tokens \
+         WHERE token_hash <> $1 AND used_at IS NULL AND expires_at > now() \
+           AND operator_seeded = true LIMIT 1",
+    )
+    .bind(&h)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("bootstrap seed: probe peers: {e}")))?;
+    if peer.is_some() {
+        return Ok(SeedOutcome::Conflict); // tx rolls back on drop
+    }
+
+    // Invalidate prior unused LEGACY tokens (generate-and-log boots), then seed ours.
+    sqlx::query(
+        "UPDATE bootstrap_tokens SET used_at = now() \
+         WHERE used_at IS NULL AND operator_seeded = false",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("bootstrap seed: invalidate legacy: {e}")))?;
+
+    // Insert (or refresh an expired same-hash row) as the live operator seed.
+    sqlx::query(
+        "INSERT INTO bootstrap_tokens (id, token_hash, expires_at, operator_seeded) \
+         VALUES ($1, $2, now() + interval '24 hours', true) \
+         ON CONFLICT (token_hash) DO UPDATE \
+            SET used_at = NULL, expires_at = now() + interval '24 hours', operator_seeded = true",
+    )
+    .bind(Uuid::now_v7())
+    .bind(&h)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("bootstrap seed: insert: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("bootstrap seed: commit: {e}")))?;
+    Ok(SeedOutcome::Seeded)
 }
 
 /// Consume a bootstrap token and initialize the platform: platform org + first admin.
@@ -72,7 +193,7 @@ pub async fn initialize(
             ErrorCode::Unauthorized,
             "invalid, expired, or used bootstrap token",
         )
-        .with_hint("restart the server to issue a fresh token (logged once at boot)")
+        .with_hint("supply a valid bootstrap token to an uninitialized instance and retry")
     };
 
     let mut tx = pool
@@ -369,6 +490,161 @@ mod tests {
             .execute(&pool)
             .await
             .expect("clean");
+        sqlx::query("SELECT pg_advisory_unlock(420001)")
+            .execute(&pool)
+            .await
+            .expect("unlock");
+    }
+
+    #[tokio::test]
+    async fn operator_seed_semantics() {
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = crate::connect(&url, 4).await.expect("connect");
+        crate::migrate(&pool).await.expect("migrate");
+
+        // Owns instance-level state; serialize against parallel siblings and start from a clean slate.
+        sqlx::query("SELECT pg_advisory_lock(420001)")
+            .execute(&pool)
+            .await
+            .expect("lock");
+        let clean = |pool: PgPool| async move {
+            sqlx::query("DELETE FROM instance_meta WHERE key = 'platform_org_id'")
+                .execute(&pool)
+                .await
+                .expect("clean meta");
+            sqlx::query("DELETE FROM bootstrap_tokens")
+                .execute(&pool)
+                .await
+                .expect("clean tokens");
+        };
+        clean(pool.clone()).await;
+
+        let live_count = |pool: PgPool, operator: bool| async move {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM bootstrap_tokens \
+                 WHERE used_at IS NULL AND expires_at > now() AND operator_seeded = $1",
+            )
+            .bind(operator)
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+            n
+        };
+
+        let t1 = "operator-token-aaaaaaaaaaaaaaaaaaaaaaaa"; // >= 32 chars
+        let t2 = "operator-token-bbbbbbbbbbbbbbbbbbbbbbbb";
+
+        // Fresh seed.
+        assert_eq!(
+            seed_token_hash_if_uninitialized(&pool, t1)
+                .await
+                .expect("seed"),
+            SeedOutcome::Seeded
+        );
+        assert_eq!(
+            live_count(pool.clone(), true).await,
+            1,
+            "one live operator token"
+        );
+
+        // Same token again → idempotent, still exactly one live row.
+        assert_eq!(
+            seed_token_hash_if_uninitialized(&pool, t1)
+                .await
+                .expect("seed"),
+            SeedOutcome::Idempotent
+        );
+        assert_eq!(live_count(pool.clone(), true).await, 1);
+
+        // A different live operator token → fail closed; t1 untouched.
+        assert_eq!(
+            seed_token_hash_if_uninitialized(&pool, t2)
+                .await
+                .expect("seed"),
+            SeedOutcome::Conflict
+        );
+        assert_eq!(
+            live_count(pool.clone(), true).await,
+            1,
+            "conflict must not clobber t1"
+        );
+
+        // Invalidate prior unused LEGACY token on a successful operator seed.
+        clean(pool.clone()).await;
+        let legacy = issue_token_if_uninitialized(&pool)
+            .await
+            .expect("issue legacy")
+            .expect("uninitialized");
+        assert!(legacy.starts_with("fpboot_"));
+        assert_eq!(
+            live_count(pool.clone(), false).await,
+            1,
+            "legacy token live"
+        );
+        assert_eq!(
+            seed_token_hash_if_uninitialized(&pool, t1)
+                .await
+                .expect("seed"),
+            SeedOutcome::Seeded
+        );
+        assert_eq!(
+            live_count(pool.clone(), false).await,
+            0,
+            "legacy invalidated"
+        );
+        assert_eq!(
+            live_count(pool.clone(), true).await,
+            1,
+            "operator token live"
+        );
+
+        // Supplying the live LEGACY token itself as the operator token promotes it: Seeded, and the
+        // row becomes operator_seeded = true (so a later divergent peer fails closed, not clobbers).
+        clean(pool.clone()).await;
+        let legacy = issue_token_if_uninitialized(&pool)
+            .await
+            .expect("issue legacy")
+            .expect("uninitialized");
+        assert_eq!(
+            seed_token_hash_if_uninitialized(&pool, &legacy)
+                .await
+                .expect("seed"),
+            SeedOutcome::Seeded
+        );
+        assert_eq!(
+            live_count(pool.clone(), false).await,
+            0,
+            "no legacy row remains"
+        );
+        assert_eq!(
+            live_count(pool.clone(), true).await,
+            1,
+            "promoted to operator-seeded"
+        );
+
+        // Already initialized → no-op, no new token row.
+        clean(pool.clone()).await;
+        sqlx::query("INSERT INTO instance_meta (key, value) VALUES ('platform_org_id', $1)")
+            .bind(Uuid::now_v7().to_string())
+            .execute(&pool)
+            .await
+            .expect("mark initialized");
+        assert_eq!(
+            seed_token_hash_if_uninitialized(&pool, t1)
+                .await
+                .expect("seed"),
+            SeedOutcome::AlreadyInitialized
+        );
+        assert_eq!(
+            live_count(pool.clone(), true).await,
+            0,
+            "no token seeded once initialized"
+        );
+
+        clean(pool.clone()).await;
         sqlx::query("SELECT pg_advisory_unlock(420001)")
             .execute(&pool)
             .await

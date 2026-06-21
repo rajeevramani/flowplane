@@ -48,15 +48,7 @@ pub async fn run() -> anyhow::Result<()> {
         .context("failed to install Prometheus metrics recorder")?;
 
     if !config.dev_mode {
-        if let Some(token) =
-            fp_storage::repos::bootstrap::issue_token_if_uninitialized(&pool).await?
-        {
-            tracing::warn!(
-                bootstrap_token = %token,
-                "instance is uninitialized — POST /api/v1/bootstrap/initialize with this \
-                 one-shot token (valid 24h, logged only once)"
-            );
-        }
+        seed_bootstrap_token(&pool, &config).await?;
     }
 
     // xDS pipeline: snapshot cache primed from the DB (restart safety), then kept fresh by
@@ -359,6 +351,120 @@ async fn setup_dev_mode(
     ))
 }
 
+/// Minimum length of an operator-supplied bootstrap token after trimming (#113). First-platform-
+/// admin authority warrants more than "non-empty".
+const MIN_BOOTSTRAP_TOKEN_LEN: usize = 32;
+
+/// An operator-supplied bootstrap token. Wraps the secret so it never reaches logs: `Debug` and
+/// `Display` redact, and it is not `Serialize`. Only `as_str()` exposes the value, for hashing.
+struct BootstrapToken(String);
+
+impl BootstrapToken {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for BootstrapToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BootstrapToken(<redacted>)")
+    }
+}
+
+impl std::fmt::Display for BootstrapToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+/// Resolve the operator-supplied bootstrap token from the environment, provider-agnostically.
+/// `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` (a path) takes precedence over `FLOWPLANE_BOOTSTRAP_TOKEN`.
+/// Returns `Ok(None)` when neither is set. Errors never echo the token value or the file path.
+fn resolve_operator_bootstrap_token() -> anyhow::Result<Option<BootstrapToken>> {
+    let raw = if let Some(path) = std::env::var_os("FLOWPLANE_BOOTSTRAP_TOKEN_FILE") {
+        // Deliberately do not include the path or contents in the error.
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(_) => {
+                anyhow::bail!(
+                    "could not read the file named by FLOWPLANE_BOOTSTRAP_TOKEN_FILE \
+                     (check the path exists and is readable)"
+                )
+            }
+        }
+    } else if let Some(value) = std::env::var_os("FLOWPLANE_BOOTSTRAP_TOKEN") {
+        value.to_string_lossy().into_owned()
+    } else {
+        return Ok(None);
+    };
+
+    validate_bootstrap_token(&raw).map(Some)
+}
+
+/// Trim and length-validate a bootstrap token from any source. The error never echoes the value.
+fn validate_bootstrap_token(raw: &str) -> anyhow::Result<BootstrapToken> {
+    let trimmed = raw.trim();
+    if trimmed.len() < MIN_BOOTSTRAP_TOKEN_LEN {
+        anyhow::bail!(
+            "the supplied bootstrap token is too short; it must be at least {MIN_BOOTSTRAP_TOKEN_LEN} \
+             characters after trimming whitespace"
+        );
+    }
+    Ok(BootstrapToken(trimmed.to_string()))
+}
+
+/// Bootstrap-token handling for an uninitialized, non-dev instance (#113). The operator supplies a
+/// token (env / file) that is seeded without ever being logged; with no token the instance fails
+/// closed unless the explicit local-only opt-in re-enables the legacy generate-and-log path.
+async fn seed_bootstrap_token(pool: &sqlx::PgPool, config: &ServerConfig) -> anyhow::Result<()> {
+    use fp_storage::repos::bootstrap::{
+        is_initialized, issue_token_if_uninitialized, seed_token_hash_if_uninitialized, SeedOutcome,
+    };
+
+    // Already-initialized instances ignore the bootstrap token entirely — do not even resolve it,
+    // so a stale/unreadable token file cannot block a restart. (The seed path rechecks under the
+    // advisory lock, so this early return is only an optimization, not the correctness boundary.)
+    if is_initialized(pool).await? {
+        return Ok(());
+    }
+
+    match resolve_operator_bootstrap_token()? {
+        Some(token) => match seed_token_hash_if_uninitialized(pool, token.as_str()).await? {
+            SeedOutcome::Seeded => tracing::info!(
+                "bootstrap token accepted from the operator; POST /api/v1/bootstrap/initialize to \
+                 complete setup (token not logged)"
+            ),
+            SeedOutcome::Idempotent => tracing::info!(
+                "bootstrap token already seeded for this instance; awaiting \
+                 POST /api/v1/bootstrap/initialize"
+            ),
+            SeedOutcome::AlreadyInitialized => {}
+            SeedOutcome::Conflict => anyhow::bail!(
+                "a different bootstrap token is already active for this uninitialized instance; \
+                 supply the same operator token across all replicas"
+            ),
+        },
+        None => {
+            if config.allow_logged_bootstrap_token {
+                if let Some(token) = issue_token_if_uninitialized(pool).await? {
+                    tracing::warn!(
+                        bootstrap_token = %token,
+                        "LOCAL-ONLY: FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN is set — generated and \
+                         logged a one-shot bootstrap token (valid 24h). Do not use in production."
+                    );
+                }
+            } else if !is_initialized(pool).await? {
+                anyhow::bail!(
+                    "instance is uninitialized and no bootstrap token was supplied; set \
+                     FLOWPLANE_BOOTSTRAP_TOKEN or FLOWPLANE_BOOTSTRAP_TOKEN_FILE (or, for local use \
+                     only, FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN=yes-this-is-local-only)"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn load_config() -> anyhow::Result<ServerConfig> {
     ServerConfig::load().map_err(|e| {
         // Render the config error with its hint — the operator's first contact with our
@@ -464,4 +570,46 @@ async fn shutdown_signal() {
     }
     #[cfg(not(unix))]
     ctrl_c.await;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod bootstrap_token_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_short_or_blank_tokens() {
+        assert!(validate_bootstrap_token("").is_err(), "empty");
+        assert!(
+            validate_bootstrap_token("   \n").is_err(),
+            "whitespace only"
+        );
+        assert!(validate_bootstrap_token("short").is_err(), "too short");
+        assert!(
+            validate_bootstrap_token(&"x".repeat(31)).is_err(),
+            "31 chars"
+        );
+    }
+
+    #[test]
+    fn accepts_and_trims_valid_token() {
+        let t = validate_bootstrap_token("  abcdefghijklmnopqrstuvwxyz012345  ").expect("valid");
+        assert_eq!(t.as_str(), "abcdefghijklmnopqrstuvwxyz012345");
+        assert_eq!(t.as_str().len(), 32);
+    }
+
+    #[test]
+    fn token_never_renders_its_value() {
+        let secret = "abcdefghijklmnopqrstuvwxyz012345";
+        let t = validate_bootstrap_token(secret).expect("valid");
+        assert!(!format!("{t:?}").contains(secret), "Debug must redact");
+        assert!(!format!("{t}").contains(secret), "Display must redact");
+    }
+
+    #[test]
+    fn error_messages_do_not_echo_the_value() {
+        let secret = "supersecretbutslightlytooshort"; // 30 chars
+        let err = validate_bootstrap_token(secret).unwrap_err().to_string();
+        assert!(!err.contains(secret), "error must not echo the token");
+    }
 }
