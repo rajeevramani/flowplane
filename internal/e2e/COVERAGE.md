@@ -1,28 +1,17 @@
 # S1–S10 Certification Coverage Matrix
 
-Traceability for the build-quality certification (#66) and the exhaustive E2E (#65).
-Every shipped capability and every abuse-matrix row maps to exactly one **authoritative**
-evidence source. This is the certification document: "does it cover everything?" is answered
-by this table.
+Traceability for the build-quality certification (#66) and the exhaustive E2E (#65). Every shipped capability and every abuse-matrix row maps to exactly one **authoritative** evidence source. This is the certification document: "does it cover everything?" is answered by this table.
 
 ## Legend
 
-- `live:<phase>` — proven by the live Envoy E2E (`scripts/e2e-envoy.sh`; phases re-homed under
-  `scripts/e2e/` after the split). A live phase is the authoritative evidence.
-- `cargo:<test>` — unit/integration is the right boundary. The named test **must** run with
-  `FLOWPLANE_TEST_DATABASE_URL` + `FLOWPLANE_SECRET_ENCRYPTION_KEY` set, or it silently skips and
-  counts as **not tested**.
+- `live:<phase>` — proven by the live Envoy E2E (`scripts/e2e-envoy.sh`; phases re-homed under `scripts/e2e/` after the split). A live phase is the authoritative evidence.
+- `cargo:<test>` — unit/integration is the right boundary. The named test **must** run with `FLOWPLANE_TEST_DATABASE_URL` + `FLOWPLANE_SECRET_ENCRYPTION_KEY` set, or it silently skips and counts as **not tested**.
 - `gap` — certification must add coverage.
-- `out-of-scope:<reason>` — deliberately not covered now (needs an external service or belongs to
-  S12 hardening), with the reason and owning slice named.
+- `out-of-scope:<reason>` — deliberately not covered now (needs an external service or belongs to S12 hardening), with the reason and owning slice named.
 
 A capability may list a secondary source in parentheses, but the first token is authoritative.
 
-Live phases (current `scripts/e2e-envoy.sh`): `P1` basic ADS traffic · `P1a` AI
-(injection/failover/budget/usage/cleanup) · `P1b` config-first learning · `P1c` traffic-first
-discovery+route-gen · `P2` CP-restart convergence · `P2a` Envoy-restart convergence · `P3` cross-team xDS isolation · `P4`
-local-rate-limit/header-mutation · `P5` JWT/RBAC/ext_authz · `P6` SDS rotation · `P7` advanced
-route/listener/filter parity (+ global-RLS filter ACK).
+Live phases (current `scripts/e2e-envoy.sh`): `P1` basic ADS traffic · `P1a` AI (injection/failover/budget/usage/cleanup) · `P1b` config-first learning · `P1c` traffic-first discovery+route-gen · `P2` CP-restart convergence · `P2a` Envoy-restart convergence · `P3` cross-team xDS isolation · `P4` local-rate-limit/header-mutation · `P5` JWT/RBAC/ext_authz · `P6` SDS rotation · `P7` advanced route/listener/filter parity (+ global-RLS filter ACK).
 
 ---
 

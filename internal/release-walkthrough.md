@@ -1,12 +1,10 @@
 # Release Walkthrough
 
-This is the S12g release gate for `v1.0.0`. It reuses existing evidence and harnesses; it does not
-define new product behavior.
+This is the S12g release gate for `v1.0.0`. It reuses existing evidence and harnesses; it does not define new product behavior.
 
 ## Live Envoy Gate
 
-Decision for v1.0: live Envoy E2E is a documented manual release gate, not a required GitHub
-Actions job.
+Decision for v1.0: live Envoy E2E is a documented manual release gate, not a required GitHub Actions job.
 
 Evidence:
 
@@ -15,11 +13,9 @@ Evidence:
 - Coverage: `internal/e2e/COVERAGE.md`
 - Recorded pass signal: 5 consecutive runs, 12 phases each, 0 known failures, Envoy 1.37.4.
 
-CI-with-Docker promotion is deferred post-1.0. The live runner is broad, Docker-dependent, and has
-timing-sensitive streaming coverage; S12 keeps the gate recorded instead of refactoring the harness.
+CI-with-Docker promotion is deferred post-1.0. The live runner is broad, Docker-dependent, and has timing-sensitive streaming coverage; S12 keeps the gate recorded instead of refactoring the harness.
 
-The live runner uses the dev-mode dataplane path. Release dataplane bootstrap is still the mTLS path
-documented in `internal/release/release-packaging.md` and `docs/how-to/production-readiness.md`.
+The live runner uses the dev-mode dataplane path. Release dataplane bootstrap is still the mTLS path documented in `internal/release/release-packaging.md` and `docs/how-to/production-readiness.md`.
 
 ## Seeded Walkthrough
 
@@ -61,8 +57,7 @@ FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt \
 scripts/release/package-release.sh
 ```
 
-CLI first-contact flow is documented in `docs/how-to/production-readiness.md`; the release gate references
-that workflow rather than duplicating every operator command here.
+CLI first-contact flow is documented in `docs/how-to/production-readiness.md`; the release gate references that workflow rather than duplicating every operator command here.
 
 ## v1.0.0 Tag Checklist
 

@@ -1,13 +1,10 @@
 # S12 Failure-Mode Matrix
 
-This is the S12c release-readiness matrix for Flowplane v2. It records the invariant, command,
-pass signal, failure signal, and run context for each failure-mode row. It is verification evidence,
-not a new product surface.
+This is the S12c release-readiness matrix for Flowplane v2. It records the invariant, command, pass signal, failure signal, and run context for each failure-mode row. It is verification evidence, not a new product surface.
 
 ## D-021 Reconciliation
 
-D-021 defines four failure-mode rows. This matrix expands them into six verification rows so the
-evidence is specific without changing the S12 exit scope:
+D-021 defines four failure-mode rows. This matrix expands them into six verification rows so the evidence is specific without changing the S12 exit scope:
 
 | D-021 row | Verification row(s) |
 | --- | --- |
@@ -29,11 +26,6 @@ evidence is specific without changing the S12 exit scope:
 
 ## Release-Gate Notes
 
-- The Postgres row deliberately uses the existing transactional-outbox DB-backed test plus a thin
-  integration command. It does not introduce a database kill harness.
-- The Envoy restart and live xDS resync rows depend on Docker or a local Envoy binary through
-  `scripts/e2e-envoy.sh`. Their reproducibility status must be reconciled again in S12d/S12g when
-  the project decides whether live Envoy E2E is a GitHub Actions Docker gate or a documented manual
-  release gate.
-- The agent version-skew row covers only the agent-to-CP diagnostics proto/gRPC surface. REST
-  request DTOs remain strict by design.
+- The Postgres row deliberately uses the existing transactional-outbox DB-backed test plus a thin integration command. It does not introduce a database kill harness.
+- The Envoy restart and live xDS resync rows depend on Docker or a local Envoy binary through `scripts/e2e-envoy.sh`. Their reproducibility status must be reconciled again in S12d/S12g when the project decides whether live Envoy E2E is a GitHub Actions Docker gate or a documented manual release gate.
+- The agent version-skew row covers only the agent-to-CP diagnostics proto/gRPC surface. REST request DTOs remain strict by design.

@@ -1,20 +1,12 @@
 # User Onboarding (internal)
 
-How a human user goes from "exists in the IdP" to "can operate Flowplane resources".
-Derived from the auth code paths (`crates/fp-api/src/auth.rs`, `crates/fp-core/src/services/orgs.rs`,
-`crates/fp-domain/src/identity.rs`) and the CLI (`crates/flowplane/src/cli`).
+How a human user goes from "exists in the IdP" to "can operate Flowplane resources". Derived from the auth code paths (`crates/fp-api/src/auth.rs`, `crates/fp-core/src/services/orgs.rs`, `crates/fp-domain/src/identity.rs`) and the CLI (`crates/flowplane/src/cli`).
 
 ## Identity model (read this first)
 
-- **Identity = OIDC `sub`.** Flowplane trusts any compliant IdP (Q-004); we run Auth0. A user is
-  keyed by their `sub` (e.g. `auth0|6a34…`), not their email.
-- **The Flowplane user row is created lazily (JIT).** `flowplane auth login` only talks to the IdP —
-  it does **not** create anything in Flowplane. The row is created on the user's **first
-  authenticated request to the control plane** (`auth.rs` → `upsert_user_by_subject`). In practice:
-  one `flowplane auth whoami` after login.
-- **Authorization is org/team scoped (D-014).** Being a platform admin lets you run platform
-  operations (create orgs/teams, add members) but does **not** grant context to read or write
-  org/team-scoped resources. For those you must hold an actual membership.
+- **Identity = OIDC `sub`.** Flowplane trusts any compliant IdP (Q-004); we run Auth0. A user is keyed by their `sub` (e.g. `auth0|6a34…`), not their email.
+- **The Flowplane user row is created lazily (JIT).** `flowplane auth login` only talks to the IdP — it does **not** create anything in Flowplane. The row is created on the user's **first authenticated request to the control plane** (`auth.rs` → `upsert_user_by_subject`). In practice: one `flowplane auth whoami` after login.
+- **Authorization is org/team scoped (D-014).** Being a platform admin lets you run platform operations (create orgs/teams, add members) but does **not** grant context to read or write org/team-scoped resources. For those you must hold an actual membership.
 
 ## Roles
 
@@ -27,24 +19,19 @@ Derived from the auth code paths (`crates/fp-api/src/auth.rs`, `crates/fp-core/s
 | `admin`  | org admin — **implicit access to every team in the org** (spec/05 §3.1) |
 | `owner`  | org admin + ownership |
 
-**Teams** have flat membership (no per-member role at the CLI). Capabilities beyond membership are
-assigned with `flowplane team grant …`. Org `admin`/`owner` already reach every team in their org.
+**Teams** have flat membership (no per-member role at the CLI). Capabilities beyond membership are assigned with `flowplane team grant …`. Org `admin`/`owner` already reach every team in their org.
 
 ## Onboarding a new user — steps
 
-Assume the operator is the platform admin with a valid session
-(`flowplane auth whoami` shows `PLATFORM ADMIN true`), and `FLOWPLANE_SERVER` points at the CP.
+Assume the operator is the platform admin with a valid session (`flowplane auth whoami` shows `PLATFORM ADMIN true`), and `FLOWPLANE_SERVER` points at the CP.
 
 ### 1. Create the user in Auth0 (with verified email)
-- Auth0 Dashboard → User Management → Users → Create User (Database connection), or via the
-  Management API.
-- The dashboard "Create User" form does **not** set `email_verified` → it defaults to `false`.
-  Verify it one of two ways:
+- Auth0 Dashboard → User Management → Users → Create User (Database connection), or via the Management API.
+- The dashboard "Create User" form does **not** set `email_verified` → it defaults to `false`. Verify it one of two ways:
   - User → `…` → **Send Verification Email** (user clicks the link), or
   - Management API: `PATCH /api/v2/users/{id}` body `{"email_verified": true}`
     (URL-encode the `|` in the id as `%7C`).
-- Flowplane itself does **not** require `email_verified` (the validator checks `iss/aud/exp/sub`
-  only), but verify it anyway for hygiene and to avoid IdP-side prompts during login.
+- Flowplane itself does **not** require `email_verified` (the validator checks `iss/aud/exp/sub` only), but verify it anyway for hygiene and to avoid IdP-side prompts during login.
 
 ### 2. User signs in once (creates the Flowplane row)
 The new user, on their own machine:
@@ -55,17 +42,14 @@ flowplane auth login --device \
   --client-id <auth0-app-client-id>
 flowplane auth whoami     # <-- this authenticated call creates their user row
 ```
-After this, `whoami` prints their `USER ID` and subject. (Concrete demo values live in the
-gitignored `internal/.env.prod-local`.)
+After this, `whoami` prints their `USER ID` and subject. (Concrete demo values live in the gitignored `internal/.env.prod-local`.)
 
 ### 3. Platform admin adds the user to an org
 ```bash
 flowplane org member add <org> --role <viewer|member|admin|owner> \
   --subject "auth0|…"        # or --email <addr>, or --user-id <flowplane-uuid>
 ```
-- Pick **one** identifier. `--subject` = OIDC sub, `--email` = email, `--user-id` = Flowplane
-  internal **UUID** (from `whoami`/`org member list`). Passing an `auth0|…` value to `--user-id`
-  fails with HTTP 422 (UUID parse error).
+- Pick **one** identifier. `--subject` = OIDC sub, `--email` = email, `--user-id` = Flowplane internal **UUID** (from `whoami`/`org member list`). Passing an `auth0|…` value to `--user-id` fails with HTTP 422 (UUID parse error).
 - The target user row must already exist (step 2), else `not_found: must sign in once`.
 
 ### 4. (If they need resource access) add to a team
@@ -99,8 +83,7 @@ flowplane config use-context <name>
 
 ## Quick reference: the moving parts
 
-- **Platform admin** is created once by bootstrap (`POST /api/v1/bootstrap/initialize`) bound to an
-  OIDC subject.
+- **Platform admin** is created once by bootstrap (`POST /api/v1/bootstrap/initialize`) bound to an OIDC subject.
 - **One IdP user ⇒ one Flowplane user row**, created JIT on first authenticated CP call.
 - **Org membership** grants org context + (admin/owner) all teams.
 - **Team membership/grants** scope resource access.

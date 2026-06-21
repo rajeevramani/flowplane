@@ -1,74 +1,47 @@
 # 15 — Core Gateway Field Parity
 
-Purpose: make V2's core gateway API, database model, CLI, and xDS output capable of representing
-the gateway fields that V1 exposed to Envoy, while preserving the V2 architecture rules in
-`spec/14-architecture-integrity.md`.
+Purpose: make V2's core gateway API, database model, CLI, and xDS output capable of representing the gateway fields that V1 exposed to Envoy, while preserving the V2 architecture rules in `spec/14-architecture-integrity.md`.
 
-Parity here means **same operator and dataplane capability**, not identical V1 JSON shapes. V2 keeps
-typed domain specs, service-layer validation, one PostgreSQL source of truth, reference tracking,
-and explicit xDS translation. Known V1 defects are fixed rather than copied.
+Parity here means **same operator and dataplane capability**, not identical V1 JSON shapes. V2 keeps typed domain specs, service-layer validation, one PostgreSQL source of truth, reference tracking, and explicit xDS translation. Known V1 defects are fixed rather than copied.
 
 ## Non-Negotiables
 
-1. The authoritative state remains the V2 domain spec stored once in PostgreSQL. Extra tables may
-   exist only as derived read models or indexes.
-2. Every accepted field has domain validation, storage round-trip coverage, OpenAPI schema coverage,
-   CLI/create-or-apply examples, and xDS translator tests.
-3. Every behaviorally meaningful Envoy field has at least one live Envoy ACK or smoke test before
-   S8 resumes.
-4. V1 smells are not ported: no implicit TLS from port 443, no parsed-but-unemitted query matchers,
-   no retry duration unit bug, no FK-by-name cascade authority, and no protobuf surgery after typed
-   translation.
-5. If a V1 field is intentionally deferred, this document must name the reason, later progress
-   anchor, and user-visible impact.
+1. The authoritative state remains the V2 domain spec stored once in PostgreSQL. Extra tables may exist only as derived read models or indexes.
+2. Every accepted field has domain validation, storage round-trip coverage, OpenAPI schema coverage, CLI/create-or-apply examples, and xDS translator tests.
+3. Every behaviorally meaningful Envoy field has at least one live Envoy ACK or smoke test before S8 resumes.
+4. V1 smells are not ported: no implicit TLS from port 443, no parsed-but-unemitted query matchers, no retry duration unit bug, no FK-by-name cascade authority, and no protobuf surgery after typed translation.
+5. If a V1 field is intentionally deferred, this document must name the reason, later progress anchor, and user-visible impact.
 
 ## Current Verdict
 
 V2 is not yet at V1 core gateway field parity. The current model is cleaner and safer, but narrower:
 
-- clusters cover endpoints, basic load balancing, explicit TLS boolean, simple HTTP health checks,
-  simple circuit breakers, and simple outlier detection.
-- routes cover virtual hosts, prefix/exact/template path matches, single-cluster actions, rewrites,
-  timeouts, and filter overrides.
+- clusters cover endpoints, basic load balancing, explicit TLS boolean, simple HTTP health checks, simple circuit breakers, and simple outlier detection.
+- routes cover virtual hosts, prefix/exact/template path matches, single-cluster actions, rewrites, timeouts, and filter overrides.
 - listeners cover a single HTTP/RDS shape, optional HTTP filters, and downstream TLS via file or SDS.
-- filters cover a typed subset: CORS, local rate limit, header mutation, health check, compressor,
-  JWT auth, ext authz, and RBAC.
+- filters cover a typed subset: CORS, local rate limit, header mutation, health check, compressor, JWT auth, ext authz, and RBAC.
 
-That is enough for the S7 simple route-to-traffic path, but not enough as the foundation for learning
-and AI gateway work. S8 should not infer, learn, or publish against a gateway model that cannot yet
-represent the core fields operators can reasonably expect from V1.
+That is enough for the S7 simple route-to-traffic path, but not enough as the foundation for learning and AI gateway work. S8 should not infer, learn, or publish against a gateway model that cannot yet represent the core fields operators can reasonably expect from V1.
 
 ## S7.8a Audit Baseline
 
 Audit inputs:
 
-- V1 domain/xDS surface: `src/xds/{cluster_spec,route,listener,secret}.rs`,
-  `src/xds/filters/http/**`, `filter-schemas/built-in/*.yaml`, and V1 docs/reference material.
-- V2 domain/xDS surface: `crates/fp-domain/src/gateway/**`,
-  `crates/fp-xds/src/translate.rs`, `crates/fp-storage/src/repos/**`, and API/CLI resource paths.
-- Existing V2 specs: `spec/03-domain-model.md`, `spec/04-xds.md`, and
-  `spec/14-architecture-integrity.md`.
+- V1 domain/xDS surface: `src/xds/{cluster_spec,route,listener,secret}.rs`, `src/xds/filters/http/**`, `filter-schemas/built-in/*.yaml`, and V1 docs/reference material.
+- V2 domain/xDS surface: `crates/fp-domain/src/gateway/**`, `crates/fp-xds/src/translate.rs`, `crates/fp-storage/src/repos/**`, and API/CLI resource paths.
+- Existing V2 specs: `spec/03-domain-model.md`, `spec/04-xds.md`, and `spec/14-architecture-integrity.md`.
 
 Verdict:
 
-- **Must implement before S8:** fields needed for the core HTTP gateway model that V1 exposed and
-  that learning/API binding will rely on: richer cluster policy/TLS/protocol/health fields, route
-  match/action parity, listener kind/logging/tracing basics, and the filter hooks required by
-  learning/rate limiting.
-- **Can defer with explicit owner:** fields that are valid gateway features but not required for the
-  S8 learning foundation: OAuth2, credential injection, custom response, WASM, MCP enforcement, and
-  some advanced rate-limit quota behavior.
-- **Reject or keep out of V2:** V1 implementation shortcuts: implicit upstream TLS on port 443,
-  parsed-but-unemitted query matchers, retry duration unit bugs, dynamic Struct fallback for
-  unknown filters, JSON/projection dual authority, and post-hoc listener/route protobuf surgery.
+- **Must implement before S8:** fields needed for the core HTTP gateway model that V1 exposed and that learning/API binding will rely on: richer cluster policy/TLS/protocol/health fields, route match/action parity, listener kind/logging/tracing basics, and the filter hooks required by learning/rate limiting.
+- **Can defer with explicit owner:** fields that are valid gateway features but not required for the S8 learning foundation: OAuth2, credential injection, custom response, WASM, MCP enforcement, and some advanced rate-limit quota behavior.
+- **Reject or keep out of V2:** V1 implementation shortcuts: implicit upstream TLS on port 443, parsed-but-unemitted query matchers, retry duration unit bugs, dynamic Struct fallback for unknown filters, JSON/projection dual authority, and post-hoc listener/route protobuf surgery.
 
 Implementation order:
 
 1. Cluster parity, because routes and `expose` depend on a correct upstream model.
-2. Route parity, because learning binds to route scopes and must observe the same path/header/query
-   semantics that Envoy enforces.
-3. Listener parity, because capture/logging/tracing and TCP/HTTPS decisions live at the HCM/listener
-   boundary.
+2. Route parity, because learning binds to route scopes and must observe the same path/header/query semantics that Envoy enforces.
+3. Listener parity, because capture/logging/tracing and TCP/HTTPS decisions live at the HCM/listener boundary.
 4. Filter parity decisions and the minimum implementation needed for learning/rate limiting.
 5. API/CLI/OpenAPI examples plus live Envoy ACK/smoke coverage.
 
@@ -80,8 +53,7 @@ For each field group below, "done" means:
 - storage round-trips the full spec without lossy projections.
 - CLI can create/apply the resource from JSON or YAML examples.
 - xDS translation emits the matching Envoy field or explicitly documents a deliberate no-op.
-- tests cover validation, serialization, DB round-trip, xDS translation, and at least one live Envoy
-  path for each behavior class.
+- tests cover validation, serialization, DB round-trip, xDS translation, and at least one live Envoy path for each behavior class.
 
 ## Cluster Parity
 
@@ -166,8 +138,7 @@ For each field group below, "done" means:
 
 ## Secrets And SDS
 
-V2 is already stronger than V1 in the broad direction: secrets are write-only, encrypted, scoped, and
-translated through SDS. S7.8 should still prove that gateway field parity does not bypass this model.
+V2 is already stronger than V1 in the broad direction: secrets are write-only, encrypted, scoped, and translated through SDS. S7.8 should still prove that gateway field parity does not bypass this model.
 
 | Capability | V2 status | S7.8 action |
 | --- | --- | --- |
@@ -180,23 +151,17 @@ translated through SDS. S7.8 should still prove that gateway field parity does n
 
 Field parity should improve the V2 UX, not expose raw Envoy complexity everywhere.
 
-- Low-level `cluster`, `route-config`, `listener`, and `filter` commands should support full typed
-  specs from JSON/YAML files.
-- `flowplane expose` should stay simple and generate the common case without requiring users to
-  understand every field.
-- Advanced fields should be available through `apply`/resource-specific create commands, with
-  examples rather than long flag sets.
+- Low-level `cluster`, `route-config`, `listener`, and `filter` commands should support full typed specs from JSON/YAML files.
+- `flowplane expose` should stay simple and generate the common case without requiring users to understand every field.
+- Advanced fields should be available through `apply`/resource-specific create commands, with examples rather than long flag sets.
 - OpenAPI examples should show at least one simple case and one advanced V1-parity case per resource.
-- S7.8f pins this contract with an authenticated REST create/get round-trip for advanced
-  route/listener specs, OpenAPI schema component assertions, and a CLI `apply` manifest test proving
-  advanced typed specs are preserved rather than projected into a smaller shape.
+- S7.8f pins this contract with an authenticated REST create/get round-trip for advanced route/listener specs, OpenAPI schema component assertions, and a CLI `apply` manifest test proving advanced typed specs are preserved rather than projected into a smaller shape.
 
 ## PROGRESS.md Mapping
 
 S7.8 should be tracked as a pre-S8 workstream:
 
-- S7.8a: finalize this parity matrix against V1 examples and current V2 code. **Done in this
-  audit baseline; keep updating only when a field decision changes.**
+- S7.8a: finalize this parity matrix against V1 examples and current V2 code. **Done in this audit baseline; keep updating only when a field decision changes.**
 - S7.8b: cluster field parity.
 - S7.8c: route field parity.
 - S7.8d: listener field parity.
@@ -204,11 +169,6 @@ S7.8 should be tracked as a pre-S8 workstream:
 - S7.8f: DB/API/CLI/OpenAPI parity examples and tests.
 - S7.8g: live Envoy parity E2E, including ACK/NACK diagnostics.
 
-S7.8g is pinned in `scripts/e2e-envoy.sh`: the live Envoy run covers baseline traffic, restart
-convergence, cross-team isolation, HTTP filter behavior, auth filters, SDS rotation, and an advanced
-parity phase that ACKs/serves route/listener/filter config using regex/header/query matchers,
-weighted clusters, retry policy, route RLS descriptors, HTTP/2 listener mode, file access logs, and
-the global RLS HTTP filter.
+S7.8g is pinned in `scripts/e2e-envoy.sh`: the live Envoy run covers baseline traffic, restart convergence, cross-team isolation, HTTP filter behavior, auth filters, SDS rotation, and an advanced parity phase that ACKs/serves route/listener/filter config using regex/header/query matchers, weighted clusters, retry policy, route RLS descriptors, HTTP/2 listener mode, file access logs, and the global RLS HTTP filter.
 
-S8 learning may resume only after S7.7 and S7.8 have enough coverage that learning can rely on the
-gateway model instead of compensating for it.
+S8 learning may resume only after S7.7 and S7.8 have enough coverage that learning can rely on the gateway model instead of compensating for it.

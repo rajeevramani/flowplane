@@ -1,52 +1,28 @@
 # 14 — Architecture Integrity Rules
 
-This is the standing rulebook for keeping Flowplane v2 from drifting into the coupling patterns
-that v1 exposed. Read it before adding a new endpoint, CLI command, worker, xDS behavior, learning
-feature, AI gateway feature, or packaging workflow.
+This is the standing rulebook for keeping Flowplane v2 from drifting into the coupling patterns that v1 exposed. Read it before adding a new endpoint, CLI command, worker, xDS behavior, learning feature, AI gateway feature, or packaging workflow.
 
-Recommendation: use these rules as a lightweight design checklist for every S7.7+ checkpoint. Do
-not create more framework around them yet; the discipline is in naming the domain owner, seam, and
-mutation path before editing code.
+Recommendation: use these rules as a lightweight design checklist for every S7.7+ checkpoint. Do not create more framework around them yet; the discipline is in naming the domain owner, seam, and mutation path before editing code.
 
 ## 1. Non-Negotiables
 
-1. **V1 is reference material, not source code.**
-   Borrow outcomes, workflows, and lessons. Do not port V1 internals or recreate V1 coupling.
+1. **V1 is reference material, not source code.** Borrow outcomes, workflows, and lessons. Do not port V1 internals or recreate V1 coupling.
 
-2. **PostgreSQL is the product source of truth.**
-   No CRDs, no orchestrator state, no generated files, no compose state, and no Envoy state become
-   authoritative product state.
+2. **PostgreSQL is the product source of truth.** No CRDs, no orchestrator state, no generated files, no compose state, and no Envoy state become authoritative product state.
 
-3. **Envoy is the only dataplane.**
-   The CP configures Envoy out-of-band through xDS/SDS. Request traffic does not pass through the
-   CP.
+3. **Envoy is the only dataplane.** The CP configures Envoy out-of-band through xDS/SDS. Request traffic does not pass through the CP.
 
-4. **CP and dataplane are separate deployment units.**
-   Designs must work when the control plane and Envoy dataplanes run on different hosts, networks,
-   or schedulers. Localhost/loopback assumptions are dev-only conveniences, never product routing
-   contracts. Any CP-initiated call that must reach a dataplane has to resolve an explicit
-   dataplane address/connection contract and fail closed when that resolution is missing.
+4. **CP and dataplane are separate deployment units.** Designs must work when the control plane and Envoy dataplanes run on different hosts, networks, or schedulers. Localhost/loopback assumptions are dev-only conveniences, never product routing contracts. Any CP-initiated call that must reach a dataplane has to resolve an explicit dataplane address/connection contract and fail closed when that resolution is missing.
 
-5. **No orchestrator dependency.**
-   Bare metal, VMs, plain containers, ECS-class managed platforms, Nomad, Cloud Run-style
-   environments, and Kubernetes must all be viable. K8s manifests can be packaging, never the
-   architecture.
+5. **No orchestrator dependency.** Bare metal, VMs, plain containers, ECS-class managed platforms, Nomad, Cloud Run-style environments, and Kubernetes must all be viable. K8s manifests can be packaging, never the architecture.
 
-6. **Tenant isolation is by construction.**
-   Org/team context is explicit or unambiguous; storage/service paths carry validated scope; xDS
-   identity comes from certificate registry binding, not claims in `node.id` or metadata.
+6. **Tenant isolation is by construction.** Org/team context is explicit or unambiguous; storage/service paths carry validated scope; xDS identity comes from certificate registry binding, not claims in `node.id` or metadata.
 
-7. **All product mutations go through `fp-core::services`.**
-   Surfaces and workers must not invent alternate write paths. Named read-side exceptions are
-   allowed only when recorded in D-016 or a later decision.
+7. **All product mutations go through `fp-core::services`.** Surfaces and workers must not invent alternate write paths. Named read-side exceptions are allowed only when recorded in D-016 or a later decision.
 
-8. **Subsystems meet through events and contracts, not private calls.**
-   xDS, learning, AI, MCP, and operators should communicate through domain events, published
-   service APIs, and generated contracts.
+8. **Subsystems meet through events and contracts, not private calls.** xDS, learning, AI, MCP, and operators should communicate through domain events, published service APIs, and generated contracts.
 
-9. **Fail closed at security boundaries.**
-   Production xDS is mTLS-or-off; partial TLS config fails boot; dev plaintext is explicit and
-   gated; secret values are write-only over HTTP.
+9. **Fail closed at security boundaries.** Production xDS is mTLS-or-off; partial TLS config fails boot; dev plaintext is explicit and gated; secret values are write-only over HTTP.
 
 10. **Deployment packaging preserves security boundaries.**
     Provider-specific packaging must not weaken product security invariants. Public operator/API
@@ -57,23 +33,16 @@ mutation path before editing code.
     mechanisms, not architecture. OIDC remains provider-agnostic, and runtime secrets/certs are
     supplied through deployment secret mechanisms, never committed config.
 
-11. **Envoy admin is not an operator/product API.**
-   Envoy admin endpoints stay loopback-local to the dataplane unit. Product diagnostics and
-   operator workflows must use CP surfaces backed by persisted diagnostics, audit, outbox, and
-   xDS state. Only `fp-agent` may scrape Envoy admin, and only to relay curated telemetry to the
-   CP over the outbound diagnostics channel.
+11. **Envoy admin is not an operator/product API.** Envoy admin endpoints stay loopback-local to the dataplane unit. Product diagnostics and operator workflows must use CP surfaces backed by persisted diagnostics, audit, outbox, and xDS state. Only `fp-agent` may scrape Envoy admin, and only to relay curated telemetry to the CP over the outbound diagnostics channel.
 
-12. **Contracts must not drift.**
-   REST, OpenAPI, CLI, and MCP declarations should come from the same source where possible, with
-   parity tests pinning the surface.
+12. **Contracts must not drift.** REST, OpenAPI, CLI, and MCP declarations should come from the same source where possible, with parity tests pinning the surface.
 
 13. **The V2 UX must improve V1.**
     V1 defines the user outcome; V2 defines the architecture and experience.
 
 ## 2. Domain Ownership
 
-Each new capability must have one primary domain owner. Cross-domain behavior happens through
-events or explicit service calls, not by sharing tables casually.
+Each new capability must have one primary domain owner. Cross-domain behavior happens through events or explicit service calls, not by sharing tables casually.
 
 | Domain | Owns | Does not own | Primary crates |
 | --- | --- | --- | --- |
@@ -92,13 +61,11 @@ events or explicit service calls, not by sharing tables casually.
 
 ### 3.1 Surface Seam
 
-REST, CLI, and MCP are surfaces. They validate transport-specific shape, resolve context, call
-`fp-core::services`, and render responses. They do not own business invariants.
+REST, CLI, and MCP are surfaces. They validate transport-specific shape, resolve context, call `fp-core::services`, and render responses. They do not own business invariants.
 
 Allowed:
 - `fp-api` request context reads listed in D-016.
-- CLI local orchestration for dev-only processes, as long as product state is still created through
-  REST.
+- CLI local orchestration for dev-only processes, as long as product state is still created through REST.
 
 Not allowed:
 - CLI writing the product database.
@@ -120,8 +87,7 @@ If a mutation cannot use this pattern, record the exception before implementing 
 
 ### 3.3 Storage Seam
 
-`fp-storage` owns SQL, migrations, repositories, and outbox persistence. Repositories are
-scoped-by-construction where data is tenant-owned.
+`fp-storage` owns SQL, migrations, repositories, and outbox persistence. Repositories are scoped-by-construction where data is tenant-owned.
 
 Rules:
 - team-owned rows use `team_id`
@@ -173,8 +139,7 @@ Rules:
 
 ### 3.7 Contract Seam
 
-REST routes, OpenAPI, CLI commands, MCP tools, and authz `(resource, action)` declarations should
-stay aligned.
+REST routes, OpenAPI, CLI commands, MCP tools, and authz `(resource, action)` declarations should stay aligned.
 
 Every new externally visible capability needs:
 - an API path or a recorded reason it is CLI-local only
@@ -185,21 +150,15 @@ Every new externally visible capability needs:
 
 ### 3.8 Test Execution Seam
 
-Tests should be parallel-safe by default. As the gateway, learning loop, and live Envoy coverage
-grow, serializing broad suites will become a real development tax.
+Tests should be parallel-safe by default. As the gateway, learning loop, and live Envoy coverage grow, serializing broad suites will become a real development tax.
 
 Rules:
 - prefer pure unit tests and table-driven translator/domain tests for most behavior
-- integration tests sharing PostgreSQL must generate unique org/team/resource names and avoid
-  assumptions about global row counts
-- tests needing a TCP port must bind port `0` or allocate a per-test unique port; fixed ports are
-  only for documented manual runbooks
-- tests needing singleton product state must serialize only the critical section, preferably via a
-  named advisory lock or local mutex with a comment explaining the shared resource
-- live Envoy/CP tests should be smoke-sized and feature-focused; one test should not become a
-  full release rehearsal unless it is explicitly an E2E gate
-- do not pass `--test-threads=1` for a suite unless the suite owns unavoidable global external
-  state and the reason is documented
+- integration tests sharing PostgreSQL must generate unique org/team/resource names and avoid assumptions about global row counts
+- tests needing a TCP port must bind port `0` or allocate a per-test unique port; fixed ports are only for documented manual runbooks
+- tests needing singleton product state must serialize only the critical section, preferably via a named advisory lock or local mutex with a comment explaining the shared resource
+- live Envoy/CP tests should be smoke-sized and feature-focused; one test should not become a full release rehearsal unless it is explicitly an E2E gate
+- do not pass `--test-threads=1` for a suite unless the suite owns unavoidable global external state and the reason is documented
 
 ## 4. Feature Placement Checklist
 
@@ -239,86 +198,49 @@ These patterns usually mean the architecture is drifting:
 ## 6. Current S7.7/S8 Application
 
 For S8.1 API lifecycle foundation:
-- `api_definitions` are the config-first roots for imported APIs, learned APIs, generated tools,
-  and later MCP/API tool serving.
-- `api_route_bindings` link APIs to existing gateway route scope by typed same-team FKs; they do
-  not duplicate route config JSON or create a second routing authority.
-- `spec_versions` are append-only content rows. Review/publish state in later S8 slices must point
-  at versions or add explicit lifecycle records; it must not mutate a spec body in place.
-- `api_tools` are generated data rows attached to a concrete spec version. They are not live MCP
-  serving behavior until S11.
-- Retention policy rows are team-owned and may be API-scoped; raw observation retention in S8.5
-  must read from this policy rather than hard-coding learning cleanup.
-- Tests for API lifecycle storage use unique tenant/resource names and row-level locking where
-  concurrency matters, so they can run with the normal parallel suite.
+- `api_definitions` are the config-first roots for imported APIs, learned APIs, generated tools, and later MCP/API tool serving.
+- `api_route_bindings` link APIs to existing gateway route scope by typed same-team FKs; they do not duplicate route config JSON or create a second routing authority.
+- `spec_versions` are append-only content rows. Review/publish state in later S8 slices must point at versions or add explicit lifecycle records; it must not mutate a spec body in place.
+- `api_tools` are generated data rows attached to a concrete spec version. They are not live MCP serving behavior until S11.
+- Retention policy rows are team-owned and may be API-scoped; raw observation retention in S8.5 must read from this policy rather than hard-coding learning cleanup.
+- Tests for API lifecycle storage use unique tenant/resource names and row-level locking where concurrency matters, so they can run with the normal parallel suite.
 
 For S8.2 API REST/CLI foundation:
-- REST and CLI expose API lifecycle through the same service mutation path; CLI never writes API
-  rows directly.
-- OpenAPI import creates an append-only `SpecVersion` and generated `api_tools` rows in the same
-  transaction as the API create.
-- Generated tools remain inert product data until S11 MCP serving; no API tool can become live
-  config without the later review/publish/serving gates.
-- Route binding names existing gateway resources by typed IDs. V2 does not infer clusters,
-  listeners, upstreams, or route topology from partial OpenAPI data.
+- REST and CLI expose API lifecycle through the same service mutation path; CLI never writes API rows directly.
+- OpenAPI import creates an append-only `SpecVersion` and generated `api_tools` rows in the same transaction as the API create.
+- Generated tools remain inert product data until S11 MCP serving; no API tool can become live config without the later review/publish/serving gates.
+- Route binding names existing gateway resources by typed IDs. V2 does not infer clusters, listeners, upstreams, or route topology from partial OpenAPI data.
 
 For S7.7 core gateway parity:
 - `expose` is a CLI/API workflow over existing gateway services, not a separate config model.
 - `dataplane bootstrap` wraps the existing bootstrap API and must keep dev/prod security explicit.
-- `dataplane up/down`, if implemented, is local orchestration only; dataplane records/certs remain
-  REST-backed product state.
-- runbooks may describe Docker/Envoy commands, but they must not turn Docker host networking into
-  an architectural requirement.
+- `dataplane up/down`, if implemented, is local orchestration only; dataplane records/certs remain REST-backed product state.
+- runbooks may describe Docker/Envoy commands, but they must not turn Docker host networking into an architectural requirement.
 
 For S8 learning:
-- `ApiDefinition` is the aggregate root for import, capture, learned specs, published specs, and
-  generated tool rows.
+- `ApiDefinition` is the aggregate root for import, capture, learned specs, published specs, and generated tool rows.
 - observations are data until reviewed/published.
 - capture injection enters xDS through typed IR and is scoped to team-owned routes/listeners.
 - MCP tools are generated projections from published specs; serving them waits for S11.
 
 For S10 AI gateway:
-- AI providers, routes, budgets, and usage are shipped v2 resources, not speculative tool families.
-  S11 must either define MCP coverage for them or explicitly defer that coverage with rationale.
-- AI request routing and budget enforcement stay behind existing gateway services, xDS/ExtProc
-  contracts, and usage repositories. MCP must not create an alternate AI execution path.
-- AI usage is product/audit data. Tooling may read it through service APIs, but provider request
-  metadata and secret values remain behind the established redaction and secret-reference rules.
+- AI providers, routes, budgets, and usage are shipped v2 resources, not speculative tool families. S11 must either define MCP coverage for them or explicitly defer that coverage with rationale.
+- AI request routing and budget enforcement stay behind existing gateway services, xDS/ExtProc contracts, and usage repositories. MCP must not create an alternate AI execution path.
+- AI usage is product/audit data. Tooling may read it through service APIs, but provider request metadata and secret values remain behind the established redaction and secret-reference rules.
 
 For S11 MCP:
-- `spec/02-mcp-tools.md` is v1 reference material. S11 inherits the outcomes and documented gaps,
-  not the v1 scope-string authz model, static tool count, or phantom authz entries.
-- MCP authorization is restated in v2 terms: `PrincipalCtx`, typed `Resource`/`Action`, explicit
-  `TeamRef` where needed, org-admin implicit grants, platform-admin governance-only bypass, and the
-  grants-only agent path.
-- MCP sessions are not an authz cache. Each request re-authenticates the bearer token and
-  re-evaluates grants so agent disable/rotate and grant revocation fail closed on the next call.
-- MCP Origin checks are a browser defense: absent `Origin` is allowed for headless agents, while a
-  present `Origin` must match the configured allowlist.
-- MCP session team scope must be explicit or unambiguous. Multi-team callers and org admins must
-  not fall back to "first team" for team-scoped writes.
-- `cp_*` tools are internal control-plane tools. They use the same org/team authz model as REST and
-  must not become externally exposable through MCP.
-- `api_*` tools are dynamic gateway tools generated from published API specs. Their listability and
-  callability require an explicit v2 exposure decision because v2 does not carry v1's route
-  `external/internal` column.
-- Dynamic `api_*` execution resolves through v2 bindings, not v1 route metadata: generated tool row
-  to API definition/spec binding, then to listener/dataplane route information. Missing binding or
-  dataplane resolution fails closed with a structured configuration error. The resolution must not
-  assume the dataplane is on CP localhost; separate CP/DP deployment is the baseline design.
-- Dynamic `api_*` listing should read live enabled/current rows unless S11 records a measured reason
-  to cache; live reads make republish staleness the database's job.
-- Agents are part of the S11 authz surface. The deferred Agents API must land before static/dynamic
-  MCP tests can rely on real `CpTool`, `GatewayTool`, and `ApiConsumer` principals.
-- Agent authz is not enough by itself: S11 must add the agent-token authN path that resolves a
-  hashed active bearer token to `PrincipalCtx::Agent` before MCP can test real agent principals.
-- `tools/list` is an executable-tool view, not a catalog. A listed tool without executable authz, or
-  authz metadata without an exposed tool, is architectural drift.
-- Static MCP registry metadata must not drift from the service-layer authz actually enforced at
-  execution. If there is no shared declaration table yet, S11 must hand-author the registry and test
-  the enforced `(Resource, Action)` pair rather than claim generated parity.
-- MCP mutations go through service functions, so audit should match REST by construction; S11 must
-  still test that the MCP ingress cannot bypass actor/resource/action audit semantics.
-- Streamable HTTP capabilities must be advertised only when implemented. GET/SSE, DELETE,
-  resumability, notifications, prompts, resources, and logging are explicit implement/defer
-  decisions, not no-op defaults.
+- `spec/02-mcp-tools.md` is v1 reference material. S11 inherits the outcomes and documented gaps, not the v1 scope-string authz model, static tool count, or phantom authz entries.
+- MCP authorization is restated in v2 terms: `PrincipalCtx`, typed `Resource`/`Action`, explicit `TeamRef` where needed, org-admin implicit grants, platform-admin governance-only bypass, and the grants-only agent path.
+- MCP sessions are not an authz cache. Each request re-authenticates the bearer token and re-evaluates grants so agent disable/rotate and grant revocation fail closed on the next call.
+- MCP Origin checks are a browser defense: absent `Origin` is allowed for headless agents, while a present `Origin` must match the configured allowlist.
+- MCP session team scope must be explicit or unambiguous. Multi-team callers and org admins must not fall back to "first team" for team-scoped writes.
+- `cp_*` tools are internal control-plane tools. They use the same org/team authz model as REST and must not become externally exposable through MCP.
+- `api_*` tools are dynamic gateway tools generated from published API specs. Their listability and callability require an explicit v2 exposure decision because v2 does not carry v1's route `external/internal` column.
+- Dynamic `api_*` execution resolves through v2 bindings, not v1 route metadata: generated tool row to API definition/spec binding, then to listener/dataplane route information. Missing binding or dataplane resolution fails closed with a structured configuration error. The resolution must not assume the dataplane is on CP localhost; separate CP/DP deployment is the baseline design.
+- Dynamic `api_*` listing should read live enabled/current rows unless S11 records a measured reason to cache; live reads make republish staleness the database's job.
+- Agents are part of the S11 authz surface. The deferred Agents API must land before static/dynamic MCP tests can rely on real `CpTool`, `GatewayTool`, and `ApiConsumer` principals.
+- Agent authz is not enough by itself: S11 must add the agent-token authN path that resolves a hashed active bearer token to `PrincipalCtx::Agent` before MCP can test real agent principals.
+- `tools/list` is an executable-tool view, not a catalog. A listed tool without executable authz, or authz metadata without an exposed tool, is architectural drift.
+- Static MCP registry metadata must not drift from the service-layer authz actually enforced at execution. If there is no shared declaration table yet, S11 must hand-author the registry and test the enforced `(Resource, Action)` pair rather than claim generated parity.
+- MCP mutations go through service functions, so audit should match REST by construction; S11 must still test that the MCP ingress cannot bypass actor/resource/action audit semantics.
+- Streamable HTTP capabilities must be advertised only when implemented. GET/SSE, DELETE, resumability, notifications, prompts, resources, and logging are explicit implement/defer decisions, not no-op defaults.

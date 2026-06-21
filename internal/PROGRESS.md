@@ -1,15 +1,8 @@
 # Flowplane v2 — Progress
 
-Resumable state for the rewrite. On session start: read this file, continue the next unchecked item.
-Rules recap: v1 at `/tmp/flowplane-v1` (cloud) is read-only reference (clone from
-`https://github.com/rajeevramani/flowplane.git` if missing). Never port code verbatim. Every
-architectural decision goes in `DECISIONS.md`; founder questions in `QUESTIONS.md` (always with a
-recommendation). Architecture integrity rules live in `spec/14-architecture-integrity.md`.
-Commit+push at every green checkpoint. GitHub issue fixes follow
-`internal/issue-fix-workflow.md`.
+Resumable state for the rewrite. On session start: read this file, continue the next unchecked item. Rules recap: v1 at `/tmp/flowplane-v1` (cloud) is read-only reference (clone from `https://github.com/rajeevramani/flowplane.git` if missing). Never port code verbatim. Every architectural decision goes in `DECISIONS.md`; founder questions in `QUESTIONS.md` (always with a recommendation). Architecture integrity rules live in `spec/14-architecture-integrity.md`. Commit+push at every green checkpoint. GitHub issue fixes follow `internal/issue-fix-workflow.md`.
 
-**Checkpoint gates:** stop and notify the founder at end of Phase 0 (review of 08, 08a, 09) and end
-of Phase 1 (architecture + slice plan). Between gates, do not wait.
+**Checkpoint gates:** stop and notify the founder at end of Phase 0 (review of 08, 08a, 09) and end of Phase 1 (architecture + slice plan). Between gates, do not wait.
 
 ## Phase 0 — Behavioral spec extraction (no v2 code)
 
@@ -579,46 +572,15 @@ of Phase 1 (architecture + slice plan). Between gates, do not wait.
 
 ## Known Corrections / Open Risks
 
-Cold-start handoff safety: items surfaced by review that the checklist above must not paper
-over. "RESOLVED" items were fixed in the same review pass (with tests); "OPEN" items are real
-and scheduled — read these before trusting a green checkbox.
+Cold-start handoff safety: items surfaced by review that the checklist above must not paper over. "RESOLVED" items were fixed in the same review pass (with tests); "OPEN" items are real and scheduled — read these before trusting a green checkbox.
 
-- **R1 — Bootstrap concurrent-init race — RESOLVED.** `initialize` used `FOR UPDATE` on a
-  not-yet-existing `instance_meta` row (locks nothing) + `ON CONFLICT DO NOTHING` on the
-  marker, so two concurrent calls with two different valid tokens could both commit (two
-  orgs, lost marker). Fixed with a transaction-scoped advisory lock serializing the critical
-  section; regression test `concurrent_initialize_*` asserts exactly one winner.
-- **R3 — Team create/delete transaction boundary — RESOLVED.** `create_team`/`delete_team`
-  inserted/deleted the row in a separate transaction *before* the event+audit tx, so a
-  mid-call crash could leave a team with no `TeamCreated`/`TeamDeleted` event or audit row
-  (transactional-outbox invariant violated). Fixed with `identity::create_team_tx` /
-  `delete_team_tx`; the service now does row+event+audit in one transaction (pool-based
-  wrappers retained for test fixtures).
-- **R4 — xDS task graceful shutdown — RESOLVED.** xDS server tasks were spawned with
-  `std::future::pending()` shutdown futures (never drained); only the API drained. Fixed:
-  `serve.rs::xds_shutdown_signal` feeds each task a real shutdown future off the watch
-  channel, and shutdown now awaits all xDS task handles with a 10s bound.
-- **R2 — Service-layer authz denials are NOT audited — RESOLVED.** Authn *failures* are audited
-  (auth middleware) and the `AuditEntry::denial` row primitive exists + is storage-tested,
-  but no service/middleware path wrote a denial row when `check_resource_access` denied.
-  Fixed: every service `authorize()` helper that wraps `check_resource_access` now writes a
-  best-effort `authz.denied` audit row with request id, actor, resource, action, org/team, and
-  reason before returning the existing 403/404 error.
-- **R5 — multi-org users require explicit request org context — RESOLVED (S2.7, D-014).** The
-  loader no longer picks an org by `ORDER BY/LIMIT 1`; it returns the full membership set and
-  the auth middleware resolves a single validated active org from `X-Flowplane-Org` (or the
-  sole non-platform membership), failing closed (`org_selector_required`) when ambiguous. The
-  platform org is never inferred. `org_memberships` keeps only `UNIQUE (user_id, org_id)`.
-- **R6 — Email resolution is global and non-unique — RESOLVED (S2.7).** `find_user_by_email`
-  now rejects ambiguous (>1) matches instead of `LIMIT 1`; `find_user_by_subject` added as the
-  preferred immutable path. Email is no longer treated as an isolation boundary. (Follow-up,
-  not a risk: let member/grant request bodies accept a subject directly — API-schema sugar.)
-- **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — RESOLVED.**
-  `refresh_keys` takes `cache.write()` *then* does the JWKS HTTP fetch while holding it, and
-  `reqwest::Client::new()` sets no timeout — so a slow/hung IdP stalls every token validation
-  (head-of-line blocking) indefinitely. Fixed: the OIDC client has a 5s request timeout,
-  refreshes are single-flighted by a dedicated mutex, and the cache write lock is held only
-  while swapping parsed keys.
+- **R1 — Bootstrap concurrent-init race — RESOLVED.** `initialize` used `FOR UPDATE` on a not-yet-existing `instance_meta` row (locks nothing) + `ON CONFLICT DO NOTHING` on the marker, so two concurrent calls with two different valid tokens could both commit (two orgs, lost marker). Fixed with a transaction-scoped advisory lock serializing the critical section; regression test `concurrent_initialize_*` asserts exactly one winner.
+- **R3 — Team create/delete transaction boundary — RESOLVED.** `create_team`/`delete_team` inserted/deleted the row in a separate transaction *before* the event+audit tx, so a mid-call crash could leave a team with no `TeamCreated`/`TeamDeleted` event or audit row (transactional-outbox invariant violated). Fixed with `identity::create_team_tx` / `delete_team_tx`; the service now does row+event+audit in one transaction (pool-based wrappers retained for test fixtures).
+- **R4 — xDS task graceful shutdown — RESOLVED.** xDS server tasks were spawned with `std::future::pending()` shutdown futures (never drained); only the API drained. Fixed: `serve.rs::xds_shutdown_signal` feeds each task a real shutdown future off the watch channel, and shutdown now awaits all xDS task handles with a 10s bound.
+- **R2 — Service-layer authz denials are NOT audited — RESOLVED.** Authn *failures* are audited (auth middleware) and the `AuditEntry::denial` row primitive exists + is storage-tested, but no service/middleware path wrote a denial row when `check_resource_access` denied. Fixed: every service `authorize()` helper that wraps `check_resource_access` now writes a best-effort `authz.denied` audit row with request id, actor, resource, action, org/team, and reason before returning the existing 403/404 error.
+- **R5 — multi-org users require explicit request org context — RESOLVED (S2.7, D-014).** The loader no longer picks an org by `ORDER BY/LIMIT 1`; it returns the full membership set and the auth middleware resolves a single validated active org from `X-Flowplane-Org` (or the sole non-platform membership), failing closed (`org_selector_required`) when ambiguous. The platform org is never inferred. `org_memberships` keeps only `UNIQUE (user_id, org_id)`.
+- **R6 — Email resolution is global and non-unique — RESOLVED (S2.7).** `find_user_by_email` now rejects ambiguous (>1) matches instead of `LIMIT 1`; `find_user_by_subject` added as the preferred immutable path. Email is no longer treated as an isolation boundary. (Follow-up, not a risk: let member/grant request bodies accept a subject directly — API-schema sugar.)
+- **R7 — OIDC JWKS fetch holds the cache write-lock across an untimed network call — RESOLVED.** `refresh_keys` takes `cache.write()` *then* does the JWKS HTTP fetch while holding it, and `reqwest::Client::new()` sets no timeout — so a slow/hung IdP stalls every token validation (head-of-line blocking) indefinitely. Fixed: the OIDC client has a 5s request timeout, refreshes are single-flighted by a dedicated mutex, and the cache write lock is held only while swapping parsed keys.
 
 ## Notes
 
