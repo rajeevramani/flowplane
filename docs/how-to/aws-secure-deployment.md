@@ -1,8 +1,6 @@
 # AWS Secure Deployment Runbook
 
-This runbook is the concrete AWS packaging of Flowplane's provider-agnostic deployment
-invariants; it is self-contained — every step and value needed to stand up the environment is
-here.
+This runbook is the concrete AWS packaging of Flowplane's provider-agnostic deployment invariants; it is self-contained — every step and value needed to stand up the environment is here.
 
 The target is a strict secure smoke environment:
 
@@ -32,9 +30,7 @@ export TF_VAR_oidc_issuer="https://your-issuer.example.com"   # OIDC issuer URL
 export TF_VAR_oidc_audience="your-api-audience"               # expected JWT aud claim
 ```
 
-The default region is `us-east-1` with `availability_zones = ["us-east-1a", "us-east-1b"]`. If you
-change regions, set AZs from the same region explicitly; this keeps planning usable with narrower
-IAM policies that do not allow availability-zone discovery.
+The default region is `us-east-1` with `availability_zones = ["us-east-1a", "us-east-1b"]`. If you change regions, set AZs from the same region explicitly; this keeps planning usable with narrower IAM policies that do not allow availability-zone discovery.
 
 ## Secret Setup
 
@@ -49,17 +45,13 @@ Create Secrets Manager secrets for:
 - dataplane certificate issuer CA certificate PEM
 - dataplane certificate issuer CA private key PEM
 
-The OpenTofu module passes secret ARNs into ECS. The container writes PEM values to files under
-`/tmp/flowplane/tls` before running `flowplane serve`.
+The OpenTofu module passes secret ARNs into ECS. The container writes PEM values to files under `/tmp/flowplane/tls` before running `flowplane serve`.
 
-The module generates the RDS password and stores it in Secrets Manager. Protect the OpenTofu state
-backend because generated secret material is present in state.
+The module generates the RDS password and stores it in Secrets Manager. Protect the OpenTofu state backend because generated secret material is present in state.
 
 ## Network Egress
 
-Auth0/OIDC discovery and JWKS fetches require outbound HTTPS from the private ECS task. The module
-creates NAT egress by default. For the smoke environment it defaults to one NAT gateway to control
-cost; set `single_nat_gateway = false` if you want per-AZ NAT gateways.
+Auth0/OIDC discovery and JWKS fetches require outbound HTTPS from the private ECS task. The module creates NAT egress by default. For the smoke environment it defaults to one NAT gateway to control cost; set `single_nat_gateway = false` if you want per-AZ NAT gateways.
 
 ## OpenTofu
 
@@ -79,8 +71,7 @@ cp.getflowplane.io  -> api_alb_dns_name
 xds.getflowplane.io  -> xds_nlb_dns_name
 ```
 
-Keep `xds.getflowplane.io` DNS-only. Do not proxy xDS through Cloudflare for this smoke path;
-Flowplane must terminate the dataplane mTLS connection itself.
+Keep `xds.getflowplane.io` DNS-only. Do not proxy xDS through Cloudflare for this smoke path; Flowplane must terminate the dataplane mTLS connection itself.
 
 ## Bootstrap
 
@@ -152,8 +143,7 @@ flowplane --out .local/aws-envoy.yaml dataplane bootstrap edge-local \
   --ca-path "$PWD/.local/aws-dp-ca.crt"
 ```
 
-Run Envoy locally with `.local/aws-envoy.yaml`, then apply a simple route/listener and confirm the
-dataplane receives xDS without NACKs.
+Run Envoy locally with `.local/aws-envoy.yaml`, then apply a simple route/listener and confirm the dataplane receives xDS without NACKs.
 
 ## Teardown
 

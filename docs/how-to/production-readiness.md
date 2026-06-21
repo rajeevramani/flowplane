@@ -1,14 +1,11 @@
 # Production Readiness
 
-This is the S12f operator entry point. It describes the shipped v1.0 system only: no new
-product behavior, no dashboard renderer, and no normal workflow that depends on Envoy admin.
+This is the S12f operator entry point. It describes the shipped v1.0 system only: no new product behavior, no dashboard renderer, and no normal workflow that depends on Envoy admin.
 
 ## Evidence
 
 - Secret KEK rotation: [`secret-kek-rotation.md`](secret-kek-rotation.md)
-- Engineering evidence — release packaging, the failure-mode matrix, the
-  adversarial surface map, and the dev-dataplane walkthrough — lives in the
-  internal engineering docs: [`../../internal/README.md`](../../internal/README.md).
+- Engineering evidence — release packaging, the failure-mode matrix, the adversarial surface map, and the dev-dataplane walkthrough — lives in the internal engineering docs: [`../../internal/README.md`](../../internal/README.md).
 
 ## Deployment Shape
 
@@ -47,13 +44,9 @@ FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt \
 scripts/release/package-release.sh
 ```
 
-Run Envoy and `fp-agent` beside each other in the dataplane network. The dataplane dials the
-control plane over xDS/diagnostics; the control plane must not dial Envoy admin as a product path.
-Envoy admin stays loopback-only and is a manual diagnostic fallback.
+Run Envoy and `fp-agent` beside each other in the dataplane network. The dataplane dials the control plane over xDS/diagnostics; the control plane must not dial Envoy admin as a product path. Envoy admin stays loopback-only and is a manual diagnostic fallback.
 
-Upgrade order is independent: upgrade CP first or DP first within the supported Envoy line. Existing
-dataplanes keep serving last-applied config during a CP restart; new dataplanes cannot join until
-the CP is back.
+Upgrade order is independent: upgrade CP first or DP first within the supported Envoy line. Existing dataplanes keep serving last-applied config during a CP restart; new dataplanes cannot join until the CP is back.
 
 ## Configuration Reference
 
@@ -99,8 +92,7 @@ Packaging:
 | Package outputs | `FLOWPLANE_PACKAGE_IMAGE`, `FLOWPLANE_PACKAGE_DATAPLANE` |
 | Dataplane package | `FLOWPLANE_PACKAGE_TEAM`, `FLOWPLANE_PACKAGE_DATAPLANE_NAME`, `FLOWPLANE_PACKAGE_DATAPLANE_MODE`, `FLOWPLANE_PACKAGE_XDS_HOST`, `FLOWPLANE_PACKAGE_XDS_PORT`, `FLOWPLANE_PACKAGE_ADMIN_PORT`, `FLOWPLANE_PACKAGE_CA_PATH`, `FLOWPLANE_PACKAGE_CERT_PATH`, `FLOWPLANE_PACKAGE_KEY_PATH` |
 
-AI providers, routes, budgets, and usage are runtime product config through the API/CLI, not
-deployment environment variables.
+AI providers, routes, budgets, and usage are runtime product config through the API/CLI, not deployment environment variables.
 
 ## Runbook
 
@@ -126,8 +118,7 @@ Back up together:
 4. Retired-key JSON in `FLOWPLANE_SECRET_ENCRYPTION_KEYS`.
 5. CP xDS/API TLS files and dataplane CA material.
 
-A database restore without the matching KEK material leaves encrypted secret rows undecryptable.
-Keep KEK escrow and rotation overlap aligned with [`secret-kek-rotation.md`](secret-kek-rotation.md).
+A database restore without the matching KEK material leaves encrypted secret rows undecryptable. Keep KEK escrow and rotation overlap aligned with [`secret-kek-rotation.md`](secret-kek-rotation.md).
 
 Restore:
 
@@ -187,5 +178,4 @@ scripts/release/package-release.sh
 FLOWPLANE_PACKAGE_IMAGE=1 scripts/release/package-release.sh
 ```
 
-The failure-mode matrix and adversarial surface map (in the internal engineering docs) are
-release evidence, not day-to-day operator runbooks.
+The failure-mode matrix and adversarial surface map (in the internal engineering docs) are release evidence, not day-to-day operator runbooks.
