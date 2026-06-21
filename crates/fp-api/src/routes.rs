@@ -439,7 +439,9 @@ async fn bootstrap_initialize(
                     fp_domain::ErrorCode::Unauthorized,
                     "missing bootstrap token",
                 )
-                .with_hint("pass the boot-logged token as: Authorization: Bearer fpboot_…"),
+                .with_hint(
+                    "pass the operator-supplied bootstrap token as: Authorization: Bearer <token>",
+                ),
                 rid,
             )
         })?;

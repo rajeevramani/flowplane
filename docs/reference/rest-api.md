@@ -29,7 +29,7 @@ A missing or unparseable bearer token yields `401`. Authentication failures are 
 
 Two endpoints sit outside the secured surface and do **not** use the global Bearer scheme:
 
-- `POST /api/v1/bootstrap/initialize` is guarded by the one-shot bootstrap token (`Authorization: Bearer fpboot_…`).
+- `POST /api/v1/bootstrap/initialize` is guarded by the one-shot, operator-supplied bootstrap token (`Authorization: Bearer <token>`). See [How-to: bootstrap the first platform admin](../how-to/bootstrap-platform.md).
 - `GET /api/v1/bootstrap/status`, `/healthz`, `/readyz`, `/metrics`, and `/api-docs/openapi.json` are public.
 
 ### Active-org selector (`X-Flowplane-Org`)

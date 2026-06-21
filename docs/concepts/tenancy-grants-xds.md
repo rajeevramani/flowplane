@@ -2,10 +2,7 @@
 
 > Audience: operators, platform-engineers · Status: stable
 
-This page explains the three ideas you need to hold in your head to operate
-Flowplane confidently: how tenants are isolated, how access is decided, and why
-the Envoy configuration Flowplane produces is predictable. It is
-understanding-oriented — it argues *why* the system is shaped this way and links
+This page explains the three ideas you need to hold in your head to operate Flowplane confidently: how tenants are isolated, how access is decided, and why the Envoy configuration Flowplane produces is predictable. It is understanding-oriented — it argues *why* the system is shaped this way and links
 out for the exhaustive detail. For the authoritative decision tables and threat
 model see [spec/08a — Security & Tenancy](../../spec/08a-security-and-tenancy.md)
 and [spec/05 — Auth](../../spec/05-auth.md); for the xDS subsystem see

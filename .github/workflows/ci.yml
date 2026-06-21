@@ -52,6 +52,9 @@ jobs:
           FLOWPLANE_DATABASE_URL: postgres://postgres:postgres@localhost:5433/flowplane_test
           FLOWPLANE_API_INSECURE: "true"
           FLOWPLANE_API_ADDR: 127.0.0.1:8080
+          # Non-dev uninitialized instance fails closed without a bootstrap token (#113); supply one
+          # so the smoke can boot (also exercises the operator-seed path).
+          FLOWPLANE_BOOTSTRAP_TOKEN: ci-smoke-bootstrap-token-0123456789abcdef
         run: |
           # Persistent runner: make sure no spawned server leaks on failure.
           trap 'kill ${SERVER_PID:-} ${TLS_PID:-} 2>/dev/null || true' EXIT
