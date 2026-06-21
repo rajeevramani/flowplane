@@ -115,7 +115,7 @@ own rate limit. Both go in the route's `filter_overrides` (a `RouteRule` field;
         "routes": [
           {
             "name": "payments",
-            "match": { "prefix": "/payments" },
+            "match": { "prefix": { "prefix": "/payments" } },
             "action": { "cluster": "payments-backend" },
             "filter_overrides": [
               { "type": "jwt_auth", "requirement_name": "require-auth0" },
