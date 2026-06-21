@@ -63,6 +63,12 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:8080/healthz
+          # readyz also gates on the xDS outbox consumer catching up; poll until ready rather
+          # than assuming it is ready the instant healthz answers.
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/readyz >/dev/null 2>&1 && break
+            sleep 1
+          done
           curl -fsS http://127.0.0.1:8080/readyz
           # request id present on responses, echoed when supplied, and in error envelope
           RID=$(curl -fsS -D - -o /dev/null http://127.0.0.1:8080/healthz | tr -d '\r' | awk -F': ' '/^x-request-id/ {print $2}')
