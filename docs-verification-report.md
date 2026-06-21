@@ -62,9 +62,13 @@ Actionable / executed:
 - `docs/how-to/learn-and-publish-api-spec.md`
 - `docs/reference/cli.md`
 - `docs/reference/configuration.md`
-- `docs/reference/rest-api.md`
 - `docs/reference/errors.md`
 - `docs/reference/filters.md`
+- `docs/reference/rest-api.md`
+
+Not execution-verified: `docs/concepts/tenancy-grants-xds.md` (#112) — explanation/concepts
+prose with no runnable commands, so it is out of scope for this execution-based pass. Its
+factual claims were code-reviewed at authoring time (Codex gate), not re-checked here.
 
 ---
 
