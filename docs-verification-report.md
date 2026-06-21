@@ -179,6 +179,38 @@ limit, `filter_overrides`, the If-Match flow) is correct. No additional fix need
 > A body carrying `name` is correctly rejected (`unknown field \`name\`, expected \`spec\``);
 > this matches the doc and is **not** a defect.
 
+## Gap-filling pass: how-to data-plane steps (mTLS + agent)
+
+A follow-up pass tried to close the remaining inspection-only/blocked steps in the
+how-to pages by standing up the full mTLS path. Findings:
+
+- **mTLS xDS works end to end.** Setting the `FLOWPLANE_XDS_TLS_*` triad makes the CP
+  use real mTLS xDS even in dev mode (`crates/flowplane/src/serve.rs:118` →
+  `serve_mtls` + cert-registry resolver; log: `xDS ADS server starting (mTLS,
+  certificate-registry binding)`). A real Envoy launched from a `--mode mtls`
+  bootstrap, presenting the issued client cert, connected over mTLS and pulled
+  resources — `cds: added/updated 2 cluster(s)`, `lds: add/update listener 'edge' /
+  'local'`. This confirms the headline claim of `register-dataplane-mtls.md` (the cert
+  the CP issues actually authenticates the dataplane's xDS stream).
+- **NEW defect (#123): the AI route's generated cluster is NACKed by Envoy.** With the
+  AI how-to's `chat-route` present, Envoy rejects its cluster:
+  `Error adding/updating cluster(s) ai-chat-route-b1: 'auto_sni_san_validation' was
+  configured without a validation context` (durably recorded by `ops xds nacks`;
+  `ops xds status` → `HEALTH degraded`). Root cause is in code, not docs
+  (`crates/fp-core/src/services/ai.rs:1120-1123` materializes
+  `auto_sni_san_validation: true` with `validation_context_sds_secret_name: None`;
+  `crates/fp-xds/src/translate.rs:668-688` emits exactly that). The same pattern exists
+  in `expose.rs:94-97` (TLS upstreams) and `route_generation.rs:284-287`. Classification
+  `code-defect`, severity `major`. A plaintext `expose http://…` upstream is unaffected
+  (no `upstream_tls`), which is why the getting-started data path serves `200`.
+- **Blocked by environment (not by the docs): the live `fp-agent` run.** This sandbox
+  SIGTERMs any shell call that keeps a server child (Envoy) alive more than a few
+  seconds, so `register-dataplane-mtls.md` §3–§4 (`fp-agent` → `/healthz` → heartbeat
+  advancing) could not be observed across a full poll cycle. The agent's flag/env
+  surface matches source, and the mTLS transport it would use is the same one verified
+  above; only the live `/healthz` + heartbeat assertion is unverified here. Stated as
+  blocked rather than assumed.
+
 ## Proof: `docs/how-to/register-dataplane-mtls.md`  (§2 cert issue **now executed**)
 
 | Command | Result | Excerpt |
@@ -217,6 +249,12 @@ the open governance issue #118, not re-filed.)
 | §3 `ai budgets update --revision 1` → enforcing | pass | `updated "chat-budget" (revision 2)` |
 | §4 `ai usage --provider-id …` | pass | `no rows` (no traffic) |
 | §4 chat request through `:19000` | **blocked** | needs live OpenAI provider + egress |
+| §2 generated cluster loadable by Envoy | **discrepancy (NACK)** | Envoy rejects `ai-chat-route-b1`: `'auto_sni_san_validation' was configured without a validation context` — see #123 / gap-filling pass |
+
+**Defect (#123, new):** the §2 AI cluster (TLS `base_url`) is materialized with
+`auto_sni_san_validation: true` and no validation context, which Envoy NACKs — the route
+shows `status: active` on the CP but never loads on the dataplane. Classification
+`code-defect`, severity `major`. Details in the gap-filling section above.
 
 **Defect (#122, reproduced):** the `unavailable` error is correct, documented use-time
 behavior (`configuration.md` constraint ⁷), but neither the AI how-to's Prereqs nor the
@@ -301,7 +339,12 @@ No discrepancies.
 
 ## Issues Raised Or Updated
 
-No new issues filed — every discrepancy found in this pass is already tracked.
+New this pass:
+
+- **#123** — `[docs-verify] docs/how-to/ai-gateway-route-budget.md — generated AI cluster
+  is NACKed by Envoy (auto_sni_san_validation without a validation context)`. Severity
+  `major` · Classification `code-defect`. Found while filling the how-to data-plane gaps;
+  also affects `expose` with a TLS upstream and route-generation.
 
 Reproduced this pass (already open, not re-filed):
 
@@ -324,12 +367,19 @@ Carried over (not in this run's executable scope or environment-specific):
 
 ## Counts
 
-- New issues raised this pass: **0** (all defects already tracked).
+- New issues raised this pass: **1** (#123, `code-defect` / `major`).
 - Defects reproduced this pass: 2 (#121, #122) — by severity `major` 1 · `minor` 1; by
   classification `doc-defect` 2 · `code-defect` 0 · `ambiguous` 0.
+- All defects (new + reproduced) by classification: `doc-defect` 2 · `code-defect` 1 ·
+  `ambiguous` 0; by severity: `major` 2 · `minor` 1.
 - Previously-blocked steps now **executed and passing**: the live Envoy data path
-  (getting-started §6–§7, dev-dataplane §8–§9) and `dataplane cert issue`
-  (register-dataplane §2).
+  (getting-started §6–§7, dev-dataplane §8–§9), `dataplane cert issue`
+  (register-dataplane §2), and **mTLS xDS** end to end (real Envoy attaches with the
+  issued client cert and pulls config).
+- Still blocked **by the environment** (not the docs): the live `fp-agent` run
+  (`register-dataplane-mtls` §3–§4) — this sandbox reaps long-lived Envoy children, so
+  the agent `/healthz` + heartbeat could not be observed; the AI chat round-trip (live
+  provider) — and, independently, the AI cluster cannot load on Envoy at all (#123).
 - Docs executed end-to-end (DB + Envoy backed): README, getting-started, dev-dataplane,
   cli-auth-and-contexts, jwt-auth-rate-limit-route, register-dataplane-mtls,
   ai-gateway-route-budget, learn-and-publish-api-spec, and all 5 reference docs.
