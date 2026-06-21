@@ -19,7 +19,7 @@ CI-with-Docker promotion is deferred post-1.0. The live runner is broad, Docker-
 timing-sensitive streaming coverage; S12 keeps the gate recorded instead of refactoring the harness.
 
 The live runner uses the dev-mode dataplane path. Release dataplane bootstrap is still the mTLS path
-documented in `docs/release-packaging.md` and `docs/production-readiness.md`.
+documented in `internal/release/release-packaging.md` and `docs/how-to/production-readiness.md`.
 
 ## Seeded Walkthrough
 
@@ -61,7 +61,7 @@ FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt \
 scripts/package-release.sh
 ```
 
-CLI first-contact flow is documented in `docs/production-readiness.md`; the release gate references
+CLI first-contact flow is documented in `docs/how-to/production-readiness.md`; the release gate references
 that workflow rather than duplicating every operator command here.
 
 ## v1.0.0 Tag Checklist
@@ -69,11 +69,11 @@ that workflow rather than duplicating every operator command here.
 - [ ] All #86 children closed or explicitly accepted; #95 reviewed and accepted.
 - [ ] Required CI green: fmt, clippy twice, workspace tests on real Postgres, boot smoke,
       cargo-deny.
-- [ ] `docs/adversarial-surface-map.md` is green or accepted.
-- [ ] `docs/failure-mode-matrix.md` is green, with live phases covered by the manual gate evidence.
+- [ ] `internal/adversarial-surface-map.md` is green or accepted.
+- [ ] `internal/failure-mode-matrix.md` is green, with live phases covered by the manual gate evidence.
 - [ ] Release artifacts reproducible with `scripts/package-release.sh`.
 - [ ] OCI image reproducible with `FLOWPLANE_PACKAGE_IMAGE=1 scripts/package-release.sh`.
-- [ ] Operator docs complete: `docs/production-readiness.md`.
+- [ ] Operator docs complete: `docs/how-to/production-readiness.md`.
 - [ ] `REWRITE-REPORT.md` committed.
 - [ ] Accepted risks below are signed off.
 

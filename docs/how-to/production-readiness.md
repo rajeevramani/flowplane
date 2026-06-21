@@ -5,12 +5,10 @@ product behavior, no dashboard renderer, and no normal workflow that depends on 
 
 ## Evidence
 
-- Release artifacts and packaging: `docs/release-packaging.md`
-- Alerts and metrics: `docs/observability-alerts.md`
-- Failure-mode evidence: `docs/failure-mode-matrix.md`
-- Adversarial coverage: `docs/adversarial-surface-map.md`
-- Dev dataplane walkthrough: `docs/dev-dataplane.md`
-- Secret KEK rotation: `docs/secret-kek-rotation.md`
+- Secret KEK rotation: [`secret-kek-rotation.md`](secret-kek-rotation.md)
+- Engineering evidence — release packaging, the failure-mode matrix, the
+  adversarial surface map, and the dev-dataplane walkthrough — lives in the
+  internal engineering docs: [`../../internal/README.md`](../../internal/README.md).
 
 ## Deployment Shape
 
@@ -116,7 +114,7 @@ deployment environment variables.
 | Auth spike | `fp_authn_failures_total`, `fp_authz_denied_total`, audit rows | For authn, check IdP/JWKS/token expiry. For authz, check grants/team context and suspicious probing. |
 | AI budget exhaustion | `fp_ai_budget_threshold_crossings_total{mode="enforcing",result="exhausted"}` | Compare expected usage to configured budget; raise budget or reduce traffic. |
 | Capture drops | `fp_capture_dropped_total` | Check capture source health and configured discovery/capture constraints. |
-| Release package validation | `SHA256SUMS`, `flowplane-*.oci.tar`, binary `file` output | Verify checksums and static binary signal from `docs/release-packaging.md`; rebuild artifacts if any hash differs. |
+| Release package validation | `SHA256SUMS`, `flowplane-*.oci.tar`, binary `file` output | Verify checksums and static binary signal (release-packaging details are in the internal engineering docs); rebuild artifacts if any hash differs. |
 
 ## Backup And Restore Drill
 
@@ -129,7 +127,7 @@ Back up together:
 5. CP xDS/API TLS files and dataplane CA material.
 
 A database restore without the matching KEK material leaves encrypted secret rows undecryptable.
-Keep KEK escrow and rotation overlap aligned with `docs/secret-kek-rotation.md`.
+Keep KEK escrow and rotation overlap aligned with [`secret-kek-rotation.md`](secret-kek-rotation.md).
 
 Restore:
 
@@ -189,5 +187,5 @@ scripts/package-release.sh
 FLOWPLANE_PACKAGE_IMAGE=1 scripts/package-release.sh
 ```
 
-Use `docs/failure-mode-matrix.md` and `docs/adversarial-surface-map.md` as release evidence, not
-as day-to-day operator runbooks.
+The failure-mode matrix and adversarial surface map (in the internal engineering docs) are
+release evidence, not day-to-day operator runbooks.

@@ -544,18 +544,22 @@ mod tests {
             .await
             .expect("register at head");
 
+        // The outbox is a single shared stream and these tests run in parallel against one
+        // database, so a head-registered consumer may already see >0 pending from sibling
+        // appends. Assert on the delta our own append causes, not an absolute count.
         let initial = consumer_lag_stats(&pool, &consumer)
             .await
             .expect("initial lag stats");
-        assert_eq!(initial.pending_count, 0);
-        assert_eq!(initial.oldest_age_seconds, 0.0);
 
         append_one(&pool, "lag-stats").await;
 
         let pending = consumer_lag_stats(&pool, &consumer)
             .await
             .expect("pending lag stats");
-        assert!(pending.pending_count >= 1);
+        assert!(
+            pending.pending_count > initial.pending_count,
+            "appending an event raises this consumer's pending count"
+        );
         assert!(pending.oldest_age_seconds >= 0.0);
     }
 

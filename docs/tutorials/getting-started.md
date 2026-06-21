@@ -24,8 +24,7 @@ You need:
   database and sets the `postgres` password to `postgres`. On **macOS / Homebrew** there
   is no `postgres` role by default, so create it first (`createuser -s postgres` →
   `ALTER USER postgres PASSWORD 'postgres'` → `createdb -O postgres flowplane_dev`), or
-  point `FLOWPLANE_DATABASE_URL` at your own superuser — see
-  [dev-dataplane.md](../dev-dataplane.md#1-start-postgresql).
+  point `FLOWPLANE_DATABASE_URL` at your own superuser.
 - **Envoy installed** — a local `envoy` binary on your `PATH`. You use it in
   step 6 to actually route traffic. On macOS, prefer the local binary over Docker.
 - **The `flowplane` binary.** Build it from the repo:
@@ -247,8 +246,7 @@ configured entirely by the Flowplane control plane. That is your first success.
 
 If traffic does not flow, check, in order, that the control plane logs show Envoy
 connected to xDS, that the upstream still answers at `http://127.0.0.1:3001/`, and
-that port `10001` is not already in use. The dev dataplane runbook
-([`../dev-dataplane.md`](../dev-dataplane.md)) has the full troubleshooting list.
+that port `10001` is not already in use.
 
 To tear down what you created:
 
@@ -264,6 +262,6 @@ You started Flowplane in dev mode, authenticated with a dev token, exposed an
 upstream, connected a local Envoy, and reached the upstream through the gateway.
 From here:
 
-- **The full dev dataplane runbook (mTLS, diagnostics, troubleshooting):** [`../dev-dataplane.md`](../dev-dataplane.md)
+- **Securing the dataplane with mTLS:** [`../how-to/register-dataplane-mtls.md`](../how-to/register-dataplane-mtls.md)
 - **Every CLI command and flag:** [`../reference/cli.md`](../reference/cli.md)
 - **Every configuration environment variable:** [`../reference/configuration.md`](../reference/configuration.md)

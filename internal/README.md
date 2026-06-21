@@ -8,19 +8,19 @@ evidence. End-user documentation lives in [`../docs/`](../docs/README.md).
 
 ## Classes of content here
 
-`(current)` = lives here today. `(planned — #116)` = migrates here from `docs/`
-once the docs-taxonomy policy is executed; **not moved yet**.
+`(current)` = always lived here. `(migrated from docs/ — #116)` = reclassified out
+of `docs/` when the docs-taxonomy policy was executed.
 
 | Class | Examples | Maintenance |
 |-------|----------|-------------|
 | **Specs / design records** | `../spec/*` (current) | Point-in-time. Mark historical; do **not** chase current. |
 | **Decisions** | `../DECISIONS.md` (current) | Append-only decision log. |
 | **Progress / status** | `internal/PROGRESS.md`, `internal/QUESTIONS.md`, `../REWRITE-REPORT.md` (current) | Status ledgers; current only while a gate is active. |
-| **Release evidence** | `internal/release-walkthrough.md` (current); `failure-mode-matrix.md`, `adversarial-surface-map.md`, `release-packaging.md` (planned — #116, today in `docs/`); `internal/release/` (planned dir, created on migration) | Supports release readiness; not product docs. |
-| **Dev runbooks & workflows** | `internal/auth0-local-runbook.md`, `internal/prod-local-runbook.md`, `internal/dev-workflow-automation.md`, `internal/issue-fix-workflow.md`, `internal/user-onboarding.md` (current); `dev-dataplane.md` (planned — #116, today in `docs/`) | For contributors/dev environments. |
+| **Release evidence** | `internal/release-walkthrough.md`, `internal/failure-mode-matrix.md`, `internal/adversarial-surface-map.md`, `internal/release/release-packaging.md` (migrated from `docs/` — #116) | Supports release readiness; not product docs. |
+| **Dev runbooks & workflows** | `internal/auth0-local-runbook.md`, `internal/prod-local-runbook.md`, `internal/dev-workflow-automation.md`, `internal/issue-fix-workflow.md`, `internal/user-onboarding.md`, `internal/dev-dataplane.md` (migrated from `docs/` — #116) | For contributors/dev environments. |
 
 Full reclassification table and sequencing: [`../docs/README.md`](../docs/README.md)
-and #116. Nothing has been moved yet.
+and #116.
 
 ## Rules
 

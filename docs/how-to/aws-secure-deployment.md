@@ -1,7 +1,8 @@
 # AWS Secure Deployment Runbook
 
-This runbook is the concrete AWS packaging for the provider-agnostic deployment invariants in
-`spec/14-architecture-integrity.md`.
+This runbook is the concrete AWS packaging of Flowplane's provider-agnostic deployment
+invariants; it is self-contained — every step and value needed to stand up the environment is
+here.
 
 The target is a strict secure smoke environment:
 

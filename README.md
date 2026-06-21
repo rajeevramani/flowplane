@@ -16,7 +16,7 @@ start control plane -> start dataplane -> expose upstream -> curl through Envoy 
 
 For the current manual dev workflow, see:
 
-- [docs/dev-dataplane.md](docs/dev-dataplane.md)
+- [internal/dev-dataplane.md](internal/dev-dataplane.md)
 
 That guide covers starting PostgreSQL, running the CP in dev mode, exporting the dev token, starting
 a local Envoy dataplane, creating gateway resources, and checking stats/NACK diagnostics.
@@ -52,7 +52,7 @@ scripts/e2e-envoy.sh
 > `scripts/ensure-postgres.sh` helper assumes a Linux/container setup (`service postgresql
 > start`, `su postgres`) and does **not** create that role; on macOS/Homebrew there is no
 > `postgres` role by default — create it first
-> (see [docs/dev-dataplane.md](docs/dev-dataplane.md#1-start-postgresql)).
+> (see [internal/dev-dataplane.md](internal/dev-dataplane.md#1-start-postgresql)).
 >
 > - Workspace tests read the DB URL from `FLOWPLANE_TEST_DATABASE_URL` (shown above).
 > - `scripts/e2e-envoy.sh` reads `FLOWPLANE_E2E_PG_ADMIN_URL` and `FLOWPLANE_E2E_DATABASE_URL`
