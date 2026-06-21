@@ -24,12 +24,11 @@ Required high-level values:
 - `xds_ingress_cidrs`: your local dataplane/operator public IP CIDR, for example `["1.2.3.4/32"]`.
 - Secrets Manager ARNs for Flowplane KEK and PEM material.
 
-OIDC values can come from the verified local prod env:
+Set the OIDC values from your identity provider:
 
 ```bash
-set -a; source internal/.env.prod-local; set +a
-export TF_VAR_oidc_issuer="$FLOWPLANE_OIDC_ISSUER"
-export TF_VAR_oidc_audience="$FLOWPLANE_OIDC_AUDIENCE"
+export TF_VAR_oidc_issuer="https://your-issuer.example.com"   # OIDC issuer URL
+export TF_VAR_oidc_audience="your-api-audience"               # expected JWT aud claim
 ```
 
 The default region is `us-east-1` with `availability_zones = ["us-east-1a", "us-east-1b"]`. If you

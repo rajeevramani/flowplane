@@ -84,7 +84,7 @@ echo "$CP_XDS_SERVER_CA_PEM" > /etc/flowplane/dp/server-ca.crt
 
 > These are two different CAs. `ca_certificate_pem` from the issue response is the *client* chain CA (used by the CP to verify the agent). The agent's `--tls-ca-path` is the *server* CA (used by the agent to verify the CP). They are the **same file only if** the CP's xDS server certificate happens to be signed by that same issuer CA — the code does not require it.
 
-> If your dataplane already has externally-issued certs, use `dataplane cert register` / `POST /api/v1/teams/{team}/proxy-certificates` instead to register the SPIFFE binding without minting a key. Certificate lifecycle (registration vs issuance, SPIFFE format, revocation) is specified in [spec/05-auth.md](../../spec/05-auth.md) and [spec/04-xds.md](../../spec/04-xds.md).
+> If your dataplane already has externally-issued certs, use `dataplane cert register` / `POST /api/v1/teams/{team}/proxy-certificates` instead to register the SPIFFE binding without minting a key. (Optional background — not needed to finish this task: the certificate lifecycle design, SPIFFE format, and revocation internals are in the design records linked under Further reading.)
 
 ## 3. Run `fp-agent`
 
@@ -136,9 +136,9 @@ flowplane ops xds status --team payments
 
 `dataplane get` (`GET /api/v1/teams/{team}/dataplanes/{name}`) shows `last_heartbeat_at` advancing once the agent is reporting; `stats overview` reflects the dataplane under `live_dataplanes`.
 
-## Related
+## Further reading
 
 - [Getting started tutorial](../tutorials/getting-started.md) — stand up the control plane and xDS mTLS.
 - [Configuration reference](../reference/configuration.md) — every env var, including the cert-issuer and xDS TLS triads.
 - [CLI reference](../reference/cli.md) — full `dataplane` and `dataplane cert` command surface.
-- [spec/04-xds.md](../../spec/04-xds.md), [spec/05-auth.md](../../spec/05-auth.md) — SPIFFE binding and certificate revocation internals.
+- Design references (optional): [spec/04-xds.md](../../spec/04-xds.md), [spec/05-auth.md](../../spec/05-auth.md) — SPIFFE binding and certificate revocation internals.

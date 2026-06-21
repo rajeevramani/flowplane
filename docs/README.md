@@ -23,26 +23,40 @@ per-document metadata (a header banner), not directories.
 
 ## Cardinal rule
 
-**User docs must stand alone.** A content page here may be *derived* from `spec/`
-but must not require the reader to open `spec/` or `internal/` to succeed.
+**User docs must stand alone.** The test is *completability*: a reader must be able
+to finish a tutorial, how-to, or reference page — every step, every required value —
+**without opening `spec/` or `internal/`**. A page may be *derived* from `spec/`, but
+the spec must never be required reading to succeed.
+
+What this allows and forbids:
 
 - ✅ Internal docs may link *into* `docs/`.
-- ❌ **Content pages** here must **not** cite `spec/` or `internal/` as required reading.
-- A short "design rationale" pointer in a `concepts/` page is the only exception,
-  and it stays a pointer — not required reading.
+- ✅ **Optional** "Further reading" / design-reference links into `spec/` are fine,
+  as long as they are clearly marked optional and the task is complete without them.
+  Put them under a `## Further reading` (or "Design references") heading, or label
+  them inline as optional background.
+- ✅ `concepts/` (explanation) pages may cite `spec/` freely — by design they are a
+  bridge into the design records (see #112). They still must not pull in `internal/`.
+- ❌ No page may make a `spec/` or `internal/` link **required reading** — i.e. a step
+  the reader must follow to complete the task.
+- ❌ No page may depend on an `internal/` artifact in a task step (e.g.
+  `source internal/.env...`); inline a self-contained example instead.
 
 ### Enforcement (CI)
 
-A CI check rejects links from `docs/**/*.md` into `../internal/` or `../spec/`,
-**with two carve-outs** so navigation still works:
+A CI check lists every `docs/**/*.md` link into `../internal/` or `../spec/` and
+fails on the ones that are **not** allowed. Allowed:
 
-1. The index file `docs/README.md` is exempt (it links to sibling buckets for
-   navigation — exactly what you're reading).
-2. Links to a *bucket index* (`../internal/README.md`, `../spec/README.md`) are
-   allowed from anywhere; only links into deeper `internal/` or `spec/` **content**
-   are rejected.
+1. `docs/README.md` (this index) and links to a *bucket index*
+   (`../internal/README.md`, `../spec/README.md`).
+2. Any link from a `docs/concepts/` page into `../spec/` (explanation bridge).
+3. Links into `../spec/` that sit under a `## Further reading` / "Design references"
+   heading (optional background).
 
-Tracked in #116.
+Everything else — required-reading spec links in task steps, and **any** link into
+`../internal/` from a task page — fails the check.
+
+Tracked in #116, #118.
 
 ## Per-document banner
 

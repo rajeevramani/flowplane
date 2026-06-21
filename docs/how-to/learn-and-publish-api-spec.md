@@ -4,7 +4,7 @@
 
 **Task:** Run a learning session, then generate and publish a learned OpenAPI spec version.
 
-This guide assumes you already have a context configured (`flowplane config set-context` / `use-context`), a team you can write to, and an existing **API definition** that the learning session will attach to. For how the captured traffic is turned into an OpenAPI spec, see [`spec/06-learning.md`](../../spec/06-learning.md) — this guide only covers the operator workflow.
+This guide assumes you already have a context configured (`flowplane config set-context` / `use-context`), a team you can write to, and an existing **API definition** that the learning session will attach to. It covers the operator workflow and needs nothing else to complete.
 
 ## Learning vs discovery
 
@@ -164,3 +164,7 @@ Confirm:
 - `tool_count` is greater than zero (the published operations became MCP tools).
 
 To inspect or toggle an individual generated tool, use `flowplane mcp status` / `flowplane mcp enable --api <tool-name>` / `flowplane mcp disable --api <tool-name>` (REST: `PATCH /api/v1/teams/{team}/mcp/tools/{name}`).
+
+## Further reading
+
+- Design reference (optional): [`spec/06-learning.md`](../../spec/06-learning.md) — how captured traffic is aggregated into an OpenAPI spec. Not needed to complete this guide.
