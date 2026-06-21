@@ -68,9 +68,12 @@ Actionable / executed:
 - `docs/reference/filters.md`
 - `docs/reference/rest-api.md`
 
+- `docs/how-to/secret-kek-rotation.md` (executed end to end)
+
 Operator runbooks (epic #100 **non-goals**; "new docs link to these") — inspection /
-command-shape verification only: `docs/how-to/aws-secure-deployment.md`,
-`docs/how-to/production-readiness.md`, `docs/how-to/secret-kek-rotation.md`.
+command-shape verification only, because they require cloud infra / a full production
+deploy that is not available here: `docs/how-to/aws-secure-deployment.md`,
+`docs/how-to/production-readiness.md`.
 
 Not execution-verified: `docs/concepts/tenancy-grants-xds.md` (#112, item 12) —
 explanation prose, no runnable commands.
@@ -147,13 +150,25 @@ TLS-bearing YAML (exit 0). Step 10 diagnostics (Envoy attached, no `fp-agent`):
 `STALE` / zero counters are exactly what the runbook predicts for the manual path (Envoy
 started directly, no heartbeats). No discrepancies.
 
-## Proof: `docs/how-to/cli-auth-and-contexts.md`
+## Proof: `docs/how-to/cli-auth-and-contexts.md`  (executed end to end)
 
-Confirmed against `--help` and a live `whoami`: global `--server`/`--org`/`--team`/`--context`
-resolution; `auth {login,whoami,token,logout}` with `--token`/`--token-stdin`/`--pkce`/`--device`
-(alias `--device-code`)/`--issuer`/`--client-id`/`--callback-url`/`--scope`; and
-`config {set-context,use-context,get-contexts,show,path}` all exist with the documented flags.
-`auth whoami` succeeds end to end against the live CP. No discrepancies.
+Ran against a clean `$HOME` so config/credentials were created from scratch.
+
+| Step / Command | Result | Excerpt |
+|---|---|---|
+| `config path` | pass | `/…/.flowplane/config.toml` (documented default) |
+| `config set-context prod --server … --org … --team …` | pass | `context saved`; becomes current when none set |
+| `config get-contexts` | pass | current marked `*`: `* prod  http://127.0.0.1:8096  dev-org  default` |
+| `config set-context staging …` + `config use-context prod` | pass | `context selected`; `*` moves to `prod` |
+| `auth login --token <tok>` | pass | `token saved to /…/.flowplane/credentials` (file mode `0600`) |
+| `auth token` | pass | prints the resolved bearer token |
+| `--context prod auth whoami` (no `FLOWPLANE_TOKEN` env) | pass | identity resolved from the credentials file → confirms the documented token precedence |
+| `config show` | pass | renders `current_context` + both `[[contexts]]` blocks |
+| `auth logout` | pass | `logged out`; credentials file deleted (confirmed absent) |
+
+The token+server fast path (`FLOWPLANE_TOKEN`/`FLOWPLANE_SERVER` → `whoami`) was already
+exercised under getting-started §3. OIDC PKCE/device login (`--pkce`/`--device`) is **blocked
+by environment** (no IdP); its flag surface matches `cli.md`. No discrepancies.
 
 ## Proof: `docs/how-to/jwt-auth-rate-limit-route.md`  (#121 **fixed**)
 
@@ -325,13 +340,26 @@ No discrepancies.
 (Note: the 422 deserialization leak above also affects rest-api.md's "Errors always use the
 envelope" statement — same root cause, filed once.)
 
-## Proof: operator runbooks (inspection — epic non-goals)
+## Proof: `docs/how-to/secret-kek-rotation.md`  (executed end to end)
+
+Ran the rotation procedure (steps 1–6) against the live CP, restarting it between keyrings.
+
+| Step / Command | Result | Excerpt |
+|---|---|---|
+| create `kek-test` secret while CP active key id = `key-a` | pass | `created "kek-test" (revision 1)`; `secret get` → `encryption_key_id: key-a` |
+| steps 2–5: restart CP with `FLOWPLANE_SECRET_ENCRYPTION_KEY`=new, `_KEY_ID=key-b`, `_KEYS={"key-a":"…"}` | pass | starts clean; old secret stays present and decryptable (key-a in keyring) |
+| step 6: `secret rotate kek-test --revision 1 --file <new spec>` | pass | `created "kek-test" (revision 2)`; `secret get` → `encryption_key_id: key-b` (re-encrypted with the new active key) |
+| step 7 warning (line 28) | confirmed independently | a leftover secret whose `encryption_key_id` (`default`) was **not** in the keyring logged the exact documented behaviour: `skipping undecryptable SDS secret during xDS rebuild … secret encryption key "default" is not configured` |
+
+The KEK env-var contract (raw-32/base64 key material; `_KEY_ID` written to new/rotated rows;
+`_KEYS` retired keyring) matches `configuration.md`. No discrepancies.
+
+## Proof: operator runbooks (inspection only — epic non-goals, need cloud/full deploy)
 
 | Doc | Check | Result |
 |---|---|---|
-| `aws-secure-deployment.md` | `flowplane … dataplane cert issue` (the old #120) | **#120 fixed** — line 121 uses `dataplane cert issue`, a real subcommand |
-| `production-readiness.md` | command shapes (`db migrate`, `route generate --from-spec --listener-port`, `route apply`, `api spec publish`, `mcp enable --api`, `learn discover …`) | all resolve to real CLI subcommands/flags via `--help` |
-| `secret-kek-rotation.md` | env-var procedure + `secret rotate` path | `secret rotate` exists (`--file`/`--revision`); KEK env vars match `configuration.md` |
+| `aws-secure-deployment.md` | `flowplane … dataplane cert issue` (the old #120) | **#120 fixed** — line 121 uses `dataplane cert issue`, a real subcommand. Full AWS/Terraform deploy not runnable here. |
+| `production-readiness.md` | command shapes (`db migrate`, `route generate --from-spec --listener-port`, `route apply`, `api spec publish`, `mcp enable --api`, `learn discover …`) | all resolve to real CLI subcommands/flags via `--help`. Full production deploy not runnable here. |
 
 ## Prior defects — re-verification (all CLOSED upstream)
 
@@ -360,10 +388,13 @@ New (both `minor`):
   by severity `minor` 2.
 - Prior defects re-verified as fixed/resolved: **7** (#118, #119, #120, #121, #122, #123, #132).
 - Docs executed end-to-end (DB + Envoy backed): README, getting-started (incl. live curl +
-  unexpose), internal/dev-dataplane, cli-auth-and-contexts, jwt-auth-rate-limit-route (§1–§3),
-  register-dataplane-mtls (incl. live cert issue), ai-gateway-route-budget (incl. live Envoy
-  load of the AI cluster), learn-and-publish-api-spec, bootstrap-platform, and all 5 reference
-  docs.
+  unexpose), internal/dev-dataplane, **cli-auth-and-contexts (contexts + login/token/logout
+  persistence)**, jwt-auth-rate-limit-route (§1–§3), register-dataplane-mtls (incl. live cert
+  issue), ai-gateway-route-budget (incl. live Envoy load of the AI cluster),
+  learn-and-publish-api-spec, bootstrap-platform, **secret-kek-rotation (full KEK rotation
+  across two key ids)**, and all 5 reference docs.
+- Inspection / command-shape only (need cloud infra or a full production deploy, not the
+  docs' fault): `aws-secure-deployment.md`, `production-readiness.md` (both epic non-goals).
 - Blocked **by the environment** (not the docs): live `fp-agent` `/healthz`+heartbeat
   (register-dataplane-mtls §3–§4; sandbox reaps long-lived children); JWT `401/429`
   data-plane verification (no IdP); AI chat round-trip (no OpenAI egress). No workarounds that
