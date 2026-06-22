@@ -12,6 +12,9 @@ ARTIFACT="flowplane-$VERSION-$HOST"
 ARTIFACT_DIR="$ROOT/$ARTIFACT"
 IMAGE_TAG=${FLOWPLANE_IMAGE_TAG:-"flowplane:$VERSION"}
 PACKAGE_IMAGE=${FLOWPLANE_PACKAGE_IMAGE:-0}
+# Evaluation image (dev-oidc on): opt-in, separately tagged, NEVER aliased to :latest (D-022).
+EVAL_IMAGE_TAG=${FLOWPLANE_EVAL_IMAGE_TAG:-"flowplane:$VERSION-eval"}
+PACKAGE_EVAL_IMAGE=${FLOWPLANE_PACKAGE_EVAL_IMAGE:-0}
 
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/dataplane" "$ROOT"
@@ -101,6 +104,15 @@ if [ "$PACKAGE_IMAGE" = "1" ]; then
   "$ENGINE" info >/dev/null 2>&1 || { echo "$ENGINE is installed but not usable" >&2; exit 1; }
   "$ENGINE" build -f Containerfile.release -t "$IMAGE_TAG" .
   "$ENGINE" save -o "$ROOT/flowplane-$VERSION.oci.tar" "$IMAGE_TAG"
+fi
+
+# Evaluation image keeps dev-oidc (Containerfile.eval). Opt-in and tagged `:<ver>-eval` only —
+# never `:latest` — so it can never be mistaken for the hardened operator base (D-022).
+if [ "$PACKAGE_EVAL_IMAGE" = "1" ]; then
+  [ -n "$ENGINE" ] || { echo "FLOWPLANE_PACKAGE_EVAL_IMAGE=1 requires docker or podman" >&2; exit 1; }
+  "$ENGINE" info >/dev/null 2>&1 || { echo "$ENGINE is installed but not usable" >&2; exit 1; }
+  "$ENGINE" build -f Containerfile.eval -t "$EVAL_IMAGE_TAG" .
+  "$ENGINE" save -o "$ROOT/flowplane-$VERSION-eval.oci.tar" "$EVAL_IMAGE_TAG"
 fi
 
 (
