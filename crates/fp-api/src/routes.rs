@@ -1,7 +1,7 @@
 //! Router assembly: health, readiness, metrics, JSON 404 fallback.
 
-use crate::extract::ApiJson;
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::middleware::request_id;
 use crate::state::AppState;
 use axum::extract::{Extension, State};

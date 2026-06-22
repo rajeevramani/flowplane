@@ -3,8 +3,8 @@
 //! Every handler carries its OpenAPI declaration — the router and the document are split
 //! from the same `routes!` registration (spec/10 §9), so they cannot drift.
 
-use crate::extract::ApiJson;
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::HeaderMap;

@@ -1,7 +1,7 @@
 //! Learning session REST endpoints (S8.3).
 
-use crate::extract::ApiJson;
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::resources::{resolve_team, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};

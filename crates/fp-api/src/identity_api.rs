@@ -1,8 +1,8 @@
 //! Team, membership, and grant endpoints (D-002: every identity workflow has an API/CLI
 //! path in v2 — the UI is gone).
 
-use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
+use crate::extract::ApiJson;
 use crate::resources::resolve_team;
 use crate::state::AppState;
 use axum::extract::{Extension, Path, State};

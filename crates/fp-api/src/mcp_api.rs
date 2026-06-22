@@ -101,9 +101,7 @@ pub async fn post(
     // REST error envelope and not axum's bare 422.
     let req: JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(req) => req,
-        Err(_) => {
-            return rpc_error(None, -32700, "Parse error", rid, "validation").into_response()
-        }
+        Err(_) => return rpc_error(None, -32700, "Parse error", rid, "validation").into_response(),
     };
     if let Err(error) = check_origin(&headers) {
         return rpc_error(req.id, -32600, error, rid, "origin").into_response();
