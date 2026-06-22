@@ -1,7 +1,7 @@
 //! Organization endpoints (platform governance + org-admin member management).
 
-use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
+use crate::extract::ApiJson;
 use crate::state::AppState;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;

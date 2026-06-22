@@ -1,8 +1,8 @@
 //! Dataplane management endpoints. The certificate registry and xDS binding internals
 //! shipped in S5.4; S6 exposes the operator-facing REST surface.
 
-use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
+use crate::extract::ApiJson;
 use crate::resources::{resolve_team, ListQuery, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};

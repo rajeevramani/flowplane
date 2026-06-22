@@ -1,8 +1,8 @@
 //! Expose shortcut REST surface. The shortcut creates/deletes normal gateway resources; it is
 //! operator UX, not a separate product source of truth.
 
-use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
+use crate::extract::ApiJson;
 use crate::resources::{resolve_team, ClusterView, ListenerView, RouteConfigView};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, State};

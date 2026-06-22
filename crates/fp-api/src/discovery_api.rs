@@ -1,7 +1,7 @@
 //! Discovery-session REST endpoints (S9).
 
-use crate::extract::ApiJson;
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::learning_api::LearnedSpecVersionView;
 use crate::resources::{resolve_team, Page};
 use crate::state::AppState;

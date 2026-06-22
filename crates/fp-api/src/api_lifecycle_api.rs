@@ -1,7 +1,7 @@
 //! API lifecycle REST endpoints (S8.2).
 
-use crate::extract::ApiJson;
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::resources::{resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};

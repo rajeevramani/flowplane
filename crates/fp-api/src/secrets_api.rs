@@ -1,8 +1,8 @@
 //! Secret management endpoints. Values are write-only: create/rotate accept a SecretSpec,
 //! but every response is metadata plus `value_redacted = true`.
 
-use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
+use crate::extract::ApiJson;
 use crate::resources::{resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};

@@ -1,7 +1,7 @@
 //! S9 route generation plan REST endpoints.
 
-use crate::extract::ApiJson;
 use crate::error::ApiError;
+use crate::extract::ApiJson;
 use crate::resources::resolve_team;
 use crate::state::AppState;
 use axum::extract::{Extension, Path, State};
