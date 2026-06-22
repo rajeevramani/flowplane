@@ -45,7 +45,7 @@ FLOWPLANE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/flowplane_dev
 What each variable does:
 
 - `FLOWPLANE_DATABASE_URL` — required; the server refuses to start without it. Migrations are applied automatically on startup.
-- `FLOWPLANE_DEV_MODE=true` — enables the in-process issuer and seeds dev resources. Mutually exclusive with `FLOWPLANE_OIDC_*`.
+- `FLOWPLANE_DEV_MODE=true` — enables the in-process issuer and seeds dev resources. Mutually exclusive with a configured OIDC issuer + audience pair.
 - `FLOWPLANE_API_INSECURE=true` — opt in to a plaintext API listener (decision D-008). Without TLS material *and* without this flag, the server refuses to start. Acceptable only for local dev or behind a TLS-terminating proxy.
 - `FLOWPLANE_API_ADDR` — where the REST API listens (defaults to `0.0.0.0:8080`; this tutorial uses `127.0.0.1:8096`).
 - `FLOWPLANE_XDS_ADDR` — where the xDS gRPC listener binds (defaults to `0.0.0.0:18000`). Envoy connects here in step 6. In dev mode this listener is plaintext.

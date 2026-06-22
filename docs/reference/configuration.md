@@ -45,7 +45,7 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH` | server | — | for issuance | Issuing CA private key PEM path. |
 | `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` | server | `flowplane.local` | no | SPIFFE trust domain for issued dataplane identities. |
 | `FLOWPLANE_UPSTREAM_CA_BUNDLE` | server | `/etc/ssl/certs/ca-certificates.crt` | no | CA bundle path Envoy uses to verify materialized TLS upstreams that name neither an SDS validation secret nor an explicit `ca_cert_file`. The control plane reads this value at xDS-translation time, but the file itself is read by Envoy/dataplane (it must exist on the dataplane host), not by the control plane. Per-cluster `insecure_skip_verify` opts a cluster out of verification. |
-| `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` | server | — | no | Comma-separated `host:port` allowlist for traffic discovery. |
+| `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` | server | — | no | Comma-separated `IP:port` allowlist for traffic discovery (for example `10.0.0.1:8080` or `[2001:db8::1]:443`); entries that are not a valid `IP:port` are ignored. |
 | `FLOWPLANE_MCP_ALLOWED_ORIGINS` | server | `http://localhost,http://127.0.0.1,http://[::1]` | no | Comma-separated allowed `Origin` values for the MCP endpoint. |
 | `FLOWPLANE_AGENT_ENVOY_ADMIN_URL` | agent | `http://127.0.0.1:9901` | no | Envoy admin base URL (usually loopback). |
 | `FLOWPLANE_AGENT_CP_ENDPOINT` | agent | — | yes | Control-plane diagnostics gRPC endpoint. ¹⁰ |
@@ -76,7 +76,7 @@ Enforcement timing varies: rows ¹–⁵ are validated at **server startup** (`f
 | ¹ | `FLOWPLANE_API_TLS_CERT`, `FLOWPLANE_API_TLS_KEY` | Set together or not at all. |
 | ² | `FLOWPLANE_API_INSECURE` | Required `=true` when the API listener has no TLS material (D-008); otherwise startup fails. |
 | ³ | `FLOWPLANE_XDS_TLS_CERT`, `FLOWPLANE_XDS_TLS_KEY`, `FLOWPLANE_XDS_TLS_CLIENT_CA` | All-or-none triad. |
-| ⁴ | `FLOWPLANE_DEV_MODE`, `FLOWPLANE_OIDC_*` | Mutually exclusive. |
+| ⁴ | `FLOWPLANE_DEV_MODE`, `FLOWPLANE_OIDC_*` | Mutually exclusive: dev mode is rejected when a full OIDC issuer + audience pair is configured. |
 | ⁵ | `FLOWPLANE_OIDC_ISSUER`, `FLOWPLANE_OIDC_AUDIENCE` | Set together or not at all (server). With neither set and dev mode off, authenticated endpoints answer `503`. |
 | ⁶ | `FLOWPLANE_AGENT_TLS_CERT_PATH`, `_KEY_PATH`, `_CA_PATH` | All-or-none. |
 | ⁷ | `FLOWPLANE_SECRET_ENCRYPTION_KEY` | Must decode to exactly 32 bytes (raw or base64). |
