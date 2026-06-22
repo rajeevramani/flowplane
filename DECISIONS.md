@@ -575,3 +575,23 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   Recording the DoD here keeps the release bar legible and prevents a green checkbox from papering
   over an unrun verification.
 - **Status:** decided for S12a / #87.
+
+## D-022: Two-image split — hardened `flowplane:<ver>` vs eval `flowplane:<ver>-eval`
+
+- **Context:** The no-clone evaluator bundle (epic #161) needs to run dev mode (in-process OIDC
+  issuer + seeded resources + the per-boot dev token file from #156). The only publishable image,
+  `Containerfile.release`, is built `--no-default-features`, so `dev-oidc` is compiled out and dev
+  mode fails closed (`crates/flowplane/src/serve.rs` `#[cfg(not(feature = "dev-oidc"))]` stub). A
+  single image cannot be both hardened-by-default and dev-capable without weakening the default.
+  (Records the decision behind issue #157; the issue text proposed an `FPV2-DEC-NNNN` id, but this
+  log's source-of-truth scheme is `D-NNN`, so it is filed as D-022.)
+- **Decision:** Ship two images from two Containerfiles. `Containerfile.release` stays exactly as
+  is — hardened, `--no-default-features`, refuses dev mode — and remains the only image eligible
+  for `:latest` / operator use. A new `Containerfile.eval` differs **only** by dropping
+  `--no-default-features` (default `dev-oidc` on) and is tagged `:<ver>-eval` exclusively, **never**
+  `:latest`. Its build is opt-in (`FLOWPLANE_PACKAGE_EVAL_IMAGE=1` in `scripts/release/package-release.sh`).
+  The eval image is bound to loopback by the compose bundle (#158) and is never an operator base.
+- **Why better:** Keeping the hardened default literally untouched means the split cannot regress
+  production posture — the dev-identity surface lives only in a distinctly named, unpublished,
+  never-`latest` artifact, while evaluators still get a frictionless dev-mode image.
+- **Status:** decided for #157 (epic #161). HUMAN-GATE (auth) slice.

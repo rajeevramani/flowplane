@@ -1,0 +1,23 @@
+# Evaluation image: keeps the default `dev-oidc` feature so dev mode works (in-process OIDC
+# issuer + seeded resources). NEVER an operator/production base — tagged `:<ver>-eval` only,
+# never `:latest`. The hardened, publishable image is `Containerfile.release` (built
+# `--no-default-features`, which refuses dev mode). See DECISIONS.md D-022.
+#
+# The ONLY difference from Containerfile.release is the absence of `--no-default-features` on
+# the flowplane build below, so keep the two files in sync for everything else.
+FROM rust:1.94.1-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked -p flowplane --bin flowplane \
+    && cargo build --release --locked -p fp-agent --bin fp-agent
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/flowplane /usr/local/bin/flowplane
+COPY --from=build /src/target/release/fp-agent /usr/local/bin/fp-agent
+USER 65532:65532
+EXPOSE 8080 18000
+ENTRYPOINT ["/usr/local/bin/flowplane"]
+CMD ["serve"]
