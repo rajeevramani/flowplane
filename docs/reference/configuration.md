@@ -32,6 +32,7 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_OTLP_ENDPOINT` | server | — | no | OTLP trace export endpoint; unset disables export. |
 | `FLOWPLANE_DEV_MODE` | server | `false` | no ⁴ | In-process OIDC issuer + seeded resources; needs the `dev-oidc` build feature. |
 | `FLOWPLANE_DEV_MODE_ACK` | server | — | no ⁴ | In release builds, dev mode requires this to equal `yes-this-is-not-production`. |
+| `FLOWPLANE_DEV_TOKEN_PATH` | server | — | no | Dev mode only: also write the per-boot dev bearer token to this file (it is otherwise only logged), so a sibling/init container can read it. Ignored outside dev mode. |
 | `FLOWPLANE_BOOTSTRAP_TOKEN` | server | — | first boot ¹³ | Operator-supplied one-shot bootstrap token (≥ 32 chars after trimming). Seeds first-admin setup; the value is never logged. |
 | `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` | server | — | first boot ¹³ | Path to read the bootstrap token from; **takes precedence** over `FLOWPLANE_BOOTSTRAP_TOKEN`. File delivery is safer than env. |
 | `FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN` | server | — | no | Local-only escape hatch: the exact value `yes-this-is-local-only` re-enables generating and **logging** a token. Never set in production. |
@@ -96,5 +97,5 @@ api_addr            xds_addr             database_url        db_max_connections
 api_tls_cert        api_tls_key          xds_tls_cert        xds_tls_key
 xds_tls_client_ca   api_insecure         dev_mode            oidc_issuer
 oidc_audience       oidc_jwks_uri        log_format          log_filter
-otlp_endpoint
+otlp_endpoint        dev_token_path
 ```

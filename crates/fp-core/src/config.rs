@@ -49,6 +49,10 @@ pub struct ServerConfig {
     /// operator-supplied bootstrap token falls back to generating one and logging it. Enabled
     /// only by the exact value `yes-this-is-local-only`; otherwise the instance fails closed.
     pub allow_logged_bootstrap_token: bool,
+    /// Dev mode only: when set, the minted per-boot dev token is also written to this path so a
+    /// sibling container's init step can read it (the token is otherwise only logged). Ignored
+    /// outside dev mode. Env `FLOWPLANE_DEV_TOKEN_PATH`.
+    pub dev_token_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +106,7 @@ struct FileConfig {
     log_format: Option<LogFormat>,
     log_filter: Option<String>,
     otlp_endpoint: Option<String>,
+    dev_token_path: Option<String>,
 }
 
 const DEFAULT_API_ADDR: &str = "0.0.0.0:8080";
@@ -306,6 +311,10 @@ impl ServerConfig {
         let allow_logged_bootstrap_token =
             get("FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN") == Some("yes-this-is-local-only");
 
+        let dev_token_path = get("FLOWPLANE_DEV_TOKEN_PATH")
+            .map(PathBuf::from)
+            .or_else(|| file.dev_token_path.map(PathBuf::from));
+
         Ok(Self {
             api_addr,
             xds_addr,
@@ -321,6 +330,7 @@ impl ServerConfig {
             oidc,
             tenant_write_limit_per_minute,
             allow_logged_bootstrap_token,
+            dev_token_path,
         })
     }
 }
@@ -389,6 +399,31 @@ mod tests {
         };
         let cfg = ServerConfig::resolve(&env, file);
         assert_eq!(cfg.ok().map(|c| c.api_addr.port()), Some(9999));
+    }
+
+    #[test]
+    fn dev_token_path_resolves_env_over_file() {
+        // Absent in both → None.
+        let cfg = ServerConfig::resolve(&base_env(), FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.dev_token_path, None);
+
+        // File only.
+        let file = FileConfig {
+            dev_token_path: Some("/from/file".into()),
+            ..FileConfig::default()
+        };
+        let cfg = ServerConfig::resolve(&base_env(), file).expect("resolves");
+        assert_eq!(cfg.dev_token_path, Some(PathBuf::from("/from/file")));
+
+        // Env overrides file.
+        let mut env = base_env();
+        env.insert("FLOWPLANE_DEV_TOKEN_PATH".into(), "/from/env".into());
+        let file = FileConfig {
+            dev_token_path: Some("/from/file".into()),
+            ..FileConfig::default()
+        };
+        let cfg = ServerConfig::resolve(&env, file).expect("resolves");
+        assert_eq!(cfg.dev_token_path, Some(PathBuf::from("/from/env")));
     }
 
     #[test]
