@@ -199,3 +199,9 @@ variable "cert_issuer_trust_domain" {
   type        = string
   default     = "getflowplane.io"
 }
+
+variable "bootstrap_token_secret_arn" {
+  description = "Optional Secrets Manager ARN holding the operator-supplied bootstrap token. When set, it is injected as FLOWPLANE_BOOTSTRAP_TOKEN so the uninitialized control plane can be seeded. Empty = not wired (the instance will fail closed until initialized by other means)."
+  type        = string
+  default     = ""
+}

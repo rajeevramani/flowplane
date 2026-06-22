@@ -75,19 +75,24 @@ Keep `xds.getflowplane.io` DNS-only. Do not proxy xDS through Cloudflare for thi
 
 ## Bootstrap
 
-The first CP task logs a single-use bootstrap token. It expires after 24 hours.
+The control plane is **operator-seeded**: it never generates or logs a bootstrap token. You supply one, and an uninitialized non-dev instance started with no token refuses to start (fails closed). See [Bootstrap the platform](bootstrap-platform.md) for the full model.
+
+Generate a token and store it in AWS Secrets Manager:
 
 ```bash
-aws logs filter-log-events \
-  --log-group-name "$(tofu -chdir=deploy/aws output -raw cloudwatch_log_group)" \
-  --filter-pattern "bootstrap_token"
+BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
+aws secretsmanager create-secret \
+  --name /flowplane/prod/bootstrap-token \
+  --secret-string "$BOOTSTRAP_TOKEN"
 ```
 
-Use it with your verified Auth0/OIDC subject:
+Pass the secret's ARN to the module via `bootstrap_token_secret_arn`; it is injected into the CP task as `FLOWPLANE_BOOTSTRAP_TOKEN`. (If the secret uses a customer-managed KMS key, also add that key to `secret_kms_key_arns`.) On first boot the CP seeds the token's hash and logs a confirmation **without** the value.
+
+Then initialize the platform admin once, using the **same** token and your verified Auth0/OIDC subject:
 
 ```bash
 curl -fsS -X POST https://cp.getflowplane.io/api/v1/bootstrap/initialize \
-  -H "Authorization: Bearer fpboot_xxxxxxxx" \
+  -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
         "org_name": "platform",

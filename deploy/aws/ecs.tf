@@ -39,7 +39,7 @@ data "aws_iam_policy_document" "task_execution_secrets" {
       "secretsmanager:GetSecretValue",
     ]
 
-    resources = [
+    resources = compact([
       var.secret_encryption_key_secret_arn,
       var.api_tls_cert_secret_arn,
       var.api_tls_key_secret_arn,
@@ -49,7 +49,8 @@ data "aws_iam_policy_document" "task_execution_secrets" {
       var.cert_issuer_ca_cert_secret_arn,
       var.cert_issuer_ca_key_secret_arn,
       aws_secretsmanager_secret.db_password.arn,
-    ]
+      var.bootstrap_token_secret_arn,
+    ])
   }
 
   dynamic "statement" {
@@ -127,17 +128,20 @@ resource "aws_ecs_task_definition" "control_plane" {
         var.oidc_jwks_uri == "" ? [] : [{ name = "FLOWPLANE_OIDC_JWKS_URI", value = var.oidc_jwks_uri }],
       )
 
-      secrets = [
-        { name = "FLOWPLANE_SECRET_ENCRYPTION_KEY", valueFrom = var.secret_encryption_key_secret_arn },
-        { name = "FLOWPLANE_API_TLS_CERT_PEM", valueFrom = var.api_tls_cert_secret_arn },
-        { name = "FLOWPLANE_API_TLS_KEY_PEM", valueFrom = var.api_tls_key_secret_arn },
-        { name = "FLOWPLANE_XDS_TLS_CERT_PEM", valueFrom = var.xds_tls_cert_secret_arn },
-        { name = "FLOWPLANE_XDS_TLS_KEY_PEM", valueFrom = var.xds_tls_key_secret_arn },
-        { name = "FLOWPLANE_XDS_TLS_CLIENT_CA_PEM", valueFrom = var.xds_tls_client_ca_secret_arn },
-        { name = "FLOWPLANE_CERT_ISSUER_CA_CERT_PEM", valueFrom = var.cert_issuer_ca_cert_secret_arn },
-        { name = "FLOWPLANE_CERT_ISSUER_CA_KEY_PEM", valueFrom = var.cert_issuer_ca_key_secret_arn },
-        { name = "FLOWPLANE_DB_PASSWORD", valueFrom = aws_secretsmanager_secret.db_password.arn },
-      ]
+      secrets = concat(
+        [
+          { name = "FLOWPLANE_SECRET_ENCRYPTION_KEY", valueFrom = var.secret_encryption_key_secret_arn },
+          { name = "FLOWPLANE_API_TLS_CERT_PEM", valueFrom = var.api_tls_cert_secret_arn },
+          { name = "FLOWPLANE_API_TLS_KEY_PEM", valueFrom = var.api_tls_key_secret_arn },
+          { name = "FLOWPLANE_XDS_TLS_CERT_PEM", valueFrom = var.xds_tls_cert_secret_arn },
+          { name = "FLOWPLANE_XDS_TLS_KEY_PEM", valueFrom = var.xds_tls_key_secret_arn },
+          { name = "FLOWPLANE_XDS_TLS_CLIENT_CA_PEM", valueFrom = var.xds_tls_client_ca_secret_arn },
+          { name = "FLOWPLANE_CERT_ISSUER_CA_CERT_PEM", valueFrom = var.cert_issuer_ca_cert_secret_arn },
+          { name = "FLOWPLANE_CERT_ISSUER_CA_KEY_PEM", valueFrom = var.cert_issuer_ca_key_secret_arn },
+          { name = "FLOWPLANE_DB_PASSWORD", valueFrom = aws_secretsmanager_secret.db_password.arn },
+        ],
+        var.bootstrap_token_secret_arn == "" ? [] : [{ name = "FLOWPLANE_BOOTSTRAP_TOKEN", valueFrom = var.bootstrap_token_secret_arn }],
+      )
 
       logConfiguration = {
         logDriver = "awslogs"
