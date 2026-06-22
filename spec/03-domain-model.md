@@ -63,12 +63,13 @@ Domain layer (`src/domain/`) is intentionally small; most persistence types are 
 
 | Entity | Table | Meaning / lifecycle |
 |---|---|---|
-| Organization | `organizations` | Outer tenant boundary. Status `active\|suspended\|archived` (CHECK). Special org named `platform` (renamed from `default`, `migrations/20260212000001`) is governance-only, not a tenant. Hard delete (RESTRICTed by teams). |
-| OrganizationMembership | `organization_memberships` | user↔org with role `owner\|admin\|member\|viewer` (CHECK). One row per (user, org). |
-| User | `users` | Humans and machines. `user_type` `human\|machine` (CHECK, `migrations/20260306000001` Part D). `is_admin` = platform superadmin. `zitadel_sub` UNIQUE links to Zitadel JWT `sub` (JIT provisioning; PAT tables were dropped in `migrations/20260228100001`). `agent_context` (`cp-tool\|gateway-tool\|api-consumer`, CHECK, NULL for humans) classifies machine users. `password_hash` still NOT NULL (legacy of pre-Zitadel auth). Status TEXT default `active` (no CHECK). |
-| Team | `teams` | Primary isolation unit. Name unique **per org** (`UNIQUE(org_id,name)` since `migrations/20260208000001`). `envoy_admin_port` BIGINT, globally UNIQUE — auto-allocated per-team Envoy admin port. Status `active\|inactive\|archived` (doc comment only, **no CHECK**). |
-| UserTeamMembership | `user_team_memberships` | user↔team link. The `scopes` JSON column was migrated into `grants` and dropped (`migrations/20260306000002`); the row now only asserts membership. |
-| Grant | `grants` | Unified authorization grant (replaced `scopes`, `agent_grants`, membership scopes — `migrations/20260306000001`). `grant_type` `resource\|gateway-tool\|route`; resource grants carry `(resource_type, action)`, gateway/route grants carry `route_id` + optional `allowed_methods TEXT[]` (NULL = all methods). Optional `expires_at`. |
+| Organization | `organizations` | Outer tenant boundary. Status `active\|suspended` (CHECK). Special org named `platform` is governance-only, not a tenant (`crates/fp-storage/src/repos/identity.rs::set_platform_org`). Hard delete (RESTRICTed by teams). (`migrations/0002_identity.sql:8-15`) |
+| OrgMembership | `org_memberships` | user↔org with role `owner\|admin\|member\|viewer` (CHECK). One row per (user, org). (`migrations/0002_identity.sql:58-65`) |
+| User | `users` | Human identities only. `subject` TEXT NOT NULL UNIQUE is the OIDC `sub` claim — **provider-agnostic** (any compliant IdP; Q-004), populated by JIT provisioning on first authenticated request. `email`/`name` come from the token claims; `status` `active\|suspended` (CHECK). **No** `password_hash`, `is_admin`, `user_type`, or `agent_context` column — machines are a separate `agents` table. (`migrations/0002_identity.sql:31-41`) |
+| Agent | `agents` | Machine identities, org-owned (service accounts / AI tools). `kind` `cp-tool\|gateway-tool\|api-consumer` (CHECK) structurally bounds reachable surfaces. Authenticates via a Flowplane-issued `fpat_*` bearer token whose SHA-256 `token_hash` is stored (`UNIQUE(token_hash)`, `migrations/0028_agents_token_hash_unique.sql`); `status` `active\|suspended`. `UNIQUE(org_id, name)`. (`migrations/0002_identity.sql:43-56`) |
+| Team | `teams` | Primary isolation unit. Name unique **per org** (`UNIQUE(org_id,name)`); also `UNIQUE(id,org_id)` so composite FKs can prove team ∈ org. Status `active\|suspended` (CHECK). (`migrations/0002_identity.sql:17-29`) |
+| TeamMembership | `team_memberships` | user↔team link asserting membership only — no scopes column. `UNIQUE(user_id, team_id)`. (`migrations/0002_identity.sql:67-73`) |
+| Grant | `grants` | Unified authorization grant. `(principal_type` `user\|agent`, `principal_id`, `org_id`, `team_id`, `resource`, `action` `read\|create\|update\|delete\|execute)`; composite FK `(team_id,org_id) → teams(id,org_id)`; `UNIQUE(principal_type,principal_id,team_id,resource,action)`. **No** grant subtype, `route_id`, `allowed_methods`, or `expires_at` — gateway-tool reach is enforced structurally by agent `kind` (spec/05 §3). (`migrations/0002_identity.sql:75-91`) |
 
 ### 2.2 Gateway resources (xDS)
 
@@ -143,69 +144,70 @@ Type/constraint notation is PostgreSQL. "team" semantics: since `migrations/2026
 
 ### 3.1 Org / user / auth
 
+Identity/auth tables are defined fresh in `migrations/0002_identity.sql` — UUID PKs, provider-agnostic OIDC `subject`, separate human (`users`) and machine (`agents`) tables, and a single `grants` table. There is no `password_hash`, `is_admin`, `zitadel_sub`, `user_type`, `agent_context`, or scope-string column.
+
 ```sql
-organizations (
-  id TEXT PK, name TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT,
-  owner_user_id TEXT FK->users(id) ON DELETE SET NULL, settings TEXT,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended','archived')),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now, updated_at TIMESTAMPTZ NOT NULL DEFAULT now)
--- idx: name, status
+organizations (                                            -- 0002_identity.sql:8-15
+  id UUID PK, name TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
+  created_at, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())
 
-organization_memberships (
-  id TEXT PK, user_id TEXT NOT NULL FK->users CASCADE, org_id TEXT NOT NULL FK->organizations CASCADE,
-  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner','admin','member','viewer')),
-  created_at TIMESTAMPTZ NOT NULL)
--- UNIQUE INDEX (user_id, org_id); idx: org_id
+teams (                                                    -- 0002_identity.sql:17-29
+  id UUID PK, org_id UUID NOT NULL FK->organizations(id) ON DELETE RESTRICT,
+  name TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
+  created_at, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name),
+  UNIQUE (id, org_id))                                     -- target of composite FKs proving team ∈ org
 
-users (
-  id TEXT PK, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, name TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active',                  -- no CHECK
-  is_admin BOOLEAN NOT NULL DEFAULT FALSE,                -- platform superadmin
-  zitadel_sub TEXT UNIQUE,
-  user_type TEXT NOT NULL DEFAULT 'human' CHECK (user_type IN ('human','machine')),
-  agent_context TEXT NULL CHECK (agent_context IN ('cp-tool','gateway-tool','api-consumer')),
-  created_at, updated_at TIMESTAMPTZ NOT NULL)
--- org_id added 20260206000003 then DROPPED 20260302000002 (membership via organization_memberships)
--- idx: email, status, is_admin, (status,is_admin) WHERE is_admin, zitadel_sub, user_type,
---      agent_context WHERE NOT NULL
+users (                                                    -- humans only, 0002_identity.sql:31-41
+  id UUID PK,
+  subject TEXT NOT NULL UNIQUE,                            -- OIDC `sub`, provider-agnostic (Q-004)
+  email TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
+  created_at, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())
 
-teams (
-  id TEXT PK, name TEXT NOT NULL, display_name TEXT NOT NULL, description TEXT,
-  owner_user_id TEXT FK->users SET NULL, settings TEXT,
-  status TEXT NOT NULL DEFAULT 'active',                  -- no CHECK
-  envoy_admin_port BIGINT,                                -- UNIQUE INDEX (global)
-  org_id TEXT NOT NULL FK->organizations(id) ON DELETE RESTRICT,
-  created_at, updated_at TIMESTAMPTZ NOT NULL,
-  UNIQUE (org_id, name))                                  -- was globally UNIQUE(name) until 20260208000001
--- idx: status, owner_user_id, org_id, (org_id,name), (status,org_id,name), envoy_admin_port UNIQUE
+agents (                                                   -- machines, 0002_identity.sql:43-56
+  id UUID PK, org_id UUID NOT NULL FK->organizations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('cp-tool','gateway-tool','api-consumer')),
+  token_hash TEXT NOT NULL,                                -- SHA-256 of fpat_* token; UNIQUE (migration 0028)
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended')),
+  created_by UUID FK->users(id) ON DELETE SET NULL,
+  created_at, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name))
 
-user_team_memberships (
-  id TEXT PK,
-  user_id TEXT NOT NULL FK->users CASCADE,    -- NB: FK declared twice (inline + fk_user_team_memberships_user_id)
-  team TEXT NOT NULL FK->teams(id) CASCADE,   -- stores team ID
-  created_at TIMESTAMPTZ NOT NULL)
--- scopes column DROPPED 20260306000002
--- UNIQUE INDEX (user_id, team); idx: user_id, team
+org_memberships (                                          -- 0002_identity.sql:58-65
+  id UUID PK, user_id UUID NOT NULL FK->users CASCADE, org_id UUID NOT NULL FK->organizations CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('owner','admin','member','viewer')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, org_id))
 
-grants (                                                  -- 20260306000001
-  id TEXT PK,
-  principal_id TEXT NOT NULL FK->users CASCADE,
-  org_id TEXT NOT NULL FK->organizations CASCADE,
-  team_id TEXT NOT NULL FK->teams CASCADE,
-  grant_type TEXT NOT NULL CHECK (grant_type IN ('resource','gateway-tool','route')),
-  resource_type TEXT, action TEXT,
-  route_id TEXT FK->routes(id) CASCADE,
-  allowed_methods TEXT[],                                 -- NULL = all methods
-  created_by TEXT NOT NULL FK->users(id),                 -- NO ON DELETE action (blocks user delete)
-  created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ,
-  CHECK (grant_type != 'resource' OR (resource_type IS NOT NULL AND action IS NOT NULL)),
-  CHECK (grant_type  = 'resource' OR route_id IS NOT NULL))
--- PARTIAL UNIQUE: (principal_id,team_id,resource_type,action) WHERE grant_type='resource'
--- PARTIAL UNIQUE: (principal_id,grant_type,route_id) WHERE grant_type IN ('gateway-tool','route')
--- idx: principal_id, org_id, team_id
+team_memberships (                                         -- 0002_identity.sql:67-73
+  id UUID PK, user_id UUID NOT NULL FK->users CASCADE, team_id UUID NOT NULL FK->teams CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, team_id))
+
+grants (                                                   -- 0002_identity.sql:75-91
+  id UUID PK,
+  principal_type TEXT NOT NULL CHECK (principal_type IN ('user','agent')),
+  principal_id UUID NOT NULL, org_id UUID NOT NULL, team_id UUID NOT NULL,
+  resource TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('read','create','update','delete','execute')),
+  created_by UUID FK->users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (team_id, org_id) REFERENCES teams(id, org_id) ON DELETE CASCADE,
+  UNIQUE (principal_type, principal_id, team_id, resource, action))
+-- idx: (principal_type, principal_id), team_id
+
+bootstrap_tokens (                                         -- one-shot platform-admin bootstrap, 0002_identity.sql:114-121
+  id UUID PK, token_hash TEXT NOT NULL UNIQUE,             -- SHA-256 of fpboot_* token
+  expires_at TIMESTAMPTZ NOT NULL, used_at TIMESTAMPTZ,    -- 24h, single-use
+  operator_seeded BOOLEAN NOT NULL DEFAULT false,          -- migration 0029
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now())
 ```
 
-Dropped auth tables (must NOT be reimplemented): `personal_access_tokens`, `token_scopes`, `invitations` (`migrations/20260228100001` — replaced by Zitadel), `scopes` and `agent_grants` (`migrations/20260306000001` — replaced by `grants`), `configuration_versions` (`migrations/20241201000006`), `route_access_grants` (never shipped).
+There is no `grant_type`/`resource_type`/`route_id`/`allowed_methods`/`expires_at` on a grant: a grant is one `(principal, resource, action, team)` row, and gateway-tool reach is enforced structurally by agent `kind` (spec/05 §3). Auth tables that never exist in v2 (do **not** reimplement): personal access tokens, token scopes, invitations, a `scopes` table, `agent_grants`, or any `password_hash`/`zitadel_sub` column.
 
 ### 3.2 Gateway resources
 
@@ -535,9 +537,9 @@ instance_apps (
 | `envoy_admin_port` globally unique across teams | `idx_teams_envoy_admin_port` |
 | Per-team name uniqueness: filters, secrets, custom_wasm_filters, mcp_tools, dataplanes, import_metadata (spec_name), learning_sessions (name, partial) | `UNIQUE(team, name)` etc. |
 | One default dataplane per team (partial unique), and exactly one required per non-platform team (D8) | `migrations/20260607000001` |
-| `users.email` UNIQUE, `users.zitadel_sub` UNIQUE | |
+| `users.subject` UNIQUE (OIDC `sub` → local identity), `agents.token_hash` UNIQUE, `agents` `UNIQUE(org_id,name)` | `migrations/0002_identity.sql`, `migrations/0028_agents_token_hash_unique.sql` |
 | One membership per (user, team) and per (user, org) | unique indexes |
-| Grants deduped via **partial** unique indexes (NULLs distinct in plain UNIQUE) | `migrations/20260304000002` comment explains rationale |
+| Grants deduped via one plain `UNIQUE(principal_type, principal_id, team_id, resource, action)` | `migrations/0002_identity.sql:88` (+ indexes on `(principal_type,principal_id)` and `team_id`) |
 | `proxy_certificates.spiffe_uri` UNIQUE (mTLS identity binding must be a point lookup) | `migrations/20260519000001` |
 | Filter order unique per attachment parent | `UNIQUE(parent_id, filter_order)` on all 4 junctions |
 | `route_metadata` 1:1 with route | `UNIQUE(route_id)` |
@@ -546,11 +548,11 @@ instance_apps (
 
 ### 4.2 Referential / cascade rules (delete behavior)
 
-- **Team delete:** RESTRICTed by `clusters`, `route_configs`, `listeners`, `filters`, `secrets`, `custom_wasm_filters` (core resources must be removed first); CASCADEs `learning_sessions`(→`inferred_schemas` via session), `aggregated_api_schemas`, `import_metadata`, `mcp_tools`, `dataplanes`, `user_team_memberships`, `proxy_certificates`, `xds_nack_events`, `grants`, rate-limit tables.
-- **Org delete:** RESTRICTed by `teams.org_id`; CASCADEs `organization_memberships`, `grants`, rate-limit tables.
-- **User delete:** CASCADEs memberships and `grants.principal_id`; SET NULL on `teams.owner_user_id`, `organizations.owner_user_id`, `proxy_certificates.issued_by_user_id`; **blocked** by `grants.created_by` (FK with no ON DELETE action).
+- **Team delete:** RESTRICTed by `clusters`, `route_configs`, `listeners`, `filters`, `secrets`, `custom_wasm_filters` (core resources must be removed first); CASCADEs `learning_sessions`(→`inferred_schemas` via session), `aggregated_api_schemas`, `import_metadata`, `mcp_tools`, `dataplanes`, `team_memberships`, `proxy_certificates`, `xds_nack_events`, `grants` (via the `(team_id,org_id)` composite FK), rate-limit tables.
+- **Org delete:** RESTRICTed by `teams.org_id`; CASCADEs `org_memberships`, `agents`, `grants`, rate-limit tables.
+- **User delete:** CASCADEs `org_memberships` and `team_memberships` (both `user_id` ON DELETE CASCADE, `0002_identity.sql:60,69`); SET NULL on `grants.created_by` and `agents.created_by` (`0002_identity.sql:52,85`). `grants.principal_id` has **no** FK, so a user's grant rows are not auto-removed by the DB on delete.
 - **Cluster delete:** CASCADEs `route_configs` via `cluster_name` FK (deleting a cluster silently deletes route configs that name it!), `cluster_endpoints`, `cluster_references`.
-- **RouteConfig delete:** CASCADEs `virtual_hosts` → `routes` → `route_filters`, `route_config_filters`, `listener_route_configs`, `listener_auto_filters`, and via `routes`: `route_metadata`, `mcp_tools.route_id`, `grants.route_id`.
+- **RouteConfig delete:** CASCADEs `virtual_hosts` → `routes` → `route_filters`, `route_config_filters`, `listener_route_configs`, `listener_auto_filters`, and via `routes`: `route_metadata`, `mcp_tools.route_id`. (v2 `grants` has no `route_id` — route grants do not exist; see §3.1.)
 - **Filter delete:** RESTRICTed by all 4 attachment junctions (must detach first); `listener_auto_filters.source_filter_id` CASCADEs.
 - **Import delete:** CASCADEs `route_configs.import_id` and `listeners.import_id` (resources die with the import) but `clusters.import_id` SET NULL (shared clusters survive; refcounted via `cluster_references.route_count`).
 - **Dataplane delete:** `listeners.dataplane_id` SET NULL.
@@ -575,7 +577,7 @@ One repository module per table-cluster, 35 files. `repository_old.rs` is **dead
 - **VirtualHostRepository / RouteRepository** (`repositories/virtual_host.rs`, `route.rs`): CRUD keyed by parent (`list_by_route_config`, `list_by_virtual_host`, `delete_by_route_config`, `delete_by_virtual_host`); `RouteRepository` adds `find_routes_with_exposure` (external routes for agent grants) and `get_routes_with_related_data` (joined query, avoids N+1). No team columns — scope is inherited via parents.
 - **FilterRepository, SecretRepository, CustomWasmFilterRepository, McpToolRepository, DataplaneRepository**: per-team CRUD (`UNIQUE(team,name)`), `list_by_teams`; `DataplaneRepository` adds `create_tx` (used by team-provisioning), `get_default_for_team`, `find_by_gateway_host`. Secrets are encrypted/decrypted in the service layer (`SecretEncryption`); repository stores ciphertext+nonce only.
 - **TeamRepository** (`repositories/team.rs`): `create_team`/`create_team_tx`, get by id/name/`(org,name)`, `resolve_id_in_org`, `resolve_team_ids`/`resolve_team_names` (id↔name mapping for the team-as-id columns), `is_name_available_in_org`, list/update/delete.
-- **UserRepository** (`repositories/user.rs`): CRUD + `find_by_zitadel_sub`, `upsert_from_jwt` (JIT provisioning), `find_machine_users_by_org`, `list_machine_agents_with_teams_in_org`; membership inserts use `INSERT … SELECT FROM UNNEST($1::text[],…) ON CONFLICT (user_id, team) DO NOTHING` (batch, empty-array-safe).
+- **Identity repo** (`crates/fp-storage/src/repos/identity.rs`): humans via `upsert_user_by_subject` (JIT provisioning on `ON CONFLICT (subject)`), `find_user_by_subject`, `load_principal` (memberships + grants in one load); agents via `create_agent_tx`, `rotate_agent_token_tx`, `disable_agent_tx`, `hash_agent_token`, `load_agent_principal_by_token_hash`; org/team/grant/membership writes (`create_org`, `create_team_tx`, `add_org_membership`, `add_team_membership`, `add_grant`/`add_agent_grant_in_tx`).
 - **OrganizationRepository, GrantRepository, MachineUserRepository**: org CRUD with member management; grant create/list-for-principal/delete/check-access scoped by org_id/team_id.
 - **RateLimitRepository** (`repositories/rate_limit.rs`): see §5.3/§6 — gold standard.
 - **AuditLogRepository** (`repositories/audit_log.rs`): append + `list`/`list_by_org`/ `list_by_team` with resource_type/action/time filters; severity derived at read time.
@@ -734,5 +736,6 @@ Only `grants`, `rate_limit_*`, and `audit_log` carry `org_id`. Gateway resources
     (`routes`→`route_configs`, `route_rules`→`routes`) — any external SQL/tooling that says
     "routes" must be checked against the post-rename meaning (a route RULE, not a route
     config).
-20. **`users.password_hash NOT NULL`** survives even though auth moved to Zitadel
-    (`20260228100001`, `20260302000001`) — JIT-provisioned users need a placeholder hash.
+20. **Resolved in v2:** v1's dead `users.password_hash` and the `zitadel_sub` naming are gone —
+    `migrations/0002_identity.sql` defines `users` with a provider-agnostic `subject` column and
+    no password storage; machines moved to a dedicated `agents` table.
