@@ -4,14 +4,16 @@ Traceability for the build-quality certification (#66) and the exhaustive E2E (#
 
 ## Legend
 
-- `live:<phase>` — proven by the live Envoy E2E (`scripts/e2e-envoy.sh`; phases re-homed under `scripts/e2e/` after the split). A live phase is the authoritative evidence.
+- `live:<phase>` — proven by the live Envoy E2E. The suite was split (#71) into `scripts/e2e/run.sh` (runner) + `scripts/e2e/lib.sh` (shared helpers + `setup_harness`) + ordered `scripts/e2e/NN-Pxx-*.sh` phase files; `scripts/e2e-envoy.sh` is now a thin pass-through shim, so every `bash scripts/e2e-envoy.sh` invocation still works. Run the whole suite with `scripts/e2e/run.sh`, or one phase with `--only <id>` (prerequisites auto-included) / `--from <id>`. A live phase is the authoritative evidence.
 - `cargo:<test>` — unit/integration is the right boundary. The named test **must** run with `FLOWPLANE_TEST_DATABASE_URL` + `FLOWPLANE_SECRET_ENCRYPTION_KEY` set, or it silently skips and counts as **not tested**.
 - `gap` — certification must add coverage.
 - `out-of-scope:<reason>` — deliberately not covered now (needs an external service or belongs to S12 hardening), with the reason and owning slice named.
 
 A capability may list a secondary source in parentheses, but the first token is authoritative.
 
-Live phases (current `scripts/e2e-envoy.sh`): `P1` basic ADS traffic · `P1a` AI (injection/failover/budget/usage/cleanup) · `P1b` config-first learning · `P1c` traffic-first discovery+route-gen · `P2` CP-restart convergence · `P2a` Envoy-restart convergence · `P3` cross-team xDS isolation · `P4` local-rate-limit/header-mutation · `P5` JWT/RBAC/ext_authz · `P6` SDS rotation · `P7` advanced route/listener/filter parity (+ global-RLS filter ACK).
+Live phases (phase ID → file under `scripts/e2e/`): `P1` basic ADS traffic (`10-p1-basic.sh`) · `P1a` AI injection/failover/budget/usage/cleanup (`15-p1a-ai.sh`) · `P1d` AI streaming-failover boundary (`16-p1d-ai-stream.sh`) · `P1e` AI malformed-provider fail-open (`17-p1e-ai-malformed.sh`) · `P1b` config-first learning (`20-p1b-learning.sh`) · `P1c` traffic-first discovery+route-gen (`25-p1c-discovery.sh`) · `P2` CP-restart convergence (`30-p2-cp-restart.sh`) · `P2a` Envoy-restart convergence (`31-p2a-envoy-restart.sh`, requires P2) · `P3` cross-team xDS isolation (`40-p3-isolation.sh`) · `P4` local-rate-limit/header-mutation (`50-p4-http-filters.sh`) · `P5` JWT/RBAC/ext_authz (`60-p5-auth-filters.sh`) · `P5a` MCP descriptor gateway parity (`65-p5a-mcp.sh`) · `P6` SDS rotation (`70-p6-sds-rotation.sh`) · `P7` advanced route/listener/filter parity + global-RLS filter ACK (`80-p7-advanced-parity.sh`, requires P2). The terminal redaction sweep + known-failure exit gate is `90-redaction-sweep.sh`.
+
+`live:redaction_sweep` is authoritative only for a **full run**. The runner enforces the sweep on full runs and skips it (with a printed note) on `--only`/`--from` subsets: the sweep asserts the *current* API token is absent from the control-plane log, which holds for the full suite only because phase P2 restarts the CP and rotates the token. A subset without P2 would false-positive on the dev-mode token the CP legitimately logs, so the sweep proves little there.
 
 ---
 
