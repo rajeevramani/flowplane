@@ -7,6 +7,14 @@ if ! pg_isready -q 2>/dev/null; then
   for i in $(seq 1 15); do pg_isready -q 2>/dev/null && break; sleep 1; done
 fi
 pg_isready -q || { echo "postgres failed to start" >&2; exit 1; }
-su postgres -s /bin/bash -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='flowplane_dev'\" | grep -q 1 || createdb flowplane_dev" 2>/dev/null || true
-su postgres -s /bin/bash -c "psql -c \"ALTER USER postgres PASSWORD 'postgres'\"" >/dev/null 2>&1 || true
+# Manage the dev database only where a postgres superuser is reachable
+# (Linux/containers). On macOS/Homebrew there is no postgres role; the
+# getting-started doc directs those users to create flowplane_dev themselves.
+if su postgres -s /bin/bash -c 'psql -tAc "SELECT 1"' >/dev/null 2>&1; then
+  if ! su postgres -s /bin/bash -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='flowplane_dev'\" | grep -q 1"; then
+    su postgres -s /bin/bash -c "createdb flowplane_dev" \
+      || { echo "ensure-postgres: failed to create flowplane_dev database" >&2; exit 1; }
+  fi
+  su postgres -s /bin/bash -c "psql -c \"ALTER USER postgres PASSWORD 'postgres'\"" >/dev/null 2>&1 || true
+fi
 echo "postgres ready"
