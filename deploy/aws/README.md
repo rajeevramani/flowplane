@@ -100,15 +100,16 @@ mTLS terminated by Flowplane.
 
 ## Bootstrap Token
 
-On first boot, the control plane logs a single-use bootstrap token. Retrieve it from CloudWatch:
+The control plane is operator-seeded — it never generates or logs a bootstrap token, and an uninitialized non-dev instance with no token fails closed at startup. Generate a token, store it in Secrets Manager, and pass its ARN as `bootstrap_token_secret_arn`; the module injects it as `FLOWPLANE_BOOTSTRAP_TOKEN`:
 
 ```bash
-aws logs filter-log-events \
-  --log-group-name "$(tofu -chdir=deploy/aws output -raw cloudwatch_log_group)" \
-  --filter-pattern "bootstrap_token"
+BOOTSTRAP_TOKEN="$(openssl rand -hex 32)"
+aws secretsmanager create-secret \
+  --name /flowplane/prod/bootstrap-token \
+  --secret-string "$BOOTSTRAP_TOKEN"
 ```
 
-Use the token to initialize the platform admin with the verified OIDC subject.
+If the secret uses a customer-managed KMS key, add that key to `secret_kms_key_arns`. Use the same token to initialize the platform admin with the verified OIDC subject (`POST /api/v1/bootstrap/initialize`).
 
 ## Local Dataplane Smoke Test
 

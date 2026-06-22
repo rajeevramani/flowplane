@@ -29,7 +29,7 @@ output "ecs_service_name" {
 }
 
 output "cloudwatch_log_group" {
-  description = "CloudWatch log group containing control-plane logs and bootstrap token lines."
+  description = "CloudWatch log group containing control-plane logs."
   value       = aws_cloudwatch_log_group.control_plane.name
 }
 
