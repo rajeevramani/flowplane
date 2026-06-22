@@ -26,7 +26,7 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!("database connected and migrations applied");
 
     let validator: Option<std::sync::Arc<fp_core::OidcValidator>> = if config.dev_mode {
-        Some(setup_dev_mode(&pool).await?)
+        Some(setup_dev_mode(&pool, config.dev_token_path.as_deref()).await?)
     } else if let Some(oidc) = &config.oidc {
         tracing::info!(issuer = %oidc.issuer, "OIDC authentication enabled");
         Some(std::sync::Arc::new(fp_core::OidcValidator::new(
@@ -316,6 +316,7 @@ pub async fn migrate_only() -> anyhow::Result<()> {
 #[cfg(feature = "dev-oidc")]
 async fn setup_dev_mode(
     pool: &sqlx::PgPool,
+    dev_token_path: Option<&std::path::Path>,
 ) -> anyhow::Result<std::sync::Arc<fp_core::OidcValidator>> {
     if !cfg!(debug_assertions) {
         let ack = std::env::var("FLOWPLANE_DEV_MODE_ACK").unwrap_or_default();
@@ -333,6 +334,12 @@ async fn setup_dev_mode(
     // Dev-only by triple gate: the token grants access to the seeded local instance only
     // and dies with this process (per-boot key).
     tracing::warn!(dev_token = %token, "dev bearer token (valid 1h, this boot only)");
+    // Dev-only file sink (#156): a compose `init`/sibling container can't read another
+    // container's stdout, so when an operator names a path we also write the raw token there.
+    if let Some(path) = dev_token_path {
+        write_dev_token(path, &token)?;
+        tracing::warn!(path = %path.display(), "dev bearer token also written to file (dev mode)");
+    }
     let validator = fp_core::OidcValidator::new(issuer.oidc_config());
     validator
         .load_jwks_json(issuer.jwks_json())
@@ -344,11 +351,20 @@ async fn setup_dev_mode(
 #[cfg(not(feature = "dev-oidc"))]
 async fn setup_dev_mode(
     _pool: &sqlx::PgPool,
+    _dev_token_path: Option<&std::path::Path>,
 ) -> anyhow::Result<std::sync::Arc<fp_core::OidcValidator>> {
     Err(anyhow::anyhow!(
         "FLOWPLANE_DEV_MODE=true but this binary was built without the dev-oidc feature \
          (release artifact); use a development build or configure a real OIDC issuer"
     ))
+}
+
+/// Persist the minted dev token to an operator-named path so a sibling container can read it.
+/// Dev-mode only; a write failure is fatal so a misconfigured eval bundle fails loud, not silent.
+#[cfg(feature = "dev-oidc")]
+fn write_dev_token(path: &std::path::Path, token: &str) -> anyhow::Result<()> {
+    std::fs::write(path, token)
+        .with_context(|| format!("failed to write dev token to {}", path.display()))
 }
 
 /// Minimum length of an operator-supplied bootstrap token after trimming (#113). First-platform-
@@ -611,5 +627,41 @@ mod bootstrap_token_tests {
         let secret = "supersecretbutslightlytooshort"; // 30 chars
         let err = validate_bootstrap_token(secret).unwrap_err().to_string();
         assert!(!err.contains(secret), "error must not echo the token");
+    }
+}
+
+#[cfg(all(test, feature = "dev-oidc"))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod dev_token_tests {
+    use super::*;
+    use std::process;
+
+    #[test]
+    fn write_dev_token_persists_exact_bytes() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("flowplane-dev-token-{}.txt", process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let token = "dev.token.value-123";
+        write_dev_token(&path, token).expect("write must succeed");
+
+        let read_back = std::fs::read_to_string(&path).expect("file must be readable");
+        assert_eq!(
+            read_back, token,
+            "file content must match minted token byte-for-byte"
+        );
+
+        std::fs::remove_file(&path).expect("cleanup");
+    }
+
+    #[test]
+    fn write_dev_token_errors_with_context_on_bad_path() {
+        // A path whose parent does not exist is unwritable; the error must carry the path context.
+        let bad = std::path::Path::new("/nonexistent-flowplane-dir/does/not/exist/token.txt");
+        let err = write_dev_token(bad, "x").expect_err("must fail on unwritable path");
+        assert!(
+            err.to_string().contains("failed to write dev token to"),
+            "error must carry write context, got: {err}"
+        );
     }
 }
