@@ -8,16 +8,16 @@ Native OpenTelemetry `gen_ai.*` semantic-convention meters are deferred for v1.0
 
 | Family | Metric | Type | Labels | Source |
 | --- | --- | --- | --- | --- |
-| API traffic | `fp_api_requests_total` | counter | `method`, `path`, `status` | API middleware |
-| API latency | `fp_api_request_duration_ms` | histogram | `method`, `path`, `status` | API middleware |
-| Authn failures | `fp_authn_failures_total` | counter | `reason` | API auth middleware |
+| API traffic | `fp_api_requests_total` | counter | `status` | API middleware |
+| API latency | `fp_api_request_duration_ms` | histogram | none | API middleware |
+| Authn failures | `fp_authn_failures_total` | counter | none | API auth middleware |
 | Authz denials | `fp_authz_denied_total` | counter | `resource`, `action` | shared denial recording hook |
 | Audit write failures | `fp_audit_write_failures_total` | counter | none | shared audit writer |
 | Tenant throttling | `fp_tenant_write_throttled_total` | counter | none | write throttle |
-| xDS NACKs | `fp_xds_nacks_total` | counter | `resource_type` | ADS NACK handling |
-| xDS quarantine | `fp_xds_quarantined_resources_total` | counter | `resource_type` | snapshot quarantine |
-| xDS rebuilds | `fp_xds_snapshot_rebuilds_total` | counter | `team` | snapshot cache |
-| xDS translation failures | `fp_xds_resource_translation_failures_total` | counter | `resource_type` | snapshot translation |
+| xDS NACKs | `fp_xds_nacks_total` | counter | none | ADS NACK handling |
+| xDS quarantine | `fp_xds_quarantined_resources_total` | counter | none | snapshot quarantine |
+| xDS rebuilds | `fp_xds_snapshot_rebuilds_total` | counter | none | snapshot cache |
+| xDS translation failures | `fp_xds_resource_translation_failures_total` | counter | `resource_kind` | snapshot translation |
 | xDS secret translation failures | `fp_xds_secret_translation_failures_total` | counter | none | secret translation |
 | xDS prime failures | `fp_xds_prime_team_failures_total` | counter | none | startup priming |
 | ADS stream opens | `fp_xds_ads_streams_opened_total` | counter | none | authenticated ADS stream lifecycle |
@@ -69,5 +69,5 @@ Use one production dashboard with these panels:
 
 - The serve-owned sampler is read-only. It does not advance outbox cursors and does not contact dataplanes.
 - `fp_outbox_pending_events` and `fp_outbox_oldest_pending_age_seconds` are currently emitted for the `xds-snapshot` consumer.
-- `fp_xds_snapshot_rebuilds_total` still has a `team` label from earlier slice work. Do not copy that pattern into new S12 metrics.
+- `fp_xds_snapshot_rebuilds_total` emits no labels; an earlier slice carried a `team` label that was dropped for cardinality. Do not add per-team labels to new S12 metrics.
 - The ADS stream counters count authenticated ADS streams only. Failed authentication is covered by xDS/API logs and the existing authn/authz surfaces, not these lifecycle counters.
