@@ -1,5 +1,123 @@
 # Docs Verification Report
 
+## Run: 2026-06-22 (adversarial literal verification)
+
+Config:
+
+- Epic issue: #100
+- Label: `docs-verification`
+- Marker: `[docs-verify]`
+- Method: execute docs exactly as written where local prerequisites are available; record command, exit code, and evidence; use minimal logged workarounds only to continue later steps.
+
+### Preconditions
+
+- GitHub auth: pass. `gh auth status` exit 0; token scopes include `repo`, which permits issue writes.
+- Build/toolchain: pass. `cargo build --bin flowplane` exit 0; `cargo 1.94.1`; `./target/debug/flowplane version` -> `0.1.0`.
+- Local PostgreSQL: reachable, but the documented tutorial helper did not create the documented `flowplane_dev` database; filed #137.
+- Envoy: pass. `/opt/homebrew/bin/envoy`, version `1.36.4`.
+- External systems not available in this environment: AWS/OpenTofu apply, real OIDC provider/device login, live OpenAI/provider egress. Those docs/steps were verified by command-surface/config inspection or by local smoke equivalents only.
+
+### Documentation Set
+
+Actionable / executable or command-surface verified:
+
+- `README.md`
+- `deploy/aws/README.md`
+- `docs/README.md`
+- `docs/tutorials/getting-started.md`
+- `docs/how-to/aws-secure-deployment.md`
+- `docs/how-to/bootstrap-platform.md`
+- `docs/how-to/cli-auth-and-contexts.md`
+- `docs/how-to/jwt-auth-rate-limit-route.md`
+- `docs/how-to/register-dataplane-mtls.md`
+- `docs/how-to/secret-kek-rotation.md`
+- `docs/how-to/ai-gateway-route-budget.md`
+- `docs/how-to/learn-and-publish-api-spec.md`
+- `docs/how-to/production-readiness.md`
+- `docs/reference/cli.md`
+- `docs/reference/configuration.md`
+- `docs/reference/errors.md`
+- `docs/reference/filters.md`
+- `docs/reference/rest-api.md`
+
+Explanation / fact-checked:
+
+- `docs/concepts/tenancy-grants-xds.md`
+- `docs/observability-alerts.md`
+
+### Proof Doc: `docs/how-to/cli-auth-and-contexts.md`
+
+Harness preconditions supplied exactly as the doc assumes: a `flowplane` binary on `PATH`, a reachable control-plane URL, and a bearer token. The control plane was started using the getting-started dev-mode command after the logged database workaround below.
+
+| Step | Command | Exit | Result |
+|---|---|---:|---|
+| Env token + server verify | `flowplane auth whoami` with `FLOWPLANE_TOKEN`, `FLOWPLANE_SERVER`, `FLOWPLANE_ORG`, `FLOWPLANE_TEAM` | 0 | Output included `MEMBERSHIPS 1 items`, `ORG ROLE owner`, `GRANT COUNT 0`. |
+| Direct token save | `flowplane auth login --token 'docverify-token'` | 0 | `token saved to /tmp/flowplane-docverify-home/.flowplane/credentials`. |
+| stdin token save | `printf '%s' 'stdin-token' | flowplane auth login --token-stdin` | 0 | `token saved to .../.flowplane/credentials`. |
+| token print | `flowplane auth token` | 0 | Printed `docverify-token`. |
+| context create | `flowplane config set-context prod --server https://fp.example --org acme --team payments` | 0 | `context saved`. |
+| context list | `flowplane config get-contexts` | 0 | Listed `* prod  https://fp.example  acme  payments`. |
+| context switch | `flowplane config use-context prod` | 0 | `context selected`. |
+| final verify without `FLOWPLANE_TOKEN` | `flowplane auth whoami` using a saved context token for the dev CP | 0 | Output included the expected dev identity. |
+
+No discrepancies.
+
+### `docs/tutorials/getting-started.md`
+
+| Step | Command | Exit | Result |
+|---|---|---:|---|
+| §1 PostgreSQL helper | `scripts/ensure-postgres.sh` | 0 | Printed `postgres ready`, but `flowplane_dev` did not exist. Discrepancy filed as #137. |
+| §2 server before workaround | documented `FLOWPLANE_DATABASE_URL=...flowplane_dev ... ./target/debug/flowplane serve` | 1 | `database "flowplane_dev" does not exist`. |
+| WORKAROUND | `createdb -h 127.0.0.1 -U postgres flowplane_dev` | 0 | Minimal database creation to continue later doc steps. |
+| §2 server after workaround | same documented server command | running | Logs included `database connected`, `DEV MODE`, `dev resources seeded`, `dev_token`, xDS start, API start. |
+| §3 auth | `./target/debug/flowplane auth whoami` | 0 | Dev identity accepted. |
+| §4 upstream | documented `python3 -m http.server 3001` | 1 | Port already in use; existing listener served exact expected `hello-flowplane`, so continued without changing the documented port. |
+| §4 expose | `./target/debug/flowplane expose http://127.0.0.1:3001 --name local --path / --port 10001 --public-base-url http://127.0.0.1:10001` | 0 | Printed `CURL URL http://127.0.0.1:10001/`, `local-upstream`, `local-routes`, `local`. |
+| §4 list resources | `cluster/listener/route list` | 0 | All three resources present at revision 1. |
+| §5 dataplane | `./target/debug/flowplane dataplane create dp-local --description "local Envoy"` | 0 | `created "dp-local" (revision 1)`. |
+| §6 bootstrap | `./target/debug/flowplane --out /tmp/flowplane-envoy.yaml dataplane bootstrap dp-local --mode dev --xds-host 127.0.0.1 --xds-port 18000 --admin-port 9901` | 0 | Wrote Envoy bootstrap. |
+| §6 Envoy | `envoy -c /tmp/flowplane-envoy.yaml --log-level info` | running | Logs included `cds: added/updated 1 cluster(s)` and `lds: add/update listener 'local'`. |
+| §7 curl | `curl -i http://127.0.0.1:10001/` | 0 | `HTTP/1.1 200 OK`, `server: envoy`, body `hello-flowplane`. |
+
+### `README.md`
+
+| Command | Exit | Result |
+|---|---:|---|
+| `cargo build --bin flowplane` | 0 | Finished dev build. |
+| `cargo test -p flowplane` | 0 | 30 passed. |
+| `./target/debug/flowplane openapi` | 0 | Printed OpenAPI `3.1.0`, title `Flowplane`. |
+| `./target/debug/flowplane version` | 0 | `0.1.0`. |
+| `scripts/e2e-envoy.sh` | 1 | First attempt failed because prior tutorial state already occupied `3001`; Envoy routed to `hello-flowplane` instead of the script's `hello-from-upstream-*`. |
+| WORKAROUND | `FLOWPLANE_E2E_API=127.0.0.1:18096 FLOWPLANE_E2E_XDS_PORT=28000 FLOWPLANE_E2E_GW_PORT=20001 FLOWPLANE_E2E_UPSTREAM_PORT=23001 FLOWPLANE_E2E_ADMIN_PORT=19901 scripts/e2e-envoy.sh` | 0 | Passed all phases: gateway, AI, discovery, restart convergence, cross-team isolation, filters/auth, MCP parity, SDS rotation, advanced parity, redaction sweep. |
+
+### Remaining Actionable Docs
+
+- `docs/how-to/jwt-auth-rate-limit-route.md`: current doc now uses the nested route match shape (`"match": { "prefix": { "prefix": "/payments" } }`); the previous route-shape defect no longer reproduces from the current text. CLI/update semantics match `--help` and generated schemas. Final external JWT issuer behavior remains inspection-only.
+- `docs/reference/cli.md`: command tree and key flags checked against `flowplane --help`, `auth --help`, `auth login --help`, `config --help`, `config set-context --help`; no mismatch found.
+- `docs/reference/rest-api.md`: endpoint catalogue and conventions checked against `flowplane openapi` and live `/healthz`; no mismatch found in sampled endpoints/conventions.
+- `docs/reference/configuration.md`: env-var list sampled against `rg FLOWPLANE_` in code and observed startup constraints; no mismatch found in sampled server/CLI/agent variables.
+- `docs/reference/errors.md`: fact-checked against error code/status/redaction/request-id code and tests; no mismatch found.
+- `docs/reference/filters.md`: exercised indirectly by `scripts/e2e-envoy.sh` phases 4, 5, 7, which ACKed local rate limit, header mutation, JWT/RBAC, and advanced filter/listener parity.
+- `docs/how-to/ai-gateway-route-budget.md`, `docs/how-to/learn-and-publish-api-spec.md`, `docs/how-to/register-dataplane-mtls.md`: local e2e script exercised equivalent AI budget/usage, learning/discovery publish, and SDS/cert rotation paths. Live external provider/OIDC parts remain inspection-only.
+- `docs/how-to/bootstrap-platform.md`, `docs/how-to/secret-kek-rotation.md`, `docs/how-to/production-readiness.md`, `docs/how-to/aws-secure-deployment.md`, `deploy/aws/README.md`: verified by command/config/source inspection only; AWS, production OIDC, and secret manager state were not available.
+- `docs/README.md`: Diátaxis structure and boundary policy checked against current doc layout; no mismatch found.
+
+### Explanation Docs
+
+- `docs/concepts/tenancy-grants-xds.md`: claims checked against `TeamScope`, authorization tests, xDS snapshot/version/quarantine code, and ADS NACK handling. No mismatch found.
+- `docs/observability-alerts.md`: metric names and alert intent checked by inspection against xDS metrics and smoke-test diagnostics. No mismatch found in sampled claims.
+
+### Bugs Raised / Updated
+
+- New: #137 `docs/tutorials/getting-started.md — ensure-postgres reports ready without creating flowplane_dev`
+
+Counts for this run:
+
+- Severity: blocker 1, major 0, minor 0.
+- Classification: doc-defect 1, code-defect 0, ambiguous 0.
+
+---
+
 Run date: 2026-06-21 (third pass — PostgreSQL **and** Envoy available)
 
 Config:
