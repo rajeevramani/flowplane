@@ -1,0 +1,86 @@
+# Changelog
+
+All notable changes to Flowplane are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Flowplane v2 is a ground-up Rust/PostgreSQL control plane. It is a new product, not an
+upgrade of an earlier Flowplane line — there is no in-place migration path from any prior
+version. `1.0.0` is its first stable release and the point at which the public REST API,
+CLI surface, and configuration contract become subject to semantic versioning.
+
+## [1.0.0] - 2026-06-22
+
+First stable release. PostgreSQL is the source of truth, Envoy is the only dataplane,
+xDS/SDS is the config channel, and all product mutations flow through `fp-core` services.
+
+### Added
+
+#### Control plane & runtime
+- Single `flowplane` binary running the control plane (`serve`), backed by PostgreSQL with
+  schema migrations.
+- Operational endpoints: `/healthz`, `/readyz` (database + xDS-consumer health), `/metrics`,
+  and `/api-docs/openapi.json`.
+- Structured logging and Prometheus metrics for the API, xDS, and database layers.
+
+#### Identity, authentication & tenancy
+- OIDC authentication for production (generic, any compliant IdP) and a self-contained dev
+  mode with an in-process issuer and a boot-logged dev token.
+- One-shot platform bootstrap that seeds the platform admin from an OIDC subject.
+- Multi-tenant governance: organizations, teams, users, memberships, and grants, with
+  per-team authorization scoping enforced across the API and xDS.
+
+#### Gateway resources & REST API
+- CRUD for clusters, listeners, route-configs, and dataplane bindings over a versioned REST
+  API, with an OpenAPI 3.1 document generated from the code.
+- Optimistic concurrency via `If-Match`/revision on mutations; a consistent error envelope
+  (`code`, `message`, `hint?`, `details?`, `request_id`) with redaction of internal detail.
+
+#### xDS, Envoy & filters
+- ADS delivery of CDS/EDS/RDS/LDS to real Envoy dataplanes with make-before-break
+  convergence and snapshot priming from the database across control-plane restarts.
+- NACK quarantine: an offending resource is isolated and last-good config keeps serving.
+- HTTP filter support proven against a live Envoy: local rate limit (with per-route
+  disable), header mutation, JWT authentication, RBAC, ext_authz, and global rate-limit
+  (RLS) filter wiring.
+
+#### Secrets, SDS & dataplane lifecycle
+- Write-only secret management (values never returned over the API), encrypted at rest.
+- SDS-backed downstream TLS with live certificate rotation — no Envoy restart required.
+- Dataplane CRUD, Envoy bootstrap generation, and certificate issue/register/revoke for
+  mTLS xDS.
+
+#### CLI & operator workflows
+- `flowplane` CLI: auth (`login`, device-code, `whoami`, token), contexts
+  (`config set-context`/`use-context`/`get-contexts`), resource management, `expose`/
+  `unexpose` shortcuts, declarative `apply`, and `stats`/`ops xds` diagnostics.
+
+#### Learning & discovery
+- Config-first learning: live traffic capture through an injected ALS/ExtProc path, bounded
+  and redacted observations, deterministic learned-spec generation, review/publish gates,
+  and tool/route generation.
+- Traffic-first discovery: a discovery listener that captures traffic, generates a spec and
+  routes, and tears down its owned resources cleanly — with SSRF guards on upstreams.
+
+#### AI gateway
+- OpenAI-compatible AI gateway: provider/route/budget/usage resources, secret-backed
+  credential injection, usage settlement and attribution, per-team budgets with enforcing
+  trips, and priority-based backend failover.
+- Streaming (`stream:true`) support with a correct stream-start failover boundary and SSE
+  forwarding.
+
+#### Deployment
+- Secure AWS reference deployment (OpenTofu/Terraform under `deploy/aws/`): ECS/Fargate
+  control plane in private subnets, RDS PostgreSQL, ALB HTTPS for the API path, NLB TCP
+  passthrough for mTLS xDS, OIDC and TLS/mTLS material wired via AWS Secrets Manager, with
+  an operator runbook for bootstrap, login, dataplane onboarding, and teardown.
+
+#### Testing & certification
+- Workspace test suite plus a live Envoy end-to-end suite (`scripts/e2e-envoy.sh`, split
+  into `scripts/e2e/`) covering the full gateway, filter, restart-convergence, isolation,
+  SDS-rotation, learning, discovery, and AI paths, with a Tier-0 credential-redaction sweep.
+- Certified at Tier 0 for S1–S10 with the live suite green across 5 consecutive runs and
+  zero open critical/major defects.
+
+[1.0.0]: https://github.com/rajeevramani/flowplane-v2/releases/tag/v1.0.0
