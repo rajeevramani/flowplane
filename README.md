@@ -1,34 +1,128 @@
-# Flowplane v2
+# Flowplane
 
-Flowplane v2 is a ground-up Rust/PostgreSQL rewrite of the Flowplane control plane. V1 remains
-reference material for product outcomes; V2 keeps the architecture cleaner: PostgreSQL is the
-source of truth, Envoy is the only dataplane, xDS/SDS is the config channel, and product mutations
-go through `fp-core` services.
+[![CI](https://github.com/rajeevramani/flowplane-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/rajeevramani/flowplane-v2/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.94.1-orange.svg)](https://www.rust-lang.org/)
 
-The current focus is **S7.7 Core gateway parity before learning**. Before S8 learning resumes, the
-basic gateway loop must be usable:
+**Flowplane** — an API gateway built for humans and AI agents.
 
-```text
-start control plane -> start dataplane -> expose upstream -> curl through Envoy -> inspect status
+Publish your APIs through a multi-tenant control plane and get governance (OIDC auth, grant-based RBAC, audit), a deterministic Envoy data plane driven over xDS, schema learning that infers OpenAPI from live traffic, and an AI gateway that fronts LLM providers with token budgets. Drive it from a CLI or REST API.
+
+> A ground-up Rust/PostgreSQL rebuild. PostgreSQL is the source of truth, Envoy is the only data plane, xDS/SDS is the config channel, and every product mutation goes through `fp-core` services.
+
+## Quick Start
+
+This is the short version of the [Getting Started tutorial](docs/tutorials/getting-started.md) — start the control plane in **dev mode**, expose one upstream, connect a local Envoy, and `curl` through the gateway.
+
+> **Toolchain:** build through [rustup](https://rustup.rs) so the `rust-toolchain.toml` pin (1.94.1) is applied automatically. A distro-packaged `cargo` may be too old to read this repo's version-4 `Cargo.lock`.
+>
+> **Prerequisites:** a reachable PostgreSQL (`postgres://postgres:postgres@127.0.0.1:5432/flowplane_dev`), a local `envoy` binary on your `PATH`, and a Rust toolchain via rustup. On macOS/Homebrew create the `postgres` role first — see the [tutorial](docs/tutorials/getting-started.md#1-prerequisites).
+
+```bash
+# Build (the default `dev-oidc` feature enables dev mode)
+cargo build --bin flowplane
+
+# 1. Start the control plane in dev mode (in-process OIDC + seeded resources)
+FLOWPLANE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/flowplane_dev \
+  FLOWPLANE_DEV_MODE=true \
+  FLOWPLANE_API_INSECURE=true \
+  FLOWPLANE_API_ADDR=127.0.0.1:8096 \
+  FLOWPLANE_XDS_ADDR=0.0.0.0:18000 \
+  ./target/debug/flowplane serve
 ```
 
-## Current Developer Path
+Dev mode logs a one-hour `dev_token` once at boot. In a second terminal:
 
-For the current manual dev workflow, see:
+```bash
+export FLOWPLANE_SERVER=http://127.0.0.1:8096
+export FLOWPLANE_ORG=dev-org
+export FLOWPLANE_TEAM=default
+export FLOWPLANE_TOKEN='<paste the dev_token from the server log>'
 
-- [internal/dev-dataplane.md](internal/dev-dataplane.md)
+./target/debug/flowplane auth whoami        # confirm authentication
+```
 
-That guide covers starting PostgreSQL, running the CP in dev mode, exporting the dev token, starting
-a local Envoy dataplane, creating gateway resources, and checking stats/NACK diagnostics.
+Start a trivial upstream, expose it, point Envoy at the control plane, and verify:
 
-## Useful Commands
+```bash
+# Trivial upstream (third terminal)
+mkdir -p /tmp/fp-upstream && cd /tmp/fp-upstream
+printf 'hello-flowplane\n' > index.html && python3 -m http.server 3001
 
-> **Toolchain:** build through [rustup](https://rustup.rs) so the `rust-toolchain.toml`
-> pin (1.94.1) is applied automatically. A distro-packaged `cargo` (e.g. `apt-get install
-> cargo`) may be too old to read this repo's version-4 `Cargo.lock` and will fail before
-> building.
+# Expose it — creates cluster + route config + listener in one command
+./target/debug/flowplane expose http://127.0.0.1:3001 \
+  --name local --path / --port 10001 \
+  --public-base-url http://127.0.0.1:10001
 
-Build:
+# Register a dataplane and generate the dev Envoy bootstrap (--out is global, before the subcommand)
+./target/debug/flowplane dataplane create dp-local --description "local Envoy"
+./target/debug/flowplane --out /tmp/flowplane-envoy.yaml \
+  dataplane bootstrap dp-local --mode dev \
+  --xds-host 127.0.0.1 --xds-port 18000 --admin-port 9901
+
+# Start Envoy (its own terminal)
+envoy -c /tmp/flowplane-envoy.yaml --log-level info
+
+# Verify: this request flows through Envoy (:10001) to your upstream (:3001)
+curl -i http://127.0.0.1:10001/        # -> 200 OK, body: hello-flowplane
+```
+
+Tear it down with `flowplane unexpose local`. The full walkthrough with every check is in the [Getting Started tutorial](docs/tutorials/getting-started.md).
+
+> Dev mode runs an in-process identity issuer over plaintext — local exploration only, never production. The published release container is built `--no-default-features` and rejects dev mode entirely.
+
+## Architecture
+
+```mermaid
+graph LR
+    subgraph Configure["Configure (control plane)"]
+        Op[Developer / Operator / AI Agent]
+    end
+    subgraph Call["Call (data plane)"]
+        Cl[Service / Client]
+    end
+
+    Op -->|REST · CLI| FP[Flowplane control plane]
+    FP <--> PG[(PostgreSQL)]
+    FP -->|gRPC xDS / SDS| Envoy[Envoy data plane]
+
+    Cl -->|HTTP| Envoy
+    Envoy -->|HTTP| US[Upstream services / LLM providers]
+```
+
+Flowplane is the **control plane**: it stores gateway configuration (clusters, routes, listeners, filters, secrets) in PostgreSQL and pushes it to Envoy over xDS. It is out-of-band of request traffic — clients call Envoy directly, and Envoy proxies to upstreams. PostgreSQL is the single source of truth; the same database state always produces the same Envoy configuration bytes.
+
+## Key Features
+
+- **Multi-tenant by construction** — organizations own teams; teams own gateway resources. Every tenant query names whose data it touches (`TeamScope`), so an unscoped cross-tenant query is not representable. Cross-tenant existence is hidden (`404`, not `403`).
+- **Grant-based authorization** — one pure-function gate decides every access on every surface (REST, CLI). Access is a decision over a closed `(resource, action, team)` grant vocabulary; every decision returns a stable reason for audit.
+- **Provider-neutral OIDC auth** — works with any compliant IdP (Auth0, Keycloak, Okta, Entra) plus an in-process dev mock for local runs. JWTs are identity-only; all authorization comes from the database.
+- **Deterministic xDS data plane** — CDS/RDS/LDS/EDS/SDS over ADS. Stable encoding, per-type versions that bump only on real byte changes, and NACK quarantine that serves last-known-good rather than blanking a resource type. mTLS/SPIFFE identity, per-dataplane scoping.
+- **HTTP filter chain** — a closed set of nine filter kinds: CORS, local and global rate limit, header mutation, health check, compressor, JWT auth, ext authz, and RBAC. Per-route overrides supported; chain order is semantic.
+- **API schema learning + discovery** — capture live traffic and infer JSON schemas with confidence scoring, exported as OpenAPI 3.1. *Learning* enriches an existing API definition; *discovery* spins up a throwaway listener and creates new API definitions from observed traffic.
+- **AI gateway** — register LLM providers (OpenAI / OpenAI-compatible), publish AI routes, and cap token spend with budgets that run in `shadow` (observe-only) then `enforcing`. Provider credentials are encrypted at rest.
+- **REST API + CLI** — a JSON API and a full-surface `flowplane` CLI covering auth/context, org/team management, gateway resources, expose/unexpose, learning, AI, secrets, dataplane registration, and ops diagnostics. Print the exact contract with `flowplane openapi`.
+
+> An MCP control-plane surface is present in the codebase and evolving; a web dashboard is planned (the REST API already backs one).
+
+## Documentation
+
+The [documentation home](docs/README.md) is organised by [Diátaxis](https://diataxis.fr/) mode. Start here:
+
+| You want to… | Start here |
+|--------------|------------|
+| Stand up a gateway from a clean checkout | [Getting Started](docs/tutorials/getting-started.md) |
+| Protect a route with JWT auth + rate limit | [JWT auth & rate limit](docs/how-to/jwt-auth-rate-limit-route.md) |
+| Learn an API spec from live traffic | [Learn & publish an API spec](docs/how-to/learn-and-publish-api-spec.md) |
+| Front an LLM with a token budget | [AI gateway route & budget](docs/how-to/ai-gateway-route-budget.md) |
+| Secure the data plane with mTLS | [Register a dataplane (mTLS)](docs/how-to/register-dataplane-mtls.md) |
+| Understand tenancy, grants, and xDS | [Tenancy, grants & the xDS pipeline](docs/concepts/tenancy-grants-xds.md) |
+
+Reference: [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) · [REST API](docs/reference/rest-api.md) · [Filters](docs/reference/filters.md) · [Errors](docs/reference/errors.md)
+
+## Building and Testing
+
+Build the main binary:
 
 ```bash
 cargo build --bin flowplane
@@ -40,30 +134,12 @@ Run tests for the main binary:
 cargo test -p flowplane
 ```
 
-Run the full suite with PostgreSQL-backed tests enabled:
+Run the full workspace suite with PostgreSQL-backed tests enabled:
 
 ```bash
 FLOWPLANE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/flowplane_dev \
   cargo test --workspace --all-features
 ```
-
-Run the live Envoy smoke test:
-
-```bash
-scripts/e2e-envoy.sh
-```
-
-> These commands expect a PostgreSQL with a `postgres` superuser. The
-> `scripts/ensure-postgres.sh` helper assumes a Linux/container setup (`service postgresql
-> start`, `su postgres`) and does **not** create that role; on macOS/Homebrew there is no
-> `postgres` role by default — create it first
-> (see [internal/dev-dataplane.md](internal/dev-dataplane.md#1-start-postgresql)).
->
-> - Workspace tests read the DB URL from `FLOWPLANE_TEST_DATABASE_URL` (shown above).
-> - `scripts/e2e-envoy.sh` reads `FLOWPLANE_E2E_PG_ADMIN_URL` and `FLOWPLANE_E2E_DATABASE_URL`
->   (defaults `postgres://postgres:postgres@127.0.0.1:5432/...`), and also invokes
->   `ensure-postgres.sh` + `su postgres`, so it is Linux/container-oriented; on macOS run a
->   local Postgres yourself and set those two variables rather than relying on the helper.
 
 Print the generated REST contract:
 
@@ -71,8 +147,8 @@ Print the generated REST contract:
 ./target/debug/flowplane openapi
 ```
 
-## Architecture References
+> Workspace tests read the DB URL from `FLOWPLANE_TEST_DATABASE_URL`. The `scripts/ensure-postgres.sh` helper assumes a Linux/container setup and does not create the `postgres` role; on macOS/Homebrew create it yourself (see [Getting Started](docs/tutorials/getting-started.md#1-prerequisites)).
 
-- [spec/10-v2-architecture.md](spec/10-v2-architecture.md) — target architecture
-- [spec/13-basics-before-learning-mindmap.md](spec/13-basics-before-learning-mindmap.md) — core gateway parity plan
-- [spec/14-architecture-integrity.md](spec/14-architecture-integrity.md) — domain ownership and seam rules
+## License
+
+Apache-2.0.
