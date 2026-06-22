@@ -625,3 +625,46 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   hard-to-debug failure. Failing the boot surfaces the misconfiguration immediately.
 - **Status:** decided for #156 (epic #161). HUMAN-GATE (auth/secrets) slice; recorded
   retroactively at founder request after the slice merged.
+
+## D-024: Compose evaluator bundle (`compose.eval.yml`) — design decisions
+
+- **Context:** Epic #161 slice #158 ("the heart") needs one `docker compose up` to stand up the
+  whole gateway and route a request, reproducing the host-network E2E dev-mode flow
+  (`scripts/e2e/lib.sh:192-242`) across containers. Several wiring decisions were made while
+  building and testing it (recorded as they happened, per founder instruction).
+- **Build-vs-pull (acceptance #1 "no checkout"):** `compose.eval.yml` references
+  `image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}` **with** a `build:` from
+  `Containerfile.eval`, so it works from a checkout today. The eval image is **not published until
+  #159**, so the literal "clean machine, no checkout" acceptance is an **epic-level** outcome
+  realized by #159 (GHCR publish) + #160 (docs point at the published ref via
+  `FLOWPLANE_EVAL_IMAGE=ghcr.io/<org>/flowplane:<ver>-eval`), **not** by #158 alone. The compose
+  header comment states this explicitly so nobody mistakes the local build for the final path.
+- **Loopback-only host bindings:** every published port is `127.0.0.1`-only (API `8080`, gateway
+  `10000`). xDS (`18000`) and Postgres are **not** host-exposed — Envoy and the CLI reach the
+  control plane over the compose network. Keeps the dev-identity surface off all external
+  interfaces (consistent with D-022's eval posture).
+- **Shared-volume token/bootstrap handoff + non-root permission fix:** the dev token (#156/D-023)
+  crosses containers through a named volume at `/shared/dev-token`; the init container writes the
+  rendered Envoy bootstrap to `/shared/envoy.yaml`. A named volume mounts root-owned `0755`, but
+  the eval image runs as non-root `65532` (D-022). Rather than run the control plane or init as
+  root, a single one-shot `shared-init` service does `chmod 0777 /shared` as root, so every
+  long-running container stays non-root.
+- **Service-name xDS:** the generated bootstrap's `xds_cluster` is `type: LOGICAL_DNS`
+  (`dataplanes_api.rs:665`), so `dataplane bootstrap --xds-host flowplane-eval` resolves the
+  control plane by compose-DNS name — no static IP wiring needed.
+- **CLI-binary readiness probe (no curl/wget):** the slim eval image ships only the `flowplane`
+  binary, so `flowplane-eval`'s healthcheck uses `flowplane auth whoami` (with the on-disk token)
+  — it passes only once the API is up *and* the token validates, which is exactly the signal the
+  init container needs. (Found during testing: an HTTP healthcheck would have needed a client the
+  image does not carry.)
+- **Envoy entrypoint bypass:** the bundle sets `entrypoint: ["envoy"]` to skip the
+  `envoyproxy/envoy` image's `docker-entrypoint.sh`, whose `chown /dev/stdout` fails (and kills
+  the container) under rootless container engines. (Found during testing under rootless Podman.)
+- **Idempotent init:** the one-shot `init` skips its work when `/shared/envoy.yaml` already exists,
+  so a repeated `up` (without `down -v`) does not fail on "dataplane already exists".
+- **Demo upstream + Envoy pin:** `hashicorp/http-echo` returns a deterministic 200 body for the
+  curl assertion; Envoy is pinned to `v1.37-latest`, matching the E2E suite (`lib.sh:32`).
+- **Verification:** built + run end to end under rootless Podman (`docker`→podman, docker-compose
+  v5 provider): `init` exits 0; `auth whoami` via `exec` succeeds; `curl http://127.0.0.1:10000/`
+  returns `200` with the demo body; the gateway port binds `127.0.0.1` only.
+- **Status:** decided for #158 (epic #161).

@@ -1,0 +1,138 @@
+# Flowplane v2 — evaluation bundle (epic #161 / slice #158). One `docker compose up` stands up
+# Postgres + the dev-mode control plane + a demo upstream + Envoy, wires them with the flowplane
+# CLI, and routes a real request — no manual steps.
+#
+# EVALUATION ONLY. Dev mode (in-process OIDC issuer + seeded resources + a dev bearer token on
+# disk, see DECISIONS.md D-022/D-023/D-024) is never an operator/production setup. Every host
+# port is bound to 127.0.0.1.
+#
+# This file BUILDS the eval image from Containerfile.eval, so it needs the repo checkout today.
+# The true "clean machine, no checkout" path (acceptance #1) is an EPIC-LEVEL outcome completed by
+# #159 (publish the image to GHCR) + #160 (docs). Once the image is published, point this bundle at
+# it with no source tree:  FLOWPLANE_EVAL_IMAGE=ghcr.io/<org>/flowplane:<ver>-eval docker compose -f compose.eval.yml up
+#
+# Quick start:
+#   docker compose -f compose.eval.yml up -d --build
+#   curl http://127.0.0.1:10000/        # -> the demo-upstream body, routed through Envoy
+#   docker compose -f compose.eval.yml exec flowplane-eval \
+#     sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
+#   docker compose -f compose.eval.yml down -v
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: flowplane
+    # No host port: only the control plane (same compose network) needs the database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d flowplane"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # One-shot: make the shared volume writable by the non-root (65532) eval image, which must create
+  # /shared/dev-token (control plane) and /shared/envoy.yaml (init). Runs as root ONLY for this
+  # chmod so every long-running container stays non-root (DECISIONS.md D-024).
+  shared-init:
+    image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
+    build:
+      context: .
+      dockerfile: Containerfile.eval
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chmod 0777 /shared"]
+    volumes:
+      - shared:/shared
+
+  flowplane-eval:
+    image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
+    # The build here tags the image; shared-init and init reuse the same tag without rebuilding.
+    build:
+      context: .
+      dockerfile: Containerfile.eval
+    command: ["serve"]
+    environment:
+      FLOWPLANE_DATABASE_URL: postgres://postgres:postgres@postgres:5432/flowplane
+      FLOWPLANE_DEV_MODE: "true"
+      FLOWPLANE_DEV_MODE_ACK: yes-this-is-not-production
+      FLOWPLANE_API_INSECURE: "true"
+      FLOWPLANE_DEV_TOKEN_PATH: /shared/dev-token
+      FLOWPLANE_API_ADDR: 0.0.0.0:8080
+      FLOWPLANE_XDS_ADDR: 0.0.0.0:18000
+      # Dev-only constant key (32 chars). Never a real secret.
+      FLOWPLANE_SECRET_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+    ports:
+      - "127.0.0.1:8080:8080"   # REST/MCP API, loopback only. xDS (18000) is NOT host-exposed —
+                                # Envoy reaches it over the compose network.
+    # The slim eval image ships only the flowplane binary (no curl/wget), so readiness is probed
+    # with the binary itself: `auth whoami` succeeds only once the API listener is up AND the dev
+    # token (written by setup_dev_mode at startup) validates — exactly the signal init needs.
+    healthcheck:
+      test: ["CMD-SHELL", "FLOWPLANE_SERVER=http://127.0.0.1:8080 FLOWPLANE_TOKEN=$(cat /shared/dev-token 2>/dev/null) flowplane auth whoami >/dev/null 2>&1"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    depends_on:
+      postgres:
+        condition: service_healthy
+      shared-init:
+        condition: service_completed_successfully
+    volumes:
+      - shared:/shared
+
+  demo-upstream:
+    image: hashicorp/http-echo
+    command: ["-text=hello from the flowplane eval demo upstream", "-listen=:5678"]
+    # No host port: only Envoy (same compose network) routes to it.
+
+  # One-shot: read the dev token, then drive the same CLI flow the E2E harness uses
+  # (scripts/e2e/lib.sh:192-228) — create a dataplane, expose the demo upstream, and render the
+  # Envoy bootstrap to the shared volume.
+  init:
+    image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ -s /shared/envoy.yaml ]; then echo "already initialized; nothing to do"; exit 0; fi
+        echo "waiting for dev token..."
+        for i in $$(seq 1 60); do [ -s /shared/dev-token ] && break; sleep 1; done
+        [ -s /shared/dev-token ] || { echo "dev token never appeared"; exit 1; }
+        export FLOWPLANE_SERVER=http://flowplane-eval:8080
+        export FLOWPLANE_TOKEN="$$(cat /shared/dev-token)"
+        export FLOWPLANE_ORG=dev-org
+        export FLOWPLANE_TEAM=default
+        flowplane dataplane create dp-eval --description "eval dataplane"
+        flowplane expose "http://demo-upstream:5678" --name demo --path / --port 10000 --public-base-url "http://127.0.0.1:10000"
+        flowplane --out /shared/envoy.yaml dataplane bootstrap dp-eval --mode dev --xds-host flowplane-eval --xds-port 18000 --admin-port 9901
+        echo "init complete: dataplane + expose + bootstrap done"
+    depends_on:
+      flowplane-eval:
+        condition: service_healthy
+      demo-upstream:
+        condition: service_started
+      shared-init:
+        condition: service_completed_successfully
+    volumes:
+      - shared:/shared
+
+  envoy:
+    image: envoyproxy/envoy:v1.37-latest
+    # Run the envoy binary directly, bypassing the image's docker-entrypoint.sh: under rootless
+    # container engines that wrapper's `chown /dev/stdout` fails and kills the container.
+    entrypoint: ["envoy"]
+    command: ["-c", "/shared/envoy.yaml", "--log-level", "info"]
+    ports:
+      - "127.0.0.1:10000:10000"   # the evaluator's gateway; loopback only.
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - shared:/shared
+
+volumes:
+  shared: {}
+  pgdata: {}
