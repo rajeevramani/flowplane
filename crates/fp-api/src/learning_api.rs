@@ -1,5 +1,6 @@
 //! Learning session REST endpoints (S8.3).
 
+use crate::extract::ApiJson;
 use crate::error::ApiError;
 use crate::resources::{resolve_team, Page};
 use crate::state::AppState;
@@ -234,7 +235,7 @@ pub async fn start_learning_session(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<StartLearningSessionBody>,
+    ApiJson(body): ApiJson<StartLearningSessionBody>,
 ) -> Result<(axum::http::StatusCode, Json<LearningSessionView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;

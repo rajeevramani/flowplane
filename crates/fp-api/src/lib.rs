@@ -11,6 +11,7 @@ pub mod dataplanes_api;
 pub mod discovery_api;
 pub mod error;
 pub mod expose_api;
+pub mod extract;
 pub mod identity_api;
 pub mod learning_api;
 pub mod mcp_api;

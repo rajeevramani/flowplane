@@ -1,5 +1,6 @@
 //! S9 route generation plan REST endpoints.
 
+use crate::extract::ApiJson;
 use crate::error::ApiError;
 use crate::resources::resolve_team;
 use crate::state::AppState;
@@ -65,7 +66,7 @@ pub async fn create_route_plan(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateRoutePlanBody>,
+    ApiJson(body): ApiJson<CreateRoutePlanBody>,
 ) -> Result<(axum::http::StatusCode, Json<RouteGenerationPlanView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;

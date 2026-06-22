@@ -3,6 +3,7 @@
 //! Every handler carries its OpenAPI declaration — the router and the document are split
 //! from the same `routes!` registration (spec/10 §9), so they cannot drift.
 
+use crate::extract::ApiJson;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
@@ -213,7 +214,7 @@ macro_rules! endpoints {
                 Path(team): Path<String>,
                 Extension(ctx): Extension<PrincipalCtx>,
                 Extension(rid): Extension<RequestId>,
-                Json(body): Json<$create_body>,
+                ApiJson(body): ApiJson<$create_body>,
             ) -> Result<(axum::http::StatusCode, Json<$view>), ApiError> {
                 let run = async {
                     let team = resolve_team(&state, &ctx, &team).await?;
@@ -265,7 +266,7 @@ macro_rules! endpoints {
                 headers: HeaderMap,
                 Extension(ctx): Extension<PrincipalCtx>,
                 Extension(rid): Extension<RequestId>,
-                Json(body): Json<$update_body>,
+                ApiJson(body): ApiJson<$update_body>,
             ) -> Result<Json<$view>, ApiError> {
                 let run = async {
                     let revision = revision_from(&headers)?;

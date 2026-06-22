@@ -1,5 +1,6 @@
 //! Router assembly: health, readiness, metrics, JSON 404 fallback.
 
+use crate::extract::ApiJson;
 use crate::error::ApiError;
 use crate::middleware::request_id;
 use crate::state::AppState;
@@ -427,7 +428,7 @@ async fn bootstrap_initialize(
     State(state): State<AppState>,
     Extension(rid): Extension<RequestId>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<BootstrapInitialize>,
+    ApiJson(body): ApiJson<BootstrapInitialize>,
 ) -> Result<Json<BootstrapResult>, ApiError> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
