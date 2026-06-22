@@ -594,4 +594,34 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
 - **Why better:** Keeping the hardened default literally untouched means the split cannot regress
   production posture — the dev-identity surface lives only in a distinctly named, unpublished,
   never-`latest` artifact, while evaluators still get a frictionless dev-mode image.
+- **Addendum (eval image contents):** `Containerfile.eval` also builds and ships the `fp-agent`
+  dataplane sidecar, matching `Containerfile.release` exactly rather than shipping a
+  flowplane-only image. The compose evaluator bundle (#158) needs `fp-agent` to bootstrap the
+  Envoy dataplane for the end-to-end request path, and keeping the two images structurally
+  identical (only the feature flag differs) makes the "keep them in sync" rule trivial to honor.
 - **Status:** decided for #157 (epic #161). HUMAN-GATE (auth) slice.
+
+## D-023: Dev bearer token may be written to disk (dev mode only, fail-loud)
+
+- **Context:** The per-boot dev bearer token was emitted only to the tracing log
+  (`crates/flowplane/src/serve.rs`), which a sibling/init container in the compose evaluator
+  bundle (#161) cannot read. Slice #156 added `FLOWPLANE_DEV_TOKEN_PATH` so the token reaches an
+  `init` step through a shared file. Unlike #157, the #156 issue did not mandate a standalone ADR,
+  yet persisting a bearer token to disk is an auth/secrets posture decision — recorded here for
+  parity with D-022 so the asymmetry isn't silent.
+- **Decision:** When (and only when) dev mode is active *and* `FLOWPLANE_DEV_TOKEN_PATH` is set,
+  the minted token is written verbatim to that path via `std::fs::write`, in addition to the
+  existing log line (the log is not suppressed — the file is an extra sink, not a replacement).
+  Guard rails: the write is gated behind the `dev-oidc` feature (compiled out of the hardened
+  image entirely — see D-022); a write failure is fatal (`?` with context) so a misconfigured
+  eval bundle fails loud rather than silently leaving `init` without credentials; and the path is
+  operator-supplied, never defaulted, so absent the env var nothing is ever written.
+- **Why acceptable:** The token is already a dev-only, per-boot, ~1h artifact that grants access
+  only to a seeded local instance and dies with the process. In a hardened build the code path
+  does not exist. The on-disk exposure is therefore bounded to exactly the local evaluation
+  scenario the feature serves, and is strictly opt-in.
+- **Why fail-loud over fail-silent:** A bearer-token handoff that silently no-ops would produce an
+  evaluator bundle that *looks* up but whose `init` step has no credentials — a confusing,
+  hard-to-debug failure. Failing the boot surfaces the misconfiguration immediately.
+- **Status:** decided for #156 (epic #161). HUMAN-GATE (auth/secrets) slice; recorded
+  retroactively at founder request after the slice merged.
