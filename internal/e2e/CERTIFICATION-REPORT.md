@@ -50,4 +50,20 @@ Both were caught only by reproducing on a clean environment. D9 in particular wa
 
 ## Follow-ups (do not block Tier 0)
 
-- Split `scripts/e2e-envoy.sh` into `scripts/e2e/run.sh` + `lib.sh` + `NN-*.sh` (move `wait_converged`/`assert_status`/`redaction_sweep`/`known_fail` into `lib.sh`); maintainability, not a coverage gap.
+- Split `scripts/e2e-envoy.sh` into `scripts/e2e/run.sh` + `lib.sh` + `NN-*.sh` (move `wait_converged`/`assert_status`/`redaction_sweep`/`known_fail` into `lib.sh`); maintainability, not a coverage gap. **Done (#71, merged via #150); parity re-verified — see below.**
+
+## Parity gate: #71 e2e split (run.sh + lib.sh + phase files)
+
+Date: 2026-06-22. Branch: `claude/brave-curie-1je6jq` (from `main` @ `b4feedc` — "refactor(e2e): split e2e-envoy.sh into run.sh + lib.sh + phase files (#71) (#150)").
+
+Purpose: prove the #71 refactor — splitting `scripts/e2e-envoy.sh` into `scripts/e2e/run.sh` + `lib.sh` + `NN-*.sh` phase files — is behavior-faithful to the pre-split monolith before trusting the merge. This is the "5-green parity gate."
+
+Environment (independent reproduction, clean shell, no ambient `FLOWPLANE_*` env):
+- Host/OS: Linux 6.18.5 x86_64, Ubuntu 24.04.4 LTS
+- Envoy: local binary `1.37.0` (BoringSSL/RELEASE; Docker unavailable → suite auto-fell back to local envoy)
+- Postgres: PostgreSQL 16.13 (default admin URL `postgres://postgres:postgres@127.0.0.1:5432/postgres`)
+- Rust: cargo/rustc 1.94.1
+
+Result: **5 consecutive green runs, 12 phases each (P1, P1a, P1d, P1e, P1b, P1c, P2, P2a, P3, P4, P5, P5a, P6, P7), redaction sweep green.** Every run exited 0 and printed `E2E PASSED:`; 0 failures, 0 flakes, deterministic phase order across all 5 runs. New runner flags smoke-tested: `run.sh --list` (14 phases), `run.sh --plan --only P7` (correctly expands to `P2 P7`), `run.sh --plan --from P5` (expands to `P5 P5a P6 P7`).
+
+Verdict: **parity gate PASSED (5/5).** The split runner is behavior-faithful to the pre-split monolith.
