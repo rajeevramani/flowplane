@@ -1,6 +1,7 @@
 //! Dataplane management endpoints. The certificate registry and xDS binding internals
 //! shipped in S5.4; S6 exposes the operator-facing REST surface.
 
+use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
 use crate::resources::{resolve_team, ListQuery, Page};
 use crate::state::AppState;
@@ -282,7 +283,7 @@ pub async fn create_dataplane(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateDataplaneBody>,
+    ApiJson(body): ApiJson<CreateDataplaneBody>,
 ) -> Result<(StatusCode, Json<DataplaneView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -336,7 +337,7 @@ pub async fn record_dataplane_telemetry(
     Path((team, name)): Path<(String, String)>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<DataplaneTelemetryBody>,
+    ApiJson(body): ApiJson<DataplaneTelemetryBody>,
 ) -> Result<Json<DataplaneView>, ApiError> {
     let run = async {
         if body.requests_delta < 0 || body.errors_delta < 0 || body.warming_failures_delta < 0 {
@@ -460,7 +461,7 @@ pub async fn register_proxy_certificate(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<RegisterProxyCertificateBody>,
+    ApiJson(body): ApiJson<RegisterProxyCertificateBody>,
 ) -> Result<(StatusCode, Json<ProxyCertificateView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -499,7 +500,7 @@ pub async fn issue_proxy_certificate(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<IssueProxyCertificateBody>,
+    ApiJson(body): ApiJson<IssueProxyCertificateBody>,
 ) -> Result<(StatusCode, Json<IssuedProxyCertificateView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -541,7 +542,7 @@ pub async fn revoke_proxy_certificate(
     Path((team, serial_number)): Path<(String, String)>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<RevokeProxyCertificateBody>,
+    ApiJson(body): ApiJson<RevokeProxyCertificateBody>,
 ) -> Result<Json<ProxyCertificateView>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;

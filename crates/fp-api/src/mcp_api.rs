@@ -95,8 +95,16 @@ pub async fn post(
     headers: HeaderMap,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(req): Json<JsonRpcRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
+    // JSON-RPC transport: a malformed body is a Parse error (-32700), not the
+    // REST error envelope and not axum's bare 422.
+    let req: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(_) => {
+            return rpc_error(None, -32700, "Parse error", rid, "validation").into_response()
+        }
+    };
     if let Err(error) = check_origin(&headers) {
         return rpc_error(req.id, -32600, error, rid, "origin").into_response();
     }
@@ -2321,22 +2329,26 @@ mod tests {
         }
     }
 
-    fn initialize_request() -> JsonRpcRequest {
-        JsonRpcRequest {
-            jsonrpc: Some("2.0".into()),
-            method: "initialize".into(),
-            params: json!({ "protocolVersion": PREFERRED_VERSION }),
-            id: Some(json!(1)),
-        }
+    fn initialize_request() -> axum::body::Bytes {
+        serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": { "protocolVersion": PREFERRED_VERSION },
+            "id": 1,
+        }))
+        .unwrap()
+        .into()
     }
 
-    fn ping_request() -> JsonRpcRequest {
-        JsonRpcRequest {
-            jsonrpc: Some("2.0".into()),
-            method: "ping".into(),
-            params: json!({}),
-            id: Some(json!(2)),
-        }
+    fn ping_request() -> axum::body::Bytes {
+        serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "method": "ping",
+            "params": {},
+            "id": 2,
+        }))
+        .unwrap()
+        .into()
     }
 
     async fn json_body(response: Response<Body>) -> Value {
@@ -2378,7 +2390,7 @@ mod tests {
             HeaderMap::new(),
             Extension(ctx.clone()),
             Extension(RequestId::generate()),
-            Json(initialize_request()),
+            initialize_request(),
         )
         .await;
         let session = response
@@ -2400,7 +2412,7 @@ mod tests {
             headers,
             Extension(ctx),
             Extension(RequestId::generate()),
-            Json(ping_request()),
+            ping_request(),
         )
         .await;
         let body = json_body(response).await;
@@ -2415,7 +2427,7 @@ mod tests {
             HeaderMap::new(),
             Extension(user(UserId::generate(), org_id)),
             Extension(RequestId::generate()),
-            Json(initialize_request()),
+            initialize_request(),
         )
         .await;
         let session = response
@@ -2435,7 +2447,7 @@ mod tests {
             headers,
             Extension(user(UserId::generate(), org_id)),
             Extension(RequestId::generate()),
-            Json(ping_request()),
+            ping_request(),
         )
         .await;
         let body = json_body(response).await;
@@ -2452,7 +2464,7 @@ mod tests {
             headers,
             Extension(ctx.clone()),
             Extension(RequestId::generate()),
-            Json(initialize_request()),
+            initialize_request(),
         )
         .await;
         let body = json_body(response).await;
@@ -2468,7 +2480,7 @@ mod tests {
             headers,
             Extension(ctx),
             Extension(RequestId::generate()),
-            Json(initialize_request()),
+            initialize_request(),
         )
         .await;
         let body = json_body(response).await;

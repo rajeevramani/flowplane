@@ -1697,3 +1697,68 @@ async fn secret_values_are_write_only_over_http() {
     assert_eq!(body["value_redacted"], true);
     assert!(body.get("spec").is_none());
 }
+
+// Regression for #138: a type-malformed JSON body must return the standard
+// error envelope (validation_failed -> 400), not axum's bare plain-text 422.
+#[tokio::test]
+async fn malformed_json_body_returns_validation_envelope() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+    let subject = unique("sub");
+    let token = issuer
+        .mint(&subject, "malformed@test", "Malformed", 600)
+        .expect("mint");
+
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let user = identity::upsert_user_by_subject(&pool, &subject, "malformed@test", "Malformed")
+        .await
+        .expect("user");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Admin)
+        .await
+        .expect("member");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
+        discovery_forwarding_policy: Default::default(),
+    });
+
+    // `port` typed as a string -> JSON deserialization failure.
+    let bad = r#"{"name":"x","spec":{"endpoints":[{"host":"10.0.0.1","port":"oops"}]}}"#;
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/teams/{}/clusters", team.name))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(bad))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("send");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_of(response).await;
+    assert_eq!(body["code"], "validation_failed");
+    assert!(
+        body.get("request_id").and_then(|v| v.as_str()).is_some(),
+        "envelope must carry request_id, got: {body}"
+    );
+}

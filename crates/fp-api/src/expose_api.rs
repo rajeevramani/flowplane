@@ -1,6 +1,7 @@
 //! Expose shortcut REST surface. The shortcut creates/deletes normal gateway resources; it is
 //! operator UX, not a separate product source of truth.
 
+use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
 use crate::resources::{resolve_team, ClusterView, ListenerView, RouteConfigView};
 use crate::state::AppState;
@@ -97,7 +98,7 @@ pub async fn expose(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<ExposeBody>,
+    ApiJson(body): ApiJson<ExposeBody>,
 ) -> Result<(StatusCode, Json<ExposeView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;

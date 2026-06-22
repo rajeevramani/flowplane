@@ -1,5 +1,6 @@
 //! AI gateway REST endpoints.
 
+use crate::extract::ApiJson;
 use crate::error::ApiError;
 use crate::resources::{resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
@@ -178,7 +179,7 @@ pub async fn create_ai_provider(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateAiProviderBody>,
+    ApiJson(body): ApiJson<CreateAiProviderBody>,
 ) -> Result<(axum::http::StatusCode, Json<AiProviderView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -228,7 +229,7 @@ pub async fn update_ai_provider(
     headers: HeaderMap,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<UpdateAiProviderBody>,
+    ApiJson(body): ApiJson<UpdateAiProviderBody>,
 ) -> Result<Json<AiProviderView>, ApiError> {
     let run = async {
         let revision = revision_from(&headers)?;
@@ -299,7 +300,7 @@ pub async fn create_ai_route(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateAiRouteBody>,
+    ApiJson(body): ApiJson<CreateAiRouteBody>,
 ) -> Result<(axum::http::StatusCode, Json<AiRouteView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -349,7 +350,7 @@ pub async fn update_ai_route(
     headers: HeaderMap,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<UpdateAiRouteBody>,
+    ApiJson(body): ApiJson<UpdateAiRouteBody>,
 ) -> Result<Json<AiRouteView>, ApiError> {
     let run = async {
         let revision = revision_from(&headers)?;
@@ -420,7 +421,7 @@ pub async fn create_ai_budget(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateAiBudgetBody>,
+    ApiJson(body): ApiJson<CreateAiBudgetBody>,
 ) -> Result<(axum::http::StatusCode, Json<AiBudgetView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -470,7 +471,7 @@ pub async fn update_ai_budget(
     headers: HeaderMap,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<UpdateAiBudgetBody>,
+    ApiJson(body): ApiJson<UpdateAiBudgetBody>,
 ) -> Result<Json<AiBudgetView>, ApiError> {
     let run = async {
         let revision = revision_from(&headers)?;

@@ -346,3 +346,23 @@ async fn mcp_rejects_unsupported_protocol_versions() {
     let json = body_json(response).await;
     assert_eq!(json["error"]["data"]["kind"], "protocol");
 }
+
+// Regression for #138: a malformed JSON-RPC body must return a JSON-RPC parse
+// error (-32700), not axum's bare 422 and not the REST error envelope.
+#[tokio::test]
+async fn mcp_malformed_body_returns_jsonrpc_parse_error() {
+    let Some((app, token, _token_b, _team)) = app_with_tokens().await else {
+        return;
+    };
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/mcp")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from("{ this is not valid json"))
+        .expect("request");
+
+    let response = app.oneshot(request).await.expect("send");
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], -32700);
+}

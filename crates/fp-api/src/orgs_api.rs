@@ -1,5 +1,6 @@
 //! Organization endpoints (platform governance + org-admin member management).
 
+use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, State};
@@ -118,7 +119,7 @@ pub async fn create_org(
     State(state): State<AppState>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateOrgBody>,
+    ApiJson(body): ApiJson<CreateOrgBody>,
 ) -> Result<(StatusCode, Json<OrgView>), ApiError> {
     let org = svc::create_org(&state.pool, &ctx, &body.name, &body.display_name, rid)
         .await
@@ -198,7 +199,7 @@ pub async fn add_member(
     Path(org): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<AddOrgMemberBody>,
+    ApiJson(body): ApiJson<AddOrgMemberBody>,
 ) -> Result<StatusCode, ApiError> {
     let run = async {
         let role = OrgRole::parse(&body.role)?;

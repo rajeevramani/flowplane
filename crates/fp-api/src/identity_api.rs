@@ -1,6 +1,7 @@
 //! Team, membership, and grant endpoints (D-002: every identity workflow has an API/CLI
 //! path in v2 — the UI is gone).
 
+use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
 use crate::resources::resolve_team;
 use crate::state::AppState;
@@ -153,7 +154,7 @@ pub async fn create_team(
     State(state): State<AppState>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateTeamBody>,
+    ApiJson(body): ApiJson<CreateTeamBody>,
 ) -> Result<(StatusCode, Json<TeamView>), ApiError> {
     let team = svc::create_team(&state.pool, &ctx, &body.name, &body.display_name, rid)
         .await
@@ -221,7 +222,7 @@ pub async fn add_member(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<AddMemberBody>,
+    ApiJson(body): ApiJson<AddMemberBody>,
 ) -> Result<StatusCode, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -288,7 +289,7 @@ pub async fn add_grant(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<AddGrantBody>,
+    ApiJson(body): ApiJson<AddGrantBody>,
 ) -> Result<StatusCode, ApiError> {
     let run = async {
         let resource = Resource::parse(&body.resource)?;
@@ -343,7 +344,7 @@ pub async fn create_agent(
     State(state): State<AppState>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateAgentBody>,
+    ApiJson(body): ApiJson<CreateAgentBody>,
 ) -> Result<(StatusCode, Json<AgentTokenView>), ApiError> {
     let grants = agent_grants(body.grants).map_err(|e| ApiError::new(e, rid))?;
     let kind = AgentKind::parse(&body.kind).map_err(|e| ApiError::new(e, rid))?;

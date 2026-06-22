@@ -1,6 +1,7 @@
 //! Secret management endpoints. Values are write-only: create/rotate accept a SecretSpec,
 //! but every response is metadata plus `value_redacted = true`.
 
+use crate::extract::ApiJson;
 use crate::error::{ApiError, ErrorBody};
 use crate::resources::{resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
@@ -107,7 +108,7 @@ pub async fn create_secret(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateSecretBody>,
+    ApiJson(body): ApiJson<CreateSecretBody>,
 ) -> Result<(StatusCode, Json<SecretView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -177,7 +178,7 @@ pub async fn rotate_secret(
     headers: HeaderMap,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<RotateSecretBody>,
+    ApiJson(body): ApiJson<RotateSecretBody>,
 ) -> Result<Json<SecretView>, ApiError> {
     let run = async {
         let revision = revision_from(&headers)?;

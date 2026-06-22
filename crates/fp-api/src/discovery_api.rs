@@ -1,5 +1,6 @@
 //! Discovery-session REST endpoints (S9).
 
+use crate::extract::ApiJson;
 use crate::error::ApiError;
 use crate::learning_api::LearnedSpecVersionView;
 use crate::resources::{resolve_team, Page};
@@ -198,7 +199,7 @@ pub async fn start_discovery_session(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<StartDiscoverySessionBody>,
+    ApiJson(body): ApiJson<StartDiscoverySessionBody>,
 ) -> Result<(axum::http::StatusCode, Json<DiscoverySessionView>), ApiError> {
     let input = body.into_service().map_err(|e| ApiError::new(e, rid))?;
     let run = async {

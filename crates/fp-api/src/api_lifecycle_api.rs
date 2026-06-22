@@ -1,5 +1,6 @@
 //! API lifecycle REST endpoints (S8.2).
 
+use crate::extract::ApiJson;
 use crate::error::ApiError;
 use crate::resources::{resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
@@ -241,7 +242,7 @@ pub async fn create_api(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<CreateApiBody>,
+    ApiJson(body): ApiJson<CreateApiBody>,
 ) -> Result<(axum::http::StatusCode, Json<ApiStatusView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -322,7 +323,7 @@ pub async fn update_mcp_tool(
     Path((team, name)): Path<(String, String)>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<UpdateApiToolBody>,
+    ApiJson(body): ApiJson<UpdateApiToolBody>,
 ) -> Result<Json<ApiToolView>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -351,7 +352,7 @@ pub async fn reject_spec_version(
     Path((team, name, version)): Path<(String, String, i64)>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<SpecReviewBody>,
+    ApiJson(body): ApiJson<SpecReviewBody>,
 ) -> Result<Json<SpecVersionSummary>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
@@ -397,7 +398,7 @@ pub async fn publish_spec_version(
     Path((team, name, version)): Path<(String, String, i64)>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<SpecReviewBody>,
+    ApiJson(body): ApiJson<SpecReviewBody>,
 ) -> Result<Json<PublishSpecView>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
