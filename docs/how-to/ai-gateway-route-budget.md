@@ -14,6 +14,18 @@ The control plane must be running with `FLOWPLANE_SECRET_ENCRYPTION_KEY` set (a 
 
 With that key set, create a secret holding the provider API key — `flowplane secret create --file secret.json` — and note its UUID for `credential_secret_id` below.
 
+`secret.json` (the `secret` value is **standard base64** of the raw provider API key — produce it with `printf %s "$API_KEY" | base64`):
+
+```json
+{
+  "name": "openai-key",
+  "spec": {
+    "type": "generic_secret",
+    "secret": "<base64 of your provider API key>"
+  }
+}
+```
+
 ## 1. Create a provider
 
 The provider body is `{ "name", "spec" }`, where `spec` is the `AiProviderSpec`: a `kind` (`openai` or `openai-compatible`), an **origin-only** `base_url` (scheme + host, no path — use `path_prefix` for upstream paths), the `credential_secret_id` of your secret, the `models` the provider serves, and the `auth_header` the key is sent in (defaults to `authorization`).
