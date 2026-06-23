@@ -668,3 +668,40 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   v5 provider): `init` exits 0; `auth whoami` via `exec` succeeds; `curl http://127.0.0.1:10000/`
   returns `200` with the demo body; the gateway port binds `127.0.0.1` only.
 - **Status:** decided for #158 (epic #161).
+
+## D-025: Multi-arch (`linux/amd64` + `linux/arm64`) GHCR publish — supersedes the parked arm64-first scope
+
+- **Context:** The #159 thread parked a scope decision ("arm64-first eval image; amd64 → Phase 2")
+  that was *to be recorded as D-025 when #159 shipped*. It never shipped, so arm64-first never
+  reached this log. That decision was driven by **two constraints, both now gone:**
+  1. **Budget** — the repo was **private**, so GitHub-hosted Actions minutes were metered/charged.
+     The workaround was a **self-hosted Lima Ubuntu runner** to get zero Actions minutes.
+  2. **QEMU flakiness** — building `amd64` on an Apple-Silicon Mac needed cross-arch emulation,
+     which the spike proved unreliable (buildx on the Lima `vz` VM would not route execs to
+     binfmt; `exec format error`). So the fallback was **native arm64 only**, with amd64 and
+     multi-arch deferred to Phase 2.
+- **Trigger to reassess:** the repo moved **private → public**. Public repos get **unlimited free
+  GitHub-hosted Actions minutes**, *and* free **hosted arm64 Linux runners** (`ubuntu-24.04-arm`)
+  alongside the amd64 `ubuntu-latest`. Both constraints that forced arm64-first are void:
+  there is now a free **native** build host for *each* arch — no self-hosted runner, no QEMU.
+  (`ci.yml` already runs on `ubuntu-latest`; comment: "free for public repos".)
+- **Decision:** Phase 1 of #159 publishes a **multi-arch manifest** (`linux/amd64` + `linux/arm64`)
+  for **both** the eval (`:<ver>-eval`) and hardened (`:<ver>`) images. Each arch is built
+  **natively** on its own free hosted runner (amd64 on `ubuntu-latest`, arm64 on
+  `ubuntu-24.04-arm`), then the two per-arch images are joined into one tag via
+  `docker buildx imagetools create` (manifest list). **No QEMU emulation, no self-hosted runner.**
+- **What this supersedes:** the parked **arm64-first** scope decision in the #159 thread and its
+  Phase-2 deferral of amd64/multi-arch. amd64 evaluators are **no longer a deferred path** — a
+  `docker pull` on either an amd64 or arm64 host resolves the correct native image with no
+  `--platform` flag and no emulation. The earlier "single-arch excludes no one" worry is moot
+  because neither arch is excluded.
+- **Why now-superior:** removes the **budget driver** (public repo = free minutes) and the
+  **QEMU-flakiness driver** (a free native amd64 runner exists, so amd64 is built, not emulated).
+  Native-per-arch is both more correct (no emulation in the build) and broader (both audiences get
+  a native image) than single-arch arm64. Image *signing* remains separately out of scope here.
+- **Unchanged:** all rev-2 release gates still hold — image-only `--no-build` smoke, a separate
+  hardened build+sanity gate and digest, OCI `image.source` labels, pinned smoke dependencies, and
+  first-publish public-GHCR + repo-link verification. Eval tag stays `:<ver>-eval`, **never**
+  `:latest` (D-022). First push remains a **HUMAN-GATE** (outward-facing, irreversible).
+- **Status:** supersedes the parked arm64-first scope decision; decided for #159 (epic #161).
+  HUMAN-GATE (first public artifact push) slice.
