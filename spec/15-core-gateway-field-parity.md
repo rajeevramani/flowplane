@@ -1,6 +1,6 @@
 # 15 — Core Gateway Field Parity
 
-Purpose: make V2's core gateway API, database model, CLI, and xDS output capable of representing the gateway fields that V1 exposed to Envoy, while preserving the V2 architecture rules in `spec/14-architecture-integrity.md`.
+Purpose: make V2's core gateway API, database model, CLI, and xDS output capable of representing the gateway fields that V1 exposed to Envoy, while preserving the V2 architecture rules in the architecture-integrity constitution (formerly `spec/14`), now canonical in the vault at `../flowplane-private-vault/constitution.md`.
 
 Parity here means **same operator and dataplane capability**, not identical V1 JSON shapes. V2 keeps typed domain specs, service-layer validation, one PostgreSQL source of truth, reference tracking, and explicit xDS translation. Known V1 defects are fixed rather than copied.
 
@@ -29,7 +29,7 @@ Audit inputs:
 
 - V1 domain/xDS surface: `src/xds/{cluster_spec,route,listener,secret}.rs`, `src/xds/filters/http/**`, `filter-schemas/built-in/*.yaml`, and V1 docs/reference material.
 - V2 domain/xDS surface: `crates/fp-domain/src/gateway/**`, `crates/fp-xds/src/translate.rs`, `crates/fp-storage/src/repos/**`, and API/CLI resource paths.
-- Existing V2 specs: `spec/03-domain-model.md`, `spec/04-xds.md`, and `spec/14-architecture-integrity.md`.
+- Existing V2 specs: `spec/03-domain-model.md`, `spec/04-xds.md`, and the architecture-integrity constitution (formerly `spec/14`), now at `../flowplane-private-vault/constitution.md`.
 
 Verdict:
 

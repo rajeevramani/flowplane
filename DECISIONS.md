@@ -5,6 +5,15 @@ entry: **Context** → **Decision** → **Why it's better than the v1 approach**
 rejected). Decisions made without founder response to a question in `QUESTIONS.md` are marked
 **provisional** until approved or vetoed.
 
+> **Decisions policy (frozen log).** D-001..D-025 below are **FROZEN** — code/build-coupled
+> legacy decisions kept as historical record. **New substantive decisions are authored ONLY as
+> vault AIDF ADRs** (`../flowplane-private-vault/decisions/FP-DEC-NNNN-<slug>.md`); do **not**
+> append new substantive decisions here. A short repo pointer entry is allowed for code/build
+> ergonomics (so a code reader can find the canonical ADR), but it is never a second record.
+> One canonical home per decision. The standing architecture invariants that several of these
+> decisions enforce now live in the architecture-integrity constitution at
+> `../flowplane-private-vault/constitution.md` (formerly `spec/14`).
+
 ---
 
 ## D-001: Spec-first rewrite process
