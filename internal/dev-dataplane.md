@@ -253,6 +253,6 @@ These are known gaps, not operator mistakes:
 
 Relevant tracking:
 
-- `PROGRESS.md` -> `S7.7 Core gateway parity before learning`
+- `../../flowplane-private-vault/archive/repo-import-2026-06-24/internal/PROGRESS.md` -> `S7.7 Core gateway parity before learning`
 - `spec/13-basics-before-learning-mindmap.md`
-- `spec/14-architecture-integrity.md`
+- `../../flowplane-private-vault/constitution.md`

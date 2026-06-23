@@ -1,33 +1,25 @@
 # Internal engineering docs
 
-> Internal — engineering/historical; may be stale; **not** product documentation.
+> Internal — engineering; may be stale; **not** product documentation.
 
-This directory and `../spec/` hold material written for *building* Flowplane, not for using it: design records, decisions, progress ledgers, runbooks, and release evidence. End-user documentation lives in [`../docs/`](../docs/README.md).
+This directory holds material written for *building and operating* Flowplane, not for using it. End-user documentation lives in [`../docs/`](../docs/README.md).
 
-## Classes of content here
+## What lives here
 
-`(current)` = always lived here. `(migrated from docs/ — #116)` = reclassified out of `docs/` when the docs-taxonomy policy was executed.
+Dev and operator runbooks (kept current while in use):
 
-| Class | Examples | Maintenance |
-|-------|----------|-------------|
-| **Specs / design records** | `../spec/*` (current) | Point-in-time. Mark historical; do **not** chase current. |
-| **Decisions** | `../DECISIONS.md` (current) | Append-only decision log. |
-| **Progress / status** | `internal/PROGRESS.md`, `internal/QUESTIONS.md`, `../REWRITE-REPORT.md` (current) | Status ledgers; current only while a gate is active. |
-| **Release evidence** | `internal/release-walkthrough.md`, `internal/failure-mode-matrix.md`, `internal/adversarial-surface-map.md`, `internal/release/release-packaging.md` (migrated from `docs/` — #116) | Supports release readiness; not product docs. |
-| **Dev runbooks & workflows** | `internal/auth0-local-runbook.md`, `internal/prod-local-runbook.md`, `internal/dev-workflow-automation.md`, `internal/issue-fix-workflow.md`, `internal/user-onboarding.md`, `internal/dev-dataplane.md` (migrated from `docs/` — #116) | For contributors/dev environments. |
+- [`auth0-local-runbook.md`](auth0-local-runbook.md) — local Auth0 setup for development.
+- [`prod-local-runbook.md`](prod-local-runbook.md) — local production-like environment.
+- [`dev-dataplane.md`](dev-dataplane.md) — running a dev-mode dataplane.
+- [`release-walkthrough.md`](release-walkthrough.md) — release gate and v1.0 checklist.
+- [`release/release-packaging.md`](release/release-packaging.md) — release packaging procedure.
 
-Full reclassification table and sequencing: [`../docs/README.md`](../docs/README.md) and #116.
+## Where moved material went
+
+- **Architecture-integrity constitution** (formerly `spec/14`) is now canonical in the vault at `../../flowplane-private-vault/constitution.md`.
+- **Historical evidence and process docs** — progress ledgers, the failure-mode matrix, the adversarial surface map, e2e certification/coverage, onboarding and workflow notes — were lifted verbatim into `../../flowplane-private-vault/archive/repo-import-2026-06-24/`. They are historical reference, not maintained.
 
 ## Rules
 
-- **Historical is fine.** Internal docs describe what was true at the time. Do not spend effort keeping every old spec/progress note perfectly current — mark it historical instead. Only docs still used as **active release gates or status ledgers** get kept up to date.
-- **Internal docs may link into `../docs/`.** The reverse is constrained: `docs/` **content pages** must not cite `internal/` or `spec/` as required reading. The CI check carves out two exceptions — the `docs/README.md` index, and links to a bucket index (`README.md`) — so navigation still works while deep content links are rejected. Same rule as `../docs/README.md` and #116.
 - **No product truth originates here.** If a user needs it to operate Flowplane, it belongs in `../docs/` as a stand-alone page; internal docs link to it.
-
-## Banner
-
-Each internal page should carry, near the top:
-
-```md
-> Internal — engineering/historical; may be stale.
-```
+- **Internal docs may link into `../docs/`.** The reverse is constrained: `docs/` content pages must not cite `internal/` as required reading (CI carves out the `docs/README.md` index and bucket-index links so navigation still works).

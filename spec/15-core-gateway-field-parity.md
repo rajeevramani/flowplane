@@ -157,7 +157,9 @@ Field parity should improve the V2 UX, not expose raw Envoy complexity everywher
 - OpenAPI examples should show at least one simple case and one advanced V1-parity case per resource.
 - S7.8f pins this contract with an authenticated REST create/get round-trip for advanced route/listener specs, OpenAPI schema component assertions, and a CLI `apply` manifest test proving advanced typed specs are preserved rather than projected into a smaller shape.
 
-## PROGRESS.md Mapping
+## Progress Mapping
+
+Status is tracked in the archived `../flowplane-private-vault/archive/repo-import-2026-06-24/internal/PROGRESS.md`.
 
 S7.8 should be tracked as a pre-S8 workstream:
 

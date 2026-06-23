@@ -2,7 +2,7 @@
 
 Every divergence from v1, every borrowed idea from prior art, every cut or reshape. Format per
 entry: **Context** → **Decision** → **Why it's better than the v1 approach** (or why borrowed /
-rejected). Decisions made without founder response to a question in `QUESTIONS.md` are marked
+rejected). Decisions made without founder response to a question in `../flowplane-private-vault/archive/repo-import-2026-06-24/internal/QUESTIONS.md` are marked
 **provisional** until approved or vetoed.
 
 > **Decisions policy (frozen log).** D-001..D-025 below are **FROZEN** — code/build-coupled
@@ -574,7 +574,7 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   guides with bare-metal/VM/compose/ECS/K8s parity (D-004, spec/10 §10.1); config reference;
   runbook; backup/restore drill; CLI workflow guide.
 - **Release (S12g):** scripted seeded demo walkthrough (first-contact -> full loop -> MCP
-  descriptor-aware client), `REWRITE-REPORT.md`, final green gates, accepted-risk list, and
+  descriptor-aware client), `../flowplane-private-vault/archive/repo-import-2026-06-24/REWRITE-REPORT.md`, final green gates, accepted-risk list, and
   `v1.0.0` tag.
 - **Exit:** all S12 child issues closed or explicitly accepted; required CI green; full spec/08a §4
   map green or accepted; failure-mode matrix green; release artifacts produced; docs complete;

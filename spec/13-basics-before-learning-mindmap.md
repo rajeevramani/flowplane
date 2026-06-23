@@ -1,6 +1,6 @@
 # 13 — Core Gateway Parity Before Learning
 
-Purpose: align the practical "can I run the CP, start a dataplane, expose traffic, and verify it" work with `PROGRESS.md` before S8 learning continues. V1 is inspiration for the operator journey only (`init`, `expose`, `dataplane up`, runbooks, smoke tests); V2 keeps the existing Rust workspace boundaries, PostgreSQL source of truth, REST/CLI surfaces, xDS snapshot cache, and agent telemetry design. Architecture integrity rules for the seams and domain boundaries are in the architecture-integrity constitution (formerly `spec/14`), now canonical in the vault at `../flowplane-private-vault/constitution.md`. Core gateway API/DB/xDS field parity is tracked separately in `spec/15-core-gateway-field-parity.md` and is a pre-S8 gate.
+Purpose: align the practical "can I run the CP, start a dataplane, expose traffic, and verify it" work with `../flowplane-private-vault/archive/repo-import-2026-06-24/internal/PROGRESS.md` before S8 learning continues. V1 is inspiration for the operator journey only (`init`, `expose`, `dataplane up`, runbooks, smoke tests); V2 keeps the existing Rust workspace boundaries, PostgreSQL source of truth, REST/CLI surfaces, xDS snapshot cache, and agent telemetry design. Architecture integrity rules for the seams and domain boundaries are in the architecture-integrity constitution (formerly `spec/14`), now canonical in the vault at `../flowplane-private-vault/constitution.md`. Core gateway API/DB/xDS field parity is tracked separately in `spec/15-core-gateway-field-parity.md` and is a pre-S8 gate.
 
 Principle: **V1 defines the user outcome; V2 defines the architecture and experience.** The goal is not feature-for-feature porting. The goal is core gateway workflow parity with a simpler, safer, faster V2-native UX.
 
@@ -51,7 +51,7 @@ Only after both gates are closed should S8 learning resume.
 
 ## Execution Breakdown
 
-This table is the pre-S8 work queue. `PROGRESS.md` owns status; this spec explains why each item exists and what "done" means.
+This table is the pre-S8 work queue. `../flowplane-private-vault/archive/repo-import-2026-06-24/internal/PROGRESS.md` owns status; this spec explains why each item exists and what "done" means.
 
 | Progress item | Focus | User outcome | Implementation shape | Done criteria |
 | --- | --- | --- | --- | --- |
