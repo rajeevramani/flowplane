@@ -2,43 +2,44 @@ name: CI
 
 on:
   # Feature branches are covered by their pull_request run; only push events to main
-  # trigger a second run. Avoids double-running every branch push on the single runner.
+  # trigger a second run. Avoids double-running every branch push.
   push:
     branches: [main]
   pull_request:
+
+# Least-privilege default token (public repo, fork PRs run with this scope).
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
-# Runs on a self-hosted macOS (Apple Silicon) runner. No Docker: GitHub's
-# `services:`/`container:` need Docker and do not work on macOS runners. Postgres
-# runs as a disposable Podman container on host port 5433 (avoids clashing with a
-# local Postgres on 5432). Toolchains come from the machine (rustup honours
-# rust-toolchain.toml; no install action). Requires `podman machine` running.
+# Runs on GitHub-hosted ubuntu-latest (free for public repos). Postgres comes from a
+# service container (Docker is available on hosted Linux runners) on localhost:5432.
+# The Rust toolchain is resolved from rust-toolchain.toml (channel 1.94.1 + rustfmt +
+# clippy), which the runner's preinstalled rustup installs on first `cargo` invocation.
 jobs:
   quality:
-    runs-on: [self-hosted, macOS]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: flowplane_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     env:
-      FLOWPLANE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5433/flowplane_test
+      FLOWPLANE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowplane_test
       FLOWPLANE_SECRET_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
-      # Per-run container name so concurrent runs don't delete each other's DB. Host port 5433
-      # is fixed; a single runner serializes jobs, so only run >1 runner per host if you also
-      # parameterize the port.
-      PG_CONTAINER: flowplane-ci-pg-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
-      - name: Start Postgres (Podman)
-        run: |
-          podman rm -f "$PG_CONTAINER" 2>/dev/null || true
-          podman run -d --name "$PG_CONTAINER" -p 5433:5432 \
-            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=flowplane_test \
-            docker.io/library/postgres:16
-          for i in $(seq 1 30); do
-            podman exec "$PG_CONTAINER" pg_isready -U postgres >/dev/null 2>&1 && break
-            sleep 1
-          done
-          podman exec "$PG_CONTAINER" pg_isready -U postgres
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -49,14 +50,14 @@ jobs:
         run: cargo test --workspace --all-features
       - name: Boot smoke (fresh DB, plaintext opt-in, health + request-id checks)
         env:
-          FLOWPLANE_DATABASE_URL: postgres://postgres:postgres@localhost:5433/flowplane_test
+          FLOWPLANE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowplane_test
           FLOWPLANE_API_INSECURE: "true"
           FLOWPLANE_API_ADDR: 127.0.0.1:8080
           # Non-dev uninitialized instance fails closed without a bootstrap token (#113); supply one
           # so the smoke can boot (also exercises the operator-seed path).
           FLOWPLANE_BOOTSTRAP_TOKEN: ci-smoke-bootstrap-token-0123456789abcdef
         run: |
-          # Persistent runner: make sure no spawned server leaks on failure.
+          # Make sure no spawned server leaks on failure.
           trap 'kill ${SERVER_PID:-} ${TLS_PID:-} 2>/dev/null || true' EXIT
           cargo build --bin flowplane
           ./target/debug/flowplane serve > server.log 2>&1 &
@@ -94,23 +95,19 @@ jobs:
           done
           curl -fsSk https://127.0.0.1:8443/healthz
           kill $TLS_PID
-      - name: Stop Postgres (Podman)
-        if: always()
-        run: podman rm -f "$PG_CONTAINER" 2>/dev/null || true
 
   supply-chain:
-    runs-on: [self-hosted, macOS]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: cargo-deny (licenses, advisories, bans)
         run: |
-          # crates.io + --locked is reproducible (cargo-deny releases are immutable), unlike a
-          # Homebrew bottle-of-the-day. Pin an explicit `--version` here for strict reproducibility.
+          # crates.io + --locked is reproducible (cargo-deny releases are immutable).
           command -v cargo-deny >/dev/null || cargo install --locked cargo-deny
           cargo deny check
 
   docs:
-    runs-on: [self-hosted, macOS]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Docs boundary self-test
