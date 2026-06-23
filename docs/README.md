@@ -70,8 +70,6 @@ The Diátaxis directories are populated by epic #100 (sub-issues #101–#112). T
 | `docs/production-readiness.md` | `docs/how-to/production-readiness.md` | user |
 | `docs/secret-kek-rotation.md` | `docs/how-to/secret-kek-rotation.md` | user |
 | `docs/dev-dataplane.md` | `../internal/dev-dataplane.md` | internal (dev workflow) |
-| `docs/failure-mode-matrix.md` | `../internal/failure-mode-matrix.md` | internal (evidence) |
-| `docs/adversarial-surface-map.md` | `../internal/adversarial-surface-map.md` | internal (evidence) |
 | `docs/release-packaging.md` | `../internal/release/release-packaging.md` | internal |
 
 The boundary is enforced in CI by `scripts/ci/check-docs-boundary.py` (see [Enforcement (CI)](#enforcement-ci)).

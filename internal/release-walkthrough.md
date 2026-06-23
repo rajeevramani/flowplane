@@ -9,8 +9,8 @@ Decision for v1.0: live Envoy E2E is a documented manual release gate, not a req
 Evidence:
 
 - Runner: `bash scripts/e2e-envoy.sh`
-- Report: `internal/e2e/CERTIFICATION-REPORT.md`
-- Coverage: `internal/e2e/COVERAGE.md`
+- Report: `../../flowplane-private-vault/archive/repo-import-2026-06-24/internal/e2e/CERTIFICATION-REPORT.md`
+- Coverage: `../../flowplane-private-vault/archive/repo-import-2026-06-24/internal/e2e/COVERAGE.md`
 - Recorded pass signal: 5 consecutive runs, 12 phases each, 0 known failures, Envoy 1.37.4.
 
 CI-with-Docker promotion is deferred post-1.0. The live runner is broad, Docker-dependent, and has timing-sensitive streaming coverage; S12 keeps the gate recorded instead of refactoring the harness.
@@ -64,12 +64,12 @@ CLI first-contact flow is documented in `docs/how-to/production-readiness.md`; t
 - [ ] All #86 children closed or explicitly accepted; #95 reviewed and accepted.
 - [ ] Required CI green: fmt, clippy twice, workspace tests on real Postgres, boot smoke,
       cargo-deny.
-- [ ] `internal/adversarial-surface-map.md` is green or accepted.
-- [ ] `internal/failure-mode-matrix.md` is green, with live phases covered by the manual gate evidence.
+- [ ] `../../flowplane-private-vault/archive/repo-import-2026-06-24/internal/adversarial-surface-map.md` is green or accepted.
+- [ ] `../../flowplane-private-vault/archive/repo-import-2026-06-24/internal/failure-mode-matrix.md` is green, with live phases covered by the manual gate evidence.
 - [ ] Release artifacts reproducible with `scripts/release/package-release.sh`.
 - [ ] OCI image reproducible with `FLOWPLANE_PACKAGE_IMAGE=1 scripts/release/package-release.sh`.
 - [ ] Operator docs complete: `docs/how-to/production-readiness.md`.
-- [ ] `REWRITE-REPORT.md` committed.
+- [ ] `../../flowplane-private-vault/archive/repo-import-2026-06-24/REWRITE-REPORT.md` committed.
 - [ ] Accepted risks below are signed off.
 
 Do not create the `v1.0.0` tag until this checklist is reviewed and accepted.
