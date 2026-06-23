@@ -83,4 +83,4 @@ xDS/SDS is the config channel, and all product mutations flow through `fp-core` 
 - Certified at Tier 0 for S1–S10 with the live suite green across 5 consecutive runs and
   zero open critical/major defects.
 
-[1.0.0]: https://github.com/rajeevramani/flowplane-v2/releases/tag/v1.0.0
+[1.0.0]: https://github.com/rajeevramani/flowplane/releases/tag/v1.0.0
