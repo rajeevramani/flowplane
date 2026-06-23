@@ -6,17 +6,18 @@
 # disk, see DECISIONS.md D-022/D-023/D-024) is never an operator/production setup. Every host
 # port is bound to 127.0.0.1.
 #
-# This file BUILDS the eval image from Containerfile.eval, so it needs the repo checkout today.
-# The true "clean machine, no checkout" path (acceptance #1) is an EPIC-LEVEL outcome completed by
-# #159 (publish the image to GHCR) + #160 (docs). Once the image is published, point this bundle at
-# it with no source tree:  FLOWPLANE_EVAL_IMAGE=ghcr.io/<org>/flowplane:<ver>-eval docker compose -f compose.eval.yml up
-#
-# Quick start:
-#   docker compose -f compose.eval.yml up -d --build
+# No-clone path (published image — the canonical evaluator quick start): fetch this file at the
+# release tag, then point the bundle at the published multi-arch GHCR image (no source tree, no
+# `--build`). A plain `docker pull` resolves the right arch (amd64/arm64 are both native, D-025):
+#   curl -fsSLO https://raw.githubusercontent.com/<org>/flowplane/v<ver>/compose.eval.yml
+#   FLOWPLANE_EVAL_IMAGE=ghcr.io/<org>/flowplane:<ver>-eval docker compose -f compose.eval.yml up -d --no-build
 #   curl http://127.0.0.1:10000/        # -> the demo-upstream body, routed through Envoy
 #   docker compose -f compose.eval.yml exec flowplane-eval \
 #     sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
 #   docker compose -f compose.eval.yml down -v
+#
+# From-source path (contributors, repo checkout): build the eval image from Containerfile.eval:
+#   docker compose -f compose.eval.yml up -d --build
 
 services:
   postgres:
@@ -84,7 +85,7 @@ services:
       - shared:/shared
 
   demo-upstream:
-    image: hashicorp/http-echo
+    image: hashicorp/http-echo:1.0.0
     command: ["-text=hello from the flowplane eval demo upstream", "-listen=:5678"]
     # No host port: only Envoy (same compose network) routes to it.
 

@@ -570,6 +570,11 @@ Resumable state for the rewrite. On session start: read this file, continue the 
         requires explicit release approval. Q-006 is resolved (Apache-2.0); public distribution is
         no longer license-gated.
 
+- [ ] S13 Global rate-limit service — Flowplane ships only the Envoy RLS *client*
+      (`global_rate_limit` filter → `service_cluster`); no rate-limit service exists yet. Build a
+      first-party RLS gRPC service so global rate limiting works out of the box (no user-supplied
+      external limiter).
+
 ## Known Corrections / Open Risks
 
 Cold-start handoff safety: items surfaced by review that the checklist above must not paper over. "RESOLVED" items were fixed in the same review pass (with tests); "OPEN" items are real and scheduled — read these before trusting a green checkbox.

@@ -1,0 +1,254 @@
+name: Release
+
+# Publishes multi-arch (linux/amd64 + linux/arm64) GHCR images for the hardened
+# (`flowplane:<ver>`) and evaluation (`flowplane:<ver>-eval`) images. Each architecture is built
+# NATIVELY on a free public-repo hosted runner — amd64 on `ubuntu-latest`, arm64 on
+# `ubuntu-24.04-arm` — then the per-arch digests are joined into one manifest list with
+# `docker buildx imagetools create`. No QEMU, no self-hosted runner (DECISIONS.md D-025).
+#
+# The eval image is NEVER tagged `:latest` (D-022). The first public push is a HUMAN-GATE:
+# the build/manifest jobs run in the `release` GitHub Environment, so a human reviewer (configured
+# in repo Settings → Environments → release) must approve before anything reaches GHCR.
+#
+# Both run paths build from the immutable `v<version>` tag commit:
+#   - tag push  (`v1.2.3`)            → version from the ref
+#   - workflow_dispatch(version=1.2.3) → version from the validated input; the `v1.2.3` tag must exist
+# so the published image, its OCI source label, and the `v<ver>/compose.eval.yml` the docs fetch all
+# come from the same tagged commit.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to publish (semver X.Y.Z, no leading v). A matching v<version> tag must already exist.'
+        required: true
+        type: string
+
+# Least-privilege default; jobs widen only what they need.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      image: ${{ steps.v.outputs.image }}
+    steps:
+      - name: Resolve and validate version
+        id: v
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="${REF_NAME#v}"
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::resolved version '$VERSION' is not semver X.Y.Z"; exit 1
+          fi
+          OWNER_LC="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "image=${REGISTRY}/${OWNER_LC}/flowplane" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$VERSION image=${REGISTRY}/${OWNER_LC}/flowplane"
+
+      - name: Verify the v<version> tag exists (fail loudly if missing)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ steps.v.outputs.version }}
+          fetch-depth: 0
+
+  build:
+    needs: resolve-version
+    # HUMAN-GATE: first public artifact push. Requires an approver on the `release` environment.
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ needs.resolve-version.outputs.version }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Pre-push gates (native, on the just-built single-arch image, loaded locally) ---
+
+      - name: Build eval image (load) for the image-only compose smoke
+        run: |
+          docker buildx build --platform ${{ matrix.platform }} \
+            -f Containerfile.eval -t flowplane:eval-smoke --load .
+
+      - name: Image-only evaluator smoke (no --build; uses the built eval image)
+        run: |
+          set -euo pipefail
+          export FLOWPLANE_EVAL_IMAGE=flowplane:eval-smoke
+          docker compose -f compose.eval.yml up -d --no-build
+          ok=
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:10000/ | grep -q "hello from the flowplane eval demo upstream"; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          docker compose -f compose.eval.yml logs --no-color > compose-smoke.log 2>&1 || true
+          docker compose -f compose.eval.yml down -v
+          [ -n "$ok" ] || { echo "::error::eval image smoke did not return the demo body"; exit 1; }
+
+      - name: Build hardened image (load) for the sanity gate
+        run: |
+          docker buildx build --platform ${{ matrix.platform }} \
+            -f Containerfile.release -t flowplane:hardened-smoke --load .
+
+      - name: Hardened image sanity (binary runs in the slim image)
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/flowplane flowplane:hardened-smoke --help >/dev/null
+
+      # --- Push each image by digest (cached layers from the load builds above) ---
+
+      - name: Push eval image by digest
+        id: eval
+        env:
+          IMAGE: ${{ needs.resolve-version.outputs.image }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx build --platform ${{ matrix.platform }} \
+            -f Containerfile.eval \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file eval-meta.json .
+          echo "digest=$(jq -r '."containerimage.digest"' eval-meta.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Push hardened image by digest
+        id: hardened
+        env:
+          IMAGE: ${{ needs.resolve-version.outputs.image }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx build --platform ${{ matrix.platform }} \
+            -f Containerfile.release \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file hardened-meta.json .
+          echo "digest=$(jq -r '."containerimage.digest"' hardened-meta.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Record per-arch digests
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          echo "${{ steps.eval.outputs.digest }}"     > "${{ runner.temp }}/digests/eval-${{ matrix.arch }}"
+          echo "${{ steps.hardened.outputs.digest }}" > "${{ runner.temp }}/digests/hardened-${{ matrix.arch }}"
+
+      - name: Upload digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+  manifest:
+    needs: [resolve-version, build]
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ needs.resolve-version.outputs.version }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download per-arch digests
+        uses: actions/download-artifact@v4
+        with:
+          path: digests
+          pattern: digests-*
+          merge-multiple: true
+      - name: Create + verify multi-arch manifest lists
+        env:
+          IMAGE: ${{ needs.resolve-version.outputs.image }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Hardened: flowplane:<ver>  (no :latest in this MVP)
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}" \
+            "${IMAGE}@$(cat digests/hardened-amd64)" \
+            "${IMAGE}@$(cat digests/hardened-arm64)"
+          # Eval: flowplane:<ver>-eval  (NEVER :latest — D-022)
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}-eval" \
+            "${IMAGE}@$(cat digests/eval-amd64)" \
+            "${IMAGE}@$(cat digests/eval-arm64)"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}-eval"
+
+  verify-publish:
+    needs: [resolve-version, manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # attach compose.eval.yml as a release asset
+      packages: read
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ needs.resolve-version.outputs.version }}
+      - name: Assert both tags are multi-arch (amd64 + arm64)
+        env:
+          IMAGE: ${{ needs.resolve-version.outputs.image }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for ref in "${IMAGE}:${VERSION}" "${IMAGE}:${VERSION}-eval"; do
+            echo "== $ref =="
+            out="$(docker buildx imagetools inspect "$ref")"
+            echo "$out"
+            echo "$out" | grep -q "linux/amd64" || { echo "::error::$ref missing linux/amd64"; exit 1; }
+            echo "$out" | grep -q "linux/arm64" || { echo "::error::$ref missing linux/arm64"; exit 1; }
+          done
+      - name: Attach compose.eval.yml as a release asset (stable no-clone download URL)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.resolve-version.outputs.version }}
+          files: compose.eval.yml
+          fail_on_unmatched_files: true

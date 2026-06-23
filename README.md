@@ -10,9 +10,45 @@ Publish your APIs through a multi-tenant control plane and get governance (OIDC 
 
 > A ground-up Rust/PostgreSQL rebuild. PostgreSQL is the source of truth, Envoy is the only data plane, xDS/SDS is the config channel, and every product mutation goes through `fp-core` services.
 
-## Quick Start
+## Quick Start (no clone, no Rust toolchain)
 
-This is the short version of the [Getting Started tutorial](docs/tutorials/getting-started.md) — start the control plane in **dev mode**, expose one upstream, connect a local Envoy, and `curl` through the gateway.
+Evaluate Flowplane on a clean machine with only a container engine (Docker or Podman). This pulls the
+published **evaluation** image and stands up the whole stack — Postgres, the dev-mode control plane, a
+demo upstream, and Envoy — then routes a real request through the gateway. No repo checkout, no
+`cargo build`.
+
+> Set `VER` to the release you want (e.g. `1.0.0`). The image is **multi-arch**: a plain `docker pull`
+> resolves the native `linux/amd64` or `linux/arm64` variant — no `--platform` flag, no emulation.
+
+```bash
+VER=1.0.0
+
+# 1. Fetch the evaluator bundle at the matching release tag (the only file you need)
+curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
+
+# 2. Bring up the whole stack against the published eval image (no --build)
+FLOWPLANE_EVAL_IMAGE=ghcr.io/rajeevramani/flowplane:${VER}-eval \
+  docker compose -f compose.eval.yml up -d --no-build
+
+# 3. A request flows through Envoy (:10000) to the demo upstream
+curl http://127.0.0.1:10000/        # -> hello from the flowplane eval demo upstream
+
+# 4. (optional) confirm authentication from inside the control-plane container
+docker compose -f compose.eval.yml exec flowplane-eval \
+  sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
+
+# Tear down
+docker compose -f compose.eval.yml down -v
+```
+
+> The `:${VER}-eval` image is **for evaluation only** — it runs dev mode (in-process OIDC issuer +
+> seeded resources + a dev bearer token on disk) and binds every port to `127.0.0.1`. It is **never**
+> an operator/production base and is never tagged `:latest`. The hardened, publishable image is
+> `ghcr.io/rajeevramani/flowplane:${VER}` (built `--no-default-features`, which refuses dev mode).
+
+## Build from source (contributors)
+
+Working on Flowplane itself? Build the binary and run the control plane directly.
 
 > **Toolchain:** build through [rustup](https://rustup.rs) so the `rust-toolchain.toml` pin (1.94.1) is applied automatically. A distro-packaged `cargo` may be too old to read this repo's version-4 `Cargo.lock`.
 >
