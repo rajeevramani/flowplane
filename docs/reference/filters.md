@@ -2,7 +2,7 @@
 
 # HTTP Filter Catalogue
 
-Reference for the closed set of HTTP filters flowplane-v2 accepts in a listener filter chain, the per-scope overrides each supports, the Envoy filter URI each maps to, and the filters Flowplane injects automatically.
+Reference for the closed set of HTTP filters Flowplane accepts in a listener filter chain, the per-scope overrides each supports, the Envoy filter URI each maps to, and the filters Flowplane injects automatically.
 
 ## Filter chain model
 
