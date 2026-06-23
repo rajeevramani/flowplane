@@ -6,4 +6,4 @@ CREATE TABLE instance_meta (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-INSERT INTO instance_meta (key, value) VALUES ('schema_origin', 'flowplane-v2');
+INSERT INTO instance_meta (key, value) VALUES ('schema_origin', 'flowplane');
