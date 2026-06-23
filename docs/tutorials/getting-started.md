@@ -8,6 +8,12 @@ Follow the steps in order. Every command here is copy-pasteable.
 
 Dev mode runs an in-process identity issuer, seeds local resources, and serves the API and xDS over plaintext. It is for local exploration only — never production.
 
+> **Just want to try Flowplane?** You don't need this tutorial. The fastest path uses the published
+> evaluation image and a single `docker compose` file — no clone, no Rust toolchain — and routes a
+> real request in four commands. See **[Quick Start (no clone)](../../README.md#quick-start-no-clone-no-rust-toolchain)**.
+> This tutorial is the **from-source / contributor** path: build the binary yourself and drive the
+> control plane directly, which is what you want when hacking on Flowplane itself.
+
 ---
 
 ## 1. Prerequisites
@@ -25,7 +31,7 @@ You need:
 
   Dev mode requires a binary built **with the `dev-oidc` feature**. That feature is on by default, so a plain `cargo build --bin flowplane` (or `cargo run`) includes it — both debug and local release builds (`cargo build --release`) are fine. The commands below use `./target/debug/flowplane`.
 
-  The published release container (`Containerfile.release`) is built `--no-default-features`, so it does **not** include `dev-oidc` and rejects dev mode entirely. Dev mode is for local builds only. A separate, **unpublished** evaluation image (`Containerfile.eval`, tagged `flowplane:<ver>-eval` — never `latest`) keeps `dev-oidc` on for the no-clone evaluator bundle; it is for local evaluation only and is never an operator base.
+  The published release container (`Containerfile.release`) is built `--no-default-features`, so it does **not** include `dev-oidc` and rejects dev mode entirely. Dev mode is for local builds only. A separate evaluation image (`Containerfile.eval`, published to GHCR as `ghcr.io/rajeevramani/flowplane:<ver>-eval` — never `latest`) keeps `dev-oidc` on for the no-clone evaluator bundle; it is for local evaluation only and is never an operator base.
 
 ---
 
