@@ -46,8 +46,14 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Clippy (release artifact shape, no dev-oidc)
         run: cargo clippy -p flowplane --no-default-features --all-targets -- -D warnings
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9
       - name: Tests (unit + integration against local PostgreSQL)
-        run: cargo test --workspace --all-features
+        run: cargo nextest run --workspace --all-features --profile ci
+      - name: Doc tests (nextest does not run these)
+        run: cargo test --workspace --all-features --doc
       - name: Boot smoke (fresh DB, plaintext opt-in, health + request-id checks)
         env:
           FLOWPLANE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/flowplane_test

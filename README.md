@@ -170,11 +170,18 @@ Run tests for the main binary:
 cargo test -p flowplane
 ```
 
-Run the full workspace suite with PostgreSQL-backed tests enabled:
+Run the full workspace suite with PostgreSQL-backed tests enabled. CI uses
+[`cargo nextest`](https://nexte.st) (faster; the same suite); install it with
+`cargo install cargo-nextest --locked` or `cargo binstall cargo-nextest`:
 
 ```bash
-FLOWPLANE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/flowplane_dev \
-  cargo test --workspace --all-features
+export FLOWPLANE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/flowplane_dev
+
+cargo nextest run --workspace --all-features   # what CI runs (via the `ci` profile)
+cargo test --workspace --all-features --doc    # doctests — nextest does not run these
+
+# plain cargo test still works and additionally runs doctests inline:
+cargo test --workspace --all-features
 ```
 
 Print the generated REST contract:
