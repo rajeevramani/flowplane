@@ -33,6 +33,11 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # 'every': a changed file counts as `code` only if it matches ALL patterns
+          # — i.e. it is some path AND is not Markdown / docs/** / internal/**. Without
+          # this, paths-filter ORs the patterns and '**' alone matches every file, so
+          # docs-only changes still flagged code=true (the bug this fixes).
+          predicate-quantifier: 'every'
           filters: |
             code:
               - '**'
