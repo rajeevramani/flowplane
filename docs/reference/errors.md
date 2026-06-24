@@ -66,3 +66,5 @@ The original message is written to the server log keyed by `request_id`, so an o
 
 - Code set, retryable predicate, and per-code meaning: `crates/fp-domain/src/error.rs` (`ErrorCode`, `ErrorCode::is_retryable`).
 - HTTP status mapping, envelope, redaction, and `Retry-After`: `crates/fp-api/src/error.rs` (`ApiError::status`, `ErrorBody`, `IntoResponse`).
+
+<!-- ci-skip-recheck: docs-only, quality must skip -->
