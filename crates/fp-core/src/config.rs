@@ -60,6 +60,11 @@ pub struct OidcSettings {
     pub issuer: String,
     pub audience: String,
     pub jwks_uri: Option<String>,
+    /// Optional operator-supplied CA bundle (PEM, one or more certs) that the OIDC
+    /// HTTP client trusts *in addition to* the bundled webpki roots — needed when the
+    /// IdP is reachable only through a TLS-intercepting egress proxy (#171). Lives
+    /// inside `OidcSettings`, so it only takes effect when OIDC is configured.
+    pub ca_bundle_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -103,6 +108,7 @@ struct FileConfig {
     oidc_issuer: Option<String>,
     oidc_audience: Option<String>,
     oidc_jwks_uri: Option<String>,
+    oidc_ca_bundle: Option<String>,
     log_format: Option<LogFormat>,
     log_filter: Option<String>,
     otlp_endpoint: Option<String>,
@@ -283,6 +289,13 @@ impl ServerConfig {
                 jwks_uri: get("FLOWPLANE_OIDC_JWKS_URI")
                     .map(str::to_owned)
                     .or(file.oidc_jwks_uri),
+                // Operator CA bundle for a TLS-intercepting proxy (#171); env over file.
+                // Only meaningful here — when OIDC is enabled. Set without issuer/audience
+                // (or in dev mode) it has no effect, since no `OidcSettings` is built.
+                ca_bundle_path: get("FLOWPLANE_OIDC_CA_BUNDLE")
+                    .map(str::to_owned)
+                    .or(file.oidc_ca_bundle)
+                    .map(PathBuf::from),
             }),
             (None, None) => None,
             _ => {
@@ -424,6 +437,54 @@ mod tests {
         };
         let cfg = ServerConfig::resolve(&env, file).expect("resolves");
         assert_eq!(cfg.dev_token_path, Some(PathBuf::from("/from/env")));
+    }
+
+    fn oidc_env() -> HashMap<String, String> {
+        let mut env = base_env();
+        env.insert("FLOWPLANE_OIDC_ISSUER".into(), "https://idp.test".into());
+        env.insert("FLOWPLANE_OIDC_AUDIENCE".into(), "flowplane".into());
+        env
+    }
+
+    #[test]
+    fn oidc_ca_bundle_resolves_env_over_file() {
+        // Absent in both → None on the resolved OidcSettings.
+        let cfg = ServerConfig::resolve(&oidc_env(), FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.oidc.expect("oidc set").ca_bundle_path, None);
+
+        // File only.
+        let file = FileConfig {
+            oidc_ca_bundle: Some("/from/file/ca.pem".into()),
+            ..FileConfig::default()
+        };
+        let cfg = ServerConfig::resolve(&oidc_env(), file).expect("resolves");
+        assert_eq!(
+            cfg.oidc.expect("oidc set").ca_bundle_path,
+            Some(PathBuf::from("/from/file/ca.pem"))
+        );
+
+        // Env overrides file.
+        let mut env = oidc_env();
+        env.insert("FLOWPLANE_OIDC_CA_BUNDLE".into(), "/from/env/ca.pem".into());
+        let file = FileConfig {
+            oidc_ca_bundle: Some("/from/file/ca.pem".into()),
+            ..FileConfig::default()
+        };
+        let cfg = ServerConfig::resolve(&env, file).expect("resolves");
+        assert_eq!(
+            cfg.oidc.expect("oidc set").ca_bundle_path,
+            Some(PathBuf::from("/from/env/ca.pem"))
+        );
+    }
+
+    #[test]
+    fn oidc_ca_bundle_is_noop_without_issuer_and_audience() {
+        // The CA bundle lives inside OidcSettings, which is only built when both issuer
+        // and audience are present. Set alone, it must not conjure an OidcSettings.
+        let mut env = base_env();
+        env.insert("FLOWPLANE_OIDC_CA_BUNDLE".into(), "/some/ca.pem".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert!(cfg.oidc.is_none(), "CA bundle alone must not enable OIDC");
     }
 
     #[test]

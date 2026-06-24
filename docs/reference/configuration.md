@@ -38,6 +38,7 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN` | server | — | no | Local-only escape hatch: the exact value `yes-this-is-local-only` re-enables generating and **logging** a token. Never set in production. |
 | `FLOWPLANE_OIDC_AUDIENCE` | server | — | no ⁵ | Expected JWT `aud` claim. |
 | `FLOWPLANE_OIDC_JWKS_URI` | server | — | no | JWKS endpoint override (optional even with OIDC set). |
+| `FLOWPLANE_OIDC_CA_BUNDLE` | server | — | no ¹⁴ | PEM file (one or more CA certs) the control plane trusts **in addition to** its bundled roots when fetching OIDC discovery + JWKS. Needed when the IdP is reachable only through a **TLS-intercepting egress proxy** (the outbound fetch otherwise fails `invalid peer certificate: UnknownIssuer`). Takes effect only when OIDC is configured (issuer + audience set); ignored in dev mode. |
 | `FLOWPLANE_TENANT_WRITE_LIMIT_PER_MIN` | server | `120` | no | Per-tenant mutating-request budget per minute; must be ≥ 1. |
 | `FLOWPLANE_SECRET_ENCRYPTION_KEY` | server | — | for secrets | Active key-encryption key; 32 raw bytes or base64. ⁷ |
 | `FLOWPLANE_SECRET_ENCRYPTION_KEY_ID` | server | `default` | no | Identifier for the active KEK, used for rotation. ⁸ |
@@ -87,6 +88,7 @@ Enforcement timing varies: rows ¹–⁵ are validated at **server startup** (`f
 | ¹¹ | `FLOWPLANE_AGENT_POLL_INTERVAL_SECS` | Coerced to a minimum of 1 second. |
 | ¹² | `FLOWPLANE_AGENT_QUEUE_CAP` | Clamped to `1..=16384`. |
 | ¹³ | `FLOWPLANE_BOOTSTRAP_TOKEN`, `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` | Required on the **first** boot of an uninitialized, non-dev instance: with no token (and without the `yes-this-is-local-only` opt-in) the server **fails closed** and does not start. Already-initialized instances ignore these. Supply the **same** token to every replica. See [How-to: bootstrap the first admin](../how-to/bootstrap-platform.md). |
+| ¹⁴ | `FLOWPLANE_OIDC_CA_BUNDLE` | When set, the file must exist and parse as one or more PEM certificates; an unreadable, non-PEM, or zero-certificate bundle **fails server startup closed** (`invalid_config`) rather than silently falling back to bundled-roots-only trust. Trust is additive — bundled webpki roots are never disabled. |
 
 ## TOML config file keys (server)
 
@@ -96,6 +98,6 @@ Accepted keys when `FLOWPLANE_CONFIG` points at a TOML file (unknown keys reject
 api_addr            xds_addr             database_url        db_max_connections
 api_tls_cert        api_tls_key          xds_tls_cert        xds_tls_key
 xds_tls_client_ca   api_insecure         dev_mode            oidc_issuer
-oidc_audience       oidc_jwks_uri        log_format          log_filter
-otlp_endpoint        dev_token_path
+oidc_audience       oidc_jwks_uri        oidc_ca_bundle      log_format
+log_filter          otlp_endpoint        dev_token_path
 ```

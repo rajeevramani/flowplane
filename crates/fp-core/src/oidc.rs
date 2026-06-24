@@ -13,6 +13,7 @@ use fp_domain::{DomainError, DomainResult, ErrorCode};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
@@ -26,6 +27,11 @@ pub struct OidcConfig {
     pub audience: String,
     /// JWKS endpoint. When `None`, discovered from `{issuer}/.well-known/openid-configuration`.
     pub jwks_uri: Option<String>,
+    /// Optional operator-supplied CA bundle (PEM, one or more certs). When set, the HTTP
+    /// client that fetches discovery + JWKS trusts these roots *in addition to* the bundled
+    /// webpki roots — for an IdP reachable only through a TLS-intercepting egress proxy
+    /// (#171). A bad bundle fails closed at construction (`try_new`), not silently.
+    pub ca_bundle_path: Option<PathBuf>,
 }
 
 /// Identity claims extracted from a validated token. Authorization context (memberships,
@@ -70,21 +76,31 @@ pub struct OidcValidator {
 }
 
 impl OidcValidator {
+    /// Infallible constructor for the common case (no CA bundle / known-good config).
+    /// Panics only if the HTTP client cannot be built — kept for the many call sites that
+    /// pass no `ca_bundle_path`; production boot uses [`OidcValidator::try_new`] so a bad
+    /// operator-supplied bundle fails closed instead of panicking.
     #[allow(clippy::expect_used)]
     pub fn new(config: OidcConfig) -> Self {
-        Self {
+        Self::try_new(config).expect("valid OIDC HTTP client config")
+    }
+
+    /// Fallible constructor: builds the discovery/JWKS HTTP client, loading the optional
+    /// operator-supplied CA bundle. Returns `Err` (config-class) when `ca_bundle_path` is
+    /// set but missing, unreadable, not PEM, or contains no usable certificate — so the
+    /// caller (boot) can fail closed (#171, spec/05; constitution inv 10).
+    pub fn try_new(config: OidcConfig) -> DomainResult<Self> {
+        let http = build_http_client(&config)?;
+        Ok(Self {
             config,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
-                .build()
-                .expect("valid reqwest client config"),
+            http,
             cache: Arc::new(RwLock::new(KeyCache {
                 keys: HashMap::new(),
                 last_refresh: None,
             })),
             refresh: Arc::new(Mutex::new(())),
             refresh_cooldown: Duration::from_secs(30),
-        }
+        })
     }
 
     /// Test/dev hook: load keys from a JWKS JSON document directly (no network).
@@ -203,6 +219,43 @@ impl OidcValidator {
     }
 }
 
+/// Build the OIDC discovery/JWKS HTTP client. Trust is *additive*: the bundled webpki
+/// roots stay (no `tls_built_in_root_certs(false)`); an operator CA bundle is layered on
+/// top via `add_root_certificate`. A `ca_bundle_path` that is set but unusable fails
+/// closed with a config-class error.
+fn build_http_client(config: &OidcConfig) -> DomainResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
+
+    if let Some(path) = &config.ca_bundle_path {
+        let pem = std::fs::read(path).map_err(|e| {
+            DomainError::invalid_config(format!(
+                "cannot read FLOWPLANE_OIDC_CA_BUNDLE at {}: {e}",
+                path.display()
+            ))
+            .with_hint("point it at a readable PEM file containing the proxy/IdP CA certificate(s)")
+        })?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| {
+            DomainError::invalid_config(format!(
+                "FLOWPLANE_OIDC_CA_BUNDLE at {} is not a valid PEM certificate bundle: {e}",
+                path.display()
+            ))
+        })?;
+        if certs.is_empty() {
+            return Err(DomainError::invalid_config(format!(
+                "FLOWPLANE_OIDC_CA_BUNDLE at {} contains no usable certificates",
+                path.display()
+            )));
+        }
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+
+    builder
+        .build()
+        .map_err(|e| DomainError::internal(format!("failed to build OIDC HTTP client: {e}")))
+}
+
 fn keys_from_set(set: &JwkSet) -> HashMap<String, DecodingKey> {
     let mut keys = HashMap::new();
     for key in &set.keys {
@@ -316,7 +369,66 @@ mod tests {
             issuer: "https://idp.test".into(),
             audience: "flowplane".into(),
             jwks_uri: Some("https://unreachable.invalid/jwks".into()),
+            ca_bundle_path: None,
         })
+    }
+
+    fn config_with_ca(path: Option<PathBuf>) -> OidcConfig {
+        OidcConfig {
+            issuer: "https://idp.test".into(),
+            audience: "flowplane".into(),
+            jwks_uri: Some("https://unreachable.invalid/jwks".into()),
+            ca_bundle_path: path,
+        }
+    }
+
+    #[test]
+    fn try_new_without_ca_bundle_builds() {
+        // The infallible `new` path: no bundle, must construct cleanly.
+        OidcValidator::try_new(config_with_ca(None)).expect("no bundle builds");
+    }
+
+    #[test]
+    fn try_new_with_missing_ca_file_fails_closed() {
+        // `.err().expect` (not `expect_err`) — the Ok type `OidcValidator` is not `Debug`.
+        let err = OidcValidator::try_new(config_with_ca(Some(PathBuf::from(
+            "/nonexistent/flowplane-test-ca.pem",
+        ))))
+        .err()
+        .expect("missing CA file must fail");
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
+    }
+
+    // Unique temp path per test: process id + a per-test tag (inv 18, parallel-safe).
+    fn temp_ca_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "flowplane-oidc-ca-{}-{}.pem",
+            tag,
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn try_new_with_non_pem_ca_file_fails_closed() {
+        let path = temp_ca_path("garbage");
+        std::fs::write(&path, b"this is not a certificate").expect("write temp");
+        let err = OidcValidator::try_new(config_with_ca(Some(path.clone())))
+            .err()
+            .expect("non-PEM CA file must fail");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
+    }
+
+    #[test]
+    fn try_new_with_empty_ca_file_fails_closed() {
+        // A readable file with zero certificates must be rejected, not silently ignored.
+        let path = temp_ca_path("empty");
+        std::fs::write(&path, b"").expect("write temp");
+        let err = OidcValidator::try_new(config_with_ca(Some(path.clone())))
+            .err()
+            .expect("empty CA file must fail");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
     }
 
     fn good_claims() -> serde_json::Value {

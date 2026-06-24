@@ -29,13 +29,16 @@ pub async fn run() -> anyhow::Result<()> {
         Some(setup_dev_mode(&pool, config.dev_token_path.as_deref()).await?)
     } else if let Some(oidc) = &config.oidc {
         tracing::info!(issuer = %oidc.issuer, "OIDC authentication enabled");
-        Some(std::sync::Arc::new(fp_core::OidcValidator::new(
+        // try_new (not new): a bad operator-supplied CA bundle must fail boot closed,
+        // not panic (#171). The `?` propagates through serve::run -> main -> exit non-zero.
+        Some(std::sync::Arc::new(fp_core::OidcValidator::try_new(
             fp_core::OidcConfig {
                 issuer: oidc.issuer.clone(),
                 audience: oidc.audience.clone(),
                 jwks_uri: oidc.jwks_uri.clone(),
+                ca_bundle_path: oidc.ca_bundle_path.clone(),
             },
-        )))
+        )?))
     } else {
         tracing::warn!(
             "no OIDC issuer configured and dev mode off — authenticated endpoints return 503"
