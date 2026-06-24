@@ -137,7 +137,7 @@ flowplane auth whoami
 
 - `auth login` completes (device approved) and stores the token.
 - `whoami` returns your identity — the Auth0 ID token validated against the CP, and because `admin_subject` matched your `sub`, you are the platform admin.
-- A governance call works, e.g. `flowplane org list` / `flowplane team create <name> --org platform`.
+- A platform-admin governance call works, e.g. `flowplane org list` or `flowplane org create <tenant>`. (Do **not** use `team create … --org platform` as a smoke check — teams cannot be hosted in the platform org, so it fails closed with `org_selector_required`. To stand up a team, [create a tenant org and a team](../docs/how-to/create-tenant-org-and-team.md).)
 
 ## Troubleshooting
 

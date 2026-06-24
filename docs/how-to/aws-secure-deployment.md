@@ -119,6 +119,11 @@ flowplane auth whoami
 
 ## Local Dataplane Smoke
 
+A dataplane is registered under a team, so a **tenant org and team must already exist**
+(the platform org cannot host one). If you have only bootstrapped the platform admin,
+first [create a tenant org and a team](create-tenant-org-and-team.md), then use that
+org+team below.
+
 Create the dataplane and issue a one-time cert response:
 
 ```bash

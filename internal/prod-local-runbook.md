@@ -245,6 +245,34 @@ Pass signals:
 - `auth whoami` returns your user and `platform_admin: true`.
 - `org list` succeeds.
 
+## Step F - Create a tenant org and team
+
+Bootstrap created only the **platform org**, which is governance-only and **cannot
+host tenant teams or dataplanes**. To stand up gateway config you create a tenant org
+and a team inside it. See [create a tenant org and a team](../docs/how-to/create-tenant-org-and-team.md)
+for the full reference; the local single-human flow is:
+
+```bash
+# 1. Platform admin creates the tenant org.
+./target/release/flowplane org create edgeco --display-name "EdgeCo"
+
+# 2. Platform admin seeds the org's first owner — add YOUR OWN subject so the same
+#    human is both platform admin and edgeco owner (only the first owner can be added
+#    this way, while the org has no owner yet). Use the same OIDC sub you bootstrapped.
+./target/release/flowplane org member add edgeco --role owner --subject "auth0|6650f0..."
+
+# 3. Create a team, selecting the tenant org with the global --org flag.
+./target/release/flowplane team create payments --org edgeco --display-name "Payments"
+
+# Verify.
+./target/release/flowplane team list --org edgeco        # payments is listed
+```
+
+`--org` is a **global** selector (sent as `X-Flowplane-Org`); there is no per-command
+`--org` on `team create`. Selecting the platform org (`--org platform`) for a tenant
+operation is rejected with `org_selector_required` — the platform org is never a
+tenant context. You can now create dataplanes under `edgeco` / `payments`.
+
 ## Optional - API TLS instead of local plaintext
 
 If you want to test the HTTPS API listener locally:
@@ -293,7 +321,7 @@ Use this only when you are testing Envoy or `fp-agent`. For API/auth/governance 
 | `invalid issuer` | exact `iss` mismatch | copy the issuer from the token/discovery document, including trailing slash if present |
 | `invalid audience` | token `aud` does not match server audience | set `FLOWPLANE_OIDC_AUDIENCE` to the audience in the token the CLI sends |
 | login succeeds but `org list` is denied | bootstrap admin subject does not match token `sub` | reinitialize a fresh DB or add the correct user through an existing platform admin |
-| tenant commands fail with `org_selector_required` | user belongs to multiple non-platform orgs | pass `--org <org>` or configure an active CLI context |
+| tenant commands fail with `org_selector_required` | the active org resolved to the platform org or none — you have no tenant org yet, selected `--org platform`, or belong to multiple non-platform orgs | create a tenant org + membership first (Step F), then pass `--org <tenant-org>` or configure an active CLI context. The platform org is never a tenant context. |
 | xDS does not listen in prod mode | xDS mTLS vars are absent | set all three `FLOWPLANE_XDS_TLS_CERT`, `FLOWPLANE_XDS_TLS_KEY`, `FLOWPLANE_XDS_TLS_CLIENT_CA` |
 
 ## Clean reset
