@@ -65,6 +65,10 @@ A success response returns the new `org_id` and `admin_user_id`. The token is no
 - Re-running the same `POST /api/v1/bootstrap/initialize` returns a conflict — the instance is initialized.
 - Your admin can now authenticate through your OIDC issuer and reach authenticated endpoints.
 
+## Next step
+
+Bootstrap creates only the **platform org** (governance only — it cannot host tenant teams or dataplanes). To stand up actual gateway config, create a **tenant org and a team**: [create a tenant org and a team](create-tenant-org-and-team.md).
+
 ## Troubleshooting
 
 - **Server won't start, "no bootstrap token was supplied":** the instance is uninitialized and you set neither `FLOWPLANE_BOOTSTRAP_TOKEN` nor `FLOWPLANE_BOOTSTRAP_TOKEN_FILE`. Set one and restart.
