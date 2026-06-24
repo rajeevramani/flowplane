@@ -10,6 +10,39 @@ upgrade of an earlier Flowplane line — there is no in-place migration path fro
 version. `1.0.0` is its first stable release and the point at which the public REST API,
 CLI surface, and configuration contract become subject to semantic versioning.
 
+## [1.0.1] - 2026-06-24
+
+Patch release. Fixes defects found during the v1.0.0 separated CP/DP end-to-end
+(GHCR-extracted binaries, real Envoy 1.37, mTLS xDS). No REST, CLI, or MCP surface
+change; one additive, optional, backward-compatible configuration env var.
+
+### Added
+
+- `FLOWPLANE_OIDC_CA_BUNDLE` — an operator-supplied PEM bundle the control plane
+  trusts **in addition to** its bundled webpki roots when fetching OIDC discovery +
+  JWKS. Needed when the IdP is reachable only through a TLS-intercepting egress proxy
+  (the outbound fetch otherwise fails `invalid peer certificate: UnknownIssuer`).
+  Optional and default-off — unset behavior is unchanged. A set-but-unreadable,
+  non-PEM, or zero-certificate bundle **fails server startup closed** (`invalid_config`)
+  rather than silently weakening trust. (#171)
+
+### Fixed
+
+- `fp-agent` heartbeat: `/stats?format=json` from Envoy 1.37 returns histogram
+  elements without the `{name, value}` shape, which broke strict deserialization so
+  `last_heartbeat_at` was never populated. The parser now tolerates non-`{name,value}`
+  elements. (#170)
+
+### Documentation
+
+- New how-to: **create a tenant org and a team**. The prod/separated onboarding docs
+  jumped straight to `team create`, but a freshly bootstrapped control plane has only
+  the governance-only platform org, so the step failed closed with
+  `org_selector_required` (D-014). The onboarding path now documents the
+  tenant-org → first-owner → team sequence and why `--org platform` is rejected. (#172)
+- `docs/reference/errors.md`: the `org_selector_required` row now also names the
+  platform-org-selector and no-tenant-org-yet causes.
+
 ## [1.0.0] - 2026-06-22
 
 First stable release. PostgreSQL is the source of truth, Envoy is the only dataplane,
