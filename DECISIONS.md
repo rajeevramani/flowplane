@@ -714,3 +714,17 @@ The mechanism left open in D-014 is now decided (founder, 2026-06-13):
   `:latest` (D-022). First push remains a **HUMAN-GATE** (outward-facing, irreversible).
 - **Status:** supersedes the parked arm64-first scope decision; decided for #159 (epic #161).
   HUMAN-GATE (first public artifact push) slice.
+
+---
+
+## Pointers to vault ADRs
+
+These are **not** decisions recorded here — the canonical record is the vault AIDF ADR. This
+section exists only so a code reader can find the ADR for a code/build-coupled change (per the
+frozen-log policy above). One line per ADR.
+
+- **[FP-DEC-0001] Adopt `cargo-nextest` as the test runner** (2026-06-24) — CI runs
+  `cargo nextest run --workspace --all-features --profile ci` + a separate `cargo test --doc`;
+  `.config/nextest.toml` caps `test-threads` so the shared test PostgreSQL is not
+  connection-exhausted. Canonical: `../flowplane-private-vault/decisions/FP-DEC-0001-adopt-cargo-nextest.md`.
+  Code: `.config/nextest.toml`, `.github/workflows/ci.yml` (PR #176). See `CLAUDE.md` "Testing".
