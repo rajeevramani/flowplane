@@ -35,7 +35,7 @@ One row per code. **Retryable** = the identical request may succeed if retried w
 | `code` | HTTP status | Retryable | Meaning |
 |--------|-------------|-----------|---------|
 | `validation_failed` | 400 Bad Request | no | Request was syntactically or semantically invalid. |
-| `org_selector_required` | 400 Bad Request | no | Caller belongs to multiple orgs (or none inferable) and must name one for this tenant-scoped request. Pass `X-Flowplane-Org: <name\|uuid>` (or `--org` on the CLI). |
+| `org_selector_required` | 400 Bad Request | no | No tenant org could be resolved for this tenant-scoped request: the caller belongs to several orgs and named none, has no tenant org yet, or selected the **platform** org — which is never a selectable tenant context. Name a tenant org with `X-Flowplane-Org: <name\|uuid>` (or `--org` on the CLI). |
 | `unauthorized` | 401 Unauthorized | no | Authentication missing or invalid. |
 | `forbidden` | 403 Forbidden | no | Authenticated but not permitted; `message` names the missing (resource, action). |
 | `not_found` | 404 Not Found | no | Resource does not exist within the caller's visibility. Cross-tenant existence is indistinguishable from absence. |
