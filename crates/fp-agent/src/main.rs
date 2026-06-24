@@ -189,26 +189,28 @@ type SharedHealth = Arc<RwLock<HealthState>>;
 
 #[derive(Deserialize)]
 struct EnvoyStats {
-    stats: Vec<EnvoyStat>,
-}
-
-#[derive(Deserialize)]
-struct EnvoyStat {
-    name: String,
-    value: serde_json::Value,
+    stats: Vec<serde_json::Value>,
 }
 
 fn parse_envoy_stats(body: &str) -> Result<StatsSnapshot> {
     let parsed: EnvoyStats =
         serde_json::from_str(body).context("parse Envoy /stats?format=json response")?;
     let mut snapshot = StatsSnapshot::default();
-    for stat in parsed.stats {
-        let Some(value) = stat_value(&stat.value) else {
+    for entry in &parsed.stats {
+        // Envoy's `/stats?format=json` mixes scalar `{name, value}` objects with at
+        // least one non-scalar element (the histograms object, `{"histograms": {...}}`).
+        // Pick out only `{name, numeric value}` entries and skip everything else, so a
+        // single non-conforming element does not fail deserialization of the whole
+        // payload. Shape-based and version-agnostic (works across Envoy releases).
+        let (Some(name), Some(value)) = (
+            entry.get("name").and_then(|n| n.as_str()),
+            entry.get("value").and_then(stat_value),
+        ) else {
             continue;
         };
-        if stat.name.ends_with(".downstream_rq_total") {
+        if name.ends_with(".downstream_rq_total") {
             snapshot.requests += value;
-        } else if stat.name.ends_with(".downstream_rq_5xx") {
+        } else if name.ends_with(".downstream_rq_5xx") {
             snapshot.errors += value;
         }
     }
@@ -436,6 +438,80 @@ mod tests {
             }
         );
         Ok(())
+    }
+
+    // Regression for #170. Real `/stats?format=json` body captured from
+    // `envoyproxy/envoy:v1.37-latest` (the D-013 pinned image) after driving traffic
+    // through an ingress listener (7×200, 3×503-to-dead-cluster). Its `stats` array
+    // contains the non-`{name,value}` histograms element that made the old strict
+    // `Vec<EnvoyStat>` deserialize fail for the whole payload — so no heartbeat was
+    // sent and `last_heartbeat_at` was never populated. Expected sums computed
+    // independently from the captured file: Σ `*.downstream_rq_total` = 12,
+    // Σ `*.downstream_rq_5xx` = 6.
+    const ENVOY_1_37_STATS: &str = include_str!("testdata/envoy_1_37_stats.json");
+
+    #[test]
+    fn parses_real_envoy_1_37_stats_including_histograms_element() -> anyhow::Result<()> {
+        // Sanity: the captured fixture really does carry the offending element.
+        assert!(
+            ENVOY_1_37_STATS.contains("\"histograms\""),
+            "fixture must include the histograms element this regression guards against"
+        );
+        let parsed = parse_envoy_stats(ENVOY_1_37_STATS)?;
+        assert_eq!(
+            parsed,
+            StatsSnapshot {
+                requests: 12,
+                errors: 6
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parser_skips_histograms_string_and_non_scalar_elements() -> anyhow::Result<()> {
+        // The histograms object, a string-valued stat, a null-valued stat, and a
+        // non-integer (float) value must all be skipped rather than fail the payload;
+        // only integer counters are summed (`stat_value` is integer-only).
+        let parsed = parse_envoy_stats(
+            r#"{"stats":[
+                {"name":"http.ingress.downstream_rq_total","value":5},
+                {"name":"server.version","value":"d3a3..."},
+                {"name":"http.ingress.downstream_rq_5xx","value":2},
+                {"name":"some.gauge","value":null},
+                {"name":"http.float.downstream_rq_total","value":1.5},
+                {"histograms":{"supported_quantiles":[0,25,50],"computed_quantiles":[]}}
+            ]}"#,
+        )?;
+        assert_eq!(
+            parsed,
+            StatsSnapshot {
+                requests: 5,
+                errors: 2
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parser_returns_zero_on_empty_stats_array() -> anyhow::Result<()> {
+        // The valid-but-empty boundary: a well-formed body with no entries parses to a
+        // zero snapshot (distinct from the malformed cases below, which must error).
+        assert_eq!(
+            parse_envoy_stats(r#"{"stats":[]}"#)?,
+            StatsSnapshot::default()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parser_rejects_malformed_body() {
+        // Tolerance is for unexpected *elements*, not a broken scrape: invalid JSON,
+        // a missing `stats` key, a non-array `stats`, and a null `stats` all still error.
+        assert!(parse_envoy_stats("not json at all").is_err());
+        assert!(parse_envoy_stats(r#"{"stats":"nope"}"#).is_err());
+        assert!(parse_envoy_stats(r#"{"stats":null}"#).is_err());
+        assert!(parse_envoy_stats(r#"{"other":[]}"#).is_err());
     }
 
     #[test]
