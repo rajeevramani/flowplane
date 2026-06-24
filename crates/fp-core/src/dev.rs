@@ -94,6 +94,8 @@ impl DevIssuer {
             audience: DEV_AUDIENCE.to_string(),
             // JWKS is loaded directly via load_jwks_json; no network fetch in dev.
             jwks_uri: Some("https://dev.flowplane.local/jwks".to_string()),
+            // Dev mode never intercepts its in-process issuer.
+            ca_bundle_path: None,
         }
     }
 }

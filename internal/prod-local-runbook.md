@@ -148,6 +148,21 @@ Use `FLOWPLANE_OIDC_JWKS_URI` only if your IdP discovery document is not enough:
 export FLOWPLANE_OIDC_JWKS_URI="https://issuer.example/.well-known/jwks.json"
 ```
 
+If the control plane reaches your IdP through a **TLS-intercepting egress proxy**
+(common in enterprises — the proxy re-signs outbound TLS with a private CA), the
+OIDC discovery/JWKS fetch otherwise fails with `invalid peer certificate:
+UnknownIssuer`. Point the control plane at the proxy's signing CA so it trusts that
+chain **in addition to** the bundled public roots:
+
+```bash
+export FLOWPLANE_OIDC_CA_BUNDLE="/etc/flowplane/tls/egress-proxy-ca.pem"
+```
+
+The file is a PEM bundle of one or more CA certs. It only applies when OIDC is
+configured (issuer + audience set). If the path is missing, unreadable, not PEM, or
+empty, the **server fails to start** (`invalid_config`) — it never silently falls
+back to bundled-roots-only trust.
+
 Generate the local secret key with:
 
 ```bash
