@@ -1,0 +1,24 @@
+# cargo-nextest configuration. See https://nexte.st/docs/configuration/
+#
+# The default profile is used for local `cargo nextest run`. The `ci` profile is
+# selected in CI with `--profile ci` (see .github/workflows/ci.yml).
+#
+# Concurrency note: the integration tests share one PostgreSQL database
+# (FLOWPLANE_TEST_DATABASE_URL) and each opens a small per-test pool (mostly 4–8,
+# one 16). nextest schedules every test across all binaries in one global pool, so
+# `test-threads` caps how many test pools can be live at once and keeps the total
+# well under the server's `max_connections` (stock 100). A local 12-thread run of
+# the full suite was clean; 8 is a pragmatic guard that keeps most of the speedup
+# while leaving headroom for larger runners.
+
+[profile.ci]
+# Run the whole suite for complete diagnostics rather than stopping at the first failure.
+fail-fast = false
+# Flakes should surface as real bugs, not be retried away.
+retries = 0
+# Cap global concurrency to bound concurrent DB pools (see note above).
+test-threads = 8
+# A test that runs too long is killed (SIGTERM, then SIGKILL after the grace period).
+slow-timeout = { period = "120s", terminate-after = 2, grace-period = "10s" }
+# Fail a test that leaks a child process holding a port/handle past this window.
+leak-timeout = { period = "500ms", result = "fail" }
