@@ -20,7 +20,29 @@ env:
 # The Rust toolchain is resolved from rust-toolchain.toml (channel 1.94.1 + rustfmt +
 # clippy), which the runner's preinstalled rustup installs on first `cargo` invocation.
 jobs:
+  # Detect whether anything other than docs changed. Docs-only PRs (Markdown,
+  # docs/**, internal/** runbooks) skip the heavy Rust suite + supply-chain — the
+  # `docs` job below still runs the boundary check. Anything else (code, Cargo.*,
+  # .github/**, scripts/**) flips `code=true` and runs the full pipeline.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!internal/**'
+
   quality:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -103,6 +125,8 @@ jobs:
           kill $TLS_PID
 
   supply-chain:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
