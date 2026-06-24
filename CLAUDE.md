@@ -24,6 +24,27 @@ constitution was unavailable. `/aidf:feature` likewise loads it fail-closed befo
   decisions to `DECISIONS.md`; a short repo pointer entry is allowed for code/build ergonomics,
   never a second record. One canonical home per decision.
 
+## Testing
+
+- **Runner: `cargo nextest`** (CI uses it; PR #176). Install once with
+  `cargo install cargo-nextest --locked` (or `cargo binstall cargo-nextest`).
+- DB-backed tests connect to a **shared external PostgreSQL** via
+  `FLOWPLANE_TEST_DATABASE_URL`; they **skip themselves** when it is unset (no
+  testcontainers, no per-test container spawning). Most also need
+  `FLOWPLANE_SECRET_ENCRYPTION_KEY`. Typical local run:
+  ```bash
+  export FLOWPLANE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/flowplane_test
+  export FLOWPLANE_SECRET_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef
+  cargo nextest run --workspace --all-features          # CI adds --profile ci
+  cargo test --workspace --all-features --doc           # nextest does NOT run doctests
+  ```
+- `.config/nextest.toml` defines the `ci` profile (caps `test-threads` so the shared
+  PG can't be connection-exhausted under nextest's global parallelism). Plain
+  `cargo test --workspace --all-features` still works and runs doctests inline.
+- There is **no Makefile / `make test`**, no `postgres_tests` feature, and no
+  testcontainers — older docs/memories saying otherwise are stale (the test infra
+  moved to the skip-if-unset shared-DB model).
+
 ## Build docs
 
 Build-process docs (lifecycle, feature threads, plans, ADRs, release evidence) are canonical in
