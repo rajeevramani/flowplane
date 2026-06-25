@@ -8,6 +8,7 @@ members = [
     "crates/fp-xds",
     "crates/fp-agent",
     "crates/flowplane",
+    "crates/flowplane-rls",
 ]
 
 [workspace.package]

@@ -797,6 +797,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "flowplane-rls"
+version = "1.0.1"
+dependencies = [
+ "axum",
+ "envoy-types",
+ "fp-domain",
+ "prost",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "flume"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
