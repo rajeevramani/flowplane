@@ -203,25 +203,48 @@ Validation:
 
 ### global_rate_limit (`HttpFilterSpec::GlobalRateLimit` → `GlobalRateLimitConfig`)
 
+Sends each request's descriptors to a global rate-limit service (RLS) over gRPC. Flowplane ships
+a first-party RLS (`flowplane-rls`); see [Global rate limiting](../concepts/global-rate-limiting.md)
+for the architecture and [Enable global rate limiting](../how-to/global-rate-limit.md) for the
+end-to-end recipe.
+
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `domain` | `String` | required | Rate-limit domain. |
-| `service_cluster` | `String` | required | Rate-limit service (RLS) cluster. |
+| `domain` | `String` | required | The **policy** domain — the limit group an operator names (matches a `rate-limit-domains` row). On the built-in path the control plane rewrites the *emitted* Envoy domain (see below); you still supply the short policy name here. |
+| `service_cluster` | `String` | optional (default `rate_limit_cluster`) | RLS cluster. Omit it to use the control-plane-injected built-in cluster; set it to one of **your** clusters to point at an external limiter. |
 | `timeout_ms` | `u64` | optional (default 20) | RLS call timeout. |
-| `failure_mode_deny` | `bool` | optional (default `false`) | Deny on RLS error. |
+| `failure_mode_deny` | `bool` | optional (default `false`) | On RLS error/unreachable: `false` fails **open** (request proceeds), `true` fails **closed** (request is rejected, default 500). |
 | `stage` | `u32` | optional (default 0) | Rate-limit stage. |
 | `request_type` | `RateLimitRequestType` | optional (default `both`) | Which traffic the filter applies to. |
 | `stat_prefix` | `Option<String>` | optional | Stats prefix. |
 | `enable_x_ratelimit_headers` | `bool` | optional (default `false`) | Emit `x-ratelimit-*` headers (draft v03). |
 | `disable_x_envoy_ratelimited_header` | `bool` | optional (default `false`) | Suppress `x-envoy-ratelimited`. |
-| `rate_limited_status` | `Option<u16>` | optional | Status returned when rate-limited. |
-| `status_on_error` | `Option<u16>` | optional | Status returned on RLS error. |
+| `rate_limited_status` | `Option<u16>` | optional | Status returned when rate-limited (default 429). |
+| `status_on_error` | `Option<u16>` | optional | Status returned on RLS error when failing closed. |
 
 `RateLimitRequestType` (`snake_case`): `both` (default), `internal`, `external`.
 
+**Built-in path vs. external cluster.** Two shapes, decided by `service_cluster`:
+
+- **Built-in (default)** — `service_cluster` is `rate_limit_cluster` (or omitted). Valid only when the
+  control plane is configured with `FLOWPLANE_RLS_GRPC_URL` (else the listener create/update is
+  rejected `400` at config time — the CP never emits a filter pointing at a missing cluster). On
+  this path the CP **composes** the Envoy `domain` it emits to the tenant-namespaced form
+  `{orgUUID}|{teamUUID}|{domain}` (deterministic SHA-256-derived org/team UUIDs), so two teams that
+  pick the same policy `domain` never share a counter. You set the short `domain` ("checkout"); the
+  emitted Envoy domain (visible in `/config_dump`) is the composed value.
+- **External cluster** — `service_cluster` names one of your own clusters (same team). The `domain`
+  is sent verbatim; you own the limiter's policy semantics. The reference is validated at config
+  time: an unknown / cross-team cluster is rejected `404`.
+
+The reserved name `rate_limit_cluster` (and the `rate_limit_` prefix) cannot be used for a
+user-created cluster — see [filters reference / reserved names] and
+[Global rate limiting](../concepts/global-rate-limiting.md).
+
 Validation:
-- `domain` must be 1..=128 characters and contain no NUL.
-- `service_cluster` passes `identity::validate_name`.
+- `domain` must be 1..=327 characters and contain no NUL. (The ceiling admits the composed
+  `{orgUUID}|{teamUUID}|{domain}` value; the user-facing policy domain itself is 1..=253.)
+- `service_cluster`, unless it is the reserved `rate_limit_cluster`, passes `identity::validate_name`.
 - `timeout_ms` must be <= 60000.
 - `stage` must be in 0..=10.
 - `stat_prefix`, if present, must be 1..=128 characters and contain no NUL.

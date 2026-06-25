@@ -166,6 +166,46 @@ Grouped by resource. Per-field request/response schemas are in the generated Ope
 | PATCH  | `/api/v1/teams/{team}/route-configs/{name}` |
 | DELETE | `/api/v1/teams/{team}/route-configs/{name}` |
 
+### Rate limiting
+
+Team-scoped rate-limit domains, the policies within each, and an optional per-team override of a
+policy's limit. Policies and overrides are nested under their domain. Mutations write an audit row
++ outbox event in one transaction; `PATCH`/`DELETE` take `If-Match` (optimistic concurrency, `409`
+on mismatch); cross-tenant access is `404` (not `403`). See the
+[`global_rate_limit` filter](filters.md),
+[Enable global rate limiting](../how-to/global-rate-limit.md), and
+[Global rate limiting](../concepts/global-rate-limiting.md).
+
+| Method | Path |
+|--------|------|
+| GET    | `/api/v1/teams/{team}/rate-limit-domains` |
+| POST   | `/api/v1/teams/{team}/rate-limit-domains` |
+| GET    | `/api/v1/teams/{team}/rate-limit-domains/{domain}` |
+| PATCH  | `/api/v1/teams/{team}/rate-limit-domains/{domain}` |
+| DELETE | `/api/v1/teams/{team}/rate-limit-domains/{domain}` |
+| GET    | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies` |
+| POST   | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies` |
+| GET    | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{name}` |
+| PATCH  | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{name}` |
+| DELETE | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{name}` |
+| GET    | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{policy}/override` |
+| POST   | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{policy}/override` |
+| PATCH  | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{policy}/override` |
+| DELETE | `/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{policy}/override` |
+
+Request bodies: domain `{"name":"checkout"}`; policy `{"name":"per-client","spec":{"descriptors":{"api_key":"acme"},"requests_per_unit":100,"unit":"minute"}}` (`unit` ∈ `second|minute|hour|day`); override `{"spec":{"requests_per_unit":500}}`. `PATCH` bodies carry the `spec` only.
+
+#### Admin: force a CP→RLS reconcile
+
+| Method | Path |
+|--------|------|
+| POST   | `/api/v1/admin/rls/force-repush` |
+
+Triggers an immediate push of the full policy set to the rate-limit service. Requires
+**platform-admin** (`admin:all`). Returns `202` (reconcile kicked), `403` (not platform-admin), or
+`503` (no RLS admin URL configured). The 60 s reconcile loop is the backstop; this is only a fast
+path.
+
 ### API definitions (+ specs)
 
 | Method | Path |
