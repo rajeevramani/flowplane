@@ -32,10 +32,11 @@ FLOWPLANE_RLS_ADMIN_LISTEN=127.0.0.1:8081 \
   flowplane-rls
 ```
 
-Expected log line:
+Expected startup log — a `flowplane-rls starting` line carrying both bind addresses (the exact
+prefix/format depends on the tracing setup; `grpc=` and `admin=` fields appear):
 
 ```
-INFO flowplane-rls starting grpc=127.0.0.1:50051 admin=127.0.0.1:8081
+INFO flowplane_rls: flowplane-rls starting grpc=127.0.0.1:50051 admin=127.0.0.1:8081
 ```
 
 Confirm the admin server is up:
@@ -68,10 +69,11 @@ For production, also set the `FLOWPLANE_DATAPLANE_TLS_*` triad so the Envoy→RL
 none set the injected cluster dials the RLS in plaintext h2c (dev only). See
 [configuration reference](../reference/configuration.md).
 
-Confirm the worker started (control-plane log):
+Confirm the worker started (control-plane log; the CP logs JSON by default, so the message appears
+as a structured field):
 
 ```
-INFO rls_sync worker started reconcile_secs=60
+{"message":"rls_sync worker started","reconcile_secs":60}
 ```
 
 ## 3. Create a rate-limit domain and policy
@@ -174,9 +176,22 @@ team's identical `checkout` policy never shares this counter (the namespace pref
 
 ## Lifecycle and fail modes
 
-- **Update a limit:** `flowplane rate-limit policy update --team default --domain checkout per-client --file policy.json` (body carries `spec` only). The change reaches the RLS within the reconcile window (≤ 60 s).
-- **Per-team override:** raise/lower one team's limit without touching the policy — `flowplane rate-limit override set --team default --domain checkout --policy per-client --file '{"spec":{"requests_per_unit":500}}'`.
-- **Stop enforcing:** delete the policy; it stops being enforced within the reconcile window.
+Update and delete are concurrency-controlled: pass the current revision with the global
+`--revision <N>` flag (the `If-Match` value). Get the current revision from a `GET`, e.g.
+`flowplane rate-limit policy get --team default --domain checkout per-client` (the `revision`
+field); omitting `--revision` fails with `this operation requires the resource revision`.
+
+- **Update a limit:** edit `policy.json` (the body carries `spec` only on update), then
+  `flowplane rate-limit policy update --team default --domain checkout per-client --revision 1 --file policy.json`. The change reaches the RLS within the reconcile window (≤ 60 s).
+- **Per-team override:** raise/lower one team's limit without touching the policy. The `--file`
+  flag takes a **path**, so write the body first:
+
+  ```bash
+  echo '{"spec":{"requests_per_unit":500}}' > override.json
+  flowplane rate-limit override set --team default --domain checkout --policy per-client --file override.json
+  ```
+
+- **Stop enforcing:** `flowplane rate-limit policy delete --team default --domain checkout per-client --revision 2` — enforcement stops within the reconcile window.
 - **Force an immediate sync** (platform-admin only): `flowplane rate-limit force-repush`. The 60 s loop is the backstop, so this is only a fast path; an org/team token gets `403`.
 - **RLS down:** behavior follows each filter's `failure_mode_deny` (open vs closed).
 

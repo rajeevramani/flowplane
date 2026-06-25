@@ -158,7 +158,9 @@ Global rate-limit domains, policies, per-team overrides, and the CP→RLS repush
 | `rate-limit override delete` | `--team`, `--domain` (required), `--policy` (required) | — |
 | `rate-limit force-repush` | (none) | — |
 
-`rate-limit force-repush` triggers an immediate CP→RLS reconcile and requires **platform-admin** (`admin:all`); an org/team token gets `403`. The 60 s reconcile loop is the backstop, so a repush is only a fast path — see [`FLOWPLANE_RLS_RECONCILE_SECS`](configuration.md). `unit` is one of `second`, `minute`, `hour`, `day`.
+The `update` and `delete` subcommands (domain, policy, and override) are concurrency-controlled: pass the current resource revision with the global `--revision <N>` flag (the `If-Match` value, read from a `GET`). Omitting it fails with `this operation requires the resource revision`; a stale value returns `409`. `create`/`set` do not take `--revision`.
+
+`rate-limit force-repush` triggers an immediate CP→RLS reconcile and requires the `platform:execute` permission (held by the `admin:all` / platform-admin role); an org/team token gets `403` (`missing permission: platform:execute`). The 60 s reconcile loop is the backstop, so a repush is only a fast path — see [`FLOWPLANE_RLS_RECONCILE_SECS`](configuration.md). `unit` is one of `second`, `minute`, `hour`, `day`.
 
 ### `api`
 API definitions, imported specs, and generated API tool rows.

@@ -201,10 +201,10 @@ Request bodies: domain `{"name":"checkout"}`; policy `{"name":"per-client","spec
 |--------|------|
 | POST   | `/api/v1/admin/rls/force-repush` |
 
-Triggers an immediate push of the full policy set to the rate-limit service. Requires
-**platform-admin** (`admin:all`). Returns `202` (reconcile kicked), `403` (not platform-admin), or
-`503` (no RLS admin URL configured). The 60 s reconcile loop is the backstop; this is only a fast
-path.
+Triggers an immediate push of the full policy set to the rate-limit service. Requires the
+`platform:execute` permission (held by the `admin:all` / platform-admin role). Returns `202`
+(reconcile kicked), `403` (`missing permission: platform:execute`), or `503` (no RLS admin URL
+configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 
 ### API definitions (+ specs)
 
