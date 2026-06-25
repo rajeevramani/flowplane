@@ -58,6 +58,11 @@ pub struct ServerConfig {
     /// `FLOWPLANE_RLS_ADMIN_URL`. (The RLS gRPC URL that drives S6 CDS injection,
     /// `FLOWPLANE_RLS_GRPC_URL`, is a separate listener.)
     pub rls_admin_url: Option<String>,
+    /// Seconds between `rls_sync` reconcile pushes (S5). Defaults to 60 (the design's reconcile
+    /// window) and is clamped to 1..=60 — the knob may only *lower* the interval to make automated
+    /// tests converge quickly, never raise it past the documented 60 s backstop. Env
+    /// `FLOWPLANE_RLS_RECONCILE_SECS`.
+    pub rls_reconcile_secs: u64,
     /// gRPC URL (`host:port`) of the first-party rate-limit service. When set, the CP synthesizes
     /// and injects the built-in `rate_limit_cluster` into CDS (S6) and defaults the
     /// `global_rate_limit` filter to it. `None` disables injection. Env `FLOWPLANE_RLS_GRPC_URL`.
@@ -366,6 +371,15 @@ impl ServerConfig {
             .map(str::to_owned)
             .or(file.rls_grpc_url);
 
+        // Clamped to 1..=60: the knob exists only to make automated tests converge faster than the
+        // design's 60 s reconcile window — it may LOWER the interval but never raise it past 60 s,
+        // so the documented "missed delivery converges within 60 s" backstop always holds.
+        let rls_reconcile_secs = get("FLOWPLANE_RLS_RECONCILE_SECS")
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|s| *s > 0)
+            .map(|s| s.min(60))
+            .unwrap_or(60);
+
         let dataplane_tls_cert = get("FLOWPLANE_DATAPLANE_TLS_CERT")
             .map(str::to_owned)
             .or(file.dataplane_tls_cert);
@@ -414,6 +428,7 @@ impl ServerConfig {
             allow_logged_bootstrap_token,
             dev_token_path,
             rls_admin_url,
+            rls_reconcile_secs,
             rls_grpc_url,
             dataplane_tls,
         })
@@ -509,6 +524,33 @@ mod tests {
         };
         let cfg = ServerConfig::resolve(&env, file).expect("resolves");
         assert_eq!(cfg.dev_token_path, Some(PathBuf::from("/from/env")));
+    }
+
+    #[test]
+    fn rls_reconcile_secs_defaults_to_60_and_honors_env() {
+        // Absent → the design's 60 s reconcile window.
+        let cfg = ServerConfig::resolve(&base_env(), FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_reconcile_secs, 60);
+
+        // A valid override in 1..=60 is taken verbatim (tests lower it to converge fast).
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_RECONCILE_SECS".into(), "2".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_reconcile_secs, 2);
+
+        // A value above 60 is clamped to 60 — the knob can only lower the backstop, never raise it.
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_RECONCILE_SECS".into(), "300".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_reconcile_secs, 60, "values above the 60 s backstop must clamp to 60");
+
+        // Garbage and zero both fall back to the default rather than disabling the loop.
+        for bad in ["0", "not-a-number", ""] {
+            let mut env = base_env();
+            env.insert("FLOWPLANE_RLS_RECONCILE_SECS".into(), bad.into());
+            let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+            assert_eq!(cfg.rls_reconcile_secs, 60, "input {bad:?} must fall back to 60");
+        }
     }
 
     fn oidc_env() -> HashMap<String, String> {

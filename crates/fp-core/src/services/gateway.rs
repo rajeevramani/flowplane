@@ -417,6 +417,10 @@ pub async fn list_listeners(
     gateway::list_listeners(pool, team.id, limit, offset).await
 }
 
+// The listener update path carries one argument past clippy's threshold (the `rls_grpc_configured`
+// gate added in S7); the alternative — bundling the long-standing service args into a struct — is a
+// larger churn than the lint is worth, and matches how `rate_limit.rs` handles the same shape.
+#[allow(clippy::too_many_arguments)]
 pub async fn update_listener(
     pool: &PgPool,
     ctx: &PrincipalCtx,

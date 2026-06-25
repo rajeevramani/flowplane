@@ -200,13 +200,15 @@ pub async fn run() -> anyhow::Result<()> {
         let worker_pool = pool.clone();
         let worker_notify = Arc::clone(&notify);
         let worker_shutdown = xds_shutdown_tx.subscribe();
+        let reconcile_secs = config.rls_reconcile_secs;
         tokio::spawn(run_rls_sync(
             worker_pool,
             admin_url,
+            reconcile_secs,
             worker_notify,
             worker_shutdown,
         ));
-        tracing::info!("rls_sync worker started (60s reconcile)");
+        tracing::info!(reconcile_secs, "rls_sync worker started");
         Some(notify)
     } else {
         None
@@ -349,11 +351,13 @@ async fn run_observability_sampler(
 async fn run_rls_sync(
     pool: sqlx::PgPool,
     admin_url: String,
+    reconcile_secs: u64,
     repush: Arc<tokio::sync::Notify>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let client = reqwest::Client::new();
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(reconcile_secs.max(1)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
