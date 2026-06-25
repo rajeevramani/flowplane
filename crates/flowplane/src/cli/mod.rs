@@ -24,7 +24,7 @@ pub use commands::{
 pub use config::GlobalOptions;
 use config::{
     config_path, credentials_path, effective, read_config, write_config, write_private_file,
-    NamedContext,
+    NamedContext, OutputFormat,
 };
 use output::{format_row, render};
 
@@ -1262,7 +1262,21 @@ pub async fn run_unexpose(global: GlobalOptions, command: UnexposeCommand) -> Re
     Ok(())
 }
 
+/// Advisory hint printed after `api create --from-openapi`: imported specs generate tools
+/// that stay inert until an explicit publish (constitution inv 16). Returns `None` for
+/// machine-readable output formats so the note never pollutes JSON/YAML consumers.
+fn imported_create_hint(format: OutputFormat, api_name: &str) -> Option<String> {
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        return None;
+    }
+    Some(format!(
+        "note: tools were generated from the OpenAPI spec but are NOT served yet.\n      \
+         publish them to make them available over MCP:\n        flowplane api spec publish {api_name} 1"
+    ))
+}
+
 pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
+    let format = global.format();
     let client = RestClient::new(global)?;
     match command {
         ApiCommand::List { team } => {
@@ -1345,6 +1359,10 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
             route,
         } => {
             let team = client.team(team)?;
+            // Capture before `name`/`from_openapi` are moved into the request body, so we can
+            // print the generated-but-not-served hint after a successful imported create.
+            let api_name = name.clone();
+            let imported = from_openapi.is_some();
             let mut body = Map::new();
             body.insert("name".into(), Value::String(name));
             body.insert(
@@ -1373,13 +1391,22 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
                     "--route-config-id is required when passing --listener-id, --virtual-host, or --route"
                 );
             }
-            client
+            let response = client
                 .request(
                     reqwest::Method::POST,
                     &format!("/api/v1/teams/{team}/api-definitions"),
                     Some(Value::Object(body)),
                 )
-                .await?
+                .await?;
+            // Imported specs are inert until an explicit publish (constitution inv 16): the
+            // tools exist but are not served over MCP until `api spec publish`. Nudge the
+            // operator so import no longer looks like a dead end (#187).
+            if imported {
+                if let Some(hint) = imported_create_hint(format, &api_name) {
+                    eprintln!("{hint}");
+                }
+            }
+            response
         }
         ApiCommand::Delete { team, name } => {
             let team = client.team(team)?;
@@ -2551,6 +2578,30 @@ mod tests {
         assert_eq!(query_component("a%b"), "a%25b");
         assert_eq!(query_component("a?b#c"), "a%3Fb%23c");
         assert_eq!(query_component("Safe-Name_1.0~x"), "Safe-Name_1.0~x");
+    }
+
+    #[test]
+    fn imported_create_hint_names_the_publish_step_in_human_output() {
+        // fpv2-dn7.2: after `api create --from-openapi`, human output must nudge the operator
+        // to publish (import is inert until then) and name the exact next command.
+        for fmt in [OutputFormat::Table, OutputFormat::Wide] {
+            let hint = imported_create_hint(fmt, "catalog").expect("human formats get a hint");
+            assert!(
+                hint.contains("NOT served yet"),
+                "hint must state inert: {hint}"
+            );
+            assert!(
+                hint.contains("flowplane api spec publish catalog 1"),
+                "hint must name the publish command with the api name and v1: {hint}"
+            );
+        }
+    }
+
+    #[test]
+    fn imported_create_hint_is_suppressed_for_machine_output() {
+        // Advisory note must never pollute JSON/YAML consumers.
+        assert!(imported_create_hint(OutputFormat::Json, "catalog").is_none());
+        assert!(imported_create_hint(OutputFormat::Yaml, "catalog").is_none());
     }
 
     #[test]
