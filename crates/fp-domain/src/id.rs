@@ -162,6 +162,18 @@ domain_id!(
     /// Identifies one persisted route generation dry-run/apply plan.
     RouteGenerationPlanId
 );
+domain_id!(
+    /// Identifies a rate-limit domain (the user-facing limit group).
+    RateLimitDomainId
+);
+domain_id!(
+    /// Identifies a rate-limit policy (one descriptor-set -> requests_per_unit).
+    RateLimitPolicyId
+);
+domain_id!(
+    /// Identifies a per-team override of a rate-limit policy's limit.
+    RateLimitTeamOverrideId
+);
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
