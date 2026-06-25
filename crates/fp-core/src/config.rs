@@ -56,8 +56,16 @@ pub struct ServerConfig {
     /// HTTP admin URL of the first-party rate-limit service. When set, the CP `rls_sync` worker
     /// pushes the policy set here on a 60 s reconcile (S5). `None` disables the worker. Env
     /// `FLOWPLANE_RLS_ADMIN_URL`. (The RLS gRPC URL that drives S6 CDS injection,
-    /// `FLOWPLANE_RLS_GRPC_URL`, is a separate listener and lands with S6.)
+    /// `FLOWPLANE_RLS_GRPC_URL`, is a separate listener.)
     pub rls_admin_url: Option<String>,
+    /// gRPC URL (`host:port`) of the first-party rate-limit service. When set, the CP synthesizes
+    /// and injects the built-in `rate_limit_cluster` into CDS (S6) and defaults the
+    /// `global_rate_limit` filter to it. `None` disables injection. Env `FLOWPLANE_RLS_GRPC_URL`.
+    pub rls_grpc_url: Option<String>,
+    /// mTLS material the synthesized `rate_limit_cluster` presents to / verifies the RLS with
+    /// (S6). All three paths come together or not at all (see `resolve`). `None` => the built-in
+    /// cluster dials the RLS in plaintext h2c (dev only). Env `FLOWPLANE_DATAPLANE_TLS_*`.
+    pub dataplane_tls: Option<DataplaneTlsConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,6 +91,18 @@ pub struct XdsTlsConfig {
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
     /// CA bundle that dataplane client certificates must chain to.
+    pub client_ca_path: PathBuf,
+}
+
+/// mTLS material for the built-in `rate_limit_cluster` (S6, spec/04:31). The Envoy→RLS hop
+/// authenticates with the dataplane client cert and verifies the RLS server cert against the CA.
+/// All three paths are required together (fail-closed in `resolve`); the files are read by Envoy
+/// on the dataplane host, so the control plane only ships the paths.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataplaneTlsConfig {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    /// CA bundle the dataplane uses to verify the RLS server certificate.
     pub client_ca_path: PathBuf,
 }
 
@@ -119,6 +139,10 @@ struct FileConfig {
     otlp_endpoint: Option<String>,
     dev_token_path: Option<String>,
     rls_admin_url: Option<String>,
+    rls_grpc_url: Option<String>,
+    dataplane_tls_cert: Option<String>,
+    dataplane_tls_key: Option<String>,
+    dataplane_tls_client_ca: Option<String>,
 }
 
 const DEFAULT_API_ADDR: &str = "0.0.0.0:8080";
@@ -338,6 +362,41 @@ impl ServerConfig {
             .map(str::to_owned)
             .or(file.rls_admin_url);
 
+        let rls_grpc_url = get("FLOWPLANE_RLS_GRPC_URL")
+            .map(str::to_owned)
+            .or(file.rls_grpc_url);
+
+        let dataplane_tls_cert = get("FLOWPLANE_DATAPLANE_TLS_CERT")
+            .map(str::to_owned)
+            .or(file.dataplane_tls_cert);
+        let dataplane_tls_key = get("FLOWPLANE_DATAPLANE_TLS_KEY")
+            .map(str::to_owned)
+            .or(file.dataplane_tls_key);
+        let dataplane_tls_client_ca = get("FLOWPLANE_DATAPLANE_TLS_CLIENT_CA")
+            .map(str::to_owned)
+            .or(file.dataplane_tls_client_ca);
+        let dataplane_tls = match (
+            dataplane_tls_cert,
+            dataplane_tls_key,
+            dataplane_tls_client_ca,
+        ) {
+            (Some(cert_path), Some(key_path), Some(client_ca_path)) => Some(DataplaneTlsConfig {
+                cert_path: cert_path.into(),
+                key_path: key_path.into(),
+                client_ca_path: client_ca_path.into(),
+            }),
+            (None, None, None) => None,
+            _ => {
+                return Err(DomainError::invalid_config(
+                    "FLOWPLANE_DATAPLANE_TLS_CERT, FLOWPLANE_DATAPLANE_TLS_KEY, and \
+                     FLOWPLANE_DATAPLANE_TLS_CLIENT_CA must be set together",
+                )
+                .with_hint(
+                    "Envoy→RLS mTLS needs the dataplane client identity AND the RLS server CA",
+                ))
+            }
+        };
+
         Ok(Self {
             api_addr,
             xds_addr,
@@ -355,6 +414,8 @@ impl ServerConfig {
             allow_logged_bootstrap_token,
             dev_token_path,
             rls_admin_url,
+            rls_grpc_url,
+            dataplane_tls,
         })
     }
 }
@@ -531,6 +592,55 @@ mod tests {
         }
         let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("full triple ok");
         assert!(cfg.xds_tls.is_some());
+    }
+
+    #[test]
+    fn dataplane_tls_paths_must_come_in_triples() {
+        // Fail-closed: the Envoy→RLS mTLS material is all-or-nothing (acceptance: partial certs
+        // are rejected at config load, before any CDS injection).
+        for present in [
+            vec!["FLOWPLANE_DATAPLANE_TLS_CERT"],
+            vec![
+                "FLOWPLANE_DATAPLANE_TLS_CERT",
+                "FLOWPLANE_DATAPLANE_TLS_KEY",
+            ],
+            vec![
+                "FLOWPLANE_DATAPLANE_TLS_KEY",
+                "FLOWPLANE_DATAPLANE_TLS_CLIENT_CA",
+            ],
+            vec!["FLOWPLANE_DATAPLANE_TLS_CLIENT_CA"],
+        ] {
+            let mut env = base_env();
+            for key in &present {
+                env.insert((*key).into(), "/tmp/dp.pem".into());
+            }
+            assert!(
+                ServerConfig::resolve(&env, FileConfig::default()).is_err(),
+                "partial dataplane TLS config {present:?} must be rejected"
+            );
+        }
+        let mut env = base_env();
+        for key in [
+            "FLOWPLANE_DATAPLANE_TLS_CERT",
+            "FLOWPLANE_DATAPLANE_TLS_KEY",
+            "FLOWPLANE_DATAPLANE_TLS_CLIENT_CA",
+        ] {
+            env.insert(key.into(), "/tmp/dp.pem".into());
+        }
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("full triple ok");
+        assert!(cfg.dataplane_tls.is_some());
+        assert!(
+            cfg.rls_grpc_url.is_none(),
+            "tls without grpc url is allowed"
+        );
+    }
+
+    #[test]
+    fn rls_grpc_url_parsed_from_env() {
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_GRPC_URL".into(), "rls.internal:8081".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_grpc_url.as_deref(), Some("rls.internal:8081"));
     }
 
     #[test]

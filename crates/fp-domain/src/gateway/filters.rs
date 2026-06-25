@@ -368,6 +368,7 @@ pub enum RateLimitRequestType {
 #[serde(deny_unknown_fields)]
 pub struct GlobalRateLimitConfig {
     pub domain: String,
+    #[serde(default = "default_service_cluster")]
     pub service_cluster: String,
     #[serde(default = "default_global_rate_limit_timeout_ms")]
     pub timeout_ms: u64,
@@ -393,18 +394,38 @@ fn default_global_rate_limit_timeout_ms() -> u64 {
     20
 }
 
+/// Default `service_cluster` = the CP-synthesized built-in rate-limit cluster (S6). When set, the
+/// operator's filter resolves to the first-party RLS out of the box without naming a cluster.
+fn default_service_cluster() -> String {
+    crate::gateway::cluster::RESERVED_RATE_LIMIT_CLUSTER.to_string()
+}
+
+/// Upper bound on the Envoy filter `domain`. The CP composes it as
+/// `{org_uuid}|{team_uuid}|{user_domain}` (S5/S7): two 36-char UUIDs + two `|` separators + the
+/// user domain (<= 253, spec/02:329) = 327. The cap admits that composed value; the user-facing
+/// domain itself stays bounded at 253 by `rate_limit::validate_rate_limit_domain_name`.
+const MAX_GLOBAL_RATE_LIMIT_DOMAIN_LEN: usize = 253 + 36 + 36 + 2;
+
 fn is_default_rate_limit_request_type(value: &RateLimitRequestType) -> bool {
     *value == RateLimitRequestType::Both
 }
 
 impl GlobalRateLimitConfig {
     pub fn validate(&self) -> DomainResult<()> {
-        if self.domain.is_empty() || self.domain.len() > 128 || self.domain.contains('\0') {
-            return Err(DomainError::validation(
-                "global_rate_limit: domain must be 1..=128 characters and contain no NUL",
-            ));
+        if self.domain.is_empty()
+            || self.domain.len() > MAX_GLOBAL_RATE_LIMIT_DOMAIN_LEN
+            || self.domain.contains('\0')
+        {
+            return Err(DomainError::validation(format!(
+                "global_rate_limit: domain must be 1..={MAX_GLOBAL_RATE_LIMIT_DOMAIN_LEN} \
+                 characters and contain no NUL",
+            )));
         }
-        crate::identity::validate_name(&self.service_cluster)?;
+        // The CP-owned built-in cluster name (spec/04) contains underscores and is exempt from
+        // the user-facing slug rule; any other service_cluster must be a valid cluster name.
+        if self.service_cluster != crate::gateway::cluster::RESERVED_RATE_LIMIT_CLUSTER {
+            crate::identity::validate_name(&self.service_cluster)?;
+        }
         if self.timeout_ms > 60_000 {
             return Err(DomainError::validation(
                 "global_rate_limit: timeout_ms must be <= 60000",
@@ -1380,5 +1401,102 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    // ---------------- S6 global_rate_limit (separate author) ----------------
+
+    use crate::gateway::cluster::RESERVED_RATE_LIMIT_CLUSTER;
+
+    /// A fully-specified, otherwise-valid config with overridable domain/service_cluster.
+    fn grl(domain: String, service_cluster: String) -> GlobalRateLimitConfig {
+        GlobalRateLimitConfig {
+            domain,
+            service_cluster,
+            timeout_ms: 20,
+            failure_mode_deny: false,
+            stage: 0,
+            request_type: RateLimitRequestType::Both,
+            stat_prefix: None,
+            enable_x_ratelimit_headers: false,
+            disable_x_envoy_ratelimited_header: false,
+            rate_limited_status: None,
+            status_on_error: None,
+        }
+    }
+
+    #[test]
+    fn cp_composed_domain_at_the_cap_passes() {
+        // CP composes `{org_uuid}|{team_uuid}|{user_domain}` (S5/S7). Two 36-char UUIDs + two
+        // '|' separators + a 253-char user domain = 327 chars == the cap. It must validate.
+        let uuid_a = uuid::Uuid::now_v7().to_string();
+        let uuid_b = uuid::Uuid::now_v7().to_string();
+        assert_eq!(uuid_a.len(), 36, "UUID hyphenated form is 36 chars");
+        let domain = format!("{}|{}|{}", uuid_a, uuid_b, "x".repeat(253));
+        assert_eq!(domain.len(), 327, "composed length is exactly the cap");
+        let cfg = grl(domain, "rls-cluster".into());
+        assert!(
+            cfg.validate().is_ok(),
+            "the CP-composed value at the cap must pass: {:?}",
+            cfg.validate()
+        );
+    }
+
+    #[test]
+    fn domain_one_over_cap_fails() {
+        let domain = "d".repeat(328);
+        assert_eq!(domain.len(), 328);
+        let cfg = grl(domain, "rls-cluster".into());
+        assert!(
+            cfg.validate().is_err(),
+            "328 chars (cap+1) must be rejected"
+        );
+    }
+
+    #[test]
+    fn empty_domain_fails() {
+        let cfg = grl(String::new(), "rls-cluster".into());
+        assert!(cfg.validate().is_err(), "empty domain must be rejected");
+    }
+
+    #[test]
+    fn service_cluster_defaults_to_reserved_when_omitted() {
+        // Omitting service_cluster in JSON must default to the reserved built-in cluster name.
+        let cfg: GlobalRateLimitConfig = serde_json::from_value(serde_json::json!({
+            "domain": "edge",
+        }))
+        .expect("deserialize without service_cluster");
+        assert_eq!(cfg.service_cluster, "rate_limit_cluster");
+        assert_eq!(cfg.service_cluster, RESERVED_RATE_LIMIT_CLUSTER);
+        // And the defaulted value must itself validate (exempt from the slug rule).
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn reserved_service_cluster_is_exempt_from_slug_rule_but_others_are_not() {
+        // The reserved underscore-bearing name is accepted even though validate_name rejects '_'.
+        let reserved = grl("edge".into(), RESERVED_RATE_LIMIT_CLUSTER.into());
+        assert!(
+            reserved.validate().is_ok(),
+            "rate_limit_cluster must be exempt from validate_name"
+        );
+
+        // A name with a space/uppercase is not a valid cluster name → must fail.
+        let spaced = grl("edge".into(), "Bad Cluster".into());
+        assert!(
+            spaced.validate().is_err(),
+            "service_cluster with a space/uppercase must be rejected"
+        );
+
+        // Another underscore-bearing-but-non-reserved name is NOT exempt: validate_name rejects
+        // underscores, so this must fail (the exemption is exact-match only).
+        let underscored = grl("edge".into(), "rate_limit_other".into());
+        assert!(
+            underscored.validate().is_err(),
+            "only the exact reserved name is exempt; rate_limit_other must fail validate_name"
+        );
+
+        // Sanity: an ordinary valid slug cluster name passes.
+        let ok = grl("edge".into(), "team-rls".into());
+        assert!(ok.validate().is_ok());
     }
 }

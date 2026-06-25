@@ -57,7 +57,34 @@ pub async fn run() -> anyhow::Result<()> {
     // xDS pipeline: snapshot cache primed from the DB (restart safety), then kept fresh by
     // the outbox consumer, which also feeds certificate revocations to live streams.
     let (xds_shutdown_tx, xds_shutdown_rx) = tokio::sync::watch::channel(false);
-    let snapshot_cache = fp_xds::snapshot::SnapshotCache::new();
+    // S6: when an RLS gRPC endpoint is configured, the snapshot cache injects the built-in
+    // rate_limit_cluster into every team's CDS. Build its config from ServerConfig (fp-xds stays
+    // free of fp-core types) and validate the endpoint once here so a bad URL fails boot, not
+    // every per-team rebuild.
+    let rls_cluster =
+        config
+            .rls_grpc_url
+            .as_ref()
+            .map(|grpc_url| fp_xds::translate::RlsClusterConfig {
+                grpc_url: grpc_url.clone(),
+                tls: config
+                    .dataplane_tls
+                    .as_ref()
+                    .map(|t| fp_xds::translate::RlsClusterTls {
+                        cert_path: t.cert_path.to_string_lossy().into_owned(),
+                        key_path: t.key_path.to_string_lossy().into_owned(),
+                        client_ca_path: t.client_ca_path.to_string_lossy().into_owned(),
+                    }),
+            });
+    if let Some(rls) = &rls_cluster {
+        fp_xds::translate::rls_cluster_to_proto(rls)
+            .map_err(|e| anyhow::anyhow!("invalid FLOWPLANE_RLS_GRPC_URL: {e}"))?;
+        tracing::info!(
+            mtls = config.dataplane_tls.is_some(),
+            "built-in rate_limit_cluster will be injected into CDS"
+        );
+    }
+    let snapshot_cache = fp_xds::snapshot::SnapshotCache::with_rls(rls_cluster);
     let xds_consumer_failed = Arc::new(AtomicBool::new(false));
     let primed = snapshot_cache
         .prime_all(&pool)
