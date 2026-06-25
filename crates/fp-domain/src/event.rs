@@ -91,6 +91,19 @@ pub enum DomainEvent {
         capture_session_id: Uuid,
         name: String,
     },
+    // Rate-limit policy model (fpv2-4ht). Used as an optional immediate reconcile kick for the
+    // CP rls_sync worker (S5); the 60s reconcile is the correctness backstop, so these events
+    // are an optimization, not load-bearing for delivery.
+    #[serde(
+        rename = "rate_limit_policy.upserted",
+        alias = "rate_limit_policy_upserted"
+    )]
+    RateLimitPolicyUpserted { policy_id: Uuid, domain_id: Uuid },
+    #[serde(
+        rename = "rate_limit_policy.deleted",
+        alias = "rate_limit_policy_deleted"
+    )]
+    RateLimitPolicyDeleted { policy_id: Uuid, domain_id: Uuid },
 }
 
 impl DomainEvent {
@@ -116,6 +129,8 @@ impl DomainEvent {
             Self::CaptureSessionStarted { .. } => "capture_session.started",
             Self::CaptureSessionStopped { .. } => "capture_session.stopped",
             Self::CaptureSessionCancelled { .. } => "capture_session.cancelled",
+            Self::RateLimitPolicyUpserted { .. } => "rate_limit_policy.upserted",
+            Self::RateLimitPolicyDeleted { .. } => "rate_limit_policy.deleted",
         }
     }
 }
@@ -213,6 +228,14 @@ mod tests {
             DomainEvent::CaptureSessionCancelled {
                 capture_session_id: uuid,
                 name: "x".into(),
+            },
+            DomainEvent::RateLimitPolicyUpserted {
+                policy_id: uuid,
+                domain_id: uuid,
+            },
+            DomainEvent::RateLimitPolicyDeleted {
+                policy_id: uuid,
+                domain_id: uuid,
             },
         ];
 

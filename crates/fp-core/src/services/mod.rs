@@ -12,6 +12,7 @@ pub mod gateway;
 pub mod learning;
 pub mod orgs;
 pub mod quota;
+pub mod rate_limit;
 pub mod route_generation;
 pub mod secrets;
 pub mod teams;
