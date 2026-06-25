@@ -144,6 +144,7 @@ async fn fixture() -> Option<Fixture> {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     Some(Fixture {

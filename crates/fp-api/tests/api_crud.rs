@@ -197,6 +197,7 @@ async fn learning_session_lifecycle_over_http() {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request =
@@ -350,6 +351,7 @@ async fn api_definition_import_status_and_delete_over_http() {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request =
@@ -476,6 +478,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request =
@@ -875,6 +878,7 @@ async fn multi_org_user_selects_active_org_with_header() {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let response = app
@@ -973,6 +977,7 @@ async fn proxy_certificate_registry_flow_over_http() {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
@@ -1279,6 +1284,7 @@ async fn secret_values_are_write_only_over_http() {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
@@ -1750,6 +1756,7 @@ async fn malformed_json_body_returns_validation_envelope() {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     // `port` typed as a string -> JSON deserialization failure.

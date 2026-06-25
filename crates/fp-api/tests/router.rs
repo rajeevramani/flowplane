@@ -38,6 +38,7 @@ async fn test_app_with_xds_readiness(
         xds_readiness,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     }))
 }
 

@@ -24,6 +24,10 @@ pub struct AppState {
     /// Kicks the rate-limit `rls_sync` worker for an immediate reconcile (force-repush).
     /// `None` when the RLS admin URL is unconfigured (the worker is not running).
     pub rls_repush: Option<Arc<tokio::sync::Notify>>,
+    /// `true` when `FLOWPLANE_RLS_GRPC_URL` is set, i.e. the CP injects the built-in
+    /// `rate_limit_cluster` into CDS (S6). The listener service reads this to fail closed when a
+    /// `global_rate_limit` filter points at the built-in cluster but injection is off (S7).
+    pub rls_grpc_configured: bool,
 }
 
 #[derive(Clone)]

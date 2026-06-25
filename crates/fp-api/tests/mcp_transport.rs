@@ -74,6 +74,7 @@ async fn app_with_tokens() -> Option<(axum::Router, String, String, String)> {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
     Some((app, token_a, token_b, team.name))
 }

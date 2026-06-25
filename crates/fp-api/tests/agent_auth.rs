@@ -68,6 +68,7 @@ async fn app_with_admin() -> Option<(axum::Router, String, String, uuid::Uuid, P
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     });
     Some((app, token, team.name, team.id.as_uuid(), pool))
 }

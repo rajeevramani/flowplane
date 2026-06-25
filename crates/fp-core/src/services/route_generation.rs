@@ -184,6 +184,9 @@ pub async fn apply_plan(
         &plan.plan.listener_name,
         plan.plan.listener_spec.clone(),
         request_id,
+        // Generated listeners carry no http_filters (see listener_spec below), so the
+        // global_rate_limit reference check is a no-op regardless of RLS configuration.
+        false,
     )
     .await
     {

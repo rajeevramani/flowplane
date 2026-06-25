@@ -99,6 +99,7 @@ async fn build_app_with(pool: sqlx::PgPool, issuer: &Issuer) -> axum::Router {
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
         rls_repush: None,
+        rls_grpc_configured: false,
     })
 }
 

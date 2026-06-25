@@ -167,7 +167,8 @@ macro_rules! endpoints {
     ($mod_name:ident, $segment:literal, $tag:literal,
      view: $view:ident, create: $create_body:ident, update: $update_body:ident,
      svc_create: $svc_create:path, svc_get: $svc_get:path, svc_list: $svc_list:path,
-     svc_update: $svc_update:path, svc_delete: $svc_delete:path) => {
+     svc_update: $svc_update:path, svc_delete: $svc_delete:path
+     $(, rls: $rls:ident)?) => {
         pub mod $mod_name {
             use super::*;
 
@@ -218,7 +219,7 @@ macro_rules! endpoints {
             ) -> Result<(axum::http::StatusCode, Json<$view>), ApiError> {
                 let run = async {
                     let team = resolve_team(&state, &ctx, &team).await?;
-                    $svc_create(&state.pool, &ctx, team, &body.name, body.spec, rid).await
+                    $svc_create(&state.pool, &ctx, team, &body.name, body.spec, rid $(, state.$rls)?).await
                 };
                 let created = run.await.map_err(|e| ApiError::new(e, rid))?;
                 Ok((axum::http::StatusCode::CREATED, Json($view::from(created))))
@@ -271,7 +272,7 @@ macro_rules! endpoints {
                 let run = async {
                     let revision = revision_from(&headers)?;
                     let team = resolve_team(&state, &ctx, &team).await?;
-                    $svc_update(&state.pool, &ctx, team, &name, body.spec, revision, rid).await
+                    $svc_update(&state.pool, &ctx, team, &name, body.spec, revision, rid $(, state.$rls)?).await
                 };
                 run.await.map(|v| Json($view::from(v))).map_err(|e| ApiError::new(e, rid))
             }
@@ -318,7 +319,8 @@ endpoints!(listeners, "listeners", "Listeners",
     view: ListenerView, create: CreateListenerBody, update: UpdateListenerBody,
     svc_create: gateway_svc::create_listener, svc_get: gateway_svc::get_listener,
     svc_list: gateway_svc::list_listeners, svc_update: gateway_svc::update_listener,
-    svc_delete: gateway_svc::delete_listener);
+    svc_delete: gateway_svc::delete_listener,
+    rls: rls_grpc_configured);
 
 endpoints!(route_configs, "route-configs", "RouteConfigs",
     view: RouteConfigView, create: CreateRouteConfigBody, update: UpdateRouteConfigBody,

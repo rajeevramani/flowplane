@@ -1338,6 +1338,7 @@ mod tests {
                 access_logs: Vec::new(),
             },
             RequestId::generate(),
+            false,
         )
         .await
         .expect("a listener");
@@ -1507,6 +1508,7 @@ mod tests {
                 access_logs: Vec::new(),
             },
             RequestId::generate(),
+            false,
         )
         .await
         .expect("a listener");
@@ -1526,6 +1528,7 @@ mod tests {
                 access_logs: Vec::new(),
             },
             RequestId::generate(),
+            false,
         )
         .await
         .expect("b listener");
@@ -1744,6 +1747,7 @@ mod tests {
                 access_logs: Vec::new(),
             },
             RequestId::generate(),
+            false,
         )
         .await
         .expect("good listener");

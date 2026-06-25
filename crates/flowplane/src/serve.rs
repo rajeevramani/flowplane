@@ -227,6 +227,7 @@ pub async fn run() -> anyhow::Result<()> {
         }),
         discovery_forwarding_policy,
         rls_repush,
+        rls_grpc_configured: config.rls_grpc_url.is_some(),
     };
     let router = fp_api::build_router(state);
 

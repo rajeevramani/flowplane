@@ -1079,6 +1079,7 @@ async fn execute_static_tool(
                 string_arg(&arguments, "name")?,
                 spec,
                 rid,
+                state.rls_grpc_configured,
             )
             .await?;
             serde_json::to_value(item).map_err(json_err)
@@ -1094,6 +1095,7 @@ async fn execute_static_tool(
                 spec,
                 required_revision(&arguments)?,
                 rid,
+                state.rls_grpc_configured,
             )
             .await?;
             serde_json::to_value(item).map_err(json_err)
@@ -2325,6 +2327,7 @@ mod tests {
             xds_readiness: None,
             discovery_forwarding_policy: Default::default(),
             rls_repush: None,
+            rls_grpc_configured: false,
         }
     }
 
