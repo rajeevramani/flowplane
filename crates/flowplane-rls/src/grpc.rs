@@ -13,6 +13,7 @@ use envoy_types::pb::envoy::service::ratelimit::v3::rate_limit_response::{
     rate_limit::Unit as ProtoUnit, Code, DescriptorStatus, RateLimit as ProtoRateLimit,
 };
 use envoy_types::pb::envoy::service::ratelimit::v3::rate_limit_service_server::RateLimitService;
+use envoy_types::pb::google::protobuf::Duration;
 use fp_domain::rate_limit::{descriptors_canonical, RateLimitUnit};
 use tonic::{Request, Response, Status};
 
@@ -57,9 +58,14 @@ fn ok_status() -> DescriptorStatus {
     }
 }
 
-fn enforced_status(policy: MatchedPolicy, count: u64) -> (DescriptorStatus, bool) {
+fn enforced_status(policy: MatchedPolicy, count: u64, now: u64) -> (DescriptorStatus, bool) {
     let over = count > policy.requests_per_unit;
     let remaining = policy.requests_per_unit.saturating_sub(count);
+    // Seconds until the current epoch-aligned fixed window `[id*W, (id+1)*W)` resets — the same
+    // window the counter store uses (`now / W`), so this is the real reset for this counter. Feeds
+    // Envoy's `x-ratelimit-reset` header (when enabled). `now % W == 0` ⇒ a full window remains.
+    let window = policy.unit.window_seconds().max(1);
+    let until_reset = window - (now % window);
     let status = DescriptorStatus {
         code: if over { Code::OverLimit } else { Code::Ok } as i32,
         current_limit: Some(ProtoRateLimit {
@@ -68,7 +74,10 @@ fn enforced_status(policy: MatchedPolicy, count: u64) -> (DescriptorStatus, bool
             unit: unit_to_proto(policy.unit),
         }),
         limit_remaining: u32::try_from(remaining).unwrap_or(u32::MAX),
-        duration_until_reset: None,
+        duration_until_reset: Some(Duration {
+            seconds: i64::try_from(until_reset).unwrap_or(i64::MAX),
+            nanos: 0,
+        }),
         ..Default::default()
     };
     (status, over)
@@ -121,7 +130,7 @@ impl RateLimitService for RlsService {
                     let count = self
                         .counters
                         .incr(&key, policy.unit.window_seconds(), hits, now);
-                    let (status, over) = enforced_status(policy, count);
+                    let (status, over) = enforced_status(policy, count, now);
                     overall_over |= over;
                     statuses.push(status);
                 }
@@ -210,6 +219,58 @@ mod tests {
                 .into_inner();
             let ok = resp.overall_code == Code::Ok as i32;
             assert_eq!(ok, expected_ok, "overall_code={}", resp.overall_code);
+        }
+    }
+
+    #[tokio::test]
+    async fn matched_status_reports_a_nonzero_duration_until_reset() {
+        // Regression for the hardcoded `duration_until_reset: None` that left Envoy's
+        // `x-ratelimit-reset` header stuck at 0. A matched descriptor must carry the seconds left
+        // in its epoch-aligned window — for a minute policy that is 1..=60 (never 0/None).
+        let svc = service_with(pushed("orgA|teamA|checkout", &[("client_id", "bob")], 5));
+        let resp = svc
+            .should_rate_limit(request(
+                "orgA|teamA|checkout",
+                vec![descriptor(&[("client_id", "bob")])],
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let reset = resp.statuses[0]
+            .duration_until_reset
+            .as_ref()
+            .expect("matched descriptor must report duration_until_reset");
+        assert!(
+            (1..=60).contains(&reset.seconds),
+            "minute-window reset must be 1..=60s, got {}",
+            reset.seconds
+        );
+        assert_eq!(reset.nanos, 0);
+        // An unmatched descriptor still has no window, so it stays None.
+        let unmatched = svc
+            .should_rate_limit(request(
+                "orgA|teamA|checkout",
+                vec![descriptor(&[("client_id", "nobody")])],
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(unmatched.statuses[0].duration_until_reset.is_none());
+    }
+
+    #[test]
+    fn duration_until_reset_is_the_seconds_left_in_the_epoch_window() {
+        // Deterministic boundary math (no wall clock). Minute window W=60, epoch-aligned:
+        // window 16 = [960, 1020). now=960 -> a full window remains; now=1019 -> 1s; now=1020 ->
+        // the next window just opened, so a full 60s again.
+        let policy = || MatchedPolicy { requests_per_unit: 5, unit: RateLimitUnit::Minute };
+        for (now, expected) in [(960u64, 60i64), (1019, 1), (1020, 60), (1000, 20)] {
+            let (status, _) = enforced_status(policy(), 1, now);
+            assert_eq!(
+                status.duration_until_reset.expect("reset present").seconds,
+                expected,
+                "now={now}"
+            );
         }
     }
 
