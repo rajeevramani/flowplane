@@ -21,6 +21,9 @@ pub struct AppState {
     pub xds_readiness: Option<XdsReadiness>,
     /// Runtime deny policy for S9 discovery forwarding.
     pub discovery_forwarding_policy: DiscoveryForwardingPolicy,
+    /// Kicks the rate-limit `rls_sync` worker for an immediate reconcile (force-repush).
+    /// `None` when the RLS admin URL is unconfigured (the worker is not running).
+    pub rls_repush: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Clone)]

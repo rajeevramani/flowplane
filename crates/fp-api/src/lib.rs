@@ -17,6 +17,7 @@ pub mod learning_api;
 pub mod mcp_api;
 pub mod middleware;
 pub mod orgs_api;
+pub mod rate_limit_api;
 pub mod resources;
 pub mod route_generation_api;
 pub mod routes;

@@ -15,7 +15,7 @@ use fp_domain::rate_limit::{
     RateLimitTeamOverrideSpec, RateLimitUnit,
 };
 use fp_domain::{
-    DomainError, DomainResult, ErrorCode, RateLimitDomainId, RateLimitPolicyId,
+    DomainError, DomainResult, ErrorCode, OrgId, RateLimitDomainId, RateLimitPolicyId,
     RateLimitTeamOverrideId, TeamId,
 };
 use sqlx::postgres::PgRow;
@@ -653,6 +653,59 @@ async fn override_revision_error(
         Ok(None) => DomainError::not_found("rate-limit override", &policy_id.to_string()),
         Err(e) => DomainError::internal(format!("rate-limit override revision recheck: {e}")),
     }
+}
+
+// ---- CP rls_sync reconcile read (PLATFORM-INTERNAL, cross-team) --------------------------
+
+/// One effective policy row for the CP `rls_sync` worker (S5). The effective `requests_per_unit`
+/// already folds in any team override.
+pub struct SyncPolicyRow {
+    pub org_id: OrgId,
+    pub team_id: TeamId,
+    pub domain: String,
+    pub descriptors: BTreeMap<String, String>,
+    pub requests_per_unit: u64,
+    pub unit: RateLimitUnit,
+}
+
+/// Read every team's live policies (with overrides applied) for the reconcile push. This is the
+/// one intentionally UNSCOPED read in this module: the sync worker is a platform-internal
+/// component that pushes the full set to the RLS, which keys everything by the CP-composed
+/// `{org|team|domain}` namespace. It is never reachable from a tenant request path.
+pub async fn list_all_for_sync(pool: &PgPool) -> DomainResult<Vec<SyncPolicyRow>> {
+    let rows = sqlx::query(
+        "SELECT p.org_id, p.team_id, d.name AS domain, p.descriptors, \
+                COALESCE(o.requests_per_unit, p.requests_per_unit) AS requests_per_unit, p.unit \
+         FROM rate_limit_policies p \
+         JOIN rate_limit_domains d ON d.id = p.domain_id AND d.deleted_at IS NULL \
+         LEFT JOIN rate_limit_team_overrides o \
+           ON o.policy_id = p.id AND o.team_id = p.team_id AND o.deleted_at IS NULL \
+         WHERE p.deleted_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list rate-limit policies for sync: {e}")))?;
+    rows.iter().map(sync_row_from).collect()
+}
+
+fn sync_row_from(row: &PgRow) -> DomainResult<SyncPolicyRow> {
+    let descriptors: serde_json::Value = row.get("descriptors");
+    let descriptors: BTreeMap<String, String> =
+        serde_json::from_value(descriptors).map_err(|e| {
+            DomainError::internal(format!("rate-limit descriptors in DB do not parse: {e}"))
+        })?;
+    let requests_per_unit: i64 = row.get("requests_per_unit");
+    let unit: String = row.get("unit");
+    Ok(SyncPolicyRow {
+        org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+        team_id: TeamId::from(row.get::<Uuid, _>("team_id")),
+        domain: row.get("domain"),
+        descriptors,
+        requests_per_unit: u64::try_from(requests_per_unit)
+            .map_err(|_| DomainError::internal("rate-limit requests_per_unit in DB is negative"))?,
+        unit: RateLimitUnit::from_str(&unit)
+            .map_err(|e| DomainError::internal(format!("rate-limit unit in DB invalid: {e}")))?,
+    })
 }
 
 // ---- Shared error helpers ---------------------------------------------------------------

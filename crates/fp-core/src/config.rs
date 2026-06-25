@@ -53,6 +53,11 @@ pub struct ServerConfig {
     /// sibling container's init step can read it (the token is otherwise only logged). Ignored
     /// outside dev mode. Env `FLOWPLANE_DEV_TOKEN_PATH`.
     pub dev_token_path: Option<PathBuf>,
+    /// HTTP admin URL of the first-party rate-limit service. When set, the CP `rls_sync` worker
+    /// pushes the policy set here on a 60 s reconcile (S5). `None` disables the worker. Env
+    /// `FLOWPLANE_RLS_ADMIN_URL`. (The RLS gRPC URL that drives S6 CDS injection,
+    /// `FLOWPLANE_RLS_GRPC_URL`, is a separate listener and lands with S6.)
+    pub rls_admin_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +118,7 @@ struct FileConfig {
     log_filter: Option<String>,
     otlp_endpoint: Option<String>,
     dev_token_path: Option<String>,
+    rls_admin_url: Option<String>,
 }
 
 const DEFAULT_API_ADDR: &str = "0.0.0.0:8080";
@@ -328,6 +334,10 @@ impl ServerConfig {
             .map(PathBuf::from)
             .or_else(|| file.dev_token_path.map(PathBuf::from));
 
+        let rls_admin_url = get("FLOWPLANE_RLS_ADMIN_URL")
+            .map(str::to_owned)
+            .or(file.rls_admin_url);
+
         Ok(Self {
             api_addr,
             xds_addr,
@@ -344,6 +354,7 @@ impl ServerConfig {
             tenant_write_limit_per_minute,
             allow_logged_bootstrap_token,
             dev_token_path,
+            rls_admin_url,
         })
     }
 }

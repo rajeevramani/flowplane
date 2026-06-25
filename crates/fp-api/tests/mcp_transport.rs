@@ -73,6 +73,7 @@ async fn app_with_tokens() -> Option<(axum::Router, String, String, String)> {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
     });
     Some((app, token_a, token_b, team.name))
 }
