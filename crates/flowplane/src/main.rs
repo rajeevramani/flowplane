@@ -89,6 +89,11 @@ enum Command {
         #[command(subcommand)]
         command: cli::AiCommand,
     },
+    /// Global rate-limit domains, policies, and per-team overrides.
+    RateLimit {
+        #[command(subcommand)]
+        command: cli::RateLimitCommand,
+    },
     /// Learning capture sessions.
     Learn {
         #[command(subcommand)]
@@ -184,6 +189,9 @@ fn run() -> anyhow::Result<()> {
         Command::Api { command } => runtime.block_on(cli::run_api(cli.client, command)),
         Command::Mcp { command } => runtime.block_on(cli::run_mcp(cli.client, command)),
         Command::Ai { command } => runtime.block_on(cli::run_ai(cli.client, command)),
+        Command::RateLimit { command } => {
+            runtime.block_on(cli::run_rate_limit(cli.client, command))
+        }
         Command::Learn { command } => runtime.block_on(cli::run_learn(cli.client, command)),
         Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
         Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),

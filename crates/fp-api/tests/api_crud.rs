@@ -109,11 +109,12 @@ fn openapi_document_covers_every_registered_operation() {
     // + 5 AI provider operations + 5 AI route operations.
     // + 5 AI budget operations + 1 AI usage operation.
     // + 1 RLS force-repush admin operation.
+    // + 14 rate-limit CRUD operations (5 domain + 5 policy + 4 override).
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 96,
-        "expected 96 documented operations, got {operations}"
+        operations, 110,
+        "expected 110 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");

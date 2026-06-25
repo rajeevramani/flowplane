@@ -89,6 +89,30 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         ))
         .routes(routes!(crate::orgs_api::remove_member))
         .routes(routes!(crate::rate_limit_api::force_repush))
+        .routes(routes!(
+            crate::rate_limit_api::list_domains,
+            crate::rate_limit_api::create_domain
+        ))
+        .routes(routes!(
+            crate::rate_limit_api::get_domain,
+            crate::rate_limit_api::update_domain,
+            crate::rate_limit_api::delete_domain
+        ))
+        .routes(routes!(
+            crate::rate_limit_api::list_policies,
+            crate::rate_limit_api::create_policy
+        ))
+        .routes(routes!(
+            crate::rate_limit_api::get_policy,
+            crate::rate_limit_api::update_policy,
+            crate::rate_limit_api::delete_policy
+        ))
+        .routes(routes!(
+            crate::rate_limit_api::get_override,
+            crate::rate_limit_api::create_override,
+            crate::rate_limit_api::update_override,
+            crate::rate_limit_api::delete_override
+        ))
         .routes(routes!(clusters::list, clusters::create))
         .routes(routes!(clusters::get, clusters::update, clusters::delete))
         .routes(routes!(listeners::list, listeners::create))
