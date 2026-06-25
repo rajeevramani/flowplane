@@ -698,19 +698,9 @@ async fn dynamic_api_tools_are_live_enabled_and_team_scoped() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = json_of(response).await;
     let api_id = uuid::Uuid::parse_str(body["api"]["id"].as_str().expect("api id")).expect("uuid");
-    let spec_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM spec_versions WHERE api_definition_id = $1 ORDER BY version DESC LIMIT 1",
-    )
-    .bind(api_id)
-    .fetch_one(&fx.pool)
-    .await
-    .expect("spec id");
-    sqlx::query("UPDATE api_definitions SET published_spec_version_id = $1 WHERE id = $2")
-        .bind(spec_id)
-        .bind(api_id)
-        .execute(&fx.pool)
-        .await
-        .expect("publish api");
+    // Publish v1 through the product publish surface (not a raw UPDATE): imported specs
+    // become servable only through the explicit publish gate (acceptance #6 / inv 16).
+    publish_spec(fx.app.clone(), &fx.admin_token, &fx.team_name, &api_name, 1).await;
     let tool_name: String =
         sqlx::query_scalar("SELECT name FROM api_tools WHERE api_definition_id = $1")
             .bind(api_id)
@@ -1065,5 +1055,314 @@ async fn dynamic_api_tools_reflect_republished_specs() {
     assert_ne!(
         first_content["specVersionId"],
         second_content["specVersionId"]
+    );
+}
+
+/// Acceptance #1: an API created with `--from-openapi` (imported) is INERT by default —
+/// it does NOT auto-publish, so its `api_<tool>` is absent from `tools/list` until an
+/// explicit publish.
+#[tokio::test]
+async fn imported_api_is_inert_before_publish() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    let api_name = unique("imported");
+    let response = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/teams/{}/api-definitions", fx.team_name))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": api_name,
+                        "openapi": {
+                            "openapi": "3.0.3",
+                            "info": { "title": "Imported", "version": "1" },
+                            "paths": {
+                                "/items/{id}": {
+                                    "get": { "operationId": "getItem" }
+                                }
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("create api"),
+        )
+        .await
+        .expect("api response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    let api_id = uuid::Uuid::parse_str(body["api"]["id"].as_str().expect("api id")).expect("uuid");
+
+    // The tool row is generated on import, but the API is inert (no published pointer),
+    // so the MCP tool must NOT be exposed.
+    let tool_name: String =
+        sqlx::query_scalar("SELECT name FROM api_tools WHERE api_definition_id = $1")
+            .bind(api_id)
+            .fetch_one(&fx.pool)
+            .await
+            .expect("tool name");
+    let mcp_name = format!("api_{tool_name}");
+
+    let gateway_token = create_agent(
+        fx.app.clone(),
+        &fx.admin_token,
+        "gateway-tool",
+        fx.team_id,
+        vec![("mcp-tools", "execute")],
+    )
+    .await;
+    let gateway_session = initialize(fx.app.clone(), &gateway_token).await;
+    let tools = tools_list(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &fx.team_name,
+    )
+    .await;
+    assert!(
+        !tools.contains(&mcp_name),
+        "imported API must be inert before publish: {mcp_name} should be absent"
+    );
+}
+
+/// Acceptance #2: after publishing an imported spec, its `api_<tool>` is listed for the
+/// owning team and absent for any other team.
+#[tokio::test]
+async fn publishing_imported_api_serves_tools_team_scoped() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    let api_name = unique("imported");
+    let response = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/teams/{}/api-definitions", fx.team_name))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": api_name,
+                        "openapi": {
+                            "openapi": "3.0.3",
+                            "info": { "title": "Imported", "version": "1" },
+                            "paths": {
+                                "/items/{id}": {
+                                    "get": { "operationId": "getItem" }
+                                }
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("create api"),
+        )
+        .await
+        .expect("api response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_of(response).await;
+    let api_id = uuid::Uuid::parse_str(body["api"]["id"].as_str().expect("api id")).expect("uuid");
+    let tool_name: String =
+        sqlx::query_scalar("SELECT name FROM api_tools WHERE api_definition_id = $1")
+            .bind(api_id)
+            .fetch_one(&fx.pool)
+            .await
+            .expect("tool name");
+    let mcp_name = format!("api_{tool_name}");
+
+    // Publish v1 through the product publish surface.
+    publish_spec(fx.app.clone(), &fx.admin_token, &fx.team_name, &api_name, 1).await;
+
+    let gateway_token = create_agent(
+        fx.app.clone(),
+        &fx.admin_token,
+        "gateway-tool",
+        fx.team_id,
+        vec![("mcp-tools", "execute")],
+    )
+    .await;
+    let gateway_session = initialize(fx.app.clone(), &gateway_token).await;
+    let tools = tools_list(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &fx.team_name,
+    )
+    .await;
+    assert!(
+        tools.contains(&mcp_name),
+        "published imported API must expose {mcp_name} to the owning team"
+    );
+
+    let cross_team_tools = tools_list(
+        fx.app.clone(),
+        &gateway_token,
+        &gateway_session,
+        &fx.other_team_name,
+    )
+    .await;
+    assert!(
+        !cross_team_tools.contains(&mcp_name),
+        "published imported API must be team-scoped: {mcp_name} absent for other team"
+    );
+}
+
+/// Acceptance #4: publishing an imported spec emits an `api.spec.publish` audit row for the
+/// team and at least one outbox event (the tool-regeneration / config-change event).
+#[tokio::test]
+async fn publishing_imported_api_emits_audit_and_outbox() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    let api_name = unique("imported");
+    let response = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/teams/{}/api-definitions", fx.team_name))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": api_name,
+                        "openapi": {
+                            "openapi": "3.0.3",
+                            "info": { "title": "Imported", "version": "1" },
+                            "paths": {
+                                "/items/{id}": {
+                                    "get": { "operationId": "getItem" }
+                                }
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("create api"),
+        )
+        .await
+        .expect("api response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // Count team outbox events before publish so we can assert a positive delta. The exact
+    // tool-regeneration `event_type` is an implementation detail (not exposed black-box), so
+    // we assert that publish appended at least one new event for the team. The `events`
+    // table shape (event_type, team_id, payload) is from migration 0003_outbox.sql, and the
+    // query mirrors the count pattern used by crates/fp-core/tests/rate_limit.rs.
+    let events_before: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE team_id = $1")
+        .bind(fx.team_id)
+        .fetch_one(&fx.pool)
+        .await
+        .expect("events before");
+
+    // Publish v1 through the product publish surface.
+    publish_spec(fx.app.clone(), &fx.admin_token, &fx.team_name, &api_name, 1).await;
+
+    // (a) audit row for the publish action.
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+         WHERE team_id = $1 AND action = 'api.spec.publish'",
+    )
+    .bind(fx.team_id)
+    .fetch_one(&fx.pool)
+    .await
+    .expect("publish audit count");
+    assert!(
+        audit_count >= 1,
+        "publish must emit an api.spec.publish audit row for the team"
+    );
+
+    // (b) outbox row for the tool-regeneration / config-change event.
+    let events_after: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE team_id = $1")
+        .bind(fx.team_id)
+        .fetch_one(&fx.pool)
+        .await
+        .expect("events after");
+    assert!(
+        events_after > events_before,
+        "publish must append at least one outbox event for the team \
+         (tool-regeneration / config-change event)"
+    );
+}
+
+/// Acceptance #5: an imported spec cannot be rejected via the REST reject endpoint — reject
+/// stays learned-only. The error message must say so.
+#[tokio::test]
+async fn imported_spec_reject_is_learned_only_over_rest() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    let api_name = unique("imported");
+    let response = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/teams/{}/api-definitions", fx.team_name))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": api_name,
+                        "openapi": {
+                            "openapi": "3.0.3",
+                            "info": { "title": "Imported", "version": "1" },
+                            "paths": {
+                                "/items/{id}": {
+                                    "get": { "operationId": "getItem" }
+                                }
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("create api"),
+        )
+        .await
+        .expect("api response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // Attempt to reject v1 over REST. Path confirmed from existing tests
+    // (crates/fp-api/tests/api_crud.rs registers
+    //  /api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject).
+    let reject = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/teams/{}/api-definitions/{api_name}/specs/1/reject",
+                    fx.team_name
+                ))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "reason": "nope" }).to_string(),
+                ))
+                .expect("reject request"),
+        )
+        .await
+        .expect("reject response");
+    assert_ne!(
+        reject.status(),
+        StatusCode::OK,
+        "rejecting an imported spec must fail"
+    );
+    let body = json_of(reject).await;
+    let message = body.to_string();
+    assert!(
+        message.contains("only learned spec versions can be rejected"),
+        "expected learned-only reject error, got: {message}"
     );
 }
