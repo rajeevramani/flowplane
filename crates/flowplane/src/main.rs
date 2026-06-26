@@ -148,9 +148,12 @@ enum DbCommand {
 
 fn main() {
     if let Err(err) = run() {
-        if let Some(http) = err.downcast_ref::<cli::output::CliHttpError>() {
-            std::process::exit(http.exit_code());
+        // A CliError has already rendered its structured envelope to stderr (CLI-R-30);
+        // exit with its resolved code (CLI-R-31) without re-printing.
+        if let Some(cli_err) = err.downcast_ref::<cli::output::CliError>() {
+            std::process::exit(cli_err.exit_code());
         }
+        // Fallback: an unclassified internal/local error → generic exit 1 (CLI-R-31).
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }

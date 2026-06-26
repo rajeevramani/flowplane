@@ -6,24 +6,32 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 
+/// A CLI error whose structured envelope has already been rendered to stderr (CLI-R-30).
+///
+/// It carries only the resolved process exit code (CLI-R-31); `main` downcasts to this type
+/// and exits with `exit_code()` without re-printing, so no raw `{err:?}` trailer leaks.
 #[derive(Debug)]
-pub(crate) struct CliHttpError {
-    status: StatusCode,
+pub(crate) struct CliError {
+    exit_code: i32,
 }
 
-impl CliHttpError {
+impl CliError {
+    pub(crate) fn new(exit_code: i32) -> Self {
+        Self { exit_code }
+    }
+
     pub(crate) fn exit_code(&self) -> i32 {
-        exit_code_for_status(self.status)
+        self.exit_code
     }
 }
 
-impl fmt::Display for CliHttpError {
+impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "request failed with status {}", self.status)
+        write!(f, "command failed (exit {})", self.exit_code)
     }
 }
 
-impl std::error::Error for CliHttpError {}
+impl std::error::Error for CliError {}
 
 pub(crate) fn render_error(
     global: &GlobalOptions,
@@ -31,30 +39,65 @@ pub(crate) fn render_error(
     request_id: Option<String>,
     text: &str,
 ) -> anyhow::Error {
-    let (envelope, code, message, hint, request_id) = error_envelope(status, request_id, text);
-    if matches!(global.format(), OutputFormat::Json) {
-        match serde_json::to_string_pretty(&envelope) {
-            Ok(json) => eprintln!("{json}"),
-            Err(_) => eprintln!("{}", envelope),
-        }
-    } else {
-        eprintln!("error ({code}): {message}");
-        if let Some(hint) = hint {
-            eprintln!("  -> {hint}");
-        }
-        if let Some(rid) = request_id {
-            eprintln!("  request id: {rid}");
-        }
-    }
-    anyhow::Error::new(CliHttpError { status })
+    let env = error_envelope(status, request_id, text);
+    emit_error_envelope(global, &env);
+    anyhow::Error::new(CliError::new(exit_code_for_status(status)))
 }
 
-fn error_envelope(
-    status: StatusCode,
-    request_id: Option<String>,
-    text: &str,
-) -> (Value, String, String, Option<String>, Option<String>) {
-    let parsed = serde_json::from_str::<Value>(text).ok();
+/// Render a transport/network failure (connection refused, DNS, TLS, timeout) through the
+/// same structured envelope as HTTP errors (CLI-R-30): no raw `eprintln!("{err:?}")`.
+/// Transport failures are always `retryable: true` and exit `7` (CLI-R-31/32).
+pub(crate) fn render_transport_error(
+    global: &GlobalOptions,
+    err: &reqwest::Error,
+) -> anyhow::Error {
+    let code = if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connection_failed"
+    } else {
+        "transport_error"
+    };
+    let env = serde_json::json!({
+        "code": code,
+        "message": err.to_string(),
+        "retryable": true,
+    });
+    emit_error_envelope(global, &env);
+    anyhow::Error::new(CliError::new(7))
+}
+
+/// Print an already-built error envelope to **stderr** (CLI-R-30): JSON under `-o json`,
+/// YAML under `-o yaml`, otherwise a compact prose form. stdout is left untouched.
+pub(crate) fn emit_error_envelope(global: &GlobalOptions, env: &Value) {
+    match global.format() {
+        OutputFormat::Json => match serde_json::to_string_pretty(env) {
+            Ok(json) => eprintln!("{json}"),
+            Err(_) => eprintln!("{env}"),
+        },
+        OutputFormat::Yaml => eprintln!("{}", yaml_like(env, 0)),
+        OutputFormat::Table | OutputFormat::Wide => {
+            let field = |key: &str| env.get(key).and_then(Value::as_str);
+            let code = field("code").unwrap_or("error");
+            let message = field("message").unwrap_or("request failed");
+            eprintln!("error ({code}): {message}");
+            if let Some(hint) = field("hint") {
+                eprintln!("  -> {hint}");
+            }
+            if let Some(rid) = field("request_id") {
+                eprintln!("  request id: {rid}");
+            }
+        }
+    }
+}
+
+fn error_envelope(status: StatusCode, request_id: Option<String>, text: &str) -> Value {
+    // Only a JSON *object* error body is adopted as the envelope base; a string/array/number
+    // (or non-JSON text) body falls back to a freshly-built object so the contract shape
+    // (CLI-R-30) holds for every HTTP error regardless of what the server/proxy returned.
+    let parsed = serde_json::from_str::<Value>(text)
+        .ok()
+        .filter(Value::is_object);
     let code = parsed
         .as_ref()
         .and_then(|v| v.get("code"))
@@ -67,11 +110,17 @@ fn error_envelope(
         .and_then(Value::as_str)
         .unwrap_or(text)
         .to_string();
+    // CLI-R-33: synthesize the login hint on 401 when the server omits one; 403 keeps the
+    // server-supplied hint (which already names the (resource, action) via deny_to_error).
     let hint = parsed
         .as_ref()
         .and_then(|v| v.get("hint"))
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_string)
+        .or_else(|| {
+            (status == StatusCode::UNAUTHORIZED)
+                .then(|| "run `flowplane auth login` to authenticate".to_string())
+        });
     let request_id = request_id.or_else(|| {
         parsed
             .as_ref()
@@ -80,33 +129,71 @@ fn error_envelope(
             .map(str::to_string)
     });
 
-    let mut envelope = parsed.unwrap_or_else(|| {
-        serde_json::json!({
-            "code": code,
-            "message": message,
-        })
-    });
+    let mut envelope = parsed.unwrap_or_else(|| serde_json::json!({}));
     if let Value::Object(obj) = &mut envelope {
         obj.entry("code").or_insert(Value::String(code.clone()));
         obj.entry("message")
             .or_insert(Value::String(message.clone()));
         obj.entry("status")
             .or_insert(Value::Number(status.as_u16().into()));
+        // CLI-R-32: classify transient (429/5xx) vs terminal failures.
+        obj.insert("retryable".into(), Value::Bool(is_retryable(status)));
+        if let Some(hint) = &hint {
+            obj.entry("hint").or_insert(Value::String(hint.clone()));
+        }
         if let Some(rid) = &request_id {
             obj.entry("request_id")
                 .or_insert(Value::String(rid.clone()));
         }
     }
-    (envelope, code, message, hint, request_id)
+    envelope
 }
 
+/// The human message for a non-success HTTP response (object `message`, else the body text,
+/// else the status), for callers that aggregate failures instead of rendering each one.
+pub(crate) fn error_message(status: StatusCode, text: &str) -> String {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .filter(Value::is_object)
+        .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| {
+            if text.trim().is_empty() {
+                status.to_string()
+            } else {
+                text.to_string()
+            }
+        })
+}
+
+/// Build the aggregate error envelope for an `apply` partial/total failure (CLI-R-30): one
+/// structured document on stderr listing each failed resource, instead of per-subrequest
+/// prints or a raw `{err:?}` trailer.
+pub(crate) fn apply_error_envelope(failures: Vec<Value>) -> Value {
+    serde_json::json!({
+        "code": "apply_failed",
+        "message": format!("{} resource(s) failed to apply", failures.len()),
+        "retryable": false,
+        "failures": failures,
+    })
+}
+
+/// Whether a failed HTTP status is worth retrying (CLI-R-32): rate-limit and server errors
+/// are transient; 4xx terminal. Transport failures are handled in `render_transport_error`.
+pub(crate) fn is_retryable(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// Map an HTTP status to the CLI's scriptable exit code (CLI-R-31): `3` auth (401/403),
+/// `4` not-found/conflict/precondition (404/409/412), `5` validation (400/422), `6`
+/// rate-limited (429), `7` server (5xx), `1` otherwise. Usage errors (`2`) are clap-native;
+/// transport failures (`7`) are assigned in `render_transport_error`.
 pub(crate) fn exit_code_for_status(status: StatusCode) -> i32 {
     match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => 2,
-        StatusCode::NOT_FOUND | StatusCode::CONFLICT | StatusCode::PRECONDITION_FAILED => 3,
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => 4,
-        StatusCode::TOO_MANY_REQUESTS => 5,
-        s if s.is_server_error() => 6,
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => 3,
+        StatusCode::NOT_FOUND | StatusCode::CONFLICT | StatusCode::PRECONDITION_FAILED => 4,
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => 5,
+        StatusCode::TOO_MANY_REQUESTS => 6,
+        s if s.is_server_error() => 7,
         _ => 1,
     }
 }
@@ -641,45 +728,90 @@ mod tests {
 
     #[test]
     fn http_statuses_map_to_scriptable_exit_codes() {
-        assert_eq!(exit_code_for_status(StatusCode::UNAUTHORIZED), 2);
-        assert_eq!(exit_code_for_status(StatusCode::FORBIDDEN), 2);
-        assert_eq!(exit_code_for_status(StatusCode::NOT_FOUND), 3);
-        assert_eq!(exit_code_for_status(StatusCode::CONFLICT), 3);
-        assert_eq!(exit_code_for_status(StatusCode::BAD_REQUEST), 4);
-        assert_eq!(exit_code_for_status(StatusCode::TOO_MANY_REQUESTS), 5);
-        assert_eq!(exit_code_for_status(StatusCode::INTERNAL_SERVER_ERROR), 6);
+        // CLI-R-31 0–7 table: auth=3, not-found/conflict/precondition=4, validation=5,
+        // rate-limited=6, server=7, generic=1.
+        assert_eq!(exit_code_for_status(StatusCode::UNAUTHORIZED), 3);
+        assert_eq!(exit_code_for_status(StatusCode::FORBIDDEN), 3);
+        assert_eq!(exit_code_for_status(StatusCode::NOT_FOUND), 4);
+        assert_eq!(exit_code_for_status(StatusCode::CONFLICT), 4);
+        assert_eq!(exit_code_for_status(StatusCode::PRECONDITION_FAILED), 4);
+        assert_eq!(exit_code_for_status(StatusCode::BAD_REQUEST), 5);
+        assert_eq!(exit_code_for_status(StatusCode::UNPROCESSABLE_ENTITY), 5);
+        assert_eq!(exit_code_for_status(StatusCode::TOO_MANY_REQUESTS), 6);
+        assert_eq!(exit_code_for_status(StatusCode::INTERNAL_SERVER_ERROR), 7);
+        assert_eq!(exit_code_for_status(StatusCode::BAD_GATEWAY), 7);
+        assert_eq!(exit_code_for_status(StatusCode::IM_A_TEAPOT), 1);
+    }
+
+    #[test]
+    fn retryable_classifies_transient_vs_terminal() {
+        assert!(is_retryable(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(!is_retryable(StatusCode::NOT_FOUND));
+        assert!(!is_retryable(StatusCode::BAD_REQUEST));
+        assert!(!is_retryable(StatusCode::UNAUTHORIZED));
     }
 
     #[test]
     fn error_envelope_preserves_server_json_and_request_id_header() {
-        let (value, code, message, hint, request_id) = error_envelope(
+        let value = error_envelope(
             StatusCode::NOT_FOUND,
             Some("req-1".into()),
             r#"{"code":"not_found","message":"missing","hint":"check name"}"#,
         );
 
-        assert_eq!(code, "not_found");
-        assert_eq!(message, "missing");
-        assert_eq!(hint.as_deref(), Some("check name"));
-        assert_eq!(request_id.as_deref(), Some("req-1"));
         assert_eq!(value["code"], "not_found");
         assert_eq!(value["message"], "missing");
+        assert_eq!(value["hint"], "check name");
         assert_eq!(value["status"], 404);
         assert_eq!(value["request_id"], "req-1");
+        assert_eq!(value["retryable"], false);
     }
 
     #[test]
-    fn error_envelope_wraps_plain_text_failures() {
-        let (value, code, message, hint, request_id) =
-            error_envelope(StatusCode::BAD_GATEWAY, None, "upstream unavailable");
+    fn error_envelope_wraps_plain_text_failures_as_retryable_server_error() {
+        let value = error_envelope(StatusCode::BAD_GATEWAY, None, "upstream unavailable");
 
-        assert_eq!(code, "502");
-        assert_eq!(message, "upstream unavailable");
-        assert_eq!(hint, None);
-        assert_eq!(request_id, None);
         assert_eq!(value["code"], "502");
         assert_eq!(value["message"], "upstream unavailable");
         assert_eq!(value["status"], 502);
+        assert_eq!(value["retryable"], true);
+        assert!(value.get("hint").is_none());
+        assert!(value.get("request_id").is_none());
+    }
+
+    #[test]
+    fn error_envelope_wraps_non_object_json_body_in_a_fresh_object() {
+        // A server/proxy returning a JSON array/string/number must still yield the contract
+        // object shape, not the raw value (CLI-R-30).
+        for body in [r#"["boom"]"#, r#""boom""#, "42", "true"] {
+            let value = error_envelope(StatusCode::BAD_GATEWAY, None, body);
+            assert!(
+                value.is_object(),
+                "body {body:?} must produce an object envelope"
+            );
+            assert_eq!(value["status"], 502);
+            assert_eq!(value["retryable"], true);
+            assert!(value.get("code").is_some());
+            assert!(value.get("message").is_some());
+        }
+    }
+
+    #[test]
+    fn error_envelope_synthesizes_login_hint_on_401_without_server_hint() {
+        let value = error_envelope(StatusCode::UNAUTHORIZED, None, "unauthorized");
+        assert_eq!(value["status"], 401);
+        assert_eq!(value["retryable"], false);
+        assert_eq!(value["hint"], "run `flowplane auth login` to authenticate");
+
+        // A server-supplied hint is preserved, not overwritten.
+        let value = error_envelope(
+            StatusCode::UNAUTHORIZED,
+            None,
+            r#"{"message":"nope","hint":"use a fresh token"}"#,
+        );
+        assert_eq!(value["hint"], "use a fresh token");
     }
 
     #[test]

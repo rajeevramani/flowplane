@@ -19,6 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::Path;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{json, Value};
@@ -85,8 +86,38 @@ async fn list_clusters(Path(_team): Path<String>) -> Json<Value> {
     ]))
 }
 
-async fn get_cluster(Path((_team, name)): Path<(String, String)>) -> Json<Value> {
-    Json(json!({ "name": name, "revision": 1, "service_name": "svc" }))
+/// Error injection: a resource name like `err-404`/`err-429`/`err-503`/`err-401`/`err-403`
+/// makes the item endpoints return that HTTP status with a JSON error body, so error-path
+/// tests can drive every status class deterministically. Any other name is a normal 200.
+fn injected_error(name: &str) -> Option<(StatusCode, Value)> {
+    let code = name.strip_prefix("err-")?.parse::<u16>().ok()?;
+    let status = StatusCode::from_u16(code).ok()?;
+    let body = match status {
+        // 401 deliberately omits a `hint` so the client must synthesize the login hint.
+        StatusCode::UNAUTHORIZED => {
+            json!({ "code": "unauthorized", "message": "missing or invalid token" })
+        }
+        // 403 names the (resource, action) the way deny_to_error does server-side.
+        StatusCode::FORBIDDEN => json!({
+            "code": "forbidden",
+            "message": "access denied",
+            "hint": "forbidden: team:payments resource=clusters action=delete"
+        }),
+        StatusCode::NOT_FOUND => json!({ "code": "not_found", "message": "cluster not found" }),
+        StatusCode::TOO_MANY_REQUESTS => json!({ "code": "rate_limited", "message": "slow down" }),
+        _ => json!({ "code": status.as_str(), "message": "server error" }),
+    };
+    Some((status, body))
+}
+
+async fn get_cluster(Path((_team, name)): Path<(String, String)>) -> (StatusCode, Json<Value>) {
+    if let Some((status, body)) = injected_error(&name) {
+        return (status, Json(body));
+    }
+    (
+        StatusCode::OK,
+        Json(json!({ "name": name, "revision": 1, "service_name": "svc" })),
+    )
 }
 
 async fn create_cluster(
@@ -111,8 +142,21 @@ async fn update_cluster(
     Json(json!({ "name": name, "revision": 2 }))
 }
 
-async fn delete_cluster(Path((_team, _name)): Path<(String, String)>) -> StatusCode {
-    StatusCode::NO_CONTENT
+async fn delete_cluster(Path((_team, name)): Path<(String, String)>) -> Response {
+    if let Some((status, body)) = injected_error(&name) {
+        return (status, Json(body)).into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// A loopback URL with no listener — connecting to it fails fast with "connection refused",
+/// for exercising the transport-error path. Binds an ephemeral port then drops it so the
+/// port is (almost certainly) free again, avoiding a fixed-port collision.
+pub fn dead_base_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    drop(listener);
+    format!("http://{addr}")
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);

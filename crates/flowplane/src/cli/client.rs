@@ -1,5 +1,7 @@
 use crate::cli::config::{effective, EffectiveConfig, GlobalOptions, OutputFormat};
-use crate::cli::output::{derive_kind, print_mutation_summary, render, render_error};
+use crate::cli::output::{
+    derive_kind, print_mutation_summary, render, render_error, render_transport_error,
+};
 use anyhow::{Context, Result};
 use serde_json::json;
 use serde_json::Value;
@@ -9,6 +11,9 @@ pub(crate) struct RestClient {
     http: reqwest::Client,
     config: EffectiveConfig,
     global: GlobalOptions,
+    /// When false, failed sub-requests do not print their own error envelope; the caller
+    /// (e.g. `apply`) aggregates failures into a single envelope (CLI-R-30).
+    report_errors: bool,
 }
 
 impl RestClient {
@@ -21,7 +26,15 @@ impl RestClient {
             http,
             config,
             global,
+            report_errors: true,
         })
+    }
+
+    /// Build a client whose sub-request failures are returned silently (no per-call error
+    /// envelope), for orchestrating commands that emit one aggregate error envelope.
+    pub(crate) fn quiet_errors(mut self) -> Self {
+        self.report_errors = false;
+        self
     }
 
     pub(crate) async fn request(
@@ -75,7 +88,10 @@ impl RestClient {
         let url = self.url(path);
         let mut req = self.http.request(reqwest::Method::GET, url);
         req = self.add_auth_headers(req, None);
-        let response = req.send().await.context("send request")?;
+        let response = match req.send().await {
+            Ok(response) => response,
+            Err(err) => return Err(self.transport_failure(&err)),
+        };
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -87,7 +103,7 @@ impl RestClient {
             .map(str::to_string);
         let text = response.text().await.context("read response body")?;
         if !status.is_success() {
-            return Err(render_error(&self.global, status, request_id, &text));
+            return Err(self.http_failure(status, request_id, &text));
         }
         if text.trim().is_empty() {
             return Ok(None);
@@ -95,6 +111,30 @@ impl RestClient {
         serde_json::from_str(&text)
             .context("parse response JSON")
             .map(Some)
+    }
+
+    /// Turn a non-success HTTP response into an error: a rendered envelope normally, or a
+    /// silent message-carrying error when this client suppresses per-call errors (apply).
+    fn http_failure(
+        &self,
+        status: reqwest::StatusCode,
+        request_id: Option<String>,
+        text: &str,
+    ) -> anyhow::Error {
+        if self.report_errors {
+            render_error(&self.global, status, request_id, text)
+        } else {
+            anyhow::anyhow!("{}", crate::cli::output::error_message(status, text))
+        }
+    }
+
+    /// Transport failure as an error: rendered envelope normally, silent message otherwise.
+    fn transport_failure(&self, err: &reqwest::Error) -> anyhow::Error {
+        if self.report_errors {
+            render_transport_error(&self.global, err)
+        } else {
+            anyhow::anyhow!("{err}")
+        }
     }
 
     pub(crate) async fn request_text(&self, method: reqwest::Method, path: &str) -> Result<String> {
@@ -106,7 +146,10 @@ impl RestClient {
         let url = self.url(path);
         let mut req = self.http.request(method, url);
         req = self.add_auth_headers(req, self.global.revision);
-        let response = req.send().await.context("send request")?;
+        let response = match req.send().await {
+            Ok(response) => response,
+            Err(err) => return Err(self.transport_failure(&err)),
+        };
         let status = response.status();
         let request_id = response
             .headers()
@@ -115,7 +158,7 @@ impl RestClient {
             .map(str::to_string);
         let text = response.text().await.context("read response body")?;
         if !status.is_success() {
-            return Err(render_error(&self.global, status, request_id, &text));
+            return Err(self.http_failure(status, request_id, &text));
         }
         if let Some(out) = &self.global.out {
             fs::write(out, &text).with_context(|| format!("write {}", out.display()))?;
@@ -147,7 +190,10 @@ impl RestClient {
         if let Some(body) = body {
             req = req.json(&body);
         }
-        let response = req.send().await.context("send request")?;
+        let response = match req.send().await {
+            Ok(response) => response,
+            Err(err) => return Err(self.transport_failure(&err)),
+        };
         let status = response.status();
         let request_id = response
             .headers()
@@ -156,7 +202,7 @@ impl RestClient {
             .map(str::to_string);
         let text = response.text().await.context("read response body")?;
         if !status.is_success() {
-            return Err(render_error(&self.global, status, request_id, &text));
+            return Err(self.http_failure(status, request_id, &text));
         }
         if status == reqwest::StatusCode::NO_CONTENT || text.trim().is_empty() {
             if render_response && !self.global.quiet {

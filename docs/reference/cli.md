@@ -68,6 +68,46 @@ This envelope wraps reader output, mutation results (including `version`, `delet
 now emits the envelope under `-o json`. Human formats (`table`, `wide`) are unwrapped and
 remain free-form.
 
+## Errors & exit codes
+
+Every failure — an HTTP error from the server, a transport/network failure, or an `apply`
+partial-failure — is written as a structured error envelope to **stderr** (stdout stays
+empty), and the process exits with a scriptable code. Under `-o json` the error envelope is
+JSON; otherwise it is a compact `error (code): message` line. The error envelope is
+separate from the success envelope above (it is **not** wrapped in `{schemaVersion,kind,data}`):
+
+```json
+{
+  "code": "not_found",
+  "message": "cluster \"alpha\" not found",
+  "status": 404,
+  "retryable": false,
+  "request_id": "01J…",
+  "hint": "…"
+}
+```
+
+- `retryable` — `true` for transient failures (HTTP `429`, any `5xx`, and transport/timeout
+  failures), `false` for terminal `4xx`.
+- `hint` — on a `401` with no server-supplied hint the client synthesizes
+  `run \`flowplane auth login\` to authenticate`; a `403` carries the server's hint naming
+  the `(resource, action)`.
+- `status` — the HTTP status (absent for transport failures, whose `code` is
+  `connection_failed`/`timeout`/`transport_error`).
+
+### Exit codes
+
+| Code | Meaning | Trigger |
+|------|---------|---------|
+| `0` | Success | — |
+| `1` | Generic / internal CLI error | Unclassified local failure |
+| `2` | Usage error | Invalid flags/arguments (clap-native) |
+| `3` | Authentication / authorization | HTTP `401`, `403` |
+| `4` | Not found / conflict / precondition | HTTP `404`, `409`, `412` |
+| `5` | Validation | HTTP `400`, `422` |
+| `6` | Rate limited | HTTP `429` |
+| `7` | Server / transport | HTTP `5xx`, connection refused, timeout |
+
 ## Top-level commands
 
 `serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `learn`, `secret`, `dataplane`, `expose`, `unexpose`, `stats`, `ops`, `apply`, `completion`, `version`.

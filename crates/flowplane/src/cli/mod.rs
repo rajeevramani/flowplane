@@ -2020,7 +2020,9 @@ pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<(
         );
     }
     let targets = ordered_apply_targets(read_apply_manifests(&command.file)?)?;
-    let client = RestClient::new(global.clone())?;
+    // Sub-request failures are suppressed per-call and aggregated into one error envelope
+    // below (CLI-R-30), instead of each printing its own.
+    let client = RestClient::new(global.clone())?.quiet_errors();
     let mut diff_lines = Vec::new();
     let mut outcomes = Vec::new();
     for target in targets {
@@ -2056,20 +2058,36 @@ pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<(
         } else if !global.quiet {
             println!("{text}");
         }
-    } else if !global.quiet {
-        // CLI-R-10: `apply` honours `-o json`/`-o yaml` like every other command; the
-        // prose summary is only the human (table/wide) rendering.
-        if matches!(global.format(), OutputFormat::Json | OutputFormat::Yaml) {
-            output::render(&global, "applyResult", &apply_outcomes_value(&outcomes))?;
-        } else {
-            print_apply_summary(&outcomes);
+        return Ok(());
+    }
+
+    let failures: Vec<&ApplyOutcome> = outcomes.iter().filter(|o| o.failed).collect();
+    if failures.is_empty() {
+        // Success: the apply result is the command's stdout payload (CLI-R-10/15).
+        if !global.quiet {
+            if matches!(global.format(), OutputFormat::Json | OutputFormat::Yaml) {
+                output::render(&global, "applyResult", &apply_outcomes_value(&outcomes))?;
+            } else {
+                print_apply_summary(&outcomes);
+            }
         }
+        return Ok(());
     }
-    let failures = outcomes.iter().filter(|outcome| outcome.failed).count();
-    if failures > 0 {
-        anyhow::bail!("apply failed for {failures} resource(s); see summary above");
-    }
-    Ok(())
+
+    // CLI-R-30: a partial/total failure is reported as ONE structured error envelope on
+    // stderr (no per-subrequest prints, no applyResult on stdout, no raw `{err:?}` trailer).
+    let failure_items = failures
+        .iter()
+        .map(|o| {
+            json!({
+                "kind": o.kind.label(),
+                "name": o.name,
+                "error": o.detail,
+            })
+        })
+        .collect::<Vec<_>>();
+    output::emit_error_envelope(&global, &output::apply_error_envelope(failure_items));
+    Err(anyhow::Error::new(output::CliError::new(1)))
 }
 
 async fn create_apply_target(
