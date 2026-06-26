@@ -227,6 +227,33 @@ mod tests {
     }
 
     #[test]
+    fn revision_is_a_global_option_on_every_update_and_delete() {
+        // CLI-R-47: `--revision` must be uniform across every update/delete. It is a global
+        // arg, so it is accepted on every subcommand by construction — assert that invariant.
+        let cmd = Cli::command();
+        let revision = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "revision")
+            .expect("--revision global arg must exist");
+        assert!(
+            revision.is_global_set(),
+            "--revision must be global so it is present on every update/delete"
+        );
+        // And it actually parses on representative update + delete forms.
+        Cli::try_parse_from([
+            "flowplane",
+            "--revision",
+            "3",
+            "cluster",
+            "delete",
+            "x",
+            "--team",
+            "t",
+        ])
+        .expect("--revision parses on delete");
+    }
+
+    #[test]
     fn json_flag_conflicts_with_explicit_output() {
         // CLI-R-11: `-o/--output` is the single format selector; `--json` is an alias for
         // `-o json` and must not be combined with an explicit `-o`.

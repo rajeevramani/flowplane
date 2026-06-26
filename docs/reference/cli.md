@@ -22,7 +22,7 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--verbose` | | | `false` | Verbose output. |
 | `--dry-run` | | | `false` | Do not perform mutating actions. |
 | `--yes` | `-y` | | `false` | Assume "yes" for confirmation prompts. |
-| `--revision <N>` | | | | Resource revision (i64). |
+| `--revision <N>` | | | | Optimistic-concurrency precondition for `update`/`delete`, sent as `If-Match`. Omit it and the CLI does read-modify-write: it reads the resource's current revision and sends that, so a concurrent edit is detected. A stale revision fails with a `409` whose error envelope names both the `attempted_revision` and the server's current one. |
 | `--timeout <SECS>` | | `FLOWPLANE_TIMEOUT` | `30` | HTTP timeout in seconds (u64). |
 | `--out <PATH>` | | | | Write command output to a file. |
 

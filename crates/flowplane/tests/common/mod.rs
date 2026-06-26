@@ -156,16 +156,57 @@ async fn create_cluster(
     )
 }
 
+/// The `If-Match` revision the CLI sent (read-modify-write / explicit `--revision`), or null.
+fn if_match(headers: &axum::http::HeaderMap) -> Value {
+    headers
+        .get(axum::http::header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+        .map(|n| json!(n))
+        .unwrap_or(Value::Null)
+}
+
 async fn update_cluster(
     Path((_team, name)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
     Json(_body): Json<Value>,
-) -> Json<Value> {
-    Json(json!({ "name": name, "revision": 2 }))
+) -> Response {
+    // The reserved name `conflict` simulates a revision race: whatever the client sent as
+    // `If-Match`, the server has moved on to revision 7 and rejects with 409.
+    if name == "conflict" {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "conflict",
+                "message": "revision mismatch: current revision is 7"
+            })),
+        )
+            .into_response();
+    }
+    // Echo the received If-Match so a test can prove the CLI sent the resource's current
+    // revision (read-modify-write) when no explicit --revision was given.
+    Json(json!({
+        "name": name,
+        "revision": 2,
+        "applied_revision": if_match(&headers),
+    }))
+    .into_response()
 }
 
 async fn delete_cluster(Path((_team, name)): Path<(String, String)>) -> Response {
     if let Some((status, body)) = injected_error(&name) {
         return (status, Json(body)).into_response();
+    }
+    // The reserved name `conflict` simulates a revision race on delete.
+    if name == "conflict" {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "conflict",
+                "message": "revision mismatch: current revision is 7"
+            })),
+        )
+            .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
 }

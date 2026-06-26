@@ -44,6 +44,45 @@ pub(crate) fn render_error(
     anyhow::Error::new(CliError::new(exit_code_for_status(status)))
 }
 
+/// Render a revision conflict (CLI-R-47): the same structured error envelope as any HTTP
+/// failure, enriched so it names BOTH the revision the client attempted (`attempted_revision`)
+/// and the server's current one (carried in the server `message`), plus a recovery hint.
+pub(crate) fn render_revision_conflict(
+    global: &GlobalOptions,
+    status: StatusCode,
+    request_id: Option<String>,
+    text: &str,
+    attempted: i64,
+) -> anyhow::Error {
+    let env = revision_conflict_envelope(status, request_id, text, attempted);
+    emit_error_envelope(global, &env);
+    anyhow::Error::new(CliError::new(exit_code_for_status(status)))
+}
+
+/// Pure builder for the revision-conflict envelope (CLI-R-47): the standard error envelope
+/// plus `attempted_revision` and a recovery hint. The server's current revision rides along
+/// in the existing `message`/body.
+fn revision_conflict_envelope(
+    status: StatusCode,
+    request_id: Option<String>,
+    text: &str,
+    attempted: i64,
+) -> Value {
+    let mut env = error_envelope(status, request_id, text);
+    if let Value::Object(obj) = &mut env {
+        obj.insert("attempted_revision".into(), Value::Number(attempted.into()));
+        obj.insert(
+            "hint".into(),
+            Value::String(format!(
+                "stale revision: you sent revision {attempted}, but the resource has since \
+                 changed (see message for the current revision); re-read it, or omit \
+                 --revision to let the CLI read-modify-write"
+            )),
+        );
+    }
+    env
+}
+
 /// Render a transport/network failure (connection refused, DNS, TLS, timeout) through the
 /// same structured envelope as HTTP errors (CLI-R-30): no raw `eprintln!("{err:?}")`.
 /// Transport failures are always `retryable: true` and exit `7` (CLI-R-31/32).
@@ -796,6 +835,33 @@ mod tests {
             assert!(value.get("code").is_some());
             assert!(value.get("message").is_some());
         }
+    }
+
+    #[test]
+    fn revision_conflict_envelope_names_both_revisions() {
+        // Server 409 body carries the current revision in its message; the CLI adds the
+        // attempted revision + a recovery hint (CLI-R-47).
+        let env = revision_conflict_envelope(
+            StatusCode::CONFLICT,
+            Some("req-9".into()),
+            r#"{"code":"conflict","message":"revision mismatch: current revision is 5"}"#,
+            3,
+        );
+        assert_eq!(env["status"], 409);
+        assert_eq!(env["attempted_revision"], 3);
+        assert!(
+            env["message"]
+                .as_str()
+                .unwrap()
+                .contains("current revision is 5"),
+            "server's current revision must survive in the message: {env}"
+        );
+        assert!(
+            env["hint"].as_str().unwrap().contains("revision 3"),
+            "hint must name the attempted revision: {env}"
+        );
+        // 409 maps to exit 4 (not-found/conflict/precondition).
+        assert_eq!(exit_code_for_status(StatusCode::CONFLICT), 4);
     }
 
     #[test]

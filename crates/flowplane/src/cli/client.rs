@@ -1,6 +1,7 @@
 use crate::cli::config::{effective, EffectiveConfig, GlobalOptions, OutputFormat};
 use crate::cli::output::{
-    derive_kind, print_mutation_summary, render, render_error, render_transport_error,
+    derive_kind, print_mutation_summary, render, render_error, render_revision_conflict,
+    render_transport_error,
 };
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -128,6 +129,23 @@ impl RestClient {
         }
     }
 
+    /// Read a resource's current `revision` for read-modify-write (CLI-R-47). A quiet GET:
+    /// it neither renders nor surfaces errors (a missing/failed read just yields `None`, and
+    /// the mutation proceeds without `If-Match`, letting the server report the real failure).
+    async fn read_current_revision(&self, path: &str) -> Option<i64> {
+        let url = self.url(path);
+        let req = self.add_auth_headers(self.http.request(reqwest::Method::GET, url), None);
+        let response = req.send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let text = response.text().await.ok()?;
+        serde_json::from_str::<Value>(&text)
+            .ok()?
+            .get("revision")
+            .and_then(Value::as_i64)
+    }
+
     /// Transport failure as an error: rendered envelope normally, silent message otherwise.
     fn transport_failure(&self, err: &reqwest::Error) -> anyhow::Error {
         if self.report_errors {
@@ -182,9 +200,21 @@ impl RestClient {
             render(&self.global, "plan", &plan)?;
             return Ok(Some(plan));
         }
-        let url = self.url(path);
         let method_label = method.as_str().to_string();
         let is_get = method == reqwest::Method::GET;
+        // CLI-R-47: read-modify-write. On an update/delete with no explicit `--revision`, read
+        // the resource's current revision first and send it as `If-Match`, so concurrent edits
+        // are detected (a stale write loses with a 409) instead of silently last-write-wins.
+        let is_mutation = matches!(
+            method,
+            reqwest::Method::PATCH | reqwest::Method::DELETE | reqwest::Method::PUT
+        );
+        let revision = match revision {
+            Some(explicit) => Some(explicit),
+            None if is_mutation => self.read_current_revision(path).await,
+            None => None,
+        };
+        let url = self.url(path);
         let mut req = self.http.request(method, url);
         req = self.add_auth_headers(req, revision);
         if let Some(body) = body {
@@ -202,6 +232,23 @@ impl RestClient {
             .map(str::to_string);
         let text = response.text().await.context("read response body")?;
         if !status.is_success() {
+            // CLI-R-47: a revision race surfaces a 409/412 that names BOTH revisions — the one
+            // we attempted (If-Match) and the server's current one (in its message).
+            if self.report_errors
+                && revision.is_some()
+                && matches!(
+                    status,
+                    reqwest::StatusCode::CONFLICT | reqwest::StatusCode::PRECONDITION_FAILED
+                )
+            {
+                return Err(render_revision_conflict(
+                    &self.global,
+                    status,
+                    request_id,
+                    &text,
+                    revision.unwrap_or_default(),
+                ));
+            }
             return Err(self.http_failure(status, request_id, &text));
         }
         if status == reqwest::StatusCode::NO_CONTENT || text.trim().is_empty() {
