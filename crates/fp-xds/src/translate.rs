@@ -665,6 +665,155 @@ pub fn cluster_to_proto_with_ai(
     })
 }
 
+// ---- Built-in rate-limit cluster (fpv2-4ht S6) ------------------------------------------
+
+/// CP-side config for the synthesized built-in `rate_limit_cluster` (spec/04:212). Built from
+/// `ServerConfig` (`rls_grpc_url` + `dataplane_tls`) in `serve.rs`; fp-xds stays free of fp-core.
+#[derive(Debug, Clone)]
+pub struct RlsClusterConfig {
+    /// gRPC endpoint of the first-party RLS — `host:port` (an optional scheme is stripped).
+    pub grpc_url: String,
+    /// mTLS material; `None` => plaintext h2c (dev only). All three paths are present together
+    /// (the config layer fails closed on a partial set).
+    pub tls: Option<RlsClusterTls>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RlsClusterTls {
+    pub cert_path: String,
+    pub key_path: String,
+    pub client_ca_path: String,
+}
+
+/// Synthesize the built-in `rate_limit_cluster` Envoy proto: STRICT_DNS for a hostname / STATIC
+/// for an IP literal, HTTP/2 (required by the gRPC RateLimitService), and an optional mTLS
+/// transport socket. The name is the single reserved constant so it matches the filter default
+/// (filters.rs) and the S7-composed reference byte-for-byte.
+pub fn rls_cluster_to_proto(cfg: &RlsClusterConfig) -> DomainResult<exc::Cluster> {
+    let name = fp_domain::gateway::cluster::RESERVED_RATE_LIMIT_CLUSTER;
+    let (host, port) = parse_rls_host_port(&cfg.grpc_url)?;
+    // An IP literal is STATIC (no DNS); a hostname is STRICT_DNS (DNS-RR rebalancing).
+    let discovery_type = if host.parse::<std::net::IpAddr>().is_ok() {
+        exc::cluster::DiscoveryType::Static
+    } else {
+        exc::cluster::DiscoveryType::StrictDns
+    };
+    let load_assignment = ep::ClusterLoadAssignment {
+        cluster_name: name.to_string(),
+        endpoints: vec![ep::LocalityLbEndpoints {
+            lb_endpoints: vec![ep::LbEndpoint {
+                host_identifier: Some(ep::lb_endpoint::HostIdentifier::Endpoint(ep::Endpoint {
+                    address: Some(socket_address(&host, port)),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let transport_socket = cfg.tls.as_ref().map(rls_transport_socket);
+    let protocol_options = std::iter::once((
+        "envoy.extensions.upstreams.http.v3.HttpProtocolOptions".to_string(),
+        any(
+            "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            &upstream_http::HttpProtocolOptions {
+                upstream_protocol_options: Some(explicit_http2_config()),
+                ..Default::default()
+            },
+        ),
+    ))
+    .collect();
+    Ok(exc::Cluster {
+        name: name.to_string(),
+        connect_timeout: Some(duration(1)),
+        cluster_discovery_type: Some(exc::cluster::ClusterDiscoveryType::Type(
+            discovery_type as i32,
+        )),
+        lb_policy: exc::cluster::LbPolicy::RoundRobin as i32,
+        load_assignment: Some(load_assignment),
+        transport_socket,
+        typed_extension_protocol_options: protocol_options,
+        ..Default::default()
+    })
+}
+
+/// mTLS transport socket for the RLS cluster: present the dataplane client cert/key and verify
+/// the RLS server cert against the CA. Files are read by Envoy on the dataplane host.
+fn rls_transport_socket(tls: &RlsClusterTls) -> core::TransportSocket {
+    let ctx = tls::UpstreamTlsContext {
+        common_tls_context: Some(tls::CommonTlsContext {
+            tls_certificates: vec![tls::TlsCertificate {
+                certificate_chain: Some(filename(tls.cert_path.clone())),
+                private_key: Some(filename(tls.key_path.clone())),
+                ..Default::default()
+            }],
+            validation_context_type: Some(
+                tls::common_tls_context::ValidationContextType::ValidationContext(
+                    tls::CertificateValidationContext {
+                        trusted_ca: Some(filename(tls.client_ca_path.clone())),
+                        ..Default::default()
+                    },
+                ),
+            ),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    core::TransportSocket {
+        name: "envoy.transport_sockets.tls".to_string(),
+        config_type: Some(core::transport_socket::ConfigType::TypedConfig(any(
+            "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
+            &ctx,
+        ))),
+    }
+}
+
+/// Parse and FULLY validate `host:port` from the RLS gRPC URL, stripping an optional `scheme://`
+/// prefix and trailing slash. Fail-closed at boot: the host must be an IP literal or a syntactically
+/// valid DNS name, and the port must be 1..=65535 — anything else (spaces, `/`, control chars,
+/// port 0) is rejected so a bad endpoint can never reach the globally-injected CDS cluster.
+fn parse_rls_host_port(url: &str) -> DomainResult<(String, u16)> {
+    let bad = |why: &str| {
+        DomainError::invalid_config(format!("FLOWPLANE_RLS_GRPC_URL {why}, got {url:?}"))
+            .with_hint("expected host:port, e.g. rls.internal:8081 or 10.0.0.5:8081")
+    };
+    let raw = url.trim();
+    let after_scheme = raw.rsplit("://").next().unwrap_or(raw);
+    let trimmed = after_scheme.trim_end_matches('/');
+    let (host, port) = trimmed
+        .rsplit_once(':')
+        .ok_or_else(|| bad("must be host:port"))?;
+    if !is_valid_rls_host(host) {
+        return Err(bad("has an invalid host"));
+    }
+    let port: u16 = port.parse().map_err(|_| bad("has a non-numeric port"))?;
+    if port == 0 {
+        return Err(bad("has port 0"));
+    }
+    Ok((host.to_string(), port))
+}
+
+/// A host usable as an Envoy cluster endpoint address: an IP literal, or a DNS name (1..=253 chars,
+/// dot-separated labels of 1..=63 chars from `[A-Za-z0-9-]`, no leading/trailing hyphen per label).
+fn is_valid_rls_host(host: &str) -> bool {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
 /// Default CA bundle path (in the Envoy/dataplane container) used to verify upstream TLS certs
 /// when a cluster's `UpstreamTlsConfig` names neither an SDS secret nor an explicit `ca_cert_file`.
 /// Override with `FLOWPLANE_UPSTREAM_CA_BUNDLE`. The path is resolved by Envoy, not the control
@@ -4228,5 +4377,236 @@ mod type_url_tests {
             source.specifier,
             Some(core::data_source::Specifier::InlineBytes(bytes)) if bytes == b"hello"
         ));
+    }
+}
+
+// S6 adversarial tests (separate author): treat `rls_cluster_to_proto` as opaque and assert on
+// the emitted Envoy proto fields + the validation Result. Built directly from RlsClusterConfig
+// values — no DB.
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod rls_cluster_tests {
+    use super::*;
+
+    const HTTP_PROTO_OPTS_KEY: &str = "envoy.extensions.upstreams.http.v3.HttpProtocolOptions";
+    const TLS_CTX_TYPE_URL: &str =
+        "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext";
+
+    fn cfg(grpc_url: &str, tls: Option<RlsClusterTls>) -> RlsClusterConfig {
+        RlsClusterConfig {
+            grpc_url: grpc_url.to_string(),
+            tls,
+        }
+    }
+
+    fn sample_tls() -> RlsClusterTls {
+        RlsClusterTls {
+            cert_path: "/etc/fp/rls-client.crt".into(),
+            key_path: "/etc/fp/rls-client.key".into(),
+            client_ca_path: "/etc/fp/rls-ca.crt".into(),
+        }
+    }
+
+    /// Pull (host, port) out of the cluster's single load-assignment endpoint.
+    fn endpoint_host_port(cluster: &exc::Cluster) -> (String, u32) {
+        let la = cluster
+            .load_assignment
+            .as_ref()
+            .expect("load_assignment present");
+        assert_eq!(la.endpoints.len(), 1, "exactly one locality");
+        let locality = &la.endpoints[0];
+        assert_eq!(locality.lb_endpoints.len(), 1, "exactly one endpoint");
+        let lb = &locality.lb_endpoints[0];
+        let Some(ep::lb_endpoint::HostIdentifier::Endpoint(endpoint)) = &lb.host_identifier else {
+            panic!("expected an inline endpoint");
+        };
+        let addr = endpoint.address.as_ref().expect("address");
+        let Some(core::address::Address::SocketAddress(sa)) = &addr.address else {
+            panic!("expected a socket address");
+        };
+        let port = match &sa.port_specifier {
+            Some(core::socket_address::PortSpecifier::PortValue(p)) => *p,
+            other => panic!("expected a numeric port value, got {other:?}"),
+        };
+        (sa.address.clone(), port)
+    }
+
+    fn discovery_type(cluster: &exc::Cluster) -> exc::cluster::DiscoveryType {
+        match &cluster.cluster_discovery_type {
+            Some(exc::cluster::ClusterDiscoveryType::Type(t)) => {
+                exc::cluster::DiscoveryType::try_from(*t).expect("valid discovery enum")
+            }
+            other => panic!("expected an inline discovery Type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hostname_url_is_strict_dns_with_reserved_name_and_parsed_endpoint() {
+        let cluster = rls_cluster_to_proto(&cfg("rls.internal:8081", None)).expect("synthesize");
+
+        assert_eq!(
+            cluster.name,
+            fp_domain::gateway::cluster::RESERVED_RATE_LIMIT_CLUSTER,
+            "name must be the single reserved constant"
+        );
+        assert_eq!(cluster.name, "rate_limit_cluster", "spec name");
+        assert_eq!(
+            discovery_type(&cluster),
+            exc::cluster::DiscoveryType::StrictDns,
+            "a hostname must be STRICT_DNS"
+        );
+
+        let (host, port) = endpoint_host_port(&cluster);
+        assert_eq!(host, "rls.internal");
+        assert_eq!(port, 8081);
+
+        // The load assignment's cluster_name must reference the reserved name, not be empty.
+        assert_eq!(
+            cluster.load_assignment.as_ref().unwrap().cluster_name,
+            "rate_limit_cluster"
+        );
+    }
+
+    #[test]
+    fn ip_literal_url_is_static() {
+        let cluster = rls_cluster_to_proto(&cfg("10.0.0.5:8081", None)).expect("synthesize");
+        assert_eq!(
+            discovery_type(&cluster),
+            exc::cluster::DiscoveryType::Static,
+            "an IP literal must be STATIC (no DNS)"
+        );
+        let (host, port) = endpoint_host_port(&cluster);
+        assert_eq!(host, "10.0.0.5");
+        assert_eq!(port, 8081);
+    }
+
+    #[test]
+    fn http2_protocol_options_present_and_decodes_to_explicit_h2() {
+        let cluster = rls_cluster_to_proto(&cfg("rls.internal:8081", None)).expect("synthesize");
+        let any = cluster
+            .typed_extension_protocol_options
+            .get(HTTP_PROTO_OPTS_KEY)
+            .expect("HttpProtocolOptions key present (gRPC RLS needs h2)");
+        assert_eq!(
+            any.type_url,
+            format!("type.googleapis.com/{HTTP_PROTO_OPTS_KEY}")
+        );
+        let opts = upstream_http::HttpProtocolOptions::decode(any.value.as_slice())
+            .expect("decode HttpProtocolOptions");
+        let proto = opts
+            .upstream_protocol_options
+            .expect("upstream_protocol_options set");
+        // Must be an ExplicitHttpConfig carrying Http2ProtocolOptions (not http1 / not unset).
+        let upstream_http::http_protocol_options::UpstreamProtocolOptions::ExplicitHttpConfig(
+            explicit,
+        ) = proto
+        else {
+            panic!("expected ExplicitHttpConfig for the RLS upstream");
+        };
+        assert!(
+            matches!(
+                explicit.protocol_config,
+                Some(upstream_http::http_protocol_options::explicit_http_config::ProtocolConfig::Http2ProtocolOptions(_))
+            ),
+            "RLS cluster must speak HTTP/2"
+        );
+    }
+
+    #[test]
+    fn no_tls_means_no_transport_socket() {
+        let cluster = rls_cluster_to_proto(&cfg("rls.internal:8081", None)).expect("synthesize");
+        assert!(
+            cluster.transport_socket.is_none(),
+            "plaintext h2c: transport_socket must be None"
+        );
+    }
+
+    #[test]
+    fn tls_some_emits_mtls_transport_socket_with_certs_and_trusted_ca() {
+        let cluster = rls_cluster_to_proto(&cfg("rls.internal:8081", Some(sample_tls())))
+            .expect("synthesize");
+
+        let socket = cluster
+            .transport_socket
+            .as_ref()
+            .expect("transport_socket present when tls is Some");
+        assert_eq!(socket.name, "envoy.transport_sockets.tls");
+
+        let Some(core::transport_socket::ConfigType::TypedConfig(any)) = &socket.config_type else {
+            panic!("expected a typed_config");
+        };
+        assert_eq!(any.type_url, TLS_CTX_TYPE_URL);
+        let ctx = tls::UpstreamTlsContext::decode(any.value.as_slice())
+            .expect("decode UpstreamTlsContext");
+        let common = ctx.common_tls_context.expect("common_tls_context");
+
+        // Exactly one client certificate: cert chain + private key as filenames.
+        assert_eq!(common.tls_certificates.len(), 1, "one client cert");
+        let cert = &common.tls_certificates[0];
+        let chain = match cert
+            .certificate_chain
+            .as_ref()
+            .expect("chain")
+            .specifier
+            .clone()
+        {
+            Some(core::data_source::Specifier::Filename(p)) => p,
+            other => panic!("cert chain must be a filename: {other:?}"),
+        };
+        let key = match cert.private_key.as_ref().expect("key").specifier.clone() {
+            Some(core::data_source::Specifier::Filename(p)) => p,
+            other => panic!("private key must be a filename: {other:?}"),
+        };
+        assert_eq!(chain, "/etc/fp/rls-client.crt");
+        assert_eq!(key, "/etc/fp/rls-client.key");
+
+        // A validation context whose trusted_ca is the client CA path (server-cert verification).
+        let Some(tls::common_tls_context::ValidationContextType::ValidationContext(vc)) =
+            common.validation_context_type
+        else {
+            panic!("expected an inline validation context");
+        };
+        let ca = match vc.trusted_ca.expect("trusted_ca").specifier {
+            Some(core::data_source::Specifier::Filename(p)) => p,
+            other => panic!("trusted_ca must be a filename: {other:?}"),
+        };
+        assert_eq!(ca, "/etc/fp/rls-ca.crt");
+    }
+
+    #[test]
+    fn malformed_urls_are_rejected() {
+        for bad in [
+            "noport",
+            "host:notaport",
+            ":8081",
+            "",
+            // host syntax: spaces, slashes, control chars, bad labels — must never reach CDS.
+            "bad host:8081",
+            "rls/internal:8081",
+            "rls\u{7f}.internal:8081",
+            "-bad.host:8081",
+            "bad-.host:8081",
+            "host..dot:8081",
+            // port 0 is not a usable endpoint.
+            "rls.internal:0",
+        ] {
+            assert!(
+                rls_cluster_to_proto(&cfg(bad, None)).is_err(),
+                "{bad:?} must be rejected (fail-closed at boot)"
+            );
+        }
+    }
+
+    #[test]
+    fn scheme_is_stripped_before_host_port_parse() {
+        let cluster =
+            rls_cluster_to_proto(&cfg("grpc://rls.internal:8081", None)).expect("synthesize");
+        let (host, port) = endpoint_host_port(&cluster);
+        assert_eq!(host, "rls.internal", "scheme must be stripped from host");
+        assert_eq!(port, 8081);
+        assert_eq!(
+            discovery_type(&cluster),
+            exc::cluster::DiscoveryType::StrictDns
+        );
     }
 }

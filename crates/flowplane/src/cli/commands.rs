@@ -257,6 +257,109 @@ pub enum AiCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum RateLimitCommand {
+    /// Rate-limit domains (the limit groups).
+    Domain {
+        #[command(subcommand)]
+        command: ResourceCommand,
+    },
+    /// Policies within a domain.
+    Policy {
+        #[command(subcommand)]
+        command: RateLimitPolicyCommand,
+    },
+    /// Per-team override of a policy's limit.
+    Override {
+        #[command(subcommand)]
+        command: RateLimitOverrideCommand,
+    },
+    /// Force an immediate CP→RLS policy reconcile (platform admin).
+    ForceRepush,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RateLimitPolicyCommand {
+    List {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+    },
+    Get {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+        name: String,
+    },
+    Create {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+        #[arg(short, long)]
+        file: PathBuf,
+    },
+    Update {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+        name: String,
+        #[arg(short, long)]
+        file: PathBuf,
+    },
+    Delete {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+        name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RateLimitOverrideCommand {
+    Get {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        policy: String,
+    },
+    /// Create the override from a JSON file (`{ "spec": { "requests_per_unit": N } }`).
+    Set {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        policy: String,
+        #[arg(short, long)]
+        file: PathBuf,
+    },
+    Update {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        policy: String,
+        #[arg(short, long)]
+        file: PathBuf,
+    },
+    Delete {
+        #[arg(long)]
+        team: Option<String>,
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        policy: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum ApiCommand {
     List {
         #[arg(long)]

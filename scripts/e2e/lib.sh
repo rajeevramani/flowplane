@@ -43,6 +43,7 @@ cleanup() {
   [ -n "${AI_STREAM_DIE_PID:-}" ] && kill "$AI_STREAM_DIE_PID" >/dev/null 2>&1 || true
   [ -n "${AI_STREAM_FALLBACK_PID:-}" ] && kill "$AI_STREAM_FALLBACK_PID" >/dev/null 2>&1 || true
   [ -n "${AI_MALFORMED_PID:-}" ] && kill "$AI_MALFORMED_PID" >/dev/null 2>&1 || true
+  [ -n "${RLS_PID:-}" ] && kill "$RLS_PID" >/dev/null 2>&1 || true
   [ -n "${ENVOY_PID:-}" ] && kill "$ENVOY_PID" >/dev/null 2>&1 || true
 }
 
@@ -227,7 +228,9 @@ grep -q "team=$TEAM_ID/dp-" /tmp/fp-e2e-bootstrap.yaml || {
 }
 echo "dataplane bootstrap and gateway resources created via CLI"
 
-if docker run -d --name fp-e2e-envoy --network host \
+# FLOWPLANE_E2E_ENVOY=local forces the local binary (docker/podman `--network host` does not reach
+# the host loopback on macOS, so the container path silently can't dial the CP/upstreams there).
+if [ "${FLOWPLANE_E2E_ENVOY:-}" != "local" ] && docker run -d --name fp-e2e-envoy --network host \
   -v /tmp/fp-e2e-bootstrap.yaml:/etc/envoy/envoy.yaml:ro \
   envoyproxy/envoy:v${ENVOY_VERSION} -c /etc/envoy/envoy.yaml --log-level info >/dev/null 2>&1; then
   ENVOY_MODE=docker

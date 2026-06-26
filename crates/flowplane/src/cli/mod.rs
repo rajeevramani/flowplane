@@ -17,14 +17,14 @@ use client::RestClient;
 pub use commands::{
     AiCommand, ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand,
     DataplaneBootstrapMode, DataplaneCommand, ExposeCommand, GrantCommand, LearnCommand,
-    LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand, OrgMemberCommand, ResourceCommand,
-    RouteCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand,
-    XdsCommand,
+    LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand, OrgMemberCommand, RateLimitCommand,
+    RateLimitOverrideCommand, RateLimitPolicyCommand, ResourceCommand, RouteCommand, SecretCommand,
+    StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{
     config_path, credentials_path, effective, read_config, write_config, write_private_file,
-    NamedContext,
+    NamedContext, OutputFormat,
 };
 use output::{format_row, render};
 
@@ -1025,6 +1025,227 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
     }
 }
 
+pub async fn run_rate_limit(global: GlobalOptions, command: RateLimitCommand) -> Result<()> {
+    match command {
+        RateLimitCommand::Domain { command } => run_rate_limit_domain(global, command).await,
+        RateLimitCommand::Policy { command } => run_rate_limit_policy(global, command).await,
+        RateLimitCommand::Override { command } => run_rate_limit_override(global, command).await,
+        RateLimitCommand::ForceRepush => {
+            let client = RestClient::new(global)?;
+            client
+                .request(
+                    reqwest::Method::POST,
+                    "/api/v1/admin/rls/force-repush",
+                    None,
+                )
+                .await?;
+            Ok(())
+        }
+    }
+}
+
+// Rate-limit domain/policy names are free-text (1–253 chars, may contain `/`, spaces, `%`, …),
+// NOT path-safe slugs like cluster names — so every interpolated path segment MUST be
+// percent-encoded (`query_component`, the same encoder `run_unexpose` uses). The server side
+// (axum `Path`) percent-decodes, so the round trip is exact. This is why rate-limit domains do
+// not reuse the raw-interpolating `run_resource` path.
+async fn run_rate_limit_domain(global: GlobalOptions, command: ResourceCommand) -> Result<()> {
+    let client = RestClient::new(global)?;
+    let base = |team: &str| format!("/api/v1/teams/{}/rate-limit-domains", query_component(team));
+    match command {
+        ResourceCommand::List { team } => {
+            let team = client.team(team)?;
+            client
+                .request(reqwest::Method::GET, &base(&team), None)
+                .await?
+        }
+        ResourceCommand::Get { team, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("{}/{}", base(&team), query_component(&name)),
+                    None,
+                )
+                .await?
+        }
+        ResourceCommand::Create { team, file } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::POST,
+                    &base(&team),
+                    Some(body_from_file(&file)?),
+                )
+                .await?
+        }
+        ResourceCommand::Update { team, name, file } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::PATCH,
+                    &format!("{}/{}", base(&team), query_component(&name)),
+                    Some(body_from_file(&file)?),
+                )
+                .await?
+        }
+        ResourceCommand::Delete { team, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::DELETE,
+                    &format!("{}/{}", base(&team), query_component(&name)),
+                    None,
+                )
+                .await?
+        }
+    };
+    Ok(())
+}
+
+async fn run_rate_limit_policy(
+    global: GlobalOptions,
+    command: RateLimitPolicyCommand,
+) -> Result<()> {
+    let client = RestClient::new(global)?;
+    // Policies live under their domain: /rate-limit-domains/{domain}/policies[/{name}]. Every
+    // free-text segment is percent-encoded (see `run_rate_limit_domain`).
+    let base = |team: &str, domain: &str| {
+        format!(
+            "/api/v1/teams/{}/rate-limit-domains/{}/policies",
+            query_component(team),
+            query_component(domain)
+        )
+    };
+    match command {
+        RateLimitPolicyCommand::List { team, domain } => {
+            let team = client.team(team)?;
+            client
+                .request(reqwest::Method::GET, &base(&team, &domain), None)
+                .await?
+        }
+        RateLimitPolicyCommand::Get { team, domain, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("{}/{}", base(&team, &domain), query_component(&name)),
+                    None,
+                )
+                .await?
+        }
+        RateLimitPolicyCommand::Create { team, domain, file } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::POST,
+                    &base(&team, &domain),
+                    Some(body_from_file(&file)?),
+                )
+                .await?
+        }
+        RateLimitPolicyCommand::Update {
+            team,
+            domain,
+            name,
+            file,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::PATCH,
+                    &format!("{}/{}", base(&team, &domain), query_component(&name)),
+                    Some(body_from_file(&file)?),
+                )
+                .await?
+        }
+        RateLimitPolicyCommand::Delete { team, domain, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::DELETE,
+                    &format!("{}/{}", base(&team, &domain), query_component(&name)),
+                    None,
+                )
+                .await?
+        }
+    };
+    Ok(())
+}
+
+async fn run_rate_limit_override(
+    global: GlobalOptions,
+    command: RateLimitOverrideCommand,
+) -> Result<()> {
+    let client = RestClient::new(global)?;
+    // The override is a singleton sub-resource of a policy; all three segments are percent-encoded.
+    let path = |team: &str, domain: &str, policy: &str| {
+        format!(
+            "/api/v1/teams/{}/rate-limit-domains/{}/policies/{}/override",
+            query_component(team),
+            query_component(domain),
+            query_component(policy)
+        )
+    };
+    match command {
+        RateLimitOverrideCommand::Get {
+            team,
+            domain,
+            policy,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(reqwest::Method::GET, &path(&team, &domain, &policy), None)
+                .await?
+        }
+        RateLimitOverrideCommand::Set {
+            team,
+            domain,
+            policy,
+            file,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::POST,
+                    &path(&team, &domain, &policy),
+                    Some(body_from_file(&file)?),
+                )
+                .await?
+        }
+        RateLimitOverrideCommand::Update {
+            team,
+            domain,
+            policy,
+            file,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::PATCH,
+                    &path(&team, &domain, &policy),
+                    Some(body_from_file(&file)?),
+                )
+                .await?
+        }
+        RateLimitOverrideCommand::Delete {
+            team,
+            domain,
+            policy,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::DELETE,
+                    &path(&team, &domain, &policy),
+                    None,
+                )
+                .await?
+        }
+    };
+    Ok(())
+}
+
 pub async fn run_unexpose(global: GlobalOptions, command: UnexposeCommand) -> Result<()> {
     let client = RestClient::new(global)?;
     let team = client.team(command.team)?;
@@ -1041,7 +1262,21 @@ pub async fn run_unexpose(global: GlobalOptions, command: UnexposeCommand) -> Re
     Ok(())
 }
 
+/// Advisory hint printed after `api create --from-openapi`: imported specs generate tools
+/// that stay inert until an explicit publish (constitution inv 16). Returns `None` for
+/// machine-readable output formats so the note never pollutes JSON/YAML consumers.
+fn imported_create_hint(format: OutputFormat, api_name: &str) -> Option<String> {
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        return None;
+    }
+    Some(format!(
+        "note: tools were generated from the OpenAPI spec but are NOT served yet.\n      \
+         publish them to make them available over MCP:\n        flowplane api spec publish {api_name} 1"
+    ))
+}
+
 pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
+    let format = global.format();
     let client = RestClient::new(global)?;
     match command {
         ApiCommand::List { team } => {
@@ -1124,6 +1359,10 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
             route,
         } => {
             let team = client.team(team)?;
+            // Capture before `name`/`from_openapi` are moved into the request body, so we can
+            // print the generated-but-not-served hint after a successful imported create.
+            let api_name = name.clone();
+            let imported = from_openapi.is_some();
             let mut body = Map::new();
             body.insert("name".into(), Value::String(name));
             body.insert(
@@ -1152,13 +1391,22 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
                     "--route-config-id is required when passing --listener-id, --virtual-host, or --route"
                 );
             }
-            client
+            let response = client
                 .request(
                     reqwest::Method::POST,
                     &format!("/api/v1/teams/{team}/api-definitions"),
                     Some(Value::Object(body)),
                 )
-                .await?
+                .await?;
+            // Imported specs are inert until an explicit publish (constitution inv 16): the
+            // tools exist but are not served over MCP until `api spec publish`. Nudge the
+            // operator so import no longer looks like a dead end (#187).
+            if imported {
+                if let Some(hint) = imported_create_hint(format, &api_name) {
+                    eprintln!("{hint}");
+                }
+            }
+            response
         }
         ApiCommand::Delete { team, name } => {
             let team = client.team(team)?;
@@ -2264,6 +2512,12 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/ai/budgets",
         "/api/v1/teams/{team}/ai/budgets/{name}",
         "/api/v1/teams/{team}/ai/usage",
+        "/api/v1/teams/{team}/rate-limit-domains",
+        "/api/v1/teams/{team}/rate-limit-domains/{domain}",
+        "/api/v1/teams/{team}/rate-limit-domains/{domain}/policies",
+        "/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{name}",
+        "/api/v1/teams/{team}/rate-limit-domains/{domain}/policies/{policy}/override",
+        "/api/v1/admin/rls/force-repush",
         "/api/v1/teams/{team}/learning-sessions",
         "/api/v1/teams/{team}/learning-sessions/{session}",
         "/api/v1/teams/{team}/learning-sessions/{session}/stop",
@@ -2312,6 +2566,42 @@ mod tests {
             }
         }
         assert!(missing.is_empty(), "missing CLI coverage for: {missing:?}");
+    }
+
+    #[test]
+    fn query_component_encodes_path_unsafe_chars() {
+        // Rate-limit domain/policy names are free-text and flow into URL path segments; the
+        // encoder must escape everything that would break path routing, leaving RFC-3986
+        // unreserved chars intact. (Regression guard for the S3 CLI nested-path fix.)
+        assert_eq!(query_component("a/b"), "a%2Fb");
+        assert_eq!(query_component("a b"), "a%20b");
+        assert_eq!(query_component("a%b"), "a%25b");
+        assert_eq!(query_component("a?b#c"), "a%3Fb%23c");
+        assert_eq!(query_component("Safe-Name_1.0~x"), "Safe-Name_1.0~x");
+    }
+
+    #[test]
+    fn imported_create_hint_names_the_publish_step_in_human_output() {
+        // fpv2-dn7.2: after `api create --from-openapi`, human output must nudge the operator
+        // to publish (import is inert until then) and name the exact next command.
+        for fmt in [OutputFormat::Table, OutputFormat::Wide] {
+            let hint = imported_create_hint(fmt, "catalog").expect("human formats get a hint");
+            assert!(
+                hint.contains("NOT served yet"),
+                "hint must state inert: {hint}"
+            );
+            assert!(
+                hint.contains("flowplane api spec publish catalog 1"),
+                "hint must name the publish command with the api name and v1: {hint}"
+            );
+        }
+    }
+
+    #[test]
+    fn imported_create_hint_is_suppressed_for_machine_output() {
+        // Advisory note must never pollute JSON/YAML consumers.
+        assert!(imported_create_hint(OutputFormat::Json, "catalog").is_none());
+        assert!(imported_create_hint(OutputFormat::Yaml, "catalog").is_none());
     }
 
     #[test]
@@ -2568,7 +2858,7 @@ callback_url = "http://127.0.0.1:8976/callback"
                 "filter": {
                     "type": "global_rate_limit",
                     "domain": "flowplane",
-                    "service_cluster": "flowplane-rls",
+                    "service_cluster": "rate_limit_cluster",
                     "timeout_ms": 50,
                     "failure_mode_deny": true,
                     "stage": 1,

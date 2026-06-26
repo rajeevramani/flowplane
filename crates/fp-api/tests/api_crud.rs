@@ -108,11 +108,13 @@ fn openapi_document_covers_every_registered_operation() {
     // + 2 route-generation plan operations.
     // + 5 AI provider operations + 5 AI route operations.
     // + 5 AI budget operations + 1 AI usage operation.
+    // + 1 RLS force-repush admin operation.
+    // + 14 rate-limit CRUD operations (5 domain + 5 policy + 4 override).
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 95,
-        "expected 95 documented operations, got {operations}"
+        operations, 110,
+        "expected 110 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -194,6 +196,8 @@ async fn learning_session_lifecycle_over_http() {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request =
@@ -346,6 +350,8 @@ async fn api_definition_import_status_and_delete_over_http() {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request =
@@ -471,6 +477,8 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request =
@@ -869,6 +877,8 @@ async fn multi_org_user_selects_active_org_with_header() {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let response = app
@@ -966,6 +976,8 @@ async fn proxy_certificate_registry_flow_over_http() {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
@@ -1271,6 +1283,8 @@ async fn secret_values_are_write_only_over_http() {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
@@ -1741,6 +1755,8 @@ async fn malformed_json_body_returns_validation_envelope() {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
     });
 
     // `port` typed as a string -> JSON deserialization failure.

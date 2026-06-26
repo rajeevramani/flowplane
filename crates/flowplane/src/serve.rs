@@ -57,7 +57,34 @@ pub async fn run() -> anyhow::Result<()> {
     // xDS pipeline: snapshot cache primed from the DB (restart safety), then kept fresh by
     // the outbox consumer, which also feeds certificate revocations to live streams.
     let (xds_shutdown_tx, xds_shutdown_rx) = tokio::sync::watch::channel(false);
-    let snapshot_cache = fp_xds::snapshot::SnapshotCache::new();
+    // S6: when an RLS gRPC endpoint is configured, the snapshot cache injects the built-in
+    // rate_limit_cluster into every team's CDS. Build its config from ServerConfig (fp-xds stays
+    // free of fp-core types) and validate the endpoint once here so a bad URL fails boot, not
+    // every per-team rebuild.
+    let rls_cluster =
+        config
+            .rls_grpc_url
+            .as_ref()
+            .map(|grpc_url| fp_xds::translate::RlsClusterConfig {
+                grpc_url: grpc_url.clone(),
+                tls: config
+                    .dataplane_tls
+                    .as_ref()
+                    .map(|t| fp_xds::translate::RlsClusterTls {
+                        cert_path: t.cert_path.to_string_lossy().into_owned(),
+                        key_path: t.key_path.to_string_lossy().into_owned(),
+                        client_ca_path: t.client_ca_path.to_string_lossy().into_owned(),
+                    }),
+            });
+    if let Some(rls) = &rls_cluster {
+        fp_xds::translate::rls_cluster_to_proto(rls)
+            .map_err(|e| anyhow::anyhow!("invalid FLOWPLANE_RLS_GRPC_URL: {e}"))?;
+        tracing::info!(
+            mtls = config.dataplane_tls.is_some(),
+            "built-in rate_limit_cluster will be injected into CDS"
+        );
+    }
+    let snapshot_cache = fp_xds::snapshot::SnapshotCache::with_rls(rls_cluster);
     let xds_consumer_failed = Arc::new(AtomicBool::new(false));
     let primed = snapshot_cache
         .prime_all(&pool)
@@ -165,6 +192,28 @@ pub async fn run() -> anyhow::Result<()> {
 
     let discovery_forwarding_policy =
         fp_core::services::discovery::DiscoveryForwardingPolicy::from_server_config(&config).await;
+
+    // CP→RLS policy sync (S5): when the RLS admin URL is set, run the 60 s reconcile worker and
+    // expose a force-repush kick. The first reconcile fires immediately at startup.
+    let rls_repush = if let Some(admin_url) = config.rls_admin_url.clone() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let worker_pool = pool.clone();
+        let worker_notify = Arc::clone(&notify);
+        let worker_shutdown = xds_shutdown_tx.subscribe();
+        let reconcile_secs = config.rls_reconcile_secs;
+        tokio::spawn(run_rls_sync(
+            worker_pool,
+            admin_url,
+            reconcile_secs,
+            worker_notify,
+            worker_shutdown,
+        ));
+        tracing::info!(reconcile_secs, "rls_sync worker started");
+        Some(notify)
+    } else {
+        None
+    };
+
     let state = fp_api::AppState {
         pool,
         prometheus,
@@ -179,6 +228,8 @@ pub async fn run() -> anyhow::Result<()> {
             failed: xds_consumer_failed,
         }),
         discovery_forwarding_policy,
+        rls_repush,
+        rls_grpc_configured: config.rls_grpc_url.is_some(),
     };
     let router = fp_api::build_router(state);
 
@@ -290,6 +341,39 @@ async fn run_observability_sampler(
                     return;
                 }
             }
+        }
+    }
+}
+
+/// CP→RLS policy reconcile worker (S5). Pushes the full namespaced policy set to the RLS admin
+/// endpoint every 60 s (first tick fires immediately at startup) and on a force-repush kick.
+/// Level-triggered: each push is the complete set, so a transient failure self-heals next tick.
+async fn run_rls_sync(
+    pool: sqlx::PgPool,
+    admin_url: String,
+    reconcile_secs: u64,
+    repush: Arc<tokio::sync::Notify>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let client = reqwest::Client::new();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(reconcile_secs.max(1)));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = repush.notified() => {
+                tracing::info!("rls force-repush received; reconciling now");
+            }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+                continue;
+            }
+        }
+        match fp_core::services::rls_sync::reconcile_once(&pool, &admin_url, &client).await {
+            Ok(count) => tracing::debug!(policies = count, "rls policy reconcile pushed"),
+            Err(e) => tracing::warn!("rls policy reconcile failed: {e}"),
         }
     }
 }

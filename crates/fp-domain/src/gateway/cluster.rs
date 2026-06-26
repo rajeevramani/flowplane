@@ -8,9 +8,25 @@ use crate::identity::validate_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Name prefixes reserved for Flowplane-internal resources (v1 rule, kept).
-pub const RESERVED_NAME_PREFIXES: &[&str] =
-    &["envoy-", "xds-", "internal-", "system-", "flowplane-"];
+/// Name prefixes reserved for Flowplane-internal resources (v1 rule, kept). `rate_limit_` is
+/// reserved for the built-in global rate-limit cluster (fpv2-4ht S6) — defense-in-depth, since
+/// [`validate_name`] already rejects underscores, so the guard also covers any future loosening.
+pub const RESERVED_NAME_PREFIXES: &[&str] = &[
+    "envoy-",
+    "xds-",
+    "internal-",
+    "system-",
+    "flowplane-",
+    "rate_limit_",
+];
+
+/// The single reserved name of the CP-synthesized built-in rate-limit cluster (spec/04:212,345).
+/// The CP injects this cluster into CDS when `FLOWPLANE_RLS_GRPC_URL` is set (S6) and defaults
+/// `GlobalRateLimitConfig.service_cluster` to it (filters.rs); S7 composes the Envoy filter
+/// against the same name. ONE source of truth so the three sites never drift. It contains
+/// underscores (the spec name) and is therefore exempt from the user-facing [`validate_name`]
+/// slug rule wherever it appears as a CP-owned value.
+pub const RESERVED_RATE_LIMIT_CLUSTER: &str = "rate_limit_cluster";
 
 pub const MAX_ENDPOINTS: usize = 100;
 pub const MAX_AGGREGATE_CLUSTERS: usize = 32;
@@ -596,6 +612,8 @@ mod tests {
             "internal-db",
             "system-a",
             "flowplane-self",
+            "rate_limit_cluster",
+            "rate_limit_foo",
         ] {
             assert!(
                 validate_cluster_name(name).is_err(),

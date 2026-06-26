@@ -149,10 +149,12 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 |--------------|------------|
 | Stand up a gateway from a clean checkout | [Getting Started](docs/tutorials/getting-started.md) |
 | Protect a route with JWT auth + rate limit | [JWT auth & rate limit](docs/how-to/jwt-auth-rate-limit-route.md) |
+| Cap a route globally across all Envoys | [Enable global rate limiting](docs/how-to/global-rate-limit.md) |
 | Learn an API spec from live traffic | [Learn & publish an API spec](docs/how-to/learn-and-publish-api-spec.md) |
 | Front an LLM with a token budget | [AI gateway route & budget](docs/how-to/ai-gateway-route-budget.md) |
 | Secure the data plane with mTLS | [Register a dataplane (mTLS)](docs/how-to/register-dataplane-mtls.md) |
 | Understand tenancy, grants, and xDS | [Tenancy, grants & the xDS pipeline](docs/concepts/tenancy-grants-xds.md) |
+| Understand global rate limiting | [Global rate limiting](docs/concepts/global-rate-limiting.md) |
 
 Reference: [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) · [REST API](docs/reference/rest-api.md) · [Filters](docs/reference/filters.md) · [Errors](docs/reference/errors.md)
 

@@ -437,6 +437,7 @@ mod referential {
                 tls_context: None,
             },
             rid(),
+            false,
         )
         .await
         .expect("listener");
@@ -524,6 +525,7 @@ mod referential {
                 tls_context: None,
             },
             rid(),
+            false,
         )
         .await
         .expect_err("ai prefix is reserved");
@@ -554,6 +556,7 @@ mod referential {
                     tls_context: None,
                 },
                 rid(),
+                false,
             )
         };
         make(unique("l1"), 19001).await.expect("first listener");

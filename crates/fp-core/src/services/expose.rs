@@ -240,6 +240,9 @@ async fn create_resources_for_port(
         &template.names.listener,
         listener_spec,
         request_id,
+        // Exposed listeners carry no http_filters (listener_spec above), so the
+        // global_rate_limit reference check is a no-op regardless of RLS configuration.
+        false,
     )
     .await
     {

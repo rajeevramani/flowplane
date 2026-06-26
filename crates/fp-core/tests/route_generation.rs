@@ -122,6 +122,7 @@ async fn route_plan_apply_fails_on_intervening_conflict() {
             tls_context: None,
         },
         RequestId::generate(),
+        false,
     )
     .await
     .expect("intervening listener");

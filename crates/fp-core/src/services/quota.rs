@@ -41,6 +41,9 @@ pub async fn check_team_resource_quota(
         Resource::Dataplanes => {
             fp_storage::repos::dataplanes::count_for_team(pool, team_id).await?
         }
+        Resource::RateLimits => {
+            fp_storage::repos::rate_limit::count_policies_for_team(pool, team_id).await?
+        }
         _ => return Ok(()),
     };
     let limit = default_limit(resource);

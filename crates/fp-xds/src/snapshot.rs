@@ -225,6 +225,9 @@ pub struct SnapshotCache {
     /// Bumped on every snapshot change; payload is the team that changed.
     change_tx: watch::Sender<(u64, Option<TeamId>)>,
     change_seq: std::sync::atomic::AtomicU64,
+    /// When set, the built-in `rate_limit_cluster` is injected into every team's CDS (S6). The
+    /// endpoint is validated once at boot, so synthesis here is expected to succeed.
+    rls: Option<translate::RlsClusterConfig>,
 }
 
 impl Default for SnapshotCache {
@@ -234,6 +237,7 @@ impl Default for SnapshotCache {
             snapshots: RwLock::new(HashMap::new()),
             change_tx,
             change_seq: std::sync::atomic::AtomicU64::new(0),
+            rls: None,
         }
     }
 }
@@ -241,6 +245,15 @@ impl Default for SnapshotCache {
 impl SnapshotCache {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Construct a cache that also injects the built-in `rate_limit_cluster` (S6) when `rls` is
+    /// set. Pass `None` to behave exactly like [`SnapshotCache::new`].
+    pub fn with_rls(rls: Option<translate::RlsClusterConfig>) -> Arc<Self> {
+        Arc::new(Self {
+            rls,
+            ..Self::default()
+        })
     }
 
     pub async fn team(&self, team_id: TeamId) -> TeamSnapshot {
@@ -396,6 +409,27 @@ impl SnapshotCache {
                         value: cla.encode_to_vec(),
                     },
                 });
+            }
+        }
+
+        // S6: inject the CP-synthesized built-in rate-limit cluster into every team's CDS when an
+        // RLS endpoint is configured. STRICT_DNS/STATIC + HTTP/2 (+ optional mTLS). The endpoint
+        // was validated at boot; if synthesis still fails we skip it loudly rather than abort the
+        // whole team's gateway config (the listener-reference check, S7, fails closed separately).
+        if let Some(rls) = &self.rls {
+            match translate::rls_cluster_to_proto(rls) {
+                Ok(proto) => cluster_named.push(NamedResource {
+                    name: fp_domain::gateway::cluster::RESERVED_RATE_LIMIT_CLUSTER.to_string(),
+                    any: Any {
+                        type_url: CLUSTER_TYPE_URL.to_string(),
+                        value: proto.encode_to_vec(),
+                    },
+                }),
+                Err(err) => {
+                    metrics::counter!("fp_xds_rls_cluster_synthesis_failures_total").increment(1);
+                    tracing::error!(team = %team_id, error = %err,
+                        "built-in rate_limit_cluster synthesis failed; CDS omits it");
+                }
             }
         }
         let mut route_named = Vec::with_capacity(route_configs.len());
@@ -1068,6 +1102,95 @@ mod tests {
         }
     }
 
+    // ---------------- S6 built-in rate_limit_cluster injection (separate author) ----------------
+    //
+    // DB-backed: a `with_rls(Some(..))` cache must inject a CDS resource named
+    // "rate_limit_cluster" into a team's snapshot; `new()` / `with_rls(None)` must not. This is
+    // the cheap real path (create one team, rebuild_team with no gateway resources) rather than
+    // the full event-driven `world()` harness — the injection happens unconditionally in
+    // rebuild_team when `rls` is set, so an empty team is sufficient to observe it. Skips when
+    // FLOWPLANE_TEST_DATABASE_URL is unset.
+
+    /// Create one org+team and return (pool, team_id). None when the DB env var is unset.
+    async fn one_team() -> Option<(PgPool, TeamId)> {
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return None;
+        };
+        let pool = fp_storage::connect(&url, 8).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &unique("org"), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &unique("team"), "")
+            .await
+            .expect("team");
+        Some((pool, team.id))
+    }
+
+    /// Decode each cluster Any in a snapshot and return whether any is named `wanted`.
+    fn snapshot_has_cluster(snap: &TeamSnapshot, wanted: &str) -> bool {
+        snap.clusters.resources.iter().any(|any| {
+            assert_eq!(
+                any.type_url, CLUSTER_TYPE_URL,
+                "cluster set holds cluster Anys"
+            );
+            let cluster =
+                envoy_types::pb::envoy::config::cluster::v3::Cluster::decode(any.value.as_slice())
+                    .expect("decode cluster proto");
+            cluster.name == wanted
+        })
+    }
+
+    fn rls_cfg() -> translate::RlsClusterConfig {
+        translate::RlsClusterConfig {
+            grpc_url: "rls.internal:8081".into(),
+            tls: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn with_rls_injects_rate_limit_cluster_into_team_cds() {
+        let Some((pool, team_id)) = one_team().await else {
+            return;
+        };
+        let cache = SnapshotCache::with_rls(Some(rls_cfg()));
+        cache.rebuild_team(&pool, team_id).await.expect("rebuild");
+        let snap = cache.team(team_id).await;
+        assert!(
+            snapshot_has_cluster(&snap, "rate_limit_cluster"),
+            "with_rls(Some(..)) must inject a CDS resource named rate_limit_cluster"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_cache_does_not_inject_rate_limit_cluster() {
+        let Some((pool, team_id)) = one_team().await else {
+            return;
+        };
+        let cache = SnapshotCache::new();
+        cache.rebuild_team(&pool, team_id).await.expect("rebuild");
+        let snap = cache.team(team_id).await;
+        assert!(
+            !snapshot_has_cluster(&snap, "rate_limit_cluster"),
+            "SnapshotCache::new() must NOT inject the built-in rate_limit_cluster"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_rls_none_does_not_inject_rate_limit_cluster() {
+        let Some((pool, team_id)) = one_team().await else {
+            return;
+        };
+        let cache = SnapshotCache::with_rls(None);
+        cache.rebuild_team(&pool, team_id).await.expect("rebuild");
+        let snap = cache.team(team_id).await;
+        assert!(
+            !snapshot_has_cluster(&snap, "rate_limit_cluster"),
+            "with_rls(None) must behave like new(): no injected cluster"
+        );
+    }
+
     #[tokio::test]
     async fn decrypt_secret_spec_reads_retired_key_from_keyring() {
         let _guard = ENV_LOCK.lock().await;
@@ -1215,6 +1338,7 @@ mod tests {
                 access_logs: Vec::new(),
             },
             RequestId::generate(),
+            false,
         )
         .await
         .expect("a listener");
@@ -1384,6 +1508,7 @@ mod tests {
                 access_logs: Vec::new(),
             },
             RequestId::generate(),
+            false,
         )
         .await
         .expect("a listener");
@@ -1403,6 +1528,7 @@ mod tests {
                 access_logs: Vec::new(),
             },
             RequestId::generate(),
+            false,
         )
         .await
         .expect("b listener");
@@ -1621,6 +1747,7 @@ mod tests {
                 access_logs: Vec::new(),
             },
             RequestId::generate(),
+            false,
         )
         .await
         .expect("good listener");

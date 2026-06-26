@@ -137,6 +137,31 @@ Route configs.
 | `route generate` | `--team <TEAM>`, `--from-spec <ID>` (required), `--listener-port <PORT>` (u16, required) |
 | `route apply <PLAN_ID>` | `--team <TEAM>`, positional `plan_id` |
 
+### `rate-limit`
+Global rate-limit domains, policies, per-team overrides, and the CP→RLS repush trigger. `create`/`update`/`set` read the JSON body from `--file`; the file content is the REST body, sent verbatim. See [Enable global rate limiting](../how-to/global-rate-limit.md) and the [rate-limit REST reference](rest-api.md#rate-limiting).
+
+| Subcommand | Args / Flags | `--file` body |
+|------------|--------------|---------------|
+| `rate-limit domain list` | `--team <TEAM>` | — |
+| `rate-limit domain get <NAME>` | `--team`, positional `name` | — |
+| `rate-limit domain create` | `--team`, `--file <PATH>` / `-f` (required) | `{"name":"checkout"}` |
+| `rate-limit domain update <NAME>` | `--team`, positional `name`, `--file` / `-f` (required) | `{"name":"checkout"}` |
+| `rate-limit domain delete <NAME>` | `--team`, positional `name` | — |
+| `rate-limit policy list` | `--team`, `--domain <DOMAIN>` (required) | — |
+| `rate-limit policy get <NAME>` | `--team`, `--domain` (required), positional `name` | — |
+| `rate-limit policy create` | `--team`, `--domain` (required), `--file` / `-f` (required) | `{"name":"per-client","spec":{"descriptors":{"api_key":"acme"},"requests_per_unit":100,"unit":"minute"}}` |
+| `rate-limit policy update <NAME>` | `--team`, `--domain` (required), positional `name`, `--file` / `-f` (required) | `{"spec":{"descriptors":{"api_key":"acme"},"requests_per_unit":200,"unit":"minute"}}` |
+| `rate-limit policy delete <NAME>` | `--team`, `--domain` (required), positional `name` | — |
+| `rate-limit override get` | `--team`, `--domain` (required), `--policy` (required) | — |
+| `rate-limit override set` | `--team`, `--domain` (required), `--policy` (required), `--file` / `-f` (required) | `{"spec":{"requests_per_unit":500}}` |
+| `rate-limit override update` | `--team`, `--domain` (required), `--policy` (required), `--file` / `-f` (required) | `{"spec":{"requests_per_unit":500}}` |
+| `rate-limit override delete` | `--team`, `--domain` (required), `--policy` (required) | — |
+| `rate-limit force-repush` | (none) | — |
+
+The `update` and `delete` subcommands (domain, policy, and override) are concurrency-controlled: pass the current resource revision with the global `--revision <N>` flag (the `If-Match` value, read from a `GET`). Omitting it fails with `this operation requires the resource revision`; a stale value returns `409`. `create`/`set` do not take `--revision`.
+
+`rate-limit force-repush` triggers an immediate CP→RLS reconcile and requires the `platform:execute` permission (held by the `admin:all` / platform-admin role); an org/team token gets `403` (`missing permission: platform:execute`). The 60 s reconcile loop is the backstop, so a repush is only a fast path — see [`FLOWPLANE_RLS_RECONCILE_SECS`](configuration.md). `unit` is one of `second`, `minute`, `hour`, `day`.
+
 ### `api`
 API definitions, imported specs, and generated API tool rows.
 

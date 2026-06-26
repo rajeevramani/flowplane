@@ -67,6 +67,8 @@ async fn app_with_admin() -> Option<(axum::Router, String, String, uuid::Uuid, P
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
     });
     Some((app, token, team.name, team.id.as_uuid(), pool))
 }

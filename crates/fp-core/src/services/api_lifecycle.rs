@@ -347,6 +347,9 @@ pub async fn reject_spec_version(
     let spec =
         api_lifecycle::get_spec_version_for_api_by_version(&mut tx, team.id, api.id, input.version)
             .await?;
+    // Reject stays learned-only on purpose: imported specs have no review loop to reject
+    // within (they are published directly via the explicit publish gate, not reviewed), so
+    // this is intentionally NOT relaxed in symmetry with publish_spec_version (see fpv2-dn7).
     if spec.source_kind != SpecSourceKind::Learned {
         return Err(DomainError::validation(
             "only learned spec versions can be rejected",
@@ -407,11 +410,21 @@ pub async fn publish_spec_version(
     let spec =
         api_lifecycle::get_spec_version_for_api_by_version(&mut tx, team.id, api.id, input.version)
             .await?;
-    if spec.source_kind != SpecSourceKind::Learned {
+    // Publishable source kinds are an explicit allow-list, not an inverted `!= Learned` test,
+    // so the third variant `Manual` stays rejected by construction (it has no product producer
+    // today and whether/how it publishes is a separate, undecided question — see fpv2-dn7).
+    // Imported specs reach this gate inert (create_api leaves published_spec_version_id NULL);
+    // an explicit publish call is their gate, preserving inert-until-gate (constitution inv 16).
+    if !matches!(
+        spec.source_kind,
+        SpecSourceKind::Learned | SpecSourceKind::Imported
+    ) {
         return Err(DomainError::validation(
-            "only learned spec versions can be published through the review loop",
+            "only learned or imported spec versions can be published",
         ));
     }
+    // Rejected-decision guard: a no-op for imported specs (they have no review loop, so the
+    // latest decision is always None), still correct for learned specs.
     if api_lifecycle::latest_spec_review_decision(&mut tx, team.id, spec.id).await?
         == Some(SpecReviewDecision::Rejected)
     {

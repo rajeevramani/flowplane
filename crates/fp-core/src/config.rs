@@ -53,6 +53,24 @@ pub struct ServerConfig {
     /// sibling container's init step can read it (the token is otherwise only logged). Ignored
     /// outside dev mode. Env `FLOWPLANE_DEV_TOKEN_PATH`.
     pub dev_token_path: Option<PathBuf>,
+    /// HTTP admin URL of the first-party rate-limit service. When set, the CP `rls_sync` worker
+    /// pushes the policy set here on a 60 s reconcile (S5). `None` disables the worker. Env
+    /// `FLOWPLANE_RLS_ADMIN_URL`. (The RLS gRPC URL that drives S6 CDS injection,
+    /// `FLOWPLANE_RLS_GRPC_URL`, is a separate listener.)
+    pub rls_admin_url: Option<String>,
+    /// Seconds between `rls_sync` reconcile pushes (S5). Defaults to 60 (the design's reconcile
+    /// window) and is clamped to 1..=60 — the knob may only *lower* the interval to make automated
+    /// tests converge quickly, never raise it past the documented 60 s backstop. Env
+    /// `FLOWPLANE_RLS_RECONCILE_SECS`.
+    pub rls_reconcile_secs: u64,
+    /// gRPC URL (`host:port`) of the first-party rate-limit service. When set, the CP synthesizes
+    /// and injects the built-in `rate_limit_cluster` into CDS (S6) and defaults the
+    /// `global_rate_limit` filter to it. `None` disables injection. Env `FLOWPLANE_RLS_GRPC_URL`.
+    pub rls_grpc_url: Option<String>,
+    /// mTLS material the synthesized `rate_limit_cluster` presents to / verifies the RLS with
+    /// (S6). All three paths come together or not at all (see `resolve`). `None` => the built-in
+    /// cluster dials the RLS in plaintext h2c (dev only). Env `FLOWPLANE_DATAPLANE_TLS_*`.
+    pub dataplane_tls: Option<DataplaneTlsConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +96,18 @@ pub struct XdsTlsConfig {
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
     /// CA bundle that dataplane client certificates must chain to.
+    pub client_ca_path: PathBuf,
+}
+
+/// mTLS material for the built-in `rate_limit_cluster` (S6, spec/04:31). The Envoy→RLS hop
+/// authenticates with the dataplane client cert and verifies the RLS server cert against the CA.
+/// All three paths are required together (fail-closed in `resolve`); the files are read by Envoy
+/// on the dataplane host, so the control plane only ships the paths.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataplaneTlsConfig {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    /// CA bundle the dataplane uses to verify the RLS server certificate.
     pub client_ca_path: PathBuf,
 }
 
@@ -113,6 +143,11 @@ struct FileConfig {
     log_filter: Option<String>,
     otlp_endpoint: Option<String>,
     dev_token_path: Option<String>,
+    rls_admin_url: Option<String>,
+    rls_grpc_url: Option<String>,
+    dataplane_tls_cert: Option<String>,
+    dataplane_tls_key: Option<String>,
+    dataplane_tls_client_ca: Option<String>,
 }
 
 const DEFAULT_API_ADDR: &str = "0.0.0.0:8080";
@@ -328,6 +363,54 @@ impl ServerConfig {
             .map(PathBuf::from)
             .or_else(|| file.dev_token_path.map(PathBuf::from));
 
+        let rls_admin_url = get("FLOWPLANE_RLS_ADMIN_URL")
+            .map(str::to_owned)
+            .or(file.rls_admin_url);
+
+        let rls_grpc_url = get("FLOWPLANE_RLS_GRPC_URL")
+            .map(str::to_owned)
+            .or(file.rls_grpc_url);
+
+        // Clamped to 1..=60: the knob exists only to make automated tests converge faster than the
+        // design's 60 s reconcile window — it may LOWER the interval but never raise it past 60 s,
+        // so the documented "missed delivery converges within 60 s" backstop always holds.
+        let rls_reconcile_secs = get("FLOWPLANE_RLS_RECONCILE_SECS")
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|s| *s > 0)
+            .map(|s| s.min(60))
+            .unwrap_or(60);
+
+        let dataplane_tls_cert = get("FLOWPLANE_DATAPLANE_TLS_CERT")
+            .map(str::to_owned)
+            .or(file.dataplane_tls_cert);
+        let dataplane_tls_key = get("FLOWPLANE_DATAPLANE_TLS_KEY")
+            .map(str::to_owned)
+            .or(file.dataplane_tls_key);
+        let dataplane_tls_client_ca = get("FLOWPLANE_DATAPLANE_TLS_CLIENT_CA")
+            .map(str::to_owned)
+            .or(file.dataplane_tls_client_ca);
+        let dataplane_tls = match (
+            dataplane_tls_cert,
+            dataplane_tls_key,
+            dataplane_tls_client_ca,
+        ) {
+            (Some(cert_path), Some(key_path), Some(client_ca_path)) => Some(DataplaneTlsConfig {
+                cert_path: cert_path.into(),
+                key_path: key_path.into(),
+                client_ca_path: client_ca_path.into(),
+            }),
+            (None, None, None) => None,
+            _ => {
+                return Err(DomainError::invalid_config(
+                    "FLOWPLANE_DATAPLANE_TLS_CERT, FLOWPLANE_DATAPLANE_TLS_KEY, and \
+                     FLOWPLANE_DATAPLANE_TLS_CLIENT_CA must be set together",
+                )
+                .with_hint(
+                    "Envoy→RLS mTLS needs the dataplane client identity AND the RLS server CA",
+                ))
+            }
+        };
+
         Ok(Self {
             api_addr,
             xds_addr,
@@ -344,6 +427,10 @@ impl ServerConfig {
             tenant_write_limit_per_minute,
             allow_logged_bootstrap_token,
             dev_token_path,
+            rls_admin_url,
+            rls_reconcile_secs,
+            rls_grpc_url,
+            dataplane_tls,
         })
     }
 }
@@ -439,6 +526,39 @@ mod tests {
         assert_eq!(cfg.dev_token_path, Some(PathBuf::from("/from/env")));
     }
 
+    #[test]
+    fn rls_reconcile_secs_defaults_to_60_and_honors_env() {
+        // Absent → the design's 60 s reconcile window.
+        let cfg = ServerConfig::resolve(&base_env(), FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_reconcile_secs, 60);
+
+        // A valid override in 1..=60 is taken verbatim (tests lower it to converge fast).
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_RECONCILE_SECS".into(), "2".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_reconcile_secs, 2);
+
+        // A value above 60 is clamped to 60 — the knob can only lower the backstop, never raise it.
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_RECONCILE_SECS".into(), "300".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(
+            cfg.rls_reconcile_secs, 60,
+            "values above the 60 s backstop must clamp to 60"
+        );
+
+        // Garbage and zero both fall back to the default rather than disabling the loop.
+        for bad in ["0", "not-a-number", ""] {
+            let mut env = base_env();
+            env.insert("FLOWPLANE_RLS_RECONCILE_SECS".into(), bad.into());
+            let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+            assert_eq!(
+                cfg.rls_reconcile_secs, 60,
+                "input {bad:?} must fall back to 60"
+            );
+        }
+    }
+
     fn oidc_env() -> HashMap<String, String> {
         let mut env = base_env();
         env.insert("FLOWPLANE_OIDC_ISSUER".into(), "https://idp.test".into());
@@ -520,6 +640,55 @@ mod tests {
         }
         let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("full triple ok");
         assert!(cfg.xds_tls.is_some());
+    }
+
+    #[test]
+    fn dataplane_tls_paths_must_come_in_triples() {
+        // Fail-closed: the Envoy→RLS mTLS material is all-or-nothing (acceptance: partial certs
+        // are rejected at config load, before any CDS injection).
+        for present in [
+            vec!["FLOWPLANE_DATAPLANE_TLS_CERT"],
+            vec![
+                "FLOWPLANE_DATAPLANE_TLS_CERT",
+                "FLOWPLANE_DATAPLANE_TLS_KEY",
+            ],
+            vec![
+                "FLOWPLANE_DATAPLANE_TLS_KEY",
+                "FLOWPLANE_DATAPLANE_TLS_CLIENT_CA",
+            ],
+            vec!["FLOWPLANE_DATAPLANE_TLS_CLIENT_CA"],
+        ] {
+            let mut env = base_env();
+            for key in &present {
+                env.insert((*key).into(), "/tmp/dp.pem".into());
+            }
+            assert!(
+                ServerConfig::resolve(&env, FileConfig::default()).is_err(),
+                "partial dataplane TLS config {present:?} must be rejected"
+            );
+        }
+        let mut env = base_env();
+        for key in [
+            "FLOWPLANE_DATAPLANE_TLS_CERT",
+            "FLOWPLANE_DATAPLANE_TLS_KEY",
+            "FLOWPLANE_DATAPLANE_TLS_CLIENT_CA",
+        ] {
+            env.insert(key.into(), "/tmp/dp.pem".into());
+        }
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("full triple ok");
+        assert!(cfg.dataplane_tls.is_some());
+        assert!(
+            cfg.rls_grpc_url.is_none(),
+            "tls without grpc url is allowed"
+        );
+    }
+
+    #[test]
+    fn rls_grpc_url_parsed_from_env() {
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_GRPC_URL".into(), "rls.internal:8081".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_grpc_url.as_deref(), Some("rls.internal:8081"));
     }
 
     #[test]

@@ -167,4 +167,5 @@ To inspect or toggle an individual generated tool, use `flowplane mcp status` / 
 
 ## Further reading
 
+- [import-and-publish-openapi-spec](import-and-publish-openapi-spec.md) — the same publish gate, but for a spec you already have (imported via `--from-openapi`) rather than one learned from traffic.
 - Design reference (optional): [`spec/06-learning.md`](../../spec/06-learning.md) — how captured traffic is aggregated into an OpenAPI spec. Not needed to complete this guide.
