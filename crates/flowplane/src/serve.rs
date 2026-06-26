@@ -356,8 +356,7 @@ async fn run_rls_sync(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let client = reqwest::Client::new();
-    let mut interval =
-        tokio::time::interval(std::time::Duration::from_secs(reconcile_secs.max(1)));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(reconcile_secs.max(1)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {

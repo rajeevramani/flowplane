@@ -542,14 +542,20 @@ mod tests {
         let mut env = base_env();
         env.insert("FLOWPLANE_RLS_RECONCILE_SECS".into(), "300".into());
         let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
-        assert_eq!(cfg.rls_reconcile_secs, 60, "values above the 60 s backstop must clamp to 60");
+        assert_eq!(
+            cfg.rls_reconcile_secs, 60,
+            "values above the 60 s backstop must clamp to 60"
+        );
 
         // Garbage and zero both fall back to the default rather than disabling the loop.
         for bad in ["0", "not-a-number", ""] {
             let mut env = base_env();
             env.insert("FLOWPLANE_RLS_RECONCILE_SECS".into(), bad.into());
             let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
-            assert_eq!(cfg.rls_reconcile_secs, 60, "input {bad:?} must fall back to 60");
+            assert_eq!(
+                cfg.rls_reconcile_secs, 60,
+                "input {bad:?} must fall back to 60"
+            );
         }
     }
 

@@ -263,7 +263,10 @@ mod tests {
         // Deterministic boundary math (no wall clock). Minute window W=60, epoch-aligned:
         // window 16 = [960, 1020). now=960 -> a full window remains; now=1019 -> 1s; now=1020 ->
         // the next window just opened, so a full 60s again.
-        let policy = || MatchedPolicy { requests_per_unit: 5, unit: RateLimitUnit::Minute };
+        let policy = || MatchedPolicy {
+            requests_per_unit: 5,
+            unit: RateLimitUnit::Minute,
+        };
         for (now, expected) in [(960u64, 60i64), (1019, 1), (1020, 60), (1000, 20)] {
             let (status, _) = enforced_status(policy(), 1, now);
             assert_eq!(
