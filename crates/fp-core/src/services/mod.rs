@@ -25,9 +25,12 @@ use fp_domain::{DomainError, ErrorCode, RequestId};
 use fp_storage::repos::audit::{self, ActorType};
 use sqlx::PgPool;
 
-/// Map an authorization denial to the wire error. Cross-org and no-grant denials on reads
-/// render as `not_found` (anti-enumeration, spec/05 §3.2.2); everything else is `forbidden`
-/// naming the missing (resource, action) so the caller knows what grant to request.
+/// Map an authorization denial to the wire error. Only an org-boundary (cross-org) denial
+/// renders as `not_found` — anti-enumeration across the hard org boundary (spec/05 §3.2.2,
+/// §3.3). Every other denial, including a same-org no-grant denial, is `forbidden` naming the
+/// missing (resource, action) so the caller knows what grant to request; this is safe because
+/// the grant check denies at team level before any per-resource lookup, so the response is
+/// identical whether the named resource exists or not (no existence oracle).
 pub fn deny_to_error(resource: Resource, action: Action, reason: Reason) -> DomainError {
     match reason {
         Reason::CrossOrg => DomainError::new(ErrorCode::NotFound, "not found"),
