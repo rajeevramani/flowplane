@@ -20,7 +20,7 @@ impl RestClient {
     pub(crate) fn new(global: GlobalOptions) -> Result<Self> {
         let config = effective(&global)?;
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(global.timeout))
+            .timeout(std::time::Duration::from_secs(config.timeout))
             .build()?;
         Ok(Self {
             http,

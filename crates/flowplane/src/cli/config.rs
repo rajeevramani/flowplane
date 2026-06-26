@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Args)]
 pub struct GlobalOptions {
@@ -16,10 +17,14 @@ pub struct GlobalOptions {
     pub context: Option<String>,
     #[arg(long, global = true, env = "FLOWPLANE_SERVER")]
     pub server: Option<String>,
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "FLOWPLANE_TEAM")]
     pub team: Option<String>,
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "FLOWPLANE_ORG")]
     pub org: Option<String>,
+    /// Bearer token; highest-priority token source (CLI-R-40). Falls back to
+    /// `FLOWPLANE_TOKEN`, the selected context, the config file, then the credentials file.
+    #[arg(long, global = true, env = "FLOWPLANE_TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
     #[arg(short = 'o', long, global = true, value_enum)]
     pub output: Option<OutputFormat>,
     /// Exactly equivalent to `--output json`; cannot be combined with `--output`
@@ -38,8 +43,10 @@ pub struct GlobalOptions {
     pub yes: bool,
     #[arg(long, global = true)]
     pub revision: Option<i64>,
-    #[arg(long, global = true, default_value_t = 30)]
-    pub timeout: u64,
+    /// HTTP timeout in seconds. Uniform precedence (CLI-R-40/41):
+    /// flag > `FLOWPLANE_TIMEOUT` > context > config file > default (30).
+    #[arg(long, global = true, env = "FLOWPLANE_TIMEOUT")]
+    pub timeout: Option<u64>,
     #[arg(long, global = true)]
     pub out: Option<PathBuf>,
 }
@@ -67,6 +74,8 @@ pub(crate) struct CliConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) oidc_issuer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) oidc_client_id: Option<String>,
@@ -83,6 +92,8 @@ pub(crate) struct NamedContext {
     pub(crate) org: Option<String>,
     pub(crate) team: Option<String>,
     pub(crate) token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +102,7 @@ pub(crate) struct EffectiveConfig {
     pub(crate) org: Option<String>,
     pub(crate) team: Option<String>,
     pub(crate) token: Option<String>,
+    pub(crate) timeout: u64,
     pub(crate) oidc_issuer: Option<String>,
     pub(crate) oidc_client_id: Option<String>,
     pub(crate) oidc_scope: Option<String>,
@@ -223,6 +235,21 @@ fn write_private_file_contents(path: &Path, contents: &[u8]) -> Result<()> {
 
 pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
     let file = read_config()?;
+    let credentials = fs::read_to_string(credentials_path())
+        .ok()
+        .map(|s| s.trim().to_string());
+    resolve(global, file, credentials)
+}
+
+/// Pure precedence resolver (CLI-R-40): `flag > env > context > file > default` for every
+/// value. The flag-or-env tier is already folded into `global.*` by clap (each arg's
+/// `env = …`); this layers context → file → credentials/default beneath it. IO-free so the
+/// precedence is unit-testable without touching process env or the filesystem.
+fn resolve(
+    global: &GlobalOptions,
+    file: CliConfig,
+    credentials: Option<String>,
+) -> Result<EffectiveConfig> {
     let selected_name = global.context.as_ref().or(file.current_context.as_ref());
     let selected =
         selected_name.and_then(|name| file.contexts.iter().find(|ctx| &ctx.name == name));
@@ -231,15 +258,12 @@ pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
             anyhow::bail!("context \"{name}\" does not exist");
         }
     }
-    let token = std::env::var("FLOWPLANE_TOKEN")
-        .ok()
+    let token = global
+        .token
+        .clone()
         .or_else(|| selected.and_then(|ctx| ctx.token.clone()))
         .or_else(|| file.token.clone())
-        .or_else(|| {
-            fs::read_to_string(credentials_path())
-                .ok()
-                .map(|s| s.trim().to_string())
-        })
+        .or(credentials)
         .filter(|s| !s.is_empty());
     Ok(EffectiveConfig {
         server: global
@@ -251,16 +275,19 @@ pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
         org: global
             .org
             .clone()
-            .or_else(|| std::env::var("FLOWPLANE_ORG").ok())
             .or_else(|| selected.and_then(|ctx| ctx.org.clone()))
             .or_else(|| file.org.clone()),
         team: global
             .team
             .clone()
-            .or_else(|| std::env::var("FLOWPLANE_TEAM").ok())
             .or_else(|| selected.and_then(|ctx| ctx.team.clone()))
             .or_else(|| file.team.clone()),
         token,
+        timeout: global
+            .timeout
+            .or_else(|| selected.and_then(|ctx| ctx.timeout))
+            .or(file.timeout)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS),
         oidc_issuer: std::env::var("FLOWPLANE_OIDC_ISSUER")
             .ok()
             .or(file.oidc_issuer),
@@ -278,6 +305,140 @@ pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+mod resolve_tests {
+    use super::{resolve, CliConfig, GlobalOptions, NamedContext, DEFAULT_SERVER};
+
+    fn opts() -> GlobalOptions {
+        GlobalOptions {
+            context: None,
+            server: None,
+            team: None,
+            org: None,
+            token: None,
+            output: None,
+            json: false,
+            no_color: false,
+            quiet: false,
+            verbose: false,
+            dry_run: false,
+            yes: false,
+            revision: None,
+            timeout: None,
+            out: None,
+        }
+    }
+
+    fn ctx(name: &str) -> NamedContext {
+        NamedContext {
+            name: name.to_string(),
+            server: "https://ctx.example".to_string(),
+            org: Some("ctx-org".to_string()),
+            team: Some("ctx-team".to_string()),
+            token: Some("ctx-token".to_string()),
+            timeout: Some(11),
+        }
+    }
+
+    fn file_with_ctx() -> CliConfig {
+        CliConfig {
+            current_context: Some("prod".to_string()),
+            contexts: vec![ctx("prod")],
+            base_url: Some("https://file.example".to_string()),
+            org: Some("file-org".to_string()),
+            team: Some("file-team".to_string()),
+            token: Some("file-token".to_string()),
+            ..CliConfig::default()
+        }
+    }
+
+    #[test]
+    fn flag_or_env_tier_beats_context_file_and_credentials() {
+        // `global.*` carries the resolved flag-or-env value (clap folds env in); it wins.
+        let mut o = opts();
+        o.server = Some("https://flag.example".to_string());
+        o.org = Some("flag-org".to_string());
+        o.team = Some("flag-team".to_string());
+        o.token = Some("flag-token".to_string());
+        let eff = resolve(&o, file_with_ctx(), Some("cred-token".to_string())).unwrap();
+        assert_eq!(eff.server, "https://flag.example");
+        assert_eq!(eff.org.as_deref(), Some("flag-org"));
+        assert_eq!(eff.team.as_deref(), Some("flag-team"));
+        assert_eq!(eff.token.as_deref(), Some("flag-token"));
+    }
+
+    #[test]
+    fn context_beats_file_when_no_flag_or_env() {
+        let eff = resolve(&opts(), file_with_ctx(), Some("cred-token".to_string())).unwrap();
+        // current_context = prod, so the context values win over the bare file values.
+        assert_eq!(eff.server, "https://ctx.example");
+        assert_eq!(eff.org.as_deref(), Some("ctx-org"));
+        assert_eq!(eff.team.as_deref(), Some("ctx-team"));
+        assert_eq!(eff.token.as_deref(), Some("ctx-token"));
+    }
+
+    #[test]
+    fn file_beats_credentials_and_default_when_no_context() {
+        let file = CliConfig {
+            base_url: Some("https://file.example".to_string()),
+            org: Some("file-org".to_string()),
+            team: Some("file-team".to_string()),
+            token: Some("file-token".to_string()),
+            ..CliConfig::default()
+        };
+        let eff = resolve(&opts(), file, Some("cred-token".to_string())).unwrap();
+        assert_eq!(eff.server, "https://file.example");
+        assert_eq!(eff.token.as_deref(), Some("file-token"));
+    }
+
+    #[test]
+    fn credentials_then_default_are_the_lowest_token_and_server_tiers() {
+        let eff = resolve(
+            &opts(),
+            CliConfig::default(),
+            Some("cred-token".to_string()),
+        )
+        .unwrap();
+        assert_eq!(eff.token.as_deref(), Some("cred-token"));
+        // No server anywhere → the built-in default.
+        assert_eq!(eff.server, DEFAULT_SERVER);
+        // No token anywhere → None.
+        let eff = resolve(&opts(), CliConfig::default(), None).unwrap();
+        assert_eq!(eff.token, None);
+    }
+
+    #[test]
+    fn timeout_follows_uniform_precedence_flag_context_file_default() {
+        // flag (folded from --timeout/FLOWPLANE_TIMEOUT) wins.
+        let mut o = opts();
+        o.timeout = Some(99);
+        assert_eq!(resolve(&o, file_with_ctx(), None).unwrap().timeout, 99);
+        // no flag/env → selected context timeout (ctx sets 11).
+        assert_eq!(resolve(&opts(), file_with_ctx(), None).unwrap().timeout, 11);
+        // no flag/env/context → file timeout.
+        let file = CliConfig {
+            timeout: Some(7),
+            ..CliConfig::default()
+        };
+        assert_eq!(resolve(&opts(), file, None).unwrap().timeout, 7);
+        // nothing anywhere → default 30.
+        assert_eq!(
+            resolve(&opts(), CliConfig::default(), None)
+                .unwrap()
+                .timeout,
+            30
+        );
+    }
+
+    #[test]
+    fn unknown_explicit_context_is_an_error() {
+        let mut o = opts();
+        o.context = Some("does-not-exist".to_string());
+        assert!(resolve(&o, CliConfig::default(), None).is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod format_tests {
     use super::{GlobalOptions, OutputFormat};
 
@@ -287,6 +448,7 @@ mod format_tests {
             server: None,
             team: None,
             org: None,
+            token: None,
             output: None,
             json: false,
             no_color: false,
@@ -295,7 +457,7 @@ mod format_tests {
             dry_run: false,
             yes: false,
             revision: None,
-            timeout: 30,
+            timeout: None,
             out: None,
         }
     }

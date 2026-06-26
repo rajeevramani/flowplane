@@ -110,9 +110,30 @@ fn injected_error(name: &str) -> Option<(StatusCode, Value)> {
     Some((status, body))
 }
 
-async fn get_cluster(Path((_team, name)): Path<(String, String)>) -> (StatusCode, Json<Value>) {
+async fn get_cluster(
+    Path((_team, name)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+) -> (StatusCode, Json<Value>) {
     if let Some((status, body)) = injected_error(&name) {
         return (status, Json(body));
+    }
+    // The reserved name `probe` echoes the request's effective auth/scope headers, so a test
+    // can observe which token/org the CLI's precedence resolution actually sent.
+    if name == "probe" {
+        let header = |key: &str| {
+            headers
+                .get(key)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "name": "probe",
+                "received_authorization": header("authorization"),
+                "received_org": header("x-flowplane-org"),
+            })),
+        );
     }
     (
         StatusCode::OK,

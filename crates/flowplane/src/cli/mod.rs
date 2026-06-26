@@ -209,7 +209,7 @@ async fn device_login(
     })?;
     let scope = config.oidc_scope.unwrap_or(scope);
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(global.timeout))
+        .timeout(Duration::from_secs(global.timeout.unwrap_or(30)))
         .build()?;
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
@@ -325,7 +325,7 @@ async fn pkce_login(
         .unwrap_or_else(|| "http://127.0.0.1:8976/callback".to_string());
     let callback = CallbackUrl::parse(&callback_url)?;
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(global.timeout))
+        .timeout(Duration::from_secs(global.timeout.unwrap_or(30)))
         .build()?;
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
@@ -544,10 +544,27 @@ fn percent_decode(value: &str) -> Result<String> {
     String::from_utf8(out).context("percent decoded value is not UTF-8")
 }
 
+/// Replace a stored token with a fixed redaction marker so `config show` never reveals it
+/// (CLI-R-43). A `None` token is left as-is.
+fn redact_token(token: &mut Option<String>) {
+    if token.is_some() {
+        *token = Some("***redacted***".to_string());
+    }
+}
+
 pub fn run_config(_global: GlobalOptions, command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Path => println!("{}", config_path().display()),
-        ConfigCommand::Show => println!("{}", toml::to_string_pretty(&read_config()?)?),
+        ConfigCommand::Show => {
+            // CLI-R-43: never print token material. Redact the file token and any
+            // per-context tokens before serializing the config.
+            let mut config = read_config()?;
+            redact_token(&mut config.token);
+            for ctx in &mut config.contexts {
+                redact_token(&mut ctx.token);
+            }
+            println!("{}", toml::to_string_pretty(&config)?);
+        }
         ConfigCommand::SetContext {
             name,
             server,
@@ -571,6 +588,7 @@ pub fn run_config(_global: GlobalOptions, command: ConfigCommand) -> Result<()> 
                 } else {
                     token
                 },
+                timeout: None,
             });
             config.current_context.get_or_insert(name);
             write_config(&config)?;

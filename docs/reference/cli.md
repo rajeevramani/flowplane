@@ -14,6 +14,7 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--server <URL>` | | `FLOWPLANE_SERVER` | `http://127.0.0.1:8080` | Control-plane base URL. |
 | `--team <NAME>` | | `FLOWPLANE_TEAM` | | Team scope. |
 | `--org <NAME>` | | `FLOWPLANE_ORG` | | Organization scope. |
+| `--token <TOKEN>` | | `FLOWPLANE_TOKEN` | | Bearer token. Highest-priority token source; falls back to the selected context, the config-file token, then `~/.flowplane/credentials`. Redacted in `config show`. |
 | `--output <FMT>` | `-o` | | `table` on a TTY, `json` when stdout is piped | Output format: `table`, `json`, `yaml`, `wide`. An explicit `-o` always wins; otherwise the default is `table` on an interactive terminal and `json` when stdout is not a TTY (so `… \| jq` works without `-o json`). |
 | `--json` | | | `false` | Exactly equivalent to `--output json`. |
 | `--no-color` | | | `false` | Disable colored output. Color is also disabled by the `NO_COLOR` environment variable, when stdout is not a TTY, or when output is redirected with `--out`. |
@@ -22,7 +23,7 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--dry-run` | | | `false` | Do not perform mutating actions. |
 | `--yes` | `-y` | | `false` | Assume "yes" for confirmation prompts. |
 | `--revision <N>` | | | | Resource revision (i64). |
-| `--timeout <SECS>` | | | `30` | HTTP timeout in seconds (u64). |
+| `--timeout <SECS>` | | `FLOWPLANE_TIMEOUT` | `30` | HTTP timeout in seconds (u64). |
 | `--out <PATH>` | | | | Write command output to a file. |
 
 ### Other environment variables
@@ -32,15 +33,19 @@ These are read directly (not as flags) by config resolution:
 | Env var | Meaning |
 |---------|---------|
 | `FLOWPLANE_CONFIG` | Path to the config TOML file. Default: `$HOME/.flowplane/config.toml`. |
-| `FLOWPLANE_TOKEN` | Bearer token (highest-priority token source). |
-| `FLOWPLANE_ORG` | Organization fallback. |
-| `FLOWPLANE_TEAM` | Team fallback. |
+| `FLOWPLANE_TOKEN` | Bearer token (env tier; below `--token`, above context/file). |
+| `FLOWPLANE_ORG` | Organization (env tier of the precedence rule). |
+| `FLOWPLANE_TEAM` | Team (env tier of the precedence rule). |
+| `FLOWPLANE_TIMEOUT` | HTTP timeout in seconds (env tier; below `--timeout`, above the `30` default). |
 | `FLOWPLANE_OIDC_ISSUER` | OIDC issuer URL fallback. |
 | `FLOWPLANE_OIDC_CLIENT_ID` | OIDC client ID fallback. |
 | `FLOWPLANE_OIDC_SCOPE` | OIDC scope fallback. |
 | `FLOWPLANE_OIDC_CALLBACK_URL` | OIDC callback URL fallback. |
 
-Token resolution order: `FLOWPLANE_TOKEN` → selected context token → config-file token → `~/.flowplane/credentials` file. The config directory and credential files are written with `0700`/`0600` permissions on Unix.
+Configuration precedence is uniform for every value — `flag > env > context > file > default`.
+Token resolution follows the same rule: `--token` → `FLOWPLANE_TOKEN` → selected context token →
+config-file token → `~/.flowplane/credentials` file. The config directory and credential files are
+written with `0700`/`0600` permissions on Unix, and the token is redacted in `config show`.
 
 ## JSON output envelope
 
