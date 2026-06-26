@@ -1,6 +1,7 @@
 mod client;
 mod commands;
 mod config;
+pub(crate) mod confirm;
 pub(crate) mod output;
 pub(crate) mod schema;
 

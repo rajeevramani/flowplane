@@ -43,7 +43,7 @@ fn run_cluster_delete(server: &str, name: &str) -> Output {
         .env("FLOWPLANE_SERVER", server)
         .env("FLOWPLANE_TOKEN", "t")
         .args([
-            "cluster", "delete", name, "--team", "payments", "-o", "json",
+            "cluster", "delete", name, "--team", "payments", "--yes", "-o", "json",
         ])
         .output()
         .unwrap_or_else(|e| panic!("run cluster delete {name}: {e}"))

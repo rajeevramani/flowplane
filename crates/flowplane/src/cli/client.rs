@@ -200,6 +200,15 @@ impl RestClient {
             render(&self.global, "plan", &plan)?;
             return Ok(Some(plan));
         }
+        // CLI-R-22/26: a destructive DELETE prompts `[y/N]` on a TTY, is skipped by `--yes`,
+        // and fails fast on a non-interactive terminal — before any network call (incl. the
+        // RMW read below). Only for interactive command clients (apply uses a quiet client).
+        if method == reqwest::Method::DELETE && self.report_errors {
+            crate::cli::confirm::confirm_destructive(
+                &self.global,
+                &format!("delete {}", path.trim_start_matches('/')),
+            )?;
+        }
         let method_label = method.as_str().to_string();
         let is_get = method == reqwest::Method::GET;
         // CLI-R-47: read-modify-write. On an update/delete with no explicit `--revision`, read

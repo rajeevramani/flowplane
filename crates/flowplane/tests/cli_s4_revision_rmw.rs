@@ -214,6 +214,7 @@ async fn stale_revision_delete_conflict_names_both() {
             "payments",
             "--revision",
             "3",
+            "--yes",
             "-o",
             "json",
         ])
@@ -292,6 +293,7 @@ async fn revision_flag_accepted_on_update_and_delete() {
             "payments",
             "--revision",
             "1",
+            "--yes",
             "-o",
             "json",
         ])

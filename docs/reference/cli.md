@@ -21,7 +21,7 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--quiet` | | | `false` | Suppress non-essential output. |
 | `--verbose` | | | `false` | Verbose output. |
 | `--dry-run` | | | `false` | Do not perform mutating actions. |
-| `--yes` | `-y` | | `false` | Assume "yes" for confirmation prompts. |
+| `--yes` | `-y` | | `false` | Skip the confirmation prompt on destructive commands (`delete`, `unexpose`). Required to run a destructive command on a non-interactive terminal — see [Destructive confirmations](#destructive-confirmations). |
 | `--revision <N>` | | | | Optimistic-concurrency precondition for `update`/`delete`, sent as `If-Match`. Omit it and the CLI does read-modify-write: it reads the resource's current revision and sends that, so a concurrent edit is detected. A stale revision fails with a `409` whose error envelope names both the `attempted_revision` and the server's current one. |
 | `--fields <a,b,c>` | | | | Project reader output to only these comma-separated keys, applied inside the envelope `data` (per item for lists). `schemaVersion`/`kind` always survive; an absent key is omitted (no `null`). |
 | `--timeout <SECS>` | | `FLOWPLANE_TIMEOUT` | `30` | HTTP timeout in seconds (u64). |
@@ -47,6 +47,22 @@ Configuration precedence is uniform for every value — `flag > env > context > 
 Token resolution follows the same rule: `--token` → `FLOWPLANE_TOKEN` → selected context token →
 config-file token → `~/.flowplane/credentials` file. The config directory and credential files are
 written with `0700`/`0600` permissions on Unix, and the token is redacted in `config show`.
+
+## Destructive confirmations
+
+Destructive commands (`delete` and `unexpose`) confirm before acting:
+
+- **On an interactive terminal**, the CLI prompts `delete <resource>? [y/N]:`. The default is
+  no — only `y`/`yes` proceeds; a bare Enter or anything else aborts (exit `1`). The prompt is
+  written to stderr.
+- **`--yes` / `-y`** skips the prompt and proceeds immediately. Use it in scripts and automation.
+- **On a non-interactive terminal** (piped or redirected stdin) **without `--yes`**, the command
+  does not prompt and does not hang: it fails fast with exit code `2` and an
+  `error (confirmation_required): … pass --yes` message on stderr. The CLI never reads from a
+  non-TTY stdin, so it can never deadlock waiting for an answer that will not come.
+
+`apply` is additive-only and does not delete; `apply --prune` is currently rejected as
+unsupported, so it is not a confirmation surface.
 
 ## JSON output envelope
 

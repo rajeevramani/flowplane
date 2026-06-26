@@ -298,7 +298,7 @@ async fn delete_json_envelope() {
         .env("FLOWPLANE_SERVER", mock.base_url())
         .env("FLOWPLANE_TOKEN", "t")
         .args([
-            "cluster", "delete", "alpha", "--team", "payments", "-o", "json",
+            "cluster", "delete", "alpha", "--team", "payments", "--yes", "-o", "json",
         ])
         .output()
         .expect("run cluster delete -o json");
