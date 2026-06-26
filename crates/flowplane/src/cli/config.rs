@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
@@ -22,7 +22,9 @@ pub struct GlobalOptions {
     pub org: Option<String>,
     #[arg(short = 'o', long, global = true, value_enum)]
     pub output: Option<OutputFormat>,
-    #[arg(long, global = true)]
+    /// Exactly equivalent to `--output json`; cannot be combined with `--output`
+    /// (CLI-R-11: `-o/--output` is the single format selector).
+    #[arg(long, global = true, conflicts_with = "output")]
     pub json: bool,
     #[arg(long, global = true)]
     pub no_color: bool,
@@ -96,12 +98,44 @@ pub(crate) struct EffectiveConfig {
 }
 
 impl GlobalOptions {
+    /// Resolve the effective output format.
+    ///
+    /// Precedence (CLI-R-11/12): `--json` is exactly `-o json`; an explicit `-o/--output`
+    /// always wins; otherwise the default is `table` on an interactive stdout and `json`
+    /// when stdout is not a TTY (so `flowplane … | jq` works without `-o json`).
     pub(crate) fn format(&self) -> OutputFormat {
+        self.format_for(std::io::stdout().is_terminal())
+    }
+
+    /// TTY-parameterized core of [`GlobalOptions::format`], split out for deterministic tests.
+    pub(crate) fn format_for(&self, stdout_is_tty: bool) -> OutputFormat {
         if self.json {
-            OutputFormat::Json
-        } else {
-            self.output.unwrap_or(OutputFormat::Table)
+            return OutputFormat::Json;
         }
+        if let Some(output) = self.output {
+            return output;
+        }
+        if stdout_is_tty {
+            OutputFormat::Table
+        } else {
+            OutputFormat::Json
+        }
+    }
+
+    /// Whether styled (ANSI) output is permitted (CLI-R-16).
+    ///
+    /// Disabled by `--no-color`, the `NO_COLOR` env var (any value), a non-TTY stdout, or
+    /// when output is redirected to a file via `--out`.
+    pub(crate) fn use_color(&self) -> bool {
+        self.use_color_for(std::io::stdout().is_terminal())
+    }
+
+    /// TTY-parameterized core of [`GlobalOptions::use_color`], split out for deterministic tests.
+    pub(crate) fn use_color_for(&self, stdout_is_tty: bool) -> bool {
+        !self.no_color
+            && self.out.is_none()
+            && stdout_is_tty
+            && std::env::var_os("NO_COLOR").is_none()
     }
 }
 
@@ -240,6 +274,68 @@ pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
             .ok()
             .or(file.callback_url),
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod format_tests {
+    use super::{GlobalOptions, OutputFormat};
+
+    fn opts() -> GlobalOptions {
+        GlobalOptions {
+            context: None,
+            server: None,
+            team: None,
+            org: None,
+            output: None,
+            json: false,
+            no_color: false,
+            quiet: false,
+            verbose: false,
+            dry_run: false,
+            yes: false,
+            revision: None,
+            timeout: 30,
+            out: None,
+        }
+    }
+
+    #[test]
+    fn json_flag_forces_json_regardless_of_tty() {
+        let mut o = opts();
+        o.json = true;
+        assert_eq!(o.format_for(true), OutputFormat::Json);
+        assert_eq!(o.format_for(false), OutputFormat::Json);
+    }
+
+    #[test]
+    fn explicit_output_always_wins() {
+        let mut o = opts();
+        o.output = Some(OutputFormat::Yaml);
+        assert_eq!(o.format_for(true), OutputFormat::Yaml);
+        assert_eq!(o.format_for(false), OutputFormat::Yaml);
+    }
+
+    #[test]
+    fn default_is_table_on_tty_json_off_tty() {
+        let o = opts();
+        assert_eq!(o.format_for(true), OutputFormat::Table);
+        assert_eq!(o.format_for(false), OutputFormat::Json);
+    }
+
+    #[test]
+    fn color_disabled_by_flag_file_or_non_tty() {
+        let mut o = opts();
+        o.no_color = true;
+        assert!(!o.use_color_for(true), "--no-color disables color");
+
+        let mut o = opts();
+        o.out = Some(std::path::PathBuf::from("/tmp/x"));
+        assert!(!o.use_color_for(true), "--out disables color");
+
+        let o = opts();
+        assert!(!o.use_color_for(false), "non-TTY disables color");
+    }
 }
 
 #[cfg(test)]

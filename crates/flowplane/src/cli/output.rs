@@ -111,11 +111,91 @@ pub(crate) fn exit_code_for_status(status: StatusCode) -> i32 {
     }
 }
 
-pub(crate) fn render(global: &GlobalOptions, value: &Value) -> Result<()> {
+/// JSON output-contract version (CLI-R-15). Integer, independent of the product semver;
+/// bumped only on a breaking change to the `-o json`/`-o yaml` envelope shape.
+pub(crate) const SCHEMA_VERSION: u64 = 1;
+
+/// Wrap a payload in the Option-A typed envelope `{ schemaVersion, kind, data }` (CLI-R-15).
+pub(crate) fn envelope(kind: &str, data: &Value) -> Value {
+    serde_json::json!({
+        "schemaVersion": SCHEMA_VERSION,
+        "kind": kind,
+        "data": data,
+    })
+}
+
+/// Derive a stable envelope `kind` from the REST path and response shape (CLI-R-15).
+/// Singular for an object (`cluster`), `…List` for a collection (`clusterList`).
+///
+/// Any `?query` is stripped first. For a list the collection is the trailing path segment.
+/// For an object the noun is the nearest-to-the-end *plural* segment (the governing
+/// collection) — so item reads (`…/clusters/{name}`), creates (`POST …/clusters`), and
+/// action sub-routes (`POST …/clusters/{name}/rotate`) all resolve to `cluster` rather than
+/// to an id or a verb. If no plural segment exists the trailing segment is used as-is.
+pub(crate) fn derive_kind(path: &str, value: &Value) -> String {
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut segments: Vec<&str> = path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .skip_while(|s| matches!(*s, "api" | "v1"))
+        .collect();
+    // Drop a leading `teams/{team}` or `orgs/{org}` scoping pair when a resource follows it,
+    // so the (plural) scope segment is never mistaken for the resource noun.
+    if segments.len() > 2 && matches!(segments[0], "teams" | "orgs") {
+        segments.drain(0..2);
+    }
+    let is_list = value.is_array() || value.get("items").map(Value::is_array).unwrap_or(false);
+    if is_list {
+        let noun = segments.last().copied().unwrap_or("result");
+        return format!("{}List", singularize(noun));
+    }
+    // Object: prefer the nearest-to-end plural (collection) segment; else the trailing segment.
+    let mut noun = segments.last().copied().unwrap_or("result");
+    for seg in segments.iter().rev() {
+        if singularize(seg).as_str() != *seg {
+            noun = *seg;
+            break;
+        }
+    }
+    singularize(noun)
+}
+
+/// Convert a plural resource segment to a camelCase singular kind (`route-configs` →
+/// `routeConfig`, `policies` → `policy`).
+fn singularize(segment: &str) -> String {
+    let camel = to_lower_camel(segment);
+    if let Some(stem) = camel.strip_suffix("ies") {
+        format!("{stem}y")
+    } else if camel.ends_with("ss") {
+        camel
+    } else if let Some(stem) = camel.strip_suffix('s') {
+        stem.to_string()
+    } else {
+        camel
+    }
+}
+
+fn to_lower_camel(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    let mut upper_next = false;
+    for ch in segment.chars() {
+        if ch == '-' || ch == '_' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(ch.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+pub(crate) fn render(global: &GlobalOptions, kind: &str, value: &Value) -> Result<()> {
     let text = match global.format() {
-        OutputFormat::Json => serde_json::to_string_pretty(value)?,
-        OutputFormat::Yaml => yaml_like(value, 0),
-        OutputFormat::Table | OutputFormat::Wide => table(value),
+        OutputFormat::Json => serde_json::to_string_pretty(&envelope(kind, value))?,
+        OutputFormat::Yaml => yaml_like(&envelope(kind, value), 0),
+        OutputFormat::Table | OutputFormat::Wide => table_styled(value, global.use_color()),
     };
     if let Some(out) = &global.out {
         fs::write(out, text).with_context(|| format!("write {}", out.display()))?;
@@ -125,18 +205,23 @@ pub(crate) fn render(global: &GlobalOptions, value: &Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn table(value: &Value) -> String {
+    table_styled(value, false)
+}
+
+pub(crate) fn table_styled(value: &Value, color: bool) -> String {
     if let Some(flattened) = flatten_xds_status(value) {
-        return table(&flattened);
+        return table_styled(&flattened, color);
     }
     if let Some(flattened) = flatten_ops_trace(value) {
-        return table(&flattened);
+        return table_styled(&flattened, color);
     }
     if let Some(flattened) = flatten_expose(value) {
-        return table(&flattened);
+        return table_styled(&flattened, color);
     }
     if let Some(flattened) = flatten_status_row(value) {
-        return table(&flattened);
+        return table_styled(&flattened, color);
     }
     let rows = if let Some(items) = value.get("items").and_then(Value::as_array) {
         items.clone()
@@ -186,7 +271,12 @@ pub(crate) fn table(value: &Value) -> String {
                 .unwrap_or(0)
         })
         .collect::<Vec<_>>();
-    let mut out = format_row(&headers, &widths);
+    let header_row = format_row(&headers, &widths);
+    let mut out = if color {
+        format!("\x1b[1m{header_row}\x1b[0m")
+    } else {
+        header_row
+    };
     for row in matrix {
         out.push('\n');
         out.push_str(&format_row(&row, &widths));
@@ -545,6 +635,7 @@ fn resource_label(value: &Value) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -589,5 +680,89 @@ mod tests {
         assert_eq!(value["code"], "502");
         assert_eq!(value["message"], "upstream unavailable");
         assert_eq!(value["status"], 502);
+    }
+
+    #[test]
+    fn envelope_wraps_payload_with_integer_schema_version_and_kind() {
+        let data = serde_json::json!({ "name": "demo", "revision": 3 });
+        let env = envelope("cluster", &data);
+        assert_eq!(env["schemaVersion"], Value::Number(SCHEMA_VERSION.into()));
+        assert!(
+            env["schemaVersion"].is_u64(),
+            "schemaVersion must be an integer"
+        );
+        assert_eq!(env["kind"], "cluster");
+        assert_eq!(env["data"], data);
+        // Exactly the three contract keys, nothing leaked at the top level.
+        let keys: BTreeSet<&str> = env
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, BTreeSet::from(["schemaVersion", "kind", "data"]));
+    }
+
+    #[test]
+    fn derive_kind_singular_for_object_list_for_collection() {
+        let obj = serde_json::json!({ "name": "c1" });
+        let arr = serde_json::json!([{ "name": "c1" }]);
+        let items = serde_json::json!({ "items": [{ "name": "c1" }] });
+
+        // item read: trailing id ignored, collection precedes it.
+        assert_eq!(
+            derive_kind("/api/v1/teams/payments/clusters/c1", &obj),
+            "cluster"
+        );
+        // collection list / create.
+        assert_eq!(
+            derive_kind("/api/v1/teams/payments/clusters", &arr),
+            "clusterList"
+        );
+        assert_eq!(
+            derive_kind("/api/v1/teams/payments/clusters", &items),
+            "clusterList"
+        );
+        assert_eq!(
+            derive_kind("/api/v1/teams/payments/clusters", &obj),
+            "cluster"
+        );
+        // top-level collections.
+        assert_eq!(derive_kind("/api/v1/orgs/acme/teams", &arr), "teamList");
+        assert_eq!(derive_kind("/api/v1/orgs", &arr), "orgList");
+        assert_eq!(derive_kind("/api/v1/orgs/acme", &obj), "org");
+        // hyphenated/`ies` plurals singularize to camelCase.
+        assert_eq!(
+            derive_kind("/api/v1/teams/p/route-configs/r1", &obj),
+            "routeConfig"
+        );
+        assert_eq!(
+            derive_kind("/api/v1/teams/p/rate-limit/d/policies", &arr),
+            "policyList"
+        );
+        // query strings are stripped, not leaked into the kind.
+        assert_eq!(
+            derive_kind("/api/v1/teams/p/ai/usage?from=2026-01-01", &obj),
+            "usage"
+        );
+        assert_eq!(
+            derive_kind("/api/v1/teams/p/learning-sessions?status=active", &arr),
+            "learningSessionList"
+        );
+        // action sub-routes resolve to the governing collection, not the verb.
+        assert_eq!(
+            derive_kind("/api/v1/teams/p/secrets/s1/rotate", &obj),
+            "secret"
+        );
+    }
+
+    #[test]
+    fn table_styled_emits_no_ansi_when_color_disabled() {
+        let value = serde_json::json!([{ "name": "demo", "revision": 1 }]);
+        let plain = table_styled(&value, false);
+        assert!(!plain.contains('\x1b'), "no-color table must be ANSI-free");
+        let colored = table_styled(&value, true);
+        assert!(colored.contains("\x1b[1m"), "colored header should be bold");
+        assert!(colored.contains("\x1b[0m"), "colored header should reset");
     }
 }

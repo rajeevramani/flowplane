@@ -1853,6 +1853,7 @@ pub async fn run_dataplane(global: GlobalOptions, command: DataplaneCommand) -> 
             if dry_run_global.dry_run {
                 render(
                     &dry_run_global,
+                    "plan",
                     &json!({"method": reqwest::Method::GET.as_str(), "path": path}),
                 )?;
             } else {
@@ -2056,7 +2057,13 @@ pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<(
             println!("{text}");
         }
     } else if !global.quiet {
-        print_apply_summary(&outcomes);
+        // CLI-R-10: `apply` honours `-o json`/`-o yaml` like every other command; the
+        // prose summary is only the human (table/wide) rendering.
+        if matches!(global.format(), OutputFormat::Json | OutputFormat::Yaml) {
+            output::render(&global, "applyResult", &apply_outcomes_value(&outcomes))?;
+        } else {
+            print_apply_summary(&outcomes);
+        }
     }
     let failures = outcomes.iter().filter(|outcome| outcome.failed).count();
     if failures > 0 {
@@ -2071,10 +2078,11 @@ async fn create_apply_target(
     target: &ApplyTarget,
 ) -> Result<ApplyAction> {
     client
-        .request(
+        .request_quiet(
             reqwest::Method::POST,
             &format!("/api/v1/teams/{team}/{}", target.kind.segment()),
             Some(target.create_body.clone()),
+            None,
         )
         .await?;
     Ok(ApplyAction::Created)
@@ -2093,7 +2101,7 @@ async fn apply_existing(
             }
             let revision = existing.get("revision").and_then(Value::as_i64);
             client
-                .request_with_revision(
+                .request_quiet(
                     reqwest::Method::PATCH,
                     path,
                     Some(target.update_body()?),
@@ -2110,7 +2118,7 @@ async fn apply_existing(
             }
             let revision = existing.get("revision").and_then(Value::as_i64);
             client
-                .request_with_revision(
+                .request_quiet(
                     reqwest::Method::POST,
                     &format!("{path}/rotate"),
                     Some(target.update_body()?),
@@ -2212,6 +2220,24 @@ impl ApplyOutcome {
             failed: true,
         }
     }
+}
+
+/// Machine-readable apply summary for `-o json`/`-o yaml` (CLI-R-10/15). Wrapped by
+/// `render()` in the typed envelope as `kind: "applyResult"`.
+fn apply_outcomes_value(outcomes: &[ApplyOutcome]) -> Value {
+    let items = outcomes
+        .iter()
+        .map(|outcome| {
+            json!({
+                "kind": outcome.kind.label(),
+                "name": outcome.name,
+                "action": outcome.action,
+                "detail": outcome.detail,
+                "failed": outcome.failed,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "items": items })
 }
 
 fn print_apply_summary(outcomes: &[ApplyOutcome]) {

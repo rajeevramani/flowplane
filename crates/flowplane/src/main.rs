@@ -205,10 +205,11 @@ fn run() -> anyhow::Result<()> {
             clap_complete::generate(shell, &mut command, "flowplane", &mut std::io::stdout());
             Ok(())
         }
-        Command::Version => {
-            println!("{VERSION}");
-            Ok(())
-        }
+        Command::Version => cli::output::render(
+            &cli.client,
+            "version",
+            &serde_json::json!({ "version": VERSION }),
+        ),
     }
 }
 
@@ -220,6 +221,23 @@ mod tests {
     #[test]
     fn command_tree_builds() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn json_flag_conflicts_with_explicit_output() {
+        // CLI-R-11: `-o/--output` is the single format selector; `--json` is an alias for
+        // `-o json` and must not be combined with an explicit `-o`.
+        let result = Cli::try_parse_from(["flowplane", "-o", "table", "--json", "version"]);
+        assert!(
+            result.is_err(),
+            "--json with explicit -o must be a usage error"
+        );
+        if let Err(err) = result {
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        // Either alone parses fine.
+        Cli::try_parse_from(["flowplane", "--json", "version"]).expect("--json alone parses");
+        Cli::try_parse_from(["flowplane", "-o", "json", "version"]).expect("-o json alone parses");
     }
 
     #[test]

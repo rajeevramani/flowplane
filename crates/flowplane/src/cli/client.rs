@@ -1,5 +1,5 @@
 use crate::cli::config::{effective, EffectiveConfig, GlobalOptions, OutputFormat};
-use crate::cli::output::{print_mutation_summary, render, render_error};
+use crate::cli::output::{derive_kind, print_mutation_summary, render, render_error};
 use anyhow::{Context, Result};
 use serde_json::json;
 use serde_json::Value;
@@ -55,6 +55,22 @@ impl RestClient {
             .await
     }
 
+    /// Perform a mutation without emitting any per-call output (no render, no summary).
+    ///
+    /// Used by orchestrating commands (e.g. `apply`) that aggregate several sub-requests
+    /// and render a single summary envelope themselves — emitting a per-resource envelope
+    /// here would break the one-document-per-invocation JSON contract (CLI-R-15).
+    pub(crate) async fn request_quiet(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        revision: Option<i64>,
+    ) -> Result<Option<Value>> {
+        self.request_inner(method, path, body, revision, false, false)
+            .await
+    }
+
     pub(crate) async fn get_optional(&self, path: &str) -> Result<Option<Value>> {
         let url = self.url(path);
         let mut req = self.http.request(reqwest::Method::GET, url);
@@ -84,7 +100,7 @@ impl RestClient {
     pub(crate) async fn request_text(&self, method: reqwest::Method, path: &str) -> Result<String> {
         if self.global.dry_run && method != reqwest::Method::GET {
             let plan = json!({ "method": method.as_str(), "path": path });
-            render(&self.global, &plan)?;
+            render(&self.global, "plan", &plan)?;
             return Ok(String::new());
         }
         let url = self.url(path);
@@ -120,7 +136,7 @@ impl RestClient {
     ) -> Result<Option<Value>> {
         if self.global.dry_run && method != reqwest::Method::GET {
             let plan = json!({ "method": method.as_str(), "path": path, "body": body });
-            render(&self.global, &plan)?;
+            render(&self.global, "plan", &plan)?;
             return Ok(Some(plan));
         }
         let url = self.url(path);
@@ -143,8 +159,22 @@ impl RestClient {
             return Err(render_error(&self.global, status, request_id, &text));
         }
         if status == reqwest::StatusCode::NO_CONTENT || text.trim().is_empty() {
-            if !self.global.quiet {
-                print_mutation_summary(&self.global, &method_label, path, None)?;
+            if render_response && !self.global.quiet {
+                // CLI-R-10: a body-less mutation (e.g. delete) still emits a JSON/YAML
+                // envelope under `-o json`/`-o yaml`; only human formats print prose.
+                if matches!(
+                    self.global.format(),
+                    OutputFormat::Json | OutputFormat::Yaml
+                ) {
+                    let result = json!({
+                        "result": "ok",
+                        "method": method_label,
+                        "path": path,
+                    });
+                    render(&self.global, "mutationResult", &result)?;
+                } else {
+                    print_mutation_summary(&self.global, &method_label, path, None)?;
+                }
             }
             return Ok(None);
         }
@@ -157,7 +187,7 @@ impl RestClient {
                     OutputFormat::Json | OutputFormat::Yaml
                 ))
         {
-            render(&self.global, &value)?;
+            render(&self.global, &derive_kind(path, &value), &value)?;
         } else if render_response {
             print_mutation_summary(&self.global, &method_label, path, Some(&value))?;
         }

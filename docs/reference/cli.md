@@ -14,9 +14,9 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--server <URL>` | | `FLOWPLANE_SERVER` | `http://127.0.0.1:8080` | Control-plane base URL. |
 | `--team <NAME>` | | `FLOWPLANE_TEAM` | | Team scope. |
 | `--org <NAME>` | | `FLOWPLANE_ORG` | | Organization scope. |
-| `--output <FMT>` | `-o` | | `table` | Output format: `table`, `json`, `yaml`, `wide`. |
-| `--json` | | | `false` | Shorthand for `--output json` (overrides `--output`). |
-| `--no-color` | | | `false` | Disable colored output. |
+| `--output <FMT>` | `-o` | | `table` on a TTY, `json` when stdout is piped | Output format: `table`, `json`, `yaml`, `wide`. An explicit `-o` always wins; otherwise the default is `table` on an interactive terminal and `json` when stdout is not a TTY (so `… \| jq` works without `-o json`). |
+| `--json` | | | `false` | Exactly equivalent to `--output json`. |
+| `--no-color` | | | `false` | Disable colored output. Color is also disabled by the `NO_COLOR` environment variable, when stdout is not a TTY, or when output is redirected with `--out`. |
 | `--quiet` | | | `false` | Suppress non-essential output. |
 | `--verbose` | | | `false` | Verbose output. |
 | `--dry-run` | | | `false` | Do not perform mutating actions. |
@@ -41,6 +41,32 @@ These are read directly (not as flags) by config resolution:
 | `FLOWPLANE_OIDC_CALLBACK_URL` | OIDC callback URL fallback. |
 
 Token resolution order: `FLOWPLANE_TOKEN` → selected context token → config-file token → `~/.flowplane/credentials` file. The config directory and credential files are written with `0700`/`0600` permissions on Unix.
+
+## JSON output envelope
+
+Under `-o json` (and `-o yaml`) every command's success payload is wrapped in a typed
+envelope so machine consumers can rely on a stable shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "cluster",
+  "data": { "name": "alpha", "revision": 3 }
+}
+```
+
+- `schemaVersion` — integer version of the **output contract** (not the product version).
+  It starts at `1` and is bumped only on a breaking change to this envelope shape.
+- `kind` — the resource kind. Singular for a single resource (`cluster`), suffixed with
+  `List` for a collection (`clusterList`). `version` → `version`; a body-less mutation
+  (e.g. `delete`) → `mutationResult`; `apply` → `applyResult`.
+- `data` — the resource object, the array/`items` collection, or the command-specific
+  payload.
+
+This envelope wraps reader output, mutation results (including `version`, `delete`, and
+`apply`), so a command that previously printed prose (e.g. `version`, `cluster delete`)
+now emits the envelope under `-o json`. Human formats (`table`, `wide`) are unwrapped and
+remain free-form.
 
 ## Top-level commands
 
