@@ -23,6 +23,7 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--dry-run` | | | `false` | Do not perform mutating actions. |
 | `--yes` | `-y` | | `false` | Assume "yes" for confirmation prompts. |
 | `--revision <N>` | | | | Optimistic-concurrency precondition for `update`/`delete`, sent as `If-Match`. Omit it and the CLI does read-modify-write: it reads the resource's current revision and sends that, so a concurrent edit is detected. A stale revision fails with a `409` whose error envelope names both the `attempted_revision` and the server's current one. |
+| `--fields <a,b,c>` | | | | Project reader output to only these comma-separated keys, applied inside the envelope `data` (per item for lists). `schemaVersion`/`kind` always survive; an absent key is omitted (no `null`). |
 | `--timeout <SECS>` | | `FLOWPLANE_TIMEOUT` | `30` | HTTP timeout in seconds (u64). |
 | `--out <PATH>` | | | | Write command output to a file. |
 
@@ -115,7 +116,7 @@ separate from the success envelope above (it is **not** wrapped in `{schemaVersi
 
 ## Top-level commands
 
-`serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `learn`, `secret`, `dataplane`, `expose`, `unexpose`, `stats`, `ops`, `apply`, `completion`, `version`.
+`serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `rate-limit`, `learn`, `secret`, `dataplane`, `expose`, `unexpose`, `stats`, `ops`, `apply`, `completion`, `version`, `schema`.
 
 ---
 
@@ -384,6 +385,16 @@ Generate a shell completion script.
 
 ### `version`
 Print the binary version (from `CARGO_PKG_VERSION`). No subcommands or args.
+
+### `schema`
+Print the machine-readable CLI catalog — the whole command tree (commands, subcommands,
+flags, types, enums, required/defaults, help) as JSON. Makes no network call. This is the
+**canonical CLI contract source and the MCP-derivation seam** (ADR FP-DEC-0003): generated
+consumers (shell completion, the future MCP tool catalog, docs) derive from `flowplane schema`
+rather than scraping `--help`. Under `-o json` the payload is the standard envelope with
+`kind: "cliSchema"`; `data` carries its own integer `catalogVersion` (distinct from the
+envelope `schemaVersion`) and the `command` tree. A generator drift test pins the catalog to
+`Cli::command()`. No subcommands or args.
 
 ---
 

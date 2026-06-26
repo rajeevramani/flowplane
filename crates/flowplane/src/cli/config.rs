@@ -43,6 +43,10 @@ pub struct GlobalOptions {
     pub yes: bool,
     #[arg(long, global = true)]
     pub revision: Option<i64>,
+    /// Comma-separated field names to project reader output to (CLI-R-51). Applied inside
+    /// the envelope `data` (per item for lists); `schemaVersion`/`kind` always survive.
+    #[arg(long, global = true, value_delimiter = ',')]
+    pub fields: Vec<String>,
     /// HTTP timeout in seconds. Uniform precedence (CLI-R-40/41):
     /// flag > `FLOWPLANE_TIMEOUT` > context > config file > default (30).
     #[arg(long, global = true, env = "FLOWPLANE_TIMEOUT")]
@@ -323,6 +327,7 @@ mod resolve_tests {
             dry_run: false,
             yes: false,
             revision: None,
+            fields: Vec::new(),
             timeout: None,
             out: None,
         }
@@ -457,6 +462,7 @@ mod format_tests {
             dry_run: false,
             yes: false,
             revision: None,
+            fields: Vec::new(),
             timeout: None,
             out: None,
         }

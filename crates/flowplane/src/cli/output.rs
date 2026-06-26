@@ -250,6 +250,39 @@ pub(crate) fn envelope(kind: &str, data: &Value) -> Value {
     })
 }
 
+/// Project a payload to only the requested field names (CLI-R-51). Applied to the resource
+/// data: a list (array, or an object wrapping an `items` array) projects every item; a
+/// single object keeps only the requested keys; scalars are returned unchanged.
+pub(crate) fn project_fields(value: &Value, fields: &[String]) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(|v| project_one(v, fields)).collect()),
+        Value::Object(map) if map.get("items").map(Value::is_array).unwrap_or(false) => {
+            let mut out = map.clone();
+            if let Some(Value::Array(items)) = out.get_mut("items") {
+                *items = items.iter().map(|v| project_one(v, fields)).collect();
+            }
+            Value::Object(out)
+        }
+        Value::Object(_) => project_one(value, fields),
+        other => other.clone(),
+    }
+}
+
+fn project_one(value: &Value, fields: &[String]) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for key in fields {
+                if let Some(v) = map.get(key) {
+                    out.insert(key.clone(), v.clone());
+                }
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
 /// Derive a stable envelope `kind` from the REST path and response shape (CLI-R-15).
 /// Singular for an object (`cluster`), `…List` for a collection (`clusterList`).
 ///
@@ -318,6 +351,15 @@ fn to_lower_camel(segment: &str) -> String {
 }
 
 pub(crate) fn render(global: &GlobalOptions, kind: &str, value: &Value) -> Result<()> {
+    // CLI-R-51: `--fields` projects inside `data` (per item for lists); the envelope
+    // metadata (schemaVersion/kind) is added afterwards and always survives.
+    let projected;
+    let value = if global.fields.is_empty() {
+        value
+    } else {
+        projected = project_fields(value, &global.fields);
+        &projected
+    };
     let text = match global.format() {
         OutputFormat::Json => serde_json::to_string_pretty(&envelope(kind, value))?,
         OutputFormat::Yaml => yaml_like(&envelope(kind, value), 0),
@@ -952,6 +994,37 @@ mod tests {
             derive_kind("/api/v1/teams/p/secrets/s1/rotate", &obj),
             "secret"
         );
+    }
+
+    #[test]
+    fn project_fields_keeps_only_requested_keys_inside_data() {
+        let fields = vec!["name".to_string(), "revision".to_string()];
+        // single object
+        let obj = serde_json::json!({ "name": "c1", "revision": 3, "service_name": "svc" });
+        assert_eq!(
+            project_fields(&obj, &fields),
+            serde_json::json!({ "name": "c1", "revision": 3 })
+        );
+        // array (per item)
+        let arr = serde_json::json!([
+            { "name": "a", "revision": 1, "x": 9 },
+            { "name": "b", "revision": 2, "x": 8 }
+        ]);
+        assert_eq!(
+            project_fields(&arr, &fields),
+            serde_json::json!([{ "name": "a", "revision": 1 }, { "name": "b", "revision": 2 }])
+        );
+        // object wrapping an `items` array
+        let items =
+            serde_json::json!({ "items": [{ "name": "a", "revision": 1, "x": 9 }], "total": 1 });
+        let projected = project_fields(&items, &fields);
+        assert_eq!(
+            projected["items"],
+            serde_json::json!([{ "name": "a", "revision": 1 }])
+        );
+        // a requested key that is absent is simply omitted (no null injected)
+        let missing = project_fields(&obj, &["name".to_string(), "nope".to_string()]);
+        assert_eq!(missing, serde_json::json!({ "name": "c1" }));
     }
 
     #[test]

@@ -138,6 +138,8 @@ enum Command {
     Completion { shell: Shell },
     /// Print version.
     Version,
+    /// Print the machine-readable CLI schema (the canonical CLI contract; the MCP-derivation seam).
+    Schema,
 }
 
 #[derive(Subcommand)]
@@ -213,6 +215,13 @@ fn run() -> anyhow::Result<()> {
             "version",
             &serde_json::json!({ "version": VERSION }),
         ),
+        // CLI-R-50: short-circuit before any network call — the schema is the CLI's own
+        // structure, serialized from the clap tree.
+        Command::Schema => cli::output::render(
+            &cli.client,
+            "cliSchema",
+            &cli::schema::cli_schema(&Cli::command()),
+        ),
     }
 }
 
@@ -224,6 +233,53 @@ mod tests {
     #[test]
     fn command_tree_builds() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn schema_has_no_drift_from_the_clap_tree() {
+        // CLI-R-50: the schema is generated FROM Cli::command(); the drift guard asserts every
+        // real top-level command appears in the schema (a future hardcoded list would break).
+        let cmd = Cli::command();
+        let expected: std::collections::BTreeSet<String> = cmd
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect();
+        let schema = cli::schema::cli_schema(&cmd);
+        let actual: std::collections::BTreeSet<String> =
+            cli::schema::top_level_command_names(&schema)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            actual, expected,
+            "flowplane schema drifted from the clap command tree"
+        );
+        // The new `schema` command must itself be in the catalog (not accidentally exempt).
+        assert!(
+            actual.contains("schema"),
+            "`schema` command missing from the catalog"
+        );
+        // Catalog carries its own version distinct from the envelope schemaVersion.
+        assert_eq!(schema["catalogVersion"], cli::schema::CATALOG_VERSION);
+        // Every arg, recursively, carries the documented type/enums/defaults fields (CLI-R-50).
+        fn assert_arg_fields(node: &serde_json::Value) {
+            for arg in node["args"].as_array().expect("args array") {
+                for key in [
+                    "name",
+                    "type",
+                    "required",
+                    "global",
+                    "takesValue",
+                    "possibleValues",
+                    "defaults",
+                ] {
+                    assert!(arg.get(key).is_some(), "arg missing `{key}`: {arg}");
+                }
+            }
+            for sub in node["subcommands"].as_array().expect("subcommands array") {
+                assert_arg_fields(sub);
+            }
+        }
+        assert_arg_fields(&schema["command"]);
     }
 
     #[test]

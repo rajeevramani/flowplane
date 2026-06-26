@@ -2,6 +2,7 @@ mod client;
 mod commands;
 mod config;
 pub(crate) mod output;
+pub(crate) mod schema;
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
