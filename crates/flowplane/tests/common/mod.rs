@@ -89,10 +89,18 @@ pub async fn start_mock() -> MockServer {
 }
 
 async fn list_clusters(Path(_team): Path<String>) -> Json<Value> {
-    Json(json!([
-        { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
-        { "name": "beta", "revision": 2, "service_name": "beta-svc" }
-    ]))
+    // The real `cluster list` endpoint is Page-backed: `data` wraps the items in
+    // `{ items, limit, offset, total }` (fp-api `Page<T>`), not a bare array. The mock mirrors
+    // that so the fixture matches the server it stands in for (fpv2-86m.2 / F-1).
+    Json(json!({
+        "items": [
+            { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
+            { "name": "beta", "revision": 2, "service_name": "beta-svc" }
+        ],
+        "limit": 50,
+        "offset": 0,
+        "total": 2
+    }))
 }
 
 /// Error injection: a resource name like `err-404`/`err-429`/`err-503`/`err-401`/`err-403`

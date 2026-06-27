@@ -20,7 +20,7 @@ Reader commands print a **table** on an interactive terminal but switch to **JSO
 when stdout is not a terminal** — so a pipe just works, no flag needed:
 
 ```bash
-flowplane cluster list --team payments | jq '.data'
+flowplane cluster list --team payments | jq '.data.items'
 ```
 
 To be explicit (recommended in scripts so behavior never depends on the terminal), pass
@@ -30,23 +30,33 @@ To be explicit (recommended in scripts so behavior never depends on the terminal
 flowplane cluster list --team payments -o json
 ```
 
-Every success payload is wrapped in a stable, versioned envelope:
+Every success payload is wrapped in a stable, versioned envelope. `cluster list` is **paginated**,
+so its `data` is an object wrapping the rows in `items` (with `limit`/`offset`/`total`):
 
 ```json
 {
   "schemaVersion": 1,
   "kind": "clusterList",
-  "data": [
-    { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
-    { "name": "beta",  "revision": 2, "service_name": "beta-svc" }
-  ]
+  "data": {
+    "items": [
+      { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
+      { "name": "beta",  "revision": 2, "service_name": "beta-svc" }
+    ],
+    "limit": 50,
+    "offset": 0,
+    "total": 2
+  }
 }
 ```
 
 - `schemaVersion` — integer contract version of the envelope; branch on it if you parse defensively.
 - `kind` — what `data` holds (`cluster` for one object, `clusterList` for a list, `mutationResult`
-  for a delete, etc.).
-- `data` — the resource (object) or resources (array).
+  for a delete/action, etc.).
+- `data` — the resource (object), or the collection. **Two list shapes exist:** paginated lists
+  (most resources — clusters, listeners, routes, secrets, dataplanes, AI, rate-limit, …) wrap rows
+  in `data.items` as above; a few identity/org lists (`org list`, `team list`, `org member list`,
+  `team member list`, `team grant list`) return `data` as a **bare array**. When in doubt, branch on `.data | type`
+  (`"object"` → read `.data.items`, `"array"` → read `.data`).
 
 Pull a single value out with `jq`:
 
@@ -99,7 +109,8 @@ done
 ## 3. Project only the fields you need
 
 `--fields` trims reader output to a comma-separated key set, applied **inside** `data` (per item
-for lists). `schemaVersion` and `kind` always survive; absent keys are omitted:
+for lists — including each row of a paginated `data.items`). `schemaVersion` and `kind` always
+survive; absent keys are omitted:
 
 ```bash
 flowplane cluster list --team payments -o json --fields name,revision
@@ -109,10 +120,15 @@ flowplane cluster list --team payments -o json --fields name,revision
 {
   "schemaVersion": 1,
   "kind": "clusterList",
-  "data": [
-    { "name": "alpha", "revision": 1 },
-    { "name": "beta",  "revision": 2 }
-  ]
+  "data": {
+    "items": [
+      { "name": "alpha", "revision": 1 },
+      { "name": "beta",  "revision": 2 }
+    ],
+    "limit": 50,
+    "offset": 0,
+    "total": 2
+  }
 }
 ```
 
@@ -177,7 +193,7 @@ export FLOWPLANE_TOKEN=…           # highest-priority token source
 export FLOWPLANE_TEAM=payments
 export FLOWPLANE_TIMEOUT=15        # seconds
 
-flowplane cluster list -o json --quiet | jq '.data[].name'
+flowplane cluster list -o json --quiet | jq -r '.data.items[].name'
 ```
 
 Precedence for every value (including the token) is `flag > env > context > file > default` — see

@@ -227,9 +227,13 @@ async fn fields_projects_list_items_inside_data() {
     );
     assert!(v["kind"].is_string(), "kind must survive projection: {v}");
 
-    let data = v["data"]
-        .as_array()
-        .unwrap_or_else(|| panic!("list `data` must be an array: {}", v["data"]));
+    // `cluster list` is Page-backed: --fields projects each item inside `data.items`.
+    let data = v["data"]["items"].as_array().unwrap_or_else(|| {
+        panic!(
+            "Page-backed list `data.items` must be an array: {}",
+            v["data"]
+        )
+    });
     assert!(
         !data.is_empty(),
         "mock list must return at least one item: {v}"

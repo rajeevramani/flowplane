@@ -402,7 +402,7 @@ async fn cluster_family_json_envelopes_are_frozen() {
             .expect("run cluster command")
     };
 
-    // cluster list → clusterList, data is the two-item array.
+    // cluster list → clusterList, data is the Page wrapper {items,limit,offset,total}.
     let list = run(vec![
         "cluster".into(),
         "list".into(),
@@ -416,10 +416,16 @@ async fn cluster_family_json_envelopes_are_frozen() {
         json!({
             "schemaVersion": 1,
             "kind": "clusterList",
-            "data": [
-                { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
-                { "name": "beta", "revision": 2, "service_name": "beta-svc" }
-            ]
+            // `cluster list` is Page-backed: data wraps items in {items,limit,offset,total}.
+            "data": {
+                "items": [
+                    { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
+                    { "name": "beta", "revision": 2, "service_name": "beta-svc" }
+                ],
+                "limit": 50,
+                "offset": 0,
+                "total": 2
+            }
         }),
         "cluster list -o json envelope drifted"
     );
@@ -732,8 +738,8 @@ async fn output_format_and_quiet_are_honoured() {
         "`--quiet` must not suppress the requested data envelope"
     );
     assert!(
-        quiet_env["data"].is_array(),
-        "`--quiet` data envelope must still carry the list array: {quiet_env}"
+        quiet_env["data"]["items"].is_array(),
+        "`--quiet` data envelope must still carry the list (Page-backed items): {quiet_env}"
     );
     // No trailing prose: stdout is a single parseable JSON document and nothing else.
     let mut docs = serde_json::Deserializer::from_slice(&quiet_out.stdout).into_iter::<Value>();

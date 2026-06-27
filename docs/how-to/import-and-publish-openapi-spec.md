@@ -37,7 +37,7 @@ flowplane api create catalog --from-openapi openapi.json --team my-team \
   --route-config-id <id> --listener-id <id> --virtual-host <host> --route <route>
 ```
 
-After this the CLI prints a reminder that the tools are generated **but not served yet**. Confirm: an MCP `tools/list` for the team does **not** include the new `api_catalog-*` tools, and `mcp status`'s `dynamic_enabled_tool_count` does not rise for this API.
+After this the CLI prints a reminder that the tools are generated **but not served yet** (this reminder is shown only in the default human/table output; under `-o json`/`-o yaml` it is omitted so machine consumers get a clean envelope). Confirm: an MCP `tools/list` for the team does **not** include the new `api_catalog-*` tools, and `mcp status`'s `dynamic_enabled_tool_count` does not rise for this API.
 
 ## 2. Publish the imported spec version
 
