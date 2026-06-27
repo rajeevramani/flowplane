@@ -85,10 +85,10 @@ Dev mode seeds one organization, team, and user:
 Dev mode mints a bearer token at startup and logs it once. Find the log line that looks like:
 
 ```text
-WARN ... dev_token=<long-token-string> dev bearer token (valid 1h, this boot only)
+WARN ... dev_token=<long-token-string> dev bearer token (default 24h, set FLOWPLANE_DEV_TOKEN_TTL to change; this boot only)
 ```
 
-The token is valid for this control-plane process only and expires after one hour. If you restart the server, grab the new token.
+The token is valid for this control-plane process only and, by default, expires after 24 hours (set `FLOWPLANE_DEV_TOKEN_TTL` in seconds to change it). If you restart the server, grab the new token.
 
 In a second terminal, point the CLI at the running server and export the token:
 

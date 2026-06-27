@@ -19,6 +19,25 @@ pub const DEV_SUBJECT: &str = "dev-user";
 pub const DEV_EMAIL: &str = "dev@flowplane.local";
 const DEV_KID: &str = "flowplane-dev-key";
 
+/// Default dev-user token lifetime (24h). Long enough that a local exploration session does not
+/// expire mid-use (#190); dev-only, so it never affects production token lifetimes.
+const DEV_TOKEN_DEFAULT_TTL_SECS: i64 = 86_400;
+
+/// Resolve the dev-user token lifetime from `FLOWPLANE_DEV_TOKEN_TTL` (seconds), defaulting to
+/// [`DEV_TOKEN_DEFAULT_TTL_SECS`]. Reads process env; the parse/validation is factored into the
+/// pure [`parse_dev_token_ttl`] so it is unit-testable without env mutation.
+fn dev_token_ttl_secs() -> i64 {
+    parse_dev_token_ttl(std::env::var("FLOWPLANE_DEV_TOKEN_TTL").ok().as_deref())
+}
+
+/// Pure parse: a positive integer wins; anything else (absent, non-numeric, ≤ 0) falls back to
+/// the 24h default.
+fn parse_dev_token_ttl(raw: Option<&str>) -> i64 {
+    raw.and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEV_TOKEN_DEFAULT_TTL_SECS)
+}
+
 /// In-process token issuer for dev mode. The key is generated per boot — dev tokens never
 /// survive a restart and can never validate against another instance.
 pub struct DevIssuer {
@@ -82,9 +101,12 @@ impl DevIssuer {
             .map_err(|e| DomainError::internal(format!("dev token mint failed: {e}")))
     }
 
-    /// Mint the standard dev-user token (1 hour).
+    /// Mint the standard dev-user token. Lifetime is configurable via `FLOWPLANE_DEV_TOKEN_TTL`
+    /// (seconds, dev-only) and defaults to 24h, so a local exploration session no longer dies
+    /// after an hour and forces a control-plane restart (#190). Dev-mode only; production builds
+    /// (`--no-default-features`) never reach this path, and the expiry-enforcement path is unchanged.
     pub fn mint_dev_user(&self) -> DomainResult<String> {
-        self.mint(DEV_SUBJECT, DEV_EMAIL, "Dev User", 3600)
+        self.mint(DEV_SUBJECT, DEV_EMAIL, "Dev User", dev_token_ttl_secs())
     }
 
     /// The validator configuration matching this issuer.
@@ -126,6 +148,45 @@ fn base64url(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::oidc::OidcValidator;
+
+    #[test]
+    fn dev_token_ttl_parses_env_else_defaults_to_24h() {
+        // default when absent / invalid / non-positive.
+        assert_eq!(parse_dev_token_ttl(None), DEV_TOKEN_DEFAULT_TTL_SECS);
+        assert_eq!(parse_dev_token_ttl(Some("abc")), DEV_TOKEN_DEFAULT_TTL_SECS);
+        assert_eq!(parse_dev_token_ttl(Some("0")), DEV_TOKEN_DEFAULT_TTL_SECS);
+        assert_eq!(parse_dev_token_ttl(Some("-5")), DEV_TOKEN_DEFAULT_TTL_SECS);
+        // default is at least 24h (no more 1h forced restart).
+        assert!(DEV_TOKEN_DEFAULT_TTL_SECS >= 86_400);
+        // a valid positive override wins.
+        assert_eq!(parse_dev_token_ttl(Some("3600")), 3600);
+        assert_eq!(parse_dev_token_ttl(Some(" 7200 ")), 7200);
+    }
+
+    #[tokio::test]
+    async fn dev_user_token_lifetime_matches_resolved_ttl() {
+        // The minted dev-user token's exp-iat reflects the resolved TTL (>= 24h by default),
+        // proving mint_dev_user honours dev_token_ttl_secs() rather than the old hardcoded 1h.
+        let issuer = DevIssuer::generate().expect("keygen");
+        let token = issuer.mint_dev_user().expect("mint");
+        let payload = token.split('.').nth(1).expect("jwt payload segment");
+        let decoded = base64_url_decode(payload);
+        let claims: serde_json::Value = serde_json::from_slice(&decoded).expect("claims are JSON");
+        let iat = claims["iat"].as_i64().expect("iat");
+        let exp = claims["exp"].as_i64().expect("exp");
+        assert!(
+            exp - iat >= 86_400,
+            "default dev token lifetime must be >= 24h, got {}s",
+            exp - iat
+        );
+    }
+
+    fn base64_url_decode(s: &str) -> Vec<u8> {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(s)
+            .expect("valid base64url")
+    }
 
     #[tokio::test]
     async fn dev_tokens_validate_through_the_production_path() {
