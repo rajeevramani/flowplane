@@ -6,6 +6,8 @@ Exhaustive reference for the `flowplane` binary: global options, every top-level
 
 To drive the CLI from a script or agent, see the how-to [Script Flowplane from a shell or agent](../how-to/script-the-cli.md); for the reasoning behind the output envelope, exit codes, and `schema`, see [The CLI as a typed contract](../concepts/cli-contract.md).
 
+`flowplane --help` is self-sufficient: as of 2.1.0 every command and subcommand shows a one-line summary, every flag and positional shows help text, and the workflow ("spine") commands — resource `create`/`update`, `route generate`, `api create`, `expose`/`unexpose`/`apply`, the capture/discovery starters, `dataplane bootstrap`/`cert register`/`issue`/`revoke`, `secret create`/`rotate` — carry a copy-pasteable example in their `--help`. This page is the exhaustive reference; `--help` is the in-terminal quick path.
+
 ## Global options
 
 These flags are accepted on every command (`global = true`). Place them before or after the subcommand.
