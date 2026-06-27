@@ -135,7 +135,10 @@ enum Command {
         command: cli::ApplyCommand,
     },
     /// Shell completion script.
-    Completion { shell: Shell },
+    Completion {
+        /// Shell to generate the completion script for (bash, zsh, fish, …).
+        shell: Shell,
+    },
     /// Print version.
     Version,
     /// Print the machine-readable CLI schema (the canonical CLI contract; the MCP-derivation seam).

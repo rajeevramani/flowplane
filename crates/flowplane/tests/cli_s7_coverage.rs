@@ -784,3 +784,48 @@ fn chk_nonempty_about() {
          whitespace-only `about`: {offenders:?}"
     );
 }
+
+// =============================================================================================
+// Test 6 — chk:nonempty-arg-help (CLI-R-07): every flag and positional argument of every command
+// (root + every descendant) must render a non-empty `help` description. Walks the serialized clap
+// tree from `flowplane schema -o json` and FAILS, naming EVERY offender, if any arg has a
+// missing/null/empty/whitespace `help` — so adding a new flag/positional with no `///` doc summary
+// fails CI loudly.
+//
+// NOTE on clap globals: clap serializes GLOBAL args (output/server/team/revision/...) ONLY on the
+// ROOT command's `args`, never repeated on descendant subcommands. So walking each node's OWN
+// `args` and asserting non-empty help is correct and complete — globals are covered once at the
+// root, per-command args at their own node. The clap builtin `--help`/`--version` do NOT appear in
+// the schema, so there is nothing to exempt.
+// =============================================================================================
+#[test]
+fn chk_nonempty_arg_help() {
+    let schema = live_schema();
+    let command = root_command(&schema);
+
+    // Collect EVERY offending arg (do not stop at the first) so a developer sees the full list.
+    // Each offender is identified as "<command path> :: <arg name>" — the root uses `<root>`.
+    let mut offenders: Vec<String> = Vec::new();
+    for_each_command(command, |path, node| {
+        if let Some(args) = node["args"].as_array() {
+            for arg in args {
+                let ok = arg["help"]
+                    .as_str()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false); // null / non-string / absent all fail
+                if !ok {
+                    let where_ = if path.is_empty() { "<root>" } else { path };
+                    let arg_name = arg["name"].as_str().unwrap_or("<unnamed>");
+                    offenders.push(format!("{where_} :: {arg_name}"));
+                }
+            }
+        }
+    });
+
+    assert!(
+        offenders.is_empty(),
+        "CLI-R-07 chk:nonempty-arg-help: every flag and positional argument of every command must \
+         render a non-empty `help` description (add a `///` doc summary). Args with a \
+         missing/null/empty/whitespace-only `help`: {offenders:?}"
+    );
+}
