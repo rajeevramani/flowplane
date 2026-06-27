@@ -53,10 +53,14 @@ impl IntoResponse for ApiError {
         let code = self.error.code;
 
         // Internal/invalid-config details go to logs (keyed by request id), never to the caller.
+        // The hint is logged too: for a misconfiguration (e.g. an unconfigured cert issuer) it
+        // carries the actionable prerequisite the operator needs, which the redacted client
+        // message omits (fpv2-86m.4 / #193 Obs-1).
         let message = if code == ErrorCode::Internal || code == ErrorCode::InvalidConfig {
             tracing::error!(
                 request_id = %self.request_id,
                 error.message = %self.error.message,
+                error.hint = self.error.hint.as_deref().unwrap_or(""),
                 "internal error"
             );
             "an internal error occurred; report the request_id to your operator".to_string()
