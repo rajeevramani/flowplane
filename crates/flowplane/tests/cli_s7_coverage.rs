@@ -747,3 +747,40 @@ async fn output_format_and_quiet_are_honoured() {
         String::from_utf8_lossy(&quiet_out.stdout)
     );
 }
+
+// =============================================================================================
+// Test 5 — chk:nonempty-about (CLI-R-05): every command node (root + every descendant) must
+// render a non-empty one-line `about`. Walks the serialized clap tree from `flowplane schema
+// -o json` and FAILS, naming EVERY offender, if any node has a missing/null/empty/whitespace
+// `about` — so adding a command with no `///` doc summary fails CI loudly.
+// =============================================================================================
+#[test]
+fn chk_nonempty_about() {
+    let schema = live_schema();
+    let command = root_command(&schema);
+
+    // Collect EVERY offending command path (do not stop at the first) so a developer sees the
+    // full list. The root has path "" — label it explicitly for a readable message.
+    let mut offenders: Vec<String> = Vec::new();
+    for_each_command(command, |path, node| {
+        let ok = node["about"]
+            .as_str()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false); // null / non-string / absent all fail
+        if !ok {
+            let where_ = if path.is_empty() {
+                "<root>".to_string()
+            } else {
+                path.to_string()
+            };
+            offenders.push(where_);
+        }
+    });
+
+    assert!(
+        offenders.is_empty(),
+        "CLI-R-05 chk:nonempty-about: every command and sub-command must render a non-empty \
+         one-line `about` (add a `///` doc summary). Commands with a missing/null/empty/\
+         whitespace-only `about`: {offenders:?}"
+    );
+}

@@ -3,8 +3,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
+    /// Print the identity and scopes of the active credential.
     Whoami,
+    /// Print the raw bearer token for the active context.
     Token,
+    /// Acquire and store a bearer token (static token, PKCE, or device flow).
     Login {
         #[arg(long)]
         token: Option<String>,
@@ -23,13 +26,17 @@ pub enum AuthCommand {
         #[arg(long, default_value = "openid email profile")]
         scope: String,
     },
+    /// Clear the stored credential for the active context.
     Logout,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
+    /// Print the path to the CLI config file.
     Path,
+    /// Print the merged CLI configuration.
     Show,
+    /// Create or update a named context (server, org, team, token).
     SetContext {
         name: String,
         #[arg(long)]
@@ -43,26 +50,27 @@ pub enum ConfigCommand {
         #[arg(long)]
         token_stdin: bool,
     },
-    UseContext {
-        name: String,
-    },
+    /// Switch the active context.
+    UseContext { name: String },
+    /// List the configured contexts.
     GetContexts,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum OrgCommand {
+    /// List organizations.
     List,
-    Get {
-        org: String,
-    },
+    /// Show one organization.
+    Get { org: String },
+    /// Create an organization.
     Create {
         name: String,
         #[arg(long)]
         display_name: Option<String>,
     },
-    Delete {
-        org: String,
-    },
+    /// Delete an organization.
+    Delete { org: String },
+    /// Manage organization members.
     Member {
         #[command(subcommand)]
         command: OrgMemberCommand,
@@ -71,9 +79,9 @@ pub enum OrgCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum OrgMemberCommand {
-    List {
-        org: String,
-    },
+    /// List members of an organization.
+    List { org: String },
+    /// Add a member to an organization.
     Add {
         org: String,
         #[arg(long)]
@@ -85,28 +93,31 @@ pub enum OrgMemberCommand {
         #[arg(long)]
         role: String,
     },
-    Remove {
-        org: String,
-        user_id: String,
-    },
+    /// Remove a member from an organization.
+    Remove { org: String, user_id: String },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum TeamCommand {
+    /// List teams.
     List,
+    /// Create a team.
     Create {
         name: String,
         #[arg(long)]
         display_name: Option<String>,
     },
+    /// Delete a team.
     Delete {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Manage team members.
     Member {
         #[command(subcommand)]
         command: TeamMemberCommand,
     },
+    /// Manage a team's resource grants.
     Grant {
         #[command(subcommand)]
         command: GrantCommand,
@@ -115,15 +126,18 @@ pub enum TeamCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum TeamMemberCommand {
+    /// List members of a team.
     List {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Add a member to a team.
     Add {
         #[arg(long)]
         team: Option<String>,
         email: String,
     },
+    /// Remove a member from a team.
     Remove {
         #[arg(long)]
         team: Option<String>,
@@ -133,10 +147,12 @@ pub enum TeamMemberCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum GrantCommand {
+    /// List a team's grants.
     List {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Grant a member an action on a resource.
     Add {
         #[arg(long)]
         team: Option<String>,
@@ -146,6 +162,7 @@ pub enum GrantCommand {
         #[arg(long)]
         action: String,
     },
+    /// Revoke a grant.
     Remove {
         #[arg(long)]
         team: Option<String>,
@@ -155,21 +172,25 @@ pub enum GrantCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ResourceCommand {
+    /// List the resources in this collection.
     List {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Show one resource.
     Get {
         #[arg(long)]
         team: Option<String>,
         name: String,
     },
+    /// Create a resource from a JSON file.
     Create {
         #[arg(long)]
         team: Option<String>,
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Update a resource from a JSON file (requires `--revision`).
     Update {
         #[arg(long)]
         team: Option<String>,
@@ -177,6 +198,7 @@ pub enum ResourceCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Delete a resource.
     Delete {
         #[arg(long)]
         team: Option<String>,
@@ -186,21 +208,25 @@ pub enum ResourceCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RouteCommand {
+    /// List route configurations.
     List {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Show one route configuration.
     Get {
         #[arg(long)]
         team: Option<String>,
         name: String,
     },
+    /// Create a route configuration from a JSON file.
     Create {
         #[arg(long)]
         team: Option<String>,
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Update a route configuration from a JSON file (requires `--revision`).
     Update {
         #[arg(long)]
         team: Option<String>,
@@ -208,11 +234,13 @@ pub enum RouteCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Delete a route configuration.
     Delete {
         #[arg(long)]
         team: Option<String>,
         name: String,
     },
+    /// Generate a route plan from a published API spec.
     Generate {
         #[arg(long)]
         team: Option<String>,
@@ -221,6 +249,7 @@ pub enum RouteCommand {
         #[arg(long)]
         listener_port: u16,
     },
+    /// Apply a previously generated route plan.
     Apply {
         #[arg(long)]
         team: Option<String>,
@@ -230,18 +259,22 @@ pub enum RouteCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AiCommand {
+    /// Manage AI providers.
     Providers {
         #[command(subcommand)]
         command: ResourceCommand,
     },
+    /// Manage AI routes.
     Routes {
         #[command(subcommand)]
         command: ResourceCommand,
     },
+    /// Manage AI budgets.
     Budgets {
         #[command(subcommand)]
         command: ResourceCommand,
     },
+    /// Show AI token-usage records.
     Usage {
         #[arg(long)]
         team: Option<String>,
@@ -279,12 +312,14 @@ pub enum RateLimitCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RateLimitPolicyCommand {
+    /// List the policies in a domain.
     List {
         #[arg(long)]
         team: Option<String>,
         #[arg(long)]
         domain: String,
     },
+    /// Show one policy.
     Get {
         #[arg(long)]
         team: Option<String>,
@@ -292,6 +327,7 @@ pub enum RateLimitPolicyCommand {
         domain: String,
         name: String,
     },
+    /// Create a policy from a JSON file.
     Create {
         #[arg(long)]
         team: Option<String>,
@@ -300,6 +336,7 @@ pub enum RateLimitPolicyCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Update a policy from a JSON file (requires `--revision`).
     Update {
         #[arg(long)]
         team: Option<String>,
@@ -309,6 +346,7 @@ pub enum RateLimitPolicyCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Delete a policy.
     Delete {
         #[arg(long)]
         team: Option<String>,
@@ -320,6 +358,7 @@ pub enum RateLimitPolicyCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RateLimitOverrideCommand {
+    /// Show a team's override of a policy.
     Get {
         #[arg(long)]
         team: Option<String>,
@@ -339,6 +378,7 @@ pub enum RateLimitOverrideCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Update a policy override from a JSON file (requires `--revision`).
     Update {
         #[arg(long)]
         team: Option<String>,
@@ -349,6 +389,7 @@ pub enum RateLimitOverrideCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Delete a policy override.
     Delete {
         #[arg(long)]
         team: Option<String>,
@@ -361,24 +402,29 @@ pub enum RateLimitOverrideCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ApiCommand {
+    /// List API definitions.
     List {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Show one API definition.
     Get {
         #[arg(long)]
         team: Option<String>,
         name: String,
     },
+    /// Show an API definition's lifecycle status.
     Status {
         #[arg(long)]
         team: Option<String>,
         name: String,
     },
+    /// Manage an API's imported spec versions.
     Spec {
         #[command(subcommand)]
         command: ApiSpecCommand,
     },
+    /// Create an API definition (optionally importing an OpenAPI document).
     Create {
         #[arg(long)]
         team: Option<String>,
@@ -398,6 +444,7 @@ pub enum ApiCommand {
         #[arg(long)]
         route: Option<String>,
     },
+    /// Delete an API definition.
     Delete {
         #[arg(long)]
         team: Option<String>,
@@ -407,6 +454,7 @@ pub enum ApiCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ApiSpecCommand {
+    /// Reject a pending spec version.
     Reject {
         #[arg(long)]
         team: Option<String>,
@@ -415,6 +463,7 @@ pub enum ApiSpecCommand {
         #[arg(long, default_value = "")]
         reason: String,
     },
+    /// Publish a reviewed spec version.
     Publish {
         #[arg(long)]
         team: Option<String>,
@@ -427,20 +476,24 @@ pub enum ApiSpecCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum McpCommand {
+    /// Show MCP server status.
     Status {
         #[arg(long)]
         team: Option<String>,
     },
+    /// List active MCP connections.
     Connections {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Expose an API as an MCP tool.
     Enable {
         #[arg(long = "api", alias = "tool")]
         api: String,
         #[arg(long)]
         team: Option<String>,
     },
+    /// Stop exposing an API as an MCP tool.
     Disable {
         #[arg(long = "api", alias = "tool")]
         api: String,
@@ -451,10 +504,12 @@ pub enum McpCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum LearnCommand {
+    /// Schema-free traffic discovery sessions.
     Discover {
         #[command(subcommand)]
         command: LearnDiscoverCommand,
     },
+    /// Start a capture session against an existing API.
     Start {
         #[arg(long)]
         team: Option<String>,
@@ -480,6 +535,7 @@ pub enum LearnCommand {
         #[arg(long, default_value_t = 500)]
         max_distinct_paths: i32,
     },
+    /// List capture sessions.
     List {
         #[arg(long)]
         team: Option<String>,
@@ -490,21 +546,25 @@ pub enum LearnCommand {
         #[arg(long, default_value_t = 0)]
         offset: i64,
     },
+    /// Show one capture session.
     Get {
         #[arg(long)]
         team: Option<String>,
         session: String,
     },
+    /// Stop a capture session.
     Stop {
         #[arg(long)]
         team: Option<String>,
         session: String,
     },
+    /// Generate an OpenAPI spec from a capture session.
     GenerateSpec {
         #[arg(long)]
         team: Option<String>,
         session: String,
     },
+    /// Cancel a capture session.
     Cancel {
         #[arg(long)]
         team: Option<String>,
@@ -514,6 +574,7 @@ pub enum LearnCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum LearnDiscoverCommand {
+    /// Start a discovery session against a raw upstream.
     Start {
         #[arg(long)]
         team: Option<String>,
@@ -533,6 +594,7 @@ pub enum LearnDiscoverCommand {
         #[arg(long, default_value_t = 500)]
         max_distinct_paths: i32,
     },
+    /// List discovery sessions.
     List {
         #[arg(long)]
         team: Option<String>,
@@ -543,16 +605,19 @@ pub enum LearnDiscoverCommand {
         #[arg(long, default_value_t = 0)]
         offset: i64,
     },
+    /// Show a discovery session's status.
     Status {
         #[arg(long)]
         team: Option<String>,
         session: String,
     },
+    /// Stop a discovery session.
     Stop {
         #[arg(long)]
         team: Option<String>,
         session: String,
     },
+    /// Generate an OpenAPI spec from a discovery session.
     GenerateSpec {
         #[arg(long)]
         team: Option<String>,
@@ -562,21 +627,25 @@ pub enum LearnDiscoverCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SecretCommand {
+    /// List secrets (metadata only).
     List {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Show one secret's metadata.
     Get {
         #[arg(long)]
         team: Option<String>,
         name: String,
     },
+    /// Create a secret from a JSON file.
     Create {
         #[arg(long)]
         team: Option<String>,
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Rotate a secret's value from a JSON file.
     Rotate {
         #[arg(long)]
         team: Option<String>,
@@ -590,15 +659,18 @@ pub enum SecretCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DataplaneCommand {
+    /// List dataplanes.
     List {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Show one dataplane.
     Get {
         #[arg(long)]
         team: Option<String>,
         name: String,
     },
+    /// Register a dataplane.
     Create {
         #[arg(long)]
         team: Option<String>,
@@ -606,6 +678,7 @@ pub enum DataplaneCommand {
         #[arg(long, default_value = "")]
         description: String,
     },
+    /// Submit dataplane telemetry from a JSON file.
     Telemetry {
         #[arg(long)]
         team: Option<String>,
@@ -613,6 +686,7 @@ pub enum DataplaneCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Generate an Envoy bootstrap config for a dataplane.
     #[command(alias = "envoy-config")]
     Bootstrap {
         #[arg(long)]
@@ -633,6 +707,7 @@ pub enum DataplaneCommand {
         #[arg(long)]
         ca_path: Option<String>,
     },
+    /// Manage dataplane proxy certificates.
     Cert {
         #[command(subcommand)]
         command: CertCommand,
@@ -681,16 +756,19 @@ pub struct UnexposeCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CertCommand {
+    /// List a dataplane's proxy certificates.
     List {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Register a proxy certificate from a JSON file.
     Register {
         #[arg(long)]
         team: Option<String>,
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Issue a proxy certificate for a dataplane.
     Issue {
         #[arg(long)]
         team: Option<String>,
@@ -698,6 +776,7 @@ pub enum CertCommand {
         #[arg(long, default_value_t = 24)]
         ttl_hours: i64,
     },
+    /// Revoke a proxy certificate.
     Revoke {
         #[arg(long)]
         team: Option<String>,
@@ -709,6 +788,7 @@ pub enum CertCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum StatsCommand {
+    /// Show a team's resource counts.
     Overview {
         #[arg(long)]
         team: Option<String>,
@@ -717,10 +797,12 @@ pub enum StatsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum OpsCommand {
+    /// xDS delivery diagnostics.
     Xds {
         #[command(subcommand)]
         command: XdsCommand,
     },
+    /// Search request traces.
     Trace {
         #[arg(long)]
         team: Option<String>,
@@ -737,10 +819,12 @@ pub enum OpsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum XdsCommand {
+    /// Show xDS stream status.
     Status {
         #[arg(long)]
         team: Option<String>,
     },
+    /// Show recent xDS NACKs.
     Nacks {
         #[arg(long)]
         team: Option<String>,
