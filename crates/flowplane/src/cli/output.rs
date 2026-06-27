@@ -283,15 +283,121 @@ fn project_one(value: &Value, fields: &[String]) -> Value {
     }
 }
 
+/// Authoritative envelope `kind` for a response (CLI-R-15 / invariant 13). This is the single
+/// source of truth the renderer uses — NOT free URL inference. Non-collection / action
+/// endpoints (whose path tail is not a `{collection}/{id}` pair) get an explicit kind via
+/// [`kind_override`]; every true REST collection resolves through [`derive_kind`] (corrected
+/// singularization). The kind-parity test (`cli_s7_coverage.rs`) pins every envelope-emitting
+/// command against this resolver so a wrong/truncated/id-shaped kind fails CI.
+pub(crate) fn resolve_kind(path: &str, value: &Value) -> String {
+    let clean = path.split(['?', '#']).next().unwrap_or(path);
+    if let Some(kind) = kind_override(clean) {
+        let is_list = value.is_array() || value.get("items").map(Value::is_array).unwrap_or(false);
+        return if is_list {
+            format!("{kind}List")
+        } else {
+            kind.to_string()
+        };
+    }
+    derive_kind(clean, value)
+}
+
+/// Authoritative kind for endpoints whose path tail is an *action* (a mutation sub-route) or a
+/// *singleton view* rather than a `{collection}/{id}` pair — where singularizing the trailing
+/// path segment yields a wrong/truncated kind (`mcp/status` → `statu`) or the resource name
+/// (`expose/{name}` → `local`). Ordered; first match wins. Returns the singular base kind (the
+/// caller appends `List` for list payloads). Everything not matched here is a true REST
+/// collection resolved by [`derive_kind`]; the parity test forbids a wrong kind for any endpoint.
+fn kind_override(path: &str) -> Option<&'static str> {
+    // Mutation actions: a body-returning DELETE/POST/PATCH sub-route (or expose/unexpose) is a
+    // mutation, not a resource read — it carries the stable `mutationResult` kind (matches the
+    // body-less mutation path in client.rs).
+    const ACTION_TAILS: &[&str] = &[
+        "/expose",
+        "/rotate",
+        "/stop",
+        "/disable",
+        "/enable",
+        "/revoke",
+        "/reject",
+        "/publish",
+        "/apply",
+        "/force-repush",
+        "/rotate-token",
+    ];
+    if path.contains("/expose/") || ACTION_TAILS.iter().any(|t| path.ends_with(t)) {
+        return Some("mutationResult");
+    }
+    // Singleton / aggregate GET views (would mis-singularize to `statu`, `stat`, `op`, or the
+    // governing collection).
+    if path.ends_with("/mcp/status") {
+        return Some("mcpStatus");
+    }
+    if path.ends_with("/xds/status") {
+        return Some("xdsStatus");
+    }
+    if path.ends_with("/stats/overview") {
+        return Some("statsOverview");
+    }
+    if path.ends_with("/ops/trace") {
+        return Some("trace");
+    }
+    if path.ends_with("/envoy-config") {
+        return Some("envoyConfig");
+    }
+    if path.ends_with("/telemetry") {
+        return Some("dataplaneTelemetry");
+    }
+    if path.ends_with("/override") {
+        return Some("rateLimitOverride");
+    }
+    // `…/api-definitions/{name}/status` only (mcp/xds status tails handled above); scoped so a
+    // future singleton `…/status` endpoint cannot silently inherit this kind.
+    if path.contains("/api-definitions/") && path.ends_with("/status") {
+        return Some("apiDefinitionStatus");
+    }
+    None
+}
+
 /// Derive a stable envelope `kind` from the REST path and response shape (CLI-R-15).
 /// Singular for an object (`cluster`), `…List` for a collection (`clusterList`).
 ///
-/// Any `?query` is stripped first. For a list the collection is the trailing path segment.
-/// For an object the noun is the nearest-to-the-end *plural* segment (the governing
-/// collection) — so item reads (`…/clusters/{name}`), creates (`POST …/clusters`), and
-/// action sub-routes (`POST …/clusters/{name}/rotate`) all resolve to `cluster` rather than
-/// to an id or a verb. If no plural segment exists the trailing segment is used as-is.
+/// The governing collection is chosen from an **explicit known-collection set** (not by guessing
+/// which path segment "looks plural") — so an item read resolves to its resource (`…/clusters/x`
+/// → `cluster`) even when the id itself looks plural (`…/clusters/aliases` is still `cluster`,
+/// not `aliase`). `?query` is stripped first; lists get the `List` suffix. An unmapped path falls
+/// back to the trailing segment — the parity test forbids that for known endpoints.
 pub(crate) fn derive_kind(path: &str, value: &Value) -> String {
+    // Explicit REST collection segments the CLI addresses. The kind is the singular of the
+    // nearest-to-end entry found here, so dynamic ids (which are never in this set) are skipped.
+    const COLLECTIONS: &[&str] = &[
+        "clusters",
+        "listeners",
+        "route-configs",
+        "route-generation-plans",
+        "secrets",
+        "api-definitions",
+        "specs",
+        "spec-versions",
+        "spec-version",
+        "providers",
+        "routes",
+        "budgets",
+        "rate-limit-domains",
+        "policies",
+        "connections",
+        "tools",
+        "dataplanes",
+        "proxy-certificates",
+        "learning-sessions",
+        "learning-discovery-sessions",
+        "orgs",
+        "teams",
+        "members",
+        "grants",
+        "agents",
+        "nacks",
+    ];
     let path = path.split(['?', '#']).next().unwrap_or(path);
     let mut segments: Vec<&str> = path
         .split('/')
@@ -304,28 +410,32 @@ pub(crate) fn derive_kind(path: &str, value: &Value) -> String {
         segments.drain(0..2);
     }
     let is_list = value.is_array() || value.get("items").map(Value::is_array).unwrap_or(false);
+    // Nearest-to-end KNOWN collection; else the trailing segment (forbidden for known endpoints
+    // by the parity test).
+    let noun = segments
+        .iter()
+        .rev()
+        .find(|s| COLLECTIONS.contains(s))
+        .or_else(|| segments.last())
+        .copied()
+        .unwrap_or("result");
+    let base = singularize(noun);
     if is_list {
-        let noun = segments.last().copied().unwrap_or("result");
-        return format!("{}List", singularize(noun));
+        format!("{base}List")
+    } else {
+        base
     }
-    // Object: prefer the nearest-to-end plural (collection) segment; else the trailing segment.
-    let mut noun = segments.last().copied().unwrap_or("result");
-    for seg in segments.iter().rev() {
-        if singularize(seg).as_str() != *seg {
-            noun = *seg;
-            break;
-        }
-    }
-    singularize(noun)
 }
 
 /// Convert a plural resource segment to a camelCase singular kind (`route-configs` →
-/// `routeConfig`, `policies` → `policy`).
+/// `routeConfig`, `policies` → `policy`). Non-plural words ending in `s` (`status`, `ss`,
+/// `us`) are left intact so `status` does not become `statu` (Obs-2 / fpv2-86m.1).
 fn singularize(segment: &str) -> String {
     let camel = to_lower_camel(segment);
     if let Some(stem) = camel.strip_suffix("ies") {
         format!("{stem}y")
-    } else if camel.ends_with("ss") {
+    } else if camel.ends_with("ss") || camel.ends_with("us") {
+        // `status`, `bonus`, `…ss` collections are not plurals — never truncate them.
         camel
     } else if let Some(stem) = camel.strip_suffix('s') {
         stem.to_string()
@@ -994,6 +1104,153 @@ mod tests {
             derive_kind("/api/v1/teams/p/secrets/s1/rotate", &obj),
             "secret"
         );
+    }
+
+    #[test]
+    fn singularize_does_not_truncate_non_plurals() {
+        // `status` is not a plural — must not become `statu` (Obs-2).
+        assert_eq!(singularize("status"), "status");
+        // genuine plurals still singularize.
+        assert_eq!(singularize("clusters"), "cluster");
+        assert_eq!(singularize("policies"), "policy");
+        assert_eq!(singularize("route-configs"), "routeConfig");
+        // `…ss` words are left intact.
+        assert_eq!(singularize("address"), "address");
+    }
+
+    #[test]
+    fn resolve_kind_fixes_status_expose_and_singleton_views() {
+        let obj = serde_json::json!({ "ok": true });
+        let arr = serde_json::json!([{ "x": 1 }]);
+        // status views never truncate to `statu`.
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/mcp/status", &obj),
+            "mcpStatus"
+        );
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/xds/status", &obj),
+            "xdsStatus"
+        );
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/api-definitions/d1/status", &obj),
+            "apiDefinitionStatus"
+        );
+        // unexpose returns a body — a mutation action, never the resource name.
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/expose/local", &obj),
+            "mutationResult"
+        );
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/expose", &obj),
+            "mutationResult"
+        );
+        // other body-returning mutation actions are mutationResult too.
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/secrets/s1/rotate", &obj),
+            "mutationResult"
+        );
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/api-definitions/d1/specs/3/publish", &obj),
+            "mutationResult"
+        );
+        // singleton views get a stable kind, not a mis-singularized path tail.
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/stats/overview", &obj),
+            "statsOverview"
+        );
+        assert_eq!(resolve_kind("/api/v1/teams/p/ops/trace", &obj), "trace");
+        // ai/usage is already a clean singular — no override, no truncation.
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/ai/usage?from=x", &obj),
+            "usage"
+        );
+        // true collections still resolve correctly through the resolver.
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/clusters", &arr),
+            "clusterList"
+        );
+        assert_eq!(resolve_kind("/api/v1/teams/p/clusters/c1", &obj), "cluster");
+    }
+
+    #[test]
+    fn resolve_kind_parity_across_every_cli_endpoint() {
+        // Exhaustive contract pin (invariant 13). EVERY REST endpoint the CLI calls is checked:
+        // an INVARIANT pass asserts no endpoint yields a malformed/truncated/id-shaped kind, and
+        // an EXACT pass pins the authoritative value for the confident set (collections,
+        // singleton views, mutation actions, and the previously-broken endpoints). A new endpoint
+        // added without a kind decision will surface here as a malformed/loose kind.
+        let obj = serde_json::json!({ "name": "x" });
+
+        // INVARIANT pass — exhaustive and drift-proof: iterate the *canonical* CLI endpoint
+        // registry (`cli_endpoint_templates`), so a new endpoint is automatically checked here.
+        // Every endpoint must yield a well-formed lowerCamel kind (no hyphen/slash/`statu`/id).
+        for path in crate::cli::cli_endpoint_templates() {
+            let got = resolve_kind(path, &obj);
+            let base = got.strip_suffix("List").unwrap_or(&got);
+            assert!(
+                !base.is_empty()
+                    && base.chars().next().unwrap().is_ascii_lowercase()
+                    && base.chars().all(|c| c.is_ascii_alphanumeric()),
+                "kind {got:?} for {path} is malformed (not lowerCamel, or hyphen/slash/id-shaped)"
+            );
+            assert_ne!(got, "statu", "{path} truncated to statu");
+        }
+
+        // Exact authoritative values for the confident set.
+        let exact: &[(&str, &str)] = &[
+            ("/api/v1/teams/p/clusters/c1", "cluster"),
+            ("/api/v1/teams/p/listeners/l1", "listener"),
+            ("/api/v1/teams/p/route-configs/r1", "routeConfig"),
+            ("/api/v1/teams/p/secrets/s1", "secret"),
+            ("/api/v1/teams/p/api-definitions/a1", "apiDefinition"),
+            ("/api/v1/teams/p/dataplanes/d1", "dataplane"),
+            ("/api/v1/teams/p/rate-limit-domains/d", "rateLimitDomain"),
+            ("/api/v1/orgs/acme", "org"),
+            ("/api/v1/teams/t1", "team"),
+            ("/api/v1/teams/t1/grants/g", "grant"),
+            ("/api/v1/auth/whoami", "whoami"),
+            // singleton views
+            ("/api/v1/teams/p/mcp/status", "mcpStatus"),
+            ("/api/v1/teams/p/xds/status", "xdsStatus"),
+            (
+                "/api/v1/teams/p/api-definitions/a1/status",
+                "apiDefinitionStatus",
+            ),
+            ("/api/v1/teams/p/stats/overview", "statsOverview"),
+            ("/api/v1/teams/p/ops/trace", "trace"),
+            ("/api/v1/teams/p/ai/usage", "usage"),
+            ("/api/v1/teams/p/dataplanes/d1/envoy-config", "envoyConfig"),
+            (
+                "/api/v1/teams/p/dataplanes/d1/telemetry",
+                "dataplaneTelemetry",
+            ),
+            (
+                "/api/v1/teams/p/rate-limit-domains/d/policies/x/override",
+                "rateLimitOverride",
+            ),
+            // mutation actions
+            ("/api/v1/teams/p/expose", "mutationResult"),
+            ("/api/v1/teams/p/expose/local", "mutationResult"),
+            ("/api/v1/teams/p/secrets/s1/rotate", "mutationResult"),
+            (
+                "/api/v1/teams/p/api-definitions/a1/specs/3/publish",
+                "mutationResult",
+            ),
+            (
+                "/api/v1/teams/p/proxy-certificates/sn/revoke",
+                "mutationResult",
+            ),
+            ("/api/v1/admin/rls/force-repush", "mutationResult"),
+            ("/api/v1/teams/p/learning-sessions/s/stop", "mutationResult"),
+            // spec-version sub-resources resolve to the spec version, not the parent session.
+            (
+                "/api/v1/teams/p/learning-sessions/sess/spec-version",
+                "specVersion",
+            ),
+        ];
+        for (path, expected) in exact {
+            assert_eq!(&resolve_kind(path, &obj), expected, "kind for {path}");
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use crate::cli::config::{effective, EffectiveConfig, GlobalOptions, OutputFormat};
 use crate::cli::output::{
-    derive_kind, print_mutation_summary, render, render_error, render_revision_conflict,
-    render_transport_error,
+    print_mutation_summary, render, render_error, render_revision_conflict, render_transport_error,
+    resolve_kind,
 };
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -289,7 +289,7 @@ impl RestClient {
                     OutputFormat::Json | OutputFormat::Yaml
                 ))
         {
-            render(&self.global, &derive_kind(path, &value), &value)?;
+            render(&self.global, &resolve_kind(path, &value), &value)?;
         } else if render_response {
             print_mutation_summary(&self.global, &method_label, path, Some(&value))?;
         }

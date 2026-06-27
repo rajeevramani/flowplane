@@ -64,6 +64,15 @@ pub async fn start_mock() -> MockServer {
             get(get_cluster)
                 .patch(update_cluster)
                 .delete(delete_cluster),
+        )
+        // MCP status reader — returns a small JSON object (fields are illustrative; only the
+        // object shape matters, so the CLI can render the envelope kind for `mcp status`).
+        .route("/api/v1/teams/{team}/mcp/status", get(mcp_status))
+        // `unexpose <name>` hits DELETE on the expose surface. It must return a JSON object body
+        // (NOT 204/empty) so the body path drives the envelope `kind` resolver for `unexpose`.
+        .route(
+            "/api/v1/teams/{team}/expose/{name}",
+            axum::routing::delete(delete_expose),
         );
 
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -80,10 +89,18 @@ pub async fn start_mock() -> MockServer {
 }
 
 async fn list_clusters(Path(_team): Path<String>) -> Json<Value> {
-    Json(json!([
-        { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
-        { "name": "beta", "revision": 2, "service_name": "beta-svc" }
-    ]))
+    // The real `cluster list` endpoint is Page-backed: `data` wraps the items in
+    // `{ items, limit, offset, total }` (fp-api `Page<T>`), not a bare array. The mock mirrors
+    // that so the fixture matches the server it stands in for (fpv2-86m.2 / F-1).
+    Json(json!({
+        "items": [
+            { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
+            { "name": "beta", "revision": 2, "service_name": "beta-svc" }
+        ],
+        "limit": 50,
+        "offset": 0,
+        "total": 2
+    }))
 }
 
 /// Error injection: a resource name like `err-404`/`err-429`/`err-503`/`err-401`/`err-403`
@@ -209,6 +226,22 @@ async fn delete_cluster(Path((_team, name)): Path<(String, String)>) -> Response
             .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// MCP status reader: a small JSON **object** body (the exact fields are not contractual — only
+/// that it is an object the CLI can wrap in its `{schemaVersion, kind, data}` envelope).
+async fn mcp_status(Path(_team): Path<String>) -> (StatusCode, Json<Value>) {
+    (StatusCode::OK, Json(json!({ "enabled": true, "tools": 0 })))
+}
+
+/// `unexpose <name>` → DELETE on the expose surface. Returns 200 with a small JSON **object**
+/// body (deliberately NOT 204/empty) so the response-body path is what the CLI uses to resolve
+/// the envelope `kind`.
+async fn delete_expose(Path((_team, name)): Path<(String, String)>) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::OK,
+        Json(json!({ "removed": true, "name": name })),
+    )
 }
 
 /// A loopback URL with no listener — connecting to it fails fast with "connection refused",

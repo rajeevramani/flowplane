@@ -10,6 +10,42 @@ upgrade of an earlier Flowplane line — there is no in-place migration path fro
 version. `1.0.0` is its first stable release and the point at which the public REST API,
 CLI surface, and configuration contract become subject to semantic versioning.
 
+## [2.1.0] - 2026-06-27
+
+Minor release. **CLI Tier-2 help quality: `flowplane --help` is now self-sufficient.** Every
+command and subcommand renders a one-line summary, every flag and positional renders help text,
+and every spine workflow command's `--help` carries a copy-pasteable, parse-tested example.
+Purely **additive** — no command, flag, output-shape, or exit-code change (semver MINOR); existing
+scripts and config files are unaffected.
+
+### Added
+
+- **One-line `about` on every command and subcommand** (CLI-R-05). `flowplane <group> --help`
+  (e.g. `flowplane cluster --help`) now lists each subcommand with a summary instead of a blank
+  line.
+- **Help text on every flag and positional** (CLI-R-07). No argument — including the global
+  options and bare positionals like `<NAME>` — renders a blank meaning in `--help`.
+- **Runnable examples on spine workflow commands** (CLI-R-06). The 44 workflow leaves (resource
+  `create`/`update`, `route generate`, `api create`, `expose`/`unexpose`/`apply`, the
+  capture/discovery starters, `dataplane bootstrap`/`cert register`/`issue`/`revoke`,
+  `secret create`/`rotate`, …) each
+  show at least one copy-pasteable `flowplane …` example in their `--help`.
+- **Conformance lints** `chk:nonempty-about`, `chk:nonempty-arg-help`, and `chk:help-examples-parse`.
+  The first two walk the live `flowplane schema -o json` tree (black-box, reusing the Tier-1 S7
+  coverage harness); the third walks the in-process clap tree, freezes the spine/exempt
+  classification with a union-equals-live guard, and asserts every extracted example parses. Missing
+  help or a non-parsing example now fails CI — help coverage is provable and regression-proof, like
+  the Tier-1 machine contract.
+
+### Fixed
+
+- **Docs E2E QA release gaps.** Documentation now matches the v2.1.0 branch behavior for dev-mode
+  token TTL/test database guidance, global rate-limit policy update bodies, and dev-mode tenant
+  org/team setup boundaries. (#194, #195)
+- **`auth login` method-conflict exit code.** Explicit conflicting login methods now fail as a
+  usage error with exit code `2`, while no-method/no-OIDC remains exit `1` and ambient
+  `FLOWPLANE_TOKEN` fallback behavior is preserved. (#196)
+
 ## [2.0.0] - 2026-06-27
 
 Major release. CLI Tier-1 conformance: the `flowplane` CLI is brought to a documented,

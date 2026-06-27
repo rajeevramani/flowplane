@@ -54,9 +54,10 @@ boolean instead of hard-coding a status list.
 
 The process exits `0` on success and a **specific code by failure class** otherwise — usage `2`,
 auth `3`, not-found/conflict `4`, validation `5`, rate-limited `6`, server/transport `7` — rather
-than a generic non-zero. A script can branch on `$?` alone, before parsing any JSON, and a CI job
-can distinguish "your input was wrong" (`2`/`5`) from "the server is down" (`7`). The codes mirror
-the error classes, so the exit code and the `code`/`retryable` fields always agree.
+than a generic non-zero. Usage `2` covers invalid flags/arguments and local preflight usage checks.
+A script can branch on `$?` alone, before parsing any JSON, and a CI job can distinguish "your input
+was wrong" (`2`/`5`) from "the server is down" (`7`). The codes mirror the error classes, so the
+exit code and the `code`/`retryable` fields always agree.
 
 ## Optimistic concurrency instead of last-write-wins
 

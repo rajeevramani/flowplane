@@ -13,34 +13,45 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Args)]
 pub struct GlobalOptions {
+    /// Named context from the config file to use for this invocation.
     #[arg(long, global = true)]
     pub context: Option<String>,
+    /// Control-plane server base URL (overrides the context and config file).
     #[arg(long, global = true, env = "FLOWPLANE_SERVER")]
     pub server: Option<String>,
+    /// Team scope; defaults to the active context's team.
     #[arg(long, global = true, env = "FLOWPLANE_TEAM")]
     pub team: Option<String>,
+    /// Organization scope; defaults to the active context's org.
     #[arg(long, global = true, env = "FLOWPLANE_ORG")]
     pub org: Option<String>,
     /// Bearer token; highest-priority token source (CLI-R-40). Falls back to
     /// `FLOWPLANE_TOKEN`, the selected context, the config file, then the credentials file.
     #[arg(long, global = true, env = "FLOWPLANE_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
+    /// Output format: table, json, yaml, or wide.
     #[arg(short = 'o', long, global = true, value_enum)]
     pub output: Option<OutputFormat>,
     /// Exactly equivalent to `--output json`; cannot be combined with `--output`
     /// (CLI-R-11: `-o/--output` is the single format selector).
     #[arg(long, global = true, conflicts_with = "output")]
     pub json: bool,
+    /// Disable ANSI color in output.
     #[arg(long, global = true)]
     pub no_color: bool,
+    /// Suppress non-essential progress output.
     #[arg(long, global = true)]
     pub quiet: bool,
+    /// Enable verbose diagnostic logging.
     #[arg(long, global = true)]
     pub verbose: bool,
+    /// Preview the request without sending it to the server.
     #[arg(long, global = true)]
     pub dry_run: bool,
+    /// Skip the confirmation prompt for destructive operations.
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
+    /// Expected current revision for optimistic-concurrency updates.
     #[arg(long, global = true)]
     pub revision: Option<i64>,
     /// Comma-separated field names to project reader output to (CLI-R-51). Applied inside
@@ -51,6 +62,7 @@ pub struct GlobalOptions {
     /// flag > `FLOWPLANE_TIMEOUT` > context > config file > default (30).
     #[arg(long, global = true, env = "FLOWPLANE_TIMEOUT")]
     pub timeout: Option<u64>,
+    /// Write output to this file instead of stdout.
     #[arg(long, global = true)]
     pub out: Option<PathBuf>,
 }

@@ -402,7 +402,7 @@ async fn cluster_family_json_envelopes_are_frozen() {
             .expect("run cluster command")
     };
 
-    // cluster list → clusterList, data is the two-item array.
+    // cluster list → clusterList, data is the Page wrapper {items,limit,offset,total}.
     let list = run(vec![
         "cluster".into(),
         "list".into(),
@@ -416,10 +416,16 @@ async fn cluster_family_json_envelopes_are_frozen() {
         json!({
             "schemaVersion": 1,
             "kind": "clusterList",
-            "data": [
-                { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
-                { "name": "beta", "revision": 2, "service_name": "beta-svc" }
-            ]
+            // `cluster list` is Page-backed: data wraps items in {items,limit,offset,total}.
+            "data": {
+                "items": [
+                    { "name": "alpha", "revision": 1, "service_name": "alpha-svc" },
+                    { "name": "beta", "revision": 2, "service_name": "beta-svc" }
+                ],
+                "limit": 50,
+                "offset": 0,
+                "total": 2
+            }
         }),
         "cluster list -o json envelope drifted"
     );
@@ -732,8 +738,8 @@ async fn output_format_and_quiet_are_honoured() {
         "`--quiet` must not suppress the requested data envelope"
     );
     assert!(
-        quiet_env["data"].is_array(),
-        "`--quiet` data envelope must still carry the list array: {quiet_env}"
+        quiet_env["data"]["items"].is_array(),
+        "`--quiet` data envelope must still carry the list (Page-backed items): {quiet_env}"
     );
     // No trailing prose: stdout is a single parseable JSON document and nothing else.
     let mut docs = serde_json::Deserializer::from_slice(&quiet_out.stdout).into_iter::<Value>();
@@ -745,5 +751,87 @@ async fn output_format_and_quiet_are_honoured() {
         docs.next().is_none(),
         "quiet stdout must be exactly ONE JSON document with no extra prose: {:?}",
         String::from_utf8_lossy(&quiet_out.stdout)
+    );
+}
+
+// =============================================================================================
+// Test 5 — chk:nonempty-about (CLI-R-05): every command node (root + every descendant) must
+// render a non-empty one-line `about`. Walks the serialized clap tree from `flowplane schema
+// -o json` and FAILS, naming EVERY offender, if any node has a missing/null/empty/whitespace
+// `about` — so adding a command with no `///` doc summary fails CI loudly.
+// =============================================================================================
+#[test]
+fn chk_nonempty_about() {
+    let schema = live_schema();
+    let command = root_command(&schema);
+
+    // Collect EVERY offending command path (do not stop at the first) so a developer sees the
+    // full list. The root has path "" — label it explicitly for a readable message.
+    let mut offenders: Vec<String> = Vec::new();
+    for_each_command(command, |path, node| {
+        let ok = node["about"]
+            .as_str()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false); // null / non-string / absent all fail
+        if !ok {
+            let where_ = if path.is_empty() {
+                "<root>".to_string()
+            } else {
+                path.to_string()
+            };
+            offenders.push(where_);
+        }
+    });
+
+    assert!(
+        offenders.is_empty(),
+        "CLI-R-05 chk:nonempty-about: every command and sub-command must render a non-empty \
+         one-line `about` (add a `///` doc summary). Commands with a missing/null/empty/\
+         whitespace-only `about`: {offenders:?}"
+    );
+}
+
+// =============================================================================================
+// Test 6 — chk:nonempty-arg-help (CLI-R-07): every flag and positional argument of every command
+// (root + every descendant) must render a non-empty `help` description. Walks the serialized clap
+// tree from `flowplane schema -o json` and FAILS, naming EVERY offender, if any arg has a
+// missing/null/empty/whitespace `help` — so adding a new flag/positional with no `///` doc summary
+// fails CI loudly.
+//
+// NOTE on clap globals: clap serializes GLOBAL args (output/server/team/revision/...) ONLY on the
+// ROOT command's `args`, never repeated on descendant subcommands. So walking each node's OWN
+// `args` and asserting non-empty help is correct and complete — globals are covered once at the
+// root, per-command args at their own node. The clap builtin `--help`/`--version` do NOT appear in
+// the schema, so there is nothing to exempt.
+// =============================================================================================
+#[test]
+fn chk_nonempty_arg_help() {
+    let schema = live_schema();
+    let command = root_command(&schema);
+
+    // Collect EVERY offending arg (do not stop at the first) so a developer sees the full list.
+    // Each offender is identified as "<command path> :: <arg name>" — the root uses `<root>`.
+    let mut offenders: Vec<String> = Vec::new();
+    for_each_command(command, |path, node| {
+        if let Some(args) = node["args"].as_array() {
+            for arg in args {
+                let ok = arg["help"]
+                    .as_str()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false); // null / non-string / absent all fail
+                if !ok {
+                    let where_ = if path.is_empty() { "<root>" } else { path };
+                    let arg_name = arg["name"].as_str().unwrap_or("<unnamed>");
+                    offenders.push(format!("{where_} :: {arg_name}"));
+                }
+            }
+        }
+    });
+
+    assert!(
+        offenders.is_empty(),
+        "CLI-R-07 chk:nonempty-arg-help: every flag and positional argument of every command must \
+         render a non-empty `help` description (add a `///` doc summary). Args with a \
+         missing/null/empty/whitespace-only `help`: {offenders:?}"
     );
 }

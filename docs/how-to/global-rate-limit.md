@@ -181,8 +181,15 @@ Update and delete are concurrency-controlled: pass the current revision with the
 `flowplane rate-limit policy get --team default --domain checkout per-client` (the `revision`
 field); omitting `--revision` fails with `this operation requires the resource revision`.
 
-- **Update a limit:** edit `policy.json` (the body carries `spec` only on update), then
-  `flowplane rate-limit policy update --team default --domain checkout per-client --revision 1 --file policy.json`. The change reaches the RLS within the reconcile window (≤ 60 s).
+- **Update a limit:** write an update body with `spec` only (the policy name is the
+  positional `per-client`), then pass the current revision:
+
+  ```bash
+  echo '{"spec":{"descriptors":{"api_key":"acme"},"requests_per_unit":200,"unit":"minute"}}' > policy-update.json
+  flowplane rate-limit policy update --team default --domain checkout per-client --revision 1 --file policy-update.json
+  ```
+
+  The change reaches the RLS within the reconcile window (≤ 60 s).
 - **Per-team override:** raise/lower one team's limit without touching the policy. The `--file`
   flag takes a **path**, so write the body first:
 

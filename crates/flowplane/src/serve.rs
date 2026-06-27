@@ -420,7 +420,10 @@ async fn setup_dev_mode(
     let token = issuer.mint_dev_user()?;
     // Dev-only by triple gate: the token grants access to the seeded local instance only
     // and dies with this process (per-boot key).
-    tracing::warn!(dev_token = %token, "dev bearer token (valid 1h, this boot only)");
+    tracing::warn!(
+        dev_token = %token,
+        "dev bearer token (default 24h, set FLOWPLANE_DEV_TOKEN_TTL to change; this boot only)"
+    );
     // Dev-only file sink (#156): a compose `init`/sibling container can't read another
     // container's stdout, so when an operator names a path we also write the raw token there.
     if let Some(path) = dev_token_path {

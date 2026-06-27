@@ -23,6 +23,12 @@ dataplanes under." Every value you need is here.
 - Your CLI points at the control plane (`--server` / `FLOWPLANE_SERVER` / a saved
   context — see [CLI auth and contexts](cli-auth-and-contexts.md)).
 
+> **Using dev mode from Getting Started?** The seeded `dev-user` is an owner of
+> `dev-org` and a member of `default`, but it is **not** a platform admin and cannot run
+> `org create`. Use the seeded `dev-org` / `default` context for local gateway
+> exploration. This guide is for a non-dev context where you hold a real
+> platform-admin identity and need to provision an additional tenant org and team.
+
 ## 1. Create the tenant org
 
 Only a platform admin can create an organization. `name` is the immutable handle;
@@ -51,10 +57,11 @@ flowplane org member add edgeco --role owner --subject "auth0|6650f0..."
 This calls `POST /api/v1/orgs/{org}/members`. Pass exactly one of `--subject`,
 `--email`, or `--user-id`.
 
-> **Running everything yourself locally?** Add **your own** subject as the owner. You
+> **Running a local non-dev bootstrap?** Add **your own** subject as the owner. You
 > are then both the platform admin *and* the owner of `edgeco`; the team step below
 > authorizes through your `edgeco` org membership, not your platform role — the
-> platform role never grants tenant access.
+> platform role never grants tenant access. This is separate from dev mode's
+> seeded `dev-user`, which is not a platform admin.
 
 ## 3. Create a team in the tenant org
 

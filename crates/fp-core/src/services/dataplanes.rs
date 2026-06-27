@@ -654,3 +654,33 @@ fn validate_trust_domain(value: &str) -> DomainResult<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::required_env_path;
+    use fp_domain::error::ErrorCode;
+
+    // Obs-1 (fpv2-86m.4): an unconfigured cert-issuer prerequisite must fail closed with a
+    // *reason* — the error names the missing env var and carries an actionable hint, so the
+    // operator log (fp-api logs message + hint) is actionable even though the client sees the
+    // redacted generic 500. Reads a guaranteed-unset var, so it is parallel-safe (no env mutation).
+    #[test]
+    fn unconfigured_cert_issuer_env_fails_with_named_reason() {
+        let err = required_env_path("FLOWPLANE_CERT_ISSUER_CA_CERT_PATH_DEFINITELY_UNSET_XQ7")
+            .expect_err("an unset env path must error");
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
+        assert!(
+            err.message
+                .contains("FLOWPLANE_CERT_ISSUER_CA_CERT_PATH_DEFINITELY_UNSET_XQ7"),
+            "error message must name the missing env var: {}",
+            err.message
+        );
+        let hint = err.hint.unwrap_or_default();
+        assert!(
+            hint.contains("FLOWPLANE_CERT_ISSUER_CA_CERT_PATH")
+                && hint.contains("FLOWPLANE_CERT_ISSUER_CA_KEY_PATH"),
+            "hint must name the cert-issuer prerequisites: {hint}"
+        );
+    }
+}

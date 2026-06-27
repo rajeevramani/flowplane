@@ -67,7 +67,8 @@ FLOWPLANE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/flowplane_dev
   ./target/debug/flowplane serve
 ```
 
-Dev mode logs a one-hour `dev_token` once at boot. In a second terminal:
+Dev mode logs a 24-hour `dev_token` once at boot (configurable with
+`FLOWPLANE_DEV_TOKEN_TTL`). In a second terminal:
 
 ```bash
 export FLOWPLANE_SERVER=http://127.0.0.1:8096
@@ -177,7 +178,7 @@ Run the full workspace suite with PostgreSQL-backed tests enabled. CI uses
 `cargo install cargo-nextest --locked` or `cargo binstall cargo-nextest`:
 
 ```bash
-export FLOWPLANE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/flowplane_dev
+export FLOWPLANE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/flowplane_test
 
 cargo nextest run --workspace --all-features   # what CI runs (via the `ci` profile)
 cargo test --workspace --all-features --doc    # doctests — nextest does not run these

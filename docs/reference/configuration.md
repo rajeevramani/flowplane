@@ -33,6 +33,7 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_DEV_MODE` | server | `false` | no ⁴ | In-process OIDC issuer + seeded resources; needs the `dev-oidc` build feature. |
 | `FLOWPLANE_DEV_MODE_ACK` | server | — | no ⁴ | In release builds, dev mode requires this to equal `yes-this-is-not-production`. |
 | `FLOWPLANE_DEV_TOKEN_PATH` | server | — | no | Dev mode only: also write the per-boot dev bearer token to this file (it is otherwise only logged), so a sibling/init container can read it. Ignored outside dev mode. |
+| `FLOWPLANE_DEV_TOKEN_TTL` | server | `86400` | no | Dev mode only: lifetime in **seconds** of the per-boot dev bearer token. Defaults to 24h so a local session does not expire mid-use; a non-numeric or non-positive value falls back to the default. Ignored outside dev mode; never affects production token lifetimes. |
 | `FLOWPLANE_BOOTSTRAP_TOKEN` | server | — | first boot ¹³ | Operator-supplied one-shot bootstrap token (≥ 32 chars after trimming). Seeds first-admin setup; the value is never logged. |
 | `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` | server | — | first boot ¹³ | Path to read the bootstrap token from; **takes precedence** over `FLOWPLANE_BOOTSTRAP_TOKEN`. File delivery is safer than env. |
 | `FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN` | server | — | no | Local-only escape hatch: the exact value `yes-this-is-local-only` re-enables generating and **logging** a token. Never set in production. |
