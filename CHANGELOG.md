@@ -10,6 +10,49 @@ upgrade of an earlier Flowplane line — there is no in-place migration path fro
 version. `1.0.0` is its first stable release and the point at which the public REST API,
 CLI surface, and configuration contract become subject to semantic versioning.
 
+## [2.0.0] - Unreleased
+
+Major release. CLI Tier-1 conformance: the `flowplane` CLI is brought to a documented,
+machine-consumable standard (output model, error/exit-code contract, config precedence,
+optimistic concurrency, introspection, and destructive-action safety). These are **breaking**
+changes to the CLI surface and exit-code behavior (semver MAJOR); the REST API and MCP surface
+are unchanged, and the configuration file gains only an optional `timeout` field (existing
+config files remain valid).
+
+### Added
+
+- **`flowplane schema` subcommand.** Prints the machine-readable CLI catalog (every command,
+  its flags, value types, and defaults) as the typed envelope `{schemaVersion, kind:"cliSchema",
+  data}`, with no network call — the canonical CLI contract and MCP-derivation seam (FP-DEC-0003).
+- **`--fields a,b,c` projection.** Projects reader output to only the named keys inside the
+  envelope `data` (per item for lists); `schemaVersion`/`kind` always survive, absent keys are omitted.
+- **`--token` flag** (highest-priority token source) and **`FLOWPLANE_TIMEOUT`** environment
+  variable (HTTP timeout; env tier of the precedence rule).
+- **Destructive-action confirmation.** `delete` and `unexpose` prompt `[y/N]` on an interactive
+  terminal; `--yes`/`-y` skips. On a non-interactive terminal without `--yes` they fail fast with
+  exit code `2` and never block on stdin.
+
+### Changed
+
+- **Output format default is now context-aware.** Reader output is `table` on an interactive
+  terminal and `json` when stdout is piped/redirected (so `… | jq` works without `-o json`); an
+  explicit `-o/--output` always wins. `--json` is exactly `-o json`.
+- **`-o json` success payloads are wrapped in a typed envelope** `{schemaVersion, kind, data}`
+  (e.g. `kind: "cluster"`/`"clusterList"`/`"mutationResult"`), frozen by a snapshot suite so the
+  shape cannot silently drift.
+- **Structured error contract.** Errors render a single structured envelope on stderr (empty
+  stdout) with `code`/`message`/`retryable`/`request_id` — JSON under `-o json`, YAML under
+  `-o yaml`, and a compact prose form otherwise; transport and 429/5xx are `retryable:true`,
+  4xx are `false`.
+- **Exit codes are now a defined 0–7 range** mapped from the failure class (e.g. usage `2`,
+  auth `3`, conflict `4`, connection-refused `7`) instead of a generic non-zero.
+- **Uniform configuration precedence** `flag > env > context > file > default` for *every* value
+  including the token; the token is redacted in `config show`.
+- **`update`/`delete` are optimistically concurrent.** With no `--revision`, the CLI does
+  read-modify-write (reads the current revision, sends it as `If-Match`); a stale `--revision`
+  fails with `409` naming both the attempted and the server's current revision.
+- **`--no-color`/`NO_COLOR` and `--yes` are now honored** (previously declared but inert).
+
 ## [1.1.0] - 2026-06-26
 
 Minor release. Two features that close gaps the gateway advertised but did not yet ship.

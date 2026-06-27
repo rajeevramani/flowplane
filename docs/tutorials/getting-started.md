@@ -219,6 +219,9 @@ To tear down what you created:
 ./target/debug/flowplane unexpose local
 ```
 
+`unexpose` is destructive, so on an interactive terminal it asks for `[y/N]` confirmation before
+acting. Answer `y`, or pass `--yes` to skip the prompt (required when running non-interactively).
+
 ---
 
 ## You now have a working gateway
