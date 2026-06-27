@@ -4,7 +4,7 @@
 
 This guide gets the `flowplane` CLI talking to a control plane: set a token, point at the right server, optionally scope to an org/team, and verify. It assumes you have the `flowplane` binary on your `PATH` and a control-plane URL to talk to.
 
-For the full command surface see [`../reference/cli.md`](../reference/cli.md), and for the complete list of environment variables and config keys see [`../reference/configuration.md`](../reference/configuration.md).
+For the full command surface see [`../reference/cli.md`](../reference/cli.md), and for the complete list of environment variables and config keys see [`../reference/configuration.md`](../reference/configuration.md). Once authenticated, to drive the CLI non-interactively from a script or agent see [Script Flowplane from a shell or agent](script-the-cli.md).
 
 ## Fastest path: token + server, then verify
 

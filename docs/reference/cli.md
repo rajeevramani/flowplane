@@ -4,6 +4,8 @@
 
 Exhaustive reference for the `flowplane` binary: global options, every top-level command, and its subcommands, arguments, and flags.
 
+To drive the CLI from a script or agent, see the how-to [Script Flowplane from a shell or agent](../how-to/script-the-cli.md); for the reasoning behind the output envelope, exit codes, and `schema`, see [The CLI as a typed contract](../concepts/cli-contract.md).
+
 ## Global options
 
 These flags are accepted on every command (`global = true`). Place them before or after the subcommand.
