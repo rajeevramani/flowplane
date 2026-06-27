@@ -37,6 +37,15 @@ scripts and config files are unaffected.
   help or a non-parsing example now fails CI — help coverage is provable and regression-proof, like
   the Tier-1 machine contract.
 
+### Fixed
+
+- **Docs E2E QA release gaps.** Documentation now matches the v2.1.0 branch behavior for dev-mode
+  token TTL/test database guidance, global rate-limit policy update bodies, and dev-mode tenant
+  org/team setup boundaries. (#194, #195)
+- **`auth login` method-conflict exit code.** Explicit conflicting login methods now fail as a
+  usage error with exit code `2`, while no-method/no-OIDC remains exit `1` and ambient
+  `FLOWPLANE_TOKEN` fallback behavior is preserved. (#196)
+
 ## [2.0.0] - 2026-06-27
 
 Major release. CLI Tier-1 conformance: the `flowplane` CLI is brought to a documented,
