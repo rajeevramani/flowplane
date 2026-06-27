@@ -154,6 +154,11 @@ On success the command prints a table describing the created resources, includin
 ./target/debug/flowplane route list
 ```
 
+These print a table at your terminal. Piped into another tool they switch to JSON automatically, so
+`./target/debug/flowplane cluster list | jq '.data'` works without any extra flag. To script
+Flowplane this way — structured output, exit codes, safe deletes — see
+[Script Flowplane from a shell or agent](../how-to/script-the-cli.md).
+
 ---
 
 ## 5. Create a dataplane record
@@ -218,6 +223,9 @@ To tear down what you created:
 ```bash
 ./target/debug/flowplane unexpose local
 ```
+
+`unexpose` is destructive, so on an interactive terminal it asks for `[y/N]` confirmation before
+acting. Answer `y`, or pass `--yes` to skip the prompt (required when running non-interactively).
 
 ---
 

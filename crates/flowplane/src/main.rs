@@ -138,6 +138,8 @@ enum Command {
     Completion { shell: Shell },
     /// Print version.
     Version,
+    /// Print the machine-readable CLI schema (the canonical CLI contract; the MCP-derivation seam).
+    Schema,
 }
 
 #[derive(Subcommand)]
@@ -148,9 +150,12 @@ enum DbCommand {
 
 fn main() {
     if let Err(err) = run() {
-        if let Some(http) = err.downcast_ref::<cli::output::CliHttpError>() {
-            std::process::exit(http.exit_code());
+        // A CliError has already rendered its structured envelope to stderr (CLI-R-30);
+        // exit with its resolved code (CLI-R-31) without re-printing.
+        if let Some(cli_err) = err.downcast_ref::<cli::output::CliError>() {
+            std::process::exit(cli_err.exit_code());
         }
+        // Fallback: an unclassified internal/local error → generic exit 1 (CLI-R-31).
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
@@ -205,10 +210,18 @@ fn run() -> anyhow::Result<()> {
             clap_complete::generate(shell, &mut command, "flowplane", &mut std::io::stdout());
             Ok(())
         }
-        Command::Version => {
-            println!("{VERSION}");
-            Ok(())
-        }
+        Command::Version => cli::output::render(
+            &cli.client,
+            "version",
+            &serde_json::json!({ "version": VERSION }),
+        ),
+        // CLI-R-50: short-circuit before any network call — the schema is the CLI's own
+        // structure, serialized from the clap tree.
+        Command::Schema => cli::output::render(
+            &cli.client,
+            "cliSchema",
+            &cli::schema::cli_schema(&Cli::command()),
+        ),
     }
 }
 
@@ -220,6 +233,97 @@ mod tests {
     #[test]
     fn command_tree_builds() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn schema_has_no_drift_from_the_clap_tree() {
+        // CLI-R-50: the schema is generated FROM Cli::command(); the drift guard asserts every
+        // real top-level command appears in the schema (a future hardcoded list would break).
+        let cmd = Cli::command();
+        let expected: std::collections::BTreeSet<String> = cmd
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect();
+        let schema = cli::schema::cli_schema(&cmd);
+        let actual: std::collections::BTreeSet<String> =
+            cli::schema::top_level_command_names(&schema)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            actual, expected,
+            "flowplane schema drifted from the clap command tree"
+        );
+        // The new `schema` command must itself be in the catalog (not accidentally exempt).
+        assert!(
+            actual.contains("schema"),
+            "`schema` command missing from the catalog"
+        );
+        // Catalog carries its own version distinct from the envelope schemaVersion.
+        assert_eq!(schema["catalogVersion"], cli::schema::CATALOG_VERSION);
+        // Every arg, recursively, carries the documented type/enums/defaults fields (CLI-R-50).
+        fn assert_arg_fields(node: &serde_json::Value) {
+            for arg in node["args"].as_array().expect("args array") {
+                for key in [
+                    "name",
+                    "type",
+                    "required",
+                    "global",
+                    "takesValue",
+                    "possibleValues",
+                    "defaults",
+                ] {
+                    assert!(arg.get(key).is_some(), "arg missing `{key}`: {arg}");
+                }
+            }
+            for sub in node["subcommands"].as_array().expect("subcommands array") {
+                assert_arg_fields(sub);
+            }
+        }
+        assert_arg_fields(&schema["command"]);
+    }
+
+    #[test]
+    fn revision_is_a_global_option_on_every_update_and_delete() {
+        // CLI-R-47: `--revision` must be uniform across every update/delete. It is a global
+        // arg, so it is accepted on every subcommand by construction — assert that invariant.
+        let cmd = Cli::command();
+        let revision = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "revision")
+            .expect("--revision global arg must exist");
+        assert!(
+            revision.is_global_set(),
+            "--revision must be global so it is present on every update/delete"
+        );
+        // And it actually parses on representative update + delete forms.
+        Cli::try_parse_from([
+            "flowplane",
+            "--revision",
+            "3",
+            "cluster",
+            "delete",
+            "x",
+            "--team",
+            "t",
+        ])
+        .expect("--revision parses on delete");
+    }
+
+    #[test]
+    fn json_flag_conflicts_with_explicit_output() {
+        // CLI-R-11: `-o/--output` is the single format selector; `--json` is an alias for
+        // `-o json` and must not be combined with an explicit `-o`.
+        let result = Cli::try_parse_from(["flowplane", "-o", "table", "--json", "version"]);
+        assert!(
+            result.is_err(),
+            "--json with explicit -o must be a usage error"
+        );
+        if let Err(err) = result {
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        // Either alone parses fine.
+        Cli::try_parse_from(["flowplane", "--json", "version"]).expect("--json alone parses");
+        Cli::try_parse_from(["flowplane", "-o", "json", "version"]).expect("-o json alone parses");
     }
 
     #[test]

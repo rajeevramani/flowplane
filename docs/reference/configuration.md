@@ -9,7 +9,7 @@ Every `FLOWPLANE_*` variable read by the control plane (`server`), the rate-limi
 | Surface | Resolution order |
 |---------|------------------|
 | Server (`flowplane serve`) | env var > TOML file (`FLOWPLANE_CONFIG`) > built-in default |
-| CLI | flag > env var > CLI config file |
+| CLI | flag > env var > selected context > CLI config file > built-in default (uniform for every value, including the bearer token) |
 
 Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fail startup with an `invalid_config` error.
 
@@ -68,9 +68,10 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_AGENT_TLS_SERVER_NAME` | agent | `localhost` | no | Server name for TLS verification. |
 | `FLOWPLANE_AGENT_HEALTH_BIND_ADDR` | agent | `127.0.0.1:19902` | no | Local health endpoint bind address. |
 | `FLOWPLANE_SERVER` | cli | `http://127.0.0.1:8080` | no | API base URL the CLI targets. |
-| `FLOWPLANE_TOKEN` | cli | — | no | Bearer token for API requests. |
+| `FLOWPLANE_TOKEN` | cli | — | no | Bearer token for API requests (env tier; below `--token`, above context/file/credentials). |
 | `FLOWPLANE_ORG` | cli | — | no | Active organization (name or UUID). |
 | `FLOWPLANE_TEAM` | cli | — | no | Active team. |
+| `FLOWPLANE_TIMEOUT` | cli | `30` | no | HTTP request timeout in seconds (env tier; below `--timeout`, above the default). |
 | `FLOWPLANE_OIDC_CLIENT_ID` | cli | — | no | OIDC client id for CLI login. |
 | `FLOWPLANE_OIDC_SCOPE` | cli | `openid email profile` | no | OIDC scopes requested at CLI login. |
 | `FLOWPLANE_OIDC_CALLBACK_URL` | cli | `http://127.0.0.1:8976/callback` | no | OAuth callback URL for CLI login. |

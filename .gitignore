@@ -17,6 +17,7 @@ internal/.env.auth0.example
 scripts/flowplane-dev
 scripts/flowplane-dev.py
 .beads/
+scratchpad/
 
 # internal build-journey scaffolding (agent prompts / automation notes)
 internal/dev-workflow-automation.md

@@ -1,7 +1,9 @@
 mod client;
 mod commands;
 mod config;
+pub(crate) mod confirm;
 pub(crate) mod output;
+pub(crate) mod schema;
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -209,7 +211,7 @@ async fn device_login(
     })?;
     let scope = config.oidc_scope.unwrap_or(scope);
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(global.timeout))
+        .timeout(Duration::from_secs(global.timeout.unwrap_or(30)))
         .build()?;
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
@@ -325,7 +327,7 @@ async fn pkce_login(
         .unwrap_or_else(|| "http://127.0.0.1:8976/callback".to_string());
     let callback = CallbackUrl::parse(&callback_url)?;
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(global.timeout))
+        .timeout(Duration::from_secs(global.timeout.unwrap_or(30)))
         .build()?;
     let discovery_url = format!(
         "{}/.well-known/openid-configuration",
@@ -544,10 +546,27 @@ fn percent_decode(value: &str) -> Result<String> {
     String::from_utf8(out).context("percent decoded value is not UTF-8")
 }
 
+/// Replace a stored token with a fixed redaction marker so `config show` never reveals it
+/// (CLI-R-43). A `None` token is left as-is.
+fn redact_token(token: &mut Option<String>) {
+    if token.is_some() {
+        *token = Some("***redacted***".to_string());
+    }
+}
+
 pub fn run_config(_global: GlobalOptions, command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Path => println!("{}", config_path().display()),
-        ConfigCommand::Show => println!("{}", toml::to_string_pretty(&read_config()?)?),
+        ConfigCommand::Show => {
+            // CLI-R-43: never print token material. Redact the file token and any
+            // per-context tokens before serializing the config.
+            let mut config = read_config()?;
+            redact_token(&mut config.token);
+            for ctx in &mut config.contexts {
+                redact_token(&mut ctx.token);
+            }
+            println!("{}", toml::to_string_pretty(&config)?);
+        }
         ConfigCommand::SetContext {
             name,
             server,
@@ -571,6 +590,7 @@ pub fn run_config(_global: GlobalOptions, command: ConfigCommand) -> Result<()> 
                 } else {
                     token
                 },
+                timeout: None,
             });
             config.current_context.get_or_insert(name);
             write_config(&config)?;
@@ -1853,6 +1873,7 @@ pub async fn run_dataplane(global: GlobalOptions, command: DataplaneCommand) -> 
             if dry_run_global.dry_run {
                 render(
                     &dry_run_global,
+                    "plan",
                     &json!({"method": reqwest::Method::GET.as_str(), "path": path}),
                 )?;
             } else {
@@ -2019,7 +2040,9 @@ pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<(
         );
     }
     let targets = ordered_apply_targets(read_apply_manifests(&command.file)?)?;
-    let client = RestClient::new(global.clone())?;
+    // Sub-request failures are suppressed per-call and aggregated into one error envelope
+    // below (CLI-R-30), instead of each printing its own.
+    let client = RestClient::new(global.clone())?.quiet_errors();
     let mut diff_lines = Vec::new();
     let mut outcomes = Vec::new();
     for target in targets {
@@ -2055,14 +2078,36 @@ pub async fn run_apply(global: GlobalOptions, command: ApplyCommand) -> Result<(
         } else if !global.quiet {
             println!("{text}");
         }
-    } else if !global.quiet {
-        print_apply_summary(&outcomes);
+        return Ok(());
     }
-    let failures = outcomes.iter().filter(|outcome| outcome.failed).count();
-    if failures > 0 {
-        anyhow::bail!("apply failed for {failures} resource(s); see summary above");
+
+    let failures: Vec<&ApplyOutcome> = outcomes.iter().filter(|o| o.failed).collect();
+    if failures.is_empty() {
+        // Success: the apply result is the command's stdout payload (CLI-R-10/15).
+        if !global.quiet {
+            if matches!(global.format(), OutputFormat::Json | OutputFormat::Yaml) {
+                output::render(&global, "applyResult", &apply_outcomes_value(&outcomes))?;
+            } else {
+                print_apply_summary(&outcomes);
+            }
+        }
+        return Ok(());
     }
-    Ok(())
+
+    // CLI-R-30: a partial/total failure is reported as ONE structured error envelope on
+    // stderr (no per-subrequest prints, no applyResult on stdout, no raw `{err:?}` trailer).
+    let failure_items = failures
+        .iter()
+        .map(|o| {
+            json!({
+                "kind": o.kind.label(),
+                "name": o.name,
+                "error": o.detail,
+            })
+        })
+        .collect::<Vec<_>>();
+    output::emit_error_envelope(&global, &output::apply_error_envelope(failure_items));
+    Err(anyhow::Error::new(output::CliError::new(1)))
 }
 
 async fn create_apply_target(
@@ -2071,10 +2116,11 @@ async fn create_apply_target(
     target: &ApplyTarget,
 ) -> Result<ApplyAction> {
     client
-        .request(
+        .request_quiet(
             reqwest::Method::POST,
             &format!("/api/v1/teams/{team}/{}", target.kind.segment()),
             Some(target.create_body.clone()),
+            None,
         )
         .await?;
     Ok(ApplyAction::Created)
@@ -2093,7 +2139,7 @@ async fn apply_existing(
             }
             let revision = existing.get("revision").and_then(Value::as_i64);
             client
-                .request_with_revision(
+                .request_quiet(
                     reqwest::Method::PATCH,
                     path,
                     Some(target.update_body()?),
@@ -2110,7 +2156,7 @@ async fn apply_existing(
             }
             let revision = existing.get("revision").and_then(Value::as_i64);
             client
-                .request_with_revision(
+                .request_quiet(
                     reqwest::Method::POST,
                     &format!("{path}/rotate"),
                     Some(target.update_body()?),
@@ -2212,6 +2258,24 @@ impl ApplyOutcome {
             failed: true,
         }
     }
+}
+
+/// Machine-readable apply summary for `-o json`/`-o yaml` (CLI-R-10/15). Wrapped by
+/// `render()` in the typed envelope as `kind: "applyResult"`.
+fn apply_outcomes_value(outcomes: &[ApplyOutcome]) -> Value {
+    let items = outcomes
+        .iter()
+        .map(|outcome| {
+            json!({
+                "kind": outcome.kind.label(),
+                "name": outcome.name,
+                "action": outcome.action,
+                "detail": outcome.detail,
+                "failed": outcome.failed,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "items": items })
 }
 
 fn print_apply_summary(outcomes: &[ApplyOutcome]) {

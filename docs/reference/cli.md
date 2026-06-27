@@ -4,6 +4,8 @@
 
 Exhaustive reference for the `flowplane` binary: global options, every top-level command, and its subcommands, arguments, and flags.
 
+To drive the CLI from a script or agent, see the how-to [Script Flowplane from a shell or agent](../how-to/script-the-cli.md); for the reasoning behind the output envelope, exit codes, and `schema`, see [The CLI as a typed contract](../concepts/cli-contract.md).
+
 ## Global options
 
 These flags are accepted on every command (`global = true`). Place them before or after the subcommand.
@@ -14,15 +16,17 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--server <URL>` | | `FLOWPLANE_SERVER` | `http://127.0.0.1:8080` | Control-plane base URL. |
 | `--team <NAME>` | | `FLOWPLANE_TEAM` | | Team scope. |
 | `--org <NAME>` | | `FLOWPLANE_ORG` | | Organization scope. |
-| `--output <FMT>` | `-o` | | `table` | Output format: `table`, `json`, `yaml`, `wide`. |
-| `--json` | | | `false` | Shorthand for `--output json` (overrides `--output`). |
-| `--no-color` | | | `false` | Disable colored output. |
+| `--token <TOKEN>` | | `FLOWPLANE_TOKEN` | | Bearer token. Highest-priority token source; falls back to the selected context, the config-file token, then `~/.flowplane/credentials`. Redacted in `config show`. |
+| `--output <FMT>` | `-o` | | `table` on a TTY, `json` when stdout is piped | Output format: `table`, `json`, `yaml`, `wide`. An explicit `-o` always wins; otherwise the default is `table` on an interactive terminal and `json` when stdout is not a TTY (so `… \| jq` works without `-o json`). |
+| `--json` | | | `false` | Exactly equivalent to `--output json`. |
+| `--no-color` | | | `false` | Disable colored output. Color is also disabled by the `NO_COLOR` environment variable, when stdout is not a TTY, or when output is redirected with `--out`. |
 | `--quiet` | | | `false` | Suppress non-essential output. |
 | `--verbose` | | | `false` | Verbose output. |
 | `--dry-run` | | | `false` | Do not perform mutating actions. |
-| `--yes` | `-y` | | `false` | Assume "yes" for confirmation prompts. |
-| `--revision <N>` | | | | Resource revision (i64). |
-| `--timeout <SECS>` | | | `30` | HTTP timeout in seconds (u64). |
+| `--yes` | `-y` | | `false` | Skip the confirmation prompt on destructive commands (`delete`, `unexpose`). Required to run a destructive command on a non-interactive terminal — see [Destructive confirmations](#destructive-confirmations). |
+| `--revision <N>` | | | | Optimistic-concurrency precondition for `update`/`delete`, sent as `If-Match`. Omit it and the CLI does read-modify-write: it reads the resource's current revision and sends that, so a concurrent edit is detected. A stale revision fails with a `409` whose error envelope names both the `attempted_revision` and the server's current one. |
+| `--fields <a,b,c>` | | | | Project reader output to only these comma-separated keys, applied inside the envelope `data` (per item for lists). `schemaVersion`/`kind` always survive; an absent key is omitted (no `null`). |
+| `--timeout <SECS>` | | `FLOWPLANE_TIMEOUT` | `30` | HTTP timeout in seconds (u64). |
 | `--out <PATH>` | | | | Write command output to a file. |
 
 ### Other environment variables
@@ -32,19 +36,105 @@ These are read directly (not as flags) by config resolution:
 | Env var | Meaning |
 |---------|---------|
 | `FLOWPLANE_CONFIG` | Path to the config TOML file. Default: `$HOME/.flowplane/config.toml`. |
-| `FLOWPLANE_TOKEN` | Bearer token (highest-priority token source). |
-| `FLOWPLANE_ORG` | Organization fallback. |
-| `FLOWPLANE_TEAM` | Team fallback. |
+| `FLOWPLANE_TOKEN` | Bearer token (env tier; below `--token`, above context/file). |
+| `FLOWPLANE_ORG` | Organization (env tier of the precedence rule). |
+| `FLOWPLANE_TEAM` | Team (env tier of the precedence rule). |
+| `FLOWPLANE_TIMEOUT` | HTTP timeout in seconds (env tier; below `--timeout`, above the `30` default). |
 | `FLOWPLANE_OIDC_ISSUER` | OIDC issuer URL fallback. |
 | `FLOWPLANE_OIDC_CLIENT_ID` | OIDC client ID fallback. |
 | `FLOWPLANE_OIDC_SCOPE` | OIDC scope fallback. |
 | `FLOWPLANE_OIDC_CALLBACK_URL` | OIDC callback URL fallback. |
 
-Token resolution order: `FLOWPLANE_TOKEN` → selected context token → config-file token → `~/.flowplane/credentials` file. The config directory and credential files are written with `0700`/`0600` permissions on Unix.
+Configuration precedence is uniform for every value — `flag > env > context > file > default`.
+Token resolution follows the same rule: `--token` → `FLOWPLANE_TOKEN` → selected context token →
+config-file token → `~/.flowplane/credentials` file. The config directory and credential files are
+written with `0700`/`0600` permissions on Unix, and the token is redacted in `config show`.
+
+## Destructive confirmations
+
+Destructive commands (`delete` and `unexpose`) confirm before acting:
+
+- **On an interactive terminal**, the CLI prompts `delete <resource>? [y/N]:`. The default is
+  no — only `y`/`yes` proceeds; a bare Enter or anything else aborts (exit `1`). The prompt is
+  written to stderr.
+- **`--yes` / `-y`** skips the prompt and proceeds immediately. Use it in scripts and automation.
+- **On a non-interactive terminal** (piped or redirected stdin) **without `--yes`**, the command
+  does not prompt and does not hang: it fails fast with exit code `2` and an
+  `error (confirmation_required): … pass --yes` message on stderr. The CLI never reads from a
+  non-TTY stdin, so it can never deadlock waiting for an answer that will not come.
+
+`apply` is additive-only and does not delete; `apply --prune` is currently rejected as
+unsupported, so it is not a confirmation surface.
+
+## JSON output envelope
+
+Under `-o json` (and `-o yaml`) every command's success payload is wrapped in a typed
+envelope so machine consumers can rely on a stable shape:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "cluster",
+  "data": { "name": "alpha", "revision": 3 }
+}
+```
+
+- `schemaVersion` — integer version of the **output contract** (not the product version).
+  It starts at `1` and is bumped only on a breaking change to this envelope shape.
+- `kind` — the resource kind. Singular for a single resource (`cluster`), suffixed with
+  `List` for a collection (`clusterList`). `version` → `version`; a body-less mutation
+  (e.g. `delete`) → `mutationResult`; `apply` → `applyResult`.
+- `data` — the resource object, the array/`items` collection, or the command-specific
+  payload.
+
+This envelope wraps reader output, mutation results (including `version`, `delete`, and
+`apply`), so a command that previously printed prose (e.g. `version`, `cluster delete`)
+now emits the envelope under `-o json`. Human formats (`table`, `wide`) are unwrapped and
+remain free-form.
+
+## Errors & exit codes
+
+Every failure — an HTTP error from the server, a transport/network failure, or an `apply`
+partial-failure — is written as a structured error envelope to **stderr** (stdout stays
+empty), and the process exits with a scriptable code. Under `-o json` the error envelope is
+JSON; otherwise it is a compact `error (code): message` line. The error envelope is
+separate from the success envelope above (it is **not** wrapped in `{schemaVersion,kind,data}`):
+
+```json
+{
+  "code": "not_found",
+  "message": "cluster \"alpha\" not found",
+  "status": 404,
+  "retryable": false,
+  "request_id": "01J…",
+  "hint": "…"
+}
+```
+
+- `retryable` — `true` for transient failures (HTTP `429`, any `5xx`, and transport/timeout
+  failures), `false` for terminal `4xx`.
+- `hint` — on a `401` with no server-supplied hint the client synthesizes
+  `run \`flowplane auth login\` to authenticate`; a `403` carries the server's hint naming
+  the `(resource, action)`.
+- `status` — the HTTP status (absent for transport failures, whose `code` is
+  `connection_failed`/`timeout`/`transport_error`).
+
+### Exit codes
+
+| Code | Meaning | Trigger |
+|------|---------|---------|
+| `0` | Success | — |
+| `1` | Generic / internal CLI error | Unclassified local failure |
+| `2` | Usage error | Invalid flags/arguments (clap-native) |
+| `3` | Authentication / authorization | HTTP `401`, `403` |
+| `4` | Not found / conflict / precondition | HTTP `404`, `409`, `412` |
+| `5` | Validation | HTTP `400`, `422` |
+| `6` | Rate limited | HTTP `429` |
+| `7` | Server / transport | HTTP `5xx`, connection refused, timeout |
 
 ## Top-level commands
 
-`serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `learn`, `secret`, `dataplane`, `expose`, `unexpose`, `stats`, `ops`, `apply`, `completion`, `version`.
+`serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `rate-limit`, `learn`, `secret`, `dataplane`, `expose`, `unexpose`, `stats`, `ops`, `apply`, `completion`, `version`, `schema`.
 
 ---
 
@@ -313,6 +403,16 @@ Generate a shell completion script.
 
 ### `version`
 Print the binary version (from `CARGO_PKG_VERSION`). No subcommands or args.
+
+### `schema`
+Print the machine-readable CLI catalog — the whole command tree (commands, subcommands,
+flags, types, enums, required/defaults, help) as JSON. Makes no network call. This is the
+**canonical CLI contract source and the MCP-derivation seam** (ADR FP-DEC-0003): generated
+consumers (shell completion, the future MCP tool catalog, docs) derive from `flowplane schema`
+rather than scraping `--help`. Under `-o json` the payload is the standard envelope with
+`kind: "cliSchema"`; `data` carries its own integer `catalogVersion` (distinct from the
+envelope `schemaVersion`) and the `command` tree. A generator drift test pins the catalog to
+`Cli::command()`. No subcommands or args.
 
 ---
 
