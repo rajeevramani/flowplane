@@ -8,6 +8,9 @@ pub enum AuthCommand {
     /// Print the raw bearer token for the active context.
     Token,
     /// Acquire and store a bearer token (static token, PKCE, or device flow).
+    #[command(
+        after_help = "Example:\n  flowplane auth login --device-code --issuer https://issuer.example --client-id flowplane-cli"
+    )]
     Login {
         /// Static bearer token to store for the active context.
         #[arg(long)]
@@ -45,6 +48,9 @@ pub enum ConfigCommand {
     /// Print the merged CLI configuration.
     Show,
     /// Create or update a named context (server, org, team, token).
+    #[command(
+        after_help = "Example:\n  flowplane config set-context prod --server https://fp.example --org acme --team payments"
+    )]
     SetContext {
         /// Name of the context to create or update.
         name: String,
@@ -83,6 +89,7 @@ pub enum OrgCommand {
         org: String,
     },
     /// Create an organization.
+    #[command(after_help = "Example:\n  flowplane org create acme --display-name Acme")]
     Create {
         /// Name (slug) of the organization to create.
         name: String,
@@ -110,6 +117,9 @@ pub enum OrgMemberCommand {
         org: String,
     },
     /// Add a member to an organization.
+    #[command(
+        after_help = "Example:\n  flowplane org member add acme --email user@example.com --role org-admin"
+    )]
     Add {
         /// Organization to add the member to.
         org: String,
@@ -140,6 +150,7 @@ pub enum TeamCommand {
     /// List teams.
     List,
     /// Create a team.
+    #[command(after_help = "Example:\n  flowplane team create payments --display-name Payments")]
     Create {
         /// Name (slug) of the team to create.
         name: String,
@@ -174,6 +185,9 @@ pub enum TeamMemberCommand {
         team: Option<String>,
     },
     /// Add a member to a team.
+    #[command(
+        after_help = "Example:\n  flowplane team member add user@example.com --team payments"
+    )]
     Add {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -200,6 +214,9 @@ pub enum GrantCommand {
         team: Option<String>,
     },
     /// Grant a member an action on a resource.
+    #[command(
+        after_help = "Example:\n  flowplane team grant add user@example.com --team payments --resource clusters --action write"
+    )]
     Add {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -240,6 +257,9 @@ pub enum ResourceCommand {
         name: String,
     },
     /// Create a resource from a JSON file.
+    #[command(
+        after_help = "Example (resource create takes the JSON body via -f):\n  flowplane cluster create --team payments -f resource.json\n\nThe same -f body shape applies to listener / ai providers|routes|budgets / rate-limit domain."
+    )]
     Create {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -249,6 +269,9 @@ pub enum ResourceCommand {
         file: PathBuf,
     },
     /// Update a resource from a JSON file (requires `--revision`).
+    #[command(
+        after_help = "Example (resource update takes the JSON body via -f and the current --revision):\n  flowplane cluster update web --team payments -f resource.json --revision 3\n\nThe same shape applies to listener / ai providers|routes|budgets / rate-limit domain."
+    )]
     Update {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -286,6 +309,7 @@ pub enum RouteCommand {
         name: String,
     },
     /// Create a route configuration from a JSON file.
+    #[command(after_help = "Example:\n  flowplane route create --team payments -f route.json")]
     Create {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -295,6 +319,9 @@ pub enum RouteCommand {
         file: PathBuf,
     },
     /// Update a route configuration from a JSON file (requires `--revision`).
+    #[command(
+        after_help = "Example:\n  flowplane route update edge --team payments -f route.json --revision 3"
+    )]
     Update {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -314,6 +341,9 @@ pub enum RouteCommand {
         name: String,
     },
     /// Generate a route plan from a published API spec.
+    #[command(
+        after_help = "Example:\n  flowplane route generate --team payments --from-spec 018ff2ef-bfc6-7000-8000-000000000001 --listener-port 19090"
+    )]
     Generate {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -416,6 +446,9 @@ pub enum RateLimitPolicyCommand {
         name: String,
     },
     /// Create a policy from a JSON file.
+    #[command(
+        after_help = "Example:\n  flowplane rate-limit policy create --team payments --domain edge -f policy.json"
+    )]
     Create {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -428,6 +461,9 @@ pub enum RateLimitPolicyCommand {
         file: PathBuf,
     },
     /// Update a policy from a JSON file (requires `--revision`).
+    #[command(
+        after_help = "Example:\n  flowplane rate-limit policy update per-ip --team payments --domain edge -f policy.json --revision 3"
+    )]
     Update {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -469,6 +505,9 @@ pub enum RateLimitOverrideCommand {
         policy: String,
     },
     /// Create the override from a JSON file (`{ "spec": { "requests_per_unit": N } }`).
+    #[command(
+        after_help = "Example:\n  flowplane rate-limit override set --team payments --domain edge --policy per-ip -f override.json"
+    )]
     Set {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -484,6 +523,9 @@ pub enum RateLimitOverrideCommand {
         file: PathBuf,
     },
     /// Update a policy override from a JSON file (requires `--revision`).
+    #[command(
+        after_help = "Example:\n  flowplane rate-limit override update --team payments --domain edge --policy per-ip -f override.json --revision 3"
+    )]
     Update {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -542,6 +584,9 @@ pub enum ApiCommand {
         command: ApiSpecCommand,
     },
     /// Create an API definition (optionally importing an OpenAPI document).
+    #[command(
+        after_help = "Example:\n  flowplane api create catalog --team payments --from-openapi openapi.json"
+    )]
     Create {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -583,6 +628,7 @@ pub enum ApiCommand {
 #[derive(Debug, Subcommand)]
 pub enum ApiSpecCommand {
     /// Reject a pending spec version.
+    #[command(after_help = "Example:\n  flowplane api spec reject catalog 3 --reason superseded")]
     Reject {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -596,6 +642,7 @@ pub enum ApiSpecCommand {
         reason: String,
     },
     /// Publish a reviewed spec version.
+    #[command(after_help = "Example:\n  flowplane api spec publish catalog 3")]
     Publish {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -625,6 +672,7 @@ pub enum McpCommand {
         team: Option<String>,
     },
     /// Expose an API as an MCP tool.
+    #[command(after_help = "Example:\n  flowplane mcp enable --api catalog --team payments")]
     Enable {
         /// Name of the API to expose as an MCP tool.
         #[arg(long = "api", alias = "tool")]
@@ -634,6 +682,7 @@ pub enum McpCommand {
         team: Option<String>,
     },
     /// Stop exposing an API as an MCP tool.
+    #[command(after_help = "Example:\n  flowplane mcp disable --api catalog --team payments")]
     Disable {
         /// Name of the API to stop exposing as an MCP tool.
         #[arg(long = "api", alias = "tool")]
@@ -652,6 +701,9 @@ pub enum LearnCommand {
         command: LearnDiscoverCommand,
     },
     /// Start a capture session against an existing API.
+    #[command(
+        after_help = "Example:\n  flowplane learn start catalog-capture --team payments --api catalog"
+    )]
     Start {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -741,6 +793,9 @@ pub enum LearnCommand {
 #[derive(Debug, Subcommand)]
 pub enum LearnDiscoverCommand {
     /// Start a discovery session against a raw upstream.
+    #[command(
+        after_help = "Example:\n  flowplane learn discover start public-probe --team payments --upstream 10.0.0.5:80 --listener-port 19080"
+    )]
     Start {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -827,6 +882,7 @@ pub enum SecretCommand {
         name: String,
     },
     /// Create a secret from a JSON file.
+    #[command(after_help = "Example:\n  flowplane secret create --team payments -f secret.json")]
     Create {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -836,6 +892,9 @@ pub enum SecretCommand {
         file: PathBuf,
     },
     /// Rotate a secret's value from a JSON file.
+    #[command(
+        after_help = "Example:\n  flowplane secret rotate db-password --team payments --revision 2 -f secret.json"
+    )]
     Rotate {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -868,6 +927,7 @@ pub enum DataplaneCommand {
         name: String,
     },
     /// Register a dataplane.
+    #[command(after_help = "Example:\n  flowplane dataplane create edge-1 --team payments")]
     Create {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -879,6 +939,9 @@ pub enum DataplaneCommand {
         description: String,
     },
     /// Submit dataplane telemetry from a JSON file.
+    #[command(
+        after_help = "Example:\n  flowplane dataplane telemetry edge-1 --team payments -f telemetry.json"
+    )]
     Telemetry {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -891,6 +954,9 @@ pub enum DataplaneCommand {
     },
     /// Generate an Envoy bootstrap config for a dataplane.
     #[command(alias = "envoy-config")]
+    #[command(
+        after_help = "Example:\n  flowplane dataplane bootstrap edge-1 --team payments --mode dev"
+    )]
     Bootstrap {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -982,6 +1048,9 @@ pub enum CertCommand {
         team: Option<String>,
     },
     /// Register a proxy certificate from a JSON file.
+    #[command(
+        after_help = "Example:\n  flowplane dataplane cert register --team payments -f cert.json"
+    )]
     Register {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -991,6 +1060,7 @@ pub enum CertCommand {
         file: PathBuf,
     },
     /// Issue a proxy certificate for a dataplane.
+    #[command(after_help = "Example:\n  flowplane dataplane cert issue edge-1 --team payments")]
     Issue {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
@@ -1002,6 +1072,9 @@ pub enum CertCommand {
         ttl_hours: i64,
     },
     /// Revoke a proxy certificate.
+    #[command(
+        after_help = "Example:\n  flowplane dataplane cert revoke 0A1B2C3D --team payments --reason compromised"
+    )]
     Revoke {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
