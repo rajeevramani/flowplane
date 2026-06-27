@@ -22,6 +22,7 @@ const DEV_KID: &str = "flowplane-dev-key";
 /// Default dev-user token lifetime (24h). Long enough that a local exploration session does not
 /// expire mid-use (#190); dev-only, so it never affects production token lifetimes.
 const DEV_TOKEN_DEFAULT_TTL_SECS: i64 = 86_400;
+const _: () = assert!(DEV_TOKEN_DEFAULT_TTL_SECS >= 86_400);
 
 /// Resolve the dev-user token lifetime from `FLOWPLANE_DEV_TOKEN_TTL` (seconds), defaulting to
 /// [`DEV_TOKEN_DEFAULT_TTL_SECS`]. Reads process env; the parse/validation is factored into the
@@ -156,8 +157,6 @@ mod tests {
         assert_eq!(parse_dev_token_ttl(Some("abc")), DEV_TOKEN_DEFAULT_TTL_SECS);
         assert_eq!(parse_dev_token_ttl(Some("0")), DEV_TOKEN_DEFAULT_TTL_SECS);
         assert_eq!(parse_dev_token_ttl(Some("-5")), DEV_TOKEN_DEFAULT_TTL_SECS);
-        // default is at least 24h (no more 1h forced restart).
-        assert!(DEV_TOKEN_DEFAULT_TTL_SECS >= 86_400);
         // a valid positive override wins.
         assert_eq!(parse_dev_token_ttl(Some("3600")), 3600);
         assert_eq!(parse_dev_token_ttl(Some(" 7200 ")), 7200);
