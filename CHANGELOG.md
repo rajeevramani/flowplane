@@ -10,7 +10,7 @@ upgrade of an earlier Flowplane line — there is no in-place migration path fro
 version. `1.0.0` is its first stable release and the point at which the public REST API,
 CLI surface, and configuration contract become subject to semantic versioning.
 
-## [2.0.0] - Unreleased
+## [2.0.0] - 2026-06-27
 
 Major release. CLI Tier-1 conformance: the `flowplane` CLI is brought to a documented,
 machine-consumable standard (output model, error/exit-code contract, config precedence,
