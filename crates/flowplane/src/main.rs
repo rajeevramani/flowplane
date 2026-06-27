@@ -3,7 +3,7 @@
 mod cli;
 mod serve;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::Shell;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -170,7 +170,27 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    // Capture the raw ArgMatches so we can ask clap whether `--token` was passed
+    // explicitly on the command line for `auth login`, as opposed to inherited from the
+    // ambient FLOWPLANE_TOKEN via the global `--token` flag (Fix 3 / F-2). `Cli::parse()`
+    // would discard the value-source we need.
+    let matches = Cli::command().get_matches();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.exit(),
+    };
+    // Only an explicit `--token <v>` (ValueSource::CommandLine) counts as a login input;
+    // an env-sourced token must not conflict with `--token-stdin`/`--device`/`--pkce`.
+    let auth_login_token_explicit = matches
+        .subcommand_matches("auth")
+        .and_then(|auth| auth.subcommand_matches("login"))
+        .map(|login| {
+            matches!(
+                login.value_source("token"),
+                Some(clap::parser::ValueSource::CommandLine)
+            )
+        })
+        .unwrap_or(false);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -188,7 +208,11 @@ fn run() -> anyhow::Result<()> {
             );
             Ok(())
         }
-        Command::Auth { command } => runtime.block_on(cli::run_auth(cli.client, command)),
+        Command::Auth { command } => runtime.block_on(cli::run_auth(
+            cli.client,
+            command,
+            auth_login_token_explicit,
+        )),
         Command::Config { command } => cli::run_config(cli.client, command),
         Command::Org { command } => runtime.block_on(cli::run_org(cli.client, command)),
         Command::Team { command } => runtime.block_on(cli::run_team(cli.client, command)),
@@ -241,6 +265,66 @@ mod tests {
     #[test]
     fn command_tree_builds() {
         Cli::command().debug_assert();
+    }
+
+    /// Mirror of `run`'s detection: was `--token` passed explicitly on the command line for
+    /// `auth login` (vs. inherited from the ambient FLOWPLANE_TOKEN via the global flag)?
+    /// Fix 3 / F-2. Env-sourced detection is process-global and is covered by the black-box
+    /// integration matrix instead.
+    fn login_token_is_explicit(argv: &[&str]) -> bool {
+        let matches = Cli::command()
+            .try_get_matches_from(argv)
+            .expect("argv parses without env");
+        matches
+            .subcommand_matches("auth")
+            .and_then(|auth| auth.subcommand_matches("login"))
+            .map(|login| {
+                matches!(
+                    login.value_source("token"),
+                    Some(clap::parser::ValueSource::CommandLine)
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn explicit_token_flag_is_detected_as_command_line() {
+        assert!(login_token_is_explicit(&[
+            "flowplane",
+            "auth",
+            "login",
+            "--token",
+            "v"
+        ]));
+    }
+
+    #[test]
+    fn token_stdin_alone_is_not_an_explicit_token() {
+        assert!(!login_token_is_explicit(&[
+            "flowplane",
+            "auth",
+            "login",
+            "--token-stdin"
+        ]));
+    }
+
+    #[test]
+    fn device_flag_alone_is_not_an_explicit_token() {
+        assert!(!login_token_is_explicit(&[
+            "flowplane",
+            "auth",
+            "login",
+            "--device",
+            "--issuer",
+            "https://issuer.example",
+            "--client-id",
+            "x",
+        ]));
+    }
+
+    #[test]
+    fn bare_login_is_not_an_explicit_token() {
+        assert!(!login_token_is_explicit(&["flowplane", "auth", "login"]));
     }
 
     #[test]

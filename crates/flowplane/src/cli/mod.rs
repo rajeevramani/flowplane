@@ -56,7 +56,11 @@ fn parse_json_or_yaml(raw: &str) -> Result<Value> {
     }
 }
 
-pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()> {
+pub async fn run_auth(
+    global: GlobalOptions,
+    command: AuthCommand,
+    token_explicit: bool,
+) -> Result<()> {
     match command {
         AuthCommand::Whoami => RestClient::new(global)?
             .request(reqwest::Method::GET, "/api/v1/auth/whoami", None)
@@ -77,35 +81,39 @@ pub async fn run_auth(global: GlobalOptions, command: AuthCommand) -> Result<()>
             callback_url,
             scope,
         } => {
-            let token = match (token, token_stdin, device, pkce) {
-                (Some(token), false, false, false) => token,
-                (None, true, false, false) => read_token_from_stdin()?,
-                (None, false, true, true) => {
+            // `token` may be populated from the ambient `FLOWPLANE_TOKEN` via the global
+            // `--token` flag; only an explicit `--token <v>` on the command line
+            // (`token_explicit`) counts as a login *method* that conflicts with the others
+            // (Fix 3 / F-2). An env-sourced token is used only as a fallback when no explicit
+            // method is chosen.
+            let methods = [token_explicit, token_stdin, device, pkce]
+                .into_iter()
+                .filter(|c| *c)
+                .count();
+            if methods > 1 {
+                anyhow::bail!(
+                    "use only one login input: --token, --token-stdin, --device-code, or --pkce"
+                );
+            }
+            let token = if token_stdin {
+                read_token_from_stdin()?
+            } else if device {
+                device_login(&global, issuer, client_id, scope).await?
+            } else if pkce {
+                pkce_login(&global, issuer, client_id, callback_url, scope).await?
+            } else if token_explicit {
+                token.unwrap_or_default()
+            } else {
+                // No explicit method: fall back to an ambient `FLOWPLANE_TOKEN` if present,
+                // otherwise auto-PKCE when OIDC is configured, otherwise error.
+                let config = effective(&global)?;
+                if let Some(token) = token {
+                    token
+                } else if config.oidc_issuer.is_some() && config.oidc_client_id.is_some() {
+                    pkce_login(&global, issuer, client_id, callback_url, scope).await?
+                } else {
                     anyhow::bail!(
-                        "use only one login input: --token, --token-stdin, --device-code, or --pkce"
-                    )
-                }
-                (None, false, explicit_device, explicit_pkce) => {
-                    let config = effective(&global)?;
-                    if explicit_device {
-                        device_login(&global, issuer, client_id, scope).await?
-                    } else if explicit_pkce
-                        || (config.oidc_issuer.is_some() && config.oidc_client_id.is_some())
-                    {
-                        pkce_login(&global, issuer, client_id, callback_url, scope).await?
-                    } else {
-                        anyhow::bail!(
-                            "pass --token, --token-stdin, --device-code, or configure OIDC for PKCE"
-                        )
-                    }
-                }
-                (Some(_), true, _, _)
-                | (Some(_), _, true, _)
-                | (Some(_), _, _, true)
-                | (None, true, true, _)
-                | (None, true, _, true) => {
-                    anyhow::bail!(
-                        "use only one login input: --token, --token-stdin, --device-code, or --pkce"
+                        "pass --token, --token-stdin, --device-code, or configure OIDC for PKCE"
                     )
                 }
             };
