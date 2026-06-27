@@ -78,6 +78,11 @@ Dev mode seeds one organization, team, and user:
 | Team     | `default` |
 | User     | `dev-user`|
 
+The seeded `dev-user` is ready for this local tenant (`dev-org` / `default`) but
+is not a platform admin. Creating additional tenant organizations requires a
+bootstrapped platform-admin environment; for that operator workflow, see
+[create a tenant org and a team](../how-to/create-tenant-org-and-team.md).
+
 ---
 
 ## 3. Get a token and confirm authentication
