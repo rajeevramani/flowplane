@@ -11,7 +11,7 @@
 //!     `--pkce`.
 //!   * `auth login` login methods (`--token <v>`, `--token-stdin`, `--device`/`--device-code`,
 //!     `--pkce`) are mutually exclusive. More than one explicit method →
-//!     `use only one login input: --token, --token-stdin, --device-code, or --pkce` (exit 1).
+//!     `use only one login input: --token, --token-stdin, --device-code, or --pkce` (exit 2).
 //!   * No method chosen and nothing available →
 //!     `pass --token, --token-stdin, --device-code, or configure OIDC for PKCE` (exit 1).
 //!   * On success the bearer token is written to the credentials file (path echoed as
@@ -113,7 +113,7 @@ fn env_unset_token_stdin_saves_stdin_value() {
     assert_eq!(saved_token(&out, "row2"), "stdin-tok-2");
 }
 
-// 3. env SET + explicit --token <v> + --token-stdin → exit 1; conflict. [explicit token conflicts]
+// 3. env SET + explicit --token <v> + --token-stdin → exit 2; conflict. [explicit token conflicts]
 #[test]
 fn env_set_explicit_token_and_stdin_conflicts() {
     let home = common::unique_tempdir();
@@ -124,7 +124,7 @@ fn env_set_explicit_token_and_stdin_conflicts() {
         Some("stdin-tok-3"),
     );
     assert!(!out.status.success(), "row3: must fail");
-    assert_eq!(out.status.code(), Some(1), "row3: exit code");
+    assert_eq!(out.status.code(), Some(2), "row3: exit code");
     let err = stderr_of(&out);
     assert!(
         err.contains(CONFLICT_MSG),
@@ -132,7 +132,7 @@ fn env_set_explicit_token_and_stdin_conflicts() {
     );
 }
 
-// 4. env UNSET + explicit --token <v> + --token-stdin → exit 1; conflict.
+// 4. env UNSET + explicit --token <v> + --token-stdin → exit 2; conflict.
 #[test]
 fn env_unset_explicit_token_and_stdin_conflicts() {
     let home = common::unique_tempdir();
@@ -143,7 +143,7 @@ fn env_unset_explicit_token_and_stdin_conflicts() {
         Some("stdin-tok-4"),
     );
     assert!(!out.status.success(), "row4: must fail");
-    assert_eq!(out.status.code(), Some(1), "row4: exit code");
+    assert_eq!(out.status.code(), Some(2), "row4: exit code");
     let err = stderr_of(&out);
     assert!(
         err.contains(CONFLICT_MSG),
@@ -240,7 +240,7 @@ fn env_set_pkce_attempts_network_not_conflict() {
     );
 }
 
-// 11. --device --pkce (env unset) → exit 1; conflict. [two real methods conflict]
+// 11. --device --pkce (env unset) → exit 2; conflict. [two real methods conflict]
 #[test]
 fn device_and_pkce_conflicts() {
     let home = common::unique_tempdir();
@@ -258,7 +258,7 @@ fn device_and_pkce_conflicts() {
         None,
     );
     assert!(!out.status.success(), "row11: must fail");
-    assert_eq!(out.status.code(), Some(1), "row11: exit code");
+    assert_eq!(out.status.code(), Some(2), "row11: exit code");
     let err = stderr_of(&out);
     assert!(
         err.contains(CONFLICT_MSG),
@@ -266,7 +266,7 @@ fn device_and_pkce_conflicts() {
     );
 }
 
-// 12. env SET + explicit --token v + --device → exit 1; conflict.
+// 12. env SET + explicit --token v + --device → exit 2; conflict.
 #[test]
 fn env_set_explicit_token_and_device_conflicts() {
     let home = common::unique_tempdir();
@@ -285,7 +285,7 @@ fn env_set_explicit_token_and_device_conflicts() {
         None,
     );
     assert!(!out.status.success(), "row12: must fail");
-    assert_eq!(out.status.code(), Some(1), "row12: exit code");
+    assert_eq!(out.status.code(), Some(2), "row12: exit code");
     let err = stderr_of(&out);
     assert!(
         err.contains(CONFLICT_MSG),

@@ -127,7 +127,7 @@ separate from the success envelope above (it is **not** wrapped in `{schemaVersi
 |------|---------|---------|
 | `0` | Success | — |
 | `1` | Generic / internal CLI error | Unclassified local failure |
-| `2` | Usage error | Invalid flags/arguments (clap-native) |
+| `2` | Usage error | Invalid flags/arguments and local preflight usage checks |
 | `3` | Authentication / authorization | HTTP `401`, `403` |
 | `4` | Not found / conflict / precondition | HTTP `404`, `409`, `412` |
 | `5` | Validation | HTTP `400`, `422` |
@@ -161,7 +161,7 @@ Client auth helpers.
 | `auth whoami` | — |
 | `auth token` | — |
 | `auth logout` | — |
-| `auth login` | `--token <TOKEN>`, `--token-stdin`, `--device` (alias `--device-code`), `--pkce`, `--issuer <URL>`, `--client-id <ID>`, `--callback-url <URL>`, `--scope <SCOPE>` (default `openid email profile`) |
+| `auth login` | `--token <TOKEN>`, `--token-stdin`, `--device` (alias `--device-code`), `--pkce`, `--issuer <URL>`, `--client-id <ID>`, `--callback-url <URL>`, `--scope <SCOPE>` (default `openid email profile`). Login input methods are mutually exclusive; combining explicit methods exits `2`. |
 
 ### `config`
 Client configuration.

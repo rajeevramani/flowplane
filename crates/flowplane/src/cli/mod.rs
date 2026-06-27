@@ -91,9 +91,10 @@ pub async fn run_auth(
                 .filter(|c| *c)
                 .count();
             if methods > 1 {
-                anyhow::bail!(
-                    "use only one login input: --token, --token-stdin, --device-code, or --pkce"
+                eprintln!(
+                    "error (usage_error): use only one login input: --token, --token-stdin, --device-code, or --pkce"
                 );
+                return Err(anyhow::Error::new(output::CliError::new(2)));
             }
             let token = if token_stdin {
                 read_token_from_stdin()?

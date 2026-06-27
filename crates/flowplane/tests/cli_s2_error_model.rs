@@ -13,7 +13,7 @@
 //!     404 and 400/validation → false.
 //!   * Auth hint (CLI-R-33): a 401 with no server `hint` still yields a `hint` mentioning
 //!     `flowplane auth login`; a 403 server `hint` naming resource/action survives.
-//!   * Exit-code table (CLI-R-31), full 0–7 range: 0 ok, 2 clap usage, 3 auth (401/403),
+//!   * Exit-code table (CLI-R-31), full 0–7 range: 0 ok, 2 usage/preflight, 3 auth (401/403),
 //!     4 not-found/conflict (404), 5 validation (400), 6 rate-limited (429),
 //!     7 server error (503) and transport/connection-refused.
 

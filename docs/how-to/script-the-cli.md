@@ -86,7 +86,7 @@ The full map (see [`../reference/cli.md#exit-codes`](../reference/cli.md#exit-co
 |------|---------|---------|
 | `0` | Success | — |
 | `1` | Generic / internal CLI error | Unclassified local failure |
-| `2` | Usage error | Invalid flags/arguments |
+| `2` | Usage error | Invalid flags/arguments and local preflight usage checks |
 | `3` | Auth | HTTP `401`, `403` |
 | `4` | Not found / conflict / precondition | HTTP `404`, `409`, `412` |
 | `5` | Validation | HTTP `400`, `422` |
