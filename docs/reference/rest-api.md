@@ -166,6 +166,169 @@ Grouped by resource. Per-field request/response schemas are in the generated Ope
 | PATCH  | `/api/v1/teams/{team}/route-configs/{name}` |
 | DELETE | `/api/v1/teams/{team}/route-configs/{name}` |
 
+#### Gateway resource request bodies
+
+`cluster`, `listener`, and `route` CLI `create`/`update` commands send these same REST bodies from `--file`. `POST` bodies include `name`; `PATCH` bodies omit `name` and replace the full `spec`. `PATCH` and `DELETE` also require `If-Match` with the current `revision`.
+
+| Resource | Create body | Update body | What it models |
+|----------|-------------|-------------|----------------|
+| Cluster | `{"name":"<name>","spec":{...}}` | `{"spec":{...}}` | Upstream endpoints, load-balancing policy, upstream TLS/protocol, health and resilience settings. |
+| Route config | `{"name":"<name>","spec":{...}}` | `{"spec":{...}}` | Virtual hosts, host domains, route matchers, route actions, retries, rewrites, and per-route or per-vhost filter overrides. |
+| Listener | `{"name":"<name>","spec":{...}}` | `{"spec":{...}}` | Dataplane bind address/port, public base URL, downstream protocol/TLS, bound route config, HTTP filters, and access logs. |
+
+Minimal cluster body:
+
+```json
+{
+  "name": "orders-upstream",
+  "spec": {
+    "endpoints": [
+      { "host": "orders.default.svc.cluster.local", "port": 8080 }
+    ],
+    "lb_policy": "round-robin",
+    "connect_timeout_secs": 5,
+    "use_tls": false
+  }
+}
+```
+
+Cluster body with weighted endpoints and explicit upstream TLS:
+
+```json
+{
+  "name": "catalog-upstream",
+  "spec": {
+    "endpoints": [
+      { "host": "catalog-a.internal", "port": 8443, "weight": 80 },
+      { "host": "catalog-b.internal", "port": 8443, "weight": 20 }
+    ],
+    "lb_policy": "least-request",
+    "least_request": { "choice_count": 2 },
+    "connect_timeout_secs": 3,
+    "use_tls": true,
+    "upstream_tls": {
+      "sni": "catalog.internal",
+      "auto_sni_san_validation": true,
+      "insecure_skip_verify": false
+    },
+    "protocol": "http2"
+  }
+}
+```
+
+Minimal route config body:
+
+```json
+{
+  "name": "orders-routes",
+  "spec": {
+    "virtual_hosts": [
+      {
+        "name": "default",
+        "domains": ["*"],
+        "routes": [
+          {
+            "name": "all",
+            "match": { "prefix": { "prefix": "/" } },
+            "action": { "cluster": "orders-upstream" }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Route config body with host matching, header/query matching, weighted clusters, rewrite, timeout, and retries:
+
+```json
+{
+  "name": "catalog-routes",
+  "spec": {
+    "virtual_hosts": [
+      {
+        "name": "catalog",
+        "domains": ["catalog.example.com"],
+        "routes": [
+          {
+            "name": "items",
+            "match": { "prefix": { "prefix": "/items" } },
+            "headers": [
+              { "name": "x-api-version", "type": "exact", "value": "2" }
+            ],
+            "query_parameters": [
+              { "name": "preview", "type": "present", "value": true }
+            ],
+            "action": {
+              "weighted_clusters": [
+                { "cluster": "catalog-primary", "weight": 90 },
+                { "cluster": "catalog-canary", "weight": 10 }
+              ],
+              "prefix_rewrite": "/v2/items",
+              "timeout_secs": 10,
+              "retry_policy": {
+                "retry_on": "5xx,connect-failure",
+                "num_retries": 2,
+                "per_try_timeout_secs": 3,
+                "retriable_status_codes": [502, 503]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Minimal listener body bound to a route config:
+
+```json
+{
+  "name": "orders-http",
+  "spec": {
+    "address": "0.0.0.0",
+    "port": 10001,
+    "public_base_url": "http://127.0.0.1:10001",
+    "protocol": "http",
+    "route_config": "orders-routes"
+  }
+}
+```
+
+HTTPS listener body using SDS secret names and a file access log:
+
+```json
+{
+  "name": "catalog-https",
+  "spec": {
+    "address": "0.0.0.0",
+    "port": 10443,
+    "public_base_url": "https://catalog.example.com",
+    "protocol": "https",
+    "route_config": "catalog-routes",
+    "tls_context": {
+      "tls_certificate_sds_secret_name": "catalog-server-cert",
+      "validation_context_sds_secret_name": "client-ca",
+      "require_client_certificate": false
+    },
+    "access_logs": [
+      { "path": "/var/log/envoy/catalog-access.log" }
+    ]
+  }
+}
+```
+
+Field notes:
+
+- Resource names and references such as `route_config` and `cluster` are team-scoped names. The service layer resolves references within the same team and rejects unknown or cross-team targets.
+- Listener ports must be `1024` or higher because dataplanes run unprivileged.
+- `public_base_url` is product metadata used for invocation descriptors. It is not the Envoy bind address; use `address` and `port` for the listener bind.
+- Route matchers are externally tagged JSON objects: `{"prefix":{"prefix":"/"}}`, `{"exact":{"path":"/healthz"}}`, `{"template":{"template":"/items/{id}"}}`, or `{"regex":{"pattern":"^/v[0-9]+/items$"}}`.
+- `action` must choose one target style: `cluster`, `weighted_clusters`, `redirect`, or `direct_response`.
+- Upstream TLS is explicit. `use_tls: true` enables TLS, and `upstream_tls` supplies verification/SNI details. `insecure_skip_verify` defaults to `false` and disables verification only when set to `true`.
+- The `expose` shortcut creates this same chain for you: one cluster, one route config, and one listener.
+
 ### Rate limiting
 
 Team-scoped rate-limit domains, the policies within each, and an optional per-team override of a

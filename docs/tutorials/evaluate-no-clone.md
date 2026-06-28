@@ -57,7 +57,7 @@ docker compose -f compose.eval.yml exec flowplane-eval \
   sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) FLOWPLANE_ORG=dev-org FLOWPLANE_TEAM=default flowplane route list'
 ```
 
-You should see the resources created by the evaluator bundle. They are the durable gateway resources that produce Envoy config: a cluster, a route config, a listener, and a dataplane record.
+You should see the resources created by the evaluator bundle. They are the durable gateway resources that produce Envoy config: a cluster, a route config, a listener, and a dataplane record. To inspect or create those resources directly, use the [gateway resource request body examples](../reference/rest-api.md#gateway-resource-request-bodies).
 
 ## 3. Import a small OpenAPI document
 

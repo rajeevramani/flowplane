@@ -149,7 +149,7 @@ The flags map directly to the request the server receives:
 - `--port` is the listener port — this is the port Envoy will listen on, and it must match the `curl` you run in step 7 (`10001` here),
 - `--public-base-url` is the address clients use to reach the listener; keep it consistent with `--port` (`http://127.0.0.1:10001`). For real deployments set it to the dataplane listener address clients can actually reach, or omit it.
 
-On success the command prints a table describing the created resources, including a `curl_url` of `http://127.0.0.1:10001/` and the `cluster`, `route_config`, and `listener` it created.
+On success the command prints a table describing the created resources, including a `curl_url` of `http://127.0.0.1:10001/` and the `cluster`, `route_config`, and `listener` it created. To model the same topology by hand, see the [gateway resource request body examples](../reference/rest-api.md#gateway-resource-request-bodies).
 
 (Optional intermediate check — confirm the control plane holds the resources:)
 
