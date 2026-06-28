@@ -9,6 +9,8 @@ This is the operator entry point for a production-shaped Flowplane deployment. I
 - Secret KEK rotation: [`secret-kek-rotation.md`](secret-kek-rotation.md)
 - OIDC setup and first-admin subject discovery: [`configure-oidc-provider.md`](configure-oidc-provider.md)
 - First platform admin bootstrap: [`bootstrap-platform.md`](bootstrap-platform.md)
+- Platform evaluation sequence: [`evaluate-platform.md`](evaluate-platform.md)
+- Observability baseline: [`../reference/observability-alerts.md`](../reference/observability-alerts.md)
 - Configuration reference: [`../reference/configuration.md`](../reference/configuration.md)
 
 ## Deployment Shape

@@ -153,7 +153,7 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 | You want to… | Start here |
 |--------------|------------|
 | Try Flowplane without cloning the repo | [Evaluate without cloning](docs/tutorials/evaluate-no-clone.md) |
-| Evaluate a production-shaped platform setup | [Production Readiness](docs/how-to/production-readiness.md), [Configure OIDC](docs/how-to/configure-oidc-provider.md), and [Bootstrap the first platform admin](docs/how-to/bootstrap-platform.md) |
+| Evaluate a production-shaped platform setup | [Evaluate a production-shaped platform setup](docs/how-to/evaluate-platform.md) |
 | Stand up a gateway from a clean checkout | [Getting Started](docs/tutorials/getting-started.md) |
 | Protect a route with JWT auth + rate limit | [JWT auth & rate limit](docs/how-to/jwt-auth-rate-limit-route.md) |
 | Cap a route globally across all Envoys | [Enable global rate limiting](docs/how-to/global-rate-limit.md) |
