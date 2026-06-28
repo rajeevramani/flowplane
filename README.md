@@ -17,11 +17,13 @@ published **evaluation** image and stands up the whole stack — Postgres, the d
 demo upstream, and Envoy — then routes a real request through the gateway. No repo checkout, no
 `cargo build`.
 
-> Set `VER` to the release you want (e.g. `1.0.0`). The image is **multi-arch**: a plain `docker pull`
-> resolves the native `linux/amd64` or `linux/arm64` variant — no `--platform` flag, no emulation.
+> Set `VER` to a published release. The example below uses `2.1.0`, whose evaluator bundle and
+> `:${VER}-eval` image are published for `linux/amd64` and `linux/arm64`. For newer releases,
+> use the version shown on the GitHub Releases page. The image is **multi-arch**: a plain
+> `docker pull` resolves the native variant — no `--platform` flag, no emulation.
 
 ```bash
-VER=1.0.0
+VER=2.1.0
 
 # 1. Fetch the evaluator bundle at the matching release tag (the only file you need)
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
@@ -148,6 +150,8 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 
 | You want to… | Start here |
 |--------------|------------|
+| Try Flowplane without cloning the repo | [Quick Start (no clone)](#quick-start-no-clone-no-rust-toolchain) |
+| Evaluate a production-shaped platform setup | [Production Readiness](docs/how-to/production-readiness.md) and [Bootstrap the first platform admin](docs/how-to/bootstrap-platform.md) |
 | Stand up a gateway from a clean checkout | [Getting Started](docs/tutorials/getting-started.md) |
 | Protect a route with JWT auth + rate limit | [JWT auth & rate limit](docs/how-to/jwt-auth-rate-limit-route.md) |
 | Cap a route globally across all Envoys | [Enable global rate limiting](docs/how-to/global-rate-limit.md) |
