@@ -125,7 +125,7 @@ At the end of this evaluation, the platform team owns:
 - dataplane registration policy and certificate issuance policy;
 - production xDS and diagnostics network paths.
 
-API teams should receive a control-plane URL, org/team names, granted permissions, and a CLI login path. The API-team self-service flow is covered separately by the API-team onboarding guide.
+API teams should receive a control-plane URL, org/team names, granted permissions, and a CLI login path. The API-team self-service flow is covered in [Onboard an API team](onboard-api-team.md).
 
 ## References
 
@@ -133,6 +133,8 @@ API teams should receive a control-plane URL, org/team names, granted permission
 - [Configure an OIDC provider](configure-oidc-provider.md)
 - [Bootstrap the first platform admin](bootstrap-platform.md)
 - [Create a tenant org and a team](create-tenant-org-and-team.md)
+- [Manage users, teams, and grants](manage-users-teams-and-grants.md)
+- [Onboard an API team](onboard-api-team.md)
 - [Register a dataplane and connect its agent over mTLS](register-dataplane-mtls.md)
 - [Configuration reference](../reference/configuration.md)
 - [CLI reference](../reference/cli.md)

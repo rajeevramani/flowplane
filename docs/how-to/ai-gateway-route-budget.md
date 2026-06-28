@@ -14,6 +14,8 @@ The control plane must be running with `FLOWPLANE_SECRET_ENCRYPTION_KEY` set (a 
 
 With that key set, create a secret holding the provider API key — `flowplane secret create --file secret.json` — and note its UUID for `credential_secret_id` below.
 
+Request verification in step 4 needs a connected dataplane that can receive the materialized listener over xDS. The `flowplane ai routes create` command creates the cluster, route config, and listener in the control plane; it does not start Envoy. For a production-shaped setup, use a dataplane registered over mTLS by the platform team (see [Register a dataplane and connect its agent over mTLS](register-dataplane-mtls.md) and [Evaluate a production-shaped platform setup](evaluate-platform.md)).
+
 `secret.json` (the `secret` value is **standard base64** of the raw provider API key — produce it with `printf %s "$API_KEY" | base64`):
 
 ```json
@@ -130,7 +132,15 @@ flowplane ai budgets update chat-budget --file budget-enforce.json --revision <n
 
 ## 4. Verify
 
-Send a chat request through the listener port from the route (`19000` above). The request body must include a `model`; Flowplane routes it to an eligible backend and forwards to the provider:
+Before sending traffic, verify that a dataplane is connected and Envoy accepted the generated xDS resources:
+
+```bash
+flowplane stats overview --team <team>
+flowplane ops xds status --team <team>
+flowplane ops xds nacks --team <team>
+```
+
+Run the `curl` from a host that can reach the dataplane listener. In the local example below, that listener is reachable at `127.0.0.1:19000`; in a platform evaluation, use the listener address the platform team provides. The request body must include a `model`; Flowplane routes it to an eligible backend and forwards to the provider through Envoy:
 
 ```bash
 curl http://127.0.0.1:19000/v1/chat/completions \
