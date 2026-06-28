@@ -164,7 +164,7 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 | Understand tenancy, grants, and xDS | [Tenancy, grants & the xDS pipeline](docs/concepts/tenancy-grants-xds.md) |
 | Understand global rate limiting | [Global rate limiting](docs/concepts/global-rate-limiting.md) |
 
-Reference: [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) · [REST API](docs/reference/rest-api.md) · [Filters](docs/reference/filters.md) · [Errors](docs/reference/errors.md)
+Reference: [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) · [REST API](docs/reference/rest-api.md) · [Filters](docs/reference/filters.md) · [Errors](docs/reference/errors.md) · [Adoption issue map](docs/reference/adoption-evaluation-issue-map.md)
 
 ## Building and Testing
 

@@ -1,5 +1,7 @@
 # AWS Secure Deployment Runbook
 
+> Audience: platform-engineers, operators · Status: stable
+
 This runbook is the concrete AWS packaging of Flowplane's provider-agnostic deployment invariants; it is self-contained — every step and value needed to stand up the environment is here.
 
 The target is a strict secure smoke environment:
