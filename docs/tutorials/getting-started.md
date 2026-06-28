@@ -10,7 +10,7 @@ Dev mode runs an in-process identity issuer, seeds local resources, and serves t
 
 > **Just want to try Flowplane?** You don't need this tutorial. The fastest path uses the published
 > evaluation image and a single `docker compose` file — no clone, no Rust toolchain — and routes a
-> real request in four commands. See **[Quick Start (no clone)](../../README.md#quick-start-no-clone-no-rust-toolchain)**.
+> real request through Envoy. See **[Evaluate Flowplane without cloning the repo](evaluate-no-clone.md)**.
 > This tutorial is the **from-source / contributor** path: build the binary yourself and drive the
 > control plane directly, which is what you want when hacking on Flowplane itself.
 

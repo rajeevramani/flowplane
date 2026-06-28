@@ -43,6 +43,8 @@ docker compose -f compose.eval.yml exec flowplane-eval \
 docker compose -f compose.eval.yml down -v
 ```
 
+Next, continue the no-clone evaluation with [Evaluate Flowplane without cloning the repo](docs/tutorials/evaluate-no-clone.md) to try the CLI, import an OpenAPI document, publish it, and verify the generated API tools.
+
 > The `:${VER}-eval` image is **for evaluation only** — it runs dev mode (in-process OIDC issuer +
 > seeded resources + a dev bearer token on disk) and binds every port to `127.0.0.1`. It is **never**
 > an operator/production base and is never tagged `:latest`. The hardened, publishable image is
@@ -150,7 +152,7 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 
 | You want to… | Start here |
 |--------------|------------|
-| Try Flowplane without cloning the repo | [Quick Start (no clone)](#quick-start-no-clone-no-rust-toolchain) |
+| Try Flowplane without cloning the repo | [Evaluate without cloning](docs/tutorials/evaluate-no-clone.md) |
 | Evaluate a production-shaped platform setup | [Production Readiness](docs/how-to/production-readiness.md) and [Bootstrap the first platform admin](docs/how-to/bootstrap-platform.md) |
 | Stand up a gateway from a clean checkout | [Getting Started](docs/tutorials/getting-started.md) |
 | Protect a route with JWT auth + rate limit | [JWT auth & rate limit](docs/how-to/jwt-auth-rate-limit-route.md) |
