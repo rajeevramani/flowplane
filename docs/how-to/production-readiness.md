@@ -1,11 +1,15 @@
 # Production Readiness
 
-This is the S12f operator entry point. It describes the shipped v1.0 system only: no new product behavior, no dashboard renderer, and no normal workflow that depends on Envoy admin.
+> Audience: operators, platform-engineers · Status: stable
+
+This is the operator entry point for a production-shaped Flowplane deployment. It describes the control plane, dataplane, identity, bootstrap, the Rate Limit Service (`flowplane-rls`), and operating checks using public docs only.
 
 ## Evidence
 
 - Secret KEK rotation: [`secret-kek-rotation.md`](secret-kek-rotation.md)
-- Engineering evidence — release packaging, the failure-mode matrix, the adversarial surface map, and the dev-dataplane walkthrough — lives in the internal engineering docs: [`../../internal/README.md`](../../internal/README.md).
+- OIDC setup and first-admin subject discovery: [`configure-oidc-provider.md`](configure-oidc-provider.md)
+- First platform admin bootstrap: [`bootstrap-platform.md`](bootstrap-platform.md)
+- Configuration reference: [`../reference/configuration.md`](../reference/configuration.md)
 
 ## Deployment Shape
 
@@ -14,18 +18,24 @@ Deploy the control plane and dataplane bundle separately.
 Control plane:
 
 ```bash
-FLOWPLANE_DATABASE_URL=postgres://user:pass@postgres/flowplane \
-FLOWPLANE_SECRET_ENCRYPTION_KEY=<32-byte-or-base64-key> \
-FLOWPLANE_API_TLS_CERT=/etc/flowplane/tls/api.crt \
-FLOWPLANE_API_TLS_KEY=/etc/flowplane/tls/api.key \
-FLOWPLANE_XDS_TLS_CERT=/etc/flowplane/tls/xds.crt \
-FLOWPLANE_XDS_TLS_KEY=/etc/flowplane/tls/xds.key \
-FLOWPLANE_XDS_TLS_CLIENT_CA=/etc/flowplane/tls/dp-ca.crt \
-FLOWPLANE_OIDC_ISSUER=https://issuer.example \
-FLOWPLANE_OIDC_AUDIENCE=flowplane \
+export FLOWPLANE_DATABASE_URL=postgres://user:pass@postgres/flowplane
+export FLOWPLANE_SECRET_ENCRYPTION_KEY=<32-byte-or-base64-key>
+export FLOWPLANE_BOOTSTRAP_TOKEN_FILE=/run/secrets/flowplane-bootstrap-token
+export FLOWPLANE_API_TLS_CERT=/etc/flowplane/tls/api.crt
+export FLOWPLANE_API_TLS_KEY=/etc/flowplane/tls/api.key
+export FLOWPLANE_XDS_TLS_CERT=/etc/flowplane/tls/xds.crt
+export FLOWPLANE_XDS_TLS_KEY=/etc/flowplane/tls/xds.key
+export FLOWPLANE_XDS_TLS_CLIENT_CA=/etc/flowplane/tls/dp-ca.crt
+export FLOWPLANE_OIDC_ISSUER=https://issuer.example
+export FLOWPLANE_OIDC_AUDIENCE=flowplane
+
 flowplane db migrate
 flowplane serve
 ```
+
+On the first boot of an uninitialized non-dev control plane, provide a high-entropy bootstrap token with `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` (preferred) or `FLOWPLANE_BOOTSTRAP_TOKEN`. The server stores only a hash, does not log the value, and fails closed if no token is supplied. Use [Bootstrap the first platform admin](bootstrap-platform.md) to consume it once.
+
+Production authentication requires a real OIDC issuer/audience pair. `FLOWPLANE_DEV_MODE` and `FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN` are local-only escape hatches and must not be set in production.
 
 Dataplane:
 
@@ -60,10 +70,12 @@ Server process:
 | Database | `FLOWPLANE_DATABASE_URL` or `DATABASE_URL`, `FLOWPLANE_DB_MAX_CONNECTIONS` |
 | Secret encryption | `FLOWPLANE_SECRET_ENCRYPTION_KEY`, `FLOWPLANE_SECRET_ENCRYPTION_KEY_ID`, `FLOWPLANE_SECRET_ENCRYPTION_KEYS` |
 | Auth | `FLOWPLANE_OIDC_ISSUER`, `FLOWPLANE_OIDC_AUDIENCE`, `FLOWPLANE_OIDC_JWKS_URI`, `FLOWPLANE_OIDC_CA_BUNDLE` (operator CA for an IdP behind a TLS-intercepting proxy; additive trust, fail-closed at startup) |
+| Bootstrap | `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` (preferred) or `FLOWPLANE_BOOTSTRAP_TOKEN` for first boot only |
 | Dev only | `FLOWPLANE_DEV_MODE`, `FLOWPLANE_DEV_MODE_ACK` |
 | Observability | `FLOWPLANE_LOG`, `FLOWPLANE_LOG_FORMAT`, `FLOWPLANE_OTLP_ENDPOINT` |
 | MCP | `FLOWPLANE_MCP_ALLOWED_ORIGINS` |
 | Throttling/discovery | `FLOWPLANE_TENANT_WRITE_LIMIT_PER_MIN`, `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` |
+| Rate Limit Service (`flowplane-rls`) | `FLOWPLANE_RLS_GRPC_URL`, `FLOWPLANE_RLS_ADMIN_URL`, `FLOWPLANE_RLS_RECONCILE_SECS`; in production also set the `FLOWPLANE_DATAPLANE_TLS_*` triad for the Envoy-to-RLS hop |
 | Dataplane cert issuer | `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH`, `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH`, `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` |
 | Upstream TLS trust | `FLOWPLANE_UPSTREAM_CA_BUNDLE` (CA bundle path **in the Envoy/dataplane container** used to verify materialized TLS upstreams; default `/etc/ssl/certs/ca-certificates.crt`) |
 
@@ -98,15 +110,15 @@ AI providers, routes, budgets, and usage are runtime product config through the 
 
 | Symptom | Signals | Action |
 | --- | --- | --- |
-| CP unavailable | `/healthz` fails, API unavailable | Check process logs, TLS material, listener bind, and DB reachability. Restart CP. Existing DPs keep last-applied config. |
+| CP unavailable | `/healthz` fails, API unavailable | Check process logs, TLS material, listener bind, bootstrap token on first boot, OIDC config, and DB reachability. Restart CP. Existing DPs keep last-applied config. |
 | DB degraded/down | `/readyz` fails, `fp_db_pool_*` saturation, DB connection errors | Restore DB connectivity. Expect REST mutations to fail while DB is down. Run `flowplane db migrate` after restore before serving traffic. |
 | xDS NACK/quarantine | `fp_xds_nacks_total`, `fp_xds_quarantined_resources_total`, translation failure counters | Inspect the rejected resource in CP logs/audit. Fix the persisted CP resource and republish; do not patch Envoy admin directly. |
 | Dataplane disconnect churn | `fp_xds_ads_streams_closed_total` rising faster than opens | Check DP network path to CP xDS, mTLS cert validity, and agent/Envoy process health. |
 | Outbox lag/failures | `fp_outbox_pending_events`, `fp_outbox_oldest_pending_age_seconds`, `fp_outbox_handler_failures_total` | Check DB health and CP logs. Restart CP if the consumer is wedged; outbox redelivery is expected after recovery. |
-| Auth spike | `fp_authn_failures_total`, `fp_authz_denied_total`, audit rows | For authn, check IdP/JWKS/token expiry. For authz, check grants/team context and suspicious probing. |
+| Auth spike | `fp_authn_failures_total`, `fp_authz_denied_total`, audit rows | For authn, check IdP/JWKS/audience/token expiry. For authz, check grants/team context and suspicious probing. |
 | AI budget exhaustion | `fp_ai_budget_threshold_crossings_total{mode="enforcing",result="exhausted"}` | Compare expected usage to configured budget; raise budget or reduce traffic. |
 | Capture drops | `fp_capture_dropped_total` | Check capture source health and configured discovery/capture constraints. |
-| Release package validation | `SHA256SUMS`, `flowplane-*.oci.tar`, binary `file` output | Verify checksums and static binary signal (release-packaging details are in the internal engineering docs); rebuild artifacts if any hash differs. |
+| Release package validation | `SHA256SUMS`, `flowplane-*.oci.tar`, binary `file` output | Verify checksums and static binary signal; rebuild artifacts if any hash differs. |
 
 ## Backup And Restore Drill
 
@@ -178,4 +190,4 @@ scripts/release/package-release.sh
 FLOWPLANE_PACKAGE_IMAGE=1 scripts/release/package-release.sh
 ```
 
-The failure-mode matrix and adversarial surface map (in the internal engineering docs) are release evidence, not day-to-day operator runbooks.
+For deployment-specific details, use the relevant public runbook such as [AWS secure deployment](aws-secure-deployment.md). Keep release evidence separate from day-to-day operator runbooks.

@@ -4,7 +4,7 @@
 
 A fresh, non-dev Flowplane control plane starts **uninitialized**: it has no platform organization and no admin. You initialize it once, with a one-shot **bootstrap token** that you supply — the control plane never generates or logs it.
 
-This page is self-contained: every value you need is here.
+Before starting, configure your OIDC provider and find the first admin's immutable subject. See [configure an OIDC provider](configure-oidc-provider.md).
 
 ## 1. Choose a bootstrap token
 
@@ -44,7 +44,9 @@ Then start the server normally (`flowplane serve`). On an uninitialized instance
 
 ## 3. Initialize the platform
 
-Call the public bootstrap endpoint once, passing the token as a bearer credential. `admin_subject` is the OIDC `sub` of your first admin (the identity your IdP will assert):
+Call the public bootstrap endpoint once, passing the token as a bearer credential. `admin_subject` is the OIDC `sub` of your first admin (the identity your IdP will assert). Use the exact `sub` string from your IdP; do not use email, username, or display name:
+
+If you do not yet know the subject, copy the stable user identifier from your IdP's user profile, decode the intended admin's own ID token locally and read `sub`, or call your IdP's userinfo endpoint with that user's own access token. Do not paste production tokens into third-party websites.
 
 ```bash
 curl -fsS -X POST https://<control-plane>/api/v1/bootstrap/initialize \
@@ -64,6 +66,7 @@ A success response returns the new `org_id` and `admin_user_id`. The token is no
 
 - Re-running the same `POST /api/v1/bootstrap/initialize` returns a conflict — the instance is initialized.
 - Your admin can now authenticate through your OIDC issuer and reach authenticated endpoints.
+- `flowplane auth whoami` shows the bootstrapped user as a platform admin after OIDC login.
 
 ## Next step
 
@@ -75,3 +78,4 @@ Bootstrap creates only the **platform org** (governance only — it cannot host 
 - **Server won't start, "a different bootstrap token is already active":** another replica was given a different token. Use one identical token across all replicas.
 - **"token is too short":** the token must be ≥ 32 characters after trimming whitespace.
 - **`401` on initialize:** the token is wrong, expired (24 h), or already used. Restart an uninitialized instance with a fresh token, or confirm you are sending the exact value you seeded.
+- **OIDC login works but the user is not platform admin:** the `admin_subject` used during bootstrap did not match the OIDC `sub` claim for that login. Check the subject discovery steps in [configure an OIDC provider](configure-oidc-provider.md).

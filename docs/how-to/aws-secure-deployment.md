@@ -88,7 +88,7 @@ aws secretsmanager create-secret \
 
 Pass the secret's ARN to the module via `bootstrap_token_secret_arn`; it is injected into the CP task as `FLOWPLANE_BOOTSTRAP_TOKEN`. (If the secret uses a customer-managed KMS key, also add that key to `secret_kms_key_arns`.) On first boot the CP seeds the token's hash and logs a confirmation **without** the value.
 
-Then initialize the platform admin once, using the **same** token and your verified Auth0/OIDC subject:
+Then initialize the platform admin once, using the **same** token and your verified OIDC subject:
 
 ```bash
 curl -fsS -X POST https://cp.getflowplane.io/api/v1/bootstrap/initialize \
@@ -97,7 +97,7 @@ curl -fsS -X POST https://cp.getflowplane.io/api/v1/bootstrap/initialize \
   -d '{
         "org_name": "platform",
         "org_display_name": "Platform",
-        "admin_subject": "auth0|...",
+        "admin_subject": "<oidc-sub-of-first-admin>",
         "admin_email": "you@example.com"
       }'
 ```
