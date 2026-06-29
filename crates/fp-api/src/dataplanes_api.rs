@@ -205,7 +205,7 @@ pub struct EnvoyConfigQuery {
     /// Dataplane private key path as seen by Envoy.
     #[serde(default)]
     pub key_path: Option<String>,
-    /// Control-plane/client-CA bundle path as seen by Envoy.
+    /// CA bundle Envoy uses to verify the control-plane xDS server certificate.
     #[serde(default)]
     pub ca_path: Option<String>,
 }

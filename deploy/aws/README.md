@@ -133,8 +133,12 @@ flowplane --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <
 
 jq -r '.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
 jq -r '.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
-jq -r '.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-ca.crt
+jq -r '.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
 chmod 600 .local/aws-dp.key
+
+# `ca_certificate_pem` is the dataplane client-chain CA. Use a separate xDS
+# server-trust CA bundle for `--ca-path`: the CA that validates xds.getflowplane.io.
+printf '%s' "$CP_XDS_SERVER_CA_PEM" > .local/aws-xds-server-ca.crt
 
 flowplane --out .local/aws-envoy.yaml dataplane bootstrap edge-local \
   --team <team> \
@@ -143,7 +147,7 @@ flowplane --out .local/aws-envoy.yaml dataplane bootstrap edge-local \
   --xds-port 18000 \
   --cert-path "$PWD/.local/aws-dp.crt" \
   --key-path "$PWD/.local/aws-dp.key" \
-  --ca-path "$PWD/.local/aws-dp-ca.crt"
+  --ca-path "$PWD/.local/aws-xds-server-ca.crt"
 ```
 
 Then run Envoy locally with the generated bootstrap and apply a simple route to verify xDS delivery.

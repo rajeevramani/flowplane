@@ -138,8 +138,16 @@ Write the PEM values to files:
 ```bash
 jq -r '.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
 jq -r '.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
-jq -r '.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-ca.crt
+jq -r '.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
 chmod 600 .local/aws-dp.key
+```
+
+`ca_certificate_pem` is the dataplane **client-chain CA** from the issue response. It is the CA the control plane trusts for the dataplane client certificate; it is not the CA Envoy uses to verify the control plane's xDS server certificate.
+
+Write the xDS **server-trust CA** to a separate file. This is the CA bundle that validates the certificate served by `xds.getflowplane.io`, from the same PKI material that produced your xDS server certificate secret:
+
+```bash
+printf '%s' "$CP_XDS_SERVER_CA_PEM" > .local/aws-xds-server-ca.crt
 ```
 
 Generate the local Envoy bootstrap:
@@ -152,7 +160,7 @@ flowplane --out .local/aws-envoy.yaml dataplane bootstrap edge-local \
   --xds-port 18000 \
   --cert-path "$PWD/.local/aws-dp.crt" \
   --key-path "$PWD/.local/aws-dp.key" \
-  --ca-path "$PWD/.local/aws-dp-ca.crt"
+  --ca-path "$PWD/.local/aws-xds-server-ca.crt"
 ```
 
 Run Envoy locally with `.local/aws-envoy.yaml`, then apply a simple route/listener and confirm the dataplane receives xDS without NACKs.
