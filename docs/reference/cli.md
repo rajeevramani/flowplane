@@ -141,7 +141,7 @@ separate from the success envelope above (it is **not** wrapped in `{schemaVersi
 ---
 
 ### `serve`
-Run the control-plane server (REST + MCP; xDS from S5). No subcommands or args.
+Run the control-plane server for the REST API, MCP, and xDS. No subcommands or args.
 
 ### `db`
 Database operations.

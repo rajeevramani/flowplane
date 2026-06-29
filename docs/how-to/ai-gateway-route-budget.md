@@ -55,7 +55,7 @@ This POSTs to `/api/v1/teams/{team}/ai/providers` and returns the provider view,
 
 ## 2. Create a route to the provider
 
-The route body is `{ "name", "spec" }`, where `spec` is the `AiRouteSpec`: a `listener_port`, a `path` (defaults to `/v1/chat/completions`, the only supported path in S10), and one or more `backends`. Each `AiRouteBackend` references a `provider_id`, optionally restricts which `models` it serves (empty = catch-all), and carries a `weight` (1–1000, default 1) and `priority` (default 0). Use `model_override` to rewrite the client's `model` to a specific upstream model.
+The route body is `{ "name", "spec" }`, where `spec` is the `AiRouteSpec`: a `listener_port`, a `path` (defaults to `/v1/chat/completions`, currently the only supported path), and one or more `backends`. Each `AiRouteBackend` references a `provider_id`, optionally restricts which `models` it serves (empty = catch-all), and carries a `weight` (1–1000, default 1) and `priority` (default 0). Use `model_override` to rewrite the client's `model` to a specific upstream model.
 
 `route.json`:
 

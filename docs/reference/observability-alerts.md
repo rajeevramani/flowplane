@@ -71,5 +71,5 @@ Use one production dashboard with these panels:
 
 - The serve-owned sampler is read-only. It does not advance outbox cursors and does not contact dataplanes.
 - `fp_outbox_pending_events` and `fp_outbox_oldest_pending_age_seconds` are currently emitted for the `xds-snapshot` consumer.
-- `fp_xds_snapshot_rebuilds_total` emits no labels; an earlier slice carried a `team` label that was dropped for cardinality. Do not add per-team labels to new S12 metrics.
+- `fp_xds_snapshot_rebuilds_total` emits no labels. Do not add per-team labels to this metric or future rebuild-family metrics without an explicit cardinality decision.
 - The ADS stream counters count authenticated ADS streams only. Failed authentication is covered by xDS/API logs and the existing authn/authz surfaces, not these lifecycle counters.

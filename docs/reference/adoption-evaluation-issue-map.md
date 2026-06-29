@@ -21,7 +21,7 @@ This reference maps the 2.1.1 adoption/evaluation documentation issues to the pu
 | #211 | Added the user, team, and grant lifecycle runbook. | [Manage users, teams, and grants](../how-to/manage-users-teams-and-grants.md) |
 | #212 | Added API-team self-service onboarding and platform handoff guidance. | [Onboard an API team](../how-to/onboard-api-team.md) |
 | #213 | Made the platform/API-team ownership model explicit for evaluation and rollout. | [Evaluate a production-shaped platform setup](../how-to/evaluate-platform.md), [Onboard an API team](../how-to/onboard-api-team.md) |
-| #214 | Normalized missing how-to metadata banners and cross-links after the spine pages landed. | [AWS secure deployment](../how-to/aws-secure-deployment.md), [Secret KEK Rotation](../how-to/secret-kek-rotation.md), [README Documentation](../../README.md#documentation) |
+| #214 | Removed internal milestone labels from public docs and added a CI guard for future jargon leaks. | [CLI reference](cli.md), [AI gateway route and budget](../how-to/ai-gateway-route-budget.md), [Observability Alert Pack](observability-alerts.md) |
 | #215 | Completed final consistency and verification polish for the adoption spine. | This map, [README Documentation](../../README.md#documentation), [Documentation home](../README.md) |
 | #216 | Moved observability alert content into the Diataxis reference tree and linked it from platform docs. | [Observability Alert Pack](observability-alerts.md), [Production Readiness](../how-to/production-readiness.md), [Evaluate a production-shaped platform setup](../how-to/evaluate-platform.md) |
 
