@@ -14,7 +14,7 @@ shaped this way (separate process, namespaced counters, fail modes), read
 
 **Prerequisites**
 
-- A running control plane and a real Envoy joined over xDS — the [getting-started tutorial](../tutorials/getting-started.md) gets you here, including a listener (`edge`), a route-config (`api-routes`), and a cluster (e.g. `httpbin`) that traffic already flows to.
+- A running control plane and a real Envoy joined over xDS, with a listener, route-config, and cluster that already route traffic. The [getting-started tutorial](../tutorials/getting-started.md) gets you here with the `local` resource set on listener port `10001`; the examples below use sample names such as `edge`, `api-routes`, and `httpbin`, so substitute your actual resource names.
 - The CLI authenticated against your control plane (`flowplane auth …` or `FLOWPLANE_SERVER`/`FLOWPLANE_TOKEN`) — see [CLI auth & contexts](cli-auth-and-contexts.md). Examples below use team `default`.
 - The `flowplane-rls` binary built/available (`cargo build --bin flowplane-rls`, or your release artifact).
 
@@ -160,7 +160,7 @@ curl -fsS http://127.0.0.1:9901/config_dump | grep -oE '[0-9a-f-]{36}\|[0-9a-f-]
 # 16d8d7aa-7842-8166-88ac-c72392a9d771|04c9f1e3-3f4f-8e5d-8f75-5c5bb671fd58|checkout
 ```
 
-(`9901` is the Envoy admin port from your bootstrap.) Then send traffic through the gateway. The
+(`9901` is the Envoy admin port from your bootstrap.) Then send traffic through the gateway listener. Replace `10000` with your listener port; the getting-started tutorial uses `10001`. The
 first 100 requests in the minute pass; the 101st is rate-limited:
 
 ```bash

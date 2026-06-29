@@ -84,9 +84,9 @@ For each setting, the CLI walks these sources in order and uses the first one pr
 - **Server**: `--server` flag / `FLOWPLANE_SERVER` env → current context → config file `base_url` → default `http://127.0.0.1:8080`.
 - **Org**: `--org` flag → `FLOWPLANE_ORG` env → current context → config file `org`.
 - **Team**: `--team` flag → `FLOWPLANE_TEAM` env → current context → config file `team`.
-- **Token**: `FLOWPLANE_TOKEN` env → current context token → config file `token` → credentials file (`~/.flowplane/credentials`).
+- **Token**: `--token` flag / `FLOWPLANE_TOKEN` env → current context token → config file `token` → credentials file (`~/.flowplane/credentials`).
 
-The rule of thumb: **flag > env > config file**. The active context is whatever `--context` names, otherwise the `current_context` saved by `use-context`.
+The rule of thumb: **flag > env > selected context > config file > credentials/default**. The active context is whatever `--context` names, otherwise the `current_context` saved by `use-context`.
 
 ## Verify
 

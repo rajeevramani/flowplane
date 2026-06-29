@@ -1,5 +1,7 @@
 # Secret KEK Rotation
 
+> Audience: operators, platform-engineers · Status: stable
+
 Flowplane encrypts stored `SecretSpec` values with AES-256-GCM. Each secret row stores the `encryption_key_id` used for that ciphertext.
 
 ## Environment Contract

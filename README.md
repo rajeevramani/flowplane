@@ -17,11 +17,13 @@ published **evaluation** image and stands up the whole stack — Postgres, the d
 demo upstream, and Envoy — then routes a real request through the gateway. No repo checkout, no
 `cargo build`.
 
-> Set `VER` to the release you want (e.g. `1.0.0`). The image is **multi-arch**: a plain `docker pull`
-> resolves the native `linux/amd64` or `linux/arm64` variant — no `--platform` flag, no emulation.
+> Set `VER` to a published release. The example below uses `2.1.0`, whose evaluator bundle and
+> `:${VER}-eval` image are published for `linux/amd64` and `linux/arm64`. For newer releases,
+> use the version shown on the GitHub Releases page. The image is **multi-arch**: a plain
+> `docker pull` resolves the native variant — no `--platform` flag, no emulation.
 
 ```bash
-VER=1.0.0
+VER=2.1.0
 
 # 1. Fetch the evaluator bundle at the matching release tag (the only file you need)
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
@@ -40,6 +42,8 @@ docker compose -f compose.eval.yml exec flowplane-eval \
 # Tear down
 docker compose -f compose.eval.yml down -v
 ```
+
+Next, continue the no-clone evaluation with [Evaluate Flowplane without cloning the repo](docs/tutorials/evaluate-no-clone.md) to try the CLI, import an OpenAPI document, publish it, and verify the generated API tools.
 
 > The `:${VER}-eval` image is **for evaluation only** — it runs dev mode (in-process OIDC issuer +
 > seeded resources + a dev bearer token on disk) and binds every port to `127.0.0.1`. It is **never**
@@ -148,6 +152,9 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 
 | You want to… | Start here |
 |--------------|------------|
+| Try Flowplane without cloning the repo | [Evaluate without cloning](docs/tutorials/evaluate-no-clone.md) |
+| Evaluate a production-shaped platform setup | [Evaluate a production-shaped platform setup](docs/how-to/evaluate-platform.md) |
+| Delegate API onboarding to a team | [Onboard an API team](docs/how-to/onboard-api-team.md) |
 | Stand up a gateway from a clean checkout | [Getting Started](docs/tutorials/getting-started.md) |
 | Protect a route with JWT auth + rate limit | [JWT auth & rate limit](docs/how-to/jwt-auth-rate-limit-route.md) |
 | Cap a route globally across all Envoys | [Enable global rate limiting](docs/how-to/global-rate-limit.md) |
@@ -157,7 +164,7 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 | Understand tenancy, grants, and xDS | [Tenancy, grants & the xDS pipeline](docs/concepts/tenancy-grants-xds.md) |
 | Understand global rate limiting | [Global rate limiting](docs/concepts/global-rate-limiting.md) |
 
-Reference: [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) · [REST API](docs/reference/rest-api.md) · [Filters](docs/reference/filters.md) · [Errors](docs/reference/errors.md)
+Reference: [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) · [REST API](docs/reference/rest-api.md) · [Filters](docs/reference/filters.md) · [Errors](docs/reference/errors.md) · [Adoption issue map](docs/reference/adoption-evaluation-issue-map.md)
 
 ## Building and Testing
 

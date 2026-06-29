@@ -50,7 +50,7 @@ that, the org's own owners/admins manage membership.
 Identify the user by their immutable OIDC subject (preferred), or by email:
 
 ```bash
-flowplane org member add edgeco --role owner --subject "auth0|6650f0..."
+flowplane org member add edgeco --role owner --subject <oidc-sub-of-first-owner>
 # or:  flowplane org member add edgeco --role owner --email you@example.com
 ```
 
@@ -104,3 +104,5 @@ tenant orgs and send no selector; the fix is the same: name the tenant org with
 
 - [Register a dataplane and connect its agent over mTLS](register-dataplane-mtls.md)
   — create a dataplane under the `edgeco` / `payments` org+team you just made.
+- [Manage users, teams, and grants](manage-users-teams-and-grants.md)
+  — add API-team users and grant least-privilege access inside the tenant org.

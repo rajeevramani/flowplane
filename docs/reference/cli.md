@@ -141,7 +141,7 @@ separate from the success envelope above (it is **not** wrapped in `{schemaVersi
 ---
 
 ### `serve`
-Run the control-plane server (REST + MCP; xDS from S5). No subcommands or args.
+Run the control-plane server for the REST API, MCP, and xDS. No subcommands or args.
 
 ### `db`
 Database operations.
@@ -203,7 +203,7 @@ Team management.
 | `team grant remove <GRANT_ID>` | `--team <TEAM>`, positional `grant_id` |
 
 ### `cluster`
-Gateway clusters. Uses the shared resource subcommand set.
+Gateway clusters. Uses the shared resource subcommand set. `create` and `update` read the REST body from `--file`; see [gateway resource request bodies](rest-api.md#gateway-resource-request-bodies).
 
 | Subcommand | Args / Flags |
 |------------|--------------|
@@ -214,10 +214,10 @@ Gateway clusters. Uses the shared resource subcommand set.
 | `cluster delete <NAME>` | `--team <TEAM>`, positional `name` |
 
 ### `listener`
-Gateway listeners. Same shared resource subcommand set as `cluster` (`list`, `get`, `create`, `update`, `delete`) with identical flags.
+Gateway listeners. Same shared resource subcommand set as `cluster` (`list`, `get`, `create`, `update`, `delete`) with identical flags. `create` and `update` read the REST body from `--file`; see [gateway resource request bodies](rest-api.md#gateway-resource-request-bodies).
 
 ### `route`
-Route configs.
+Route configs. `create` and `update` read the REST body from `--file`; see [gateway resource request bodies](rest-api.md#gateway-resource-request-bodies).
 
 | Subcommand | Args / Flags |
 |------------|--------------|

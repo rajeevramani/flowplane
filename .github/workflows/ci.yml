@@ -149,3 +149,7 @@ jobs:
         run: python3 scripts/ci/check-docs-boundary.py --self-test
       - name: Docs boundary (user docs must stand alone, #116)
         run: python3 scripts/ci/check-docs-boundary.py
+      - name: Docs jargon self-test
+        run: python3 scripts/ci/check-docs-jargon.py --self-test
+      - name: Docs jargon (public docs must not expose planning labels)
+        run: python3 scripts/ci/check-docs-jargon.py

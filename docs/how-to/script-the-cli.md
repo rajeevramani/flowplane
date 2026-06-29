@@ -189,16 +189,18 @@ file or context, and silence chrome with `--quiet`:
 
 ```bash
 export FLOWPLANE_SERVER=https://fp.example.com
-export FLOWPLANE_TOKEN=…           # highest-priority token source
+export FLOWPLANE_TOKEN=…           # below --token, above context/config/credentials
 export FLOWPLANE_TEAM=payments
 export FLOWPLANE_TIMEOUT=15        # seconds
 
 flowplane cluster list -o json --quiet | jq -r '.data.items[].name'
 ```
 
-Precedence for every value (including the token) is `flag > env > context > file > default` — see
-[`../reference/configuration.md`](../reference/configuration.md). `--quiet` removes progress and
-human-readable summaries, leaving only the requested data envelope on stdout.
+Precedence for every value is `flag > env > context > file > default`. Token resolution adds the
+saved credentials file as the final token-only fallback: `--token` / `FLOWPLANE_TOKEN` → context
+token → config-file token → `~/.flowplane/credentials`. See [`../reference/cli.md`](../reference/cli.md).
+`--quiet` removes progress and human-readable summaries, leaving only the requested data envelope
+on stdout.
 
 ## Verify
 

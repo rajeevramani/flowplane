@@ -4,7 +4,7 @@
 
 This how-to walks one task end to end: **register a dataplane, issue its mTLS client certificate, and connect `fp-agent`.** It assumes you already run Flowplane day to day and have a working CLI context (server URL, org, team, token).
 
-It assumes the control plane is already running with xDS mTLS configured. The xDS listener is **always** mTLS in production — there is no plaintext mode off loopback. If you have not stood that up yet, do the [Getting started tutorial](../tutorials/getting-started.md) first and set the `FLOWPLANE_XDS_TLS_*` triad as described in the [configuration reference](../reference/configuration.md).
+It assumes the control plane is already running with xDS mTLS configured. The xDS listener is **always** mTLS in production — there is no plaintext mode off loopback. If you have not stood that up yet, start with [Production Readiness](production-readiness.md) and set the `FLOWPLANE_XDS_TLS_*` triad as described in the [configuration reference](../reference/configuration.md). For local from-source practice only, use the [Getting started tutorial](../tutorials/getting-started.md).
 
 ## Prerequisites
 

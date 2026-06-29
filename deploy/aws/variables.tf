@@ -40,7 +40,7 @@ variable "availability_zones" {
 }
 
 variable "enable_nat_gateway" {
-  description = "Create NAT egress for private ECS tasks. Required for external OIDC/JWKS providers such as Auth0 unless another egress path exists."
+  description = "Create NAT egress for private ECS tasks. Required for external OIDC/JWKS providers unless another egress path exists."
   type        = bool
   default     = true
 }
@@ -91,7 +91,7 @@ variable "api_certificate_arn" {
 }
 
 variable "oidc_issuer" {
-  description = "OIDC issuer URL. Auth0 is the verified provider, but this remains provider-agnostic."
+  description = "OIDC issuer URL."
   type        = string
 }
 
