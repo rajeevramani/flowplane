@@ -2,7 +2,7 @@
 
 > Audience: operators · Status: stable
 
-This how-to walks one task end to end: **register a dataplane, issue its mTLS client certificate, and connect `fp-agent`.** It assumes you already run Flowplane day to day and have a working CLI context (server URL, org, team, token).
+This how-to walks one task end to end: **register a dataplane, issue its mTLS client certificate, and connect `flowplane-agent`.** It assumes you already run Flowplane day to day and have a working CLI context (server URL, org, team, token).
 
 It assumes the control plane is already running with xDS mTLS configured. The xDS listener is **always** mTLS in production — there is no plaintext mode off loopback. If you have not stood that up yet, start with [Production Readiness](production-readiness.md) and set the `FLOWPLANE_XDS_TLS_*` triad as described in the [configuration reference](../reference/configuration.md). For local from-source practice only, use the [Getting started tutorial](../tutorials/getting-started.md).
 
@@ -11,6 +11,8 @@ It assumes the control plane is already running with xDS mTLS configured. The xD
 The control plane is up with the xDS mTLS triad set (`FLOWPLANE_XDS_TLS_CERT` / `_KEY` / `_CLIENT_CA`), and — for the `issue` step below — the cert-issuer triad `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH` and `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH` (optionally `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN`, default `flowplane.local`) is set **on the control-plane process**. See the [configuration reference](../reference/configuration.md).
 
 A **tenant org and a team must already exist** — a dataplane is registered under a team (`--team payments` below), and the platform org cannot host one. If you have only just bootstrapped the platform admin, first [create a tenant org and a team](create-tenant-org-and-team.md). Note that selecting the platform org for a tenant operation (`--org platform`) is rejected with `org_selector_required` (D-014): use your tenant org.
+
+The dataplane host must have Envoy and `flowplane-agent` installed. Install `flowplane-agent` from the published Flowplane release archive as shown in [Production Readiness](production-readiness.md).
 
 ## 1. Register the dataplane
 
@@ -88,12 +90,12 @@ echo "$CP_XDS_SERVER_CA_PEM" > /etc/flowplane/dp/server-ca.crt
 
 > If your dataplane already has externally-issued certs, use `dataplane cert register` / `POST /api/v1/teams/{team}/proxy-certificates` instead to register the SPIFFE binding without minting a key. (Optional background — not needed to finish this task: the certificate lifecycle design, SPIFFE format, and revocation internals are in the design records linked under Further reading.)
 
-## 3. Run `fp-agent`
+## 3. Run `flowplane-agent`
 
 Point the agent at the control-plane diagnostics gRPC endpoint, give it the dataplane UUID from step 1, pass its client cert and key from step 2, and pass the **server-trust CA** (the CA for the CP's xDS server cert). The TLS cert/key/CA flags are **all-or-none** — supply all three or none.
 
 ```bash
-fp-agent \
+flowplane-agent \
   --cp-endpoint https://cp.example.com:18000 \
   --dataplane-id 7b1f0a2c-... \
   --tls-cert-path /etc/flowplane/dp/client.crt \

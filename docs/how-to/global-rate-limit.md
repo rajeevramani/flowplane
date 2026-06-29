@@ -16,7 +16,7 @@ shaped this way (separate process, namespaced counters, fail modes), read
 
 - A running control plane and a real Envoy joined over xDS, with a listener, route-config, and cluster that already route traffic. The [getting-started tutorial](../tutorials/getting-started.md) gets you here with the `local` resource set on listener port `10001`; the examples below use sample names such as `edge`, `api-routes`, and `httpbin`, so substitute your actual resource names.
 - The CLI authenticated against your control plane (`flowplane auth …` or `FLOWPLANE_SERVER`/`FLOWPLANE_TOKEN`) — see [CLI auth & contexts](cli-auth-and-contexts.md). Examples below use team `default`.
-- The `flowplane-rls` binary built/available (`cargo build --bin flowplane-rls`, or your release artifact).
+- The `flowplane-rls` binary installed from a published Flowplane release artifact, as shown in [Production Readiness](production-readiness.md).
 
 The descriptor key in this guide is `api_key`, derived from an `x-api-key` request header; the
 limit is **100 requests/minute per distinct `api_key`**.
@@ -31,6 +31,8 @@ FLOWPLANE_RLS_GRPC_LISTEN=127.0.0.1:50051 \
 FLOWPLANE_RLS_ADMIN_LISTEN=127.0.0.1:8081 \
   flowplane-rls
 ```
+
+For a split-node deployment, bind these listeners on the RLS host interface that the control plane and Envoy can reach, and open the matching ports described in [Production Readiness](production-readiness.md#ports-and-network-paths). Keep the admin listener reachable only from the control-plane network.
 
 Expected startup log — a `flowplane-rls starting` line carrying both bind addresses (the exact
 prefix/format depends on the tracing setup; `grpc=` and `admin=` fields appear):

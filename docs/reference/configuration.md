@@ -2,7 +2,7 @@
 
 > Audience: operators, platform-engineers · Status: stable
 
-Every `FLOWPLANE_*` variable read by the control plane (`server`), the rate-limit service (`rls`, the `flowplane-rls` binary), the dataplane agent (`agent`), and the CLI. Each variable appears once; the **Component** column says which process reads it.
+Every `FLOWPLANE_*` variable read by the control plane (`server`), the rate-limit service (`rls`, the `flowplane-rls` binary), the dataplane agent (`agent`, the `flowplane-agent` binary), and the CLI. Each variable appears once; the **Component** column says which process reads it.
 
 **Precedence**
 
@@ -81,7 +81,7 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 
 ## Constraints
 
-Enforcement timing varies: rows ¹–⁵ are validated at **server startup** (`flowplane serve`); rows ⁶, ¹⁰–¹² at **agent startup** (`fp-agent`); rows ⁷–⁹ at **use time** when the secret encrypt/decrypt/snapshot paths run (not at server startup). A violation yields an `invalid_config` (or, for a missing key, `unavailable`) error.
+Enforcement timing varies: rows ¹–⁵ are validated at **server startup** (`flowplane serve`); rows ⁶, ¹⁰–¹² at **agent startup** (`flowplane-agent`); rows ⁷–⁹ at **use time** when the secret encrypt/decrypt/snapshot paths run (not at server startup). A violation yields an `invalid_config` (or, for a missing key, `unavailable`) error.
 
 | # | Variable(s) | Constraint |
 |---|-------------|------------|
