@@ -90,7 +90,42 @@ echo "$CP_XDS_SERVER_CA_PEM" > /etc/flowplane/dp/server-ca.crt
 
 > If your dataplane already has externally-issued certs, use `dataplane cert register` / `POST /api/v1/teams/{team}/proxy-certificates` instead to register the SPIFFE binding without minting a key. (Optional background — not needed to finish this task: the certificate lifecycle design, SPIFFE format, and revocation internals are in the design records linked under Further reading.)
 
-## 3. Run `flowplane-agent`
+## 3. Generate and run the Envoy bootstrap
+
+Envoy must connect to the control plane over xDS mTLS before `flowplane-agent`
+can report a healthy dataplane. Generate the bootstrap on the dataplane host
+with the xDS address and the same certificate paths Envoy will see at runtime:
+
+```bash
+flowplane --out /etc/flowplane/dp/envoy.yaml dataplane bootstrap edge-gateway-1 \
+  --team payments \
+  --mode mtls \
+  --xds-host cp.example.com \
+  --xds-port 18000 \
+  --cert-path /etc/flowplane/dp/client.crt \
+  --key-path /etc/flowplane/dp/client.key \
+  --ca-path /etc/flowplane/dp/server-ca.crt
+```
+
+`--xds-host` must be the address the dataplane can reach for the control
+plane's xDS listener. It is often different from the REST/API hostname. The
+certificate paths are dataplane-local paths; if Envoy runs in a container, mount
+the files at those exact paths or generate the bootstrap with the container
+paths.
+
+Start Envoy with the generated bootstrap. The exact service manager is up to
+your platform, but the command shape is:
+
+```bash
+envoy -c /etc/flowplane/dp/envoy.yaml --log-level info
+```
+
+Envoy admin should stay local to the dataplane unit. `flowplane-agent` reads
+Envoy admin through loopback and sends curated diagnostics to the control plane;
+operators should use Flowplane's `stats` / `ops xds` commands instead of direct
+Envoy admin as the product workflow.
+
+## 4. Run `flowplane-agent`
 
 Point the agent at the control-plane diagnostics gRPC endpoint, give it the dataplane UUID from step 1, pass its client cert and key from step 2, and pass the **server-trust CA** (the CA for the CP's xDS server cert). The TLS cert/key/CA flags are **all-or-none** — supply all three or none.
 
@@ -117,7 +152,7 @@ Each flag has an env-var equivalent:
 
 The agent also exposes a local health endpoint on `127.0.0.1:19902` (`--health-bind-addr`). Full flag/env list is in the [configuration reference](../reference/configuration.md) and [CLI reference](../reference/cli.md).
 
-## 4. Verify the dataplane is connected
+## 5. Verify the dataplane is connected
 
 The agent serves `/healthz` once it has scraped Envoy admin and received a diagnostics ack from the control plane:
 

@@ -19,8 +19,8 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--team <NAME>` | | `FLOWPLANE_TEAM` | | Team scope. |
 | `--org <NAME>` | | `FLOWPLANE_ORG` | | Organization scope. |
 | `--token <TOKEN>` | | `FLOWPLANE_TOKEN` | | Bearer token. Highest-priority token source; falls back to the selected context, the config-file token, then `~/.flowplane/credentials`. Redacted in `config show`. |
-| `--output <FMT>` | `-o` | | `table` on a TTY, `json` when stdout is piped | Output format: `table`, `json`, `yaml`, `wide`. An explicit `-o` always wins; otherwise the default is `table` on an interactive terminal and `json` when stdout is not a TTY (so `… \| jq` works without `-o json`). |
-| `--json` | | | `false` | Exactly equivalent to `--output json`. |
+| `--output <FMT>` | `-o` | | `table` on a TTY, `json` when stdout is piped | Output format: `table`, `json`, `yaml`, `wide`. An explicit `-o` always wins; otherwise the default is `table` on an interactive terminal and `json` when stdout is not a TTY (so `… \| jq` works without `-o json`). Artifact-producing commands can document a narrower output contract; for example `dataplane bootstrap` writes Envoy YAML because the bootstrap file is the command's primary artifact. |
+| `--json` | | | `false` | Equivalent to `--output json` for commands that render normal CLI envelopes. Artifact-producing commands may document a narrower output contract. |
 | `--no-color` | | | `false` | Disable colored output. Color is also disabled by the `NO_COLOR` environment variable, when stdout is not a TTY, or when output is redirected with `--out`. |
 | `--quiet` | | | `false` | Suppress non-essential output. |
 | `--verbose` | | | `false` | Verbose output. |
@@ -250,7 +250,7 @@ Global rate-limit domains, policies, per-team overrides, and the CP→RLS repush
 | `rate-limit override delete` | `--team`, `--domain` (required), `--policy` (required) | — |
 | `rate-limit force-repush` | (none) | — |
 
-The `update` and `delete` subcommands (domain, policy, and override) are concurrency-controlled: pass the current resource revision with the global `--revision <N>` flag (the `If-Match` value, read from a `GET`). Omitting it fails with `this operation requires the resource revision`; a stale value returns `409`. `create`/`set` do not take `--revision`.
+The `update` and `delete` subcommands (domain, policy, and override) are concurrency-controlled: pass the current resource revision with the global `--revision <N>` flag (the `If-Match` value, read from a `GET`) when you want to pin the mutation to a specific version. If you omit `--revision`, the CLI performs a read-modify-write: it reads the current resource, sends that revision as `If-Match`, and still fails on a concurrent edit. A stale explicit value returns `409`. `create`/`set` do not take `--revision`.
 
 `rate-limit force-repush` triggers an immediate CP→RLS reconcile and requires the `platform:execute` permission (held by the `admin:all` / platform-admin role); an org/team token gets `403` (`missing permission: platform:execute`). The 60 s reconcile loop is the backstop, so a repush is only a fast path — see [`FLOWPLANE_RLS_RECONCILE_SECS`](configuration.md). `unit` is one of `second`, `minute`, `hour`, `day`.
 
@@ -292,7 +292,7 @@ Learning capture sessions.
 
 | Subcommand | Args / Flags |
 |------------|--------------|
-| `learn start <NAME>` | `--team <TEAM>`, positional `name`, `--api <API>`, `--api-definition-id <ID>`, `--route-config-id <ID>`, `--listener-id <ID>`, `--virtual-host <HOST>`, `--route <ROUTE>`, `--target-sample-count <N>` (i32, default 1000), `--max-duration-seconds <N>` (i32), `--max-bytes <N>` (i64, default 10485760), `--max-distinct-paths <N>` (i32, default 500) |
+| `learn start <NAME>` | `--team <TEAM>`, positional `name`, exactly one target: `--api <API>`, `--api-definition-id <ID>`, or `--route-config-id <ID>`. Route-scoping flags `--listener-id <ID>`, `--virtual-host <HOST>`, and `--route <ROUTE>` are valid only with `--route-config-id`. Stop limits: `--target-sample-count <N>` (i32, default 1000), `--max-duration-seconds <N>` (i32), `--max-bytes <N>` (i64, default 10485760), `--max-distinct-paths <N>` (i32, default 500) |
 | `learn list` | `--team <TEAM>`, `--status <STATUS>`, `--limit <N>` (i64, default 50), `--offset <N>` (i64, default 0) |
 | `learn get <SESSION>` | `--team <TEAM>`, positional `session` |
 | `learn stop <SESSION>` | `--team <TEAM>`, positional `session` |
@@ -330,7 +330,7 @@ Dataplane registration and certificates.
 | `dataplane get <NAME>` | `--team <TEAM>`, positional `name` |
 | `dataplane create <NAME>` | `--team <TEAM>`, positional `name`, `--description <TEXT>` (default empty) |
 | `dataplane telemetry <NAME>` | `--team <TEAM>`, positional `name`, `--file <PATH>` / `-f` (required) |
-| `dataplane bootstrap <NAME>` | (alias `dataplane envoy-config`) `--team <TEAM>`, positional `name`, `--mode <MODE>` (`dev`\|`mtls`, default `dev`), `--xds-host <HOST>` (default `127.0.0.1`), `--xds-port <PORT>` (u16, default 18000), `--admin-port <PORT>` (u16, default 9901), `--cert-path <PATH>`, `--key-path <PATH>`, `--ca-path <PATH>` |
+| `dataplane bootstrap <NAME>` | (alias `dataplane envoy-config`) `--team <TEAM>`, positional `name`, `--mode <MODE>` (`dev`\|`mtls`, default `dev`), `--xds-host <HOST>` (default `127.0.0.1`), `--xds-port <PORT>` (u16, default 18000), `--admin-port <PORT>` (u16, default 9901), `--cert-path <PATH>`, `--key-path <PATH>`, `--ca-path <PATH>`. Writes Envoy bootstrap YAML to stdout or `--out`; it is not wrapped in a JSON/YAML CLI envelope. |
 | `dataplane cert <CERT_CMD>` | nested certificate subcommands (below) |
 
 #### `dataplane cert`

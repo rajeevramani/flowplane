@@ -498,6 +498,10 @@ configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 
 The **generated OpenAPI document is the source of truth** for per-field request and response schemas. The router and the document are built from the same `routes!` registration, so they cannot drift. Per-field detail is intentionally **not** hand-copied into this reference (it would drift).
 
+Known exception: the public bootstrap endpoints are documented in the endpoint catalogue above and
+in [Bootstrap the first platform admin](../how-to/bootstrap-platform.md), but they are not included
+in the generated OpenAPI document.
+
 Obtain the document:
 
 - `GET /api-docs/openapi.json` — served by a running control plane.

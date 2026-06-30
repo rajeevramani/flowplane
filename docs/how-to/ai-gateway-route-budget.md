@@ -140,7 +140,16 @@ flowplane ops xds status --team <team>
 flowplane ops xds nacks --team <team>
 ```
 
-Run the `curl` from a host that can reach the dataplane listener. In the local example below, that listener is reachable at `127.0.0.1:19000`; in a platform evaluation, use the listener address the platform team provides. The request body must include a `model`; Flowplane routes it to an eligible backend and forwards to the provider through Envoy:
+Run the `curl` from a host that can reach the dataplane listener. In the local
+example below, that listener is reachable at `127.0.0.1:19000`; in a platform
+evaluation, use the listener address the platform team provides. If you are
+using the published eval bundle, only its default demo listener is published to
+the host by default; call the AI listener from inside the dataplane/compose
+network, or publish the listener port in your local dataplane runtime before
+using `127.0.0.1:19000`.
+
+The request body must include a `model`; Flowplane routes it to an eligible
+backend and forwards to the provider through Envoy:
 
 ```bash
 curl http://127.0.0.1:19000/v1/chat/completions \

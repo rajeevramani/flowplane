@@ -33,7 +33,7 @@ What this allows and forbids:
 
 A CI check lists every `docs/**/*.md` link into `../internal/` or `../spec/` and fails on the ones that are **not** allowed. Allowed:
 
-1. `docs/README.md` (this index) and links to a *bucket index* (`../internal/README.md`, `../spec/README.md`).
+1. `docs/README.md` (this index) and links to a real bucket index such as `../internal/README.md`.
 2. Any link from a `docs/concepts/` page into `../spec/` (explanation bridge).
 3. Links into `../spec/` that sit under a `## Further reading` / "Design references" heading (optional background).
 

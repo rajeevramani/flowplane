@@ -178,10 +178,11 @@ team's identical `checkout` policy never shares this counter (the namespace pref
 
 ## Lifecycle and fail modes
 
-Update and delete are concurrency-controlled: pass the current revision with the global
-`--revision <N>` flag (the `If-Match` value). Get the current revision from a `GET`, e.g.
-`flowplane rate-limit policy get --team default --domain checkout per-client` (the `revision`
-field); omitting `--revision` fails with `this operation requires the resource revision`.
+Update and delete are concurrency-controlled. To pin the mutation to a specific version, pass
+the current revision with the global `--revision <N>` flag (the `If-Match` value). Get the
+current revision from a `GET`, e.g. `flowplane rate-limit policy get --team default --domain checkout per-client`
+(the `revision` field). If you omit `--revision`, the CLI performs a read-modify-write: it reads
+the current resource, sends that revision as `If-Match`, and still fails on a concurrent edit.
 
 - **Update a limit:** write an update body with `spec` only (the policy name is the
   positional `per-client`), then pass the current revision:

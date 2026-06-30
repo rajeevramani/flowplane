@@ -38,9 +38,14 @@ POST /api/v1/teams/{team}/learning-sessions
 Field notes:
 
 - `name` (required) — session name, used later as the `{session}` path segment.
-- `api` — API definition **name** to attach to. Alternatively pass `api_definition_id` (UUID). Pass only one.
-- `route_config_id`, `listener_id`, `virtual_host`, `route` — optional scoping of which traffic to capture.
+- `api` — API definition **name** to attach to. Alternatively pass `api_definition_id` (UUID). Pass exactly one target: `api`, `api_definition_id`, or `route_config_id`.
+- `route_config_id` — attach the learning session to a route config instead of directly to an API. Use this when you want to scope capture by listener / virtual host / route.
+- `listener_id`, `virtual_host`, `route` — optional scoping only when `route_config_id` is the target. They cannot be combined with `api` or `api_definition_id`.
 - `target_sample_count` (default `1000`), `max_bytes` (default `10485760` = 10 MiB), `max_distinct_paths` (default `500`), `max_duration_seconds` (optional) — capture stop limits.
+
+When you attach the session with `api` / `api_definition_id`, Flowplane scopes capture through
+that API definition's route binding. Do not also pass route-config scoping fields; the API rejects
+mixed targets with `validation_failed`.
 
 Returns `201` with a `LearningSessionView` (status, counters such as `sample_count` / `byte_count` / `path_count`).
 
@@ -51,6 +56,17 @@ flowplane learn start orders-learn-2026-06 \
   --team my-team \
   --api orders-api \
   --target-sample-count 1000
+```
+
+Route-config-scoped learning uses the route target instead:
+
+```bash
+flowplane learn start orders-route-learn-2026-06 \
+  --team my-team \
+  --route-config-id 019f0000-0000-7000-8000-000000000001 \
+  --listener-id 019f0000-0000-7000-8000-000000000002 \
+  --virtual-host default \
+  --route all
 ```
 
 ## 2. Drive traffic and let it capture
