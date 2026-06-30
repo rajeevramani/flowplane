@@ -30,6 +30,8 @@ Set the OIDC values from your identity provider:
 ```bash
 export TF_VAR_oidc_issuer="https://your-issuer.example.com"   # OIDC issuer URL
 export TF_VAR_oidc_audience="your-api-audience"               # expected JWT aud claim
+export FLOWPLANE_OIDC_ISSUER="$TF_VAR_oidc_issuer"
+export FLOWPLANE_OIDC_CLIENT_ID="<public-cli-client-id-from-your-idp>"
 ```
 
 The default region is `us-east-1` with `availability_zones = ["us-east-1a", "us-east-1b"]`. If you change regions, set AZs from the same region explicitly; this keeps planning usable with narrower IAM policies that do not allow availability-zone discovery.
@@ -136,9 +138,9 @@ flowplane --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <
 Write the PEM values to files:
 
 ```bash
-jq -r '.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
-jq -r '.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
-jq -r '.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
+jq -r '.data.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
+jq -r '.data.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
+jq -r '.data.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
 chmod 600 .local/aws-dp.key
 ```
 

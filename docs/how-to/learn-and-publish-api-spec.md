@@ -38,9 +38,14 @@ POST /api/v1/teams/{team}/learning-sessions
 Field notes:
 
 - `name` (required) — session name, used later as the `{session}` path segment.
-- `api` — API definition **name** to attach to. Alternatively pass `api_definition_id` (UUID). Pass only one.
-- `route_config_id`, `listener_id`, `virtual_host`, `route` — optional scoping of which traffic to capture.
+- `api` — API definition **name** to attach to. Alternatively pass `api_definition_id` (UUID). Pass exactly one target: `api`, `api_definition_id`, or `route_config_id`.
+- `route_config_id` — attach the learning session to a route config instead of directly to an API. Use this when you want to scope capture by listener / virtual host / route.
+- `listener_id`, `virtual_host`, `route` — optional scoping only when `route_config_id` is the target. They cannot be combined with `api` or `api_definition_id`.
 - `target_sample_count` (default `1000`), `max_bytes` (default `10485760` = 10 MiB), `max_distinct_paths` (default `500`), `max_duration_seconds` (optional) — capture stop limits.
+
+When you attach the session with `api` / `api_definition_id`, Flowplane scopes capture through
+that API definition's route binding. Do not also pass route-config scoping fields; the API rejects
+mixed targets with `validation_failed`.
 
 Returns `201` with a `LearningSessionView` (status, counters such as `sample_count` / `byte_count` / `path_count`).
 
@@ -51,6 +56,17 @@ flowplane learn start orders-learn-2026-06 \
   --team my-team \
   --api orders-api \
   --target-sample-count 1000
+```
+
+Route-config-scoped learning uses the route target instead:
+
+```bash
+flowplane learn start orders-route-learn-2026-06 \
+  --team my-team \
+  --route-config-id 019f0000-0000-7000-8000-000000000001 \
+  --listener-id 019f0000-0000-7000-8000-000000000002 \
+  --virtual-host default \
+  --route all
 ```
 
 ## 2. Drive traffic and let it capture
@@ -68,7 +84,8 @@ Check `sample_count` / `path_count` — you need at least one observation, other
 
 ## 3. Stop the session
 
-Stopping transitions the session to **Completed**, which is required before generating a spec.
+Generating a spec requires the session to be **Completed**. If the session is still
+`capturing`, stop it explicitly:
 
 **Endpoint**
 
@@ -81,6 +98,12 @@ POST /api/v1/teams/{team}/learning-sessions/{session}/stop
 ```bash
 flowplane learn stop orders-learn-2026-06 --team my-team
 ```
+
+If the session already hit one of its configured stop limits, such as
+`target_sample_count`, it may already show `status: "completed"` in `learn get`.
+In that case, skip the stop command and generate the spec. Running `learn stop`
+against an already-completed session returns `409 conflict` with a hint to start a
+new session for additional capture.
 
 ## 4. Generate the learned spec version
 
@@ -100,7 +123,7 @@ Returns `201` with a `LearnedSpecVersionView`:
   "api_definition_id": "…",
   "version": 3,
   "source_kind": "learned",
-  "format": "openapi",
+  "format": "openapi3",
   "spec_hash": "…",
   "created_at": "2026-06-20T…"
 }

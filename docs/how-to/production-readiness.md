@@ -194,12 +194,23 @@ FLOWPLANE_DATABASE_URL=postgres://user:pass@postgres/flowplane_restored \
 FLOWPLANE_SECRET_ENCRYPTION_KEY=<restored-active-key> \
 FLOWPLANE_SECRET_ENCRYPTION_KEY_ID=<restored-active-key-id> \
 FLOWPLANE_SECRET_ENCRYPTION_KEYS='<restored-retired-key-json>' \
+FLOWPLANE_API_INSECURE=true \
 flowplane db migrate
 ```
+
+`FLOWPLANE_API_INSECURE=true` is acceptable here only for a local restore drill that does not
+serve production traffic. In a production restore, provide the API TLS pair instead
+(`FLOWPLANE_API_TLS_CERT` and `FLOWPLANE_API_TLS_KEY`) and omit the plaintext opt-in.
 
 Post-restore pass signals:
 
 ```bash
+FLOWPLANE_DATABASE_URL=postgres://user:pass@postgres/flowplane_restored \
+FLOWPLANE_SECRET_ENCRYPTION_KEY=<restored-active-key> \
+FLOWPLANE_SECRET_ENCRYPTION_KEY_ID=<restored-active-key-id> \
+FLOWPLANE_SECRET_ENCRYPTION_KEYS='<restored-retired-key-json>' \
+FLOWPLANE_API_TLS_CERT=/etc/flowplane/tls/api.crt \
+FLOWPLANE_API_TLS_KEY=/etc/flowplane/tls/api.key \
 flowplane serve
 curl -fsS https://cp.example/healthz
 curl -fsS https://cp.example/readyz
