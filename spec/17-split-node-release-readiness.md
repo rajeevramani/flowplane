@@ -1,8 +1,24 @@
 # 17 - Split-Node Release Readiness Verification
 
-> Status: verification report
-> Scope: current published release `v2.1.0`
+> Status: historical verification report with post-release update
+> Scope: historical published release `v2.1.0`, plus current `v2.1.1` release update
 > Verdict rule: fail closed. Any `FAIL` or `UNVERIFIED` means the checked area is not ready.
+
+## v2.1.1 Post-Release Update
+
+`v2.1.1` is now published from tag commit `cbb40e4b3ed75fa6275b8594e89abc01ae956fed`.
+The GitHub Release contains the no-clone split-node artifacts introduced by this work:
+
+- `compose.eval.yml`
+- `flowplane-2.1.1-linux-amd64.tar.gz`
+- `flowplane-2.1.1-linux-arm64.tar.gz`
+- `flowplane-2.1.1-linux-amd64.cargo-metadata.sbom.json`
+- `flowplane-2.1.1-linux-arm64.cargo-metadata.sbom.json`
+- `SHA256SUMS`
+
+The user-facing docs now use `2.1.1` in no-clone examples. The historical `v2.1.0` evidence below
+is retained to document the blocker that caused the split-node release-readiness work; it is no
+longer the current published surface.
 
 ## v2.1.1-rc Branch Runtime Addendum
 
@@ -30,7 +46,7 @@ Updated readiness interpretation:
 | --- | --- | --- |
 | Published `v2.1.0` | NOT READY | Release assets lack standalone operator/agent/RLS binaries and docs cannot be completed no-clone. |
 | Branch `2.1.1-rc` artifacts | READY for branch runtime evidence | Split-node artifact, mTLS, agent, RLS, health, and ops checks passed in a network-isolated rehearsal. |
-| Published `v2.1.1` | NOT READY until release | No `v2.1.1` GitHub Release/GHCR assets exist yet. Do not close issue #220 until real published assets are verified. |
+| Published `v2.1.1` | READY for artifact availability | GitHub Release assets now include Linux amd64/arm64 tarballs, SBOMs, checksums, and the eval compose file. |
 
 ## Release Under Review
 
