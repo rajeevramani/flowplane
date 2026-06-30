@@ -10,6 +10,30 @@ upgrade of an earlier Flowplane line — there is no in-place migration path fro
 version. `1.0.0` is its first stable release and the point at which the public REST API,
 CLI surface, and configuration contract become subject to semantic versioning.
 
+## [2.1.1] - 2026-06-30
+
+Patch release. Documentation and release-packaging update for no-clone evaluation and
+split-node deployment readiness.
+
+### Added
+
+- No-clone developer and platform evaluation docs, including OIDC/bootstrap, tenant/team/user
+  lifecycle, API-team onboarding, REST body examples, and operator verification paths.
+- Release packaging for Linux `flowplane`, `flowplane-agent`, and `flowplane-rls` tarballs with
+  checksums and SBOMs.
+- Split-node runtime readiness evidence for packaged `2.1.1` branch artifacts.
+
+### Changed
+
+- Release images now include `flowplane-agent` and `flowplane-rls`; `fp-agent` remains as a
+  deprecated compatibility alias.
+- Production readiness, dataplane mTLS, RLS, AWS, CLI, and observability docs now point readers
+  toward public release artifacts instead of source checkout paths.
+
+### Fixed
+
+- Updated `anyhow` to `1.0.103` in `Cargo.lock` to clear `RUSTSEC-2026-0190` in `cargo deny`.
+
 ## [2.1.0] - 2026-06-27
 
 Minor release. **CLI Tier-2 help quality: `flowplane --help` is now self-sufficient.** Every
