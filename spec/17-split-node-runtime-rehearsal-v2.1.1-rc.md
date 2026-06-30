@@ -7,6 +7,14 @@
 > in `../flowplane-private-vault`. This file is the in-repo delivery copy of that evidence for the
 > branch work; the vault remains the canonical home.
 
+## Post-Release Update
+
+`v2.1.1` is now published from tag commit `cbb40e4b3ed75fa6275b8594e89abc01ae956fed`. The GitHub
+Release contains `flowplane-2.1.1-linux-amd64.tar.gz`, `flowplane-2.1.1-linux-arm64.tar.gz`, the
+per-arch cargo metadata SBOMs, `SHA256SUMS`, and `compose.eval.yml`. The pre-release row below that
+marked published assets as `FAIL` is retained as historical evidence for the branch rehearsal; it is
+superseded by the published `v2.1.1` release assets.
+
 This report supersedes the *source-inspection-only* `UNVERIFIED` rows in
 `spec/17-split-node-release-readiness.md` (checks 3 and 6) with **captured runtime evidence** from a
 real, network-isolated split-node rehearsal, and re-checks the prior `FAIL` rows (published binary

@@ -10,10 +10,10 @@ The evaluation bundle runs dev mode: an in-process identity issuer, seeded `dev-
 
 ## 1. Start the published evaluator bundle
 
-Use a published release. This example uses `2.1.0`, whose eval compose file and multi-arch eval image are published:
+Use a published release. This example uses `2.1.1`, whose eval compose file and multi-arch eval image are published:
 
 ```bash
-VER=2.1.0
+VER=2.1.1
 
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
 
