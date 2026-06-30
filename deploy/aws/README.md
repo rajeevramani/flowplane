@@ -72,6 +72,8 @@ repo-local files:
 ```bash
 export TF_VAR_oidc_issuer="https://your-issuer.example.com"
 export TF_VAR_oidc_audience="your-api-audience"
+export FLOWPLANE_OIDC_ISSUER="$TF_VAR_oidc_issuer"
+export FLOWPLANE_OIDC_CLIENT_ID="<public-cli-client-id-from-your-idp>"
 ```
 
 `TF_VAR_oidc_issuer` must match the issuer in accepted tokens. `TF_VAR_oidc_audience` must match
@@ -131,12 +133,12 @@ flowplane auth login --device-code \
 flowplane dataplane create edge-local --team <team>
 flowplane --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <team>
 
-jq -r '.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
-jq -r '.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
-jq -r '.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
+jq -r '.data.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
+jq -r '.data.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
+jq -r '.data.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
 chmod 600 .local/aws-dp.key
 
-# `ca_certificate_pem` is the dataplane client-chain CA. Use a separate xDS
+# `data.ca_certificate_pem` is the dataplane client-chain CA. Use a separate xDS
 # server-trust CA bundle for `--ca-path`: the CA that validates xds.getflowplane.io.
 printf '%s' "$CP_XDS_SERVER_CA_PEM" > .local/aws-xds-server-ca.crt
 
