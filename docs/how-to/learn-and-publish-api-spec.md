@@ -116,7 +116,7 @@ Returns `201` with a `LearnedSpecVersionView`:
   "api_definition_id": "…",
   "version": 3,
   "source_kind": "learned",
-  "format": "openapi",
+  "format": "openapi3",
   "spec_hash": "…",
   "created_at": "2026-06-20T…"
 }
