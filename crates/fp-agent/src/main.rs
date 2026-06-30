@@ -24,7 +24,7 @@ const DEFAULT_QUEUE_CAP: usize = 256;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "fp-agent",
+    name = "flowplane-agent",
     version,
     about = "Flowplane dataplane telemetry relay"
 )]

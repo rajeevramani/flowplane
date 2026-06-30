@@ -132,6 +132,48 @@ jobs:
       - name: Hardened image sanity (binary runs in the slim image)
         run: |
           docker run --rm --entrypoint /usr/local/bin/flowplane flowplane:hardened-smoke --help >/dev/null
+          docker run --rm --entrypoint /usr/local/bin/flowplane-agent flowplane:hardened-smoke --help >/dev/null
+          docker run --rm --entrypoint /usr/local/bin/fp-agent flowplane:hardened-smoke --help >/dev/null
+          set +e
+          docker run --rm \
+            --entrypoint /usr/bin/timeout \
+            -e FLOWPLANE_RLS_GRPC_LISTEN=127.0.0.1:0 \
+            -e FLOWPLANE_RLS_ADMIN_LISTEN=127.0.0.1:0 \
+            flowplane:hardened-smoke \
+            3 /usr/local/bin/flowplane-rls
+          rls_status=$?
+          set -e
+          [ "$rls_status" -eq 124 ] || { echo "::error::flowplane-rls smoke exited with $rls_status"; exit 1; }
+
+      - name: Build binary release artifact
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            -e FLOWPLANE_RELEASE_VERSION="$VERSION" \
+            -e FLOWPLANE_RELEASE_HOST="linux-${{ matrix.arch }}" \
+            rust:1.94.1-bookworm \
+            bash scripts/release/package-release.sh
+          root="target/release-artifacts/flowplane-v${VERSION}"
+          mkdir -p "${{ runner.temp }}/release-assets"
+          cp "$root/flowplane-${VERSION}-linux-${{ matrix.arch }}.tar.gz" "${{ runner.temp }}/release-assets/"
+          cp "$root/flowplane-${VERSION}.cargo-metadata.sbom.json" \
+            "${{ runner.temp }}/release-assets/flowplane-${VERSION}-linux-${{ matrix.arch }}.cargo-metadata.sbom.json"
+          (
+            cd "${{ runner.temp }}/release-assets"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum \
+                "flowplane-${VERSION}-linux-${{ matrix.arch }}.tar.gz" \
+                "flowplane-${VERSION}-linux-${{ matrix.arch }}.cargo-metadata.sbom.json"
+            else
+              shasum -a 256 \
+                "flowplane-${VERSION}-linux-${{ matrix.arch }}.tar.gz" \
+                "flowplane-${VERSION}-linux-${{ matrix.arch }}.cargo-metadata.sbom.json"
+            fi
+          ) > "${{ runner.temp }}/release-assets/SHA256SUMS-linux-${{ matrix.arch }}"
 
       # --- Push each image by digest (cached layers from the load builds above) ---
 
@@ -178,6 +220,13 @@ jobs:
         with:
           name: digests-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+      - name: Upload binary release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-assets-${{ matrix.arch }}
+          path: ${{ runner.temp }}/release-assets/*
           if-no-files-found: error
 
   manifest:
@@ -246,9 +295,28 @@ jobs:
             echo "$out" | grep -q "linux/amd64" || { echo "::error::$ref missing linux/amd64"; exit 1; }
             echo "$out" | grep -q "linux/arm64" || { echo "::error::$ref missing linux/arm64"; exit 1; }
           done
-      - name: Attach compose.eval.yml as a release asset (stable no-clone download URL)
+      - name: Download binary release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: binary-assets-*
+          merge-multiple: true
+
+      - name: Assemble release checksums
+        run: |
+          set -euo pipefail
+          cat release-assets/SHA256SUMS-linux-amd64 release-assets/SHA256SUMS-linux-arm64 > release-assets/SHA256SUMS
+          test -s release-assets/SHA256SUMS
+          test -f release-assets/flowplane-${{ needs.resolve-version.outputs.version }}-linux-amd64.tar.gz
+          test -f release-assets/flowplane-${{ needs.resolve-version.outputs.version }}-linux-arm64.tar.gz
+
+      - name: Attach release assets (stable no-clone download URLs)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.resolve-version.outputs.version }}
-          files: compose.eval.yml
+          files: |
+            compose.eval.yml
+            release-assets/*.tar.gz
+            release-assets/*.sbom.json
+            release-assets/SHA256SUMS
           fail_on_unmatched_files: true

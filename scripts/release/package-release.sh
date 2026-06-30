@@ -37,20 +37,27 @@ if [ -n "$TARGET" ]; then
 fi
 
 cargo build "${BUILD_ARGS[@]}" -p flowplane --bin flowplane --no-default-features
-cargo build "${BUILD_ARGS[@]}" -p fp-agent --bin fp-agent
+cargo build "${BUILD_ARGS[@]}" -p fp-agent --bin flowplane-agent
+cargo build "${BUILD_ARGS[@]}" -p flowplane-rls --bin flowplane-rls
 
 cp "$TARGET_DIR/flowplane" "$ARTIFACT_DIR/bin/"
-cp "$TARGET_DIR/fp-agent" "$ARTIFACT_DIR/bin/"
+cp "$TARGET_DIR/flowplane-agent" "$ARTIFACT_DIR/bin/"
+cp "$TARGET_DIR/flowplane-rls" "$ARTIFACT_DIR/bin/"
+ln -s flowplane-agent "$ARTIFACT_DIR/bin/fp-agent"
 cargo metadata --format-version 1 > "$ROOT/flowplane-$VERSION.cargo-metadata.sbom.json"
 
 cat > "$ARTIFACT_DIR/release-manifest.md" <<EOF
 # Flowplane $VERSION Release Manifest
 
 - CP binary: \`bin/flowplane\`
-- DP sidecar binary: \`bin/fp-agent\`
+- DP sidecar binary: \`bin/flowplane-agent\`
+- DP sidecar compatibility alias: \`bin/fp-agent\` (deprecated; use \`flowplane-agent\`)
+- Rate Limit Service binary: \`bin/flowplane-rls\`
 - Binary target: \`$HOST\`
-- Static-link decision: vendored OpenSSL is enabled for v1.0 release builds. Use
-  \`FLOWPLANE_RELEASE_TARGET=x86_64-unknown-linux-musl\` and verify with \`ldd\` or \`file\`.
+- Linkage: default release artifacts are native GNU/Linux builds for the release runner.
+  They may dynamically link glibc/OpenSSL from that environment. For a custom static/musl
+  build, set \`FLOWPLANE_RELEASE_TARGET=x86_64-unknown-linux-musl\` and verify with
+  \`ldd\` or \`file\`.
 - License: Apache-2.0 (Q-006 resolved); see \`LICENSE\`/\`NOTICE\`. Public distribution is not license-gated.
 - OCI image tag: \`$IMAGE_TAG\`
 - SBOM source artifact: \`flowplane-$VERSION.cargo-metadata.sbom.json\`

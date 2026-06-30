@@ -310,7 +310,7 @@ export FLOWPLANE_XDS_TLS_CLIENT_CA="$PWD/.local/prod/tls/dp-ca.crt"
 
 The xDS server cert/key identify the control plane. The client CA validates dataplane client certs. Dataplane certs must also be registered in Flowplane through the dataplane/proxy-certificate path; mTLS chain validity alone is not enough to authorize a dataplane.
 
-Use this only when you are testing Envoy or `fp-agent`. For API/auth/governance validation, keeping xDS disabled is expected and simpler.
+Use this only when you are testing Envoy or `flowplane-agent`. For API/auth/governance validation, keeping xDS disabled is expected and simpler.
 
 ## Troubleshooting
 

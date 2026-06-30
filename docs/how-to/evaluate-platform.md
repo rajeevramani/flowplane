@@ -15,7 +15,9 @@ You need:
 - OIDC provider values from [Configure an OIDC provider](configure-oidc-provider.md);
 - a high-entropy bootstrap token delivered by `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` or `FLOWPLANE_BOOTSTRAP_TOKEN`;
 - a `flowplane` CLI installed on the operator workstation;
-- a dataplane host that can run Envoy and `fp-agent`.
+- a dataplane host that can run Envoy and `flowplane-agent`.
+
+Install `flowplane`, `flowplane-agent`, and `flowplane-rls` from the published release archive as shown in [Production Readiness](production-readiness.md). Do not use a source checkout for this evaluation path.
 
 Use placeholders in examples until you substitute your own values. Do not put real tokens, private keys, or certificate PEM bodies in public docs, issue comments, or shell history.
 
@@ -89,7 +91,7 @@ Use [Register a dataplane and connect its agent over mTLS](register-dataplane-mt
 The expected direction is outbound from the dataplane to the control plane:
 
 - Envoy opens ADS/SDS streams to the control-plane xDS listener.
-- `fp-agent` reports dataplane diagnostics to the control plane.
+- `flowplane-agent` reports dataplane diagnostics to the control plane.
 - The control plane does not call Envoy admin as a product path.
 - Envoy admin remains local to the dataplane and is a manual diagnostic surface.
 
@@ -104,7 +106,7 @@ flowplane ops xds status --team payments
 flowplane ops xds nacks --team payments
 ```
 
-`dataplane get` should show an advancing heartbeat once `fp-agent` reports. `stats overview` should count the dataplane as live. `ops xds status` / `ops xds nacks` should show whether Envoy accepted or rejected the pushed xDS resources.
+`dataplane get` should show an advancing heartbeat once `flowplane-agent` reports. `stats overview` should count the dataplane as live. `ops xds status` / `ops xds nacks` should show whether Envoy accepted or rejected the pushed xDS resources.
 
 ## 5. Verify observability
 

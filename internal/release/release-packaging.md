@@ -28,7 +28,7 @@ Pass signal: `file` reports a statically linked binary, or Linux `ldd` prints `n
 
 Outputs are written under `target/release-artifacts/flowplane-v<version>/`:
 
-- `flowplane-<version>-<host>.tar.gz` with `flowplane` and `fp-agent` binaries.
+- `flowplane-<version>-<host>.tar.gz` with `flowplane`, `flowplane-agent`, and `flowplane-rls` binaries.
 - `flowplane-<version>.cargo-metadata.sbom.json` as the dependency SBOM source artifact.
 - `SHA256SUMS` for generated files.
 - `release-manifest.md` recording artifact choices and pass/fail notes.

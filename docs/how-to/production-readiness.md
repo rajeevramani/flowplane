@@ -17,6 +17,27 @@ This is the operator entry point for a production-shaped Flowplane deployment. I
 
 Deploy the control plane and dataplane bundle separately.
 
+Install the published operator binaries on the control-plane host, operator workstation, and dataplane host. Pick the archive for the host architecture:
+
+```bash
+VER=2.1.1
+ARCH=linux-amd64   # or linux-arm64
+BASE="https://github.com/rajeevramani/flowplane/releases/download/v${VER}"
+
+curl -fLO "${BASE}/flowplane-${VER}-${ARCH}.tar.gz"
+curl -fLO "${BASE}/SHA256SUMS"
+grep "flowplane-${VER}-${ARCH}.tar.gz" SHA256SUMS | sha256sum -c -
+tar -xzf "flowplane-${VER}-${ARCH}.tar.gz"
+
+sudo install -m 0755 "flowplane-${VER}-${ARCH}/bin/flowplane" /usr/local/bin/flowplane
+sudo install -m 0755 "flowplane-${VER}-${ARCH}/bin/flowplane-agent" /usr/local/bin/flowplane-agent
+sudo install -m 0755 "flowplane-${VER}-${ARCH}/bin/flowplane-rls" /usr/local/bin/flowplane-rls
+```
+
+Use `shasum -a 256 -c` instead of `sha256sum -c` on systems that do not provide `sha256sum`. The release archive also includes `bin/fp-agent` as a one-release compatibility alias, but public operator commands use `flowplane-agent`.
+
+The published `2.1.1` binary archives are Linux `amd64` and Linux `arm64`. Use a Linux host for the installed CLI, or run the published container image with an entrypoint override when your operator workstation is not Linux.
+
 Control plane:
 
 ```bash
@@ -42,23 +63,49 @@ Production authentication requires a real OIDC issuer/audience pair. `FLOWPLANE_
 Dataplane:
 
 ```bash
-FLOWPLANE_SERVER=https://cp.example \
-FLOWPLANE_TOKEN=<operator-token> \
-FLOWPLANE_PACKAGE_DATAPLANE=1 \
-FLOWPLANE_PACKAGE_TEAM=default \
-FLOWPLANE_PACKAGE_DATAPLANE_NAME=edge-1 \
-FLOWPLANE_PACKAGE_DATAPLANE_MODE=mtls \
-FLOWPLANE_PACKAGE_XDS_HOST=cp.example \
-FLOWPLANE_PACKAGE_XDS_PORT=18000 \
-FLOWPLANE_PACKAGE_CERT_PATH=/etc/flowplane/tls/tls.crt \
-FLOWPLANE_PACKAGE_KEY_PATH=/etc/flowplane/tls/tls.key \
-FLOWPLANE_PACKAGE_CA_PATH=/etc/flowplane/tls/ca.crt \
-scripts/release/package-release.sh
+flowplane --out /etc/flowplane/envoy/envoy.yaml \
+  dataplane bootstrap edge-1 --team <team> --mode mtls \
+  --xds-host cp.example --xds-port 18000 \
+  --cert-path /etc/flowplane/dp/client.crt \
+  --key-path /etc/flowplane/dp/client.key \
+  --ca-path /etc/flowplane/dp/server-ca.crt
 ```
 
-Run Envoy and `fp-agent` beside each other in the dataplane network. The dataplane dials the control plane over xDS/diagnostics; the control plane must not dial Envoy admin as a product path. Envoy admin stays loopback-only and is a manual diagnostic fallback.
+Run Envoy with that bootstrap and run `flowplane-agent` beside it in the dataplane network. The dataplane dials the control plane over xDS/diagnostics; the control plane must not dial Envoy admin as a product path. Envoy admin stays loopback-only and is a manual diagnostic fallback. The canonical certificate issuance and agent flags are in [Register a dataplane and connect its agent over mTLS](register-dataplane-mtls.md).
 
-Upgrade order is independent: upgrade CP first or DP first within the supported Envoy line. Existing dataplanes keep serving last-applied config during a CP restart; new dataplanes cannot join until the CP is back.
+## Ports And Network Paths
+
+| Path | Default | Direction | Notes |
+| --- | --- | --- | --- |
+| Operator/API traffic to CP | `FLOWPLANE_API_ADDR`, usually `:8080` behind TLS/load balancer | operators/API teams -> CP | Terminate public TLS before or at the CP API. Do not expose plaintext production API. |
+| Dataplane xDS/diagnostics to CP | `FLOWPLANE_XDS_ADDR`, default `:18000` | Envoy/agent -> CP | Production is mTLS-or-off. Non-loopback deployments must use the xDS TLS triad. |
+| CP to PostgreSQL | database URL | CP -> PostgreSQL | Database must not be directly internet-addressable. |
+| CP to RLS admin | `FLOWPLANE_RLS_ADMIN_URL`, commonly `http://rls.example:8081` | CP -> RLS | Used by the RLS reconcile worker to push policy. |
+| Envoy to RLS gRPC | `FLOWPLANE_RLS_GRPC_URL`, commonly `rls.example:50051` | Envoy -> RLS | Use the dataplane TLS triad for production Envoy-to-RLS mTLS when enabled. |
+| Envoy listener traffic | listener config | clients -> Envoy | Request traffic never passes through the control plane. |
+| Envoy admin | `127.0.0.1:9901` | dataplane-local only | Keep loopback-only. Product diagnostics go through `flowplane-agent`. |
+| Agent health | `127.0.0.1:19902` | dataplane-local only | Use for local process health checks on the dataplane host. |
+
+## Upgrade, Rollback, And Version Skew
+
+For the `2.1.1` split-node release path, run the control plane, CLI, `flowplane-agent`, and `flowplane-rls` from the same `2.1.1` artifact set. Short-lived skew during a rolling restart is acceptable for replacing one process at a time, but do not plan a long-lived mixed-version CP/agent/RLS deployment until a later compatibility policy says so.
+
+Upgrade:
+
+1. Back up PostgreSQL and active/retired secret-encryption keys.
+2. Download and verify the new release archive and image digests.
+3. Upgrade the control plane and run `flowplane db migrate`.
+4. Upgrade `flowplane-agent` and `flowplane-rls` on dataplane/RLS hosts.
+5. Regenerate dataplane bootstrap only when CP xDS host, port, mode, or cert paths changed.
+6. Verify `/healthz`, `/readyz`, `flowplane stats overview`, `flowplane ops xds status`, agent `/healthz`, and RLS `/healthz`/`/readyz`.
+
+Rollback:
+
+1. Keep the prior release archive/image available before upgrading.
+2. If no database migration ran, roll back CP/agent/RLS binaries together and restart.
+3. If a database migration ran and rollback is required, restore the matching database backup and KEK material before starting the old CP.
+4. Existing dataplanes keep serving their last-applied Envoy config during a CP restart; new dataplanes cannot join until the CP is back.
+5. If xDS host, port, mode, or cert paths changed during the failed upgrade, regenerate bootstrap before reconnecting the dataplane.
 
 ## Configuration Reference
 
@@ -120,7 +167,10 @@ AI providers, routes, budgets, and usage are runtime product config through the 
 | Auth spike | `fp_authn_failures_total`, `fp_authz_denied_total`, audit rows | For authn, check IdP/JWKS/audience/token expiry. For authz, check grants/team context and suspicious probing. |
 | AI budget exhaustion | `fp_ai_budget_threshold_crossings_total{mode="enforcing",result="exhausted"}` | Compare expected usage to configured budget; raise budget or reduce traffic. |
 | Capture drops | `fp_capture_dropped_total` | Check capture source health and configured discovery/capture constraints. |
-| Release package validation | `SHA256SUMS`, `flowplane-*.oci.tar`, binary `file` output | Verify checksums and static binary signal; rebuild artifacts if any hash differs. |
+| Release package validation | GitHub Release assets, image digests, `SHA256SUMS` | Verify published artifacts before deployment; rebuild only through the release process if any artifact is missing or inconsistent. |
+| Split-node TLS failure | Agent/RLS logs show TLS name, CA, or client-certificate errors | Check CP xDS server cert SAN vs `FLOWPLANE_AGENT_TLS_SERVER_NAME`, server-trust CA, issued client cert/key, and CP `FLOWPLANE_XDS_TLS_CLIENT_CA`. |
+| Remote bootstrap still points at localhost | Envoy bootstrap contains `127.0.0.1` or `localhost` for `xds_cluster` | Regenerate bootstrap with `--xds-host <cp-xds-host>` and verify the generated file before starting Envoy. |
+| RLS unreachable | Route returns 5xx/429 behavior does not match policy, RLS health fails, CP RLS reconcile errors | Check CP `FLOWPLANE_RLS_ADMIN_URL`, Envoy-facing `FLOWPLANE_RLS_GRPC_URL`, firewall rules, and dataplane TLS settings for the Envoy-to-RLS hop. |
 
 ## Backup And Restore Drill
 
@@ -180,16 +230,13 @@ flowplane route apply <plan-id> --team <team>
 
 flowplane dataplane bootstrap edge-1 --team <team> --mode mtls \
   --xds-host cp.example --xds-port 18000 \
-  --cert-path /etc/flowplane/tls/tls.crt \
-  --key-path /etc/flowplane/tls/tls.key \
-  --ca-path /etc/flowplane/tls/ca.crt
+  --cert-path /etc/flowplane/dp/client.crt \
+  --key-path /etc/flowplane/dp/client.key \
+  --ca-path /etc/flowplane/dp/server-ca.crt
 
 flowplane mcp status --team <team>
 flowplane mcp connections --team <team>
 flowplane mcp enable --api api_get-catalog --team <team>
-
-scripts/release/package-release.sh
-FLOWPLANE_PACKAGE_IMAGE=1 scripts/release/package-release.sh
 ```
 
 For deployment-specific details, use the relevant public runbook such as [AWS secure deployment](aws-secure-deployment.md). Keep release evidence separate from day-to-day operator runbooks.

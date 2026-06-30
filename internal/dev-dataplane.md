@@ -232,9 +232,9 @@ Recent xDS NACKs:
 ./target/debug/flowplane ops xds nacks
 ```
 
-This manual dev path starts Envoy directly, without `fp-agent`. Request counters may not increase until the agent-backed diagnostics path is included in a later local lifecycle wrapper. The normal operator path is still Flowplane diagnostics (`stats`, `ops xds status`, `ops xds nacks`), not direct Envoy admin access.
+This manual dev path starts Envoy directly, without `flowplane-agent`. Request counters may not increase until the agent-backed diagnostics path is included in a later local lifecycle wrapper. The normal operator path is still Flowplane diagnostics (`stats`, `ops xds status`, `ops xds nacks`), not direct Envoy admin access.
 
-Envoy admin is loopback-only local debugging. Do not treat `curl :9901/config_dump` as a product or operator workflow; in the intended DP unit, `fp-agent` is the only component that scrapes Envoy admin and relays curated telemetry to the CP.
+Envoy admin is loopback-only local debugging. Do not treat `curl :9901/config_dump` as a product or operator workflow; in the intended DP unit, `flowplane-agent` is the only component that scrapes Envoy admin and relays curated telemetry to the CP.
 
 If traffic does not flow, check in this order:
 
