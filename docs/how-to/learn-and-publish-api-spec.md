@@ -84,7 +84,8 @@ Check `sample_count` / `path_count` — you need at least one observation, other
 
 ## 3. Stop the session
 
-Stopping transitions the session to **Completed**, which is required before generating a spec.
+Generating a spec requires the session to be **Completed**. If the session is still
+`capturing`, stop it explicitly:
 
 **Endpoint**
 
@@ -97,6 +98,12 @@ POST /api/v1/teams/{team}/learning-sessions/{session}/stop
 ```bash
 flowplane learn stop orders-learn-2026-06 --team my-team
 ```
+
+If the session already hit one of its configured stop limits, such as
+`target_sample_count`, it may already show `status: "completed"` in `learn get`.
+In that case, skip the stop command and generate the spec. Running `learn stop`
+against an already-completed session returns `409 conflict` with a hint to start a
+new session for additional capture.
 
 ## 4. Generate the learned spec version
 

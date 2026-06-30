@@ -136,9 +136,9 @@ flowplane --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <
 Write the PEM values to files:
 
 ```bash
-jq -r '.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
-jq -r '.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
-jq -r '.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
+jq -r '.data.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
+jq -r '.data.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
+jq -r '.data.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
 chmod 600 .local/aws-dp.key
 ```
 
