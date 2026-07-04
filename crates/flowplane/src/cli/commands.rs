@@ -382,6 +382,24 @@ pub enum AiCommand {
         #[command(subcommand)]
         command: ResourceCommand,
     },
+    /// Show the correlated hop timeline for AI data-plane requests.
+    #[command(
+        after_help = "Example:\n  flowplane ai trace --team payments --request-id 018ff2ef-bfc6-7000-8000-000000000001"
+    )]
+    Trace {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Server-generated x-request-id from the AI data-plane response.
+        #[arg(long)]
+        request_id: Option<String>,
+        /// W3C trace id from an inbound traceparent header.
+        #[arg(long)]
+        trace_id: Option<String>,
+        /// Maximum number of traces to return.
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
     /// Show AI token-usage records.
     Usage {
         /// Team scope; defaults to the active context's team.

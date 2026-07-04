@@ -13,10 +13,10 @@ use fp_domain::gateway::route_config::{
 use fp_domain::{
     validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name, AiBudget,
     AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteMaterializedResources, AiRouteSpec,
-    AiUsageSummary, DomainError, DomainResult, RequestId, AI_MODEL_HEADER,
+    AiTraceEvent, AiUsageSummary, DomainError, DomainResult, RequestId, AI_MODEL_HEADER,
     DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
-use fp_storage::repos::{ai, audit, clusters as cluster_repo, gateway as gateway_repo};
+use fp_storage::repos::{ai, ai_trace, audit, clusters as cluster_repo, gateway as gateway_repo};
 use reqwest::Url;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
@@ -526,6 +526,19 @@ pub async fn usage_summary(
 ) -> DomainResult<Vec<AiUsageSummary>> {
     authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
     ai::usage_summary(pool, team.id, query).await
+}
+
+/// Team-scoped read of AI trace rows: authorization happens before any repo read, and the
+/// repo query is scoped by the resolved team id, so a foreign request_id can never match.
+pub async fn trace_events(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    query: ai_trace::AiTraceQuery<'_>,
+    request_id: RequestId,
+) -> DomainResult<Vec<AiTraceEvent>> {
+    authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
+    ai_trace::list_trace_events(pool, team.id, query).await
 }
 
 pub async fn update_route(

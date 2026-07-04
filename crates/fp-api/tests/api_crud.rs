@@ -107,14 +107,14 @@ fn openapi_document_covers_every_registered_operation() {
     // + 2 expose shortcut operations.
     // + 2 route-generation plan operations.
     // + 5 AI provider operations + 5 AI route operations.
-    // + 5 AI budget operations + 1 AI usage operation.
+    // + 5 AI budget operations + 1 AI usage operation + 1 AI trace operation.
     // + 1 RLS force-repush admin operation.
     // + 14 rate-limit CRUD operations (5 domain + 5 policy + 4 override).
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 110,
-        "expected 110 documented operations, got {operations}"
+        operations, 111,
+        "expected 111 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -148,6 +148,7 @@ fn openapi_document_covers_every_registered_operation() {
         "/api/v1/teams/{team}/learning-discovery-sessions/{session}/spec-versions",
         "/api/v1/teams/{team}/ai/providers",
         "/api/v1/teams/{team}/ai/routes",
+        "/api/v1/teams/{team}/ai/trace",
         "/api/v1/teams/{team}/xds/status",
         "/api/v1/teams/{team}/ops/trace",
     ] {
@@ -1776,5 +1777,244 @@ async fn malformed_json_body_returns_validation_envelope() {
     assert!(
         body.get("request_id").and_then(|v| v.as_str()).is_some(),
         "envelope must carry request_id, got: {body}"
+    );
+}
+
+// Slice s4 (ai-gateway-e2e-trace): team-scoped AI trace retrieval over HTTP through the
+// real middleware stack — correlated hop timeline on a hit, a distinguishable miss with
+// the never-traced-classes hint, cross-org 404, and missing-grant 403.
+#[tokio::test]
+async fn ai_trace_retrieval_over_http() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+
+    // Org A: an admin (implicit team access) and a member holding only an unrelated grant.
+    let org_a = identity::create_org(&pool, &unique("org-a"), "")
+        .await
+        .expect("org a");
+    let team = identity::create_team(&pool, org_a.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let admin_sub = unique("sub-admin");
+    let admin_token = issuer
+        .mint(&admin_sub, "trace-admin@test", "Trace Admin", 600)
+        .expect("mint admin");
+    let admin = identity::upsert_user_by_subject(&pool, &admin_sub, "trace-admin@test", "A")
+        .await
+        .expect("admin");
+    identity::add_org_membership(&pool, admin, org_a.id, OrgRole::Admin)
+        .await
+        .expect("admin member");
+
+    let member_sub = unique("sub-member");
+    let member_token = issuer
+        .mint(&member_sub, "trace-member@test", "Trace Member", 600)
+        .expect("mint member");
+    let member = identity::upsert_user_by_subject(&pool, &member_sub, "trace-member@test", "M")
+        .await
+        .expect("member");
+    identity::add_org_membership(&pool, member, org_a.id, OrgRole::Member)
+        .await
+        .expect("member membership");
+    identity::add_grant(
+        &pool,
+        member,
+        org_a.id,
+        team.id,
+        fp_domain::authz::Resource::AiProviders,
+        fp_domain::authz::Action::Read,
+        None,
+    )
+    .await
+    .expect("unrelated grant");
+
+    // Org B: an admin of a different org (cross-org caller).
+    let org_b = identity::create_org(&pool, &unique("org-b"), "")
+        .await
+        .expect("org b");
+    let outsider_sub = unique("sub-outsider");
+    let outsider_token = issuer
+        .mint(&outsider_sub, "trace-outsider@test", "Outsider", 600)
+        .expect("mint outsider");
+    let outsider =
+        identity::upsert_user_by_subject(&pool, &outsider_sub, "trace-outsider@test", "O")
+            .await
+            .expect("outsider");
+    identity::add_org_membership(&pool, outsider, org_b.id, OrgRole::Admin)
+        .await
+        .expect("outsider member");
+
+    // Seed one trace row for the team (the write path is slice s2's; here it is fixture data).
+    let request_id = uuid::Uuid::now_v7().to_string();
+    fp_storage::repos::ai_trace::upsert_trace_event(
+        &pool,
+        &fp_storage::repos::ai_trace::AiTraceEventUpsert {
+            team_id: team.id,
+            request_id: request_id.clone(),
+            trace_id: Some("0af7651916cd43dd8448eb211c80319c".into()),
+            route_config_id: fp_domain::RouteConfigId::from(uuid::Uuid::now_v7()),
+            listener_id: None,
+            provider_id: None,
+            model: Some("gpt-5".into()),
+            status_code: Some(200),
+            hops: serde_json::json!([
+                {"hop": "route_match", "started_at": "2026-07-04T00:00:00.100Z",
+                 "ended_at": "2026-07-04T00:00:00.200Z", "outcome": "matched",
+                 "origin": "listener", "failed": false, "detail": {}},
+                {"hop": "upstream", "started_at": "2026-07-04T00:00:00.300Z",
+                 "ended_at": "2026-07-04T00:00:00.900Z", "outcome": "ok",
+                 "origin": "upstream", "failed": false, "detail": {"status": 200}}
+            ]),
+        },
+    )
+    .await
+    .expect("seed trace row");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
+        discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
+    });
+    let request = |token: &str, path: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request")
+    };
+
+    // Hit: correlated hop timeline, no miss payload.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?request_id={request_id}",
+                team.name
+            ),
+        ))
+        .await
+        .expect("trace hit");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    let traces = body["traces"].as_array().expect("traces");
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0]["request_id"], request_id);
+    assert_eq!(traces[0]["trace_id"], "0af7651916cd43dd8448eb211c80319c");
+    let hops = traces[0]["hops"].as_array().expect("hops");
+    assert_eq!(hops[0]["hop"], "route_match");
+    assert_eq!(hops[1]["hop"], "upstream");
+    assert!(
+        body.get("miss").is_none(),
+        "hit must not carry a miss: {body}"
+    );
+
+    // trace_id filter returns the same row.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?trace_id=0af7651916cd43dd8448eb211c80319c&limit=5",
+                team.name
+            ),
+        ))
+        .await
+        .expect("trace by trace_id");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert!(body["traces"]
+        .as_array()
+        .expect("traces")
+        .iter()
+        .any(|t| t["request_id"] == request_id.as_str()));
+
+    // Miss: unknown request_id → distinguishable "no trace row found" with the hint naming
+    // the never-traced classes (design Risk 5).
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?request_id={}",
+                team.name,
+                uuid::Uuid::now_v7()
+            ),
+        ))
+        .await
+        .expect("trace miss");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert!(body["traces"].as_array().expect("traces").is_empty());
+    assert_eq!(body["miss"]["message"], "no trace row found");
+    let hint = body["miss"]["hint"].as_str().expect("miss hint");
+    for class in [
+        "TCP/TLS-level failures",
+        "client disconnect before request headers",
+        "pre-ExtProc declared-filter denials",
+    ] {
+        assert!(hint.contains(class), "hint must name {class:?}: {hint}");
+    }
+
+    // Cross-org: an org-B token querying team A's request_id gets 404 (org-boundary
+    // mapping) and zero rows — denied in the service before any repo read.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &outsider_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?request_id={request_id}",
+                team.name
+            ),
+        ))
+        .await
+        .expect("cross-org trace");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = json_of(response).await;
+    assert!(
+        body.get("traces").is_none(),
+        "denial must return no rows: {body}"
+    );
+
+    // Missing grant: a same-org member with other team grants but without (ai-usage, read)
+    // gets 403 naming the missing grant.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &member_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?request_id={request_id}",
+                team.name
+            ),
+        ))
+        .await
+        .expect("missing-grant trace");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = json_of(response).await;
+    assert_eq!(body["code"], "forbidden");
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("message")
+            .contains("ai-usage:read"),
+        "403 must name the missing grant: {body}"
     );
 }

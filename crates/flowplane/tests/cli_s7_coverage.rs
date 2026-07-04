@@ -144,6 +144,8 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "ai budgets delete",
     // ai usage
     "ai usage",
+    // ai trace
+    "ai trace",
     // rate-limit domain
     "rate-limit domain list",
     "rate-limit domain get",
