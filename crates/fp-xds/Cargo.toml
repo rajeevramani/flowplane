@@ -30,6 +30,7 @@ x509-parser = { workspace = true }
 [dev-dependencies]
 fp-core = { workspace = true }
 sha2 = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

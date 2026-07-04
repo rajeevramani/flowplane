@@ -26,9 +26,9 @@ use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
     openai_usage_from_json, prepare_openai_chat_request, rewrite_openai_chat_request_model,
-    strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec, ApiDefinitionId, CaptureSessionId,
-    DiscoverySessionId, DomainError, ListenerId, OpenAiTokenUsage, RouteConfigId, SecretSpec,
-    TeamId, AI_MODEL_HEADER,
+    strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec, AiTraceEvent, ApiDefinitionId,
+    CaptureSessionId, DiscoverySessionId, DomainError, ListenerId, OpenAiTokenUsage, RouteConfigId,
+    SecretSpec, TeamId, AI_MODEL_HEADER,
 };
 use fp_storage::repos::{ai, ai_trace, api_lifecycle, discovery, identity, secrets};
 use serde_json::{json, Map, Value};
@@ -1760,28 +1760,8 @@ async fn persist_ai_trace(pool: &sqlx::PgPool, state: &AiExtProcState, settlemen
     let is_upstream = state.trace_origin() == "upstream";
     let mut hops: Vec<Value> = state.hops.iter().map(TraceHop::to_json).collect();
     if is_upstream {
-        if let Some(usage) = state.last_usage {
-            let now = Utc::now();
-            hops.push(
-                TraceHop {
-                    hop: "usage",
-                    started_at: now,
-                    ended_at: now,
-                    outcome: match settlement {
-                        Some(true) => "settled",
-                        Some(false) => "settle_failed",
-                        None => "extracted",
-                    },
-                    origin: "upstream",
-                    failed: false,
-                    detail: json!({
-                        "prompt_tokens": usage.prompt_tokens,
-                        "completion_tokens": usage.completion_tokens,
-                        "total_tokens": usage.total_tokens,
-                    }),
-                }
-                .to_json(),
-            );
+        if let Some(usage_hop) = synthesized_usage_hop(state, settlement) {
+            hops.push(usage_hop.to_json());
         }
     } else if let Some(model) = &state.model {
         // The model routing header may only be known after the request body was parsed;
@@ -1819,9 +1799,140 @@ async fn persist_ai_trace(pool: &sqlx::PgPool, state: &AiExtProcState, settlemen
         },
         hops: Value::Array(hops),
     };
-    if let Err(err) = ai_trace::upsert_trace_event(pool, &event).await {
-        metrics::counter!("fp_ai_trace_dropped_total", "reason" => "db").increment(1);
-        tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to persist AI trace event: {}", err.message);
+    match ai_trace::upsert_trace_event(pool, &event).await {
+        Ok(outcome) => {
+            // The upsert's row lock serializes the request's stream writes, so exactly
+            // one of them observes the merged timeline flip to complete — that write
+            // emits the request's single span timeline, from the merged row.
+            if !ai_timeline_complete(&outcome.previous_hops)
+                && ai_timeline_complete(&outcome.event.hops)
+            {
+                emit_ai_trace_spans(&outcome.event);
+            }
+        }
+        Err(err) => {
+            metrics::counter!("fp_ai_trace_dropped_total", "reason" => "db").increment(1);
+            tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to persist AI trace event: {}", err.message);
+        }
+    }
+}
+
+/// The `usage` hop only exists at persistence time: the upstream stream extracts token
+/// counts from the response body and the settlement verdict is known after
+/// `persist_ai_usage` — so it is synthesized here rather than pushed during the stream.
+/// It lands in the merged row's hops, which is also what the span channel reads, so both
+/// report the same timeline.
+fn synthesized_usage_hop(state: &AiExtProcState, settlement: Option<bool>) -> Option<TraceHop> {
+    if state.trace_origin() != "upstream" {
+        return None;
+    }
+    let usage = state.last_usage?;
+    let now = Utc::now();
+    Some(TraceHop {
+        hop: "usage",
+        started_at: now,
+        ended_at: now,
+        outcome: match settlement {
+            Some(true) => "settled",
+            Some(false) => "settle_failed",
+            None => "extracted",
+        },
+        origin: "upstream",
+        failed: false,
+        detail: json!({
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        }),
+    })
+}
+
+/// Span target for the AI trace secondary channel, filterable via FLOWPLANE_LOG.
+const AI_TRACE_SPAN_TARGET: &str = "flowplane::ai_trace";
+
+/// Whether a merged hop timeline is the request's final shape. The listener stream always
+/// exists and owns `route_match`/`auth`, so a timeline without a listener-origin hop is
+/// still waiting for it; once the listener has contributed, the request is over either
+/// when some hop failed (it terminated locally or at the provider — the failure classes
+/// all record a `failed` hop: budget reject, credential failure, no-eligible-backend,
+/// `no_upstream_connection`, provider error) or when the upstream stream has merged its
+/// provider-side hops. A listener-only timeline with no failure means the upstream stream
+/// is still in flight. The one shape this never marks complete is a request torn down
+/// before its upstream stream ever opened or failed — best-effort channel, nothing emits.
+fn ai_timeline_complete(hops: &Value) -> bool {
+    let Some(hops) = hops.as_array() else {
+        return false;
+    };
+    fn origin(hop: &Value) -> &str {
+        hop.get("origin").and_then(Value::as_str).unwrap_or("")
+    }
+    let has_listener = hops.iter().any(|hop| origin(hop) == "listener");
+    let has_upstream = hops.iter().any(|hop| origin(hop) == "upstream");
+    let any_failed = hops
+        .iter()
+        .any(|hop| hop.get("failed").and_then(Value::as_bool).unwrap_or(false));
+    has_listener && (any_failed || has_upstream)
+}
+
+/// Emit the request's merged hop timeline as `tracing` spans — the design's best-effort
+/// secondary channel. Called from `persist_ai_trace` by exactly the write that completed
+/// the merged row, so one request yields one `ai_request` span carrying the full hop
+/// timeline across both ExtProc streams, never one partial tree per stream. Spans flow
+/// through the process-wide subscriber; the OTel layer installed at serve time exports
+/// them iff FLOWPLANE_OTLP_ENDPOINT is set. Purely observational: runs after the HTTP
+/// exchange completed and the primary DB row was persisted, and can affect neither. Hop
+/// wall-clock timing travels as span fields (`started_at`/`ended_at`/`duration_ms`)
+/// because `tracing` spans cannot be backdated; each hop span is parented under one
+/// per-request `ai_request` span.
+fn emit_ai_trace_spans(event: &AiTraceEvent) {
+    let Some(hops) = event.hops.as_array() else {
+        return;
+    };
+    if hops.is_empty() {
+        return;
+    }
+    let request_span = tracing::info_span!(
+        target: AI_TRACE_SPAN_TARGET,
+        "ai_request",
+        request_id = event.request_id.as_str(),
+        team_id = %event.team_id,
+        route_config_id = %event.route_config_id,
+        trace_id = event.trace_id.as_deref(),
+        model = event.model.as_deref(),
+        status_code = event.status_code,
+        failure_hop = event.failure_hop.as_deref(),
+    );
+    for hop in hops {
+        let text = |key: &str| hop.get(key).and_then(Value::as_str).unwrap_or("");
+        let name = text("hop");
+        let failed = hop.get("failed").and_then(Value::as_bool).unwrap_or(false);
+        let started_at = text("started_at");
+        let ended_at = text("ended_at");
+        let _hop_span = tracing::info_span!(
+            target: AI_TRACE_SPAN_TARGET,
+            parent: &request_span,
+            "ai_hop",
+            otel.name = name,
+            hop = name,
+            origin = text("origin"),
+            outcome = text("outcome"),
+            failed = failed,
+            started_at = started_at,
+            ended_at = ended_at,
+            duration_ms = hop_duration_ms(started_at, ended_at),
+        );
+    }
+}
+
+/// Millisecond width of a hop's `[started_at, ended_at]` window as stored in the row
+/// (RFC 3339 strings); 0 when either bound is missing or unparsable.
+fn hop_duration_ms(started_at: &str, ended_at: &str) -> i64 {
+    match (
+        DateTime::parse_from_rfc3339(started_at),
+        DateTime::parse_from_rfc3339(ended_at),
+    ) {
+        (Ok(started), Ok(ended)) => (ended - started).num_milliseconds(),
+        _ => 0,
     }
 }
 
@@ -4088,5 +4199,784 @@ mod tests {
                 "credential material must never appear in the trace row"
             );
         }
+    }
+
+    // ---- Slice s6: OTLP hop spans (secondary channel) ----
+
+    /// Test subscriber layer recording every new span's name, target, explicit parent,
+    /// and fields — enough to assert the `ai_request`/`ai_hop` hierarchy and payload.
+    #[derive(Clone, Default)]
+    struct SpanCapture {
+        spans: std::sync::Arc<std::sync::Mutex<Vec<CapturedSpan>>>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct CapturedSpan {
+        id: u64,
+        parent: Option<u64>,
+        name: String,
+        target: String,
+        fields: Map<String, Value>,
+    }
+
+    impl SpanCapture {
+        fn spans(&self) -> Vec<CapturedSpan> {
+            self.spans.lock().expect("span capture lock").clone()
+        }
+    }
+
+    struct FieldVisitor<'a>(&'a mut Map<String, Value>);
+
+    impl tracing::field::Visit for FieldVisitor<'_> {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0
+                .insert(field.name().to_string(), Value::String(value.to_string()));
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            self.0.insert(field.name().to_string(), Value::Bool(value));
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            self.0.insert(field.name().to_string(), json!(value));
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.0.insert(field.name().to_string(), json!(value));
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(
+                field.name().to_string(),
+                Value::String(format!("{value:?}")),
+            );
+        }
+    }
+
+    impl<S> tracing_subscriber::Layer<S> for SpanCapture
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            id: &tracing::span::Id,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Map::new();
+            attrs.record(&mut FieldVisitor(&mut fields));
+            let parent = attrs
+                .parent()
+                .cloned()
+                .or_else(|| ctx.current_span().id().cloned())
+                .map(|id| id.into_u64());
+            self.spans
+                .lock()
+                .expect("span capture lock")
+                .push(CapturedSpan {
+                    id: id.into_u64(),
+                    parent,
+                    name: attrs.metadata().name().to_string(),
+                    target: attrs.metadata().target().to_string(),
+                    fields,
+                });
+        }
+    }
+
+    #[test]
+    fn ai_timeline_complete_requires_listener_contribution_and_a_terminal_signal() {
+        let hop =
+            |origin: &str, failed: bool| json!({"hop": "x", "origin": origin, "failed": failed});
+        // Waiting shapes: nothing merged yet, upstream-only (the listener stream always
+        // exists and is still to contribute), listener-only with no failure (the upstream
+        // stream is still in flight).
+        assert!(!ai_timeline_complete(&json!([])));
+        assert!(!ai_timeline_complete(&Value::Null));
+        assert!(!ai_timeline_complete(&json!([hop("upstream", false)])));
+        assert!(!ai_timeline_complete(&json!([hop("listener", false)])));
+        // Terminal shapes: a failed hop (the request ended locally or at the provider),
+        // or both streams' contributions merged.
+        assert!(ai_timeline_complete(&json!([hop("listener", true)])));
+        assert!(ai_timeline_complete(&json!([
+            hop("listener", false),
+            hop("upstream", false)
+        ])));
+    }
+
+    /// The merged-row shape `emit_ai_trace_spans` reads: identity columns plus the hops
+    /// JSON exactly as `upsert_trace_event` returns them.
+    fn merged_trace_event(request_id: &str, hops: Value) -> AiTraceEvent {
+        AiTraceEvent {
+            id: Uuid::now_v7(),
+            team_id: TeamId::from(Uuid::now_v7()),
+            request_id: request_id.into(),
+            trace_id: Some("0af7651916cd43dd8448eb211c80319c".into()),
+            route_config_id: RouteConfigId::from(Uuid::now_v7()),
+            listener_id: None,
+            provider_id: None,
+            model: Some("gpt-5".into()),
+            status_code: Some(200),
+            failure_hop: None,
+            hops,
+            created_at: Utc::now(),
+            expires_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn ai_trace_spans_emit_the_merged_row_timeline_under_one_request_span() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let hop = |name: &str, origin: &str, outcome: &str, failed: bool, second: u32| {
+            json!({
+                "hop": name,
+                "started_at": format!("2026-07-04T00:00:0{second}.000000Z"),
+                "ended_at": format!("2026-07-04T00:00:0{second}.250000Z"),
+                "outcome": outcome,
+                "origin": origin,
+                "failed": failed,
+                "detail": {},
+            })
+        };
+        let event = merged_trace_event(
+            "req-spans-ok",
+            json!([
+                hop("route_match", "listener", "matched", false, 0),
+                hop("auth", "listener", "not_configured", false, 1),
+                hop("budget", "upstream", "allowed", false, 2),
+                hop("credential_injection", "upstream", "injected", false, 3),
+                hop("upstream", "upstream", "ok", false, 4),
+                hop("usage", "upstream", "settled", false, 5),
+            ]),
+        );
+
+        let capture = SpanCapture::default();
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(capture.clone()),
+            || emit_ai_trace_spans(&event),
+        );
+
+        let spans = capture.spans();
+        let requests: Vec<&CapturedSpan> = spans
+            .iter()
+            .filter(|span| span.name == "ai_request")
+            .collect();
+        assert_eq!(requests.len(), 1, "exactly one per-request span");
+        let request = requests[0];
+        assert_eq!(request.target, AI_TRACE_SPAN_TARGET);
+        assert_eq!(request.parent, None);
+        assert_eq!(request.fields["request_id"], json!("req-spans-ok"));
+        assert_eq!(request.fields["status_code"], json!(200));
+        assert_eq!(request.fields["model"], json!("gpt-5"));
+        assert_eq!(
+            request.fields["trace_id"],
+            json!("0af7651916cd43dd8448eb211c80319c")
+        );
+        assert!(
+            !request.fields.contains_key("failure_hop"),
+            "no failure on the success shape"
+        );
+
+        let hop_spans: Vec<&CapturedSpan> =
+            spans.iter().filter(|span| span.name == "ai_hop").collect();
+        let names: Vec<&str> = hop_spans
+            .iter()
+            .map(|span| span.fields["hop"].as_str().expect("hop field"))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "route_match",
+                "auth",
+                "budget",
+                "credential_injection",
+                "upstream",
+                "usage"
+            ],
+            "the full merged timeline — listener- and upstream-side hops — in row order"
+        );
+        for hop in &hop_spans {
+            assert_eq!(
+                hop.parent,
+                Some(request.id),
+                "hop span {:?} must nest under the per-request span",
+                hop.fields.get("hop")
+            );
+            assert_eq!(hop.target, AI_TRACE_SPAN_TARGET);
+            assert_eq!(
+                hop.fields["otel.name"], hop.fields["hop"],
+                "exported span name follows the hop name"
+            );
+            assert_eq!(
+                hop.fields["duration_ms"],
+                json!(250),
+                "duration derives from the row's started_at/ended_at window"
+            );
+        }
+        let usage = hop_spans
+            .iter()
+            .find(|span| span.fields["hop"] == "usage")
+            .expect("usage hop span");
+        assert_eq!(usage.fields["outcome"], json!("settled"));
+        assert_eq!(usage.fields["failed"], json!(false));
+
+        // Guards: an empty or missing hop array emits nothing.
+        let quiet = SpanCapture::default();
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(quiet.clone()),
+            || {
+                emit_ai_trace_spans(&merged_trace_event("req-empty", json!([])));
+                emit_ai_trace_spans(&merged_trace_event("req-null", Value::Null));
+            },
+        );
+        assert!(quiet.spans().is_empty(), "no spans for an empty timeline");
+    }
+
+    #[test]
+    fn ai_trace_spans_reject_shape_marks_failed_hop_and_failure_hop_field() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let stamp = "2026-07-04T00:00:00.000000Z";
+        let mut event = merged_trace_event(
+            "req-spans-reject",
+            json!([
+                {"hop": "route_match", "started_at": stamp, "ended_at": stamp, "outcome": "matched", "origin": "listener", "failed": false, "detail": {}},
+                {"hop": "auth", "started_at": stamp, "ended_at": stamp, "outcome": "not_configured", "origin": "listener", "failed": false, "detail": {}},
+                {"hop": "budget", "started_at": stamp, "ended_at": stamp, "outcome": "rejected", "origin": "upstream", "failed": true, "detail": {"mode": "enforcing"}},
+            ]),
+        );
+        event.trace_id = None;
+        event.model = None;
+        event.status_code = None;
+        event.failure_hop = Some("budget".into());
+
+        let capture = SpanCapture::default();
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(capture.clone()),
+            || emit_ai_trace_spans(&event),
+        );
+
+        let spans = capture.spans();
+        let request = spans
+            .iter()
+            .find(|span| span.name == "ai_request")
+            .expect("per-request span");
+        assert_eq!(request.fields["request_id"], json!("req-spans-reject"));
+        assert_eq!(request.fields["failure_hop"], json!("budget"));
+        assert!(
+            !request.fields.contains_key("status_code"),
+            "no response status was observed on the reject path"
+        );
+        let budget = spans
+            .iter()
+            .find(|span| span.name == "ai_hop" && span.fields["hop"] == "budget")
+            .expect("budget hop span");
+        assert_eq!(budget.parent, Some(request.id));
+        assert_eq!(budget.fields["outcome"], json!("rejected"));
+        assert_eq!(budget.fields["failed"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn ai_trace_success_two_stream_capture_emits_one_merged_span_timeline() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        use aes_gcm::aead::Aead;
+        use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+        use base64::Engine as _;
+
+        let key = *b"12345678901234567890123456789012";
+        std::env::set_var("FLOWPLANE_SECRET_ENCRYPTION_KEY_ID", "default");
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            String::from_utf8_lossy(&key).to_string(),
+        );
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+
+        let secret_value = "Bearer fp-span-secret-value";
+        let spec = SecretSpec::GenericSecret {
+            secret: base64::engine::general_purpose::STANDARD.encode(secret_value),
+        };
+        let plaintext = serde_json::to_vec(&spec).expect("secret json");
+        let nonce = [9_u8; 12];
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+            .expect("encrypt");
+
+        let secret_id = Uuid::now_v7();
+        let provider_id = Uuid::now_v7();
+        let route_id = Uuid::now_v7();
+        let route_config_id = Uuid::now_v7();
+        let listener_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secrets \
+             (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+             VALUES ($1, $2, $3, 'ai-span-key', '', 'generic_secret', $4, $5, 'default')",
+        )
+        .bind(secret_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(ciphertext)
+        .bind(nonce.to_vec())
+        .execute(&pool)
+        .await
+        .expect("secret");
+        sqlx::query(
+            "INSERT INTO ai_providers \
+             (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
+             VALUES ($1, $2, $3, 'openai-span', 'openai', 'https://api.openai.com', NULL, $4, 'authorization')",
+        )
+        .bind(provider_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .expect("provider");
+        sqlx::query(
+            "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+             VALUES ($1, $2, $3, 'ai-span-routes', '{}'::jsonb)",
+        )
+        .bind(route_config_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("route config");
+        let route_spec = serde_json::json!({
+            "listener_port": 19101,
+            "path": "/v1/chat/completions",
+            "backends": [{
+                "provider_id": provider_id,
+                "models": [],
+                "weight": 1,
+                "priority": 0
+            }]
+        });
+        sqlx::query(
+            "INSERT INTO ai_routes \
+             (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
+             VALUES ($1, $2, $3, 'ai-span-route', $4, ARRAY['ai-span-b1'], 'ai-span-routes', 'ai-span-listener')",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(route_spec)
+        .execute(&pool)
+        .await
+        .expect("ai route");
+        sqlx::query(
+            "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
+             VALUES ($1, $2, $3, 0)",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(provider_id)
+        .execute(&pool)
+        .await
+        .expect("backend");
+
+        let request_id = Uuid::now_v7().to_string();
+        let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        let request_headers = || ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: [
+                            (":path", "/v1/chat/completions"),
+                            ("x-request-id", request_id.as_str()),
+                            (AI_MODEL_HEADER, "gpt-5"),
+                            ("traceparent", traceparent),
+                        ]
+                        .into_iter()
+                        .map(|(key, value)| HeaderValue {
+                            key: key.into(),
+                            value: value.into(),
+                            raw_value: Vec::new(),
+                        })
+                        .collect(),
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let request_body = ProcessingRequest {
+            request: Some(processing_request::Request::RequestBody(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                    body: br#"{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}"#
+                        .to_vec(),
+                    end_of_stream: true,
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let response_headers = || ProcessingRequest {
+            request: Some(processing_request::Request::ResponseHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":status".into(),
+                                value: "200".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "content-type".into(),
+                                value: "application/json".into(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let response_body = || {
+            ProcessingRequest {
+            request: Some(processing_request::Request::ResponseBody(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                    body: br#"{"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#.to_vec(),
+                    end_of_stream: true,
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+        };
+
+        // Thread-scoped default subscriber: the current-thread runtime polls the
+        // production stream tasks on this thread, so their spans land in the capture.
+        let capture = SpanCapture::default();
+        let _subscriber_guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(capture.clone()));
+
+        // Listener-side stream first, driven through the production stream loop: it owns
+        // route_match/auth (and the single-backend budget/credential gates) plus the row
+        // identity columns, and persists at stream end.
+        let mut rx = ai_process_stream(
+            pool.clone(),
+            tokio_stream::iter(vec![
+                Ok(request_headers()),
+                Ok(request_body),
+                Ok(response_headers()),
+                Ok(response_body()),
+            ]),
+            Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: Some(ListenerId::from(listener_id)),
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: Vec::new(),
+            }),
+        );
+        while rx.recv().await.is_some() {}
+        assert!(
+            !capture
+                .spans()
+                .iter()
+                .any(|span| span.target == AI_TRACE_SPAN_TARGET),
+            "no partial span tree while the upstream stream is still outstanding"
+        );
+
+        // Upstream-side stream completes the request: provider-side budget/credential
+        // hops, the upstream exchange, and usage settlement. Its stream-end persist is
+        // the write that completes the merged row, so it emits the one span timeline.
+        let mut rx = ai_process_stream(
+            pool.clone(),
+            tokio_stream::iter(vec![
+                Ok(request_headers()),
+                Ok(response_headers()),
+                Ok(response_body()),
+            ]),
+            Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: Some(AiProviderId::from(provider_id)),
+                backend_position: Some(0),
+                failover_chain: Vec::new(),
+            }),
+        );
+        while rx.recv().await.is_some() {}
+
+        // Primary channel: exactly one merged row.
+        let rows = fp_storage::repos::ai_trace::list_trace_events(
+            &pool,
+            team.id,
+            fp_storage::repos::ai_trace::AiTraceQuery {
+                request_id: Some(&request_id),
+                trace_id: None,
+                limit: 10,
+            },
+        )
+        .await
+        .expect("list trace events");
+        assert_eq!(rows.len(), 1, "both streams merged into one trace row");
+        let row = &rows[0];
+        assert_eq!(row.status_code, Some(200));
+        assert_eq!(row.failure_hop, None);
+
+        // Secondary channel: one per-request span carrying the full merged timeline.
+        let spans = capture.spans();
+        let requests: Vec<&CapturedSpan> = spans
+            .iter()
+            .filter(|span| span.name == "ai_request")
+            .collect();
+        assert_eq!(
+            requests.len(),
+            1,
+            "one span timeline per request, not one per ExtProc stream"
+        );
+        let request = requests[0];
+        assert_eq!(request.fields["request_id"], json!(request_id));
+        assert_eq!(
+            request.fields["trace_id"],
+            json!("0af7651916cd43dd8448eb211c80319c")
+        );
+        assert_eq!(request.fields["model"], json!("gpt-5"));
+        assert_eq!(request.fields["status_code"], json!(200));
+        assert!(!request.fields.contains_key("failure_hop"));
+
+        let hop_spans: Vec<&CapturedSpan> =
+            spans.iter().filter(|span| span.name == "ai_hop").collect();
+        let names: Vec<&str> = hop_spans
+            .iter()
+            .map(|span| span.fields["hop"].as_str().expect("hop field"))
+            .collect();
+        for expected in [
+            "route_match",
+            "auth",
+            "budget",
+            "credential_injection",
+            "upstream",
+            "usage",
+        ] {
+            assert_eq!(
+                names.iter().filter(|name| **name == expected).count(),
+                1,
+                "expected exactly one {expected} hop span, got {names:?}"
+            );
+        }
+        for hop in &hop_spans {
+            assert_eq!(
+                hop.parent,
+                Some(request.id),
+                "hop span {:?} must nest under the per-request span",
+                hop.fields.get("hop")
+            );
+        }
+        let usage = hop_spans
+            .iter()
+            .find(|span| span.fields["hop"] == "usage")
+            .expect("usage hop span");
+        assert_eq!(usage.fields["outcome"], json!("settled"));
+
+        // The span timeline and the persisted row describe the same request, hop for hop.
+        let row_names: Vec<&str> = row
+            .hops
+            .as_array()
+            .expect("hops array")
+            .iter()
+            .map(|hop| hop["hop"].as_str().expect("hop name"))
+            .collect();
+        assert_eq!(
+            names, row_names,
+            "span timeline mirrors the merged row, in row order"
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_budget_reject_two_stream_capture_emits_one_failed_span_timeline() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+
+        let budget_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO ai_budgets \
+             (id, team_id, org_id, name, mode, limit_units, window_seconds, provider_id, route_config_id, prompt_token_weight, completion_token_weight) \
+             VALUES ($1, $2, $3, 'span-reject-stop', 'enforcing', 1, 3600, NULL, NULL, 1, 1)",
+        )
+        .bind(budget_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("budget");
+        sqlx::query(
+            "INSERT INTO ai_budget_counters (budget_id, team_id, window_start, used_units) \
+             VALUES ($1, $2, to_timestamp(floor(extract(epoch FROM now()) / 3600) * 3600), 5)",
+        )
+        .bind(budget_id)
+        .bind(team.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("counter");
+
+        let route_config_id = RouteConfigId::from(Uuid::now_v7());
+        let request_id = Uuid::now_v7().to_string();
+        let headers = || ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":path".into(),
+                                value: "/v1/chat/completions".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "x-request-id".into(),
+                                value: request_id.clone(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+
+        // Thread-scoped default subscriber: the current-thread runtime polls the
+        // production stream tasks on this thread, so their spans land in the capture.
+        let capture = SpanCapture::default();
+        let _subscriber_guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(capture.clone()));
+
+        // Listener-side stream: records route_match/auth; the request is then rejected on
+        // the upstream side, so this stream closes with no response passthrough and its
+        // persist leaves the timeline incomplete — no spans yet.
+        let mut rx = ai_process_stream(
+            pool.clone(),
+            tokio_stream::iter(vec![Ok(headers())]),
+            Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: Some(ListenerId::from(Uuid::now_v7())),
+                route_config_id,
+                provider_id: None,
+                backend_position: None,
+                failover_chain: Vec::new(),
+            }),
+        );
+        while rx.recv().await.is_some() {}
+        assert!(
+            !capture
+                .spans()
+                .iter()
+                .any(|span| span.target == AI_TRACE_SPAN_TARGET),
+            "a listener-only timeline without a failure is not emitted"
+        );
+
+        // Upstream-side stream: the enforcing budget rejects with an immediate response.
+        let mut rx = ai_process_stream(
+            pool.clone(),
+            tokio_stream::iter(vec![Ok(headers())]),
+            Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id,
+                provider_id: Some(AiProviderId::from(Uuid::now_v7())),
+                backend_position: Some(0),
+                failover_chain: Vec::new(),
+            }),
+        );
+        let response = rx.recv().await.expect("immediate response");
+        assert!(matches!(
+            response.expect("response ok").response,
+            Some(processing_response::Response::ImmediateResponse(_))
+        ));
+        while rx.recv().await.is_some() {}
+
+        // The immediate-response path also persists a snapshot from a detached task; let
+        // it run to prove the transition rule never duplicates the span timeline.
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let rows = fp_storage::repos::ai_trace::list_trace_events(
+            &pool,
+            team.id,
+            fp_storage::repos::ai_trace::AiTraceQuery {
+                request_id: Some(&request_id),
+                trace_id: None,
+                limit: 10,
+            },
+        )
+        .await
+        .expect("list trace events");
+        assert_eq!(rows.len(), 1, "both streams merged into one trace row");
+        assert_eq!(rows[0].failure_hop.as_deref(), Some("budget"));
+
+        let spans = capture.spans();
+        let requests: Vec<&CapturedSpan> = spans
+            .iter()
+            .filter(|span| span.name == "ai_request")
+            .collect();
+        assert_eq!(
+            requests.len(),
+            1,
+            "the span timeline is emitted exactly once, by the write that completed the row"
+        );
+        let request = requests[0];
+        assert_eq!(
+            request.fields["request_id"],
+            json!(request_id),
+            "the span timeline and the DB row describe the same request"
+        );
+        assert_eq!(request.fields["failure_hop"], json!("budget"));
+        assert!(
+            !request.fields.contains_key("status_code"),
+            "no response status was observed on the reject path"
+        );
+
+        let hop_spans: Vec<&CapturedSpan> =
+            spans.iter().filter(|span| span.name == "ai_hop").collect();
+        let names: Vec<&str> = hop_spans
+            .iter()
+            .map(|span| span.fields["hop"].as_str().expect("hop field"))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["route_match", "auth", "budget"],
+            "the full per-request timeline across both streams, not just the rejecting stream's hops"
+        );
+        for hop in &hop_spans {
+            assert_eq!(hop.parent, Some(request.id));
+        }
+        let budget_span = hop_spans
+            .iter()
+            .find(|span| span.fields["hop"] == "budget")
+            .expect("budget hop span");
+        assert_eq!(budget_span.fields["outcome"], json!("rejected"));
+        assert_eq!(budget_span.fields["failed"], json!(true));
     }
 }

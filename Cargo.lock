@@ -996,6 +996,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "x509-parser",
 ]

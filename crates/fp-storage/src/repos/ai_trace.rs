@@ -47,6 +47,17 @@ pub struct AiTraceEventUpsert {
     pub hops: Value,
 }
 
+/// One stream's merge outcome: the row as it stands after this write, plus the hops that
+/// were already stored before it. The pair is captured atomically under the upsert's row
+/// lock, so the capture layer can detect the exact write that completed the per-request
+/// timeline — its span emission must fire exactly once per request, whichever stream's
+/// write lands last.
+#[derive(Debug, Clone)]
+pub struct AiTraceUpsertOutcome {
+    pub previous_hops: Value,
+    pub event: AiTraceEvent,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AiTraceQuery<'a> {
     pub request_id: Option<&'a str>,
@@ -79,7 +90,10 @@ fn trace_event_from_row(row: &PgRow) -> AiTraceEvent {
 /// Insert-or-merge one stream's trace contribution. The whole operation runs in one
 /// transaction with a row lock, so concurrent listener/upstream writes serialize and
 /// converge to the same row regardless of arrival order.
-pub async fn upsert_trace_event(pool: &PgPool, event: &AiTraceEventUpsert) -> DomainResult<()> {
+pub async fn upsert_trace_event(
+    pool: &PgPool,
+    event: &AiTraceEventUpsert,
+) -> DomainResult<AiTraceUpsertOutcome> {
     let mut tx = pool
         .begin()
         .await
@@ -119,7 +133,7 @@ pub async fn upsert_trace_event(pool: &PgPool, event: &AiTraceEventUpsert) -> Do
     .map_err(|e| DomainError::internal(format!("lock AI trace event: {e}")))?;
     let merged = merge_hops(&existing, &event.hops);
     let failure_hop = derive_failure_hop(&merged);
-    sqlx::query(
+    let row = sqlx::query(&format!(
         "UPDATE ai_trace_events SET \
            trace_id = COALESCE(trace_id, $3), \
            listener_id = COALESCE(listener_id, $4), \
@@ -128,8 +142,9 @@ pub async fn upsert_trace_event(pool: &PgPool, event: &AiTraceEventUpsert) -> Do
            status_code = COALESCE(status_code, $7), \
            hops = $8, \
            failure_hop = $9 \
-         WHERE team_id = $1 AND request_id = $2",
-    )
+         WHERE team_id = $1 AND request_id = $2 \
+         RETURNING {TRACE_COLUMNS}"
+    ))
     .bind(event.team_id.as_uuid())
     .bind(&event.request_id)
     .bind(&event.trace_id)
@@ -139,13 +154,16 @@ pub async fn upsert_trace_event(pool: &PgPool, event: &AiTraceEventUpsert) -> Do
     .bind(event.status_code)
     .bind(&merged)
     .bind(failure_hop)
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| DomainError::internal(format!("merge AI trace event: {e}")))?;
     tx.commit()
         .await
         .map_err(|e| DomainError::internal(format!("upsert AI trace event: commit: {e}")))?;
-    Ok(())
+    Ok(AiTraceUpsertOutcome {
+        previous_hops: existing,
+        event: trace_event_from_row(&row),
+    })
 }
 
 pub async fn list_trace_events(
