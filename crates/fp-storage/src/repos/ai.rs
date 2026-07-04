@@ -175,6 +175,52 @@ pub async fn exhausted_enforcing_budget(
     .map_err(|e| DomainError::internal(format!("check AI budget capacity: {e}")))
 }
 
+/// One matching shadow budget's current standing, read for trace annotation only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowBudgetEvaluation {
+    pub name: String,
+    pub used_units: i64,
+    pub limit_units: i64,
+}
+
+/// Read-only shadow-budget evaluation for the trace `budget` hop (design AC 3): returns
+/// every `mode='shadow'` budget matching this (team, route config, provider) scope with
+/// its current-window usage, so capture can record `would_reject` without ever gating the
+/// request. Never writes: counters are settled only by usage settlement.
+pub async fn evaluate_shadow_budgets(
+    pool: &PgPool,
+    team_id: TeamId,
+    route_config_id: RouteConfigId,
+    provider_id: AiProviderId,
+) -> DomainResult<Vec<ShadowBudgetEvaluation>> {
+    let rows = sqlx::query(
+        "SELECT b.name, COALESCE(c.used_units, 0) AS used_units, b.limit_units \
+         FROM ai_budgets b \
+         LEFT JOIN ai_budget_counters c \
+           ON c.budget_id = b.id \
+          AND c.window_start = to_timestamp(floor(extract(epoch FROM now()) / b.window_seconds) * b.window_seconds) \
+         WHERE b.team_id = $1 \
+           AND b.mode = 'shadow' \
+           AND (b.provider_id IS NULL OR b.provider_id = $2) \
+           AND (b.route_config_id IS NULL OR b.route_config_id = $3) \
+         ORDER BY b.name",
+    )
+    .bind(team_id.as_uuid())
+    .bind(provider_id.as_uuid())
+    .bind(route_config_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("evaluate AI shadow budgets: {e}")))?;
+    Ok(rows
+        .iter()
+        .map(|row| ShadowBudgetEvaluation {
+            name: row.get("name"),
+            used_units: row.get("used_units"),
+            limit_units: row.get("limit_units"),
+        })
+        .collect())
+}
+
 async fn insert_usage_event_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     event: &AiUsageEventInsert,

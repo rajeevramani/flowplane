@@ -99,6 +99,7 @@ struct AiExtProcState {
     trace_id: Option<String>,
     model: Option<String>,
     request_headers_at: Option<DateTime<Utc>>,
+    response_body_end_seen: bool,
     hops: Vec<TraceHop>,
 }
 
@@ -167,6 +168,66 @@ impl AiExtProcState {
             detail,
         });
     }
+
+    /// Re-verdict an already-recorded hop as failed — used when a hop's outcome is only
+    /// knowable after it was opened (e.g. `route_match` turning out to have no eligible
+    /// backend once the model header is resolved against the route spec).
+    fn fail_hop(&mut self, hop: &'static str, outcome: &'static str) {
+        if let Some(entry) = self.hops.iter_mut().find(|entry| entry.hop == hop) {
+            entry.outcome = outcome;
+            entry.failed = true;
+            entry.ended_at = Utc::now().max(entry.started_at);
+        }
+    }
+}
+
+/// Verdict vocabulary of the `budget` hop (design AC 2/3): an exhausted enforcing budget
+/// rejects the request, an exhausted shadow budget only records that it *would* have.
+fn budget_verdict(enforcing: bool, exhausted: bool) -> &'static str {
+    match (enforcing, exhausted) {
+        (true, true) => "rejected",
+        (false, true) => "would_reject",
+        (_, false) => "allowed",
+    }
+}
+
+/// Map read-only shadow evaluations into the `budget` hop's `shadow` detail entries.
+fn shadow_budget_entries(evaluations: &[ai::ShadowBudgetEvaluation]) -> Value {
+    Value::Array(
+        evaluations
+            .iter()
+            .map(|eval| {
+                json!({
+                    "budget": eval.name,
+                    "verdict": budget_verdict(false, eval.used_units >= eval.limit_units),
+                    "used_units": eval.used_units,
+                    "limit_units": eval.limit_units,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Detail for an allowed enforcing-budget hop: matching shadow budgets are additionally
+/// evaluated read-only (design AC 3) and recorded per budget; evaluation failure degrades
+/// to an unannotated hop and never affects the request.
+async fn budget_allowed_detail(
+    pool: &sqlx::PgPool,
+    team_id: TeamId,
+    route_config_id: RouteConfigId,
+    provider_id: AiProviderId,
+) -> Value {
+    let mut detail = json!({"mode": "enforcing", "verdict": budget_verdict(true, false)});
+    match ai::evaluate_shadow_budgets(pool, team_id, route_config_id, provider_id).await {
+        Ok(evaluations) if !evaluations.is_empty() => {
+            detail["shadow"] = shadow_budget_entries(&evaluations);
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::debug!(team = %team_id, route_config = %route_config_id, "failed to evaluate AI shadow budgets: {}", err.message);
+        }
+    }
+    detail
 }
 
 /// Extract the 32-hex trace-id field from a W3C `traceparent` header value.
@@ -350,11 +411,17 @@ impl ExternalProcessor for LearningCaptureService {
     }
 }
 
-fn ai_process_stream(
+/// Generic over the message source so integration tests can drive the exact production
+/// loop with an in-memory stream (`tonic::Streaming` implements the same `Stream` shape).
+fn ai_process_stream<S>(
     pool: sqlx::PgPool,
-    mut stream: Streaming<ProcessingRequest>,
+    mut stream: S,
     context: Option<AiExtProcContext>,
-) -> tokio::sync::mpsc::Receiver<Result<ProcessingResponse, Status>> {
+) -> tokio::sync::mpsc::Receiver<Result<ProcessingResponse, Status>>
+where
+    S: tokio_stream::Stream<Item = Result<ProcessingRequest, Status>> + Send + Unpin + 'static,
+{
+    use tokio_stream::StreamExt;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProcessingResponse, Status>>(16);
     tokio::spawn(async move {
         let mut state = AiExtProcState {
@@ -362,24 +429,69 @@ fn ai_process_stream(
             ..Default::default()
         };
         loop {
-            match stream.message().await {
-                Ok(Some(message)) => {
+            match stream.next().await {
+                Some(Ok(message)) => {
                     let response = ai_response_with_pool(&pool, &mut state, message).await;
+                    let immediate = matches!(
+                        response.response,
+                        Some(processing_response::Response::ImmediateResponse(_))
+                    );
                     if tx.send(Ok(response)).await.is_err() {
                         break;
                     }
+                    if immediate {
+                        // Immediate responses (budget reject, credential failure) end HTTP
+                        // processing for the request; persist the row best-effort off this
+                        // fast path (design Risk 1) — never awaited before the client sees
+                        // the response. The stream-end persist below merges idempotently.
+                        let pool = pool.clone();
+                        let snapshot = state.clone();
+                        tokio::spawn(async move {
+                            persist_ai_trace(&pool, &snapshot, None).await;
+                        });
+                    }
                 }
-                Ok(None) => break,
-                Err(status) => {
+                None => break,
+                Some(Err(status)) => {
                     tracing::debug!(code = ?status.code(), message = %status.message(), "AI ExtProc stream ended with error");
                     break;
                 }
             }
         }
+        note_ai_client_disconnect(&mut state);
         let settlement = persist_ai_usage(&pool, &state).await;
         persist_ai_trace(&pool, &state, settlement).await;
     });
     rx
+}
+
+/// A client that disconnects mid-SSE tears both streams down before the response body
+/// completes. The upstream-side stream had already recorded its `upstream` hop as `ok`
+/// at response headers; rewrite it so the persisted partial row says what happened
+/// (design Risk 6). Not flagged failed: the gateway and provider did not fail.
+fn note_ai_client_disconnect(state: &mut AiExtProcState) {
+    if state.trace_origin() != "upstream" {
+        return;
+    }
+    if state.response_body_end_seen || state.last_usage.is_some() {
+        return;
+    }
+    let sse = state.response_content_type.as_deref().is_some_and(|value| {
+        value
+            .split(';')
+            .any(|part| part.trim() == "text/event-stream")
+    });
+    if !sse {
+        return;
+    }
+    if let Some(hop) = state
+        .hops
+        .iter_mut()
+        .find(|hop| hop.hop == "upstream" && hop.outcome == "ok")
+    {
+        hop.outcome = "client_disconnect";
+        hop.ended_at = Utc::now().max(hop.started_at);
+    }
 }
 
 fn is_ai_processor(metadata: &MetadataMap) -> bool {
@@ -917,6 +1029,7 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
                 .or_else(|| header_value(&map, "Content-Type"))
                 .map(|value| value.to_ascii_lowercase());
             note_ai_upstream_response(state);
+            note_ai_missing_upstream(state);
             response_headers_response(CommonResponse {
                 status: common_response::ResponseStatus::Continue as i32,
                 ..Default::default()
@@ -948,6 +1061,9 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
             }
         }
         processing_request::Request::ResponseBody(body) => {
+            if body.end_of_stream {
+                state.response_body_end_seen = true;
+            }
             let mutation = ai_response_body_mutation(state, body.body, body.end_of_stream);
             if let Some(body) = mutation {
                 response_body_response(CommonResponse {
@@ -968,12 +1084,25 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
     }
 }
 
+/// Outcome of resolving the model header against the route's backends on the listener side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendEligibility {
+    /// Exactly one backend matches — the listener stream owns budget + credential hops.
+    Single(AiProviderId, i32),
+    /// Zero backends match: the materialized route serves the direct 400
+    /// `no_eligible_ai_backend` (design AC 11) — mark the `route_match` hop failed.
+    NoneEligible,
+    /// More than one backend matches (weighted cluster) or the spec was not resolvable;
+    /// selection and provider-side hops belong to the upstream stream.
+    Deferred,
+}
+
 async fn single_eligible_backend(
     pool: &sqlx::PgPool,
     team_id: TeamId,
     route_config_id: RouteConfigId,
     model: &str,
-) -> Result<Option<(AiProviderId, i32)>, DomainError> {
+) -> Result<BackendEligibility, DomainError> {
     let row = sqlx::query_scalar::<_, serde_json::Value>(
         "SELECT r.spec \
          FROM ai_routes r \
@@ -986,7 +1115,7 @@ async fn single_eligible_backend(
     .await
     .map_err(|err| DomainError::internal(format!("load AI route for backend selection: {err}")))?;
     let Some(spec) = row else {
-        return Ok(None);
+        return Ok(BackendEligibility::Deferred);
     };
     let spec: AiRouteSpec = serde_json::from_value(spec).map_err(|err| {
         DomainError::internal(format!("AI route spec in DB does not parse: {err}"))
@@ -995,12 +1124,12 @@ async fn single_eligible_backend(
         backend.models.is_empty() || backend.models.iter().any(|m| m == model)
     });
     let Some((idx, backend)) = eligible.next() else {
-        return Ok(None);
+        return Ok(BackendEligibility::NoneEligible);
     };
     if eligible.next().is_some() {
-        return Ok(None);
+        return Ok(BackendEligibility::Deferred);
     }
-    Ok(Some((backend.provider_id, idx as i32)))
+    Ok(BackendEligibility::Single(backend.provider_id, idx as i32))
 }
 
 async fn ai_request_headers_response(
@@ -1030,7 +1159,7 @@ async fn ai_request_headers_response(
                 budget_started,
                 "rejected",
                 true,
-                json!({"mode": "enforcing", "budget": name}),
+                json!({"mode": "enforcing", "verdict": budget_verdict(true, true), "budget": name}),
             );
             metrics::counter!(
                 "fp_ai_budget_threshold_crossings_total",
@@ -1045,13 +1174,10 @@ async fn ai_request_headers_response(
             );
         }
         Ok(None) => {
-            state.push_hop(
-                "budget",
-                budget_started,
-                "allowed",
-                false,
-                json!({"mode": "enforcing"}),
-            );
+            let detail =
+                budget_allowed_detail(pool, context.team_id, context.route_config_id, provider_id)
+                    .await;
+            state.push_hop("budget", budget_started, "allowed", false, detail);
         }
         Err(err) => {
             state.push_hop(
@@ -1116,13 +1242,20 @@ async fn ai_request_headers_response(
                 ..Default::default()
             })
         }
-        Err(_) => {
-            state.push_hop(
-                "credential_injection",
+        Err(failure) => {
+            tracing::debug!(
+                team = %context.team_id,
+                route_config = %context.route_config_id,
+                code = ?failure.status.code(),
+                "AI credential injection failed: {}",
+                failure.status.message()
+            );
+            push_credential_failure_hop(
+                state,
                 credential_started,
-                "unavailable",
-                true,
-                json!({"provider_id": provider_id, "backend_position": backend_position}),
+                provider_id,
+                backend_position,
+                &failure,
             );
             immediate_response(500, "AI provider credential unavailable".into())
         }
@@ -1192,8 +1325,16 @@ async fn ai_listener_request_headers_response(
     )
     .await
     {
-        Ok(Some(selected)) => selected,
-        Ok(None) => {
+        Ok(BackendEligibility::Single(provider_id, backend_position)) => {
+            (provider_id, backend_position)
+        }
+        Ok(BackendEligibility::NoneEligible) => {
+            // The materialized route serves the direct 400 no_eligible_ai_backend; the
+            // listener stream still closes and persists the row (design AC 11).
+            state.fail_hop("route_match", "no_eligible_backend");
+            return request_headers_response(remove_internal_model_header());
+        }
+        Ok(BackendEligibility::Deferred) => {
             return request_headers_response(remove_internal_model_header());
         }
         Err(err) => {
@@ -1217,7 +1358,7 @@ async fn ai_listener_request_headers_response(
                 budget_started,
                 "rejected",
                 true,
-                json!({"mode": "enforcing", "budget": name}),
+                json!({"mode": "enforcing", "verdict": budget_verdict(true, true), "budget": name}),
             );
             metrics::counter!(
                 "fp_ai_budget_threshold_crossings_total",
@@ -1232,13 +1373,10 @@ async fn ai_listener_request_headers_response(
             );
         }
         Ok(None) => {
-            state.push_hop(
-                "budget",
-                budget_started,
-                "allowed",
-                false,
-                json!({"mode": "enforcing"}),
-            );
+            let detail =
+                budget_allowed_detail(pool, context.team_id, context.route_config_id, provider_id)
+                    .await;
+            state.push_hop("budget", budget_started, "allowed", false, detail);
         }
         Err(err) => {
             state.push_hop(
@@ -1292,13 +1430,20 @@ async fn ai_listener_request_headers_response(
                 ..Default::default()
             })
         }
-        Err(_) => {
-            state.push_hop(
-                "credential_injection",
+        Err(failure) => {
+            tracing::debug!(
+                team = %context.team_id,
+                route_config = %context.route_config_id,
+                code = ?failure.status.code(),
+                "AI credential injection failed: {}",
+                failure.status.message()
+            );
+            push_credential_failure_hop(
+                state,
                 credential_started,
-                "unavailable",
-                true,
-                json!({"provider_id": provider_id, "backend_position": backend_position}),
+                provider_id,
+                backend_position,
+                &failure,
             );
             immediate_response(500, "AI provider credential unavailable".into())
         }
@@ -1313,6 +1458,27 @@ struct SelectedBackendRuntime {
     model_override: Option<String>,
 }
 
+/// Why credential injection could not produce an auth value. `outcome` is the trace hop
+/// enum (design hop table: `secret_missing` / `decrypt_failed`; `unavailable` for failures
+/// upstream of the secret itself); `auth_header` is the provider's auth header *name* when
+/// the provider row was resolved — never any credential material.
+#[derive(Debug)]
+struct CredentialFailure {
+    outcome: &'static str,
+    auth_header: Option<String>,
+    status: Status,
+}
+
+impl CredentialFailure {
+    fn unavailable(status: Status) -> Self {
+        Self {
+            outcome: "unavailable",
+            auth_header: None,
+            status,
+        }
+    }
+}
+
 async fn selected_backend_runtime(
     pool: &sqlx::PgPool,
     team_id: TeamId,
@@ -1320,7 +1486,7 @@ async fn selected_backend_runtime(
     provider_id: AiProviderId,
     backend_position: Option<i32>,
     request_path: Option<&str>,
-) -> Result<SelectedBackendRuntime, Status> {
+) -> Result<SelectedBackendRuntime, CredentialFailure> {
     let selected = ai::get_backend_for_route_config(
         pool,
         team_id,
@@ -1329,35 +1495,76 @@ async fn selected_backend_runtime(
         backend_position,
     )
     .await
-    .map_err(status_from_domain)?
-    .ok_or_else(|| Status::not_found("AI provider not found for route"))?;
+    .map_err(|err| CredentialFailure::unavailable(status_from_domain(err)))?
+    .ok_or_else(|| {
+        CredentialFailure::unavailable(Status::not_found("AI provider not found for route"))
+    })?;
     let provider = selected.provider;
+    let auth_header = provider.spec.auth_header;
     let encrypted =
         secrets::get_encrypted_secret_by_id(pool, team_id, provider.spec.credential_secret_id)
             .await
-            .map_err(status_from_domain)?
-            .ok_or_else(|| Status::not_found("AI provider credential not found"))?;
+            .map_err(|err| CredentialFailure::unavailable(status_from_domain(err)))?
+            .ok_or_else(|| CredentialFailure {
+                outcome: "secret_missing",
+                auth_header: Some(auth_header.clone()),
+                status: Status::not_found("AI provider credential not found"),
+            })?;
+    let decrypt_failed = |status: Status| CredentialFailure {
+        outcome: "decrypt_failed",
+        auth_header: Some(auth_header.clone()),
+        status,
+    };
     let spec = crate::snapshot::decrypt_secret_spec(
         &encrypted.ciphertext,
         &encrypted.nonce,
         &encrypted.metadata.encryption_key_id,
     )
-    .map_err(status_from_domain)?;
+    .map_err(|err| decrypt_failed(status_from_domain(err)))?;
     let SecretSpec::GenericSecret { secret } = spec else {
-        return Err(Status::failed_precondition(
+        return Err(decrypt_failed(Status::failed_precondition(
             "AI provider credential is not a generic secret",
-        ));
+        )));
     };
     let value = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, secret)
-        .map_err(|_| Status::failed_precondition("AI provider credential is invalid"))?;
-    let value = String::from_utf8(value)
-        .map_err(|_| Status::failed_precondition("AI provider credential is not UTF-8"))?;
+        .map_err(|_| {
+            decrypt_failed(Status::failed_precondition(
+                "AI provider credential is invalid",
+            ))
+        })?;
+    let value = String::from_utf8(value).map_err(|_| {
+        decrypt_failed(Status::failed_precondition(
+            "AI provider credential is not UTF-8",
+        ))
+    })?;
     Ok(SelectedBackendRuntime {
-        auth_header: provider.spec.auth_header,
+        auth_header,
         auth_value: value,
         path_rewrite: provider_path_rewrite(provider.spec.path_prefix.as_deref(), request_path),
         model_override: selected.backend.model_override,
     })
+}
+
+/// Record a failed `credential_injection` hop: outcome enum + auth header *name* only —
+/// structurally no credential value exists on this path (design AC 6 / hop table).
+fn push_credential_failure_hop(
+    state: &mut AiExtProcState,
+    started_at: DateTime<Utc>,
+    provider_id: AiProviderId,
+    backend_position: i32,
+    failure: &CredentialFailure,
+) {
+    state.push_hop(
+        "credential_injection",
+        started_at,
+        failure.outcome,
+        true,
+        json!({
+            "provider_id": provider_id,
+            "backend_position": backend_position,
+            "auth_header": failure.auth_header,
+        }),
+    );
 }
 
 fn provider_path_rewrite(path_prefix: Option<&str>, request_path: Option<&str>) -> Option<String> {
@@ -1513,6 +1720,30 @@ fn note_ai_upstream_response(state: &mut AiExtProcState) {
     });
     let outcome = if failed { "error" } else { "ok" };
     state.push_hop("upstream", started, outcome, failed, detail);
+}
+
+/// Envoy answers 503 locally when the upstream connection fails, and no upstream-side
+/// ExtProc stream ever opens — so the listener stream records the gap as
+/// `no_upstream_connection` (design Risk/failure map). If a provider really answered 503,
+/// the upstream stream's own hop exists and wins the row merge by origin.
+fn note_ai_missing_upstream(state: &mut AiExtProcState) {
+    if state.trace_origin() != "listener" {
+        return;
+    }
+    if state.response_status != Some(503) {
+        return;
+    }
+    if state.hops.iter().any(|hop| hop.hop == "upstream") {
+        return;
+    }
+    let at = Utc::now();
+    state.push_hop(
+        "upstream",
+        at,
+        "no_upstream_connection",
+        true,
+        json!({"status": 503}),
+    );
 }
 
 /// Persist this stream's trace contribution — strictly best-effort: runs after the HTTP
@@ -3316,5 +3547,546 @@ mod tests {
         };
         state.push_hop("auth", Utc::now(), "not_configured", false, json!({}));
         persist_ai_trace(&pool, &state, None).await;
+    }
+
+    // ---- Slice s3: failure-path rows and shadow-budget verdict ----
+
+    #[test]
+    fn budget_verdict_maps_enforcing_and_shadow_evaluation_results() {
+        assert_eq!(budget_verdict(true, true), "rejected");
+        assert_eq!(budget_verdict(false, true), "would_reject");
+        assert_eq!(budget_verdict(true, false), "allowed");
+        assert_eq!(budget_verdict(false, false), "allowed");
+    }
+
+    #[test]
+    fn shadow_budget_entries_record_would_reject_per_exhausted_budget() {
+        let entries = shadow_budget_entries(&[
+            ai::ShadowBudgetEvaluation {
+                name: "exhausted".into(),
+                used_units: 5,
+                limit_units: 5,
+            },
+            ai::ShadowBudgetEvaluation {
+                name: "headroom".into(),
+                used_units: 1,
+                limit_units: 5,
+            },
+        ]);
+        assert_eq!(entries[0]["budget"], "exhausted");
+        assert_eq!(entries[0]["verdict"], "would_reject");
+        assert_eq!(entries[0]["used_units"], 5);
+        assert_eq!(entries[0]["limit_units"], 5);
+        assert_eq!(entries[1]["budget"], "headroom");
+        assert_eq!(entries[1]["verdict"], "allowed");
+    }
+
+    #[test]
+    fn credential_failure_hop_maps_outcomes_and_carries_no_secret_material() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let provider_id = AiProviderId::from(Uuid::now_v7());
+        for (outcome, auth_header) in [
+            ("secret_missing", Some("authorization".to_string())),
+            ("decrypt_failed", Some("x-api-key".to_string())),
+            ("unavailable", None),
+        ] {
+            let mut state = AiExtProcState {
+                context: Some(upstream_trace_context(team_id)),
+                ..Default::default()
+            };
+            let failure = CredentialFailure {
+                outcome,
+                auth_header: auth_header.clone(),
+                status: Status::not_found("credential lookup failed"),
+            };
+            push_credential_failure_hop(&mut state, Utc::now(), provider_id, 0, &failure);
+            let hop = &state.hops[0];
+            assert_eq!(hop.hop, "credential_injection");
+            assert_eq!(hop.outcome, outcome);
+            assert!(hop.failed);
+            match &auth_header {
+                Some(name) => assert_eq!(hop.detail["auth_header"], json!(name)),
+                None => assert_eq!(hop.detail["auth_header"], Value::Null),
+            }
+            // The mapped hop carries ids and the header *name* only — structurally no
+            // credential value can appear (design AC 6 / hop table).
+            let keys: Vec<&str> = hop
+                .detail
+                .as_object()
+                .expect("detail object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(keys, vec!["auth_header", "backend_position", "provider_id"]);
+        }
+    }
+
+    #[test]
+    fn fail_hop_reverdicts_route_match_for_no_eligible_backend() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let mut state = AiExtProcState {
+            context: Some(listener_trace_context(team_id)),
+            ..Default::default()
+        };
+        state.push_hop(
+            "route_match",
+            Utc::now(),
+            "matched",
+            false,
+            json!({"model": "gpt-5"}),
+        );
+        state.push_hop("auth", Utc::now(), "not_configured", false, json!({}));
+        state.fail_hop("route_match", "no_eligible_backend");
+        assert_eq!(state.hops[0].outcome, "no_eligible_backend");
+        assert!(state.hops[0].failed);
+        assert!(state.hops[0].started_at <= state.hops[0].ended_at);
+        assert!(!state.hops[1].failed, "only the named hop is re-verdicted");
+
+        // Unknown hop name is a no-op.
+        state.fail_hop("upstream", "no_upstream_connection");
+        assert_eq!(state.hops.len(), 2);
+    }
+
+    #[test]
+    fn missing_upstream_hop_marks_local_503_on_listener_stream_only() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let mut listener = AiExtProcState {
+            context: Some(listener_trace_context(team_id)),
+            response_status: Some(503),
+            ..Default::default()
+        };
+        note_ai_missing_upstream(&mut listener);
+        assert_eq!(listener.hops.len(), 1);
+        assert_eq!(listener.hops[0].hop, "upstream");
+        assert_eq!(listener.hops[0].outcome, "no_upstream_connection");
+        assert!(listener.hops[0].failed);
+        assert_eq!(listener.hops[0].detail["status"], 503);
+        // Idempotent: a second response-header phase does not duplicate the hop.
+        note_ai_missing_upstream(&mut listener);
+        assert_eq!(listener.hops.len(), 1);
+
+        let mut upstream = AiExtProcState {
+            context: Some(upstream_trace_context(team_id)),
+            response_status: Some(503),
+            ..Default::default()
+        };
+        note_ai_missing_upstream(&mut upstream);
+        assert!(
+            upstream.hops.is_empty(),
+            "the upstream stream records its own upstream hop; no provisional entry"
+        );
+
+        let mut ok = AiExtProcState {
+            context: Some(listener_trace_context(team_id)),
+            response_status: Some(200),
+            ..Default::default()
+        };
+        note_ai_missing_upstream(&mut ok);
+        assert!(
+            ok.hops.is_empty(),
+            "non-503 statuses are not connect failures"
+        );
+    }
+
+    #[test]
+    fn client_disconnect_rewrites_unfinished_sse_upstream_hop_only() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let disconnected = || AiExtProcState {
+            context: Some(upstream_trace_context(team_id)),
+            response_status: Some(200),
+            response_content_type: Some("text/event-stream".into()),
+            request_headers_at: Some(Utc::now()),
+            ..Default::default()
+        };
+
+        // Mid-SSE teardown: upstream hop was "ok" at response headers, body never finished.
+        let mut state = disconnected();
+        note_ai_upstream_response(&mut state);
+        note_ai_client_disconnect(&mut state);
+        assert_eq!(state.hops[0].hop, "upstream");
+        assert_eq!(state.hops[0].outcome, "client_disconnect");
+        assert!(
+            !state.hops[0].failed,
+            "client disconnect is not a gateway failure"
+        );
+
+        // Completed SSE stream: end_of_stream was seen, hop stays ok.
+        let mut complete = disconnected();
+        note_ai_upstream_response(&mut complete);
+        complete.response_body_end_seen = true;
+        note_ai_client_disconnect(&mut complete);
+        assert_eq!(complete.hops[0].outcome, "ok");
+
+        // Usage already extracted implies the stream effectively completed.
+        let mut settled = disconnected();
+        note_ai_upstream_response(&mut settled);
+        settled.last_usage = Some(OpenAiTokenUsage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+        });
+        note_ai_client_disconnect(&mut settled);
+        assert_eq!(settled.hops[0].outcome, "ok");
+
+        // Unary JSON responses are not rewritten.
+        let mut unary = disconnected();
+        unary.response_content_type = Some("application/json".into());
+        note_ai_upstream_response(&mut unary);
+        note_ai_client_disconnect(&mut unary);
+        assert_eq!(unary.hops[0].outcome, "ok");
+
+        // Listener stream never owns the upstream hop rewrite.
+        let mut listener = AiExtProcState {
+            context: Some(listener_trace_context(team_id)),
+            response_status: Some(200),
+            response_content_type: Some("text/event-stream".into()),
+            ..Default::default()
+        };
+        note_ai_client_disconnect(&mut listener);
+        assert!(listener.hops.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ai_budget_reject_stream_returns_429_and_persists_row_off_fast_path() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+
+        // Exhausted enforcing budget scoped to the whole team (NULL provider/route scope).
+        let budget_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO ai_budgets \
+             (id, team_id, org_id, name, mode, limit_units, window_seconds, provider_id, route_config_id, prompt_token_weight, completion_token_weight) \
+             VALUES ($1, $2, $3, 'reject-stop', 'enforcing', 1, 3600, NULL, NULL, 1, 1)",
+        )
+        .bind(budget_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("budget");
+        sqlx::query(
+            "INSERT INTO ai_budget_counters (budget_id, team_id, window_start, used_units) \
+             VALUES ($1, $2, to_timestamp(floor(extract(epoch FROM now()) / 3600) * 3600), 5)",
+        )
+        .bind(budget_id)
+        .bind(team.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("counter");
+
+        let request_id = Uuid::now_v7().to_string();
+        let route_config_id = RouteConfigId::from(Uuid::now_v7());
+        let provider_id = AiProviderId::from(Uuid::now_v7());
+        let headers = ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":path".into(),
+                                value: "/v1/chat/completions".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "x-request-id".into(),
+                                value: request_id.clone(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        // The production stream loop, driven by an in-memory message source.
+        let mut rx = ai_process_stream(
+            pool.clone(),
+            tokio_stream::iter(vec![Ok(headers)]),
+            Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id,
+                provider_id: Some(provider_id),
+                backend_position: Some(0),
+                failover_chain: Vec::new(),
+            }),
+        );
+
+        // The 429 is received before any row read is attempted — the write is spawned
+        // off this path, never awaited in front of the immediate response (Risk 1).
+        let response = rx.recv().await.expect("immediate response");
+        let processing_response::Response::ImmediateResponse(immediate) = response
+            .expect("response ok")
+            .response
+            .expect("response set")
+        else {
+            panic!("expected budget immediate response");
+        };
+        assert_eq!(immediate.status.expect("status").code, 429);
+        assert_eq!(immediate.details, "flowplane_ai_budget_exceeded");
+
+        let mut row: Option<fp_domain::AiTraceEvent> = None;
+        for _ in 0..50 {
+            let rows = fp_storage::repos::ai_trace::list_trace_events(
+                &pool,
+                team.id,
+                fp_storage::repos::ai_trace::AiTraceQuery {
+                    request_id: Some(&request_id),
+                    trace_id: None,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("list trace events");
+            if let Some(found) = rows.into_iter().next() {
+                row = Some(found);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let row = row.expect("budget-reject trace row was persisted");
+        assert_eq!(row.failure_hop.as_deref(), Some("budget"));
+        let hops = row.hops.as_array().expect("hops array");
+        let budget_hop = hops
+            .iter()
+            .find(|hop| hop["hop"] == "budget")
+            .expect("budget hop");
+        assert_eq!(budget_hop["outcome"], "rejected");
+        assert_eq!(budget_hop["detail"]["verdict"], "rejected");
+        assert_eq!(budget_hop["detail"]["budget"], "reject-stop");
+        assert!(
+            !hops
+                .iter()
+                .any(|hop| hop["hop"] == "credential_injection" || hop["hop"] == "upstream"),
+            "a budget-rejected request never reaches credential injection or the upstream: {hops:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_credential_failure_stream_persists_secret_missing_and_decrypt_failed_rows() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        use base64::Engine as _;
+        let key = *b"12345678901234567890123456789012";
+        std::env::set_var("FLOWPLANE_SECRET_ENCRYPTION_KEY_ID", "default");
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            String::from_utf8_lossy(&key).to_string(),
+        );
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+
+        // Two failing credential shapes: an expired secret row (the read path treats it
+        // as absent -> secret_missing) and garbage ciphertext (-> decrypt_failed).
+        let secret_value_marker = "fp-s3-credential-marker";
+        let expired_secret_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secrets \
+             (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id, expires_at) \
+             VALUES ($1, $2, $3, 'expired-key', '', 'generic_secret', $4, $5, 'default', now() - interval '1 hour')",
+        )
+        .bind(expired_secret_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(secret_value_marker.as_bytes().to_vec())
+        .bind(vec![1_u8; 12])
+        .execute(&pool)
+        .await
+        .expect("expired secret");
+        let garbage_secret_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secrets \
+             (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+             VALUES ($1, $2, $3, 'garbage-key', '', 'generic_secret', $4, $5, 'default')",
+        )
+        .bind(garbage_secret_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(base64::engine::general_purpose::STANDARD.decode("Z2FyYmFnZS1ub3QtYWVzZ2Nt").expect("bytes"))
+        .bind(vec![2_u8; 12])
+        .execute(&pool)
+        .await
+        .expect("garbage secret");
+
+        let missing_provider_id = Uuid::now_v7();
+        let garbage_provider_id = Uuid::now_v7();
+        for (provider_id, secret_id, name) in [
+            (missing_provider_id, expired_secret_id, "p-missing"),
+            (garbage_provider_id, garbage_secret_id, "p-garbage"),
+        ] {
+            sqlx::query(
+                "INSERT INTO ai_providers \
+                 (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
+                 VALUES ($1, $2, $3, $4, 'openai', 'https://api.openai.com', NULL, $5, 'authorization')",
+            )
+            .bind(provider_id)
+            .bind(team.id.as_uuid())
+            .bind(org.id.as_uuid())
+            .bind(name)
+            .bind(secret_id)
+            .execute(&pool)
+            .await
+            .expect("provider");
+        }
+        let route_config_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+             VALUES ($1, $2, $3, 'ai-s3-cred-routes', '{}'::jsonb)",
+        )
+        .bind(route_config_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("route config");
+        let route_id = Uuid::now_v7();
+        let route_spec = serde_json::json!({
+            "listener_port": 19200,
+            "path": "/v1/chat/completions",
+            "backends": [
+                {"provider_id": missing_provider_id, "models": [], "weight": 1, "priority": 0},
+                {"provider_id": garbage_provider_id, "models": [], "weight": 1, "priority": 0}
+            ]
+        });
+        sqlx::query(
+            "INSERT INTO ai_routes \
+             (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
+             VALUES ($1, $2, $3, 'ai-s3-cred-route', $4, ARRAY['ai-s3-cred-b1'], 'ai-s3-cred-routes', 'ai-s3-cred-listener')",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(route_spec)
+        .execute(&pool)
+        .await
+        .expect("ai route");
+        for (provider_id, position) in [(missing_provider_id, 0), (garbage_provider_id, 1)] {
+            sqlx::query(
+                "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(route_id)
+            .bind(team.id.as_uuid())
+            .bind(provider_id)
+            .bind(position)
+            .execute(&pool)
+            .await
+            .expect("backend");
+        }
+
+        for (provider_id, position, expected_outcome) in [
+            (missing_provider_id, 0, "secret_missing"),
+            (garbage_provider_id, 1, "decrypt_failed"),
+        ] {
+            let request_id = Uuid::now_v7().to_string();
+            let headers = ProcessingRequest {
+                request: Some(processing_request::Request::RequestHeaders(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                        headers: Some(HeaderMap {
+                            headers: vec![
+                                HeaderValue {
+                                    key: ":path".into(),
+                                    value: "/v1/chat/completions".into(),
+                                    raw_value: Vec::new(),
+                                },
+                                HeaderValue {
+                                    key: "x-request-id".into(),
+                                    value: request_id.clone(),
+                                    raw_value: Vec::new(),
+                                },
+                            ],
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            };
+            let mut rx = ai_process_stream(
+                pool.clone(),
+                tokio_stream::iter(vec![Ok(headers)]),
+                Some(AiExtProcContext {
+                    team_id: team.id,
+                    listener_id: None,
+                    route_config_id: RouteConfigId::from(route_config_id),
+                    provider_id: Some(AiProviderId::from(provider_id)),
+                    backend_position: Some(position),
+                    failover_chain: Vec::new(),
+                }),
+            );
+            let response = rx.recv().await.expect("immediate response");
+            let processing_response::Response::ImmediateResponse(immediate) = response
+                .expect("response ok")
+                .response
+                .expect("response set")
+            else {
+                panic!("expected credential immediate response for {expected_outcome}");
+            };
+            assert_eq!(immediate.status.expect("status").code, 500);
+            assert_eq!(
+                String::from_utf8(immediate.body).expect("body"),
+                "AI provider credential unavailable",
+                "the client-visible immediate response is unchanged"
+            );
+
+            let mut row: Option<fp_domain::AiTraceEvent> = None;
+            for _ in 0..50 {
+                let rows = fp_storage::repos::ai_trace::list_trace_events(
+                    &pool,
+                    team.id,
+                    fp_storage::repos::ai_trace::AiTraceQuery {
+                        request_id: Some(&request_id),
+                        trace_id: None,
+                        limit: 10,
+                    },
+                )
+                .await
+                .expect("list trace events");
+                if let Some(found) = rows.into_iter().next() {
+                    row = Some(found);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            let row = row.expect("credential-failure trace row was persisted");
+            assert_eq!(row.failure_hop.as_deref(), Some("credential_injection"));
+            assert_eq!(row.provider_id, Some(AiProviderId::from(provider_id)));
+            let hops = row.hops.as_array().expect("hops array");
+            let credential_hop = hops
+                .iter()
+                .find(|hop| hop["hop"] == "credential_injection")
+                .expect("credential hop");
+            assert_eq!(credential_hop["outcome"], json!(expected_outcome));
+            assert_eq!(credential_hop["detail"]["auth_header"], "authorization");
+            assert!(
+                !hops.iter().any(|hop| hop["hop"] == "upstream"),
+                "no upstream hop on a credential-failure request: {hops:?}"
+            );
+            let row_text = serde_json::to_string(&row.hops).expect("hops json");
+            assert!(
+                !row_text.contains(secret_value_marker),
+                "credential material must never appear in the trace row"
+            );
+        }
     }
 }

@@ -87,7 +87,7 @@ fn upstream_event(
         hops: json!([
             {"hop": "budget", "started_at": "2026-07-04T00:00:00.300000Z", "ended_at": "2026-07-04T00:00:00.310000Z", "outcome": "allowed", "origin": "upstream", "failed": false, "detail": {"mode": "enforcing"}},
             {"hop": "credential_injection", "started_at": "2026-07-04T00:00:00.310000Z", "ended_at": "2026-07-04T00:00:00.320000Z", "outcome": "injected", "origin": "upstream", "failed": false, "detail": {"auth_header": "authorization"}},
-            {"hop": "upstream", "started_at": "2026-07-04T00:00:00.300000Z", "ended_at": "2026-07-04T00:00:00.900000Z", "outcome": "ok", "origin": "upstream", "failed": false, "detail": {"status": 200}},
+            {"hop": "upstream", "started_at": "2026-07-04T00:00:00.320000Z", "ended_at": "2026-07-04T00:00:00.900000Z", "outcome": "ok", "origin": "upstream", "failed": false, "detail": {"status": 200}},
             {"hop": "usage", "started_at": "2026-07-04T00:00:00.900000Z", "ended_at": "2026-07-04T00:00:00.900000Z", "outcome": "settled", "origin": "upstream", "failed": false, "detail": {"total_tokens": 5}},
         ]),
     }

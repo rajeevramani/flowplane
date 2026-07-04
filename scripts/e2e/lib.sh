@@ -36,6 +36,7 @@ ENVOY_VERSION=${ENVOY_VERSION:-1.37-latest}
 cleanup() {
   docker rm -f fp-e2e-envoy >/dev/null 2>&1 || true
   docker rm -f fp-e2e-envoy-trace >/dev/null 2>&1 || true
+  docker rm -f fp-e2e-envoy-trfail >/dev/null 2>&1 || true
   [ -n "${CP_PID:-}" ] && kill "$CP_PID" >/dev/null 2>&1 || true
   [ -n "${UP_PID:-}" ] && kill "$UP_PID" >/dev/null 2>&1 || true
   [ -n "${UP2_PID:-}" ] && kill "$UP2_PID" >/dev/null 2>&1 || true
@@ -46,6 +47,8 @@ cleanup() {
   [ -n "${AI_MALFORMED_PID:-}" ] && kill "$AI_MALFORMED_PID" >/dev/null 2>&1 || true
   [ -n "${AI_TRACE_STUB_PID:-}" ] && kill "$AI_TRACE_STUB_PID" >/dev/null 2>&1 || true
   [ -n "${AI_TRACE_ENVOY_PID:-}" ] && kill "$AI_TRACE_ENVOY_PID" >/dev/null 2>&1 || true
+  [ -n "${AI_FAIL_STUB_PID:-}" ] && kill "$AI_FAIL_STUB_PID" >/dev/null 2>&1 || true
+  [ -n "${AI_FAIL_ENVOY_PID:-}" ] && kill "$AI_FAIL_ENVOY_PID" >/dev/null 2>&1 || true
   [ -n "${RLS_PID:-}" ] && kill "$RLS_PID" >/dev/null 2>&1 || true
   [ -n "${ENVOY_PID:-}" ] && kill "$ENVOY_PID" >/dev/null 2>&1 || true
 }

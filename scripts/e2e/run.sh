@@ -24,10 +24,10 @@ source "$HERE/lib.sh"
 
 # Canonical phase order (index-aligned). File names carry the NN- ordering + phase ID; this table
 # is the single source of truth for ordering and ID->file resolution.
-PHASE_IDS=(P1 P1a P1d P1e P1f P1b P1c P2 P2a P3 P4 P5 P5a P6 P7 P8)
+PHASE_IDS=(P1 P1a P1d P1e P1f P1g P1b P1c P2 P2a P3 P4 P5 P5a P6 P7 P8)
 PHASE_FILES=(
   10-p1-basic.sh 15-p1a-ai.sh 16-p1d-ai-stream.sh 17-p1e-ai-malformed.sh
-  18-p1f-ai-trace.sh
+  18-p1f-ai-trace.sh 19-p1g-ai-trace-failures.sh
   20-p1b-learning.sh 25-p1c-discovery.sh 30-p2-cp-restart.sh 31-p2a-envoy-restart.sh
   40-p3-isolation.sh 50-p4-http-filters.sh 60-p5-auth-filters.sh 65-p5a-mcp.sh
   70-p6-sds-rotation.sh 80-p7-advanced-parity.sh 82-p8-rls-enforcement.sh

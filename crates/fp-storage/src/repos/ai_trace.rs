@@ -304,5 +304,17 @@ mod tests {
         ]);
         let merged = merge_hops(&json!([]), &hops);
         assert_eq!(derive_failure_hop(&merged).as_deref(), Some("budget"));
+
+        // Failure classes from slice s3: the first failing hop in timeline order wins even
+        // when a later hop also failed (credential failure before a local-503 upstream gap).
+        let hops = json!([
+            {"hop": "route_match", "started_at": "2026-07-04T00:00:00Z", "ended_at": "2026-07-04T00:00:00Z", "outcome": "matched", "origin": "listener", "failed": false, "detail": {}},
+            {"hop": "credential_injection", "started_at": "2026-07-04T00:00:01Z", "ended_at": "2026-07-04T00:00:01Z", "outcome": "secret_missing", "origin": "listener", "failed": true, "detail": {}},
+            {"hop": "upstream", "started_at": "2026-07-04T00:00:02Z", "ended_at": "2026-07-04T00:00:02Z", "outcome": "no_upstream_connection", "origin": "listener", "failed": true, "detail": {}},
+        ]);
+        assert_eq!(
+            derive_failure_hop(&merge_hops(&json!([]), &hops)).as_deref(),
+            Some("credential_injection")
+        );
     }
 }
