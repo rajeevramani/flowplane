@@ -636,6 +636,87 @@ pub async fn get_ai_trace(
     Ok(Json(shape_trace_response(events, id_filtered)))
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetAiRetentionBody {
+    /// Days a new trace row lives before the expiry sweep removes it (1–365).
+    pub trace_ttl_days: i32,
+}
+
+/// The retention policy in force for the team's AI trace rows. `is_default: true` means no
+/// team policy row exists and the built-in 30-day default applies (`revision`/`updated_at`
+/// absent); a stored policy carries its revision and update time.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiRetentionView {
+    pub trace_ttl_days: i32,
+    pub is_default: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// The effective policy: the team's row when present, the built-in default otherwise.
+fn shape_retention_view(policy: Option<fp_domain::AiRetentionPolicy>) -> AiRetentionView {
+    match policy {
+        Some(policy) => AiRetentionView {
+            trace_ttl_days: policy.trace_ttl_days,
+            is_default: false,
+            revision: Some(policy.version),
+            updated_at: Some(policy.updated_at),
+        },
+        None => AiRetentionView {
+            trace_ttl_days: fp_storage::repos::ai_trace::DEFAULT_AI_TRACE_TTL_DAYS,
+            is_default: true,
+            revision: None,
+            updated_at: None,
+        },
+    }
+}
+
+/// Effective AI trace retention policy for the team.
+#[utoipa::path(get, path = "/api/v1/teams/{team}/ai/retention",
+    tag = "AI",
+    params(("team" = String, Path, description = "Team name or UUID")),
+    responses((status = 200, body = AiRetentionView)))]
+pub async fn get_ai_retention(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<AiRetentionView>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::get_retention_policy(&state.pool, &ctx, team, rid).await
+    };
+    run.await
+        .map(|policy| Json(shape_retention_view(policy)))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+/// Set the team's AI trace retention policy (create-or-replace; one policy per team).
+/// Existing rows keep the expiry they were stamped with; only new rows use the new TTL.
+#[utoipa::path(put, path = "/api/v1/teams/{team}/ai/retention",
+    tag = "AI",
+    params(("team" = String, Path, description = "Team name or UUID")),
+    request_body = SetAiRetentionBody,
+    responses((status = 200, body = AiRetentionView)))]
+pub async fn put_ai_retention(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    ApiJson(body): ApiJson<SetAiRetentionBody>,
+) -> Result<Json<AiRetentionView>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::set_retention_policy(&state.pool, &ctx, team, body.trace_ttl_days, rid).await
+    };
+    run.await
+        .map(|policy| Json(shape_retention_view(Some(policy))))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
 #[utoipa::path(get, path = "/api/v1/teams/{team}/ai/usage",
     tag = "AI",
     params(("team" = String, Path, description = "Team name or UUID"), AiUsageQuery),
@@ -740,5 +821,34 @@ mod tests {
         assert_eq!(trace_limit(-5), 1);
         assert_eq!(trace_limit(25), 25);
         assert_eq!(trace_limit(10_000), 500);
+    }
+
+    #[test]
+    fn retention_view_distinguishes_stored_policy_from_builtin_default() {
+        // No policy row: the 30-day default, flagged as such, with no revision/updated_at
+        // keys on the wire at all.
+        let default_view = shape_retention_view(None);
+        assert_eq!(default_view.trace_ttl_days, 30);
+        assert!(default_view.is_default);
+        let json = serde_json::to_value(&default_view).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "trace_ttl_days": 30, "is_default": true })
+        );
+
+        // Stored policy: its TTL, revision, and update time; is_default false.
+        let updated_at = chrono::Utc::now();
+        let stored = shape_retention_view(Some(fp_domain::AiRetentionPolicy {
+            id: uuid::Uuid::now_v7(),
+            team_id: fp_domain::TeamId::from(uuid::Uuid::now_v7()),
+            trace_ttl_days: 7,
+            version: 3,
+            created_at: updated_at,
+            updated_at,
+        }));
+        assert_eq!(stored.trace_ttl_days, 7);
+        assert!(!stored.is_default);
+        assert_eq!(stored.revision, Some(3));
+        assert_eq!(stored.updated_at, Some(updated_at));
     }
 }

@@ -142,6 +142,9 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "ai budgets create",
     "ai budgets update",
     "ai budgets delete",
+    // ai retention
+    "ai retention get",
+    "ai retention set",
     // ai usage
     "ai usage",
     // ai trace

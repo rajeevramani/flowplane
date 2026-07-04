@@ -12,13 +12,16 @@
 //! falling back to [`DEFAULT_AI_TRACE_TTL_DAYS`] — the same shape as
 //! `raw_observation_ttl_days` in `api_lifecycle.rs`.
 
+use chrono::Duration;
+use fp_domain::authz::TeamRef;
 use fp_domain::{
-    AiProviderId, AiTraceEvent, DomainError, DomainResult, ListenerId, RouteConfigId, TeamId,
+    AiProviderId, AiRetentionPolicy, AiTraceEvent, DomainError, DomainResult, ListenerId,
+    RouteConfigId, TeamId,
 };
 use serde_json::Value;
 use sqlx::postgres::PgRow;
 use sqlx::types::chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 pub const DEFAULT_AI_TRACE_TTL_DAYS: i32 = 30;
@@ -88,18 +91,21 @@ pub async fn upsert_trace_event(pool: &PgPool, event: &AiTraceEventUpsert) -> Do
             .await
             .map_err(|e| DomainError::internal(format!("resolve AI trace ttl: {e}")))?;
     let ttl_days = resolve_ttl_days(ttl_days);
-    // created_at and expires_at come from the same now() so the TTL arithmetic is exact.
+    // created_at and expires_at derive from the same instant so the TTL arithmetic is exact.
+    let created_at = Utc::now();
+    let expires_at = trace_expires_at(created_at, ttl_days);
     sqlx::query(
         "INSERT INTO ai_trace_events \
          (id, team_id, request_id, route_config_id, hops, created_at, expires_at) \
-         VALUES ($1, $2, $3, $4, '[]'::jsonb, now(), now() + make_interval(days => $5)) \
+         VALUES ($1, $2, $3, $4, '[]'::jsonb, $5, $6) \
          ON CONFLICT (team_id, request_id) DO NOTHING",
     )
     .bind(Uuid::now_v7())
     .bind(event.team_id.as_uuid())
     .bind(&event.request_id)
     .bind(event.route_config_id.as_uuid())
-    .bind(ttl_days)
+    .bind(created_at)
+    .bind(expires_at)
     .execute(&mut *tx)
     .await
     .map_err(|e| DomainError::internal(format!("insert AI trace event: {e}")))?;
@@ -169,6 +175,83 @@ pub async fn list_trace_events(
 /// policy row exists, the 30-day built-in default otherwise.
 fn resolve_ttl_days(policy_ttl_days: Option<i32>) -> i32 {
     policy_ttl_days.unwrap_or(DEFAULT_AI_TRACE_TTL_DAYS)
+}
+
+/// The insert-time expiry stamp: exactly `created_at + ttl_days` whole days. This is the
+/// value [`upsert_trace_event`] binds, so a row's retention is fixed by the policy in force
+/// when it was written; a later policy change affects only new rows.
+fn trace_expires_at(created_at: DateTime<Utc>, ttl_days: i32) -> DateTime<Utc> {
+    created_at + Duration::days(i64::from(ttl_days))
+}
+
+const RETENTION_COLUMNS: &str = "id, team_id, trace_ttl_days, version, created_at, updated_at";
+
+fn retention_policy_from_row(row: &PgRow) -> AiRetentionPolicy {
+    AiRetentionPolicy {
+        id: row.get("id"),
+        team_id: TeamId::from(row.get::<Uuid, _>("team_id")),
+        trace_ttl_days: row.get("trace_ttl_days"),
+        version: row.get("version"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+/// The team's retention policy row, if one exists. `None` means the built-in
+/// [`DEFAULT_AI_TRACE_TTL_DAYS`] applies at insert time.
+pub async fn get_retention_policy(
+    pool: &PgPool,
+    team_id: TeamId,
+) -> DomainResult<Option<AiRetentionPolicy>> {
+    let row = sqlx::query(&format!(
+        "SELECT {RETENTION_COLUMNS} FROM ai_retention_policies WHERE team_id = $1"
+    ))
+    .bind(team_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get AI retention policy: {e}")))?;
+    Ok(row.as_ref().map(retention_policy_from_row))
+}
+
+/// Create-or-replace the team's single retention policy row (the PUT semantics of the
+/// retention surface). Runs inside the caller's transaction so the audit row commits with it;
+/// the version bumps on every replace for change visibility.
+pub async fn set_retention_policy(
+    tx: &mut Transaction<'_, Postgres>,
+    team: TeamRef,
+    trace_ttl_days: i32,
+) -> DomainResult<AiRetentionPolicy> {
+    let row = sqlx::query(&format!(
+        "INSERT INTO ai_retention_policies (id, team_id, org_id, trace_ttl_days) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (team_id) DO UPDATE \
+           SET trace_ttl_days = EXCLUDED.trace_ttl_days, \
+               version = ai_retention_policies.version + 1, \
+               updated_at = now() \
+         RETURNING {RETENTION_COLUMNS}"
+    ))
+    .bind(Uuid::now_v7())
+    .bind(team.id.as_uuid())
+    .bind(team.org_id.as_uuid())
+    .bind(trace_ttl_days)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("set AI retention policy: {e}")))?;
+    Ok(retention_policy_from_row(&row))
+}
+
+/// The expiry sweep: delete every trace row whose `expires_at <= as_of`, across all teams,
+/// returning the deleted count. Team scoping is inherent, not filtered here: each row's
+/// `expires_at` was stamped at insert from its own team's policy (`trace_expires_at`), so
+/// the sweep can only remove a team's rows once *that team's* TTL has elapsed — unexpired
+/// rows and other teams' data are untouched (proven in `tests/ai_trace.rs`).
+pub async fn delete_expired_trace_events(pool: &PgPool, as_of: DateTime<Utc>) -> DomainResult<u64> {
+    let result = sqlx::query("DELETE FROM ai_trace_events WHERE expires_at <= $1")
+        .bind(as_of)
+        .execute(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete expired AI trace events: {e}")))?;
+    Ok(result.rows_affected())
 }
 
 /// Union two hop arrays by hop name. On a name conflict an `upstream`-origin entry beats a
@@ -293,6 +376,49 @@ mod tests {
         assert_eq!(resolve_ttl_days(None), DEFAULT_AI_TRACE_TTL_DAYS);
         assert_eq!(resolve_ttl_days(None), 30);
         assert_eq!(resolve_ttl_days(Some(7)), 7);
+    }
+
+    #[test]
+    fn expires_at_arithmetic_from_policy_vs_default_ttl() {
+        let created = DateTime::parse_from_rfc3339("2026-07-04T12:34:56.789Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // Team policy of N days: expires_at is exactly created_at + N days.
+        let with_policy = trace_expires_at(created, resolve_ttl_days(Some(7)));
+        assert_eq!(with_policy - created, Duration::days(7));
+        // No policy row: the 30-day default applies.
+        let with_default = trace_expires_at(created, resolve_ttl_days(None));
+        assert_eq!(with_default - created, Duration::days(30));
+        assert_eq!(
+            with_default,
+            DateTime::parse_from_rfc3339("2026-08-03T12:34:56.789Z").unwrap()
+        );
+        // Sub-second precision of created_at is preserved, not truncated by the arithmetic.
+        assert_eq!(
+            with_policy.timestamp_subsec_micros(),
+            created.timestamp_subsec_micros()
+        );
+    }
+
+    #[test]
+    fn sweep_deletion_boundary_keeps_unexpired_rows() {
+        // The sweep SQL (`delete_expired_trace_events`) deletes rows with expires_at <= as_of.
+        // Boundary semantics of that predicate, over rows stamped by trace_expires_at: a row
+        // is kept strictly until its expiry instant has been reached. Team scoping (a sweep
+        // never touching another team's unexpired rows) is proven against real PostgreSQL in
+        // tests/ai_trace.rs.
+        let created = DateTime::parse_from_rfc3339("2026-07-04T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let expires = trace_expires_at(created, 7);
+        let swept = |as_of: DateTime<Utc>| expires <= as_of;
+        assert!(!swept(created), "fresh row is never swept");
+        assert!(
+            !swept(expires - Duration::microseconds(1)),
+            "row is kept until the last instant before expiry"
+        );
+        assert!(swept(expires), "expiry instant itself is inclusive (<=)");
+        assert!(swept(expires + Duration::days(1)));
     }
 
     #[test]

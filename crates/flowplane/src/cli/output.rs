@@ -345,6 +345,9 @@ fn kind_override(path: &str) -> Option<&'static str> {
     if path.ends_with("/ai/trace") {
         return Some("aiTrace");
     }
+    if path.ends_with("/ai/retention") {
+        return Some("aiRetention");
+    }
     if path.ends_with("/envoy-config") {
         return Some("envoyConfig");
     }
@@ -1222,6 +1225,7 @@ mod tests {
             ("/api/v1/teams/p/stats/overview", "statsOverview"),
             ("/api/v1/teams/p/ops/trace", "trace"),
             ("/api/v1/teams/p/ai/trace", "aiTrace"),
+            ("/api/v1/teams/p/ai/retention", "aiRetention"),
             ("/api/v1/teams/p/ai/usage", "usage"),
             ("/api/v1/teams/p/dataplanes/d1/envoy-config", "envoyConfig"),
             (

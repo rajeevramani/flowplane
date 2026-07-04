@@ -11,10 +11,10 @@ use fp_domain::gateway::route_config::{
     RouteConfigSpec, RouteRule, VirtualHost, WeightedClusterTarget,
 };
 use fp_domain::{
-    validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name, AiBudget,
-    AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteMaterializedResources, AiRouteSpec,
-    AiTraceEvent, AiUsageSummary, DomainError, DomainResult, RequestId, AI_MODEL_HEADER,
-    DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+    validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name,
+    validate_trace_ttl_days, AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRetentionPolicy,
+    AiRoute, AiRouteMaterializedResources, AiRouteSpec, AiTraceEvent, AiUsageSummary, DomainError,
+    DomainResult, RequestId, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
 use fp_storage::repos::{ai, ai_trace, audit, clusters as cluster_repo, gateway as gateway_repo};
 use reqwest::Url;
@@ -539,6 +539,61 @@ pub async fn trace_events(
 ) -> DomainResult<Vec<AiTraceEvent>> {
     authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
     ai_trace::list_trace_events(pool, team.id, query).await
+}
+
+/// The team's AI trace retention policy row; `None` means the built-in 30-day default is in
+/// force. Guarded by the same resource the trace read uses.
+pub async fn get_retention_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<Option<AiRetentionPolicy>> {
+    authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
+    ai_trace::get_retention_policy(pool, team.id).await
+}
+
+/// Create-or-replace the team's AI trace retention policy (PUT semantics: one row per team).
+/// Affects only rows inserted after the change — existing rows keep the expiry they were
+/// stamped with.
+pub async fn set_retention_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    trace_ttl_days: i32,
+    request_id: RequestId,
+) -> DomainResult<AiRetentionPolicy> {
+    authorize(
+        pool,
+        ctx,
+        Resource::AiUsage,
+        Action::Update,
+        team,
+        request_id,
+    )
+    .await?;
+    validate_trace_ttl_days(trace_ttl_days)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("set AI retention policy: begin"))?;
+    let policy = ai_trace::set_retention_policy(&mut tx, team, trace_ttl_days).await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "ai_retention.set",
+            "ai-retention",
+            "trace",
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("set AI retention policy: commit"))?;
+    Ok(policy)
 }
 
 pub async fn update_route(

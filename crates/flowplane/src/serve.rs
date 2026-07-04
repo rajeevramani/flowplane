@@ -214,6 +214,18 @@ pub async fn run() -> anyhow::Result<()> {
         None
     };
 
+    // AI trace retention sweep (ai-gateway-e2e-trace s5): fixed-interval deletion of trace
+    // rows whose insert-stamped expires_at has passed. Owned by the CP; no dataplane involved.
+    {
+        let sweep_pool = pool.clone();
+        let sweep_shutdown = xds_shutdown_tx.subscribe();
+        tokio::spawn(run_ai_trace_sweep(sweep_pool, sweep_shutdown));
+        tracing::info!(
+            interval_secs = AI_TRACE_SWEEP_INTERVAL_SECS,
+            "ai trace retention sweep started"
+        );
+    }
+
     let state = fp_api::AppState {
         pool,
         prometheus,
@@ -374,6 +386,40 @@ async fn run_rls_sync(
         match fp_core::services::rls_sync::reconcile_once(&pool, &admin_url, &client).await {
             Ok(count) => tracing::debug!(policies = count, "rls policy reconcile pushed"),
             Err(e) => tracing::warn!("rls policy reconcile failed: {e}"),
+        }
+    }
+}
+
+/// Fixed sweep cadence for expired AI trace rows. Hourly is deliberately coarse: expiry
+/// precision only needs to be within the sweep interval of a row's `expires_at`, and one
+/// bulk DELETE per hour keeps the sweep invisible next to the per-request insert load.
+const AI_TRACE_SWEEP_INTERVAL_SECS: u64 = 3600;
+
+/// Expired-trace sweep loop: on every tick, delete all `ai_trace_events` rows whose
+/// `expires_at` has passed. The first tick fires immediately at startup so a restarted CP
+/// clears backlog without waiting a full interval. Errors are logged and the loop keeps
+/// running — retention is eventually consistent, never a boot or request failure.
+async fn run_ai_trace_sweep(pool: sqlx::PgPool, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    let mut interval =
+        tokio::time::interval(std::time::Duration::from_secs(AI_TRACE_SWEEP_INTERVAL_SECS));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+                continue;
+            }
+        }
+        let as_of = sqlx::types::chrono::Utc::now();
+        match fp_storage::repos::ai_trace::delete_expired_trace_events(&pool, as_of).await {
+            Ok(deleted) if deleted > 0 => {
+                tracing::info!(deleted, "ai trace retention sweep removed expired rows");
+            }
+            Ok(_) => tracing::debug!("ai trace retention sweep found nothing expired"),
+            Err(e) => tracing::warn!("ai trace retention sweep failed: {e}"),
         }
     }
 }

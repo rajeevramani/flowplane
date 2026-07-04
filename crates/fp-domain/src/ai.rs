@@ -210,6 +210,31 @@ pub struct AiTraceEvent {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Per-team AI trace retention policy: the TTL stamped onto new `ai_trace_events` rows at
+/// insert time. At most one row per team; absence means the built-in 30-day default applies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiRetentionPolicy {
+    pub id: uuid::Uuid,
+    pub team_id: TeamId,
+    pub trace_ttl_days: i32,
+    pub version: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub const MAX_AI_TRACE_TTL_DAYS: i32 = 365;
+
+/// Bounds mirror `raw_observation_ttl_days` (1..=365): a zero/negative TTL would expire rows
+/// at insert, and an unbounded one defeats retention entirely.
+pub fn validate_trace_ttl_days(days: i32) -> DomainResult<()> {
+    if !(1..=MAX_AI_TRACE_TTL_DAYS).contains(&days) {
+        return Err(DomainError::validation(format!(
+            "trace_ttl_days must be between 1 and {MAX_AI_TRACE_TTL_DAYS}, got {days}"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AiProviderSpec {
@@ -555,6 +580,16 @@ fn usage_from_sse_event(event: &str) -> Option<OpenAiTokenUsage> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_ttl_days_bounds_are_explicit() {
+        assert!(validate_trace_ttl_days(1).is_ok());
+        assert!(validate_trace_ttl_days(30).is_ok());
+        assert!(validate_trace_ttl_days(MAX_AI_TRACE_TTL_DAYS).is_ok());
+        assert!(validate_trace_ttl_days(0).is_err());
+        assert!(validate_trace_ttl_days(-7).is_err());
+        assert!(validate_trace_ttl_days(MAX_AI_TRACE_TTL_DAYS + 1).is_err());
+    }
 
     #[test]
     fn provider_spec_rejects_unsupported_kind_and_bad_url() {

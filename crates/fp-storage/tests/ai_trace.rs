@@ -5,7 +5,8 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
-use fp_domain::{ListenerId, RouteConfigId, TeamId};
+use fp_domain::authz::TeamRef;
+use fp_domain::{ListenerId, OrgId, RouteConfigId, TeamId};
 use fp_storage::repos::{ai_trace, identity};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
@@ -20,8 +21,18 @@ fn unique(prefix: &str) -> String {
 
 struct World {
     pool: PgPool,
+    org: OrgId,
     team_a: TeamId,
     team_b: TeamId,
+}
+
+impl World {
+    fn team_ref(&self, team_id: TeamId) -> TeamRef {
+        TeamRef {
+            id: team_id,
+            org_id: self.org,
+        }
+    }
 }
 
 async fn world() -> Option<World> {
@@ -42,6 +53,7 @@ async fn world() -> Option<World> {
         .expect("team b");
     Some(World {
         pool,
+        org: org.id,
         team_a: team_a.id,
         team_b: team_b.id,
     })
@@ -271,6 +283,172 @@ async fn expires_at_defaults_to_thirty_days_after_created_at_without_policy_row(
     assert!(
         exact,
         "with no ai_retention_policies row expires_at is exactly created_at + 30 days"
+    );
+}
+
+// Slice s5: one policy row per team, PUT semantics — absent → None, set creates at version 1,
+// set again replaces in place (same row id) and bumps the version.
+#[tokio::test]
+async fn retention_policy_is_a_single_versioned_row_per_team() {
+    let Some(w) = world().await else { return };
+
+    assert!(
+        ai_trace::get_retention_policy(&w.pool, w.team_a)
+            .await
+            .expect("get absent")
+            .is_none(),
+        "no policy row until one is set"
+    );
+
+    let mut tx = w.pool.begin().await.expect("begin");
+    let created = ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 7)
+        .await
+        .expect("set");
+    tx.commit().await.expect("commit");
+    assert_eq!(created.trace_ttl_days, 7);
+    assert_eq!(created.version, 1);
+    assert_eq!(created.team_id, w.team_a);
+
+    let mut tx = w.pool.begin().await.expect("begin");
+    let replaced = ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 14)
+        .await
+        .expect("replace");
+    tx.commit().await.expect("commit replace");
+    assert_eq!(replaced.trace_ttl_days, 14);
+    assert_eq!(replaced.version, 2, "replace bumps the revision");
+    assert_eq!(
+        replaced.id, created.id,
+        "one row per team, replaced in place"
+    );
+
+    let fetched = ai_trace::get_retention_policy(&w.pool, w.team_a)
+        .await
+        .expect("get stored")
+        .expect("policy row");
+    assert_eq!(fetched.trace_ttl_days, 14);
+    assert_eq!(fetched.version, 2);
+
+    // Team B is untouched by team A's policy.
+    assert!(ai_trace::get_retention_policy(&w.pool, w.team_b)
+        .await
+        .expect("get team b")
+        .is_none());
+}
+
+// Slice s5 (design AC 13): with a team policy of N days, a NEW trace row's expires_at equals
+// created_at + N days; the no-policy 30-day default is covered by
+// `expires_at_defaults_to_thirty_days_after_created_at_without_policy_row` above.
+#[tokio::test]
+async fn insert_time_ttl_honors_a_preset_policy() {
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("begin");
+    ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 7)
+        .await
+        .expect("set policy");
+    tx.commit().await.expect("commit");
+
+    let request_id = Uuid::now_v7().to_string();
+    let event = listener_event(
+        w.team_a,
+        &request_id,
+        RouteConfigId::from(Uuid::now_v7()),
+        ListenerId::from(Uuid::now_v7()),
+    );
+    ai_trace::upsert_trace_event(&w.pool, &event)
+        .await
+        .expect("upsert");
+
+    let exact: bool = sqlx::query(
+        "SELECT expires_at = created_at + make_interval(days => 7) AS exact \
+         FROM ai_trace_events WHERE team_id = $1 AND request_id = $2",
+    )
+    .bind(w.team_a.as_uuid())
+    .bind(&request_id)
+    .fetch_one(&w.pool)
+    .await
+    .expect("expiry row")
+    .get("exact");
+    assert!(
+        exact,
+        "with a 7-day policy expires_at is exactly created_at + 7 days"
+    );
+}
+
+// Slice s5 (design AC 13): the sweep removes only rows with expires_at <= as_of, and only
+// the owning team's data — an unexpired sibling row and another team's rows survive.
+#[tokio::test]
+async fn delete_expired_trace_events_scopes_to_expired_rows_only() {
+    let Some(w) = world().await else { return };
+    let route_config_id = RouteConfigId::from(Uuid::now_v7());
+    let listener_id = ListenerId::from(Uuid::now_v7());
+
+    // Team A: one row that will be expired, one that stays fresh. Team B: one fresh row.
+    let expired_id = Uuid::now_v7().to_string();
+    let fresh_a_id = Uuid::now_v7().to_string();
+    let fresh_b_id = Uuid::now_v7().to_string();
+    for (team, request_id) in [
+        (w.team_a, &expired_id),
+        (w.team_a, &fresh_a_id),
+        (w.team_b, &fresh_b_id),
+    ] {
+        let event = listener_event(team, request_id, route_config_id, listener_id);
+        ai_trace::upsert_trace_event(&w.pool, &event)
+            .await
+            .expect("upsert");
+    }
+    // Age one team-A row past its expiry (rows are otherwise 30-day fresh).
+    sqlx::query(
+        "UPDATE ai_trace_events SET expires_at = now() - interval '1 minute' \
+         WHERE team_id = $1 AND request_id = $2",
+    )
+    .bind(w.team_a.as_uuid())
+    .bind(&expired_id)
+    .execute(&w.pool)
+    .await
+    .expect("age row");
+
+    // The sweep deletes at least the aged row (the shared DB may hold other tests' expired
+    // rows, so assert on this world's rows, not the global count).
+    let deleted = ai_trace::delete_expired_trace_events(&w.pool, sqlx::types::chrono::Utc::now())
+        .await
+        .expect("sweep");
+    assert!(
+        deleted >= 1,
+        "the aged row must be swept, deleted={deleted}"
+    );
+
+    let survivors = |team: TeamId, request_id: &str| {
+        let pool = w.pool.clone();
+        let request_id = request_id.to_string();
+        async move {
+            ai_trace::list_trace_events(
+                &pool,
+                team,
+                ai_trace::AiTraceQuery {
+                    request_id: Some(&request_id),
+                    trace_id: None,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("list")
+            .len()
+        }
+    };
+    assert_eq!(
+        survivors(w.team_a, &expired_id).await,
+        0,
+        "expired row is gone"
+    );
+    assert_eq!(
+        survivors(w.team_a, &fresh_a_id).await,
+        1,
+        "same team's unexpired row survives"
+    );
+    assert_eq!(
+        survivors(w.team_b, &fresh_b_id).await,
+        1,
+        "other team's row survives"
     );
 }
 
